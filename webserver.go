@@ -94,6 +94,8 @@ var saveServersFunc = saveServers
 var auditPruneTickerOnce sync.Once
 var observabilityCacheMu sync.RWMutex
 var observabilityCache = make(map[string]observabilityCacheEntry)
+var rebootCheckErrorRe = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
+var rebootRequiredPhraseRe = regexp.MustCompile(`\b(reboot required|requires reboot|restart required|system restart required|needs reboot|need reboot)\b`)
 
 const configFileName = "config.json"
 const legacyServersFileName = "servers.json"
@@ -2202,11 +2204,6 @@ func renameServerFactsTx(tx *sql.Tx, oldName, newName string) error {
 	return err
 }
 
-func deleteServerFacts(name string) error {
-	_, err := getDB().Exec("DELETE FROM server_facts WHERE server_name = ?", name)
-	return err
-}
-
 func diskFreeKBFromOutput(output string) int64 {
 	minFree := int64(0)
 	for _, field := range strings.Fields(output) {
@@ -2240,6 +2237,17 @@ func parseUptimeSeconds(output string) int64 {
 	return int64(seconds)
 }
 
+func rebootResultRequiresRestart(result updatePrecheckResult) bool {
+	if result.Passed {
+		return false
+	}
+	text := strings.ToLower(result.Details + " " + result.Output)
+	if rebootCheckErrorRe.MatchString(text) {
+		return false
+	}
+	return rebootRequiredPhraseRe.MatchString(text)
+}
+
 func collectServerFactsWithConnection(server Server, client sshConnection, timeout time.Duration) serverFactsRecord {
 	record := serverFactsRecord{
 		ServerName:  server.Name,
@@ -2267,7 +2275,7 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 	record.AptStatus = healthStatusFromResult(apt)
 	record.AptDetails = apt.Details
 	reboot := checkRebootRequired(client)
-	required := !reboot.Passed && strings.Contains(strings.ToLower(reboot.Details+" "+reboot.Output), "reboot")
+	required := rebootResultRequiresRestart(reboot)
 	record.RebootRequired = &required
 	raw, _ := json.Marshal(map[string]any{
 		"os_stderr":     truncateString(osErrOut, 160),
@@ -2350,7 +2358,9 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 		switch result.Name {
 		case "disk_space":
 			health.DiskStatus = healthStatusFromResult(result)
-			health.DiskFreeKB = diskFreeKBFromOutput(result.Output)
+			if parsedFreeKB := diskFreeKBFromOutput(result.Output); parsedFreeKB > 0 {
+				health.DiskFreeKB = parsedFreeKB
+			}
 			health.DiskDetails = result.Details
 			health.Source = source
 			health.CollectedAt = collectedAt

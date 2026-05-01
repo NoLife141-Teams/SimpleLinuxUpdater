@@ -54,8 +54,8 @@
                     <div class="policy-actions app-time-actions">
                         <button class="btn-success" type="button" id="app-timezone-save">Save Timezone</button>
                     </div>
-                    <div id="app-timezone-error" class="form-feedback form-feedback-error" aria-live="polite"></div>
-                    <div id="app-timezone-status" class="form-feedback form-feedback-success" role="status" aria-live="polite"></div>
+                    <div id="app-timezone-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
+                    <div id="app-timezone-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
             </div>
         </section>
@@ -177,16 +177,16 @@
                                 <div class="policy-actions">
                                     <button class="btn-ghost" type="button" id="policy-blackouts-json-apply">Apply JSON to Editor</button>
                                 </div>
-                                <div id="policy-blackouts-json-status" class="muted"></div>
+                                <div id="policy-blackouts-json-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
                             </details>
                         </div>
                         <div class="field-span policy-actions">
                             <button class="btn-success" type="submit" id="policy-save-btn">Create Policy</button>
                             <button class="btn-ghost" type="button" id="policy-reset-btn">Start New Policy</button>
                         </div>
-                        <div id="update-policy-error" class="form-feedback form-feedback-error field-span" aria-live="polite"></div>
+                        <div id="update-policy-error" class="form-feedback form-feedback-error field-span" aria-live="polite" aria-atomic="true"></div>
                     </form>
-                    <div id="update-policy-status" class="form-feedback form-feedback-success" role="status" aria-live="polite"></div>
+                    <div id="update-policy-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
                 <div class="admin-block">
                     <div class="block-head">
@@ -216,14 +216,14 @@
                             <div class="policy-actions">
                                 <button class="btn-ghost" type="button" id="scheduled-global-blackouts-json-apply">Apply JSON to Editor</button>
                             </div>
-                            <div id="scheduled-global-blackouts-json-status" class="muted"></div>
+                            <div id="scheduled-global-blackouts-json-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
                         </details>
                     </div>
                     <div class="policy-actions">
                         <button class="btn-success" type="button" id="scheduled-settings-save">Save Global No-Run Windows</button>
                     </div>
-                    <div id="scheduled-settings-error" class="form-feedback form-feedback-error" aria-live="polite"></div>
-                    <div id="scheduled-settings-status" class="form-feedback form-feedback-success" role="status" aria-live="polite"></div>
+                    <div id="scheduled-settings-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
+                    <div id="scheduled-settings-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
             </div>
             <div class="table-shell section-spaced">
@@ -298,7 +298,7 @@
                     <button class="btn-danger" type="button" id="backup-restore-btn">Restore Backup (Full Replace)</button>
                 </div>
             </div>
-            <div id="backup-status" class="muted"></div>
+            <div id="backup-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
         </section>
 
         <section class="workspace fade-in section-spaced">
@@ -314,7 +314,7 @@
                 <button class="btn-ghost" type="button" id="metrics-token-rotate">Rotate Token</button>
                 <button class="btn-danger" type="button" id="metrics-token-disable">Disable Token</button>
             </div>
-            <div id="metrics-token-status" class="muted"></div>
+            <div id="metrics-token-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
             <div id="metrics-token-once" class="secret-box">
                 <div class="muted">Copy this token now. It will not be shown again.</div>
                 <code id="metrics-token-value"></code>

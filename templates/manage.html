@@ -56,7 +56,7 @@
                         <button class="primary-action" id="upload-global-key-btn" type="button">Upload Global Key</button>
                         <button class="btn-danger" id="clear-global-key-btn" type="button">Clear Global Key</button>
                     </div>
-                    <div id="global-key-status" class="muted"></div>
+                    <div id="global-key-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
                 </article>
 
                 <article class="workspace add-server-panel">
@@ -69,12 +69,30 @@
                     </div>
                     <form id="add-server-form" class="add-server-form">
                         <span class="muted form-note">Leave password and key empty only when the global SSH key should be used.</span>
-                        <input type="text" id="name" placeholder="Name" required>
-                        <input type="text" id="host" placeholder="Host" required>
-                        <input type="number" id="port" placeholder="SSH Port" min="1" max="65535">
-                        <input type="text" id="user" placeholder="User" required>
-                        <input type="password" id="pass" placeholder="Password (optional)">
-                        <input type="text" id="tags" placeholder="Tags (comma-separated)">
+                        <div class="field">
+                            <label for="name">Name</label>
+                            <input type="text" id="name" placeholder="Name" required>
+                        </div>
+                        <div class="field">
+                            <label for="host">Host</label>
+                            <input type="text" id="host" placeholder="Host" required>
+                        </div>
+                        <div class="field">
+                            <label for="port">SSH Port</label>
+                            <input type="number" id="port" placeholder="SSH Port" min="1" max="65535">
+                        </div>
+                        <div class="field">
+                            <label for="user">User</label>
+                            <input type="text" id="user" placeholder="User" required>
+                        </div>
+                        <div class="field">
+                            <label for="pass">Password</label>
+                            <input type="password" id="pass" placeholder="Password (optional)">
+                        </div>
+                        <div class="field">
+                            <label for="tags">Tags</label>
+                            <input type="text" id="tags" placeholder="Tags (comma-separated)">
+                        </div>
                         <label class="checkbox-inline"><input type="checkbox" id="trust-host-key" checked> Trust SSH host key now (confirm fingerprint)</label>
                         <div class="form-actions">
                             <button class="primary-action action-left" type="submit">Add Server</button>
@@ -97,18 +115,23 @@
                 </div>
                 <div class="control-strip">
                     <div class="controls">
+                        <label class="sr-only" for="search">Search name, host, user, or tags</label>
                         <input type="text" id="search" placeholder="Search name/host/user/tags">
+                        <label class="sr-only" for="tag-filter">Filter tag</label>
                         <input type="text" id="tag-filter" placeholder="Filter tag">
+                        <label class="sr-only" for="auth-filter">Authentication</label>
                         <select id="auth-filter" aria-label="Authentication">
                             <option value="">All auth</option>
                             <option value="password">Has password</option>
                             <option value="key">Has key</option>
                         </select>
+                        <label class="sr-only" for="group-by">Group by</label>
                         <select id="group-by" aria-label="Group by">
                             <option value="">No grouping</option>
                             <option value="tag">Group by tag</option>
                             <option value="auth">Group by auth</option>
                         </select>
+                        <label class="sr-only" for="page-size">Page size</label>
                         <select id="page-size" aria-label="Page size">
                             <option value="25">25 per page</option>
                             <option value="50">50 per page</option>
@@ -157,8 +180,11 @@
                 </div>
                 <div class="control-strip">
                     <div class="audit-controls">
+                        <label class="sr-only" for="audit-target-filter">Audit target name</label>
                         <input type="text" id="audit-target-filter" placeholder="Target name">
+                        <label class="sr-only" for="audit-action-filter">Audit action</label>
                         <input type="text" id="audit-action-filter" placeholder="Action (e.g. server.create)">
+                        <label class="sr-only" for="audit-status-filter">Audit status</label>
                         <select id="audit-status-filter" aria-label="Audit status">
                             <option value="">All statuses</option>
                             <option value="success">Success</option>
@@ -260,8 +286,8 @@
                     <button class="btn-ghost" id="edit-check-known-host" type="button">Check Known Host</button>
                     <button class="btn-danger" id="edit-clear-known-host" type="button">Clear Known Host</button>
                 </div>
-                <div id="edit-hostkey-status" class="muted full-width" aria-live="polite"></div>
-                <div id="edit-error" class="form-error full-width" aria-live="polite"></div>
+                <div id="edit-hostkey-status" class="muted full-width" role="status" aria-live="polite" aria-atomic="true"></div>
+                <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>
             </div>
             <div class="modal-actions">
                 <button class="btn-ghost inline-btn" id="edit-cancel">Cancel</button>

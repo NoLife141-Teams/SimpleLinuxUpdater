@@ -125,6 +125,88 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 	if got.NextRun.State != "none" {
 		t.Fatalf("NextRun.State = %q, want none", got.NextRun.State)
 	}
+
+	t.Run("malformed audit metadata leaves facts free space intact", func(t *testing.T) {
+		badMetaServer := Server{Name: "srv-bad-meta", Host: "10.0.0.11", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+		mu.Lock()
+		servers = append(servers, badMetaServer)
+		statusMap[badMetaServer.Name] = &ServerStatus{Name: badMetaServer.Name, Host: badMetaServer.Host, Port: badMetaServer.Port, User: badMetaServer.User, Status: "idle", Tags: badMetaServer.Tags}
+		mu.Unlock()
+
+		if err := saveServerFacts(serverFactsRecord{
+			ServerName:    badMetaServer.Name,
+			CollectedAt:   "not-a-timestamp",
+			OSPrettyName:  "Debian GNU/Linux 12",
+			UptimeSeconds: 120,
+			DiskStatus:    "ok",
+			DiskFreeKB:    1024,
+			DiskDetails:   "Saved facts disk detail.",
+			AptStatus:     "ok",
+			AptDetails:    "Saved facts apt detail.",
+			RawJSON:       "",
+		}); err != nil {
+			t.Fatalf("saveServerFacts() error = %v", err)
+		}
+		if err := writeAuditEvent(AuditEvent{
+			CreatedAt:  now.Add(-20 * time.Minute).Format(time.RFC3339),
+			Actor:      "tester",
+			Action:     updateCompleteAction,
+			TargetType: "server",
+			TargetName: badMetaServer.Name,
+			Status:     "success",
+			Message:    "Final status: done",
+			MetaJSON:   `{"precheck_results":`,
+		}); err != nil {
+			t.Fatalf("writeAuditEvent(malformed meta) error = %v", err)
+		}
+
+		summary, err := buildDashboardSummary("7d", now)
+		if err != nil {
+			t.Fatalf("buildDashboardSummary() error = %v", err)
+		}
+		var found *dashboardServerSummary
+		for i := range summary.Servers {
+			if summary.Servers[i].Name == badMetaServer.Name {
+				found = &summary.Servers[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("summary missing %q", badMetaServer.Name)
+		}
+		if found.Health.DiskFreeKB != 1024 {
+			t.Fatalf("DiskFreeKB = %d, want facts-derived 1024", found.Health.DiskFreeKB)
+		}
+		if found.LastUpdate == nil || found.LastUpdate.DurationMS != 0 {
+			t.Fatalf("LastUpdate = %+v, want successful run without parsed duration", found.LastUpdate)
+		}
+	})
+
+	t.Run("missing saved facts returns unknown health source", func(t *testing.T) {
+		missingFactsServer := Server{Name: "srv-missing-facts", Host: "10.0.0.12", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+		mu.Lock()
+		servers = append(servers, missingFactsServer)
+		statusMap[missingFactsServer.Name] = &ServerStatus{Name: missingFactsServer.Name, Host: missingFactsServer.Host, Port: missingFactsServer.Port, User: missingFactsServer.User, Status: "idle", Tags: missingFactsServer.Tags}
+		mu.Unlock()
+
+		summary, err := buildDashboardSummary("7d", now)
+		if err != nil {
+			t.Fatalf("buildDashboardSummary() error = %v", err)
+		}
+		var found *dashboardServerSummary
+		for i := range summary.Servers {
+			if summary.Servers[i].Name == missingFactsServer.Name {
+				found = &summary.Servers[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("summary missing %q", missingFactsServer.Name)
+		}
+		if found.Health.Source != "unknown" || found.Health.DiskStatus != "unknown" || found.Health.AptStatus != "unknown" {
+			t.Fatalf("Health = %+v, want unknown source/statuses", found.Health)
+		}
+	})
 }
 
 func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
@@ -178,35 +260,189 @@ func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
 	if len(runs) != 0 {
 		t.Fatalf("materialized run count = %d, want 0 before due time", len(runs))
 	}
+
+	t.Run("disabled policy is not projected", func(t *testing.T) {
+		preserveServerState(t)
+		preserveDBState(t)
+		t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "dashboard-disabled-policy.db"))
+		_ = getDB()
+		if _, err := saveAppTimezone("UTC"); err != nil {
+			t.Fatalf("saveAppTimezone() error = %v", err)
+		}
+
+		server := Server{Name: "srv-disabled-policy", Host: "10.0.0.30", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+		mu.Lock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {Name: server.Name, Host: server.Host, Port: server.Port, User: server.User, Status: "idle", Tags: server.Tags},
+		}
+		mu.Unlock()
+
+		if _, err := createUpdatePolicy(UpdatePolicy{
+			Name:          "disabled-prod",
+			Enabled:       false,
+			TargetTag:     "prod",
+			PackageScope:  updatePolicyPackageScopeFull,
+			ExecutionMode: updatePolicyExecutionAutoApply,
+			CadenceKind:   updatePolicyCadenceDaily,
+			TimeLocal:     "16:30",
+		}); err != nil {
+			t.Fatalf("createUpdatePolicy() error = %v", err)
+		}
+		summary, err := buildDashboardSummary("7d", now)
+		if err != nil {
+			t.Fatalf("buildDashboardSummary() error = %v", err)
+		}
+		if got := summary.Servers[0].NextRun.State; got != "none" {
+			t.Fatalf("NextRun.State = %q, want none", got)
+		}
+	})
+
+	t.Run("invalid stored policy time is ignored", func(t *testing.T) {
+		preserveServerState(t)
+		preserveDBState(t)
+		t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "dashboard-invalid-policy.db"))
+		_ = getDB()
+		if _, err := saveAppTimezone("UTC"); err != nil {
+			t.Fatalf("saveAppTimezone() error = %v", err)
+		}
+
+		server := Server{Name: "srv-invalid-policy", Host: "10.0.0.31", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+		mu.Lock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {Name: server.Name, Host: server.Host, Port: server.Port, User: server.User, Status: "idle", Tags: server.Tags},
+		}
+		mu.Unlock()
+
+		policy, err := createUpdatePolicy(UpdatePolicy{
+			Name:          "invalid-time-prod",
+			Enabled:       true,
+			TargetTag:     "prod",
+			PackageScope:  updatePolicyPackageScopeFull,
+			ExecutionMode: updatePolicyExecutionAutoApply,
+			CadenceKind:   updatePolicyCadenceDaily,
+			TimeLocal:     "16:30",
+		})
+		if err != nil {
+			t.Fatalf("createUpdatePolicy() error = %v", err)
+		}
+		if _, err := getDB().Exec("UPDATE update_policies SET time_local = ? WHERE id = ?", "not-time", policy.ID); err != nil {
+			t.Fatalf("corrupt policy time_local error = %v", err)
+		}
+		summary, err := buildDashboardSummary("7d", now)
+		if err != nil {
+			t.Fatalf("buildDashboardSummary() error = %v", err)
+		}
+		if got := summary.Servers[0].NextRun.State; got != "none" {
+			t.Fatalf("NextRun.State = %q, want none", got)
+		}
+	})
 }
 
 func TestCollectServerFactsWithConnectionParsesHostFacts(t *testing.T) {
-	rebootText := "required\n"
-	conn := &scriptedSSHConnection{
-		responses: map[string]scriptedResponse{
-			serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
-			serverFactsUptimeCmd:       {stdout: "12345.67 100.00\n"},
-			precheckDiskSpaceCmd:       {stdout: "2097152\n3145728\n"},
-			precheckDpkgAuditCmd:       {},
-			precheckAptCheckCmd:        {},
-			postcheckRebootRequiredCmd: {stdout: rebootText},
-		},
-	}
+	t.Run("parses successful host facts", func(t *testing.T) {
+		conn := &scriptedSSHConnection{
+			responses: map[string]scriptedResponse{
+				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
+				serverFactsUptimeCmd:       {stdout: "12345.67 100.00\n"},
+				precheckDiskSpaceCmd:       {stdout: "2097152\n3145728\n"},
+				precheckDpkgAuditCmd:       {},
+				precheckAptCheckCmd:        {},
+				postcheckRebootRequiredCmd: {stdout: "System restart required\n"},
+			},
+		}
 
-	got := collectServerFactsWithConnection(Server{Name: "srv-facts"}, conn, time.Second)
-	if got.OSPrettyName != "Ubuntu 24.04 LTS" {
-		t.Fatalf("OSPrettyName = %q, want Ubuntu 24.04 LTS", got.OSPrettyName)
-	}
-	if got.UptimeSeconds != 12345 {
-		t.Fatalf("UptimeSeconds = %d, want 12345", got.UptimeSeconds)
-	}
-	if got.DiskStatus != "ok" || got.DiskFreeKB != 2097152 {
-		t.Fatalf("disk = %s/%d, want ok/2097152", got.DiskStatus, got.DiskFreeKB)
-	}
-	if got.AptStatus != "ok" {
-		t.Fatalf("AptStatus = %q, want ok", got.AptStatus)
-	}
-	if got.RebootRequired == nil || !*got.RebootRequired {
-		t.Fatalf("RebootRequired = %v, want true", got.RebootRequired)
-	}
+		got := collectServerFactsWithConnection(Server{Name: "srv-facts"}, conn, time.Second)
+		if got.OSPrettyName != "Ubuntu 24.04 LTS" {
+			t.Fatalf("OSPrettyName = %q, want Ubuntu 24.04 LTS", got.OSPrettyName)
+		}
+		if got.UptimeSeconds != 12345 {
+			t.Fatalf("UptimeSeconds = %d, want 12345", got.UptimeSeconds)
+		}
+		if got.DiskStatus != "ok" || got.DiskFreeKB != 2097152 {
+			t.Fatalf("disk = %s/%d, want ok/2097152", got.DiskStatus, got.DiskFreeKB)
+		}
+		if got.AptStatus != "ok" {
+			t.Fatalf("AptStatus = %q, want ok", got.AptStatus)
+		}
+		if got.RebootRequired == nil || !*got.RebootRequired {
+			t.Fatalf("RebootRequired = %v, want true", got.RebootRequired)
+		}
+	})
+
+	t.Run("malformed uptime becomes zero", func(t *testing.T) {
+		conn := &scriptedSSHConnection{
+			responses: map[string]scriptedResponse{
+				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
+				serverFactsUptimeCmd:       {stdout: "not-a-number\n"},
+				precheckDiskSpaceCmd:       {stdout: "2097152\n"},
+				precheckDpkgAuditCmd:       {},
+				precheckAptCheckCmd:        {},
+				postcheckRebootRequiredCmd: {},
+			},
+		}
+
+		got := collectServerFactsWithConnection(Server{Name: "srv-bad-uptime"}, conn, time.Second)
+		if got.UptimeSeconds != 0 {
+			t.Fatalf("UptimeSeconds = %d, want 0", got.UptimeSeconds)
+		}
+	})
+
+	t.Run("missing disk output keeps zero free space", func(t *testing.T) {
+		conn := &scriptedSSHConnection{
+			responses: map[string]scriptedResponse{
+				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
+				serverFactsUptimeCmd:       {stdout: "123.45 100.00\n"},
+				precheckDiskSpaceCmd:       {stdout: ""},
+				precheckDpkgAuditCmd:       {},
+				precheckAptCheckCmd:        {},
+				postcheckRebootRequiredCmd: {},
+			},
+		}
+
+		got := collectServerFactsWithConnection(Server{Name: "srv-missing-disk"}, conn, time.Second)
+		if got.DiskFreeKB != 0 {
+			t.Fatalf("DiskFreeKB = %d, want 0", got.DiskFreeKB)
+		}
+		if got.AptStatus != "ok" {
+			t.Fatalf("AptStatus = %q, want ok", got.AptStatus)
+		}
+	})
+
+	t.Run("generic reboot command failure is not reboot required", func(t *testing.T) {
+		conn := &scriptedSSHConnection{
+			responses: map[string]scriptedResponse{
+				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
+				serverFactsUptimeCmd:       {stdout: "123.45 100.00\n"},
+				precheckDiskSpaceCmd:       {stdout: "2097152\n"},
+				precheckDpkgAuditCmd:       {},
+				precheckAptCheckCmd:        {},
+				postcheckRebootRequiredCmd: {stderr: "failed to check reboot state\n", err: fakeExitStatusError{code: 1}},
+			},
+		}
+
+		got := collectServerFactsWithConnection(Server{Name: "srv-reboot-error"}, conn, time.Second)
+		if got.RebootRequired == nil || *got.RebootRequired {
+			t.Fatalf("RebootRequired = %v, want false", got.RebootRequired)
+		}
+	})
+
+	t.Run("non reboot marker output is not reboot required", func(t *testing.T) {
+		conn := &scriptedSSHConnection{
+			responses: map[string]scriptedResponse{
+				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
+				serverFactsUptimeCmd:       {stdout: "123.45 100.00\n"},
+				precheckDiskSpaceCmd:       {stdout: "2097152\n"},
+				precheckDpkgAuditCmd:       {},
+				precheckAptCheckCmd:        {},
+				postcheckRebootRequiredCmd: {stdout: "12345\n"},
+			},
+		}
+
+		got := collectServerFactsWithConnection(Server{Name: "srv-reboot-numeric"}, conn, time.Second)
+		if got.RebootRequired == nil || *got.RebootRequired {
+			t.Fatalf("RebootRequired = %v, want false", got.RebootRequired)
+		}
+	})
 }

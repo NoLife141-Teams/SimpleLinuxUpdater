@@ -1586,13 +1586,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         async function refreshHostFacts(name) {
-            const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => ({}));
-                alert(payload.error || "Failed to refresh host facts");
+            try {
+                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => ({}));
+                    alert(payload.error || "Failed to refresh host facts");
+                    return;
+                }
+                await fetchDashboardSummary();
+            } catch (err) {
+                alert(err?.message || "Failed to refresh host facts");
                 return;
             }
-            await fetchDashboardSummary();
         }
 
         document.getElementById('selected-host-panel').addEventListener('click', (e) => {

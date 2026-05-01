@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -13,6 +12,10 @@ var scriptTagRe = regexp.MustCompile(`(?is)<script\b([^>]*)>`)
 var hasScriptSrcRe = regexp.MustCompile(`(?i)\bsrc\s*=`)
 var inlineEventAttrRe = regexp.MustCompile(`(?i)\son[a-z]+\s*=`)
 var inlineStyleAttrRe = regexp.MustCompile(`(?i)\sstyle\s*=`)
+
+func assetAttributeRe(asset string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)\b(?:href|src)\s*=\s*["'][^"']*` + regexp.QuoteMeta(asset) + `(?:\?[^"']*)?["']`)
+}
 
 func TestTemplatesStrictCSPCompliance(t *testing.T) {
 	t.Parallel()
@@ -26,49 +29,61 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 		{
 			path: "templates/setup.html",
 			requiredContains: []string{
-				`href="/static/css/base.css`,
-				`href="/static/css/setup.css`,
-				`src="/static/js/common.js"`,
-				`src="/static/js/setup.js"`,
+				`/static/css/base.css`,
+				`/static/css/auth-common.css`,
+				`/static/css/setup.css`,
+				`/static/js/common.js`,
+				`/static/js/setup.js`,
 			},
 		},
 		{
 			path: "templates/login.html",
 			requiredContains: []string{
-				`href="/static/css/base.css`,
-				`href="/static/css/login.css`,
-				`src="/static/js/common.js"`,
-				`src="/static/js/login.js"`,
+				`/static/css/base.css`,
+				`/static/css/auth-common.css`,
+				`/static/css/login.css`,
+				`/static/js/common.js`,
+				`/static/js/login.js`,
 			},
 		},
 		{
 			path: "templates/index.html",
 			requiredContains: []string{
-				`href="/static/css/base.css`,
-				`href="/static/css/index.css`,
-				`src="/static/auth.js"`,
-				`src="/static/js/common.js"`,
-				`src="/static/js/index.js`,
+				`/static/css/base.css`,
+				`/static/css/index.css`,
+				`/static/auth.js`,
+				`/static/js/common.js`,
+				`/static/js/index.js`,
 			},
 		},
 		{
 			path: "templates/manage.html",
 			requiredContains: []string{
-				`href="/static/css/base.css`,
-				`href="/static/css/manage.css`,
-				`src="/static/auth.js"`,
-				`src="/static/js/common.js"`,
-				`src="/static/js/manage.js"`,
+				`/static/css/base.css`,
+				`/static/css/manage.css`,
+				`/static/auth.js`,
+				`/static/js/common.js`,
+				`/static/js/manage.js`,
 			},
 		},
 		{
 			path: "templates/observability.html",
 			requiredContains: []string{
-				`href="/static/css/base.css`,
-				`href="/static/css/observability.css`,
-				`src="/static/auth.js"`,
-				`src="/static/js/common.js"`,
-				`src="/static/js/observability.js"`,
+				`/static/css/base.css`,
+				`/static/css/observability.css`,
+				`/static/auth.js`,
+				`/static/js/common.js`,
+				`/static/js/observability.js`,
+			},
+		},
+		{
+			path: "templates/admin.html",
+			requiredContains: []string{
+				`/static/css/base.css`,
+				`/static/css/admin.css`,
+				`/static/auth.js`,
+				`/static/js/common.js`,
+				`/static/js/admin.js`,
 			},
 		},
 	}
@@ -106,8 +121,8 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 			}
 
 			for _, required := range tc.requiredContains {
-				if !strings.Contains(content, required) {
-					t.Fatalf("%s missing required asset reference %q", tc.path, required)
+				if !assetAttributeRe(required).MatchString(content) {
+					t.Fatalf("%s missing required asset attribute reference matching %q", tc.path, required)
 				}
 			}
 		})

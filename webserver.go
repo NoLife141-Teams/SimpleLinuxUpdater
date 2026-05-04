@@ -2314,18 +2314,21 @@ func parseUptimeSeconds(output string) int64 {
 	return int64(seconds)
 }
 
-func rebootResultRequiresRestart(result updatePrecheckResult) bool {
-	if result.Passed {
-		return false
-	}
+func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 	if strings.TrimSpace(result.Error) != "" {
-		return false
+		return false, false
+	}
+	if result.Passed {
+		return false, true
 	}
 	text := strings.ToLower(result.Details + " " + result.Output)
 	if rebootCheckErrorRe.MatchString(text) {
-		return false
+		return false, false
 	}
-	return rebootRequiredPhraseRe.MatchString(text)
+	if rebootRequiredPhraseRe.MatchString(text) {
+		return true, true
+	}
+	return false, true
 }
 
 func collectServerFactsWithConnection(server Server, client sshConnection, timeout time.Duration) serverFactsRecord {
@@ -2355,8 +2358,9 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 	record.AptStatus = healthStatusFromResult(apt)
 	record.AptDetails = apt.Details
 	reboot := checkRebootRequired(client)
-	required := rebootResultRequiresRestart(reboot)
-	record.RebootRequired = &required
+	if required, known := rebootResultRequiresRestart(reboot); known {
+		record.RebootRequired = &required
+	}
 	raw, err := json.Marshal(map[string]any{
 		"os_stderr":     truncateString(osErrOut, 160),
 		"os_error":      errorString(osErr),
@@ -2472,7 +2476,10 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 			if strings.TrimSpace(result.Error) != "" {
 				continue
 			}
-			required := rebootResultRequiresRestart(result)
+			required, known := rebootResultRequiresRestart(result)
+			if !known {
+				continue
+			}
 			health.RebootRequired = &required
 			health.Source = source
 			health.CollectedAt = collectedAt
@@ -2628,12 +2635,20 @@ func projectedPolicyRunBefore(candidate, current dashboardProjectedPolicyRun) bo
 	)
 }
 
+func parseDashboardScheduledUTC(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if parsed, err := time.Parse(jobTimestampLayout, raw); err == nil {
+		return parsed, nil
+	}
+	return time.Parse(time.RFC3339, raw)
+}
+
 func mergeProjectedNextRun(result map[string]dashboardScheduleInfo, serverName string, projected dashboardProjectedPolicyRun, loc *time.Location, timezoneName string) {
 	if projected.scheduledUTC == "" {
 		return
 	}
 	if current, exists := result[serverName]; exists {
-		currentTime, err := time.Parse(jobTimestampLayout, current.ScheduledForUTC)
+		currentTime, err := parseDashboardScheduledUTC(current.ScheduledForUTC)
 		if err == nil && !currentTime.After(projected.scheduledLocal.UTC()) {
 			return
 		}
@@ -2649,25 +2664,22 @@ func mergeProjectedNextRun(result map[string]dashboardScheduleInfo, serverName s
 	}
 }
 
-func buildNextRunMap(now time.Time, serversSnapshot []Server, policies []UpdatePolicy, overrides map[int64]map[string]bool, globalBlackouts []UpdatePolicyBlackoutWindow) map[string]dashboardScheduleInfo {
+func buildNextRunMap(now time.Time, serversSnapshot []Server, policies []UpdatePolicy, overrides map[int64]map[string]bool, globalBlackouts []UpdatePolicyBlackoutWindow) (map[string]dashboardScheduleInfo, error) {
 	runs, err := listUpdatePolicyRuns(500)
 	if err != nil {
-		return map[string]dashboardScheduleInfo{}
+		return nil, err
 	}
 	loc, timezoneName := currentAppTimezone()
 	result := map[string]dashboardScheduleInfo{}
 	cutoff := now.UTC().Truncate(time.Minute)
 	for _, run := range runs {
-		scheduled, err := time.Parse(jobTimestampLayout, strings.TrimSpace(run.ScheduledForUTC))
-		if err != nil {
-			scheduled, err = time.Parse(time.RFC3339, strings.TrimSpace(run.ScheduledForUTC))
-		}
+		scheduled, err := parseDashboardScheduledUTC(run.ScheduledForUTC)
 		if err != nil || scheduled.Before(cutoff) {
 			continue
 		}
 		current, exists := result[run.ServerName]
 		if exists {
-			currentTime, currentErr := time.Parse(jobTimestampLayout, current.ScheduledForUTC)
+			currentTime, currentErr := parseDashboardScheduledUTC(current.ScheduledForUTC)
 			if currentErr == nil && !scheduled.Before(currentTime) {
 				continue
 			}
@@ -2707,7 +2719,7 @@ func buildNextRunMap(now time.Time, serversSnapshot []Server, policies []UpdateP
 	for serverName, projected := range projectedByServer {
 		mergeProjectedNextRun(result, serverName, projected, loc, timezoneName)
 	}
-	return result
+	return result, nil
 }
 
 func defaultScheduleInfo() dashboardScheduleInfo {
@@ -2760,7 +2772,10 @@ func buildDashboardSummary(rawWindow string, now time.Time) (dashboardSummaryRes
 	if err != nil {
 		return dashboardSummaryResponse{}, err
 	}
-	nextRuns := buildNextRunMap(now, serversSnapshot, policies, overrides, globalBlackouts)
+	nextRuns, err := buildNextRunMap(now, serversSnapshot, policies, overrides, globalBlackouts)
+	if err != nil {
+		return dashboardSummaryResponse{}, err
+	}
 	loc, timezoneName := currentAppTimezone()
 
 	type updateAgg struct {
@@ -3822,8 +3837,13 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 		}
 	}
 
-	if err := jm.UpdateJob(r.jobID, update); err != nil {
+	updated, err := jm.UpdateActiveJob(r.jobID, update)
+	if err != nil {
 		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
+		return
+	}
+	if !updated {
+		return
 	}
 }
 

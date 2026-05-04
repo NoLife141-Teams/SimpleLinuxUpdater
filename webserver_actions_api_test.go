@@ -977,6 +977,70 @@ func TestCancelRoutePreservesExplicitCancelSummaryOnUpdateJob(t *testing.T) {
 	}
 }
 
+func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "actions-stale-sync-cancel.db"))
+	server := Server{Name: "srv-stale-sync-cancel", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	mu.Lock()
+	servers = []Server{server}
+	statusMap = map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "cancelled", Logs: ""},
+	}
+	mu.Unlock()
+	if err := initializeJobManager(); err != nil {
+		t.Fatalf("initializeJobManager() unexpected error: %v", err)
+	}
+	job, err := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		ClientIP:   "127.0.0.1",
+		Status:     jobStatusWaitingApproval,
+		Phase:      jobPhaseApprovalWait,
+		Summary:    "Waiting for approval",
+		LogsText:   "pending",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(update waiting approval) unexpected error: %v", err)
+	}
+	cancelledStatus := jobStatusCancelled
+	cancelledPhase := jobPhaseComplete
+	cancelledSummary := "Update cancelled"
+	finishedAt := jobTimestampNow()
+	if err := currentJobManager().UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+		Status:     &cancelledStatus,
+		Phase:      &cancelledPhase,
+		Summary:    &cancelledSummary,
+		LogsText:   stringPtr("cancelled logs"),
+		FinishedAt: &finishedAt,
+	}); err != nil {
+		t.Fatalf("UpdateJobWithoutRuntimeSync(cancelled) unexpected error: %v", err)
+	}
+
+	runner := &withActorRunner{server: server, jobID: job.ID}
+	runner.syncJobFromStatus(&ServerStatus{
+		Name:           server.Name,
+		Status:         "pending_approval",
+		Logs:           "stale pending logs",
+		Upgradable:     []string{"openssl"},
+		PendingUpdates: []PendingUpdate{{Package: "openssl"}},
+	})
+
+	var jobStatus, jobPhase, jobSummary, jobLogs string
+	if err := getDB().QueryRow("SELECT status, phase, summary, logs_text FROM jobs WHERE id = ?", job.ID).Scan(&jobStatus, &jobPhase, &jobSummary, &jobLogs); err != nil {
+		t.Fatalf("query job after stale sync: %v", err)
+	}
+	if jobStatus != jobStatusCancelled || jobPhase != jobPhaseComplete || jobSummary != "Update cancelled" || jobLogs != "cancelled logs" {
+		t.Fatalf("job after stale sync = status=%q phase=%q summary=%q logs=%q, want cancelled/complete/update cancelled/cancelled logs", jobStatus, jobPhase, jobSummary, jobLogs)
+	}
+	runtimeStatus := currentStatusSnapshot(server.Name)
+	if runtimeStatus == nil || runtimeStatus.Status != "cancelled" || runtimeStatus.Logs != "" {
+		t.Fatalf("runtime status after stale sync = %+v, want cancelled with cleared logs", runtimeStatus)
+	}
+}
+
 func TestCancelRouteDoesNotRehydrateClearedRuntimeLogsFromJobSync(t *testing.T) {
 	preserveDBState(t)
 	preserveServerState(t)

@@ -1829,8 +1829,8 @@ func processDueUpdatePolicies(now time.Time) error {
 	updatePolicyTickMu.Lock()
 	defer updatePolicyTickMu.Unlock()
 	backupRestoreMu.RLock()
-	defer backupRestoreMu.RUnlock()
 	maintenanceActive := currentMaintenanceState().Active
+	backupRestoreMu.RUnlock()
 
 	policies, err := listUpdatePolicies()
 	if err != nil {

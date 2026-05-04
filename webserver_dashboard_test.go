@@ -318,6 +318,61 @@ func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
 		t.Fatalf("materialized run count = %d, want 0 before due time", len(runs))
 	}
 
+	t.Run("queued RFC3339 run wins over later projection", func(t *testing.T) {
+		preserveServerState(t)
+		preserveDBState(t)
+		t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "dashboard-rfc3339-run.db"))
+		_ = getDB()
+		if _, err := saveAppTimezone("UTC"); err != nil {
+			t.Fatalf("saveAppTimezone() error = %v", err)
+		}
+
+		server := Server{Name: "srv-rfc3339-run", Host: "10.0.0.32", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+		mu.Lock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {Name: server.Name, Host: server.Host, Port: server.Port, User: server.User, Status: "idle", Tags: server.Tags},
+		}
+		mu.Unlock()
+
+		policy, err := createUpdatePolicy(UpdatePolicy{
+			Name:          "daily-rfc3339",
+			Enabled:       true,
+			TargetTag:     "prod",
+			PackageScope:  updatePolicyPackageScopeFull,
+			ExecutionMode: updatePolicyExecutionAutoApply,
+			CadenceKind:   updatePolicyCadenceDaily,
+			TimeLocal:     "16:30",
+		})
+		if err != nil {
+			t.Fatalf("createUpdatePolicy() error = %v", err)
+		}
+		queuedUTC := time.Date(2026, 4, 29, 15, 45, 0, 0, time.UTC).Format(time.RFC3339)
+		run, inserted, err := createUpdatePolicyRun(UpdatePolicyRun{
+			PolicyID:        policy.ID,
+			PolicyName:      policy.Name,
+			ServerName:      server.Name,
+			ScheduledForUTC: queuedUTC,
+			ExecutionMode:   policy.ExecutionMode,
+			PackageScope:    policy.PackageScope,
+			Status:          updatePolicyRunQueued,
+			Summary:         "Queued",
+			ResultJSON:      "{}",
+		})
+		if err != nil || !inserted {
+			t.Fatalf("createUpdatePolicyRun() = (%+v, %t, %v), want inserted", run, inserted, err)
+		}
+
+		summary, err := buildDashboardSummary("7d", now)
+		if err != nil {
+			t.Fatalf("buildDashboardSummary() error = %v", err)
+		}
+		got := summary.Servers[0].NextRun
+		if got.ScheduledForUTC != queuedUTC || got.Status != updatePolicyRunQueued {
+			t.Fatalf("NextRun = %+v, want queued RFC3339 run at %s", got, queuedUTC)
+		}
+	})
+
 	t.Run("disabled policy is not projected", func(t *testing.T) {
 		preserveServerState(t)
 		preserveDBState(t)
@@ -480,8 +535,8 @@ func TestCollectServerFactsWithConnectionParsesHostFacts(t *testing.T) {
 		}
 
 		got := collectServerFactsWithConnection(Server{Name: "srv-reboot-error"}, conn, time.Second)
-		if got.RebootRequired == nil || *got.RebootRequired {
-			t.Fatalf("RebootRequired = %v, want false", got.RebootRequired)
+		if got.RebootRequired != nil {
+			t.Fatalf("RebootRequired = %v, want nil for unknown command state", *got.RebootRequired)
 		}
 	})
 

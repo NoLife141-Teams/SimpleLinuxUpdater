@@ -1659,7 +1659,16 @@ func TestScheduledScanPolicyStoresDiscoveryWithoutRuntimeMutation(t *testing.T) 
 	origDial := getDialSSHConnection()
 	setDialSSHConnection(func(got Server, _ *ssh.ClientConfig) (sshConnection, error) {
 		if got.Host != server.Host || got.User != server.User || got.Pass != server.Pass {
-			t.Fatalf("scheduled scan used stale server data: got host/user/pass %q/%q/%q, want %q/%q/%q", got.Host, got.User, got.Pass, server.Host, server.User, server.Pass)
+			t.Fatalf(
+				"scheduled scan used stale server data: got host/user %q/%q, want %q/%q; password equal=%t got_password_set=%t want_password_set=%t",
+				got.Host,
+				got.User,
+				server.Host,
+				server.User,
+				got.Pass == server.Pass,
+				got.Pass != "",
+				server.Pass != "",
+			)
 		}
 		return conn, nil
 	})

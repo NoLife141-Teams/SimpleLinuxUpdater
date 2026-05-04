@@ -64,12 +64,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/}"
+          ESCAPED_TAG="$(printf '%s' "$TAG" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
           echo "Tag: $TAG"
           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
-          grep -q "^Version: $TAG$" README.md
-          grep -Eq ">[[:space:]]*${TAG}[[:space:]]*<" templates/index.html
+          grep -Eq "^Version: ${ESCAPED_TAG}$" README.md
+          grep -Eq ">[[:space:]]*${ESCAPED_TAG}[[:space:]]*<" templates/index.html
           test -f CHANGELOG.md
-          grep -q "^## \[$TAG\]" CHANGELOG.md
+          grep -Eq "^## \[${ESCAPED_TAG}\]" CHANGELOG.md
 
   publish-release:
     needs: release-gate
@@ -111,7 +112,10 @@ jobs:
 
             mkdir -p "$PKG_ROOT"
             cp "dist/${BIN}" "${PKG_ROOT}/webserver${EXT}"
-            cp -r templates static docs "$PKG_ROOT/"
+            cp -r templates static "$PKG_ROOT/"
+            if [ -d docs ]; then
+              cp -r docs "$PKG_ROOT/"
+            fi
             if [ -d .github/assets ]; then
               mkdir -p "$PKG_ROOT/.github"
               cp -r .github/assets "$PKG_ROOT/.github/"

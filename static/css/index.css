@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap");
+@import "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap";
 
 :root {
     color-scheme: dark;
@@ -82,7 +82,7 @@ button {
     padding: 0;
     margin: -1px;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
 }
@@ -1128,10 +1128,10 @@ pre {
 }
 
 .fade-in {
-    animation: dashboardFade 240ms ease both;
+    animation: dashboard-fade 240ms ease both;
 }
 
-@keyframes dashboardFade {
+@keyframes dashboard-fade {
     from {
         opacity: 0;
         transform: translateY(6px);

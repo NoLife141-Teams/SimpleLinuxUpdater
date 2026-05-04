@@ -615,17 +615,18 @@ func startJobRunner(jobID string, run func()) {
 				log.Printf("job runner panic for job %q: %v", jobID, recovered)
 				if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 					status := jobStatusFailed
+					phase := jobPhaseComplete
 					summary := "Runner panicked"
 					errorClass := "panic"
 					finishedAt := jobTimestampNow()
 					_ = jm.UpdateJob(jobID, JobUpdate{
 						Status:     &status,
+						Phase:      &phase,
 						Summary:    &summary,
 						ErrorClass: &errorClass,
 						FinishedAt: &finishedAt,
 					})
 				}
-				panic(recovered)
 			}
 		}()
 		run()

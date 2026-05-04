@@ -786,20 +786,6 @@ func renameUpdatePolicyOverridesServerTx(tx *sql.Tx, oldServerName, newServerNam
 	return nil
 }
 
-func renameUpdatePolicyOverridesServer(oldServerName, newServerName string) error {
-	tx, err := getDB().Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := renameUpdatePolicyOverridesServerTx(tx, oldServerName, newServerName); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
 func pruneUpdatePolicyOverridesForServersTx(tx *sql.Tx, activeServers []Server) error {
 	if tx == nil {
 		return errors.New("tx is required")
@@ -1838,6 +1824,14 @@ func runScheduledScanJob(jobID string, runID int64, scheduledForUTC string, serv
 func processDueUpdatePolicies(now time.Time) error {
 	updatePolicyTickMu.Lock()
 	defer updatePolicyTickMu.Unlock()
+	maintenanceActive := false
+	if !backupRestoreMu.TryRLock() {
+		backupRestoreMu.RLock()
+		maintenanceActive = true
+	} else if currentMaintenanceState().Active {
+		maintenanceActive = true
+	}
+	defer backupRestoreMu.RUnlock()
 
 	policies, err := listUpdatePolicies()
 	if err != nil {
@@ -1865,6 +1859,10 @@ func processDueUpdatePolicies(now time.Time) error {
 		}
 		for _, server := range serversSnapshot {
 			if !policyMatchesServer(policy, server, overrides) {
+				continue
+			}
+			if maintenanceActive {
+				createSkippedPolicyRun(policy, server.Name, scheduledForUTC, updatePolicyRunReasonMaintenance, "Maintenance mode active; scheduled run skipped")
 				continue
 			}
 			if blackoutApplies(slotLocal, globalBlackouts) || blackoutApplies(slotLocal, policy.PolicyBlackouts) {

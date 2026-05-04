@@ -137,6 +137,85 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 	})
 }
 
+func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	dbFile := filepath.Join(t.TempDir(), "server-mutation-active.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	server := Server{Name: "srv-active-mutation", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {Name: server.Name, Status: "updating", Upgradable: []string{}},
+		}
+	}()
+	if err := saveServers(); err != nil {
+		t.Fatalf("saveServers() unexpected error: %v", err)
+	}
+
+	updateBody := bytes.NewBufferString(`{"name":"srv-active-renamed","host":"example.net","port":22,"user":"root"}`)
+	updateRec := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/servers/"+server.Name, updateBody)
+	updateReq.AddCookie(sessionCookie)
+	updateReq.Header.Set("Content-Type", "application/json")
+	markSameOriginAuthRequest(updateReq)
+	handler.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusConflict {
+		t.Fatalf("active server update status = %d, want %d (body=%s)", updateRec.Code, http.StatusConflict, updateRec.Body.String())
+	}
+
+	deleteRec := httptest.NewRecorder()
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name, nil)
+	deleteReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(deleteReq)
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusConflict {
+		t.Fatalf("active server delete status = %d, want %d (body=%s)", deleteRec.Code, http.StatusConflict, deleteRec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(servers) != 1 || servers[0].Name != server.Name {
+		t.Fatalf("active server was mutated: %+v", servers)
+	}
+	if status := statusMap[server.Name]; status == nil || status.Status != "updating" {
+		t.Fatalf("active server status changed: %+v", status)
+	}
+}
+
+func TestStartJobRunnerMarksPanicFailedWithoutCrashing(t *testing.T) {
+	preserveDBState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "job-panic.db"))
+	if err := initializeJobManager(); err != nil {
+		t.Fatalf("initializeJobManager() unexpected error: %v", err)
+	}
+	job, err := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: "srv-panic",
+		Actor:      "tester",
+		ClientIP:   "127.0.0.1",
+		Status:     jobStatusQueued,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() unexpected error: %v", err)
+	}
+
+	startJobRunner(job.ID, func() {
+		panic("boom")
+	})
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		record, err := currentJobManager().GetJob(job.ID)
+		return err == nil && record.Status == jobStatusFailed && record.Phase == jobPhaseComplete && record.ErrorClass == "panic"
+	}, "panicked job is marked failed without crashing")
+}
+
 func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	preserveDBState(t)
 	preserveServerState(t)

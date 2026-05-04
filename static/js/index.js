@@ -11,6 +11,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let dashboardSummary = null;
         let dashboardByServer = new Map();
         let globalKeyAvailable = false;
+        let dashboardExtraErrors = new Map();
         let page = 1;
         let selectedServers = new Set();
         let hoveredName = null;
@@ -377,17 +378,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderSyncState() {
             const pollingEl = document.getElementById('polling-state-label');
             const lastSyncEl = document.getElementById('last-sync-label');
+            const extrasError = dashboardExtraErrors.size > 0
+                ? Array.from(dashboardExtraErrors.values()).join("; ")
+                : "";
+            const degraded = !!lastFetchError || !!extrasError;
             if (pollingEl) {
-                pollingEl.textContent = lastFetchError ? "Polling degraded" : "Live polling 2s";
-                pollingEl.classList.toggle('warning', !!lastFetchError);
-                pollingEl.classList.toggle('live', !lastFetchError);
+                pollingEl.textContent = degraded ? "Polling degraded" : "Live polling 2s";
+                pollingEl.classList.toggle('warning', degraded);
+                pollingEl.classList.toggle('live', !degraded);
             }
             if (lastSyncEl) {
-                lastSyncEl.textContent = lastFetchError
-                    ? `Last sync error: ${lastFetchError.message || "unknown"}`
+                lastSyncEl.textContent = lastFetchError || extrasError
+                    ? `Last sync error: ${lastFetchError?.message || extrasError || "unknown"}`
                     : formatRelativeTime(lastSuccessfulSyncAt);
-                lastSyncEl.classList.toggle('warning', !!lastFetchError);
+                lastSyncEl.classList.toggle('warning', degraded);
             }
+        }
+
+        function setDashboardExtraError(key, err) {
+            if (err) {
+                const message = err.message || "unknown error";
+                dashboardExtraErrors.set(key, `${key}: ${message}`);
+            } else {
+                dashboardExtraErrors.delete(key);
+            }
+            renderSyncState();
         }
 
         function miniEmpty(text) {
@@ -621,8 +636,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 recentActivity = Array.isArray(data?.items) ? data.items : [];
-            } catch (_) {
+                setDashboardExtraError("audit", null);
+            } catch (err) {
                 recentActivity = [];
+                setDashboardExtraError("audit", err);
             }
             renderRecentActivity();
         }
@@ -632,8 +649,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const response = await fetch('/api/observability/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 observabilitySummary = await response.json();
-            } catch (_) {
+                setDashboardExtraError("observability", null);
+            } catch (err) {
                 observabilitySummary = null;
+                setDashboardExtraError("observability", err);
             }
             renderSummaryBadges();
         }
@@ -644,8 +663,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 policySummary = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
-            } catch (_) {
+                setDashboardExtraError("policies", null);
+            } catch (err) {
                 policySummary = null;
+                setDashboardExtraError("policies", err);
             }
             renderSummaryBadges();
         }
@@ -657,9 +678,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 dashboardSummary = await response.json();
                 const items = Array.isArray(dashboardSummary?.servers) ? dashboardSummary.servers : [];
                 dashboardByServer = new Map(items.map(item => [item.name, item]));
-            } catch (_) {
+                setDashboardExtraError("dashboard", null);
+            } catch (err) {
                 dashboardSummary = null;
                 dashboardByServer = new Map();
+                setDashboardExtraError("dashboard", err);
             }
             renderDashboardMetrics();
             renderDashboardPanels();
@@ -681,15 +704,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 } else {
                     globalKeyAvailable = nextGlobalKeyAvailable;
                 }
-            } catch (_) {
-                if (globalKeyAvailable) {
-                    globalKeyAvailable = false;
-                    renderDashboardMetrics();
-                    if (allServers.length > 0) {
-                        renderTable();
-                        renderDrawer();
-                    }
-                }
+                setDashboardExtraError("global key", null);
+            } catch (err) {
+                setDashboardExtraError("global key", err);
             }
         }
 
@@ -1428,14 +1445,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
             await runBulkAction('autoremove', 'apt autoremove');
         });
 
+        async function postServerAction(url, fallbackMessage, options = {}) {
+            try {
+                const response = await fetch(url, { method: 'POST', ...options });
+                if (!response.ok) {
+                    alert(await parseErrorResponse(response, fallbackMessage));
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                alert(error?.message || fallbackMessage);
+                return false;
+            }
+        }
+
         async function updateServer(name) {
-            await fetch(`/api/update/${encodeURIComponent(name)}`, { method: 'POST' });
-            fetchServers();
+            if (await postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')) {
+                fetchServers();
+            }
         }
 
         async function runAutoremove(name) {
-            await fetch(`/api/autoremove/${encodeURIComponent(name)}`, { method: 'POST' });
-            fetchServers();
+            if (await postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')) {
+                fetchServers();
+            }
         }
 
         async function enablePasswordlessApt(name) {
@@ -1446,12 +1479,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
             if (!password) return;
-            await fetch(`/api/sudoers/${encodeURIComponent(name)}`, {
-                method: 'POST',
+            if (await postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password })
-            });
-            fetchServers();
+            })) {
+                fetchServers();
+            }
         }
 
         async function disablePasswordlessApt(name) {
@@ -1462,12 +1495,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
             if (!password) return;
-            await fetch(`/api/sudoers/disable/${encodeURIComponent(name)}`, {
-                method: 'POST',
+            if (await postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password })
-            });
-            fetchServers();
+            })) {
+                fetchServers();
+            }
         }
 
         function promptPassword(message) {
@@ -1571,18 +1604,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
 
         async function approveAllUpdates(name) {
-            await fetch(`/api/approve/${encodeURIComponent(name)}`, { method: 'POST' });
-            fetchServers();
+            if (await postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.')) {
+                fetchServers();
+            }
         }
 
         async function approveSecurityUpdates(name) {
-            await fetch(`/api/approve-security/${encodeURIComponent(name)}`, { method: 'POST' });
-            fetchServers();
+            if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
+                fetchServers();
+            }
         }
 
         async function cancelUpgrade(name) {
-            await fetch(`/api/cancel/${encodeURIComponent(name)}`, { method: 'POST' });
-            fetchServers();
+            if (await postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')) {
+                fetchServers();
+            }
         }
 
         async function refreshHostFacts(name) {

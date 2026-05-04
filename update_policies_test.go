@@ -1169,6 +1169,66 @@ func TestMaintenancePageHTMLUsesAppTimezoneFormatting(t *testing.T) {
 	}
 }
 
+func TestProcessDueUpdatePoliciesRecordsMaintenanceSkip(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-maintenance-tick.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+
+	now := time.Date(2026, time.January, 15, 14, 5, 0, 0, time.UTC)
+	server := Server{Name: "srv-maint-tick", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+	mu.Lock()
+	servers = []Server{server}
+	statusMap = map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle", Tags: []string{"prod"}, Upgradable: []string{}},
+	}
+	mu.Unlock()
+
+	policy, err := createUpdatePolicy(UpdatePolicy{
+		Name:          "Maintenance tick skip",
+		Enabled:       true,
+		TargetTag:     "prod",
+		PackageScope:  updatePolicyPackageScopeSecurity,
+		ExecutionMode: updatePolicyExecutionScanOnly,
+		CadenceKind:   updatePolicyCadenceDaily,
+		TimeLocal:     now.In(currentAppLocation()).Format("15:04"),
+	})
+	if err != nil {
+		t.Fatalf("createUpdatePolicy() unexpected error: %v", err)
+	}
+
+	setCurrentMaintenanceState(MaintenanceState{
+		Active:    true,
+		Kind:      "backup_restore",
+		JobID:     "job-maint-tick",
+		StartedAt: now.Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+		Actor:     "test",
+	})
+	t.Cleanup(func() {
+		setCurrentMaintenanceState(MaintenanceState{})
+	})
+
+	if err := processDueUpdatePolicies(now); err != nil {
+		t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
+	}
+
+	runs, err := listUpdatePolicyRuns(10)
+	if err != nil {
+		t.Fatalf("listUpdatePolicyRuns() unexpected error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("scheduled maintenance runs = %d, want 1: %+v", len(runs), runs)
+	}
+	run := runs[0]
+	if run.PolicyID != policy.ID || run.ServerName != server.Name {
+		t.Fatalf("scheduled maintenance run = %+v, want policy %d server %q", run, policy.ID, server.Name)
+	}
+	if run.Status != updatePolicyRunSkipped {
+		t.Fatalf("maintenance tick run status = %q, want %q", run.Status, updatePolicyRunSkipped)
+	}
+	if run.Reason != updatePolicyRunReasonMaintenance {
+		t.Fatalf("maintenance tick run reason = %q, want %q", run.Reason, updatePolicyRunReasonMaintenance)
+	}
+}
+
 func TestRunUpdateJobWithActorScheduledAutoApplyUsesJobMeta(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-auto-apply.db")
 	prepareUpdatePolicyTestState(t, dbFile)

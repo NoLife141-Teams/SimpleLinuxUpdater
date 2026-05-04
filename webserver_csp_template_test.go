@@ -128,3 +128,33 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 		})
 	}
 }
+
+func TestMaintenancePageStrictCSPCompliance(t *testing.T) {
+	t.Parallel()
+
+	content := maintenancePageHTML()
+	if inlineStyleBlockRe.MatchString(content) {
+		t.Fatalf("maintenance page contains inline <style> block; strict CSP requires external CSS")
+	}
+	if inlineEventAttrRe.MatchString(content) {
+		t.Fatalf("maintenance page contains inline on* event handlers; strict CSP requires JS event listeners")
+	}
+	if inlineStyleAttrRe.MatchString(content) {
+		t.Fatalf("maintenance page contains inline style= attributes; strict CSP requires CSS classes")
+	}
+	matches := scriptTagRe.FindAllStringSubmatch(content, -1)
+	for _, match := range matches {
+		attrs := ""
+		if len(match) > 1 {
+			attrs = match[1]
+		}
+		if !hasScriptSrcRe.MatchString(attrs) {
+			t.Fatalf("maintenance page contains inline <script> block; strict CSP requires external scripts")
+		}
+	}
+	for _, required := range []string{"/static/css/maintenance.css", "/static/js/maintenance.js"} {
+		if !assetAttributeRe(required).MatchString(content) {
+			t.Fatalf("maintenance page missing required asset attribute reference matching %q", required)
+		}
+	}
+}

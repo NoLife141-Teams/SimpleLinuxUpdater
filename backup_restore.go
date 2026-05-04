@@ -33,6 +33,7 @@ const (
 	backupFormatName          = "simplelinuxupdater-backup"
 	backupFormatVersion       = 1
 	backupMaxUploadBytes      = 256 * 1024 * 1024
+	backupMaxExtractedBytes   = backupMaxUploadBytes
 	backupMinPassphraseLength = 12
 	backupScryptN             = 32768
 	backupScryptR             = 8
@@ -345,7 +346,12 @@ func decryptBackupPayload(encrypted []byte, passphrase string) ([]byte, error) {
 }
 
 func extractBackupTarGz(payload []byte) (map[string][]byte, backupManifest, error) {
+	return extractBackupTarGzWithLimits(payload, backupMaxUploadBytes, backupMaxExtractedBytes)
+}
+
+func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (map[string][]byte, backupManifest, error) {
 	files := make(map[string][]byte)
+	var totalExtracted int64
 	zr, err := gzip.NewReader(bytes.NewReader(payload))
 	if err != nil {
 		return nil, backupManifest{}, err
@@ -370,10 +376,20 @@ func extractBackupTarGz(payload []byte) (map[string][]byte, backupManifest, erro
 		if name != "manifest.json" && name != "servers.db" && name != "config.json" && name != "known_hosts" {
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, backupMaxUploadBytes))
+		if hdr.Size < 0 || hdr.Size > maxFileBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, name)
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
 		if err != nil {
 			return nil, backupManifest{}, err
 		}
+		if int64(len(data)) > maxFileBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, name)
+		}
+		if totalExtracted+int64(len(data)) > maxTotalBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup payload is too large", errBackupMalformed)
+		}
+		totalExtracted += int64(len(data))
 		files[name] = data
 	}
 

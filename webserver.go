@@ -137,6 +137,7 @@ const maxSSHCommandTimeout = 30 * time.Minute
 const cveLookupMaxPackages = 25
 const cveLookupMaxPerPackage = 12
 const cveLookupCommandTimeout = 20 * time.Second
+const updateApprovalPollInterval = 200 * time.Millisecond
 const postcheckFailedUnitsCmd = "systemctl --failed --no-legend --plain"
 const postcheckRebootRequiredCmd = "sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\""
 const postcheckNameAptHealth = "post_apt_health"
@@ -498,57 +499,58 @@ func getDB() *sql.DB {
 }
 
 func getEncryptionKey() []byte {
+	keyOnce.Do(func() {
+		path := configPath()
+		var cfg map[string]string
+		if data, err := os.ReadFile(path); err == nil {
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				log.Fatalf("Failed to parse %s: %v", path, err)
+			}
+		} else if !os.IsNotExist(err) {
+			log.Fatalf("Failed to read %s: %v", path, err)
+		}
+
+		keyStr := ""
+		if cfg != nil {
+			keyStr = strings.TrimSpace(cfg["encryption_key"])
+		}
+
+		if keyStr == "" {
+			keyBytes := make([]byte, 32)
+			if _, err := rand.Read(keyBytes); err != nil {
+				log.Fatalf("Failed to generate encryption key: %v", err)
+			}
+			keyStr = base64.StdEncoding.EncodeToString(keyBytes)
+			cfg = map[string]string{"encryption_key": keyStr}
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				log.Fatalf("Failed to create config dir: %v", err)
+			}
+			data, err := json.MarshalIndent(cfg, "", "  ")
+			if err != nil {
+				log.Fatalf("Failed to serialize config: %v", err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				log.Fatalf("Failed to write %s: %v", path, err)
+			}
+		}
+
+		keyBytes, err := base64.StdEncoding.DecodeString(keyStr)
+		if err != nil || len(keyBytes) != 32 {
+			log.Fatalf("Invalid encryption_key in %s (must be base64 32 bytes)", path)
+		}
+
+		runtimeStateMu.Lock()
+		encryptionKey = keyBytes
+		runtimeStateMu.Unlock()
+	})
+
 	runtimeStateMu.RLock()
-	if encryptionKey != nil {
-		key := encryptionKey
-		runtimeStateMu.RUnlock()
-		return key
-	}
+	key := encryptionKey
 	runtimeStateMu.RUnlock()
-
-	path := configPath()
-	var cfg map[string]string
-	if data, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			log.Fatalf("Failed to parse %s: %v", path, err)
-		}
-	} else if !os.IsNotExist(err) {
-		log.Fatalf("Failed to read %s: %v", path, err)
+	if key == nil {
+		log.Fatalf("Encryption key initialization failed")
 	}
-
-	keyStr := ""
-	if cfg != nil {
-		keyStr = strings.TrimSpace(cfg["encryption_key"])
-	}
-
-	if keyStr == "" {
-		keyBytes := make([]byte, 32)
-		if _, err := rand.Read(keyBytes); err != nil {
-			log.Fatalf("Failed to generate encryption key: %v", err)
-		}
-		keyStr = base64.StdEncoding.EncodeToString(keyBytes)
-		cfg = map[string]string{"encryption_key": keyStr}
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			log.Fatalf("Failed to create config dir: %v", err)
-		}
-		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			log.Fatalf("Failed to serialize config: %v", err)
-		}
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			log.Fatalf("Failed to write %s: %v", path, err)
-		}
-	}
-
-	keyBytes, err := base64.StdEncoding.DecodeString(keyStr)
-	if err != nil || len(keyBytes) != 32 {
-		log.Fatalf("Invalid encryption_key in %s (must be base64 32 bytes)", path)
-	}
-
-	runtimeStateMu.Lock()
-	defer runtimeStateMu.Unlock()
-	encryptionKey = keyBytes
-	return keyBytes
+	return key
 }
 
 func ensureSchema(db *sql.DB) error {
@@ -1473,9 +1475,7 @@ func checkAptHealth(client sshConnection) updatePrecheckResult {
 
 func checkPostAptHealth(client sshConnection) updatePrecheckResult {
 	result := runAptHealthCheck(client, postcheckNameAptHealth)
-	if strings.Contains(result.Details, "pre-check") {
-		result.Details = strings.Replace(result.Details, "pre-check", "post-check", 1)
-	}
+	result.Details = strings.Replace(result.Details, "pre-check", "post-check", 1)
 	return result
 }
 
@@ -4028,7 +4028,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			} else {
 				approvalDeadline := time.Now().Add(behavior.ApprovalTimeout)
 				for {
-					time.Sleep(1 * time.Second)
+					time.Sleep(updateApprovalPollInterval)
 					approved := false
 					cancelledByUser := false
 					approvalTimedOut := false
@@ -5413,6 +5413,9 @@ func securityHeadersMiddleware() gin.HandlerFunc {
 
 func setupRouter() (*gin.Engine, error) {
 	r := gin.Default()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return nil, fmt.Errorf("failed to configure trusted proxies: %w", err)
+	}
 	r.Use(securityHeadersMiddleware())
 	r.Use(backupRestoreBarrierMiddleware())
 	if err := initializeMaintenanceState(); err != nil {
@@ -5590,6 +5593,12 @@ func setupRouter() (*gin.Engine, error) {
 		prevStatusMap := cloneStatusMap(statusMap)
 		for i, s := range servers {
 			if s.Name == name {
+				if status := statusMap[name]; status != nil && statusInProgress(status.Status) {
+					mu.Unlock()
+					audit(c, "server.update", "server", name, "failure", "Server action already in progress", map[string]any{"status": status.Status})
+					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before editing this server"})
+					return
+				}
 				if strings.TrimSpace(updatedServer.Pass) == "" {
 					updatedServer.Pass = s.Pass
 				}
@@ -5684,6 +5693,12 @@ func setupRouter() (*gin.Engine, error) {
 		prevStatusMap := cloneStatusMap(statusMap)
 		for i, s := range servers {
 			if s.Name == name {
+				if status := statusMap[name]; status != nil && statusInProgress(status.Status) {
+					mu.Unlock()
+					audit(c, "server.delete", "server", name, "failure", "Server action already in progress", map[string]any{"status": status.Status})
+					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before deleting this server"})
+					return
+				}
 				servers = append(servers[:i], servers[i+1:]...)
 				delete(statusMap, name)
 				txHook := func(tx *sql.Tx) error {

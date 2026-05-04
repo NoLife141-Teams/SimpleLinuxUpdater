@@ -51,7 +51,7 @@
                         <p class="muted workspace-note">Use one SSH key for servers without a per-host key.</p>
                     </div>
                     <div class="key-actions">
-                        <input class="file-input" type="file" id="global-key-file" accept=".pem,.key,.rsa,.ed25519">
+                        <input class="file-input" type="file" id="global-key-file">
                         <label class="file-btn" for="global-key-file">Choose global key</label>
                         <button class="primary-action" id="upload-global-key-btn" type="button">Upload Global Key</button>
                         <button class="btn-danger" id="clear-global-key-btn" type="button">Clear Global Key</button>
@@ -97,7 +97,7 @@
                         <div class="form-actions">
                             <button class="primary-action action-left" type="submit">Add Server</button>
                             <div class="action-right">
-                                <input class="file-input" type="file" id="key_file" accept=".pem,.key,.rsa,.ed25519">
+                                <input class="file-input" type="file" id="key_file">
                                 <label class="file-btn" for="key_file">Choose host key</label>
                             </div>
                         </div>
@@ -275,7 +275,7 @@
                 </div>
                 <div class="key-section full-width">
                     <div class="eyebrow">SSH key management</div>
-                    <input class="file-input" type="file" id="edit-key" accept=".pem,.key,.rsa,.ed25519">
+                    <input class="file-input" type="file" id="edit-key">
                     <label class="file-btn small" for="edit-key">Choose key</label>
                     <button class="primary-action" id="edit-upload-key">Upload Key</button>
                     <button class="btn-danger" id="edit-clear-key">Clear Key</button>

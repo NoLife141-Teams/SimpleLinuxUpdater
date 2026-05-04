@@ -15,6 +15,7 @@ let editKnownHostState = { host: '', port: 0, checked: false, alreadyTrusted: fa
 let editKnownHostCheckPromise = null;
 let editUpdatePolicies = [];
 let editPolicyOverrideStates = new Map();
+let manageGlobalKeyAvailable = false;
 
         function escapeHtml(value) {
             return String(value ?? "")
@@ -339,13 +340,21 @@ let editPolicyOverrideStates = new Map();
             });
         }
 
+        function hasEffectiveKey(server) {
+            return !!server?.has_key || (!!manageGlobalKeyAvailable && !server?.has_key);
+        }
+
+        function usesGlobalKey(server) {
+            return !!manageGlobalKeyAvailable && !server?.has_key;
+        }
+
         function applyFilters(servers) {
             const search = document.getElementById('search').value.trim().toLowerCase();
             const tagFilter = document.getElementById('tag-filter').value.trim().toLowerCase();
             const authFilter = document.getElementById('auth-filter').value;
             return servers.filter(server => {
                 if (authFilter === "password" && !server.has_password) return false;
-                if (authFilter === "key" && !server.has_key) return false;
+                if (authFilter === "key" && !hasEffectiveKey(server)) return false;
                 if (tagFilter) {
                     const tags = (server.tags || []).join(" ").toLowerCase();
                     if (!tags.includes(tagFilter)) return false;
@@ -385,7 +394,7 @@ let editPolicyOverrideStates = new Map();
                 });
             } else if (groupBy === "auth") {
                 servers.forEach(server => {
-                    const key = server.has_key ? "key" : "no key";
+                    const key = hasEffectiveKey(server) ? (usesGlobalKey(server) ? "global key" : "key") : "no key";
                     const pw = server.has_password ? "password" : "no password";
                     const group = `${key} / ${pw}`;
                     if (!groups.has(group)) groups.set(group, []);
@@ -515,6 +524,8 @@ let editPolicyOverrideStates = new Map();
             }
             if (server.has_key) {
                 bits.push('<span class="pill pill-success">Key</span>');
+            } else if (usesGlobalKey(server)) {
+                bits.push('<span class="pill pill-success">Global Key</span>');
             } else {
                 bits.push('<span class="pill pill-muted">No Key</span>');
             }
@@ -1033,6 +1044,7 @@ let editPolicyOverrideStates = new Map();
                 maybeClearEditValidationError();
                 if (editingServerName) {
                     editKnownHostCheckPromise = null;
+                    setEditKnownHostButtonsState(false);
                     resetEditKnownHostState();
                     setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
                 }
@@ -1040,6 +1052,7 @@ let editPolicyOverrideStates = new Map();
             document.getElementById('edit-port').addEventListener('input', () => {
                 if (editingServerName) {
                     editKnownHostCheckPromise = null;
+                    setEditKnownHostButtonsState(false);
                     resetEditKnownHostState();
                     setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
                 }
@@ -1119,7 +1132,13 @@ let editPolicyOverrideStates = new Map();
                 return;
             }
             const data = await res.json();
+            const nextGlobalKeyAvailable = !!data.has_key;
+            const changed = nextGlobalKeyAvailable !== manageGlobalKeyAvailable;
+            manageGlobalKeyAvailable = nextGlobalKeyAvailable;
             status.textContent = data.has_key ? 'Global key: saved' : 'Global key: not set';
+            if (changed && manageServers.length > 0) {
+                renderTable();
+            }
         }
 
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());

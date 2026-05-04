@@ -11,6 +11,9 @@ permissions:
 jobs:
   release-gate:
     runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+      PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -21,10 +24,40 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Cache Playwright browser
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Install release tooling
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+
+      - name: Install UI dependencies
+        run: npm ci
+
       - name: Run tests
         run: |
+          go vet ./...
+          staticcheck ./...
+          govulncheck ./...
+          actionlint
           go test -count=1 ./...
           go test -race -count=1 ./...
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          go build -o webserver .
+          npm audit --audit-level=moderate
+          npx playwright install chromium
+          npm run test:e2e
 
       - name: Verify release metadata
         run: |
@@ -33,7 +66,7 @@ jobs:
           echo "Tag: $TAG"
           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
           grep -q "^Version: $TAG$" README.md
-          grep -q "Version $TAG" templates/index.html
+          grep -Eq ">[[:space:]]*${TAG}[[:space:]]*<" templates/index.html
           test -f CHANGELOG.md
           grep -q "^## \[$TAG\]" CHANGELOG.md
 

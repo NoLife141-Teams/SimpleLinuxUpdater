@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,6 +29,50 @@ func preserveEncryptionState(t *testing.T) {
 			keyOnce.Do(func() {})
 		}
 	})
+}
+
+func TestGetEncryptionKeyConcurrentInitializationUsesPersistedKey(t *testing.T) {
+	preserveEncryptionState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "encryption-race.db"))
+
+	const callers = 16
+	results := make(chan []byte, callers)
+	for range callers {
+		go func() {
+			results <- append([]byte(nil), getEncryptionKey()...)
+		}()
+	}
+
+	var first []byte
+	for i := 0; i < callers; i++ {
+		got := <-results
+		if len(got) != 32 {
+			t.Fatalf("getEncryptionKey() len = %d, want 32", len(got))
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if !bytes.Equal(got, first) {
+			t.Fatalf("concurrent getEncryptionKey() returned different keys")
+		}
+	}
+
+	raw, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
+	}
+	var cfg map[string]string
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("config unmarshal unexpected error: %v", err)
+	}
+	persisted, err := base64.StdEncoding.DecodeString(cfg["encryption_key"])
+	if err != nil {
+		t.Fatalf("persisted key decode unexpected error: %v", err)
+	}
+	if !bytes.Equal(persisted, first) {
+		t.Fatalf("persisted encryption key differs from in-memory key")
+	}
 }
 
 func TestBackupPayloadRoundTrip(t *testing.T) {
@@ -77,6 +123,25 @@ func TestBackupPayloadRoundTrip(t *testing.T) {
 
 	if _, err := decryptBackupPayload(encrypted, "wrong-passphrase"); err == nil {
 		t.Fatalf("decryptBackupPayload(wrong passphrase) error = nil, want non-nil")
+	}
+}
+
+func TestExtractBackupTarGzRejectsOversizedDecompressedPayload(t *testing.T) {
+	tarGz, err := buildBackupTarGz(map[string][]byte{
+		"servers.db":  []byte("sqlite-snapshot"),
+		"config.json": []byte(`{"encryption_key":"abc"}`),
+		"known_hosts": []byte("host ssh-ed25519 AAAATEST"),
+	})
+	if err != nil {
+		t.Fatalf("buildBackupTarGz() unexpected error: %v", err)
+	}
+
+	_, _, err = extractBackupTarGzWithLimits(tarGz, 1024, 1)
+	if err == nil {
+		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want decompressed size error")
+	}
+	if !strings.Contains(err.Error(), "backup payload is too large") {
+		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want payload size error", err)
 	}
 }
 

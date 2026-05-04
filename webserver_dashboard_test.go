@@ -209,6 +209,22 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 	})
 }
 
+func TestUpdateHealthFromResultsLeavesRebootUnknownOnCommandError(t *testing.T) {
+	health := dashboardHealthInfo{}
+	updateHealthFromResults(&health, []updatePrecheckResult{
+		{
+			Name:    postcheckNameRebootRequired,
+			Passed:  false,
+			Details: "failed to evaluate reboot-required state: exit status 1",
+			Error:   "exit status 1",
+		},
+	}, "audit", "2026-05-04T11:00:00Z")
+
+	if health.RebootRequired != nil {
+		t.Fatalf("RebootRequired = %v, want nil for command error", *health.RebootRequired)
+	}
+}
+
 func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)

@@ -322,6 +322,7 @@ type updatePrecheckResult struct {
 	Passed  bool   `json:"passed"`
 	Details string `json:"details"`
 	Output  string `json:"output,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 type updatePrecheckSummary struct {
@@ -522,7 +523,7 @@ func getEncryptionKey() []byte {
 			}
 			keyStr = base64.StdEncoding.EncodeToString(keyBytes)
 			cfg = map[string]string{"encryption_key": keyStr}
-			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				log.Fatalf("Failed to create config dir: %v", err)
 			}
 			data, err := json.MarshalIndent(cfg, "", "  ")
@@ -1582,6 +1583,7 @@ func checkRebootRequired(client sshConnection) updatePrecheckResult {
 			Passed:  false,
 			Details: fmt.Sprintf("failed to evaluate reboot-required state: %v", err),
 			Output:  output,
+			Error:   err.Error(),
 		}
 	}
 	if strings.Contains(strings.ToLower(strings.TrimSpace(stdout)), "required") {
@@ -2241,6 +2243,9 @@ func rebootResultRequiresRestart(result updatePrecheckResult) bool {
 	if result.Passed {
 		return false
 	}
+	if strings.TrimSpace(result.Error) != "" {
+		return false
+	}
 	text := strings.ToLower(result.Details + " " + result.Output)
 	if rebootCheckErrorRe.MatchString(text) {
 		return false
@@ -2370,7 +2375,10 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 			health.Source = source
 			health.CollectedAt = collectedAt
 		case postcheckNameRebootRequired:
-			required := !result.Passed
+			if strings.TrimSpace(result.Error) != "" {
+				continue
+			}
+			required := rebootResultRequiresRestart(result)
 			health.RebootRequired = &required
 			health.Source = source
 			health.CollectedAt = collectedAt

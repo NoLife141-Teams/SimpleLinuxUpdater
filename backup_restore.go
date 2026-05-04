@@ -369,6 +369,20 @@ func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes in
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
+		if hdr.Size < 0 || hdr.Size > maxFileBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, hdr.Name)
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
+		if err != nil {
+			return nil, backupManifest{}, err
+		}
+		if int64(len(data)) > maxFileBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, hdr.Name)
+		}
+		if totalExtracted+int64(len(data)) > maxTotalBytes {
+			return nil, backupManifest{}, fmt.Errorf("%w: backup payload is too large", errBackupMalformed)
+		}
+		totalExtracted += int64(len(data))
 		name := filepath.Base(strings.TrimSpace(hdr.Name))
 		if name == "" {
 			continue
@@ -376,20 +390,6 @@ func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes in
 		if name != "manifest.json" && name != "servers.db" && name != "config.json" && name != "known_hosts" {
 			continue
 		}
-		if hdr.Size < 0 || hdr.Size > maxFileBytes {
-			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, name)
-		}
-		data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
-		if err != nil {
-			return nil, backupManifest{}, err
-		}
-		if int64(len(data)) > maxFileBytes {
-			return nil, backupManifest{}, fmt.Errorf("%w: backup entry %q is too large", errBackupMalformed, name)
-		}
-		if totalExtracted+int64(len(data)) > maxTotalBytes {
-			return nil, backupManifest{}, fmt.Errorf("%w: backup payload is too large", errBackupMalformed)
-		}
-		totalExtracted += int64(len(data))
 		files[name] = data
 	}
 

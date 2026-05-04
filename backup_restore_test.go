@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -139,6 +141,50 @@ func TestExtractBackupTarGzRejectsOversizedDecompressedPayload(t *testing.T) {
 	_, _, err = extractBackupTarGzWithLimits(tarGz, 1024, 1)
 	if err == nil {
 		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want decompressed size error")
+	}
+	if !strings.Contains(err.Error(), "backup payload is too large") {
+		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want payload size error", err)
+	}
+}
+
+func TestExtractBackupTarGzCountsUnknownRegularEntries(t *testing.T) {
+	manifest := backupManifest{
+		Format:  backupFormatName,
+		Version: backupFormatVersion,
+		Files:   map[string]backupManifestFile{},
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("json.Marshal(manifest) unexpected error: %v", err)
+	}
+
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	for _, entry := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "ignored.bin", data: bytes.Repeat([]byte("x"), 32)},
+		{name: "manifest.json", data: manifestData},
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: 0600, Size: int64(len(entry.data))}); err != nil {
+			t.Fatalf("WriteHeader(%q) unexpected error: %v", entry.name, err)
+		}
+		if _, err := tw.Write(entry.data); err != nil {
+			t.Fatalf("Write(%q) unexpected error: %v", entry.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar.Close() unexpected error: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip.Close() unexpected error: %v", err)
+	}
+
+	_, _, err = extractBackupTarGzWithLimits(raw.Bytes(), 1024, 16)
+	if err == nil {
+		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want unknown entry to count against total cap")
 	}
 	if !strings.Contains(err.Error(), "backup payload is too large") {
 		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want payload size error", err)

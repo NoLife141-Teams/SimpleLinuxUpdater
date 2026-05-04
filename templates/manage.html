@@ -147,9 +147,9 @@
                             <span class="table-shell-subtle">Registered SSH targets and auth posture.</span>
                         </div>
                         <div class="pagination">
-                            <button class="btn-ghost inline-btn" id="prev-page">Prev</button>
+                            <button class="btn-ghost inline-btn" id="prev-page" type="button">Prev</button>
                             <span id="page-info" class="muted"></span>
-                            <button class="btn-ghost inline-btn" id="next-page">Next</button>
+                            <button class="btn-ghost inline-btn" id="next-page" type="button">Next</button>
                         </div>
                     </div>
                     <div class="table-wrap">
@@ -192,8 +192,8 @@
                             <option value="started">Started</option>
                             <option value="ignored">Ignored</option>
                         </select>
-                        <button class="btn-ghost inline-btn" id="audit-refresh">Refresh</button>
-                        <button class="btn-ghost inline-btn" id="audit-prune">Prune (90d)</button>
+                        <button class="btn-ghost inline-btn" id="audit-refresh" type="button">Refresh</button>
+                        <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
                     </div>
                 </div>
                 <div class="table-shell">
@@ -203,9 +203,9 @@
                             <span class="table-shell-subtle">Recent registry and update actions.</span>
                         </div>
                         <div class="audit-pagination">
-                            <button class="btn-ghost inline-btn" id="audit-prev-page">Prev</button>
+                            <button class="btn-ghost inline-btn" id="audit-prev-page" type="button">Prev</button>
                             <span id="audit-page-info" class="muted"></span>
-                            <button class="btn-ghost inline-btn" id="audit-next-page">Next</button>
+                            <button class="btn-ghost inline-btn" id="audit-next-page" type="button">Next</button>
                         </div>
                     </div>
                     <div class="table-wrap">
@@ -266,7 +266,7 @@
                 </div>
                 <div class="field">
                     <label>&nbsp;</label>
-                    <button class="btn-danger" id="edit-clear-password">Clear Password</button>
+                    <button class="btn-danger" id="edit-clear-password" type="button">Clear Password</button>
                 </div>
                 <div class="policy-override-section full-width">
                     <div class="eyebrow">Scheduled update opt-outs</div>
@@ -277,8 +277,8 @@
                     <div class="eyebrow">SSH key management</div>
                     <input class="file-input" type="file" id="edit-key">
                     <label class="file-btn small" for="edit-key">Choose key</label>
-                    <button class="primary-action" id="edit-upload-key">Upload Key</button>
-                    <button class="btn-danger" id="edit-clear-key">Clear Key</button>
+                    <button class="primary-action" id="edit-upload-key" type="button">Upload Key</button>
+                    <button class="btn-danger" id="edit-clear-key" type="button">Clear Key</button>
                 </div>
                 <div class="known-host-section full-width">
                     <div class="eyebrow">Known host management</div>
@@ -290,8 +290,8 @@
                 <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>
             </div>
             <div class="modal-actions">
-                <button class="btn-ghost inline-btn" id="edit-cancel">Cancel</button>
-                <button class="primary-action inline-btn" id="edit-save">Save</button>
+                <button class="btn-ghost inline-btn" id="edit-cancel" type="button">Cancel</button>
+                <button class="primary-action inline-btn" id="edit-save" type="button">Save</button>
             </div>
         </div>
     </div>

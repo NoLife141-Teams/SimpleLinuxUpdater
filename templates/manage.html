@@ -229,11 +229,11 @@
     </div>
 
     <div class="modal-backdrop" id="edit-modal">
-        <div class="modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-server-title">
             <div class="workspace-head">
                 <div>
                     <div class="eyebrow">Server record</div>
-                    <h3>Edit Server</h3>
+                    <h3 id="edit-server-title">Edit Server</h3>
                 </div>
             </div>
             <div class="modal-grid">
@@ -296,9 +296,9 @@
         </div>
     </div>
     <div class="modal-backdrop" id="hostkey-modal">
-        <div class="modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="hostkey-title">
             <div class="eyebrow">SSH fingerprint</div>
-            <h3>Trust SSH Host Key</h3>
+            <h3 id="hostkey-title">Trust SSH Host Key</h3>
             <p class="muted">Verify this fingerprint before saving it to known_hosts.</p>
             <pre id="hostkey-modal-details" class="hostkey-details"></pre>
             <div class="modal-actions">

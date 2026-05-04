@@ -2282,7 +2282,7 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 	reboot := checkRebootRequired(client)
 	required := rebootResultRequiresRestart(reboot)
 	record.RebootRequired = &required
-	raw, _ := json.Marshal(map[string]any{
+	raw, err := json.Marshal(map[string]any{
 		"os_stderr":     truncateString(osErrOut, 160),
 		"os_error":      errorString(osErr),
 		"uptime_error":  errorString(uptimeErr),
@@ -2290,7 +2290,12 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 		"apt_result":    apt,
 		"reboot_result": reboot,
 	})
-	record.RawJSON = string(raw)
+	if err != nil {
+		log.Printf("collectServerFactsWithConnection: failed to marshal raw facts for %q: %v", server.Name, err)
+		record.RawJSON = "{}"
+	} else {
+		record.RawJSON = string(raw)
+	}
 	return record
 }
 
@@ -2634,9 +2639,18 @@ func buildDashboardSummary(rawWindow string, now time.Time) (dashboardSummaryRes
 	if err != nil {
 		return dashboardSummaryResponse{}, err
 	}
-	policies, _ := listUpdatePolicies()
-	overrides, _ := loadAllUpdatePolicyOverrides()
-	globalBlackouts, _ := loadGlobalUpdatePolicyBlackouts()
+	policies, err := listUpdatePolicies()
+	if err != nil {
+		return dashboardSummaryResponse{}, err
+	}
+	overrides, err := loadAllUpdatePolicyOverrides()
+	if err != nil {
+		return dashboardSummaryResponse{}, err
+	}
+	globalBlackouts, err := loadGlobalUpdatePolicyBlackouts()
+	if err != nil {
+		return dashboardSummaryResponse{}, err
+	}
 	nextRuns := buildNextRunMap(now, serversSnapshot, policies, overrides, globalBlackouts)
 	loc, timezoneName := currentAppTimezone()
 

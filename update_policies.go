@@ -1824,11 +1824,9 @@ func runScheduledScanJob(jobID string, runID int64, scheduledForUTC string, serv
 func processDueUpdatePolicies(now time.Time) error {
 	updatePolicyTickMu.Lock()
 	defer updatePolicyTickMu.Unlock()
-	if !backupRestoreMu.TryRLock() {
-		backupRestoreMu.RLock()
-	}
-	defer backupRestoreMu.RUnlock()
+	backupRestoreMu.RLock()
 	maintenanceActive := currentMaintenanceState().Active
+	backupRestoreMu.RUnlock()
 
 	policies, err := listUpdatePolicies()
 	if err != nil {

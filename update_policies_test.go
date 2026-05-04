@@ -1229,6 +1229,80 @@ func TestProcessDueUpdatePoliciesRecordsMaintenanceSkip(t *testing.T) {
 	}
 }
 
+func TestProcessDueUpdatePoliciesRechecksMaintenanceAfterLockWait(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-maintenance-cleared.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+
+	now := time.Date(2026, time.January, 15, 14, 5, 0, 0, time.UTC)
+	server := Server{Name: "srv-maint-cleared", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+	mu.Lock()
+	servers = []Server{server}
+	statusMap = map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "updating", Tags: []string{"prod"}, Upgradable: []string{}},
+	}
+	mu.Unlock()
+
+	policy, err := createUpdatePolicy(UpdatePolicy{
+		Name:          "Maintenance cleared tick",
+		Enabled:       true,
+		TargetTag:     "prod",
+		PackageScope:  updatePolicyPackageScopeSecurity,
+		ExecutionMode: updatePolicyExecutionScanOnly,
+		CadenceKind:   updatePolicyCadenceDaily,
+		TimeLocal:     now.In(currentAppLocation()).Format("15:04"),
+	})
+	if err != nil {
+		t.Fatalf("createUpdatePolicy() unexpected error: %v", err)
+	}
+
+	backupRestoreMu.Lock()
+	setCurrentMaintenanceState(MaintenanceState{
+		Active:    true,
+		Kind:      "backup_restore",
+		JobID:     "job-maint-cleared",
+		StartedAt: now.Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+		Actor:     "test",
+	})
+	t.Cleanup(func() {
+		setCurrentMaintenanceState(MaintenanceState{})
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- processDueUpdatePolicies(now)
+	}()
+
+	setCurrentMaintenanceState(MaintenanceState{})
+	backupRestoreMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for scheduler tick")
+	}
+
+	runs, err := listUpdatePolicyRuns(10)
+	if err != nil {
+		t.Fatalf("listUpdatePolicyRuns() unexpected error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("scheduled runs = %d, want 1: %+v", len(runs), runs)
+	}
+	run := runs[0]
+	if run.PolicyID != policy.ID || run.ServerName != server.Name {
+		t.Fatalf("scheduled run = %+v, want policy %d server %q", run, policy.ID, server.Name)
+	}
+	if run.Status != updatePolicyRunSkipped {
+		t.Fatalf("run status = %q, want %q", run.Status, updatePolicyRunSkipped)
+	}
+	if run.Reason != updatePolicyRunReasonBusy {
+		t.Fatalf("run reason = %q, want %q after maintenance clears", run.Reason, updatePolicyRunReasonBusy)
+	}
+}
+
 func TestRunUpdateJobWithActorScheduledAutoApplyUsesJobMeta(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-auto-apply.db")
 	prepareUpdatePolicyTestState(t, dbFile)

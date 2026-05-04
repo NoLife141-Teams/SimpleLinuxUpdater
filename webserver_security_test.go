@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -133,6 +134,25 @@ func TestServerNameAndHostExistsLocked(t *testing.T) {
 	}
 }
 
+func TestServerJSONDoesNotExposeSecrets(t *testing.T) {
+	blob, err := json.Marshal(Server{
+		Name: "srv-secret",
+		Host: "example.org",
+		Port: 22,
+		User: "root",
+		Pass: "ssh-password",
+		Key:  "private-key",
+		Tags: []string{"prod"},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(Server) unexpected error: %v", err)
+	}
+	raw := string(blob)
+	if strings.Contains(raw, "ssh-password") || strings.Contains(raw, "private-key") || strings.Contains(raw, `"pass"`) {
+		t.Fatalf("server JSON exposed secret material: %s", raw)
+	}
+}
+
 func TestReadUploadedKeyDataLimit(t *testing.T) {
 	key := bytes.Repeat([]byte("a"), maxUploadedKeyBytes)
 	got, err := readUploadedKeyData(bytes.NewReader(key))
@@ -151,6 +171,40 @@ func TestReadUploadedKeyDataLimit(t *testing.T) {
 	_, err = readUploadedKeyData(bytes.NewReader([]byte("   \n\t  ")))
 	if !errors.Is(err, errUploadedKeyEmpty) {
 		t.Fatalf("readUploadedKeyData(empty) err = %v, want %v", err, errUploadedKeyEmpty)
+	}
+}
+
+func TestGlobalKeyUploadRejectsOversizedRequestBody(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	dbFile := filepath.Join(t.TempDir(), "global-key-large-upload.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("key", "id_ed25519")
+	if err != nil {
+		t.Fatalf("CreateFormFile() unexpected error: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("a"), maxUploadedKeyRequestBytes)); err != nil {
+		t.Fatalf("Write() unexpected error: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("multipart close unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/global", &body)
+	req.AddCookie(sessionCookie)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	markSameOriginAuthRequest(req)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("global key upload status = %d, want %d (body=%s)", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
 }
 

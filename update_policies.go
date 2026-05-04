@@ -49,6 +49,8 @@ const (
 
 	updatePolicyGlobalBlackoutsSetting     = "update_policy_global_blackouts"
 	defaultScheduledApprovalTimeoutMinutes = 720
+	defaultUpdatePolicyRunsLimit           = 100
+	maxUpdatePolicyRunsLimit               = 200
 	updatePolicyTickInterval               = time.Minute
 )
 
@@ -1825,8 +1827,8 @@ func processDueUpdatePolicies(now time.Time) error {
 	updatePolicyTickMu.Lock()
 	defer updatePolicyTickMu.Unlock()
 	backupRestoreMu.RLock()
+	defer backupRestoreMu.RUnlock()
 	maintenanceActive := currentMaintenanceState().Active
-	backupRestoreMu.RUnlock()
 
 	policies, err := listUpdatePolicies()
 	if err != nil {
@@ -2047,7 +2049,15 @@ func handleUpdatePolicyDelete(c *gin.Context) {
 }
 
 func handleUpdatePolicyRuns(c *gin.Context) {
-	limit, _ := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "100")))
+	rawLimit := strings.TrimSpace(c.DefaultQuery("limit", strconv.Itoa(defaultUpdatePolicyRunsLimit)))
+	limit, err := strconv.Atoi(rawLimit)
+	if err != nil || limit <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+		return
+	}
+	if limit > maxUpdatePolicyRunsLimit {
+		limit = maxUpdatePolicyRunsLimit
+	}
 	runs, err := listUpdatePolicyRuns(limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load policy runs"})

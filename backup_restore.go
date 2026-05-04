@@ -404,13 +404,26 @@ func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes in
 	if manifest.Format != backupFormatName || manifest.Version != backupFormatVersion {
 		return nil, backupManifest{}, errBackupUnsupportedFormat
 	}
-	if _, ok := files["servers.db"]; !ok {
-		return nil, backupManifest{}, fmt.Errorf("%w: servers.db", errBackupMissingFile)
+	if manifest.Files == nil {
+		return nil, backupManifest{}, errBackupMalformed
 	}
-	if _, ok := files["config.json"]; !ok {
-		return nil, backupManifest{}, fmt.Errorf("%w: config.json", errBackupMissingFile)
+	for _, name := range []string{"servers.db", "config.json"} {
+		if _, ok := files[name]; !ok {
+			return nil, backupManifest{}, fmt.Errorf("%w: %s", errBackupMissingFile, name)
+		}
+		if _, ok := manifest.Files[name]; !ok {
+			return nil, backupManifest{}, fmt.Errorf("%w: %s", errBackupMissingFile, name)
+		}
+	}
+	if _, ok := files["known_hosts"]; ok {
+		if _, ok := manifest.Files["known_hosts"]; !ok {
+			return nil, backupManifest{}, fmt.Errorf("%w: known_hosts", errBackupMissingFile)
+		}
 	}
 	for name, meta := range manifest.Files {
+		if name != "servers.db" && name != "config.json" && name != "known_hosts" {
+			return nil, backupManifest{}, fmt.Errorf("%w: unexpected file %s", errBackupMalformed, name)
+		}
 		data, exists := files[name]
 		if !exists {
 			return nil, backupManifest{}, fmt.Errorf("%w: %s", errBackupMissingFile, name)
@@ -483,6 +496,105 @@ func restoreSnapshots(snaps map[string]restoreSnapshot) error {
 		if err := os.Remove(snap.Path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	return nil
+}
+
+func sqliteSidecarPaths(path string) []string {
+	return []string{path + "-wal", path + "-shm"}
+}
+
+func removeSQLiteSidecars(path string) error {
+	for _, sidecar := range sqliteSidecarPaths(path) {
+		if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBackupConfigData(data []byte) ([]byte, error) {
+	var cfg map[string]string
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse restored config: %w", err)
+	}
+	key, err := decodeEncryptionKeyValue(cfg["encryption_key"])
+	if err != nil {
+		return nil, fmt.Errorf("invalid restored encryption_key: %w", err)
+	}
+	return key, nil
+}
+
+func validateBackupDatabaseData(data []byte, encryptionKey []byte) error {
+	tmp, err := os.CreateTemp("", "slu-restore-validate-*.sqlite")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	db, err := sql.Open("sqlite", tmpPath)
+	if err != nil {
+		return fmt.Errorf("open restored database: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", sqliteBusyTimeoutMS)); err != nil {
+		return fmt.Errorf("set restored database busy_timeout: %w", err)
+	}
+	if err := ensureSchema(db); err != nil {
+		return fmt.Errorf("validate restored database schema: %w", err)
+	}
+
+	rows, err := db.Query("SELECT name, pass_enc, key_enc FROM servers ORDER BY name")
+	if err != nil {
+		return fmt.Errorf("validate restored servers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, passEnc, keyEnc string
+		if err := rows.Scan(&name, &passEnc, &keyEnc); err != nil {
+			return fmt.Errorf("scan restored server: %w", err)
+		}
+		if _, err := decryptSecretWithKey(passEnc, encryptionKey); err != nil {
+			return fmt.Errorf("decrypt restored password for %s: %w", name, err)
+		}
+		if _, err := decryptSecretWithKey(keyEnc, encryptionKey); err != nil {
+			return fmt.Errorf("decrypt restored SSH key for %s: %w", name, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read restored servers: %w", err)
+	}
+
+	var globalKeyEnc string
+	err = db.QueryRow("SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&globalKeyEnc)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read restored global SSH key: %w", err)
+	}
+	if err == nil && strings.TrimSpace(globalKeyEnc) != "" {
+		if _, err := decryptSecretWithKey(globalKeyEnc, encryptionKey); err != nil {
+			return fmt.Errorf("decrypt restored global SSH key: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateBackupRuntimeFiles(files map[string][]byte) error {
+	key, err := validateBackupConfigData(files["config.json"])
+	if err != nil {
+		return err
+	}
+	if err := validateBackupDatabaseData(files["servers.db"], key); err != nil {
+		return err
 	}
 	return nil
 }
@@ -569,8 +681,12 @@ func applyBackupFiles(files map[string][]byte) error {
 	if p, err := knownHostsWritePath(); err == nil && strings.TrimSpace(p) != "" {
 		knownHostsTarget = p
 	}
+	if err := validateBackupRuntimeFiles(files); err != nil {
+		return err
+	}
 
 	targets := []string{dbTarget, configTarget}
+	targets = append(targets, sqliteSidecarPaths(dbTarget)...)
 	if _, ok := files["known_hosts"]; ok {
 		targets = append(targets, knownHostsTarget)
 	}
@@ -594,7 +710,13 @@ func applyBackupFiles(files map[string][]byte) error {
 		return errors.Join(errs...)
 	}
 
+	if err := removeSQLiteSidecars(dbTarget); err != nil {
+		return rollback(err)
+	}
 	if err := writeAtomicFile(dbTarget, files["servers.db"], 0600); err != nil {
+		return rollback(err)
+	}
+	if err := removeSQLiteSidecars(dbTarget); err != nil {
 		return rollback(err)
 	}
 	if err := writeAtomicFile(configTarget, files["config.json"], 0600); err != nil {

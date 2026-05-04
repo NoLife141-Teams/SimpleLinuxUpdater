@@ -1400,10 +1400,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
 
         async function runBulkAction(actionPath, actionLabel) {
-            const names = Array.from(selectedServers);
+            const visibleSelected = new Set(
+                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
+                    .map(cb => cb.dataset.name)
+                    .filter(Boolean)
+            );
+            const selectedNames = Array.from(selectedServers);
+            const names = selectedNames.filter(name => visibleSelected.has(name));
             if (names.length === 0) {
+                if (selectedNames.length > 0) {
+                    alert(`No visible selected hosts for bulk ${actionLabel}.`);
+                }
                 return;
             }
+            const hiddenCount = Math.max(0, selectedNames.length - names.length);
 
             const jobs = names.map(async (name) => {
                 const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST' });
@@ -1427,6 +1437,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (failures.length > 0) {
                 console.error(`Bulk ${actionLabel} failures:`, failures);
                 alert(`Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`);
+            } else if (hiddenCount > 0) {
+                alert(`Bulk ${actionLabel} completed for visible selected hosts; ${hiddenCount} hidden selected host(s) were skipped.`);
             }
 
             await fetchServers();

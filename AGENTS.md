@@ -4,7 +4,7 @@ This file provides guidance for agentic coding agents working on this codebase.
 
 ## Project Overview
 
-- **Language**: Go 1.25+
+- **Language**: Go 1.26+
 - **Web Framework**: Gin
 - **Database**: SQLite (modernc.org/sqlite)
 - **SSH**: golang.org/x/crypto/ssh
@@ -13,7 +13,7 @@ This file provides guidance for agentic coding agents working on this codebase.
 
 ```bash
 # Build the webserver binary
-go build -o webserver webserver.go
+go build -o webserver .
 
 # Run the application
 ./webserver
@@ -21,7 +21,7 @@ go build -o webserver webserver.go
 # Cross-compile for Linux amd64 (from Windows)
 set GOOS=linux
 set GOARCH=amd64
-go build -o webserver webserver.go
+go build -o webserver .
 ```
 
 ## Test Commands

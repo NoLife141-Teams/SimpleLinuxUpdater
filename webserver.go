@@ -47,6 +47,23 @@ type Server struct {
 	Tags []string `json:"tags"`
 }
 
+func (s Server) MarshalJSON() ([]byte, error) {
+	type serverResponse struct {
+		Name string   `json:"name"`
+		Host string   `json:"host"`
+		Port int      `json:"port"`
+		User string   `json:"user"`
+		Tags []string `json:"tags"`
+	}
+	return json.Marshal(serverResponse{
+		Name: s.Name,
+		Host: s.Host,
+		Port: s.Port,
+		User: s.User,
+		Tags: append([]string(nil), s.Tags...),
+	})
+}
+
 type ServerStatus struct {
 	Name           string          `json:"name"`
 	Host           string          `json:"host"`
@@ -103,6 +120,7 @@ const globalKeySetting = "global_ssh_key"
 const metricsBearerTokenHashSetting = "metrics_bearer_token_hash"
 const metricsBearerTokenEntropyBytes = 32
 const maxUploadedKeyBytes = 64 * 1024
+const maxUploadedKeyRequestBytes = maxUploadedKeyBytes + 1024*1024
 const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
@@ -499,6 +517,21 @@ func getDB() *sql.DB {
 	return db
 }
 
+func decodeEncryptionKeyValue(keyStr string) ([]byte, error) {
+	keyStr = strings.TrimSpace(keyStr)
+	if keyStr == "" {
+		return nil, errors.New("missing encryption_key")
+	}
+	keyBytes, err := base64.StdEncoding.DecodeString(keyStr)
+	if err != nil {
+		return nil, err
+	}
+	if len(keyBytes) != 32 {
+		return nil, errors.New("encryption_key must be base64 32 bytes")
+	}
+	return keyBytes, nil
+}
+
 func getEncryptionKey() []byte {
 	keyOnce.Do(func() {
 		path := configPath()
@@ -535,7 +568,7 @@ func getEncryptionKey() []byte {
 			}
 		}
 
-		keyBytes, err := base64.StdEncoding.DecodeString(keyStr)
+		keyBytes, err := decodeEncryptionKeyValue(keyStr)
 		if err != nil || len(keyBytes) != 32 {
 			log.Fatalf("Invalid encryption_key in %s (must be base64 32 bytes)", path)
 		}
@@ -3076,6 +3109,10 @@ func encryptSecret(secret string) (string, error) {
 }
 
 func decryptSecret(encoded string) (string, error) {
+	return decryptSecretWithKey(encoded, getEncryptionKey())
+}
+
+func decryptSecretWithKey(encoded string, key []byte) (string, error) {
 	if encoded == "" {
 		return "", nil
 	}
@@ -3091,7 +3128,7 @@ func decryptSecret(encoded string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(getEncryptionKey())
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
@@ -3399,6 +3436,14 @@ func findServerByNameLocked(name string) (Server, bool) {
 	return Server{}, false
 }
 
+func serverActionStatusInProgressLocked(name string) (bool, string) {
+	status := statusMap[name]
+	if status == nil {
+		return false, ""
+	}
+	return statusInProgress(status.Status), status.Status
+}
+
 func beginServerAction(name, newStatus string) (Server, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -3479,6 +3524,20 @@ func readUploadedPrivateKey(file *multipart.FileHeader) (string, error) {
 	}
 	defer src.Close()
 	return readUploadedKeyData(src)
+}
+
+func limitUploadedKeyRequest(c *gin.Context) {
+	if c != nil && c.Request != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadedKeyRequestBytes)
+	}
+}
+
+func uploadedKeyFormErrorStatus(err error) int {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) || strings.Contains(strings.ToLower(err.Error()), "request body too large") {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
 }
 
 func stringsEqualConstantTime(a, b string) bool {
@@ -5752,6 +5811,11 @@ func setupRouter() (*gin.Engine, error) {
 		prevStatusMap := cloneStatusMap(statusMap)
 		for i, s := range servers {
 			if s.Name == name {
+				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
+					audit(c, "server.password.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server password"})
+					return
+				}
 				servers[i].Pass = ""
 				if err := saveServersOrRollbackLocked(prevServers, prevStatusMap); err != nil {
 					audit(c, "server.password.clear", "server", name, "failure", "Failed to persist password clear", map[string]any{"error": err.Error()})
@@ -5772,10 +5836,29 @@ func setupRouter() (*gin.Engine, error) {
 
 	r.POST("/api/servers/:name/key", func(c *gin.Context) {
 		name := c.Param("name")
+		limitUploadedKeyRequest(c)
+		mu.Lock()
+		_, found := findServerByNameLocked(name)
+		blocked, status := serverActionStatusInProgressLocked(name)
+		mu.Unlock()
+		if !found {
+			audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+			return
+		}
+		if blocked {
+			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
+			return
+		}
 		file, err := c.FormFile("key")
 		if err != nil {
 			audit(c, "server.key.upload", "server", name, "failure", "Missing key file", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing key file"})
+			if uploadedKeyFormErrorStatus(err) == http.StatusRequestEntityTooLarge {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errUploadedKeyTooLarge.Error()})
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "missing key file"})
+			}
 			return
 		}
 		key, err := readUploadedPrivateKey(file)
@@ -5798,6 +5881,11 @@ func setupRouter() (*gin.Engine, error) {
 		defer mu.Unlock()
 		for i, s := range servers {
 			if s.Name == name {
+				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
+					audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
+					return
+				}
 				if err := updateServerKey(name, key); err != nil {
 					audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -5822,6 +5910,11 @@ func setupRouter() (*gin.Engine, error) {
 		defer mu.Unlock()
 		for i, s := range servers {
 			if s.Name == name {
+				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
+					audit(c, "server.key.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server key"})
+					return
+				}
 				if err := updateServerKey(name, ""); err != nil {
 					audit(c, "server.key.clear", "server", name, "failure", "Failed to clear key", map[string]any{"error": err.Error()})
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -5841,10 +5934,15 @@ func setupRouter() (*gin.Engine, error) {
 	})
 
 	r.POST("/api/keys/global", func(c *gin.Context) {
+		limitUploadedKeyRequest(c)
 		file, err := c.FormFile("key")
 		if err != nil {
 			audit(c, "global_key.upload", "global_key", "global", "failure", "Missing key file", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing key file"})
+			if uploadedKeyFormErrorStatus(err) == http.StatusRequestEntityTooLarge {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": errUploadedKeyTooLarge.Error()})
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "missing key file"})
+			}
 			return
 		}
 		key, err := readUploadedPrivateKey(file)
@@ -6445,20 +6543,6 @@ func setupRouter() (*gin.Engine, error) {
 		}
 		audit(c, "update.cancel", "server", name, "success", "Upgrade cancelled", nil)
 		c.JSON(http.StatusOK, gin.H{"message": "Upgrade cancelled"})
-	})
-
-	r.GET("/api/logs/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		mu.Lock()
-		status, exists := statusMap[name]
-		if !exists || status == nil {
-			mu.Unlock()
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		logs := status.Logs
-		mu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"logs": logs})
 	})
 
 	return r, nil

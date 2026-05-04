@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -177,6 +178,46 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	handler.ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusConflict {
 		t.Fatalf("active server delete status = %d, want %d (body=%s)", deleteRec.Code, http.StatusConflict, deleteRec.Body.String())
+	}
+
+	passwordRec := httptest.NewRecorder()
+	passwordReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name+"/password", nil)
+	passwordReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(passwordReq)
+	handler.ServeHTTP(passwordRec, passwordReq)
+	if passwordRec.Code != http.StatusConflict {
+		t.Fatalf("active server password clear status = %d, want %d (body=%s)", passwordRec.Code, http.StatusConflict, passwordRec.Body.String())
+	}
+
+	var keyBody bytes.Buffer
+	keyWriter := multipart.NewWriter(&keyBody)
+	keyPart, err := keyWriter.CreateFormFile("key", "id_ed25519")
+	if err != nil {
+		t.Fatalf("CreateFormFile() unexpected error: %v", err)
+	}
+	if _, err := keyPart.Write([]byte("private-key")); err != nil {
+		t.Fatalf("Write() unexpected error: %v", err)
+	}
+	if err := keyWriter.Close(); err != nil {
+		t.Fatalf("multipart close unexpected error: %v", err)
+	}
+	keyUploadRec := httptest.NewRecorder()
+	keyUploadReq := httptest.NewRequest(http.MethodPost, "/api/servers/"+server.Name+"/key", &keyBody)
+	keyUploadReq.AddCookie(sessionCookie)
+	keyUploadReq.Header.Set("Content-Type", keyWriter.FormDataContentType())
+	markSameOriginAuthRequest(keyUploadReq)
+	handler.ServeHTTP(keyUploadRec, keyUploadReq)
+	if keyUploadRec.Code != http.StatusConflict {
+		t.Fatalf("active server key upload status = %d, want %d (body=%s)", keyUploadRec.Code, http.StatusConflict, keyUploadRec.Body.String())
+	}
+
+	keyClearRec := httptest.NewRecorder()
+	keyClearReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name+"/key", nil)
+	keyClearReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(keyClearReq)
+	handler.ServeHTTP(keyClearRec, keyClearReq)
+	if keyClearRec.Code != http.StatusConflict {
+		t.Fatalf("active server key clear status = %d, want %d (body=%s)", keyClearRec.Code, http.StatusConflict, keyClearRec.Body.String())
 	}
 
 	mu.Lock()

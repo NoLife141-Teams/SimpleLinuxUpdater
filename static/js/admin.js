@@ -303,10 +303,15 @@ async function restoreBackup() {
             alert(await parseErrorResponse(res, "Failed to restore backup."));
             return;
         }
+        const payload = await res.json().catch(() => ({}));
         alert("Backup restored successfully.");
         if (fileInput) {
             fileInput.value = "";
             updateFileLabel(fileInput, "Choose backup file");
+        }
+        if (payload.sessions_invalidated) {
+            window.location.assign("/login");
+            return;
         }
         await fetchBackupStatus();
     } catch (err) {

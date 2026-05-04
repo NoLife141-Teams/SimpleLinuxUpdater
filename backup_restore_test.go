@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -188,6 +190,110 @@ func TestExtractBackupTarGzCountsUnknownRegularEntries(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "backup payload is too large") {
 		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want payload size error", err)
+	}
+}
+
+func TestExtractBackupTarGzRejectsUnmanifestedRestoredFiles(t *testing.T) {
+	files := map[string][]byte{
+		"servers.db":  []byte("sqlite-snapshot"),
+		"config.json": []byte(`{"encryption_key":"abc"}`),
+	}
+	configSum := sha256.Sum256(files["config.json"])
+	manifest := backupManifest{
+		Format:  backupFormatName,
+		Version: backupFormatVersion,
+		Files: map[string]backupManifestFile{
+			"config.json": {
+				Size:   int64(len(files["config.json"])),
+				SHA256: hex.EncodeToString(configSum[:]),
+			},
+		},
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("json.Marshal(manifest) unexpected error: %v", err)
+	}
+
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	for _, entry := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "manifest.json", data: manifestData},
+		{name: "servers.db", data: files["servers.db"]},
+		{name: "config.json", data: files["config.json"]},
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: 0600, Size: int64(len(entry.data))}); err != nil {
+			t.Fatalf("WriteHeader(%q) unexpected error: %v", entry.name, err)
+		}
+		if _, err := tw.Write(entry.data); err != nil {
+			t.Fatalf("Write(%q) unexpected error: %v", entry.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar.Close() unexpected error: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip.Close() unexpected error: %v", err)
+	}
+
+	_, _, err = extractBackupTarGzWithLimits(raw.Bytes(), 1024, 4096)
+	if err == nil {
+		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want missing manifest entry error")
+	}
+	if !strings.Contains(err.Error(), "servers.db") {
+		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want servers.db missing from manifest", err)
+	}
+}
+
+func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	dbFile := filepath.Join(t.TempDir(), "restore-sidecars.db")
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+
+	servers = []Server{{Name: "srv-sidecar", Host: "example.org", Port: 22, User: "root", Pass: "pw"}}
+	if err := saveServers(); err != nil {
+		t.Fatalf("saveServers() unexpected error: %v", err)
+	}
+	dbSnapshot, err := createDBBackupSnapshot()
+	if err != nil {
+		t.Fatalf("createDBBackupSnapshot() unexpected error: %v", err)
+	}
+	configData, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
+	}
+
+	resetRuntimeCaches()
+	for _, sidecar := range sqliteSidecarPaths(dbFile) {
+		if err := os.WriteFile(sidecar, []byte("stale sidecar"), 0600); err != nil {
+			t.Fatalf("WriteFile(%s) unexpected error: %v", sidecar, err)
+		}
+	}
+
+	if err := applyBackupFiles(map[string][]byte{
+		"servers.db":  dbSnapshot,
+		"config.json": configData,
+	}); err != nil {
+		t.Fatalf("applyBackupFiles() unexpected error: %v", err)
+	}
+	for _, sidecar := range sqliteSidecarPaths(dbFile) {
+		data, err := os.ReadFile(sidecar)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ReadFile(%s) unexpected error: %v", sidecar, err)
+		}
+		if bytes.Equal(data, []byte("stale sidecar")) {
+			t.Fatalf("sidecar %s still contains stale pre-restore bytes", sidecar)
+		}
 	}
 }
 

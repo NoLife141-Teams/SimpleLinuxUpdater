@@ -247,6 +247,55 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	}
 }
 
+func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-runs-limit.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+	base := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < maxUpdatePolicyRunsLimit+5; i++ {
+		_, inserted, err := createUpdatePolicyRun(UpdatePolicyRun{
+			PolicyID:        1,
+			PolicyName:      "Limit policy",
+			ServerName:      "srv-limit",
+			ScheduledForUTC: base.Add(time.Duration(i) * time.Minute).Format(jobTimestampLayout),
+			ExecutionMode:   updatePolicyExecutionScanOnly,
+			PackageScope:    updatePolicyPackageScopeSecurity,
+			Status:          updatePolicyRunSkipped,
+			Reason:          updatePolicyRunReasonBusy,
+			Summary:         "Skipped for limit test",
+			ResultJSON:      "{}",
+		})
+		if err != nil || !inserted {
+			t.Fatalf("createUpdatePolicyRun(%d) = inserted %t err %v", i, inserted, err)
+		}
+	}
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	invalidRec := httptest.NewRecorder()
+	invalidReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?limit=abc", nil)
+	invalidReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid runs limit status = %d, want %d (body=%s)", invalidRec.Code, http.StatusBadRequest, invalidRec.Body.String())
+	}
+
+	clampedRec := httptest.NewRecorder()
+	clampedReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?limit=999999", nil)
+	clampedReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(clampedRec, clampedReq)
+	if clampedRec.Code != http.StatusOK {
+		t.Fatalf("clamped runs status = %d, want %d (body=%s)", clampedRec.Code, http.StatusOK, clampedRec.Body.String())
+	}
+	var resp struct {
+		Items []UpdatePolicyRun `json:"items"`
+	}
+	if err := json.Unmarshal(clampedRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal clamped runs response: %v", err)
+	}
+	if len(resp.Items) != maxUpdatePolicyRunsLimit {
+		t.Fatalf("clamped runs count = %d, want %d", len(resp.Items), maxUpdatePolicyRunsLimit)
+	}
+}
+
 func TestAppTimezoneAPIAndScheduledSettingsMirror(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api.db")
 	prepareUpdatePolicyTestState(t, dbFile)

@@ -2282,18 +2282,20 @@ func renameServerFactsTx(tx *sql.Tx, oldName, newName string) error {
 	return err
 }
 
-func diskFreeKBFromOutput(output string) int64 {
-	minFree := int64(0)
+func diskFreeKBFromOutput(output string) (int64, bool) {
+	var minFree int64
+	found := false
 	for _, field := range strings.Fields(output) {
 		value, err := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
 		if err != nil {
 			continue
 		}
-		if minFree == 0 || value < minFree {
+		if !found || value < minFree {
 			minFree = value
+			found = true
 		}
 	}
-	return minFree
+	return minFree, found
 }
 
 func healthStatusFromResult(result updatePrecheckResult) string {
@@ -2353,7 +2355,9 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 	diskOut, _, _ := runSSHCommandWithTimeout(client, precheckDiskSpaceCmd, nil, timeout)
 	disk := checkDiskSpace(client)
 	record.DiskStatus = healthStatusFromResult(disk)
-	record.DiskFreeKB = diskFreeKBFromOutput(diskOut)
+	if diskFreeKB, ok := diskFreeKBFromOutput(diskOut); ok {
+		record.DiskFreeKB = diskFreeKB
+	}
 	record.DiskDetails = disk.Details
 	apt := checkAptHealth(client)
 	record.AptStatus = healthStatusFromResult(apt)
@@ -2462,7 +2466,7 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 		switch result.Name {
 		case "disk_space":
 			health.DiskStatus = healthStatusFromResult(result)
-			if parsedFreeKB := diskFreeKBFromOutput(result.Output); parsedFreeKB > 0 {
+			if parsedFreeKB, ok := diskFreeKBFromOutput(result.Output); ok {
 				health.DiskFreeKB = parsedFreeKB
 			}
 			health.DiskDetails = result.Details

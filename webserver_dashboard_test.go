@@ -225,6 +225,45 @@ func TestUpdateHealthFromResultsLeavesRebootUnknownOnCommandError(t *testing.T) 
 	}
 }
 
+func TestDiskFreeKBFromOutputPreservesZeroMinimum(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   int64
+		wantOK bool
+	}{
+		{name: "zero before positive", output: "0\n2097152\n", want: 0, wantOK: true},
+		{name: "zero after positive", output: "2097152\n0\n", want: 0, wantOK: true},
+		{name: "ignores labels", output: "available_kb\n1024\n", want: 1024, wantOK: true},
+		{name: "missing values", output: "", want: 0, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := diskFreeKBFromOutput(tt.output)
+			if got != tt.want || ok != tt.wantOK {
+				t.Fatalf("diskFreeKBFromOutput(%q) = %d/%v, want %d/%v", tt.output, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestUpdateHealthFromResultsAllowsZeroDiskFree(t *testing.T) {
+	health := dashboardHealthInfo{
+		DiskStatus:  "ok",
+		DiskFreeKB:  2048,
+		DiskDetails: "previous disk facts",
+	}
+
+	updateHealthFromResults(&health, []updatePrecheckResult{
+		{Name: "disk_space", Passed: false, Details: "disk is full", Output: "0\n2097152\n"},
+	}, "audit", "2026-05-04T11:00:00Z")
+
+	if health.DiskStatus != "critical" || health.DiskFreeKB != 0 || health.DiskDetails != "disk is full" {
+		t.Fatalf("Disk health = %s/%d/%q, want critical/0/disk is full", health.DiskStatus, health.DiskFreeKB, health.DiskDetails)
+	}
+}
+
 func TestUpdateHealthFromResultsSkipsStaleAuditMetadata(t *testing.T) {
 	currentAt := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	staleAt := time.Date(2026, 5, 4, 11, 0, 0, 0, time.UTC).Format(time.RFC3339)

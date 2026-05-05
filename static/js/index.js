@@ -76,8 +76,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function formatDiskFree(kb) {
-            const value = Number(kb || 0);
-            if (!Number.isFinite(value) || value <= 0) return "--";
+            if (kb === null || kb === undefined || kb === "") return "--";
+            const value = Number(kb);
+            if (!Number.isFinite(value) || value < 0) return "--";
             const gib = value / 1024 / 1024;
             if (gib >= 1) return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`;
             return `${Math.round(value / 1024)} MiB`;

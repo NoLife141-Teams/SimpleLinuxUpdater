@@ -30,16 +30,17 @@ import (
 )
 
 const (
-	backupFileExtension       = ".slubkp"
-	backupFormatName          = "simplelinuxupdater-backup"
-	backupFormatVersion       = 1
-	backupMaxUploadBytes      = 256 * 1024 * 1024
-	backupMaxExtractedBytes   = backupMaxUploadBytes
-	backupMinPassphraseLength = 12
-	backupScryptN             = 32768
-	backupScryptR             = 8
-	backupScryptP             = 1
-	backupKeyLen              = 32
+	backupFileExtension         = ".slubkp"
+	backupFormatName            = "simplelinuxupdater-backup"
+	backupFormatVersion         = 1
+	backupMaxUploadBytes        = 256 * 1024 * 1024
+	backupMaxExtractedBytes     = backupMaxUploadBytes
+	backupMaxExportRequestBytes = 1024 * 1024
+	backupMinPassphraseLength   = 12
+	backupScryptN               = 32768
+	backupScryptR               = 8
+	backupScryptP               = 1
+	backupKeyLen                = 32
 )
 
 var backupRestoreMu sync.RWMutex
@@ -600,15 +601,161 @@ func validateBackupDatabaseData(ctx context.Context, data []byte, encryptionKey 
 	return nil
 }
 
-func validateBackupRuntimeFiles(ctx context.Context, files map[string][]byte) error {
-	key, err := validateBackupConfigData(files["config.json"])
+func reencryptBackupDatabaseData(ctx context.Context, data []byte, fromKey, toKey []byte) ([]byte, error) {
+	if bytes.Equal(fromKey, toKey) {
+		return append([]byte(nil), data...), nil
+	}
+	tmp, err := os.CreateTemp("", "slu-restore-rewrap-*.sqlite")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := validateBackupDatabaseData(ctx, files["servers.db"], key); err != nil {
-		return err
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return nil, err
 	}
-	return nil
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("open restored database for rewrap: %w", err)
+	}
+	defer func() {
+		if db != nil {
+			_ = db.Close()
+		}
+	}()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", sqliteBusyTimeoutMS)); err != nil {
+		return nil, fmt.Errorf("set restored database rewrap busy_timeout: %w", err)
+	}
+	if err := ensureSchema(db); err != nil {
+		return nil, fmt.Errorf("prepare restored database rewrap schema: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin restored database rewrap: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	type encryptedServerSecrets struct {
+		name    string
+		passEnc string
+		keyEnc  string
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT name, pass_enc, key_enc FROM servers ORDER BY name")
+	if err != nil {
+		return nil, fmt.Errorf("read restored server secrets for rewrap: %w", err)
+	}
+	var secretRows []encryptedServerSecrets
+	for rows.Next() {
+		var row encryptedServerSecrets
+		if err := rows.Scan(&row.name, &row.passEnc, &row.keyEnc); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan restored server secret for rewrap: %w", err)
+		}
+		secretRows = append(secretRows, row)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close restored server secret rows for rewrap: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read restored server secret rows for rewrap: %w", err)
+	}
+
+	updateServerStmt, err := tx.PrepareContext(ctx, "UPDATE servers SET pass_enc = ?, key_enc = ? WHERE name = ?")
+	if err != nil {
+		return nil, fmt.Errorf("prepare restored server secret rewrap: %w", err)
+	}
+	defer func() {
+		if updateServerStmt != nil {
+			_ = updateServerStmt.Close()
+		}
+	}()
+	for _, row := range secretRows {
+		pass, err := decryptSecretWithKey(row.passEnc, fromKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt restored password for %s during rewrap: %w", row.name, err)
+		}
+		passEnc, err := encryptSecretWithKey(pass, toKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt restored password for %s during rewrap: %w", row.name, err)
+		}
+		key, err := decryptSecretWithKey(row.keyEnc, fromKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt restored SSH key for %s during rewrap: %w", row.name, err)
+		}
+		keyEnc, err := encryptSecretWithKey(key, toKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt restored SSH key for %s during rewrap: %w", row.name, err)
+		}
+		if _, err := updateServerStmt.ExecContext(ctx, passEnc, keyEnc, row.name); err != nil {
+			return nil, fmt.Errorf("update restored server secret for %s during rewrap: %w", row.name, err)
+		}
+	}
+	if err := updateServerStmt.Close(); err != nil {
+		return nil, fmt.Errorf("close restored server secret rewrap statement: %w", err)
+	}
+	updateServerStmt = nil
+
+	var globalKeyEnc string
+	err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&globalKeyEnc)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read restored global SSH key for rewrap: %w", err)
+	}
+	if err == nil && strings.TrimSpace(globalKeyEnc) != "" {
+		globalKey, err := decryptSecretWithKey(globalKeyEnc, fromKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt restored global SSH key during rewrap: %w", err)
+		}
+		rewrappedGlobalKey, err := encryptSecretWithKey(globalKey, toKey)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt restored global SSH key during rewrap: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE settings SET value = ? WHERE key = ?", rewrappedGlobalKey, globalKeySetting); err != nil {
+			return nil, fmt.Errorf("update restored global SSH key during rewrap: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit restored database rewrap: %w", err)
+	}
+	committed = true
+	if err := db.Close(); err != nil {
+		return nil, fmt.Errorf("close restored database after rewrap: %w", err)
+	}
+	db = nil
+	return os.ReadFile(tmpPath)
+}
+
+func prepareBackupRuntimeFiles(ctx context.Context, files map[string][]byte) (map[string][]byte, error) {
+	backupKey, err := validateBackupConfigData(files["config.json"])
+	if err != nil {
+		return nil, err
+	}
+	if err := validateBackupDatabaseData(ctx, files["servers.db"], backupKey); err != nil {
+		return nil, err
+	}
+	rewrappedDB, err := reencryptBackupDatabaseData(ctx, files["servers.db"], backupKey, getEncryptionKey())
+	if err != nil {
+		return nil, err
+	}
+	prepared := make(map[string][]byte, len(files))
+	for name, data := range files {
+		prepared[name] = data
+	}
+	prepared["servers.db"] = rewrappedDB
+	return prepared, nil
 }
 
 func resetRuntimeCaches() {
@@ -688,16 +835,16 @@ func clearPersistedSessions() error {
 
 func applyBackupFiles(ctx context.Context, files map[string][]byte) error {
 	dbTarget := dbPath()
-	configTarget := configPath()
 	knownHostsTarget := filepath.Join(filepath.Dir(dbPath()), "known_hosts")
 	if p, err := knownHostsWritePath(); err == nil && strings.TrimSpace(p) != "" {
 		knownHostsTarget = p
 	}
-	if err := validateBackupRuntimeFiles(ctx, files); err != nil {
+	files, err := prepareBackupRuntimeFiles(ctx, files)
+	if err != nil {
 		return err
 	}
 
-	targets := []string{dbTarget, configTarget}
+	targets := []string{dbTarget}
 	targets = append(targets, sqliteSidecarPaths(dbTarget)...)
 	if _, ok := files["known_hosts"]; ok {
 		targets = append(targets, knownHostsTarget)
@@ -729,9 +876,6 @@ func applyBackupFiles(ctx context.Context, files map[string][]byte) error {
 		return rollback(err)
 	}
 	if err := removeSQLiteSidecars(dbTarget); err != nil {
-		return rollback(err)
-	}
-	if err := writeAtomicFile(configTarget, files["config.json"], 0600); err != nil {
 		return rollback(err)
 	}
 	if khData, ok := files["known_hosts"]; ok {
@@ -778,8 +922,16 @@ func handleBackupExport(c *gin.Context) {
 	actor := actorFromContext(c)
 	clientIP := clientIPFromContext(c)
 	var req backupExportRequest
+	if c.Request != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxExportRequestBytes)
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		audit(c, "backup.export", "backup", "state", "failure", "Invalid backup export payload", nil)
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request payload too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}

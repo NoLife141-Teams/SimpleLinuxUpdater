@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,82 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func buildBackupDatabaseDataWithKey(t *testing.T, key []byte, server Server, backupGlobalKey string) []byte {
+	t.Helper()
+	dbFile := filepath.Join(t.TempDir(), "backup-source.db")
+	backupDB, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatalf("open backup source db: %v", err)
+	}
+	backupDB.SetMaxOpenConns(1)
+	backupDB.SetMaxIdleConns(1)
+	if _, err := backupDB.Exec(`
+		CREATE TABLE IF NOT EXISTS servers (
+			name TEXT PRIMARY KEY,
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL DEFAULT 22,
+			user TEXT NOT NULL,
+			pass_enc TEXT NOT NULL,
+			key_enc TEXT NOT NULL DEFAULT '',
+			key_path TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		_ = backupDB.Close()
+		t.Fatalf("create backup servers table: %v", err)
+	}
+	if err := ensureSchema(backupDB); err != nil {
+		_ = backupDB.Close()
+		t.Fatalf("ensureSchema(backup source) unexpected error: %v", err)
+	}
+	passEnc, err := encryptSecretWithKey(server.Pass, key)
+	if err != nil {
+		_ = backupDB.Close()
+		t.Fatalf("encrypt backup password: %v", err)
+	}
+	keyEnc, err := encryptSecretWithKey(server.Key, key)
+	if err != nil {
+		_ = backupDB.Close()
+		t.Fatalf("encrypt backup SSH key: %v", err)
+	}
+	if _, err := backupDB.Exec(
+		"INSERT INTO servers(name, host, port, user, pass_enc, key_enc, key_path, tags) VALUES(?, ?, ?, ?, ?, ?, '', ?)",
+		server.Name,
+		server.Host,
+		normalizePort(server.Port),
+		server.User,
+		passEnc,
+		keyEnc,
+		joinTags(server.Tags),
+	); err != nil {
+		_ = backupDB.Close()
+		t.Fatalf("insert backup server: %v", err)
+	}
+	if strings.TrimSpace(backupGlobalKey) != "" {
+		globalKeyEnc, err := encryptSecretWithKey(backupGlobalKey, key)
+		if err != nil {
+			_ = backupDB.Close()
+			t.Fatalf("encrypt backup global key: %v", err)
+		}
+		if _, err := backupDB.Exec(
+			"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+			globalKeySetting,
+			globalKeyEnc,
+		); err != nil {
+			_ = backupDB.Close()
+			t.Fatalf("insert backup global key: %v", err)
+		}
+	}
+	if err := backupDB.Close(); err != nil {
+		t.Fatalf("close backup source db: %v", err)
+	}
+	data, err := os.ReadFile(dbFile)
+	if err != nil {
+		t.Fatalf("read backup source db: %v", err)
+	}
+	return data
+}
 
 func preserveEncryptionState(t *testing.T) {
 	t.Helper()
@@ -369,6 +446,76 @@ func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
 	}
 }
 
+func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	dbFile := filepath.Join(t.TempDir(), "restore-rewrap.db")
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+
+	currentKey := append([]byte(nil), getEncryptionKey()...)
+	currentConfigData, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
+	}
+	backupKey := bytes.Repeat([]byte{7}, 32)
+	if bytes.Equal(backupKey, currentKey) {
+		t.Fatalf("backup key unexpectedly matches current key")
+	}
+	restoredServer := Server{
+		Name: "srv-restored-rewrap",
+		Host: "restored.example.org",
+		Port: 2222,
+		User: "root",
+		Pass: "restored-password",
+		Key:  "restored-private-key",
+		Tags: []string{"prod"},
+	}
+	backupDB := buildBackupDatabaseDataWithKey(t, backupKey, restoredServer, "restored-global-key")
+	backupConfig, err := json.Marshal(map[string]string{
+		"encryption_key": base64.StdEncoding.EncodeToString(backupKey),
+	})
+	if err != nil {
+		t.Fatalf("marshal backup config: %v", err)
+	}
+
+	if err := applyBackupFiles(context.Background(), map[string][]byte{
+		"servers.db":  backupDB,
+		"config.json": backupConfig,
+	}); err != nil {
+		t.Fatalf("applyBackupFiles() unexpected error: %v", err)
+	}
+	afterConfigData, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatalf("ReadFile(configPath()) after restore unexpected error: %v", err)
+	}
+	if !bytes.Equal(afterConfigData, currentConfigData) {
+		t.Fatalf("restore changed local config.json; restored DB should be rewrapped to local key")
+	}
+
+	mu.Lock()
+	if len(servers) != 1 || servers[0].Name != restoredServer.Name || servers[0].Pass != restoredServer.Pass || servers[0].Key != restoredServer.Key {
+		t.Fatalf("loaded servers after rewrap = %+v, want restored server with decrypted secrets", servers)
+	}
+	mu.Unlock()
+	if got := getGlobalKey(); got != "restored-global-key" {
+		t.Fatalf("getGlobalKey() = %q, want restored global key", got)
+	}
+
+	var passEnc string
+	if err := getDB().QueryRow("SELECT pass_enc FROM servers WHERE name = ?", restoredServer.Name).Scan(&passEnc); err != nil {
+		t.Fatalf("query restored pass_enc: %v", err)
+	}
+	if got, err := decryptSecretWithKey(passEnc, currentKey); err != nil || got != restoredServer.Pass {
+		t.Fatalf("decrypt restored password with current key = %q, %v; want %q", got, err, restoredServer.Pass)
+	}
+	if got, err := decryptSecretWithKey(passEnc, backupKey); err == nil && got == restoredServer.Pass {
+		t.Fatalf("restored password still decrypts with backup key")
+	}
+}
+
 func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
@@ -599,6 +746,43 @@ func TestBackupWriteRoutesRequireSameOrigin(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("backup export without same-origin status = %d, want %d (body=%s)", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestBackupExportRejectsOversizedJSONBody(t *testing.T) {
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-export-body-cap.db"))
+
+	r, err := setupRouter()
+	if err != nil {
+		t.Fatalf("setupRouter() unexpected error: %v", err)
+	}
+	handler := sessionHandler(r)
+
+	setupBody := bytes.NewBufferString(`{"username":"admin","password":"` + testPasswordStrong + `"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", setupBody)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	sessionCookie := testSessionCookieFromRecorder(t, rec)
+
+	body := `{"passphrase":"` + strings.Repeat("a", backupMaxExportRequestBytes) + `"}`
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/backup/export", strings.NewReader(body))
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("backup export oversized body status = %d, want %d (body=%s)", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
 }
 

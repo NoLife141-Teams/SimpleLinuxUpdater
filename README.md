@@ -69,7 +69,7 @@ Backup/restore flow:
   - `servers.db`
   - `config.json`
   - optional `known_hosts` (toggle at export time)
-- Restore applies immediately (no restart required) and fully replaces those files.
+- Restore applies immediately (no restart required), replaces `servers.db` and optional `known_hosts`, validates backup `config.json`, and re-encrypts restored secrets with the local `config.json` key.
 - The backup passphrase is not stored by the app; keep it in your secret manager.
 
 Environment variables for auth/session:
@@ -98,9 +98,10 @@ ARCHIVE="${APP}_linux_amd64.tar.gz"
 curl -L -o "${ARCHIVE}" "https://github.com/NoLife141/SimpleLinuxUpdater/releases/download/v${VERSION}/${ARCHIVE}"
 tar -xzf "${ARCHIVE}"
 cd "${APP}"
-cp .env-template .env
 ./webserver
 ```
+
+For binary releases, export environment variables in your shell before starting `./webserver`; `.env` files are only consumed when you pass them to Docker with `--env-file`.
 
 ## Documentation
 

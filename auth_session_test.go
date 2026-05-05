@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -322,6 +323,64 @@ func TestAuthSetupAndLoginRejectOversizedBodies(t *testing.T) {
 	if loginRec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized login status = %d, want %d (body=%s)", loginRec.Code, http.StatusRequestEntityTooLarge, loginRec.Body.String())
 	}
+}
+
+func TestNativeAuthFormPostsRedirectOnSuccess(t *testing.T) {
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-native-form.db"))
+
+	r, err := setupRouter()
+	if err != nil {
+		t.Fatalf("setupRouter() unexpected error: %v", err)
+	}
+	handler := sessionHandler(r)
+
+	setupForm := url.Values{
+		"username":         {"admin"},
+		"password":         {testPasswordStrong},
+		"password-confirm": {testPasswordStrong},
+	}
+	setupRec := httptest.NewRecorder()
+	setupReq := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(setupForm.Encode()))
+	markSameOriginAuthRequest(setupReq)
+	setupReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusSeeOther {
+		t.Fatalf("form setup status = %d, want %d (body=%s)", setupRec.Code, http.StatusSeeOther, setupRec.Body.String())
+	}
+	if got := setupRec.Header().Get("Location"); got != "/" {
+		t.Fatalf("form setup Location = %q, want /", got)
+	}
+	setupCookie := testSessionCookieFromRecorder(t, setupRec)
+
+	logoutRec := httptest.NewRecorder()
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	markSameOriginAuthRequest(logoutReq)
+	logoutReq.AddCookie(setupCookie)
+	handler.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, want %d (body=%s)", logoutRec.Code, http.StatusOK, logoutRec.Body.String())
+	}
+
+	loginForm := url.Values{
+		"username": {"admin"},
+		"password": {testPasswordStrong},
+	}
+	loginRec := httptest.NewRecorder()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginForm.Encode()))
+	markSameOriginAuthRequest(loginReq)
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusSeeOther {
+		t.Fatalf("form login status = %d, want %d (body=%s)", loginRec.Code, http.StatusSeeOther, loginRec.Body.String())
+	}
+	if got := loginRec.Header().Get("Location"); got != "/" {
+		t.Fatalf("form login Location = %q, want /", got)
+	}
+	_ = testSessionCookieFromRecorder(t, loginRec)
 }
 
 func TestValidatePasswordPolicy(t *testing.T) {
@@ -759,6 +818,52 @@ func TestAuthSetupLoginLogoutAndGate(t *testing.T) {
 			t.Fatalf("auth status after login username = %q, want %q", got, "admin")
 		}
 	})
+}
+
+func TestAuthenticatedHTMLRoutesSetNoStoreHeaders(t *testing.T) {
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-html-cache.db"))
+
+	r, err := setupRouter()
+	if err != nil {
+		t.Fatalf("setupRouter() unexpected error: %v", err)
+	}
+	handler := sessionHandler(r)
+
+	setupBody := bytes.NewBufferString(`{"username":"admin","password":"` + testPasswordStrong + `"}`)
+	setupRec := httptest.NewRecorder()
+	setupReq := httptest.NewRequest(http.MethodPost, "/api/auth/setup", setupBody)
+	markSameOriginAuthRequest(setupReq)
+	setupReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("setup status = %d, want %d (body=%s)", setupRec.Code, http.StatusOK, setupRec.Body.String())
+	}
+	sessionCookie := testSessionCookieFromRecorder(t, setupRec)
+
+	for _, path := range []string{"/", "/manage", "/observability", "/admin"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.AddCookie(sessionCookie)
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want %d (body=%s)", path, rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+				t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
+			}
+			if got := rec.Header().Get("Pragma"); got != "no-cache" {
+				t.Fatalf("%s Pragma = %q, want no-cache", path, got)
+			}
+			if got := rec.Header().Get("Expires"); got != "0" {
+				t.Fatalf("%s Expires = %q, want 0", path, got)
+			}
+		})
+	}
 }
 
 func TestAuthEndpointsAllowMissingSecFetchSite(t *testing.T) {

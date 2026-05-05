@@ -25,6 +25,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let drawerLogScrollTop = 0;
         let passwordResolve = null;
         let passwordReject = null;
+        let passwordModalPreviousFocus = null;
         let suppressSortClickUntil = 0;
         const columnResizeStorageKey = "simplelinuxupdater.statusTableColWidths.v8";
         const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
@@ -1543,14 +1544,57 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
+        function passwordModalFocusableElements(backdrop) {
+            if (!backdrop) return [];
+            return Array.from(backdrop.querySelectorAll([
+                'button:not([disabled])',
+                'input:not([disabled]):not([type="hidden"])',
+                'select:not([disabled])',
+                'textarea:not([disabled])',
+                'a[href]',
+                '[tabindex]:not([tabindex="-1"])'
+            ].join(','))).filter((el) => {
+                return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            });
+        }
+
+        function trapPasswordModalFocus(event) {
+            const backdrop = document.getElementById('password-modal');
+            if (!backdrop || !backdrop.classList.contains('active')) return false;
+            const focusable = passwordModalFocusableElements(backdrop);
+            if (!focusable.length) {
+                event.preventDefault();
+                return true;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (!backdrop.contains(document.activeElement)) {
+                event.preventDefault();
+                first.focus();
+                return true;
+            }
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+                return true;
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+                return true;
+            }
+            return false;
+        }
+
         function promptPassword(message) {
             const backdrop = document.getElementById('password-modal');
             const input = document.getElementById('password-modal-input');
             const msg = document.getElementById('password-modal-message');
             msg.textContent = message;
             input.value = '';
+            passwordModalPreviousFocus = document.activeElement;
             backdrop.classList.add('active');
-            input.focus();
+            window.setTimeout(() => input.focus({ preventScroll: true }), 0);
             return new Promise((resolve, reject) => {
                 passwordResolve = resolve;
                 passwordReject = reject;
@@ -1560,6 +1604,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function closePasswordModal() {
             const backdrop = document.getElementById('password-modal');
             backdrop.classList.remove('active');
+            const previous = passwordModalPreviousFocus;
+            passwordModalPreviousFocus = null;
+            if (previous && document.contains(previous) && typeof previous.focus === 'function') {
+                window.setTimeout(() => previous.focus({ preventScroll: true }), 0);
+            }
         }
 
         function clearPasswordPromptHandlers() {
@@ -1608,8 +1657,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 e.preventDefault();
                 document.getElementById('password-modal-submit').click();
             }
+        });
+
+        window.addEventListener('keydown', (e) => {
+            const backdrop = document.getElementById('password-modal');
+            if (!backdrop || !backdrop.classList.contains('active')) return;
+            if (e.key === 'Tab' && trapPasswordModalFocus(e)) {
+                e.stopImmediatePropagation();
+                return;
+            }
             if (e.key === 'Escape') {
                 e.preventDefault();
+                e.stopImmediatePropagation();
                 document.getElementById('password-modal-cancel').click();
             }
         });

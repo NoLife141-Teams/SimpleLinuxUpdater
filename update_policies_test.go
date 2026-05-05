@@ -23,6 +23,8 @@ func prepareUpdatePolicyTestState(t *testing.T, dbFile string) {
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
 	preserveMetricsTokenState(t)
+	resetMissedUpdatePolicyTicksForTest()
+	t.Cleanup(resetMissedUpdatePolicyTicksForTest)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
 	if err := initializeJobManager(); err != nil {
 		t.Fatalf("initializeJobManager() unexpected error: %v", err)
@@ -1278,7 +1280,7 @@ func TestProcessDueUpdatePoliciesRecordsMaintenanceSkip(t *testing.T) {
 	}
 }
 
-func TestProcessDueUpdatePoliciesRechecksMaintenanceAfterLockWait(t *testing.T) {
+func TestProcessDueUpdatePoliciesRecordsMissedMaintenanceSkipAfterBarrierUnlocks(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-maintenance-cleared.db")
 	prepareUpdatePolicyTestState(t, dbFile)
 
@@ -1322,40 +1324,41 @@ func TestProcessDueUpdatePoliciesRechecksMaintenanceAfterLockWait(t *testing.T) 
 		setCurrentMaintenanceState(MaintenanceState{})
 	})
 
-	done := make(chan error, 1)
-	go func() {
-		done <- processDueUpdatePolicies(now)
-	}()
-
+	if err := processDueUpdatePolicies(now); err != nil {
+		t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
+	}
 	setCurrentMaintenanceState(MaintenanceState{})
 	backupRestoreMu.Unlock()
 	locked = false
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for scheduler tick")
-	}
 
 	runs, err := listUpdatePolicyRuns(10)
 	if err != nil {
 		t.Fatalf("listUpdatePolicyRuns() unexpected error: %v", err)
 	}
+	if len(runs) != 0 {
+		t.Fatalf("scheduled runs = %d, want 0 while maintenance barrier is locked: %+v", len(runs), runs)
+	}
+
+	if err := processDueUpdatePolicies(now.Add(time.Minute)); err != nil {
+		t.Fatalf("processDueUpdatePolicies() after unlock unexpected error: %v", err)
+	}
+
+	runs, err = listUpdatePolicyRuns(10)
+	if err != nil {
+		t.Fatalf("listUpdatePolicyRuns() after unlock unexpected error: %v", err)
+	}
 	if len(runs) != 1 {
-		t.Fatalf("scheduled runs = %d, want 1: %+v", len(runs), runs)
+		t.Fatalf("scheduled runs after unlock = %d, want 1 missed maintenance skip: %+v", len(runs), runs)
 	}
 	run := runs[0]
 	if run.PolicyID != policy.ID || run.ServerName != server.Name {
-		t.Fatalf("scheduled run = %+v, want policy %d server %q", run, policy.ID, server.Name)
+		t.Fatalf("missed maintenance run = %+v, want policy %d server %q", run, policy.ID, server.Name)
 	}
 	if run.Status != updatePolicyRunSkipped {
-		t.Fatalf("run status = %q, want %q", run.Status, updatePolicyRunSkipped)
+		t.Fatalf("missed maintenance run status = %q, want %q", run.Status, updatePolicyRunSkipped)
 	}
-	if run.Reason != updatePolicyRunReasonBusy {
-		t.Fatalf("run reason = %q, want %q after maintenance clears", run.Reason, updatePolicyRunReasonBusy)
+	if run.Reason != updatePolicyRunReasonMaintenance {
+		t.Fatalf("missed maintenance run reason = %q, want %q", run.Reason, updatePolicyRunReasonMaintenance)
 	}
 }
 

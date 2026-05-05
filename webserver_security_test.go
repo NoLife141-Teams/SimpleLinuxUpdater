@@ -683,6 +683,93 @@ func TestKnownHostsPathsDefaultUsesDataDir(t *testing.T) {
 	}
 }
 
+func TestKnownHostsWritePathUsesAppDataWhenUserKnownHostsExists(t *testing.T) {
+	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", "")
+	tmpDir := t.TempDir()
+	homeDir := t.TempDir()
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(tmpDir, "servers.db"))
+	t.Setenv("HOME", homeDir)
+
+	userSSHDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(userSSHDir, 0700); err != nil {
+		t.Fatalf("MkdirAll(userSSHDir) unexpected error: %v", err)
+	}
+	userKnownHosts := filepath.Join(userSSHDir, "known_hosts")
+	if err := os.WriteFile(userKnownHosts, []byte("user.example ssh-ed25519 AAAAUSER\n"), 0600); err != nil {
+		t.Fatalf("WriteFile(userKnownHosts) unexpected error: %v", err)
+	}
+
+	got, err := knownHostsWritePath()
+	if err != nil {
+		t.Fatalf("knownHostsWritePath() unexpected error: %v", err)
+	}
+	want := filepath.Join(tmpDir, "known_hosts")
+	if got != want {
+		t.Fatalf("knownHostsWritePath() = %q, want app data path %q", got, want)
+	}
+
+	line := "app.example ssh-ed25519 AAAAAPP"
+	if _, err := appendKnownHostLine(line); err != nil {
+		t.Fatalf("appendKnownHostLine() unexpected error: %v", err)
+	}
+	appData, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("ReadFile(app known_hosts) unexpected error: %v", err)
+	}
+	if !strings.Contains(string(appData), line) {
+		t.Fatalf("app known_hosts missing appended line: %q", string(appData))
+	}
+	userData, err := os.ReadFile(userKnownHosts)
+	if err != nil {
+		t.Fatalf("ReadFile(user known_hosts) unexpected error: %v", err)
+	}
+	if strings.Contains(string(userData), line) {
+		t.Fatalf("user known_hosts was modified: %q", string(userData))
+	}
+}
+
+func TestKnownHostsWritePathUsesFirstConfiguredPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	first := filepath.Join(tmpDir, "app_known_hosts")
+	second := filepath.Join(tmpDir, "system_known_hosts")
+	if err := os.WriteFile(second, []byte("existing.example ssh-ed25519 AAAAEXISTING\n"), 0600); err != nil {
+		t.Fatalf("WriteFile(second) unexpected error: %v", err)
+	}
+	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", first+":"+second)
+
+	got, err := knownHostsWritePath()
+	if err != nil {
+		t.Fatalf("knownHostsWritePath() unexpected error: %v", err)
+	}
+	if got != first {
+		t.Fatalf("knownHostsWritePath() = %q, want first configured path %q", got, first)
+	}
+}
+
+func TestTrustedProxiesFromEnv(t *testing.T) {
+	t.Run("unset disables trusted proxies", func(t *testing.T) {
+		t.Setenv(trustedProxiesEnv, "")
+		if got := trustedProxiesFromEnv(); got != nil {
+			t.Fatalf("trustedProxiesFromEnv() = %+v, want nil", got)
+		}
+	})
+
+	t.Run("none disables trusted proxies", func(t *testing.T) {
+		t.Setenv(trustedProxiesEnv, "none")
+		if got := trustedProxiesFromEnv(); got != nil {
+			t.Fatalf("trustedProxiesFromEnv() = %+v, want nil", got)
+		}
+	})
+
+	t.Run("dedupes configured proxies", func(t *testing.T) {
+		t.Setenv(trustedProxiesEnv, "127.0.0.1, 10.0.0.0/8,127.0.0.1")
+		want := []string{"127.0.0.1", "10.0.0.0/8"}
+		if got := trustedProxiesFromEnv(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("trustedProxiesFromEnv() = %+v, want %+v", got, want)
+		}
+	})
+}
+
 func TestSaveServersOrRollbackLockedOnFailure(t *testing.T) {
 	preserveServerState(t)
 

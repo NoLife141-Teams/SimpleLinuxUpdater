@@ -520,7 +520,14 @@ button:disabled,
     width: 1px;
     height: 1px;
     opacity: 0;
-    pointer-events: none;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.file-input:focus-visible + .file-btn {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
 }
 
 .file-btn {
@@ -747,8 +754,7 @@ pre {
     margin-top: 12px;
 }
 
-.secret-box.active,
-.secret-box:not(:empty) {
+.secret-box.active {
     display: grid;
     gap: 10px;
 }

@@ -57,6 +57,8 @@ const (
 var (
 	updatePolicySchedulerOnce sync.Once
 	updatePolicyTickMu        sync.Mutex
+	updatePolicyMissedTickMu  sync.Mutex
+	updatePolicyMissedTicks   = map[string]time.Time{}
 	errUpdatePolicyValidation = errors.New("update policy validation")
 )
 
@@ -1429,12 +1431,39 @@ func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingU
 }
 
 func executeScheduledPolicyRun(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	if !backupRestoreMu.TryRLock() {
+		markScheduledPolicyRunMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
+		return
+	}
+	defer backupRestoreMu.RUnlock()
+	if currentMaintenanceState().Active {
+		markScheduledPolicyRunMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
+		return
+	}
+
 	switch policy.ExecutionMode {
 	case updatePolicyExecutionScanOnly:
 		runScheduledScanPolicy(run, policy, server)
 	default:
 		runScheduledUpdatePolicy(run, policy, server)
 	}
+}
+
+func markScheduledPolicyRunMaintenanceSkipped(run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
+	status := updatePolicyRunSkipped
+	reason := updatePolicyRunReasonMaintenance
+	finishedAt := jobTimestampNow()
+	_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		Status:     &status,
+		Reason:     &reason,
+		Summary:    &summary,
+		FinishedAt: &finishedAt,
+	})
+	auditWithActor("system", "", "schedule.run.skipped", "server", server.Name, "skipped", summary, map[string]any{
+		"policy_id":         policy.ID,
+		"policy_name":       policy.Name,
+		"scheduled_for_utc": run.ScheduledForUTC,
+	})
 }
 
 func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
@@ -1825,13 +1854,47 @@ func runScheduledScanJob(jobID string, runID int64, scheduledForUTC string, serv
 	})
 }
 
-func processDueUpdatePolicies(now time.Time) error {
-	updatePolicyTickMu.Lock()
-	defer updatePolicyTickMu.Unlock()
-	backupRestoreMu.RLock()
-	maintenanceActive := currentMaintenanceState().Active
-	backupRestoreMu.RUnlock()
+func missedUpdatePolicyTickKey(t time.Time) string {
+	return t.UTC().Truncate(time.Minute).Format(jobTimestampLayout)
+}
 
+func rememberMissedUpdatePolicyTick(now time.Time) {
+	slotUTC := now.UTC().Truncate(time.Minute)
+	key := missedUpdatePolicyTickKey(slotUTC)
+	updatePolicyMissedTickMu.Lock()
+	defer updatePolicyMissedTickMu.Unlock()
+	if _, exists := updatePolicyMissedTicks[key]; exists {
+		return
+	}
+	updatePolicyMissedTicks[key] = slotUTC
+}
+
+func pendingMissedUpdatePolicyTicks() []time.Time {
+	updatePolicyMissedTickMu.Lock()
+	defer updatePolicyMissedTickMu.Unlock()
+	ticks := make([]time.Time, 0, len(updatePolicyMissedTicks))
+	for _, tick := range updatePolicyMissedTicks {
+		ticks = append(ticks, tick)
+	}
+	sort.Slice(ticks, func(i, j int) bool {
+		return ticks[i].Before(ticks[j])
+	})
+	return ticks
+}
+
+func forgetMissedUpdatePolicyTick(tick time.Time) {
+	updatePolicyMissedTickMu.Lock()
+	defer updatePolicyMissedTickMu.Unlock()
+	delete(updatePolicyMissedTicks, missedUpdatePolicyTickKey(tick))
+}
+
+func resetMissedUpdatePolicyTicksForTest() {
+	updatePolicyMissedTickMu.Lock()
+	defer updatePolicyMissedTickMu.Unlock()
+	updatePolicyMissedTicks = map[string]time.Time{}
+}
+
+func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
 	policies, err := listUpdatePolicies()
 	if err != nil {
 		return err
@@ -1932,6 +1995,24 @@ func processDueUpdatePolicies(now time.Time) error {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
 	}
 	return nil
+}
+
+func processDueUpdatePolicies(now time.Time) error {
+	updatePolicyTickMu.Lock()
+	defer updatePolicyTickMu.Unlock()
+	if !backupRestoreMu.TryRLock() {
+		rememberMissedUpdatePolicyTick(now)
+		return nil
+	}
+	defer backupRestoreMu.RUnlock()
+
+	for _, missedTick := range pendingMissedUpdatePolicyTicks() {
+		if err := processDueUpdatePolicySlot(missedTick, true); err != nil {
+			return err
+		}
+		forgetMissedUpdatePolicyTick(missedTick)
+	}
+	return processDueUpdatePolicySlot(now, currentMaintenanceState().Active)
 }
 
 func startUpdatePolicyScheduler(ctx context.Context) {

@@ -31,7 +31,7 @@
             <div class="panel-kicker">Login</div>
             <h2>Welcome back</h2>
             <p class="muted">Use the local admin account created during setup.</p>
-            <form id="login-form" autocomplete="on">
+            <form id="login-form" method="post" action="/api/auth/login" autocomplete="on">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required maxlength="64" autocomplete="username">
                 <label for="password">Password</label>

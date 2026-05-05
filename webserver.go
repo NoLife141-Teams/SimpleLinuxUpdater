@@ -132,6 +132,7 @@ const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
 const retryMaxDelayMSEnv = "DEBIAN_UPDATER_RETRY_MAX_DELAY_MS"
 const retryJitterPctEnv = "DEBIAN_UPDATER_RETRY_JITTER_PCT"
 const sshCommandTimeoutSecondsEnv = "DEBIAN_UPDATER_SSH_COMMAND_TIMEOUT_SECONDS"
+const trustedProxiesEnv = "DEBIAN_UPDATER_TRUSTED_PROXIES"
 const postchecksEnabledEnv = "DEBIAN_UPDATER_POSTCHECKS_ENABLED"
 const postcheckBlockOnAptHealthEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_APT_HEALTH"
 const postcheckBlockOnFailedUnitsEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_FAILED_UNITS"
@@ -3181,10 +3182,14 @@ func startAuditPruner(ctx context.Context) {
 }
 
 func encryptSecret(secret string) (string, error) {
+	return encryptSecretWithKey(secret, getEncryptionKey())
+}
+
+func encryptSecretWithKey(secret string, key []byte) (string, error) {
 	if secret == "" {
 		return "", nil
 	}
-	block, err := aes.NewCipher(getEncryptionKey())
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
@@ -3837,13 +3842,8 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 		}
 	}
 
-	updated, err := jm.UpdateActiveJob(r.jobID, update)
-	if err != nil {
+	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
 		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
-		return
-	}
-	if !updated {
-		return
 	}
 }
 
@@ -4185,13 +4185,13 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			}
 
 			if len(upgradable) == 0 {
+				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
 					status.PendingUpdates = nil
 					status.Logs = logs + "\nNo packages to upgrade."
 				})
-				r.refreshFactsAfterSuccessfulUpdate()
 				return
 			}
 
@@ -4290,6 +4290,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			}
 
 			if r.approvalScope == "security" && len(r.approvedPackages) == 0 {
+				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
@@ -4297,7 +4298,6 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 					status.PendingUpdates = nil
 					status.Logs += "\nApproval received: security-only upgrade.\nNo security upgrades detected in pending package set; skipped upgrade."
 				})
-				r.refreshFactsAfterSuccessfulUpdate()
 				return
 			}
 
@@ -4353,13 +4353,13 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 
 			if !postcheckCfg.Enabled {
 				r.postchecksPassed = true
+				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
 					status.PendingUpdates = nil
 					status.Logs = logs + "\nUpgrade completed."
 				})
-				r.refreshFactsAfterSuccessfulUpdate()
 				return
 			}
 
@@ -4403,23 +4403,23 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			r.postchecksPassed = true
 			finalLogs := r.currentLogs()
 			if postcheckSummary.Warnings > 0 {
+				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
 					status.PendingUpdates = nil
 					status.Logs = finalLogs + fmt.Sprintf("\nUpgrade completed with %d post-check warning(s).", postcheckSummary.Warnings)
 				})
-				r.refreshFactsAfterSuccessfulUpdate()
 				return
 			}
 
+			r.refreshFactsAfterSuccessfulUpdate()
 			_ = r.withStatus(func(status *ServerStatus) {
 				status.Status = "done"
 				status.ApprovalScope = ""
 				status.PendingUpdates = nil
 				status.Logs = finalLogs + "\nUpgrade completed.\nPost-update health checks passed."
 			})
-			r.refreshFactsAfterSuccessfulUpdate()
 		},
 	)
 }
@@ -5315,6 +5315,10 @@ func knownHostsPaths() []string {
 	return unique
 }
 
+func knownHostsDefaultWritePath() string {
+	return filepath.Join(filepath.Dir(dbPath()), "known_hosts")
+}
+
 func getHostKeyCallback() (ssh.HostKeyCallback, error) {
 	candidates := knownHostsPaths()
 	existing := make([]string, 0, len(candidates))
@@ -5334,16 +5338,16 @@ func getHostKeyCallback() (ssh.HostKeyCallback, error) {
 }
 
 func knownHostsWritePath() (string, error) {
-	paths := knownHostsPaths()
-	if len(paths) == 0 {
+	if raw := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_KNOWN_HOSTS")); raw != "" {
+		for _, part := range strings.Split(raw, ":") {
+			path := strings.TrimSpace(part)
+			if path != "" {
+				return path, nil
+			}
+		}
 		return "", errors.New("no known_hosts path configured")
 	}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
-	}
-	return paths[0], nil
+	return knownHostsDefaultWritePath(), nil
 }
 
 func knownHostsHostToken(host string, port int) string {
@@ -5614,9 +5618,31 @@ func securityHeadersMiddleware() gin.HandlerFunc {
 	}
 }
 
+func trustedProxiesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
+	if raw == "" || strings.EqualFold(raw, "none") {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	proxies := make([]string, 0, len(parts))
+	for _, part := range parts {
+		proxy := strings.TrimSpace(part)
+		if proxy == "" {
+			continue
+		}
+		if _, ok := seen[proxy]; ok {
+			continue
+		}
+		seen[proxy] = struct{}{}
+		proxies = append(proxies, proxy)
+	}
+	return proxies
+}
+
 func setupRouter() (*gin.Engine, error) {
 	r := gin.Default()
-	if err := r.SetTrustedProxies(nil); err != nil {
+	if err := r.SetTrustedProxies(trustedProxiesFromEnv()); err != nil {
 		return nil, fmt.Errorf("failed to configure trusted proxies: %w", err)
 	}
 	r.Use(securityHeadersMiddleware())
@@ -5650,18 +5676,22 @@ func setupRouter() (*gin.Engine, error) {
 	r.Use(sameOriginWriteMiddleware())
 
 	r.GET("/", func(c *gin.Context) {
+		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "index.html", nil)
 	})
 
 	r.GET("/manage", func(c *gin.Context) {
+		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "manage.html", nil)
 	})
 
 	r.GET("/observability", func(c *gin.Context) {
+		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "observability.html", nil)
 	})
 
 	r.GET("/admin", func(c *gin.Context) {
+		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "admin.html", nil)
 	})
 

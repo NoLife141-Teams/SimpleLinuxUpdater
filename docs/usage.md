@@ -182,11 +182,11 @@ Restore:
 
 1. Upload a `.slubkp` file.
 2. Enter the backup passphrase.
-3. Confirm full replace.
+3. Confirm replacing `servers.db` and optional `known_hosts`.
 
 Notes:
 
-- Restore immediately replaces `servers.db`, `config.json`, and (if present in backup) `known_hosts`.
+- Restore immediately replaces `servers.db` and, if present in the backup, `known_hosts`. The backup `config.json` is validated and its encryption key is used to re-encrypt restored secrets with the local `config.json` key.
 - No restart is required after restore.
 - If your deployment depends on external TLS/reverse-proxy config, back that up separately.
 

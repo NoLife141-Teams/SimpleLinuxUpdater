@@ -90,6 +90,7 @@ The app does not terminate TLS by default. For production:
 
 - Put it behind a reverse proxy (nginx, Caddy, Traefik) for HTTPS.
 - Set `DEBIAN_UPDATER_SESSION_COOKIE_SECURE=true` under HTTPS.
+- Set `DEBIAN_UPDATER_TRUSTED_PROXIES` to the reverse proxy IP/CIDR if you want audit logs and rate limits to use the original client IP from forwarded headers.
 - Restrict access to your LAN/VPN.
 
 ## Data persistence

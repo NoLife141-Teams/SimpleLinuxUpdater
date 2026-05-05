@@ -32,7 +32,7 @@
             <div class="panel-kicker">Setup</div>
             <h2>Provision local access</h2>
             <p class="muted">This creates the single local admin user used to sign in and operate the updater.</p>
-            <form id="setup-form" autocomplete="on">
+            <form id="setup-form" method="post" action="/api/auth/setup" autocomplete="on">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required maxlength="64" autocomplete="username">
                 <label for="password">Password</label>

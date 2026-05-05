@@ -44,6 +44,7 @@ var sessionManagerMu sync.RWMutex
 var (
 	errSetupAlreadyCompleted = errors.New("setup already completed")
 	errSetupRequired         = errors.New("setup required")
+	errAuthPasswordMismatch  = errors.New("password confirmation does not match")
 )
 
 type AuthRateBucket struct {
@@ -175,6 +176,38 @@ func StopAuthRateLimiters() {
 type AuthCredentialsRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+func bindAuthCredentialsRequest(c *gin.Context, requirePasswordConfirm bool) (AuthCredentialsRequest, bool, error) {
+	if c == nil || c.Request == nil {
+		return AuthCredentialsRequest{}, false, errors.New("missing request")
+	}
+	contentType := strings.ToLower(strings.TrimSpace(c.ContentType()))
+	switch contentType {
+	case "application/x-www-form-urlencoded", "multipart/form-data":
+		if err := c.Request.ParseForm(); err != nil {
+			return AuthCredentialsRequest{}, true, err
+		}
+		req := AuthCredentialsRequest{
+			Username: c.PostForm("username"),
+			Password: c.PostForm("password"),
+		}
+		if requirePasswordConfirm && req.Password != c.PostForm("password-confirm") {
+			return req, true, errAuthPasswordMismatch
+		}
+		return req, true, nil
+	default:
+		var req AuthCredentialsRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			return AuthCredentialsRequest{}, false, err
+		}
+		return req, false, nil
+	}
+}
+
+func writeAuthFormError(c *gin.Context, status int, message string) {
+	setNoStoreHeaders(c)
+	c.String(status, message)
 }
 
 func parseBoolEnv(name string, fallback bool) (bool, error) {
@@ -640,11 +673,19 @@ func handleAuthSetup(c *gin.Context) {
 		return
 	}
 
-	var req AuthCredentialsRequest
 	limitAuthRequestBody(c)
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, formPost, err := bindAuthCredentialsRequest(c, true)
+	if err != nil {
 		if authRequestBodyTooLarge(err) {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request payload too large"})
+			return
+		}
+		if errors.Is(err, errAuthPasswordMismatch) {
+			if formPost {
+				writeAuthFormError(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
@@ -683,6 +724,10 @@ func handleAuthSetup(c *gin.Context) {
 	sm.Put(c.Request.Context(), authSessionUserKey, username)
 	c.Set("actor", username)
 	audit(c, "auth.setup", "auth_user", username, "success", "Initial admin user created", nil)
+	if formPost {
+		c.Redirect(http.StatusSeeOther, "/")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "setup complete"})
 }
 
@@ -706,9 +751,9 @@ func handleAuthLogin(c *gin.Context) {
 		return
 	}
 
-	var req AuthCredentialsRequest
 	limitAuthRequestBody(c)
-	if err := c.ShouldBindJSON(&req); err != nil {
+	req, formPost, err := bindAuthCredentialsRequest(c, false)
+	if err != nil {
 		if authRequestBodyTooLarge(err) {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request payload too large"})
 			return
@@ -741,6 +786,10 @@ func handleAuthLogin(c *gin.Context) {
 	sm.Put(c.Request.Context(), authSessionUserKey, username)
 	c.Set("actor", username)
 	audit(c, "auth.login", "auth_user", username, "success", "User logged in", nil)
+	if formPost {
+		c.Redirect(http.StatusSeeOther, "/")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "login successful"})
 }
 

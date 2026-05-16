@@ -4459,7 +4459,7 @@ func runSudoersBootstrapJobWithActor(server Server, sudoPassword, actor, clientI
 		"sudoers.enable.ssh_dial",
 		func(r *withActorRunner) {
 			r.setJobPhase(jobPhaseApply)
-			line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/fuser", r.server.User)
+			line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock", r.server.User)
 			escapedLine := shellEscapeSingleQuotes(line)
 			cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 

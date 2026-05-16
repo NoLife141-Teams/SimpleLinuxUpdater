@@ -155,7 +155,7 @@ jobs:
             if [ "$GOOS" = "windows" ]; then
               (
                 cd "$PKG_DIR"
-                zip -qr "../${APP}_${GOOS}_${GOARCH}.zip" "$APP"
+                zip -qry "../${APP}_${GOOS}_${GOARCH}.zip" "$APP"
               )
             else
               tar -C "$PKG_DIR" -czf "dist/${APP}_${GOOS}_${GOARCH}.tar.gz" "$APP"

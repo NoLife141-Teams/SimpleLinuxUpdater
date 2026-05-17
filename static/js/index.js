@@ -784,6 +784,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }, actionInteractionDeferMs);
         }
 
+        function resetActionInteraction() {
+            actionInteractionDepth = 0;
+            if (actionInteractionReleaseTimer !== null) {
+                clearTimeout(actionInteractionReleaseTimer);
+                actionInteractionReleaseTimer = null;
+            }
+            flushDeferredServerRender();
+        }
+
         function isServerActionControl(target) {
             return !!target?.closest?.([
                 'button[data-action]',
@@ -1801,6 +1810,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 endActionInteraction();
             }
         }, true);
+        window.addEventListener('blur', resetActionInteraction);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                resetActionInteraction();
+            }
+        });
 
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && drawerOpen) {

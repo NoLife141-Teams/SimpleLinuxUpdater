@@ -165,4 +165,33 @@ test.describe.serial('setup and login flows', () => {
 
     await expect.poll(() => updateRequests).toBe(1);
   });
+
+  test('auto refresh resumes when an action press loses page focus', async ({ page }) => {
+    let servers = [makeServer('demo-host')];
+    await stubDashboardApi(page, () => servers);
+
+    await page.goto('/login');
+    await signIn(page);
+
+    const updateButton = page.locator('#servers-table tbody button[data-action="update-server"][data-name="demo-host"]');
+    await expect(updateButton).toBeVisible();
+    const updateButtonHandle = await updateButton.elementHandle();
+    expect(updateButtonHandle).not.toBeNull();
+
+    await updateButtonHandle.dispatchEvent('pointerdown', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      bubbles: true,
+      cancelable: true,
+    });
+
+    servers = [makeServer('renamed-host')];
+    await page.evaluate(() => window.fetchServers());
+    await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
+
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+
+    await expect(page.locator('#servers-table tbody tr[data-name="renamed-host"]')).toBeVisible();
+  });
 });

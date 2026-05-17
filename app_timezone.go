@@ -608,11 +608,6 @@ func formatTimestampForAppDisplayWithTimezone(raw string, loc *time.Location, ti
 	return parsed.In(loc).Format(appDisplayTimestampLayout), display
 }
 
-func formatTimestampForAppDisplay(raw string) (string, string) {
-	loc, timezoneName := currentAppTimezone()
-	return formatTimestampForAppDisplayWithTimezone(raw, loc, timezoneName)
-}
-
 func handleAppTimezoneStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, currentAppTimezoneResponse())
 }

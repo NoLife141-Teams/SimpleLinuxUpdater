@@ -21,6 +21,33 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#logout-btn')).toBeVisible();
   }
 
+  async function ensureAuthenticatedSession(page) {
+    await page.goto('/login');
+
+    const status = await page.evaluate(async () => {
+      const response = await fetch('/api/auth/status', { cache: 'no-store' });
+      return response.json();
+    });
+
+    if (!status.authenticated) {
+      const endpoint = status.setup_required ? '/api/auth/setup' : '/api/auth/login';
+      const result = await page.evaluate(async ({ endpoint, username, password }) => {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return { ok: response.ok, status: response.status, payload };
+      }, { endpoint, username, password });
+
+      expect(result, `${endpoint} should create an authenticated test session`).toMatchObject({ ok: true });
+    }
+
+    await page.goto('/');
+    await expect(page.locator('#logout-btn')).toBeVisible();
+  }
+
   async function fulfillJson(route, payload) {
     await route.fulfill({
       status: 200,
@@ -247,8 +274,7 @@ test.describe.serial('setup and login flows', () => {
     let servers = [makeServer('demo-host', 'pending_approval', makePendingUpdates(80))];
     await stubDashboardApi(page, () => servers);
 
-    await page.goto('/login');
-    await signIn(page);
+    await ensureAuthenticatedSession(page);
 
     await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="pending"]').click();
     const pendingPanel = page.locator('#drawer-panel-pending');
@@ -274,8 +300,7 @@ test.describe.serial('setup and login flows', () => {
       return fulfillJson(route, { ok: true });
     });
 
-    await page.goto('/login');
-    await signIn(page);
+    await ensureAuthenticatedSession(page);
 
     const updateButton = page.locator('#servers-table tbody button[data-action="update-server"][data-name="demo-host"]');
     await expect(updateButton).toBeVisible();
@@ -289,6 +314,7 @@ test.describe.serial('setup and login flows', () => {
       bubbles: true,
       cancelable: true,
     });
+    await page.waitForTimeout(25);
 
     servers = [makeServer('renamed-host')];
     await page.evaluate(() => window.fetchServers());
@@ -310,8 +336,7 @@ test.describe.serial('setup and login flows', () => {
     let servers = [makeServer('demo-host')];
     await stubDashboardApi(page, () => servers);
 
-    await page.goto('/login');
-    await signIn(page);
+    await ensureAuthenticatedSession(page);
 
     const updateButton = page.locator('#servers-table tbody button[data-action="update-server"][data-name="demo-host"]');
     await expect(updateButton).toBeVisible();
@@ -325,6 +350,7 @@ test.describe.serial('setup and login flows', () => {
       bubbles: true,
       cancelable: true,
     });
+    await page.waitForTimeout(25);
 
     servers = [makeServer('renamed-host')];
     await page.evaluate(() => window.fetchServers());
@@ -337,7 +363,7 @@ test.describe.serial('setup and login flows', () => {
 
   test('admin scheduled policy editor submits rich targeting fields and renders report links', async ({ page }) => {
     const state = {};
-    await ensureSignedIn(page);
+    await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
     await page.goto('/admin');
@@ -369,7 +395,7 @@ test.describe.serial('setup and login flows', () => {
 
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
     const state = {};
-    await ensureSignedIn(page);
+    await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
     await page.goto('/admin');
@@ -404,7 +430,7 @@ test.describe.serial('setup and login flows', () => {
 
   test('admin password change sends payload and session clear requires typed confirmation', async ({ page }) => {
     const state = {};
-    await ensureSignedIn(page);
+    await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
     await page.goto('/admin');
@@ -434,7 +460,7 @@ test.describe.serial('setup and login flows', () => {
 
   test('manage typed confirmations gate destructive host and audit actions', async ({ page }) => {
     const state = {};
-    await ensureSignedIn(page);
+    await ensureAuthenticatedSession(page);
     await stubManageApi(page, state);
 
     await page.goto('/manage');
@@ -467,7 +493,7 @@ test.describe.serial('setup and login flows', () => {
     const state = {
       servers: [{ ...makeServer('demo-host'), tags: ['prod'] }],
     };
-    await ensureSignedIn(page);
+    await ensureAuthenticatedSession(page);
     await stubManageApi(page, state);
 
     await page.goto('/manage');

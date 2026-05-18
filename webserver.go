@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"time"
 
+	"debian-updater/internal/events"
+
 	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
@@ -177,50 +179,11 @@ var errInvalidWindow = errors.New("invalid observability window")
 var cveRegex = regexp.MustCompile(`CVE-[0-9]{4}-[0-9]+`)
 var securitySuiteTokenRegex = regexp.MustCompile(`(?:^|[\s/:])[a-z0-9][a-z0-9+.-]*-security(?:$|[\s/\],:\)])`)
 
-type clientEventBroker struct {
-	mu      sync.Mutex
-	clients map[chan string]struct{}
-}
-
-func newClientEventBroker() *clientEventBroker {
-	return &clientEventBroker{clients: make(map[chan string]struct{})}
-}
-
-func (b *clientEventBroker) subscribe() chan string {
-	ch := make(chan string, 8)
-	b.mu.Lock()
-	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch
-}
-
-func (b *clientEventBroker) unsubscribe(ch chan string) {
-	b.mu.Lock()
-	delete(b.clients, ch)
-	close(ch)
-	b.mu.Unlock()
-}
-
-func (b *clientEventBroker) publish(reason string) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "changed"
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.clients {
-		select {
-		case ch <- reason:
-		default:
-		}
-	}
-}
-
-var dashboardEventBroker = newClientEventBroker()
+var dashboardEventBroker = events.NewBroker()
 
 func notifyDashboardEvent(reason string) {
 	if dashboardEventBroker != nil {
-		dashboardEventBroker.publish(reason)
+		dashboardEventBroker.Publish(reason)
 	}
 }
 
@@ -1934,7 +1897,7 @@ func handleDashboardEvents(c *gin.Context) {
 	handleDashboardEventsWithBroker(c, dashboardEventBroker)
 }
 
-func handleDashboardEventsWithBroker(c *gin.Context, broker *clientEventBroker) {
+func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
@@ -1949,8 +1912,8 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *clientEventBroker) 
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	events := broker.subscribe()
-	defer broker.unsubscribe(events)
+	dashboardEvents := broker.Subscribe()
+	defer broker.Unsubscribe(dashboardEvents)
 
 	fmt.Fprintf(c.Writer, "event: dashboard\n")
 	fmt.Fprintf(c.Writer, "data: {\"reason\":\"connected\"}\n\n")
@@ -1960,7 +1923,7 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *clientEventBroker) 
 	defer heartbeat.Stop()
 	for {
 		select {
-		case reason := <-events:
+		case reason := <-dashboardEvents:
 			fmt.Fprintf(c.Writer, "event: dashboard\n")
 			fmt.Fprintf(c.Writer, "data: {\"reason\":%q}\n\n", reason)
 			flusher.Flush()

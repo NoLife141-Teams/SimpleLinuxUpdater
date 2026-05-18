@@ -5,7 +5,7 @@ This checklist tracks the second backend refactor pass described in [backend-ref
 ## Phase Status
 
 - [x] Phase 0 - Baseline And Extraction Harness: complete on `codex/backend-second-pass-harness`
-- [ ] Phase 1 - Events Package
+- [x] Phase 1 - Events Package: complete on `codex/events-package`
 - [ ] Phase 2 - Audit Package
 - [ ] Phase 3 - App Shell And Config Package
 - [ ] Phase 4 - Auth Package
@@ -36,6 +36,25 @@ Broader gates:
 - [x] `npm audit --audit-level=moderate`
 
 Live disposable-host smoke is not required for Phase 0 because this phase adds documentation and tests only.
+
+## Phase 1 Validation
+
+Required:
+
+- [x] `go test -count=1 ./...`
+- [x] `go vet ./...`
+- [x] `staticcheck ./...`
+- [x] `go build -o webserver .`
+- [x] `npm run test:e2e`
+
+Broader gates:
+
+- [x] `go test -race -count=1 ./...`
+- [x] `govulncheck ./...`
+- [x] `actionlint`
+- [x] `npm audit --audit-level=moderate`
+
+Live disposable-host smoke is not required for Phase 1 because this phase only moves the dashboard event broker behind `internal/events`.
 
 ## Compatibility Wrappers To Remove Later
 
@@ -127,7 +146,7 @@ This inventory is grouped by likely owning phase. Some package-level values are 
 
 ### Dashboard, Observability, And Metrics State
 
-- `webserver.go`: `dashboardEventBroker`
+- `webserver.go`: `dashboardEventBroker` is now only the temporary main-owned default singleton for `internal/events.Broker`; app-shell ownership is deferred to Phase 3 and final global removal.
 - `webserver.go`: `observabilityCache`, `observabilityCacheMu`
 - `webserver.go`: `metricsBearerTokenHash`, `metricsBearerTokenHashMu`, `metricsBearerTokenHashLoaded`, `metricsBearerTokenHashDBPath`
 

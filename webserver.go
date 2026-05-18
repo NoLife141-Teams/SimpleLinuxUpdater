@@ -3532,6 +3532,7 @@ func init() {
 }
 
 type withActorRunner struct {
+	service    *UpdateService
 	server     Server
 	actor      string
 	clientIP   string
@@ -3571,6 +3572,17 @@ type withActorRunner struct {
 	upgradeCompleted  bool
 
 	preUpdateFailedUnits []string
+}
+
+func (r *withActorRunner) deps() UpdateServiceDeps {
+	if r != nil && r.service != nil {
+		return r.service.ensureDeps()
+	}
+	return defaultUpdateService().deps
+}
+
+func (r *withActorRunner) currentJobManager() *JobManager {
+	return r.deps().CurrentJobManager()
 }
 
 func (r *withActorRunner) withStatus(update func(*ServerStatus)) bool {
@@ -3614,7 +3626,7 @@ func (r *withActorRunner) currentLogs() string {
 
 func (r *withActorRunner) setJobPhase(phase string) {
 	r.jobPhase = strings.TrimSpace(phase)
-	if jm := currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && r.jobPhase != "" {
+	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && r.jobPhase != "" {
 		if err := jm.UpdateJob(r.jobID, JobUpdate{Phase: &r.jobPhase}); err != nil {
 			log.Printf("failed to update job %q phase to %q: %v", r.jobID, r.jobPhase, err)
 		}
@@ -3625,7 +3637,7 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 	if snapshot == nil {
 		return
 	}
-	jm := currentJobManager()
+	jm := r.currentJobManager()
 	if jm == nil || strings.TrimSpace(r.jobID) == "" {
 		return
 	}
@@ -3645,7 +3657,7 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 		status := jobStatusSucceeded
 		phase := jobPhaseComplete
 		summary := "Completed successfully"
-		finishedAt := jobTimestampNow()
+		finishedAt := r.deps().JobTimestampNow()
 		update.Status = &status
 		update.Phase = &phase
 		update.Summary = &summary
@@ -3654,7 +3666,7 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 		status := jobStatusFailed
 		phase := jobPhaseComplete
 		summary := "Completed with errors"
-		finishedAt := jobTimestampNow()
+		finishedAt := r.deps().JobTimestampNow()
 		errorClass := strings.TrimSpace(r.lastErrClass)
 		update.Status = &status
 		update.Phase = &phase
@@ -3667,7 +3679,7 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 		status := jobStatusCancelled
 		phase := jobPhaseComplete
 		summary := "Cancelled"
-		finishedAt := jobTimestampNow()
+		finishedAt := r.deps().JobTimestampNow()
 		update.Status = &status
 		update.Phase = &phase
 		update.Summary = &summary
@@ -3703,13 +3715,14 @@ func (r *withActorRunner) markErrorClass(err error) {
 }
 
 func (r *withActorRunner) setupSSH(dialOpName string) bool {
-	authMethods, err := buildAuthMethods(r.server)
+	deps := r.deps()
+	authMethods, err := deps.BuildAuthMethods(r.server)
 	if err != nil {
 		r.lastErrClass = "permanent"
 		r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
 		return false
 	}
-	hostKeyCallback, err := getHostKeyCallback()
+	hostKeyCallback, err := deps.HostKeyCallback()
 	if err != nil {
 		r.lastErrClass = "permanent"
 		r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
@@ -3721,7 +3734,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         sshConnectTimeout,
 	}
-	client, err := dialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
+	client, err := deps.DialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
 	if err != nil {
 		r.markErrorClass(err)
 		r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
@@ -3731,7 +3744,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 	return true
 }
 
-func runWithActorShared(
+func (s *UpdateService) runWithActorShared(
 	server Server,
 	actor, clientIP string,
 	jobID, jobKind string,
@@ -3743,16 +3756,18 @@ func runWithActorShared(
 	dialOpName string,
 	runSteps func(*withActorRunner),
 ) {
+	deps := s.ensureDeps()
 	runner := &withActorRunner{
+		service:        s,
 		server:         server,
 		actor:          actor,
 		clientIP:       clientIP,
 		policy:         policy,
 		jobID:          strings.TrimSpace(jobID),
 		jobKind:        strings.TrimSpace(jobKind),
-		commandTimeout: loadSSHCommandTimeoutFromEnv(),
+		commandTimeout: deps.LoadCommandTimeout(),
 		lastErrClass:   "none",
-		startedAt:      time.Now().UTC(),
+		startedAt:      deps.Now(),
 	}
 	auditHandled := false
 	if auditMeta == nil {
@@ -3773,7 +3788,7 @@ func runWithActorShared(
 		}
 		mu.Unlock()
 		outcome := outcomeForStatus(finalStatus)
-		auditWithActor(
+		deps.AuditWithActor(
 			actor,
 			clientIP,
 			auditAction,
@@ -3789,12 +3804,12 @@ func runWithActorShared(
 		initStatus(status, policy)
 	}) {
 		runner.lastErrClass = "permanent"
-		if jm := currentJobManager(); jm != nil && strings.TrimSpace(runner.jobID) != "" {
+		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(runner.jobID) != "" {
 			status := jobStatusFailed
 			phase := jobPhaseComplete
 			summary := "Server runtime status missing"
 			errorClass := "runtime_state"
-			finishedAt := jobTimestampNow()
+			finishedAt := deps.JobTimestampNow()
 			if err := jm.UpdateJob(runner.jobID, JobUpdate{
 				Status:     &status,
 				Phase:      &phase,
@@ -3806,7 +3821,7 @@ func runWithActorShared(
 			}
 		}
 		auditHandled = true
-		auditWithActor(
+		deps.AuditWithActor(
 			actor,
 			clientIP,
 			auditAction,
@@ -3871,10 +3886,10 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 		"approved_packages":             append([]string(nil), r.approvedPackages...),
 	}
 	if !r.startedAt.IsZero() {
-		meta["total_elapsed_ms"] = time.Since(r.startedAt).Milliseconds()
+		meta["total_elapsed_ms"] = r.deps().Now().Sub(r.startedAt).Milliseconds()
 	}
 	if !r.approvedAt.IsZero() {
-		meta["execution_duration_ms"] = time.Since(r.approvedAt).Milliseconds()
+		meta["execution_duration_ms"] = r.deps().Now().Sub(r.approvedAt).Milliseconds()
 	}
 	return meta
 }
@@ -3894,8 +3909,9 @@ func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() {
 	if r == nil || r.client == nil {
 		return
 	}
-	record := collectServerFactsWithConnection(r.server, r.client, r.commandTimeout)
-	if err := saveServerFacts(record); err != nil {
+	deps := r.deps()
+	record := deps.CollectServerFacts(r.server, r.client, r.commandTimeout)
+	if err := deps.SaveServerFacts(record); err != nil {
 		log.Printf("failed to refresh facts after update for %q: %v", r.server.Name, err)
 	}
 }
@@ -3905,15 +3921,26 @@ func runUpdateWithActor(server Server, actor, clientIP string, policy RetryPolic
 }
 
 func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPolicy, jobID string) {
-	postcheckCfg := loadPostUpdateCheckConfigFromEnv()
-	behavior := loadScheduledJobBehavior(jobID)
-	runWithActorShared(
-		server,
-		actor,
-		clientIP,
-		jobID,
+	defaultUpdateService().RunUpdateJob(UpdateRunRequest{
+		Server:   server,
+		Actor:    actor,
+		ClientIP: clientIP,
+		Policy:   policy,
+		JobID:    jobID,
+	})
+}
+
+func (s *UpdateService) RunUpdateJob(req UpdateRunRequest) {
+	s.ensureDeps()
+	postcheckCfg := s.deps.LoadPostUpdateCheckConfig()
+	behavior := s.deps.LoadScheduledJobBehavior(req.JobID)
+	s.runWithActorShared(
+		req.Server,
+		req.Actor,
+		req.ClientIP,
+		req.JobID,
 		jobKindUpdate,
-		policy,
+		req.Policy,
 		updateCompleteAction,
 		func(status *ServerStatus, policy RetryPolicy) {
 			status.Status = "updating"
@@ -3936,7 +3963,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			r.postchecksEnabled = postcheckCfg.Enabled
 			r.appendStatusLog("\nRunning pre-checks...")
 
-			precheckSummary := runUpdatePrechecks(r.client)
+			precheckSummary := s.deps.RunUpdatePrechecks(r.client)
 			r.precheckResults = precheckSummary.Results
 			for _, result := range precheckSummary.Results {
 				state := "PASS"
@@ -3964,7 +3991,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			})
 
 			preUpdateFailedUnitsMap := make(map[string]struct{})
-			preUpdateFailedUnits, _, preUnitsErr := listFailedSystemdUnits(r.client)
+			preUpdateFailedUnits, _, preUnitsErr := s.deps.ListFailedSystemdUnits(r.client)
 			if preUnitsErr != nil {
 				r.appendStatusLog(fmt.Sprintf("\nBaseline failed-units snapshot unavailable: %v", preUnitsErr))
 			} else {
@@ -3983,7 +4010,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 
 			r.setJobPhase(jobPhaseAptUpdate)
 			var stdout, stderr string
-			err := runSSHOperationWithRetry(
+			err := s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -3993,7 +4020,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				&r.aptUpdateAttempts,
 				func() error {
 					var runErr error
-					stdout, stderr, runErr = runSSHCommandWithTimeout(r.client, aptUpdateCmd, nil, r.commandTimeout)
+					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, aptUpdateCmd, nil, r.commandTimeout)
 					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
 				},
 			)
@@ -4007,7 +4034,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 
 			var upgradable []string
 			var pendingUpdates []PendingUpdate
-			err = runSSHOperationWithRetry(
+			err = s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -4016,7 +4043,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
 				&r.listUpgradableAttempts,
 				func() error {
-					pending, items, listErr := getUpgradable(r.client, r.commandTimeout)
+					pending, items, listErr := s.deps.GetUpgradable(r.client, r.commandTimeout)
 					if listErr == nil {
 						upgradable = items
 						pendingUpdates = pending
@@ -4042,7 +4069,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			}
 
 			pendingUpdates = preparePendingUpdatesForCVE(pendingUpdates)
-			updateScheduledJobDiscoveryMeta(r.jobID, upgradable, pendingUpdates)
+			s.deps.UpdateScheduledDiscoveryMeta(r.jobID, upgradable, pendingUpdates)
 			_ = r.withStatus(func(status *ServerStatus) {
 				status.Status = "pending_approval"
 				status.ApprovalScope = ""
@@ -4051,7 +4078,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(upgradable, "\n")
 			})
 			if behavior.AutoApproveScope == "" {
-				startPendingUpdateCVEEnrichment(r.server, r.config, pendingUpdates, r.jobID, r.actor, r.clientIP)
+				s.deps.StartPendingCVEEnrichment(r.server, r.config, pendingUpdates, r.jobID, r.actor, r.clientIP)
 			}
 
 			if behavior.AutoApproveScope != "" {
@@ -4073,9 +4100,9 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				if !autoApproved {
 					return
 				}
-				r.approvedAt = time.Now().UTC()
+				r.approvedAt = s.deps.Now()
 			} else {
-				approvalDeadline := time.Now().Add(behavior.ApprovalTimeout)
+				approvalDeadline := s.deps.Now().Add(behavior.ApprovalTimeout)
 				for {
 					time.Sleep(updateApprovalPollInterval)
 					approved := false
@@ -4099,7 +4126,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 							status.Logs = ""
 							status.Upgradable = nil
 							status.PendingUpdates = nil
-						} else if time.Now().After(approvalDeadline) {
+						} else if s.deps.Now().After(approvalDeadline) {
 							approvalTimedOut = true
 							status.Status = "idle"
 							status.ApprovalScope = ""
@@ -4110,19 +4137,19 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 					}
 					mu.Unlock()
 					if approved {
-						r.approvedAt = time.Now().UTC()
+						r.approvedAt = s.deps.Now()
 						break
 					}
 					if cancelledByUser {
 						return
 					}
 					if approvalTimedOut {
-						jm := currentJobManager()
+						jm := s.deps.CurrentJobManager()
 						if jm != nil && strings.TrimSpace(r.jobID) != "" {
 							jobStatus := jobStatusCancelled
 							phase := jobPhaseComplete
 							summary := "Approval window expired"
-							finishedAt := jobTimestampNow()
+							finishedAt := s.deps.JobTimestampNow()
 							_ = jm.UpdateJob(r.jobID, JobUpdate{
 								Status:     &jobStatus,
 								Phase:      &phase,
@@ -4174,7 +4201,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 			} else {
 				r.appendStatusLog("\nRunning apt upgrade...")
 			}
-			err = runSSHOperationWithRetry(
+			err = s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -4184,7 +4211,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				&r.aptUpgradeAttempts,
 				func() error {
 					var runErr error
-					stdout, stderr, runErr = runSSHCommandWithTimeout(r.client, upgradeCmd, nil, r.commandTimeout)
+					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, upgradeCmd, nil, r.commandTimeout)
 					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
 				},
 			)
@@ -4215,7 +4242,7 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 				status.Logs = logs + "\nUpgrade completed.\nRunning post-update health checks..."
 			})
 
-			postcheckSummary := runPostUpdateHealthChecks(r.client, postcheckCfg, preUpdateFailedUnitsMap)
+			postcheckSummary := s.deps.RunPostUpdateHealthChecks(r.client, postcheckCfg, preUpdateFailedUnitsMap)
 			r.postcheckResults = postcheckSummary.Results
 			r.postcheckWarnings = postcheckSummary.Warnings
 			for _, result := range postcheckSummary.Results {
@@ -4275,13 +4302,25 @@ func runSudoersBootstrapWithActor(server Server, sudoPassword, actor, clientIP s
 }
 
 func runSudoersBootstrapJobWithActor(server Server, sudoPassword, actor, clientIP string, policy RetryPolicy, jobID string) {
-	runWithActorShared(
-		server,
-		actor,
-		clientIP,
-		jobID,
+	defaultUpdateService().RunSudoersBootstrapJob(SudoersRunRequest{
+		Server:       server,
+		SudoPassword: sudoPassword,
+		Actor:        actor,
+		ClientIP:     clientIP,
+		Policy:       policy,
+		JobID:        jobID,
+	})
+}
+
+func (s *UpdateService) RunSudoersBootstrapJob(req SudoersRunRequest) {
+	s.ensureDeps()
+	s.runWithActorShared(
+		req.Server,
+		req.Actor,
+		req.ClientIP,
+		req.JobID,
 		jobKindSudoersEnable,
-		policy,
+		req.Policy,
 		"sudoers.enable.complete",
 		func(status *ServerStatus, policy RetryPolicy) {
 			status.Status = "sudoers"
@@ -4306,7 +4345,7 @@ func runSudoersBootstrapJobWithActor(server Server, sudoPassword, actor, clientI
 			cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 
 			var stdout, stderr string
-			err := runSSHOperationWithRetry(
+			err := s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -4316,7 +4355,7 @@ func runSudoersBootstrapJobWithActor(server Server, sudoPassword, actor, clientI
 				&r.commandAttempts,
 				func() error {
 					var runErr error
-					stdout, stderr, runErr = runSSHCommandWithTimeout(r.client, cmd, strings.NewReader(sudoPassword+"\n"), r.commandTimeout)
+					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, cmd, strings.NewReader(req.SudoPassword+"\n"), r.commandTimeout)
 					return runErr
 				},
 			)
@@ -4340,13 +4379,25 @@ func runSudoersDisableWithActor(server Server, sudoPassword, actor, clientIP str
 }
 
 func runSudoersDisableJobWithActor(server Server, sudoPassword, actor, clientIP string, policy RetryPolicy, jobID string) {
-	runWithActorShared(
-		server,
-		actor,
-		clientIP,
-		jobID,
+	defaultUpdateService().RunSudoersDisableJob(SudoersRunRequest{
+		Server:       server,
+		SudoPassword: sudoPassword,
+		Actor:        actor,
+		ClientIP:     clientIP,
+		Policy:       policy,
+		JobID:        jobID,
+	})
+}
+
+func (s *UpdateService) RunSudoersDisableJob(req SudoersRunRequest) {
+	s.ensureDeps()
+	s.runWithActorShared(
+		req.Server,
+		req.Actor,
+		req.ClientIP,
+		req.JobID,
 		jobKindSudoersDisable,
-		policy,
+		req.Policy,
 		"sudoers.disable.complete",
 		func(status *ServerStatus, policy RetryPolicy) {
 			status.Status = "sudoers"
@@ -4369,7 +4420,7 @@ func runSudoersDisableJobWithActor(server Server, sudoPassword, actor, clientIP 
 			cmd := "sudo -S -p '' rm -f /etc/sudoers.d/apt-nopasswd"
 
 			var stdout, stderr string
-			err := runSSHOperationWithRetry(
+			err := s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -4379,7 +4430,7 @@ func runSudoersDisableJobWithActor(server Server, sudoPassword, actor, clientIP 
 				&r.commandAttempts,
 				func() error {
 					var runErr error
-					stdout, stderr, runErr = runSSHCommandWithTimeout(r.client, cmd, strings.NewReader(sudoPassword+"\n"), r.commandTimeout)
+					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, cmd, strings.NewReader(req.SudoPassword+"\n"), r.commandTimeout)
 					return runErr
 				},
 			)
@@ -4403,13 +4454,24 @@ func runAutoremoveWithActor(server Server, actor, clientIP string, policy RetryP
 }
 
 func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy RetryPolicy, jobID string) {
-	runWithActorShared(
-		server,
-		actor,
-		clientIP,
-		jobID,
+	defaultUpdateService().RunAutoremoveJob(AutoremoveRunRequest{
+		Server:   server,
+		Actor:    actor,
+		ClientIP: clientIP,
+		Policy:   policy,
+		JobID:    jobID,
+	})
+}
+
+func (s *UpdateService) RunAutoremoveJob(req AutoremoveRunRequest) {
+	s.ensureDeps()
+	s.runWithActorShared(
+		req.Server,
+		req.Actor,
+		req.ClientIP,
+		req.JobID,
 		jobKindAutoremove,
-		policy,
+		req.Policy,
 		"autoremove.complete",
 		func(status *ServerStatus, policy RetryPolicy) {
 			status.Status = "autoremove"
@@ -4430,7 +4492,7 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 		func(r *withActorRunner) {
 			r.setJobPhase(jobPhaseAutoremove)
 			var stdout, stderr string
-			err := runSSHOperationWithRetry(
+			err := s.deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
 				&r.client,
@@ -4440,7 +4502,7 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 				&r.commandAttempts,
 				func() error {
 					var runErr error
-					stdout, stderr, runErr = runSSHCommandWithTimeout(r.client, aptAutoremoveCmd, nil, r.commandTimeout)
+					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, aptAutoremoveCmd, nil, r.commandTimeout)
 					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
 				},
 			)

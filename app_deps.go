@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"debian-updater/internal/events"
+
 	"github.com/alexedwards/scs/v2"
 )
 
@@ -29,7 +31,7 @@ type AppDeps struct {
 	InitializeMaintenanceState func() error
 	Now                        func() time.Time
 	NotifyDashboardEvent       func(string)
-	DashboardEventBroker       *clientEventBroker
+	DashboardEventBroker       *events.Broker
 	CurrentAppTimezone         func() (*time.Location, string)
 	CurrentAppLocation         func() *time.Location
 	AppTimezoneDisplayName     func() string

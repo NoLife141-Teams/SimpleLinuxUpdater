@@ -3212,97 +3212,13 @@ func loadLegacyServers() bool {
 }
 
 func loadServers() {
-	db := getDB()
-	rows, err := db.Query("SELECT name, host, port, user, pass_enc, key_enc, tags FROM servers ORDER BY name")
-	if err != nil {
-		log.Fatalf("Failed to load servers: %v", err)
-	}
-	defer rows.Close()
-
-	servers = nil
-	for rows.Next() {
-		var name, host, user, passEnc, keyEnc, tags string
-		var port int
-		if err := rows.Scan(&name, &host, &port, &user, &passEnc, &keyEnc, &tags); err != nil {
-			log.Fatalf("Failed to scan server row: %v", err)
-		}
-		pass, err := decryptSecret(passEnc)
-		if err != nil {
-			log.Fatalf("Failed to decrypt password for %s: %v", name, err)
-		}
-		key, err := decryptSecret(keyEnc)
-		if err != nil {
-			log.Fatalf("Failed to decrypt SSH key for %s: %v", name, err)
-		}
-		servers = append(servers, Server{
-			Name: name,
-			Host: host,
-			Port: normalizePort(port),
-			User: user,
-			Pass: pass,
-			Key:  key,
-			Tags: parseTags(tags),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		log.Fatalf("Failed to read servers: %v", err)
-	}
-
-	if len(servers) == 0 {
-		loadLegacyServers()
-	}
+	serverInventoryService.Load()
 }
 
 type saveServersTxHook func(*sql.Tx) error
 
 func saveServersWithTxHook(txHook saveServersTxHook) error {
-	db := getDB()
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("start db transaction: %w", err)
-	}
-	if _, err := tx.Exec("DELETE FROM servers"); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("clear servers table: %w", err)
-	}
-	stmt, err := tx.Prepare("INSERT INTO servers (name, host, port, user, pass_enc, key_enc, tags) VALUES (?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("prepare insert: %w", err)
-	}
-	defer stmt.Close()
-	for _, server := range servers {
-		enc, err := encryptSecret(server.Pass)
-		if err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("encrypt password for %s: %w", server.Name, err)
-		}
-		keyEnc, err := encryptSecret(server.Key)
-		if err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("encrypt SSH key for %s: %w", server.Name, err)
-		}
-		tags := joinTags(server.Tags)
-		port := normalizePort(server.Port)
-		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("insert server %s: %w", server.Name, err)
-		}
-	}
-	if txHook != nil {
-		if err := txHook(tx); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	if err := pruneUpdatePolicyOverridesForServersTx(tx, servers); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("prune policy overrides: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit servers: %w", err)
-	}
-	return nil
+	return serverInventoryService.SaveWithTxHook(txHook)
 }
 
 func saveServers() error {
@@ -3314,18 +3230,7 @@ func saveServersOrRollbackLocked(prevServers []Server, prevStatusMap map[string]
 }
 
 func saveServersOrRollbackLockedWithTxHook(prevServers []Server, prevStatusMap map[string]*ServerStatus, txHook saveServersTxHook) error {
-	save := saveServersFunc
-	if txHook != nil {
-		save = func() error {
-			return saveServersWithTxHook(txHook)
-		}
-	}
-	if err := save(); err != nil {
-		servers = prevServers
-		statusMap = prevStatusMap
-		return err
-	}
-	return nil
+	return serverInventoryService.SaveOrRollbackLocked(prevServers, prevStatusMap, txHook)
 }
 
 func cloneServers(src []Server) []Server {
@@ -5142,140 +5047,7 @@ func issueMetricsBearerToken() (string, error) {
 }
 
 func updateServerKey(name, key string) error {
-	enc, err := encryptSecret(key)
-	if err != nil {
-		return err
-	}
-	db := getDB()
-	_, err = db.Exec("UPDATE servers SET key_enc = ? WHERE name = ?", enc, name)
-	return err
-}
-
-func parseTags(raw string) []string {
-	parts := strings.Split(raw, ",")
-	var tags []string
-	for _, part := range parts {
-		tag := strings.TrimSpace(part)
-		if tag != "" {
-			tags = append(tags, tag)
-		}
-	}
-	return tags
-}
-
-func joinTags(tags []string) string {
-	if len(tags) == 0 {
-		return ""
-	}
-	cleaned := make([]string, 0, len(tags))
-	seen := make(map[string]struct{})
-	for _, tag := range tags {
-		clean := strings.TrimSpace(tag)
-		if clean == "" {
-			continue
-		}
-		if _, exists := seen[clean]; exists {
-			continue
-		}
-		seen[clean] = struct{}{}
-		cleaned = append(cleaned, clean)
-	}
-	return strings.Join(cleaned, ", ")
-}
-
-func normalizePort(port int) int {
-	if port <= 0 || port > 65535 {
-		return 22
-	}
-	return port
-}
-
-func normalizeServerName(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func normalizeServerHost(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func serverNameExistsLocked(name string, skipIndex int) bool {
-	normalized := normalizeServerName(name)
-	for i, existing := range servers {
-		if i == skipIndex {
-			continue
-		}
-		if normalizeServerName(existing.Name) == normalized {
-			return true
-		}
-	}
-	return false
-}
-
-func serverHostExistsLocked(host string, skipIndex int) bool {
-	normalized := normalizeServerHost(host)
-	for i, existing := range servers {
-		if i == skipIndex {
-			continue
-		}
-		if normalizeServerHost(existing.Host) == normalized {
-			return true
-		}
-	}
-	return false
-}
-
-func knownHostsPaths() []string {
-	if raw := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_KNOWN_HOSTS")); raw != "" {
-		parts := strings.Split(raw, ":")
-		paths := make([]string, 0, len(parts))
-		for _, part := range parts {
-			path := strings.TrimSpace(part)
-			if path != "" {
-				paths = append(paths, path)
-			}
-		}
-		return paths
-	}
-	paths := []string{filepath.Join(filepath.Dir(dbPath()), "known_hosts")}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		paths = append(paths, filepath.Join(home, ".ssh", "known_hosts"))
-	}
-	paths = append(paths, "/etc/ssh/ssh_known_hosts")
-	seen := make(map[string]struct{}, len(paths))
-	unique := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		unique = append(unique, path)
-	}
-	return unique
-}
-
-func knownHostsDefaultWritePath() string {
-	return filepath.Join(filepath.Dir(dbPath()), "known_hosts")
-}
-
-func getHostKeyCallback() (ssh.HostKeyCallback, error) {
-	candidates := knownHostsPaths()
-	existing := make([]string, 0, len(candidates))
-	for _, path := range candidates {
-		if _, err := os.Stat(path); err == nil {
-			existing = append(existing, path)
-		}
-	}
-	if len(existing) == 0 {
-		return nil, errors.New("no known_hosts file found; set DEBIAN_UPDATER_KNOWN_HOSTS or create ~/.ssh/known_hosts")
-	}
-	cb, err := knownhosts.New(existing...)
-	if err != nil {
-		return nil, fmt.Errorf("load known_hosts: %w", err)
-	}
-	return cb, nil
+	return serverInventoryService.updateServerKey(name, key)
 }
 
 func knownHostsWritePath() (string, error) {
@@ -5703,27 +5475,7 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine) {
 
 func registerServerAndActionRoutes(r *gin.Engine) {
 	r.GET("/api/servers", func(c *gin.Context) {
-		mu.Lock()
-		statuses := make([]ServerStatus, 0, len(servers))
-		for _, s := range servers {
-			status := statusMap[s.Name]
-			if status == nil {
-				continue
-			}
-			status.Host = s.Host
-			status.Port = normalizePort(s.Port)
-			status.User = s.User
-			status.HasPassword = s.Pass != ""
-			status.HasKey = s.Key != ""
-			status.Tags = s.Tags
-			copyStatus := *status
-			copyStatus.Upgradable = append([]string(nil), status.Upgradable...)
-			copyStatus.PendingUpdates = clonePendingUpdates(status.PendingUpdates)
-			copyStatus.Tags = append([]string(nil), status.Tags...)
-			statuses = append(statuses, copyStatus)
-		}
-		mu.Unlock()
-		c.JSON(http.StatusOK, statuses)
+		c.JSON(http.StatusOK, serverInventoryService.ListStatuses())
 	})
 
 	r.POST("/api/servers", func(c *gin.Context) {
@@ -5733,59 +5485,34 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		newServer.Name = strings.TrimSpace(newServer.Name)
-		newServer.Host = strings.TrimSpace(newServer.Host)
-		newServer.User = strings.TrimSpace(newServer.User)
-		if newServer.Name == "" || newServer.Host == "" || newServer.User == "" {
+		created, err := serverInventoryService.Create(newServer)
+		switch {
+		case err == nil:
+			audit(c, "server.create", "server", created.Name, "success", "Server created", map[string]any{"host": created.Host, "port": created.Port, "tags_count": len(created.Tags)})
+			c.JSON(http.StatusCreated, created)
+		case errors.Is(err, errServerRequiredFields):
+			newServer.Name = strings.TrimSpace(newServer.Name)
 			audit(c, "server.create", "server", newServer.Name, "failure", "Missing required fields", nil)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "name, host, and user are required"})
-			return
-		}
-		if !isValidSSHUsername(newServer.User) {
+		case errors.Is(err, errInvalidSSHUsername):
+			newServer.Name = strings.TrimSpace(newServer.Name)
+			newServer.User = strings.TrimSpace(newServer.User)
 			audit(c, "server.create", "server", newServer.Name, "failure", "Invalid SSH username", map[string]any{"user": newServer.User})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user; allowed characters are letters, digits, '.', '-', '_'"})
-			return
-		}
-		newServer.Port = normalizePort(newServer.Port)
-		newServer.Tags = parseTags(joinTags(newServer.Tags))
-		mu.Lock()
-		prevServers := cloneServers(servers)
-		prevStatusMap := cloneStatusMap(statusMap)
-		if serverNameExistsLocked(newServer.Name, -1) {
-			mu.Unlock()
+		case errors.Is(err, errServerNameExists):
+			newServer.Name = strings.TrimSpace(newServer.Name)
 			audit(c, "server.create", "server", newServer.Name, "failure", "Server name already exists", nil)
 			c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
-			return
-		}
-		if serverHostExistsLocked(newServer.Host, -1) {
-			mu.Unlock()
+		case errors.Is(err, errServerHostExists):
+			newServer.Name = strings.TrimSpace(newServer.Name)
+			newServer.Host = strings.TrimSpace(newServer.Host)
 			audit(c, "server.create", "server", newServer.Name, "failure", "Server host already exists", map[string]any{"host": newServer.Host})
 			c.JSON(http.StatusConflict, gin.H{"error": "Server host already exists"})
-			return
-		}
-		servers = append(servers, newServer)
-		statusMap[newServer.Name] = &ServerStatus{
-			Name:           newServer.Name,
-			Host:           newServer.Host,
-			Port:           normalizePort(newServer.Port),
-			User:           newServer.User,
-			Status:         "idle",
-			Logs:           "",
-			Upgradable:     []string{},
-			PendingUpdates: []PendingUpdate{},
-			HasPassword:    newServer.Pass != "",
-			HasKey:         newServer.Key != "",
-			Tags:           newServer.Tags,
-		}
-		if err := saveServersOrRollbackLocked(prevServers, prevStatusMap); err != nil {
-			mu.Unlock()
+		default:
+			newServer.Name = strings.TrimSpace(newServer.Name)
 			audit(c, "server.create", "server", newServer.Name, "failure", "Failed to persist server", map[string]any{"error": err.Error()})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-			return
 		}
-		mu.Unlock()
-		audit(c, "server.create", "server", newServer.Name, "success", "Server created", map[string]any{"host": newServer.Host, "port": newServer.Port, "tags_count": len(newServer.Tags)})
-		c.JSON(http.StatusCreated, newServer)
 	})
 
 	r.PUT("/api/servers/:name", func(c *gin.Context) {
@@ -5796,202 +5523,89 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		updatedServer.Name = strings.TrimSpace(updatedServer.Name)
-		updatedServer.Host = strings.TrimSpace(updatedServer.Host)
-		updatedServer.User = strings.TrimSpace(updatedServer.User)
-		if updatedServer.Name == "" || updatedServer.Host == "" || updatedServer.User == "" {
+		updated, err := serverInventoryService.Update(name, updatedServer)
+		switch {
+		case err == nil:
+			audit(c, "server.update", "server", updated.Name, "success", "Server updated", map[string]any{"from": name, "host": updated.Host, "port": updated.Port, "tags_count": len(updated.Tags)})
+			c.JSON(http.StatusOK, updated)
+		case errors.Is(err, errServerRequiredFields):
 			audit(c, "server.update", "server", name, "failure", "Missing required fields", nil)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "name, host, and user are required"})
-			return
-		}
-		if !isValidSSHUsername(updatedServer.User) {
+		case errors.Is(err, errInvalidSSHUsername):
+			updatedServer.User = strings.TrimSpace(updatedServer.User)
 			audit(c, "server.update", "server", name, "failure", "Invalid SSH username", map[string]any{"user": updatedServer.User})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user; allowed characters are letters, digits, '.', '-', '_'"})
-			return
+		case errors.Is(err, errActionInProgress):
+			audit(c, "server.update", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before editing this server"})
+		case errors.Is(err, errServerNameExists):
+			audit(c, "server.update", "server", name, "failure", "Server name already exists", nil)
+			c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
+		case errors.Is(err, errServerHostExists):
+			updatedServer.Host = strings.TrimSpace(updatedServer.Host)
+			audit(c, "server.update", "server", name, "failure", "Server host already exists", map[string]any{"host": updatedServer.Host})
+			c.JSON(http.StatusConflict, gin.H{"error": "Server host already exists"})
+		case errors.Is(err, errServerNotFound):
+			audit(c, "server.update", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		default:
+			audit(c, "server.update", "server", name, "failure", "Failed to persist server", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
 		}
-		mu.Lock()
-		prevServers := cloneServers(servers)
-		prevStatusMap := cloneStatusMap(statusMap)
-		for i, s := range servers {
-			if s.Name == name {
-				if status := statusMap[name]; status != nil && statusInProgress(status.Status) {
-					mu.Unlock()
-					audit(c, "server.update", "server", name, "failure", "Server action already in progress", map[string]any{"status": status.Status})
-					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before editing this server"})
-					return
-				}
-				if strings.TrimSpace(updatedServer.Pass) == "" {
-					updatedServer.Pass = s.Pass
-				}
-				if strings.TrimSpace(updatedServer.Key) == "" {
-					updatedServer.Key = s.Key
-				}
-				if updatedServer.Port == 0 {
-					updatedServer.Port = s.Port
-				}
-				updatedServer.Port = normalizePort(updatedServer.Port)
-				if updatedServer.Tags == nil {
-					updatedServer.Tags = s.Tags
-				}
-				updatedServer.Tags = parseTags(joinTags(updatedServer.Tags))
-				if serverNameExistsLocked(updatedServer.Name, i) {
-					mu.Unlock()
-					audit(c, "server.update", "server", name, "failure", "Server name already exists", nil)
-					c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
-					return
-				}
-				if serverHostExistsLocked(updatedServer.Host, i) {
-					mu.Unlock()
-					audit(c, "server.update", "server", name, "failure", "Server host already exists", map[string]any{"host": updatedServer.Host})
-					c.JSON(http.StatusConflict, gin.H{"error": "Server host already exists"})
-					return
-				}
-				servers[i] = updatedServer
-				renamedServer := updatedServer.Name != name
-				if renamedServer {
-					delete(statusMap, name)
-					statusMap[updatedServer.Name] = &ServerStatus{
-						Name:           updatedServer.Name,
-						Host:           updatedServer.Host,
-						Port:           normalizePort(updatedServer.Port),
-						User:           updatedServer.User,
-						Status:         "idle",
-						Logs:           "",
-						Upgradable:     []string{},
-						PendingUpdates: []PendingUpdate{},
-						HasPassword:    updatedServer.Pass != "",
-						HasKey:         updatedServer.Key != "",
-						Tags:           updatedServer.Tags,
-					}
-				} else {
-					if statusMap[name] == nil {
-						statusMap[name] = &ServerStatus{
-							Name:           updatedServer.Name,
-							Status:         "idle",
-							Upgradable:     []string{},
-							PendingUpdates: []PendingUpdate{},
-						}
-					}
-					statusMap[name].Host = updatedServer.Host
-					statusMap[name].Port = normalizePort(updatedServer.Port)
-					statusMap[name].User = updatedServer.User
-					statusMap[name].HasPassword = updatedServer.Pass != ""
-					statusMap[name].HasKey = updatedServer.Key != ""
-					statusMap[name].Tags = updatedServer.Tags
-				}
-				var txHook saveServersTxHook
-				if renamedServer {
-					oldServerName := name
-					newServerName := updatedServer.Name
-					txHook = func(tx *sql.Tx) error {
-						if err := renameUpdatePolicyOverridesServerTx(tx, oldServerName, newServerName); err != nil {
-							return err
-						}
-						if err := renameUpdatePolicyTargetServersTx(tx, oldServerName, newServerName); err != nil {
-							return err
-						}
-						return renameServerFactsTx(tx, oldServerName, newServerName)
-					}
-				}
-				if err := saveServersOrRollbackLockedWithTxHook(prevServers, prevStatusMap, txHook); err != nil {
-					mu.Unlock()
-					audit(c, "server.update", "server", name, "failure", "Failed to persist server", map[string]any{"error": err.Error()})
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-					return
-				}
-				mu.Unlock()
-				audit(c, "server.update", "server", updatedServer.Name, "success", "Server updated", map[string]any{"from": name, "host": updatedServer.Host, "port": updatedServer.Port, "tags_count": len(updatedServer.Tags)})
-				c.JSON(http.StatusOK, updatedServer)
-				return
-			}
-		}
-		mu.Unlock()
-		audit(c, "server.update", "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	})
 
 	r.DELETE("/api/servers/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		mu.Lock()
-		prevServers := cloneServers(servers)
-		prevStatusMap := cloneStatusMap(statusMap)
-		for i, s := range servers {
-			if s.Name == name {
-				if status := statusMap[name]; status != nil && statusInProgress(status.Status) {
-					mu.Unlock()
-					audit(c, "server.delete", "server", name, "failure", "Server action already in progress", map[string]any{"status": status.Status})
-					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before deleting this server"})
-					return
-				}
-				servers = append(servers[:i], servers[i+1:]...)
-				delete(statusMap, name)
-				txHook := func(tx *sql.Tx) error {
-					_, err := tx.Exec("DELETE FROM server_facts WHERE server_name = ?", name)
-					return err
-				}
-				if err := saveServersOrRollbackLockedWithTxHook(prevServers, prevStatusMap, txHook); err != nil {
-					mu.Unlock()
-					audit(c, "server.delete", "server", name, "failure", "Failed to persist deletion", map[string]any{"error": err.Error()})
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-					return
-				}
-				mu.Unlock()
-				audit(c, "server.delete", "server", name, "success", "Server deleted", nil)
-				c.JSON(http.StatusOK, gin.H{"message": "Server deleted"})
-				return
-			}
+		err := serverInventoryService.Delete(name)
+		switch {
+		case err == nil:
+			audit(c, "server.delete", "server", name, "success", "Server deleted", nil)
+			c.JSON(http.StatusOK, gin.H{"message": "Server deleted"})
+		case errors.Is(err, errActionInProgress):
+			audit(c, "server.delete", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before deleting this server"})
+		case errors.Is(err, errServerNotFound):
+			audit(c, "server.delete", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		default:
+			audit(c, "server.delete", "server", name, "failure", "Failed to persist deletion", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
 		}
-		mu.Unlock()
-		audit(c, "server.delete", "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	})
 
 	r.DELETE("/api/servers/:name/password", func(c *gin.Context) {
 		name := c.Param("name")
-		mu.Lock()
-		defer mu.Unlock()
-		prevServers := cloneServers(servers)
-		prevStatusMap := cloneStatusMap(statusMap)
-		for i, s := range servers {
-			if s.Name == name {
-				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
-					audit(c, "server.password.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server password"})
-					return
-				}
-				servers[i].Pass = ""
-				if err := saveServersOrRollbackLocked(prevServers, prevStatusMap); err != nil {
-					audit(c, "server.password.clear", "server", name, "failure", "Failed to persist password clear", map[string]any{"error": err.Error()})
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-					return
-				}
-				if status, ok := statusMap[name]; ok {
-					status.HasPassword = false
-				}
-				audit(c, "server.password.clear", "server", name, "success", "Password cleared", nil)
-				c.JSON(http.StatusOK, gin.H{"message": "Password cleared"})
-				return
-			}
+		err := serverInventoryService.ClearPassword(name)
+		switch {
+		case err == nil:
+			audit(c, "server.password.clear", "server", name, "success", "Password cleared", nil)
+			c.JSON(http.StatusOK, gin.H{"message": "Password cleared"})
+		case errors.Is(err, errActionInProgress):
+			audit(c, "server.password.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server password"})
+		case errors.Is(err, errServerNotFound):
+			audit(c, "server.password.clear", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		default:
+			audit(c, "server.password.clear", "server", name, "failure", "Failed to persist password clear", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
 		}
-		audit(c, "server.password.clear", "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	})
 
 	r.POST("/api/servers/:name/key", func(c *gin.Context) {
 		name := c.Param("name")
 		limitUploadedKeyRequest(c)
-		mu.Lock()
-		_, found := findServerByNameLocked(name)
-		blocked, status := serverActionStatusInProgressLocked(name)
-		mu.Unlock()
-		if !found {
+		if err := serverInventoryService.CheckMutationAllowed(name); errors.Is(err, errServerNotFound) {
 			audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
 			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 			return
-		}
-		if blocked {
-			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+		} else if errors.Is(err, errActionInProgress) {
+			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
 			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
+			return
+		} else if err != nil {
+			audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		file, err := c.FormFile("key")
@@ -6020,60 +5634,40 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read key"})
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		for i, s := range servers {
-			if s.Name == name {
-				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
-					audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
-					return
-				}
-				if err := updateServerKey(name, key); err != nil {
-					audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-				servers[i].Key = key
-				if status, ok := statusMap[name]; ok {
-					status.HasKey = key != ""
-				}
-				audit(c, "server.key.upload", "server", name, "success", "SSH key uploaded", nil)
-				c.JSON(http.StatusOK, gin.H{"message": "Key uploaded"})
-				return
-			}
+		err = serverInventoryService.SetKey(name, key)
+		switch {
+		case err == nil:
+			audit(c, "server.key.upload", "server", name, "success", "SSH key uploaded", nil)
+			c.JSON(http.StatusOK, gin.H{"message": "Key uploaded"})
+		case errors.Is(err, errActionInProgress):
+			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
+		case errors.Is(err, errServerNotFound):
+			audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		default:
+			audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	})
 
 	r.DELETE("/api/servers/:name/key", func(c *gin.Context) {
 		name := c.Param("name")
-		mu.Lock()
-		defer mu.Unlock()
-		for i, s := range servers {
-			if s.Name == name {
-				if blocked, status := serverActionStatusInProgressLocked(name); blocked {
-					audit(c, "server.key.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-					c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server key"})
-					return
-				}
-				if err := updateServerKey(name, ""); err != nil {
-					audit(c, "server.key.clear", "server", name, "failure", "Failed to clear key", map[string]any{"error": err.Error()})
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-				servers[i].Key = ""
-				if status, ok := statusMap[name]; ok {
-					status.HasKey = false
-				}
-				audit(c, "server.key.clear", "server", name, "success", "SSH key cleared", nil)
-				c.JSON(http.StatusOK, gin.H{"message": "Key cleared"})
-				return
-			}
+		err := serverInventoryService.ClearKey(name)
+		switch {
+		case err == nil:
+			audit(c, "server.key.clear", "server", name, "success", "SSH key cleared", nil)
+			c.JSON(http.StatusOK, gin.H{"message": "Key cleared"})
+		case errors.Is(err, errActionInProgress):
+			audit(c, "server.key.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
+			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server key"})
+		case errors.Is(err, errServerNotFound):
+			audit(c, "server.key.clear", "server", name, "failure", "Server not found", nil)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		default:
+			audit(c, "server.key.clear", "server", name, "failure", "Failed to clear key", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		audit(c, "server.key.clear", "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 	})
 
 	r.POST("/api/keys/global", func(c *gin.Context) {
@@ -6163,27 +5757,20 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			return
 		}
 		port := normalizePort(req.Port)
-		key, err := scanHostKeyFunc(host, port)
+		result, err := serverInventoryService.ScanHostKey(host, port)
 		if err != nil {
 			audit(c, "hostkey.scan", "hostkey", host, "failure", "Host key scan failed", map[string]any{"port": port, "error": err.Error()})
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to scan host key: %v", err)})
 			return
 		}
-		line := buildKnownHostsLine(host, port, key)
-		alreadyTrusted := false
-		if trusted, trustedErr := knownHostLineExists(line); trustedErr == nil {
-			alreadyTrusted = trusted
-		} else {
-			log.Printf("hostkey.scan trusted-check failed for %s:%d: %v", host, port, trustedErr)
-		}
-		audit(c, "hostkey.scan", "hostkey", host, "success", "Host key scanned", map[string]any{"port": port, "algorithm": key.Type(), "already_trusted": alreadyTrusted})
+		audit(c, "hostkey.scan", "hostkey", host, "success", "Host key scanned", map[string]any{"port": port, "algorithm": result.Algorithm, "already_trusted": result.AlreadyTrusted})
 		c.JSON(http.StatusOK, gin.H{
-			"host":               host,
-			"port":               port,
-			"algorithm":          key.Type(),
-			"fingerprint_sha256": ssh.FingerprintSHA256(key),
-			"known_hosts_line":   line,
-			"already_trusted":    alreadyTrusted,
+			"host":               result.Host,
+			"port":               result.Port,
+			"algorithm":          result.Algorithm,
+			"fingerprint_sha256": result.FingerprintSHA256,
+			"known_hosts_line":   result.KnownHostsLine,
+			"already_trusted":    result.AlreadyTrusted,
 		})
 	})
 
@@ -6211,7 +5798,7 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			return
 		}
 		port := normalizePort(req.Port)
-		fingerprint, line, alreadyTrusted, err := trustHostKey(host, port, expectedFingerprint)
+		result, err := serverInventoryService.TrustHostKey(host, port, expectedFingerprint)
 		if err != nil {
 			if errors.Is(err, errFingerprintMismatch) {
 				audit(c, "hostkey.trust", "hostkey", host, "failure", "Host key fingerprint mismatch", map[string]any{"port": port})
@@ -6222,18 +5809,14 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to trust host key: %v", err)})
 			return
 		}
-		message := "Host key trusted"
-		if alreadyTrusted {
-			message = "Host key already trusted"
-		}
-		audit(c, "hostkey.trust", "hostkey", host, "success", message, map[string]any{"port": port, "fingerprint_sha256": fingerprint, "already_trusted": alreadyTrusted})
+		audit(c, "hostkey.trust", "hostkey", host, "success", result.Message, map[string]any{"port": port, "fingerprint_sha256": result.FingerprintSHA256, "already_trusted": result.AlreadyTrusted})
 		c.JSON(http.StatusOK, gin.H{
-			"message":            message,
-			"host":               host,
-			"port":               port,
-			"fingerprint_sha256": fingerprint,
-			"known_hosts_line":   line,
-			"already_trusted":    alreadyTrusted,
+			"message":            result.Message,
+			"host":               result.Host,
+			"port":               result.Port,
+			"fingerprint_sha256": result.FingerprintSHA256,
+			"known_hosts_line":   result.KnownHostsLine,
+			"already_trusted":    result.AlreadyTrusted,
 		})
 	})
 
@@ -6254,22 +5837,18 @@ func registerServerAndActionRoutes(r *gin.Engine) {
 			return
 		}
 		port := normalizePort(req.Port)
-		removed, err := removeKnownHostEntries(host, port)
+		result, err := serverInventoryService.ClearKnownHost(host, port)
 		if err != nil {
 			audit(c, "hostkey.clear", "hostkey", host, "failure", "Failed to clear host key entry", map[string]any{"port": port, "error": err.Error()})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to clear host key: %v", err)})
 			return
 		}
-		message := "Known host entry not found"
-		if removed > 0 {
-			message = "Known host entry cleared"
-		}
-		audit(c, "hostkey.clear", "hostkey", host, "success", message, map[string]any{"port": port, "removed_entries": removed})
+		audit(c, "hostkey.clear", "hostkey", host, "success", result.Message, map[string]any{"port": port, "removed_entries": result.RemovedEntries})
 		c.JSON(http.StatusOK, gin.H{
-			"message":         message,
-			"host":            host,
-			"port":            port,
-			"removed_entries": removed,
+			"message":         result.Message,
+			"host":            result.Host,
+			"port":            result.Port,
+			"removed_entries": result.RemovedEntries,
 		})
 	})
 

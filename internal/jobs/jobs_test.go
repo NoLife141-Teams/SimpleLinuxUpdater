@@ -273,7 +273,7 @@ func (r *failingRepository) FindLatestActiveByServerAndKind(string, string) (*Re
 	return nil, r.err
 }
 
-func (r *failingRepository) ListUnfinished() ([]Record, error) {
+func (r *failingRepository) ListUnfinishedServerNames() ([]string, error) {
 	return nil, r.err
 }
 

@@ -101,7 +101,7 @@ type Repository interface {
 	UpdateWithCondition(id string, update Update, updatedAt string, condition string, conditionArgs ...any) (bool, error)
 	Get(id string) (Record, error)
 	FindLatestActiveByServerAndKind(serverName, kind string) (*Record, error)
-	ListUnfinished() ([]Record, error)
+	ListUnfinishedServerNames() ([]string, error)
 	MarkUnfinishedInterrupted(now string) error
 }
 
@@ -335,21 +335,21 @@ func (m *Manager) MarkUnfinishedJobsInterrupted() error {
 	if m == nil || m.repo == nil {
 		return nil
 	}
-	unfinished, err := m.repo.ListUnfinished()
+	unfinishedServers, err := m.repo.ListUnfinishedServerNames()
 	if err != nil {
 		return err
 	}
-	if len(unfinished) == 0 {
+	if len(unfinishedServers) == 0 {
 		return nil
 	}
 	now := m.timestampNow()
 	if err := m.repo.MarkUnfinishedInterrupted(now); err != nil {
 		return err
 	}
-	affected := make([]string, 0, len(unfinished))
-	seen := make(map[string]struct{}, len(unfinished))
-	for _, record := range unfinished {
-		serverName := strings.TrimSpace(record.ServerName)
+	affected := make([]string, 0, len(unfinishedServers))
+	seen := make(map[string]struct{}, len(unfinishedServers))
+	for _, unfinishedServer := range unfinishedServers {
+		serverName := strings.TrimSpace(unfinishedServer)
 		if serverName == "" {
 			continue
 		}
@@ -615,13 +615,12 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	return &record, nil
 }
 
-func (r *SQLiteRepository) ListUnfinished() ([]Record, error) {
+func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("job repository is not initialized")
 	}
 	rows, err := r.db.Query(`
-		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		SELECT server_name
 		  FROM jobs
 		 WHERE status IN (?, ?, ?)
 	`, StatusQueued, StatusRunning, StatusWaitingApproval)
@@ -630,36 +629,18 @@ func (r *SQLiteRepository) ListUnfinished() ([]Record, error) {
 	}
 	defer rows.Close()
 
-	var records []Record
+	var serverNames []string
 	for rows.Next() {
-		var record Record
-		if err := rows.Scan(
-			&record.ID,
-			&record.Kind,
-			&record.ParentJobID,
-			&record.ServerName,
-			&record.Actor,
-			&record.ClientIP,
-			&record.Status,
-			&record.Phase,
-			&record.Summary,
-			&record.LogsText,
-			&record.ErrorClass,
-			&record.RetryPolicyJSON,
-			&record.MetaJSON,
-			&record.CreatedAt,
-			&record.UpdatedAt,
-			&record.StartedAt,
-			&record.FinishedAt,
-		); err != nil {
+		var serverName string
+		if err := rows.Scan(&serverName); err != nil {
 			return nil, err
 		}
-		records = append(records, record)
+		serverNames = append(serverNames, serverName)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return records, nil
+	return serverNames, nil
 }
 
 func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {

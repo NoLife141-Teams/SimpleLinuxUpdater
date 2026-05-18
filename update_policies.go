@@ -497,7 +497,7 @@ func normalizeBlackoutWindows(windows []UpdatePolicyBlackoutWindow) ([]UpdatePol
 	return normalized, nil
 }
 
-func normalizeUpdatePolicy(policy *UpdatePolicy) error {
+func (s *PolicyService) NormalizePolicy(policy *UpdatePolicy) error {
 	if policy == nil {
 		return errors.New("policy is required")
 	}
@@ -568,6 +568,10 @@ func normalizeUpdatePolicy(policy *UpdatePolicy) error {
 		policy.ApprovalTimeoutMinutes = 0
 	}
 	return nil
+}
+
+func normalizeUpdatePolicy(policy *UpdatePolicy) error {
+	return defaultPolicyService().NormalizePolicy(policy)
 }
 
 func scanUpdatePolicyRow(scanner interface {
@@ -1236,14 +1240,14 @@ func serverExistsByName(name string) bool {
 	return false
 }
 
-func policyMatchesServer(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
+func (s *PolicyService) PolicyMatchesServer(policy UpdatePolicy, server Server, ctx PolicyMatchContext) bool {
 	if !policy.Enabled {
 		return false
 	}
 	if len(policy.ExcludeTags) > 0 && serverHasAnyTag(server, policy.ExcludeTags) {
 		return false
 	}
-	if perPolicy := overrides[policy.ID]; perPolicy != nil && perPolicy[server.Name] {
+	if perPolicy := ctx.Overrides[policy.ID]; perPolicy != nil && perPolicy[server.Name] {
 		return false
 	}
 	if stringListContainsFold(policy.TargetServers, server.Name) {
@@ -1261,16 +1265,22 @@ func policyMatchesServer(policy UpdatePolicy, server Server, overrides map[int64
 	return false
 }
 
+func policyMatchesServer(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
+	return defaultPolicyService().PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides})
+}
+
 func enrichPoliciesWithMatches(policies []UpdatePolicy) []UpdatePolicy {
-	serversSnapshot := snapshotServers()
-	overrides, err := loadAllUpdatePolicyOverrides()
+	service := defaultPolicyService()
+	deps := service.ensureDeps()
+	serversSnapshot := deps.SnapshotServers()
+	overrides, err := deps.LoadOverrides()
 	if err != nil {
 		return policies
 	}
 	for i := range policies {
 		matched := make([]string, 0)
 		for _, server := range serversSnapshot {
-			if policyMatchesServer(policies[i], server, overrides) {
+			if service.PolicyMatchesServer(policies[i], server, PolicyMatchContext{Overrides: overrides}) {
 				matched = append(matched, server.Name)
 			}
 		}
@@ -1293,7 +1303,7 @@ func weekdayMatchesLocal(weekdays []string, t time.Time) bool {
 	return false
 }
 
-func policyDueAt(policy UpdatePolicy, slotLocal time.Time) bool {
+func (s *PolicyService) PolicyDueAt(policy UpdatePolicy, slotLocal time.Time) bool {
 	minutes, err := parseTimeLocalMinutes(policy.TimeLocal)
 	if err != nil {
 		return false
@@ -1309,6 +1319,10 @@ func policyDueAt(policy UpdatePolicy, slotLocal time.Time) bool {
 	default:
 		return false
 	}
+}
+
+func policyDueAt(policy UpdatePolicy, slotLocal time.Time) bool {
+	return defaultPolicyService().PolicyDueAt(policy, slotLocal)
 }
 
 func nextWeekdayToken(token string) string {
@@ -1351,7 +1365,7 @@ func canonicalScheduledForUTC(slotLocal time.Time) string {
 	return canonicalLocal.UTC().Format(jobTimestampLayout)
 }
 
-func blackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) bool {
+func (s *PolicyService) BlackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) bool {
 	if len(windows) == 0 {
 		return false
 	}
@@ -1381,7 +1395,11 @@ func blackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) 
 	return false
 }
 
-func candidatePriority(policy UpdatePolicy) [3]int {
+func blackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) bool {
+	return defaultPolicyService().BlackoutApplies(slotLocal, windows)
+}
+
+func (s *PolicyService) CandidatePriority(policy UpdatePolicy) [3]int {
 	modeRank := 99
 	switch policy.ExecutionMode {
 	case updatePolicyExecutionApprovalRequired:
@@ -1398,9 +1416,13 @@ func candidatePriority(policy UpdatePolicy) [3]int {
 	return [3]int{modeRank, scopeRank, int(policy.ID)}
 }
 
-func comparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
-	pa := candidatePriority(a.policy)
-	pb := candidatePriority(b.policy)
+func candidatePriority(policy UpdatePolicy) [3]int {
+	return defaultPolicyService().CandidatePriority(policy)
+}
+
+func (s *PolicyService) ComparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
+	pa := s.CandidatePriority(a.policy)
+	pb := s.CandidatePriority(b.policy)
 	for i := 0; i < len(pa); i++ {
 		if pa[i] == pb[i] {
 			continue
@@ -1413,7 +1435,12 @@ func comparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
 	return a.policy.CreatedAt < b.policy.CreatedAt
 }
 
-func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, reason, summary string) {
+func comparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
+	return defaultPolicyService().ComparePolicyCandidates(a, b)
+}
+
+func (s *PolicyService) CreateSkippedRun(policy UpdatePolicy, serverName, scheduledForUTC, reason, summary string) {
+	deps := s.ensureDeps()
 	run := UpdatePolicyRun{
 		PolicyID:        policy.ID,
 		PolicyName:      policy.Name,
@@ -1425,13 +1452,13 @@ func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, re
 		Reason:          reason,
 		Summary:         summary,
 		ResultJSON:      "{}",
-		FinishedAt:      jobTimestampNow(),
+		FinishedAt:      deps.JobTimestampNow(),
 	}
-	createdRun, inserted, err := createUpdatePolicyRun(run)
+	createdRun, inserted, err := deps.CreateRun(run)
 	if err != nil || !inserted {
 		return
 	}
-	auditWithActor(
+	deps.AuditWithActor(
 		"system",
 		"",
 		"schedule.run.skipped",
@@ -1447,6 +1474,10 @@ func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, re
 			"run_id":            createdRun.ID,
 		},
 	)
+}
+
+func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, reason, summary string) {
+	defaultPolicyService().CreateSkippedRun(policy, serverName, scheduledForUTC, reason, summary)
 }
 
 func buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
@@ -2064,7 +2095,7 @@ func missedUpdatePolicyTickKey(t time.Time) string {
 	return t.UTC().Truncate(time.Minute).Format(jobTimestampLayout)
 }
 
-func rememberMissedUpdatePolicyTick(now time.Time) {
+func (s *PolicyService) RememberMissedTick(now time.Time) {
 	slotUTC := now.UTC().Truncate(time.Minute)
 	key := missedUpdatePolicyTickKey(slotUTC)
 	updatePolicyMissedTickMu.Lock()
@@ -2075,7 +2106,11 @@ func rememberMissedUpdatePolicyTick(now time.Time) {
 	updatePolicyMissedTicks[key] = slotUTC
 }
 
-func pendingMissedUpdatePolicyTicks() []time.Time {
+func rememberMissedUpdatePolicyTick(now time.Time) {
+	defaultPolicyService().RememberMissedTick(now)
+}
+
+func (s *PolicyService) PendingMissedTicks() []time.Time {
 	updatePolicyMissedTickMu.Lock()
 	defer updatePolicyMissedTickMu.Unlock()
 	ticks := make([]time.Time, 0, len(updatePolicyMissedTicks))
@@ -2088,53 +2123,66 @@ func pendingMissedUpdatePolicyTicks() []time.Time {
 	return ticks
 }
 
-func forgetMissedUpdatePolicyTick(tick time.Time) {
+func pendingMissedUpdatePolicyTicks() []time.Time {
+	return defaultPolicyService().PendingMissedTicks()
+}
+
+func (s *PolicyService) ForgetMissedTick(tick time.Time) {
 	updatePolicyMissedTickMu.Lock()
 	defer updatePolicyMissedTickMu.Unlock()
 	delete(updatePolicyMissedTicks, missedUpdatePolicyTickKey(tick))
 }
 
-func resetMissedUpdatePolicyTicksForTest() {
+func forgetMissedUpdatePolicyTick(tick time.Time) {
+	defaultPolicyService().ForgetMissedTick(tick)
+}
+
+func (s *PolicyService) ResetMissedTicksForTest() {
 	updatePolicyMissedTickMu.Lock()
 	defer updatePolicyMissedTickMu.Unlock()
 	updatePolicyMissedTicks = map[string]time.Time{}
 }
 
-func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
-	policies, err := listUpdatePolicies()
+func resetMissedUpdatePolicyTicksForTest() {
+	defaultPolicyService().ResetMissedTicksForTest()
+}
+
+func (s *PolicyService) ProcessDueSlot(req PolicyScheduleRequest) error {
+	deps := s.ensureDeps()
+	policies, err := deps.ListPolicies()
 	if err != nil {
 		return err
 	}
 	if len(policies) == 0 {
 		return nil
 	}
-	overrides, err := loadAllUpdatePolicyOverrides()
+	overrides, err := deps.LoadOverrides()
 	if err != nil {
 		return err
 	}
-	globalBlackouts, err := loadGlobalUpdatePolicyBlackouts()
+	globalBlackouts, err := deps.LoadGlobalBlackouts()
 	if err != nil {
 		return err
 	}
-	slotLocal := now.In(currentAppLocation()).Truncate(time.Minute)
+	slotLocal := req.Now.In(deps.CurrentLocation()).Truncate(time.Minute)
 	scheduledForUTC := canonicalScheduledForUTC(slotLocal)
-	serversSnapshot := snapshotServers()
+	serversSnapshot := deps.SnapshotServers()
 
 	candidatesByServer := make(map[string][]scheduledPolicyCandidate)
 	for _, policy := range policies {
-		if !policy.Enabled || !policyDueAt(policy, slotLocal) {
+		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
 			continue
 		}
 		for _, server := range serversSnapshot {
-			if !policyMatchesServer(policy, server, overrides) {
+			if !s.PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides}) {
 				continue
 			}
-			if maintenanceActive {
-				createSkippedPolicyRun(policy, server.Name, scheduledForUTC, updatePolicyRunReasonMaintenance, "Maintenance mode active; scheduled run skipped")
+			if req.MaintenanceActive {
+				s.CreateSkippedRun(policy, server.Name, scheduledForUTC, updatePolicyRunReasonMaintenance, "Maintenance mode active; scheduled run skipped")
 				continue
 			}
-			if blackoutApplies(slotLocal, globalBlackouts) || blackoutApplies(slotLocal, policy.PolicyBlackouts) {
-				createSkippedPolicyRun(policy, server.Name, scheduledForUTC, updatePolicyRunReasonBlackout, "Scheduled run skipped due to blackout window")
+			if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
+				s.CreateSkippedRun(policy, server.Name, scheduledForUTC, updatePolicyRunReasonBlackout, "Scheduled run skipped due to blackout window")
 				continue
 			}
 			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], scheduledPolicyCandidate{
@@ -2151,24 +2199,24 @@ func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
 			continue
 		}
 		sort.Slice(candidates, func(i, j int) bool {
-			return comparePolicyCandidates(candidates[i], candidates[j])
+			return s.ComparePolicyCandidates(candidates[i], candidates[j])
 		})
 		winner := candidates[0]
 		for _, skipped := range candidates[1:] {
-			createSkippedPolicyRun(skipped.policy, serverName, skipped.scheduledForUTC, updatePolicyRunReasonSuperseded, "Scheduled run superseded by higher-priority policy")
+			s.CreateSkippedRun(skipped.policy, serverName, skipped.scheduledForUTC, updatePolicyRunReasonSuperseded, "Scheduled run superseded by higher-priority policy")
 		}
 
-		runtimeStatus := currentStatusSnapshot(serverName)
+		runtimeStatus := deps.CurrentStatusSnapshot(serverName)
 		if runtimeStatus == nil {
-			createSkippedPolicyRun(winner.policy, serverName, winner.scheduledForUTC, updatePolicyRunReasonMissing, "Scheduled run skipped because the server was missing")
+			s.CreateSkippedRun(winner.policy, serverName, winner.scheduledForUTC, updatePolicyRunReasonMissing, "Scheduled run skipped because the server was missing")
 			continue
 		}
 		if statusInProgress(runtimeStatus.Status) {
-			createSkippedPolicyRun(winner.policy, serverName, winner.scheduledForUTC, updatePolicyRunReasonBusy, "Scheduled run skipped because the server is busy")
+			s.CreateSkippedRun(winner.policy, serverName, winner.scheduledForUTC, updatePolicyRunReasonBusy, "Scheduled run skipped because the server is busy")
 			continue
 		}
 
-		run, inserted, err := createUpdatePolicyRun(UpdatePolicyRun{
+		run, inserted, err := deps.CreateRun(UpdatePolicyRun{
 			PolicyID:        winner.policy.ID,
 			PolicyName:      winner.policy.Name,
 			ServerName:      serverName,
@@ -2188,14 +2236,14 @@ func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
 				winner.scheduledForUTC,
 				err,
 			)
-			log.Printf("processDueUpdatePolicies: %v", queueErr)
+			deps.Logf("processDueUpdatePolicies: %v", queueErr)
 			queueErrs = append(queueErrs, queueErr)
 			continue
 		}
 		if !inserted {
 			continue
 		}
-		executeScheduledPolicyRun(run, winner.policy, winner.server)
+		deps.ExecuteRun(run, winner.policy, winner.server)
 	}
 	if len(queueErrs) > 0 {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
@@ -2203,47 +2251,35 @@ func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
 	return nil
 }
 
-func processDueUpdatePolicies(now time.Time) error {
+func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
+	return defaultPolicyService().ProcessDueSlot(PolicyScheduleRequest{Now: now, MaintenanceActive: maintenanceActive})
+}
+
+func (s *PolicyService) ProcessDue(now time.Time) error {
+	deps := s.ensureDeps()
 	updatePolicyTickMu.Lock()
 	defer updatePolicyTickMu.Unlock()
-	if !backupRestoreMu.TryRLock() {
-		rememberMissedUpdatePolicyTick(now)
+	if !deps.TryBackupRestoreReadLock() {
+		s.RememberMissedTick(now)
 		return nil
 	}
-	defer backupRestoreMu.RUnlock()
+	defer deps.UnlockBackupRestoreRead()
 
-	for _, missedTick := range pendingMissedUpdatePolicyTicks() {
-		if err := processDueUpdatePolicySlot(missedTick, true); err != nil {
+	for _, missedTick := range s.PendingMissedTicks() {
+		if err := s.ProcessDueSlot(PolicyScheduleRequest{Now: missedTick, MaintenanceActive: true}); err != nil {
 			return err
 		}
-		forgetMissedUpdatePolicyTick(missedTick)
+		s.ForgetMissedTick(missedTick)
 	}
-	return processDueUpdatePolicySlot(now, currentMaintenanceState().Active)
+	return s.ProcessDueSlot(PolicyScheduleRequest{Now: now, MaintenanceActive: deps.CurrentMaintenanceActive()})
+}
+
+func processDueUpdatePolicies(now time.Time) error {
+	return defaultPolicyService().ProcessDue(now)
 }
 
 func startUpdatePolicyScheduler(ctx context.Context) {
-	updatePolicySchedulerOnce.Do(func() {
-		if err := markInterruptedUpdatePolicyRuns(); err != nil {
-			log.Printf("failed to mark interrupted policy runs: %v", err)
-		}
-		if err := processDueUpdatePolicies(time.Now()); err != nil {
-			log.Printf("scheduled policy tick failed: %v", err)
-		}
-		go func() {
-			ticker := time.NewTicker(updatePolicyTickInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case tick := <-ticker.C:
-					if err := processDueUpdatePolicies(tick); err != nil {
-						log.Printf("scheduled policy tick failed: %v", err)
-					}
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	})
+	defaultPolicyService().StartScheduler(ctx, PolicySchedulerOptions{})
 }
 
 func handleUpdatePoliciesList(c *gin.Context) {

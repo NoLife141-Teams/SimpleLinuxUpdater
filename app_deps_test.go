@@ -93,6 +93,104 @@ func TestIsolatedTestAppSeparatesDBAndJobManager(t *testing.T) {
 	}
 }
 
+func TestIsolatedTestAppSeparatesAuthRateLimiters(t *testing.T) {
+	appOneLimiter := NewAuthRateLimiter(authRateLimitWindow, 1)
+	t.Cleanup(appOneLimiter.Stop)
+	appTwoLimiter := NewAuthRateLimiter(authRateLimitWindow, 5)
+	t.Cleanup(appTwoLimiter.Stop)
+
+	appOne := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "auth-rate-one.db"), AppDeps{
+		SetupRateLimiter: appOneLimiter,
+	})
+	appTwo := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "auth-rate-two.db"), AppDeps{
+		SetupRateLimiter: appTwoLimiter,
+	})
+
+	firstOne := performInvalidSetupRequest(appOne.Handler)
+	if firstOne.Code != http.StatusBadRequest {
+		t.Fatalf("first app first setup status = %d, want %d (body=%s)", firstOne.Code, http.StatusBadRequest, firstOne.Body.String())
+	}
+	secondOne := performInvalidSetupRequest(appOne.Handler)
+	if secondOne.Code != http.StatusTooManyRequests {
+		t.Fatalf("first app second setup status = %d, want %d (body=%s)", secondOne.Code, http.StatusTooManyRequests, secondOne.Body.String())
+	}
+	firstTwo := performInvalidSetupRequest(appTwo.Handler)
+	if firstTwo.Code != http.StatusBadRequest {
+		t.Fatalf("second app first setup status = %d, want %d (body=%s)", firstTwo.Code, http.StatusBadRequest, firstTwo.Body.String())
+	}
+}
+
+func TestSetupRouterWithDepsDefaultsAuthServiceToInjectedDB(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+	globalDBPath := filepath.Join(t.TempDir(), "global-auth.db")
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", globalDBPath)
+	_ = getDB()
+
+	routeDBPath := filepath.Join(t.TempDir(), "route-auth.db")
+	routeDB, err := sql.Open("sqlite", routeDBPath)
+	if err != nil {
+		t.Fatalf("open injected db: %v", err)
+	}
+	t.Cleanup(func() { _ = routeDB.Close() })
+	if err := prepareInjectedAppDB(routeDB); err != nil {
+		t.Fatalf("prepare injected db: %v", err)
+	}
+
+	router, err := setupRouterWithDeps(AppDeps{
+		DB: func() *sql.DB { return routeDB },
+	})
+	if err != nil {
+		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)
+	}
+	handler := sessionManager.LoadAndSave(router)
+
+	setupRec := httptest.NewRecorder()
+	setupReq := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"admin","password":"StrongPass123"}`))
+	markSameOriginAuthRequest(setupReq)
+	setupReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("setup status = %d, want %d (body=%s)", setupRec.Code, http.StatusOK, setupRec.Body.String())
+	}
+	if !authUserExistsInDB(t, routeDBPath) {
+		t.Fatalf("auth setup did not write to injected db")
+	}
+	if authUserExistsInDB(t, globalDBPath) {
+		t.Fatalf("auth setup wrote to global db instead of only injected db")
+	}
+}
+
+func performInvalidSetupRequest(handler http.Handler) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"username":"","password":"short"}`))
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func prepareInjectedAppDB(db *sql.DB) error {
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS servers (
+			name TEXT PRIMARY KEY,
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL DEFAULT 22,
+			user TEXT NOT NULL,
+			pass_enc TEXT NOT NULL,
+			key_enc TEXT NOT NULL DEFAULT '',
+			key_path TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return err
+	}
+	return ensureSchema(db)
+}
+
 func TestSetupRouterWithDepsPreservesRouteInventory(t *testing.T) {
 	app := newIsolatedTestApp(t)
 

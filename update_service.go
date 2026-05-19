@@ -1,99 +1,45 @@
 package main
 
 import (
-	"io"
+	"log"
+	"strings"
 	"time"
+
+	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
 )
 
-type updateSSHOperationWithRetryFunc func(Server, *ssh.ClientConfig, *sshConnection, RetryPolicy, string, string, *int, func() error) error
-
-type UpdateServiceDeps struct {
-	BuildAuthMethods             func(Server) ([]ssh.AuthMethod, error)
-	HostKeyCallback              func() (ssh.HostKeyCallback, error)
-	DialSSHWithRetry             func(Server, *ssh.ClientConfig, RetryPolicy, string, *int) (sshConnection, error)
-	RunSSHOperationWithRetry     updateSSHOperationWithRetryFunc
-	RunSSHCommandWithTimeout     func(sshConnection, string, io.Reader, time.Duration) (string, string, error)
-	CurrentJobManager            func() *JobManager
-	AuditWithActor               func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any)
-	Now                          func() time.Time
-	JobTimestampNow              func() string
-	LoadCommandTimeout           func() time.Duration
-	LoadPostUpdateCheckConfig    func() PostUpdateCheckConfig
-	LoadScheduledJobBehavior     func(string) scheduledJobBehavior
-	RunUpdatePrechecks           func(sshConnection) updatePrecheckSummary
-	RunPostUpdateHealthChecks    func(sshConnection, PostUpdateCheckConfig, map[string]struct{}) updatePostcheckSummary
-	ListFailedSystemdUnits       func(sshConnection) ([]string, string, error)
-	CollectServerFacts           func(Server, sshConnection, time.Duration) serverFactsRecord
-	SaveServerFacts              func(serverFactsRecord) error
-	GetUpgradable                func(sshConnection, time.Duration) ([]PendingUpdate, []string, error)
-	QueryPackageCVEs             func(sshConnection, string) ([]string, error)
-	UpdateScheduledDiscoveryMeta func(string, []string, []PendingUpdate)
-	StartPendingCVEEnrichment    func(Server, *ssh.ClientConfig, []PendingUpdate, string, string, string)
-	UpdatePolicyRun              func(int64, updatePolicyRunUpdate) error
-}
-
-type UpdateRunRequest struct {
-	Server   Server
-	Actor    string
-	ClientIP string
-	Policy   RetryPolicy
-	JobID    string
-}
-
-type AutoremoveRunRequest struct {
-	Server   Server
-	Actor    string
-	ClientIP string
-	Policy   RetryPolicy
-	JobID    string
-}
-
-type SudoersRunRequest struct {
-	Server       Server
-	SudoPassword string
-	Actor        string
-	ClientIP     string
-	Policy       RetryPolicy
-	JobID        string
-}
-
-type ScheduledScanRunRequest struct {
-	JobID           string
-	RunID           int64
-	ScheduledForUTC string
-	Server          Server
-	Policy          UpdatePolicy
-	RetryPolicy     RetryPolicy
-}
-
-type UpdateService struct {
-	deps UpdateServiceDeps
-}
+type UpdateServiceDeps = updatespkg.ServiceDeps
+type UpdateService = updatespkg.Service
+type UpdateRunRequest = updatespkg.UpdateRunRequest
+type AutoremoveRunRequest = updatespkg.AutoremoveRunRequest
+type SudoersRunRequest = updatespkg.SudoersRunRequest
+type ScheduledScanRunRequest = updatespkg.ScheduledScanRunRequest
+type scheduledJobBehavior = updatespkg.ScheduledJobBehavior
+type scheduledJobDiscovery = updatespkg.ScheduledJobDiscovery
+type scheduledJobMeta = updatespkg.ScheduledJobMeta
 
 func NewUpdateService(deps UpdateServiceDeps) *UpdateService {
-	deps = deps.withDefaults()
-	return &UpdateService{deps: deps}
+	return updatespkg.NewService(updateServiceDepsWithDefaults(deps))
 }
 
 func defaultUpdateService() *UpdateService {
 	return NewUpdateService(UpdateServiceDeps{})
 }
 
-func (s *UpdateService) ensureDeps() UpdateServiceDeps {
-	if s == nil {
-		return UpdateServiceDeps{}.withDefaults()
+func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
+	if d.ServerState == nil {
+		d.ServerState = serverState
 	}
-	return s.deps.withDefaults()
-}
-
-func (d UpdateServiceDeps) withDefaults() UpdateServiceDeps {
 	if d.BuildAuthMethods == nil {
 		d.BuildAuthMethods = buildAuthMethods
 	}
 	if d.HostKeyCallback == nil {
 		d.HostKeyCallback = getHostKeyCallback
+	}
+	if d.DialSSH == nil {
+		d.DialSSH = getDialSSHConnection()
 	}
 	if d.DialSSHWithRetry == nil {
 		d.DialSSHWithRetry = dialSSHWithRetry
@@ -106,6 +52,9 @@ func (d UpdateServiceDeps) withDefaults() UpdateServiceDeps {
 	}
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager
+	}
+	if d.StartJobRunner == nil {
+		d.StartJobRunner = startJobRunner
 	}
 	if d.AuditWithActor == nil {
 		d.AuditWithActor = auditWithActor
@@ -149,11 +98,163 @@ func (d UpdateServiceDeps) withDefaults() UpdateServiceDeps {
 	if d.UpdateScheduledDiscoveryMeta == nil {
 		d.UpdateScheduledDiscoveryMeta = updateScheduledJobDiscoveryMeta
 	}
-	if d.StartPendingCVEEnrichment == nil {
-		d.StartPendingCVEEnrichment = startPendingUpdateCVEEnrichment
-	}
 	if d.UpdatePolicyRun == nil {
 		d.UpdatePolicyRun = updateUpdatePolicyRun
 	}
+	if d.IsPostcheckFailureBlocking == nil {
+		d.IsPostcheckFailureBlocking = isPostcheckFailureBlocking
+	}
+	if d.SummarizeUnitNames == nil {
+		d.SummarizeUnitNames = summarizeUnitNames
+	}
+	if d.Logf == nil {
+		d.Logf = log.Printf
+	}
+	if d.SSHConnectTimeout <= 0 {
+		d.SSHConnectTimeout = sshConnectTimeout
+	}
 	return d
+}
+
+func updateServiceEnsureDeps(service *UpdateService) UpdateServiceDeps {
+	if service == nil {
+		return updateServiceDepsWithDefaults(UpdateServiceDeps{})
+	}
+	return updateServiceDepsWithDefaults(service.EnsureDeps())
+}
+
+// withActorRunner is a temporary compatibility test seam. Runtime runner
+// ownership lives in internal/updates; these methods preserve a few legacy
+// main-package tests until the final wrapper cleanup phase.
+type withActorRunner struct {
+	service         *UpdateService
+	server          Server
+	policy          RetryPolicy
+	jobID           string
+	config          *ssh.ClientConfig
+	client          sshConnection
+	sshDialAttempts int
+	lastErrClass    string
+}
+
+func (r *withActorRunner) deps() UpdateServiceDeps {
+	if r != nil && r.service != nil {
+		return updateServiceEnsureDeps(r.service)
+	}
+	return updateServiceDepsWithDefaults(UpdateServiceDeps{})
+}
+
+func (r *withActorRunner) setErrorLogs(logs string) {
+	mu.Lock()
+	if status := statusMap[r.server.Name]; status != nil {
+		status.Status = "error"
+		status.Logs = logs
+	}
+	mu.Unlock()
+}
+
+func (r *withActorRunner) markErrorClass(err error) {
+	if isRetryableError(err) {
+		r.lastErrClass = "transient"
+		return
+	}
+	r.lastErrClass = "permanent"
+}
+
+func (r *withActorRunner) setupSSH(dialOpName string) bool {
+	deps := r.deps()
+	authMethods, err := deps.BuildAuthMethods(r.server)
+	if err != nil {
+		r.lastErrClass = "permanent"
+		r.setErrorLogs("Auth setup failed: " + err.Error())
+		return false
+	}
+	hostKeyCallback, err := deps.HostKeyCallback()
+	if err != nil {
+		r.lastErrClass = "permanent"
+		r.setErrorLogs("Host key verification setup failed: " + err.Error())
+		return false
+	}
+	r.config = &ssh.ClientConfig{
+		User:            r.server.User,
+		Auth:            authMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         sshConnectTimeout,
+	}
+	client, err := deps.DialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
+	if err != nil {
+		r.markErrorClass(err)
+		r.setErrorLogs("SSH connection failed: " + err.Error())
+		return false
+	}
+	r.client = client
+	return true
+}
+
+func (r *withActorRunner) currentJobManager() *JobManager {
+	return r.deps().CurrentJobManager()
+}
+
+func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
+	if snapshot == nil {
+		return
+	}
+	jm := r.currentJobManager()
+	if jm == nil || strings.TrimSpace(r.jobID) == "" {
+		return
+	}
+	update := JobUpdate{LogsText: &snapshot.Logs}
+	switch snapshot.Status {
+	case "pending_approval":
+		status := jobStatusWaitingApproval
+		phase := jobPhaseApprovalWait
+		summary := "Waiting for approval"
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+	case "done":
+		status := jobStatusSucceeded
+		phase := jobPhaseComplete
+		summary := "Completed successfully"
+		finishedAt := jobTimestampNow()
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+		update.FinishedAt = &finishedAt
+	case "error":
+		status := jobStatusFailed
+		phase := jobPhaseComplete
+		summary := "Completed with errors"
+		finishedAt := jobTimestampNow()
+		errorClass := strings.TrimSpace(r.lastErrClass)
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+		update.FinishedAt = &finishedAt
+		if errorClass != "" {
+			update.ErrorClass = &errorClass
+		}
+	case "cancelled":
+		status := jobStatusCancelled
+		phase := jobPhaseComplete
+		summary := "Cancelled"
+		finishedAt := jobTimestampNow()
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+		update.FinishedAt = &finishedAt
+	case "approved":
+		status := jobStatusRunning
+		phase := jobPhaseAptUpgrade
+		summary := "Approval received"
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+	default:
+		status := jobStatusRunning
+		update.Status = &status
+	}
+	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
+		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
+	}
 }

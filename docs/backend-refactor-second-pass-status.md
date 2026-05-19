@@ -12,7 +12,7 @@ This checklist tracks the second backend refactor pass described in [backend-ref
 - [x] Phase 5 - Backup Package: complete on `codex/backup-package`
 - [x] Phase 6 - Server Inventory Package: complete on `codex/servers-package`
 - [x] Phase 7 - Policy Package: complete on `codex/policies-package`
-- [ ] Phase 8 - Update Package
+- [x] Phase 8 - Update Package: complete on `codex/updates-package`
 - [ ] Phase 9 - Observability And Dashboard Package
 - [ ] Phase 10 - Repository And Schema Ownership
 - [ ] Phase 11 - Final Global And Wrapper Removal
@@ -172,6 +172,26 @@ Broader gates:
 
 Live disposable-host smoke is not required for Phase 7 because this phase only moves scheduled policy persistence, matching, blackout handling, run records, missed-tick replay, and scheduler ownership behind `internal/policies`.
 
+## Phase 8 Validation
+
+Required:
+
+- [x] `go test -count=1 -run 'TestUpdate|TestAutoremove|TestSudoers|TestApproval|TestCVE|TestPostcheck|TestScheduled.*Policy|TestRunnerJobSync|TestMarkdownReport|TestBackendContract|TestRouteInventory' ./...`
+- [x] `go test -count=1 ./...`
+- [x] `go vet ./...`
+- [x] `staticcheck ./...`
+- [x] `go build -o webserver .`
+- [x] `npm run test:e2e`
+
+Broader gates:
+
+- [x] `go test -race -count=1 ./...`
+- [x] `govulncheck ./...`
+- [x] `actionlint`
+- [x] `npm audit --audit-level=moderate`
+
+Live disposable-host smoke is not required for Phase 8 because this phase only moves update, autoremove, sudoers, approval/cancel, CVE helper, and scheduled scan ownership behind `internal/updates`.
+
 ## Compatibility Wrappers To Remove Later
 
 These wrappers are intentionally retained after the first pass and are marked with `//lint:ignore U1000`. They should disappear by Phase 11 after package APIs replace all transitional call sites.
@@ -209,6 +229,8 @@ Policy ownership now lives in `internal/policies`; these main-package wrappers r
 - `webserver.go`: `handleDashboardEvents`
 - `webserver.go`: `handleDashboardSummary`
 - `webserver.go`: `createServerActionJob`
+- `webserver.go`: update/action route entrypoint wrappers (`runUpdateWithActor`, `runUpdateJobWithActor`, `runAutoremoveWithActor`, `runAutoremoveJobWithActor`, `runSudoersBootstrapWithActor`, `runSudoersBootstrapJobWithActor`, `runSudoersDisableWithActor`, `runSudoersDisableJobWithActor`)
+- `update_service.go`: `NewUpdateService`, default dependency composition, and the temporary `withActorRunner` test seam are Phase 11 cleanup glue around `internal/updates`.
 - `server_inventory_service.go`: `updateServerKey`
 - `server_inventory_service.go`: host-key result type aliases
 - `server_inventory_service.go`: server inventory helper wrappers (`newIdleServerStatus`, `updateStatusFromServer`, normalization helpers, `isValidSSHUsername`)
@@ -253,6 +275,8 @@ This inventory is grouped by likely owning phase. Some package-level values are 
 
 ### Update Runner And SSH Test Hooks
 
+- `internal/updates`: owns update/autoremove/sudoers runner orchestration, retry/error classification helpers, apt package parsing and selected-upgrade command building, approval/cancel service methods, scheduled scan execution, scheduled job metadata helpers, and CVE preparation/query-command helpers.
+- `update_service.go`: temporary main-owned default update service composition and compatibility type aliases remain until final app-scoped ownership cleanup.
 - `webserver.go`: `dialSSHConnection`, `dialSSHConnectionMu`
 - `webserver.go`: `updateRunnerWG`
 

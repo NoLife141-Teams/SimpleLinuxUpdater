@@ -13,7 +13,6 @@ import (
 
 	authpkg "debian-updater/internal/auth"
 
-	"github.com/alexedwards/argon2id"
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
@@ -375,9 +374,21 @@ func rateLimitClientIP(c *gin.Context) string {
 }
 
 func metricsBearerMiddleware() gin.HandlerFunc {
+	return metricsBearerMiddlewareWithService(metricsTokenService)
+}
+
+func metricsBearerMiddlewareWithService(service *MetricsTokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenHash := strings.TrimSpace(getMetricsBearerTokenHash())
-		if tokenHash == "" {
+		svc := service
+		if svc == nil {
+			svc = metricsTokenService
+		}
+		if svc == metricsTokenService {
+			if strings.TrimSpace(getMetricsBearerTokenHash()) == "" {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
+		} else if !svc.Status() {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
@@ -396,7 +407,7 @@ func metricsBearerMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return
 		}
-		match, err := argon2id.ComparePasswordAndHash(parts[1], tokenHash)
+		match, err := svc.VerifyBearerToken(parts[1])
 		if err != nil || !match {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return

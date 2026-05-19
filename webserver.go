@@ -15,7 +15,6 @@ import (
 	"io"
 	"log"
 	"math"
-	mathrand "math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -32,6 +31,7 @@ import (
 
 	appshell "debian-updater/internal/app"
 	"debian-updater/internal/events"
+	updatespkg "debian-updater/internal/updates"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
@@ -87,16 +87,13 @@ const precheckDpkgAuditCmd = "sudo -n dpkg --audit"
 const precheckAptCheckCmd = "sudo -n apt-get check"
 const aptUpdateCmd = "sudo -n apt-get update"
 const aptUpgradeCmd = "sudo -n apt-get -y upgrade"
-const aptUpgradeSelectedPrefixCmd = "sudo -n apt-get -y install --only-upgrade --"
 const aptAutoremoveCmd = "sudo -n apt-get -y autoremove"
 const aptListUpgradableCmd = "sudo -n apt-get -s upgrade"
 const defaultSSHCommandTimeout = 5 * time.Minute
 const minSSHCommandTimeout = 1 * time.Second
 const maxSSHCommandTimeout = 30 * time.Minute
-const cveLookupMaxPackages = 25
 const cveLookupMaxPerPackage = 12
 const cveLookupCommandTimeout = 20 * time.Second
-const updateApprovalPollInterval = 200 * time.Millisecond
 const postcheckFailedUnitsCmd = "systemctl --failed --no-legend --plain"
 const postcheckRebootRequiredCmd = "sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\""
 const postcheckNameAptHealth = "post_apt_health"
@@ -113,8 +110,6 @@ const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
 var errInvalidWindow = errors.New("invalid observability window")
-var cveRegex = regexp.MustCompile(`CVE-[0-9]{4}-[0-9]+`)
-var securitySuiteTokenRegex = regexp.MustCompile(`(?:^|[\s/:])[a-z0-9][a-z0-9+.-]*-security(?:$|[\s/\],:\)])`)
 
 var dashboardEventBroker = events.NewBroker()
 
@@ -160,19 +155,7 @@ type observabilityCacheEntry struct {
 	cachedAt time.Time
 }
 
-type serverFactsRecord struct {
-	ServerName     string `json:"server_name"`
-	CollectedAt    string `json:"collected_at"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	DiskStatus     string `json:"disk_status"`
-	DiskFreeKB     int64  `json:"disk_free_kb"`
-	DiskDetails    string `json:"disk_details"`
-	AptStatus      string `json:"apt_status"`
-	AptDetails     string `json:"apt_details"`
-	RebootRequired *bool  `json:"reboot_required"`
-	RawJSON        string `json:"raw_json,omitempty"`
-}
+type serverFactsRecord = updatespkg.ServerFactsRecord
 
 type dashboardUpdateHistory struct {
 	Status            string  `json:"status"`
@@ -252,58 +235,13 @@ type dashboardSummaryResponse struct {
 	Servers     []dashboardServerSummary `json:"servers"`
 }
 
-type RetryPolicy struct {
-	MaxAttempts int
-	BaseDelay   time.Duration
-	MaxDelay    time.Duration
-	JitterPct   int
-}
-
-type PostUpdateCheckConfig struct {
-	Enabled               bool
-	BlockOnAptHealth      bool
-	BlockOnFailedUnits    bool
-	RebootRequiredWarning bool
-	CustomCommand         string
-}
-
-type updatePrecheckResult struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Details string `json:"details"`
-	Output  string `json:"output,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
-
-type updatePrecheckSummary struct {
-	AllPassed   bool                   `json:"all_passed"`
-	FailedCheck string                 `json:"failed_check,omitempty"`
-	Results     []updatePrecheckResult `json:"results"`
-}
-
-type updatePostcheckSummary struct {
-	AllPassed   bool                   `json:"all_passed"`
-	FailedCheck string                 `json:"failed_check,omitempty"`
-	Warnings    int                    `json:"warnings"`
-	Results     []updatePrecheckResult `json:"results"`
-}
-
-type retryableTaggedError struct {
-	err error
-}
-
-type sshSessionRunner interface {
-	SetStdin(io.Reader)
-	SetStdout(io.Writer)
-	SetStderr(io.Writer)
-	Run(string) error
-	Close() error
-}
-
-type sshConnection interface {
-	NewSession() (sshSessionRunner, error)
-	Close() error
-}
+type RetryPolicy = updatespkg.RetryPolicy
+type PostUpdateCheckConfig = updatespkg.PostUpdateCheckConfig
+type updatePrecheckResult = updatespkg.PrecheckResult
+type updatePrecheckSummary = updatespkg.PrecheckSummary
+type updatePostcheckSummary = updatespkg.PostcheckSummary
+type sshSessionRunner = updatespkg.SSHSessionRunner
+type sshConnection = updatespkg.SSHConnection
 
 type realSSHSession struct {
 	session *ssh.Session
@@ -364,14 +302,6 @@ func startUpdateRunner(server Server, actor, clientIP string, policy RetryPolicy
 
 func waitForUpdateRunners() {
 	updateRunnerWG.Wait()
-}
-
-func (e retryableTaggedError) Error() string {
-	return e.err.Error()
-}
-
-func (e retryableTaggedError) Retryable() bool {
-	return true
 }
 
 func dbPath() string {
@@ -769,14 +699,7 @@ func normalizeAuditFilterTimestamp(raw string) (string, error) {
 }
 
 func updateCompletionOutcome(finalStatus string) string {
-	switch finalStatus {
-	case "done":
-		return "success"
-	case "idle":
-		return "ignored"
-	default:
-		return "failure"
-	}
+	return updatespkg.UpdateCompletionOutcome(finalStatus)
 }
 
 func parseIntEnvWithDefault(envKey string, defaultValue int) int {
@@ -878,103 +801,12 @@ func loadPostUpdateCheckConfigFromEnv() PostUpdateCheckConfig {
 	return cfg
 }
 
-func isRetryableMessage(msg string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(msg))
-	if normalized == "" {
-		return false
-	}
-
-	nonRetryableHints := []string{
-		"unable to authenticate",
-		"permission denied",
-		"no auth",
-		"authentication",
-		"host key",
-		"knownhosts",
-		"missing password or ssh key",
-		"fingerprint mismatch",
-		"invalid credentials",
-		"invalid key",
-		"invalid private key",
-	}
-	for _, hint := range nonRetryableHints {
-		if strings.Contains(normalized, hint) {
-			return false
-		}
-	}
-
-	retryableHints := []string{
-		"i/o timeout",
-		"timeout",
-		"timed out",
-		"connection reset",
-		"connection refused",
-		"broken pipe",
-		"eof",
-		"temporarily unavailable",
-		"resource temporarily unavailable",
-		"could not get lock",
-		"dpkg frontend lock",
-		"network is unreachable",
-		"no route to host",
-		"connection closed",
-	}
-	for _, hint := range retryableHints {
-		if strings.Contains(normalized, hint) {
-			return true
-		}
-	}
-	return false
-}
-
 func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var tagged interface{ Retryable() bool }
-	if errors.As(err, &tagged) && tagged.Retryable() {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		if netErr.Timeout() {
-			return true
-		}
-	}
-	return isRetryableMessage(err.Error())
+	return updatespkg.IsRetryableError(err)
 }
 
 func markRetryableFromOutput(err error, output string) error {
-	if err == nil {
-		return nil
-	}
-	if isRetryableMessage(output) {
-		return retryableTaggedError{err: err}
-	}
-	return err
-}
-
-func computeRetryDelay(policy RetryPolicy, failedAttempt int, jitterRand float64) time.Duration {
-	if failedAttempt < 1 {
-		failedAttempt = 1
-	}
-	delay := float64(policy.BaseDelay) * math.Pow(2, float64(failedAttempt-1))
-	maxDelay := float64(policy.MaxDelay)
-	if delay > maxDelay {
-		delay = maxDelay
-	}
-	if policy.JitterPct > 0 {
-		// jitterRand in [0,1) maps to [-1,1)
-		jitterFactor := (jitterRand*2 - 1) * (float64(policy.JitterPct) / 100.0)
-		delay = delay * (1 + jitterFactor)
-	}
-	if delay > maxDelay {
-		delay = maxDelay
-	}
-	if delay < float64(time.Millisecond) {
-		delay = float64(time.Millisecond)
-	}
-	return time.Duration(delay)
+	return updatespkg.MarkRetryableFromOutput(err, output)
 }
 
 func runWithRetryWithSleep(
@@ -984,37 +816,11 @@ func runWithRetryWithSleep(
 	onRetry func(attempt int, wait time.Duration, err error),
 	sleepFn func(time.Duration),
 ) error {
-	if policy.MaxAttempts < 1 {
-		policy.MaxAttempts = 1
-	}
-	var lastErr error
-	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
-		lastErr = fn()
-		if lastErr == nil {
-			return nil
-		}
-		if !isRetryableError(lastErr) {
-			return lastErr
-		}
-		if attempt == policy.MaxAttempts {
-			break
-		}
-		wait := computeRetryDelay(policy, attempt, mathrand.Float64())
-		if onRetry != nil {
-			onRetry(attempt, wait, lastErr)
-		}
-		if sleepFn != nil {
-			sleepFn(wait)
-		}
-	}
-	if lastErr != nil && isRetryableError(lastErr) {
-		log.Printf("Retry exhausted for %s after %d attempts: %v", opName, policy.MaxAttempts, lastErr)
-	}
-	return lastErr
+	return updatespkg.RunWithRetryWithSleep(policy, opName, fn, onRetry, sleepFn, log.Printf)
 }
 
 func runWithRetry(policy RetryPolicy, opName string, fn func() error, onRetry func(attempt int, wait time.Duration, err error)) error {
-	return runWithRetryWithSleep(policy, opName, fn, onRetry, time.Sleep)
+	return updatespkg.RunWithRetry(policy, opName, fn, onRetry, log.Printf)
 }
 
 func reconnectSSHClient(server Server, config *ssh.ClientConfig, clientRef *sshConnection) error {
@@ -1261,18 +1067,7 @@ func runSSHCommand(client sshConnection, cmd string, stdin io.Reader) (string, s
 }
 
 func sshExitCode(err error) (int, bool) {
-	if err == nil {
-		return 0, true
-	}
-	var exitStatusErr interface{ ExitStatus() int }
-	if errors.As(err, &exitStatusErr) {
-		return exitStatusErr.ExitStatus(), true
-	}
-	var exitErr *ssh.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitStatus(), true
-	}
-	return 0, false
+	return updatespkg.SSHExitCode(err)
 }
 
 func checkDiskSpace(client sshConnection) updatePrecheckResult {
@@ -3314,22 +3109,9 @@ func approvePendingUpdate(name, scope string) (exists bool, approved bool) {
 	return exists, true
 }
 
+//lint:ignore U1000 compatibility wrapper retained for transitional approval tests.
 func cancelPendingUpdate(name string) (exists bool, cancelled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	status, exists := statusMap[name]
-	if !exists || status == nil {
-		return exists, false
-	}
-	if status.Status != "pending_approval" {
-		return exists, false
-	}
-	status.Status = "cancelled"
-	status.ApprovalScope = ""
-	status.Logs = ""
-	status.Upgradable = nil
-	status.PendingUpdates = nil
-	return exists, true
+	return defaultUpdateService().CancelPendingUpdate(name)
 }
 
 func readUploadedKeyData(r io.Reader) (string, error) {
@@ -3396,391 +3178,7 @@ func init() {
 	}
 }
 
-type withActorRunner struct {
-	service    *UpdateService
-	server     Server
-	actor      string
-	clientIP   string
-	policy     RetryPolicy
-	jobID      string
-	jobKind    string
-	jobPhase   string
-	startedAt  time.Time
-	approvedAt time.Time
-
-	approvalScope    string
-	approvedPackages []string
-
-	config *ssh.ClientConfig
-	client sshConnection
-
-	commandTimeout time.Duration
-
-	sshDialAttempts        int
-	aptUpdateAttempts      int
-	listUpgradableAttempts int
-	aptUpgradeAttempts     int
-	commandAttempts        int
-
-	retryExhausted bool
-	lastErrClass   string
-
-	prechecksPassed bool
-	precheckFailed  string
-	precheckResults []updatePrecheckResult
-
-	postchecksEnabled bool
-	postchecksPassed  bool
-	postcheckFailed   string
-	postcheckWarnings int
-	postcheckResults  []updatePrecheckResult
-	upgradeCompleted  bool
-
-	preUpdateFailedUnits []string
-}
-
-func (r *withActorRunner) deps() UpdateServiceDeps {
-	if r != nil && r.service != nil {
-		return r.service.ensureDeps()
-	}
-	return defaultUpdateService().deps
-}
-
-func (r *withActorRunner) currentJobManager() *JobManager {
-	return r.deps().CurrentJobManager()
-}
-
-func (r *withActorRunner) withStatus(update func(*ServerStatus)) bool {
-	mu.Lock()
-	status := statusMap[r.server.Name]
-	if status == nil {
-		mu.Unlock()
-		return false
-	}
-	update(status)
-	snapshot := *status
-	snapshot.Upgradable = append([]string(nil), status.Upgradable...)
-	snapshot.PendingUpdates = clonePendingUpdates(status.PendingUpdates)
-	snapshot.Tags = append([]string(nil), status.Tags...)
-	mu.Unlock()
-	r.syncJobFromStatus(&snapshot)
-	return true
-}
-
-func (r *withActorRunner) appendStatusLog(line string) {
-	_ = r.withStatus(func(status *ServerStatus) {
-		status.Logs += line
-	})
-}
-
-func (r *withActorRunner) setErrorLogs(logs string) {
-	_ = r.withStatus(func(status *ServerStatus) {
-		status.Status = "error"
-		status.Logs = logs
-	})
-}
-
-func (r *withActorRunner) currentLogs() string {
-	mu.Lock()
-	defer mu.Unlock()
-	if status := statusMap[r.server.Name]; status != nil {
-		return status.Logs
-	}
-	return ""
-}
-
-func (r *withActorRunner) setJobPhase(phase string) {
-	r.jobPhase = strings.TrimSpace(phase)
-	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && r.jobPhase != "" {
-		if err := jm.UpdateJob(r.jobID, JobUpdate{Phase: &r.jobPhase}); err != nil {
-			log.Printf("failed to update job %q phase to %q: %v", r.jobID, r.jobPhase, err)
-		}
-	}
-}
-
-func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
-	if snapshot == nil {
-		return
-	}
-	jm := r.currentJobManager()
-	if jm == nil || strings.TrimSpace(r.jobID) == "" {
-		return
-	}
-	update := JobUpdate{
-		LogsText: &snapshot.Logs,
-	}
-
-	switch snapshot.Status {
-	case "pending_approval":
-		status := jobStatusWaitingApproval
-		phase := jobPhaseApprovalWait
-		summary := "Waiting for approval"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	case "done":
-		status := jobStatusSucceeded
-		phase := jobPhaseComplete
-		summary := "Completed successfully"
-		finishedAt := r.deps().JobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "error":
-		status := jobStatusFailed
-		phase := jobPhaseComplete
-		summary := "Completed with errors"
-		finishedAt := r.deps().JobTimestampNow()
-		errorClass := strings.TrimSpace(r.lastErrClass)
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-		if errorClass != "" {
-			update.ErrorClass = &errorClass
-		}
-	case "cancelled":
-		status := jobStatusCancelled
-		phase := jobPhaseComplete
-		summary := "Cancelled"
-		finishedAt := r.deps().JobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "approved":
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "Approval received"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	default:
-		status := jobStatusRunning
-		update.Status = &status
-		if strings.TrimSpace(r.jobPhase) != "" {
-			phase := r.jobPhase
-			update.Phase = &phase
-		}
-	}
-
-	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
-		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
-	}
-}
-
-func (r *withActorRunner) markErrorClass(err error) {
-	if isRetryableError(err) {
-		r.lastErrClass = "transient"
-		r.retryExhausted = true
-		return
-	}
-	r.lastErrClass = "permanent"
-}
-
-func (r *withActorRunner) setupSSH(dialOpName string) bool {
-	deps := r.deps()
-	authMethods, err := deps.BuildAuthMethods(r.server)
-	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
-		return false
-	}
-	hostKeyCallback, err := deps.HostKeyCallback()
-	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
-		return false
-	}
-	r.config = &ssh.ClientConfig{
-		User:            r.server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         sshConnectTimeout,
-	}
-	client, err := deps.DialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
-	if err != nil {
-		r.markErrorClass(err)
-		r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
-		return false
-	}
-	r.client = client
-	return true
-}
-
-func (s *UpdateService) runWithActorShared(
-	server Server,
-	actor, clientIP string,
-	jobID, jobKind string,
-	policy RetryPolicy,
-	auditAction string,
-	initStatus func(*ServerStatus, RetryPolicy),
-	auditMeta func(*withActorRunner, string) map[string]any,
-	outcomeForStatus func(string) string,
-	dialOpName string,
-	runSteps func(*withActorRunner),
-) {
-	deps := s.ensureDeps()
-	runner := &withActorRunner{
-		service:        s,
-		server:         server,
-		actor:          actor,
-		clientIP:       clientIP,
-		policy:         policy,
-		jobID:          strings.TrimSpace(jobID),
-		jobKind:        strings.TrimSpace(jobKind),
-		commandTimeout: deps.LoadCommandTimeout(),
-		lastErrClass:   "none",
-		startedAt:      deps.Now(),
-	}
-	auditHandled := false
-	if auditMeta == nil {
-		auditMeta = func(*withActorRunner, string) map[string]any { return map[string]any{} }
-	}
-	if outcomeForStatus == nil {
-		outcomeForStatus = updateCompletionOutcome
-	}
-
-	defer func() {
-		if auditHandled {
-			return
-		}
-		mu.Lock()
-		finalStatus := "unknown"
-		if status := statusMap[server.Name]; status != nil {
-			finalStatus = status.Status
-		}
-		mu.Unlock()
-		outcome := outcomeForStatus(finalStatus)
-		deps.AuditWithActor(
-			actor,
-			clientIP,
-			auditAction,
-			"server",
-			server.Name,
-			outcome,
-			fmt.Sprintf("Final status: %s", finalStatus),
-			auditMeta(runner, finalStatus),
-		)
-	}()
-
-	if !runner.withStatus(func(status *ServerStatus) {
-		initStatus(status, policy)
-	}) {
-		runner.lastErrClass = "permanent"
-		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(runner.jobID) != "" {
-			status := jobStatusFailed
-			phase := jobPhaseComplete
-			summary := "Server runtime status missing"
-			errorClass := "runtime_state"
-			finishedAt := deps.JobTimestampNow()
-			if err := jm.UpdateJob(runner.jobID, JobUpdate{
-				Status:     &status,
-				Phase:      &phase,
-				Summary:    &summary,
-				ErrorClass: &errorClass,
-				FinishedAt: &finishedAt,
-			}); err != nil {
-				log.Printf("failed to mark job %q failed after runtime status loss: %v", runner.jobID, err)
-			}
-		}
-		auditHandled = true
-		deps.AuditWithActor(
-			actor,
-			clientIP,
-			auditAction,
-			"server",
-			server.Name,
-			"failure",
-			"Server runtime status missing",
-			map[string]any{
-				"job_id":   runner.jobID,
-				"job_kind": runner.jobKind,
-			},
-		)
-		return
-	}
-
-	runner.setJobPhase(jobPhaseDial)
-	if !runner.setupSSH(dialOpName) {
-		return
-	}
-	defer func() {
-		if runner.client != nil {
-			_ = runner.client.Close()
-		}
-	}()
-
-	runSteps(runner)
-}
-
-func doneOnlyOutcome(finalStatus string) string {
-	if finalStatus == "done" {
-		return "success"
-	}
-	return "failure"
-}
-
-func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]any {
-	approvalScope := "none"
-	if !r.approvedAt.IsZero() {
-		approvalScope = normalizeApprovalScope(r.approvalScope)
-	}
-	meta := map[string]any{
-		"status":                        finalStatus,
-		"ssh_dial_attempts_used":        r.sshDialAttempts,
-		"apt_update_attempts_used":      r.aptUpdateAttempts,
-		"list_upgradable_attempts_used": r.listUpgradableAttempts,
-		"apt_upgrade_attempts_used":     r.aptUpgradeAttempts,
-		"total_attempts_used":           r.sshDialAttempts + r.aptUpdateAttempts + r.listUpgradableAttempts + r.aptUpgradeAttempts,
-		"last_error_class":              r.lastErrClass,
-		"retry_exhausted":               r.retryExhausted,
-		"prechecks_passed":              r.prechecksPassed,
-		"precheck_failed":               r.precheckFailed,
-		"precheck_results":              r.precheckResults,
-		"postchecks_enabled":            r.postchecksEnabled,
-		"postchecks_passed":             r.postchecksPassed,
-		"postcheck_failed":              r.postcheckFailed,
-		"postcheck_warnings":            r.postcheckWarnings,
-		"postcheck_results":             r.postcheckResults,
-		"upgrade_completed":             r.upgradeCompleted,
-		"pre_update_failed_units":       r.preUpdateFailedUnits,
-		"approval_scope":                approvalScope,
-		"approved_package_count":        len(r.approvedPackages),
-		"approved_packages":             append([]string(nil), r.approvedPackages...),
-	}
-	if !r.startedAt.IsZero() {
-		meta["total_elapsed_ms"] = r.deps().Now().Sub(r.startedAt).Milliseconds()
-	}
-	if !r.approvedAt.IsZero() {
-		meta["execution_duration_ms"] = r.deps().Now().Sub(r.approvedAt).Milliseconds()
-	}
-	return meta
-}
-
-func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]any {
-	return map[string]any{
-		"status":                 finalStatus,
-		"ssh_dial_attempts_used": r.sshDialAttempts,
-		"command_attempts_used":  r.commandAttempts,
-		"total_attempts_used":    r.sshDialAttempts + r.commandAttempts,
-		"last_error_class":       r.lastErrClass,
-		"retry_exhausted":        r.retryExhausted,
-	}
-}
-
-func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() {
-	if r == nil || r.client == nil {
-		return
-	}
-	deps := r.deps()
-	record := deps.CollectServerFacts(r.server, r.client, r.commandTimeout)
-	if err := deps.SaveServerFacts(record); err != nil {
-		log.Printf("failed to refresh facts after update for %q: %v", r.server.Name, err)
-	}
-}
-
+//lint:ignore U1000 compatibility wrapper retained for transitional action call sites.
 func runUpdateWithActor(server Server, actor, clientIP string, policy RetryPolicy) {
 	runUpdateJobWithActor(server, actor, clientIP, policy, "")
 }
@@ -3793,373 +3191,6 @@ func runUpdateJobWithActor(server Server, actor, clientIP string, policy RetryPo
 		Policy:   policy,
 		JobID:    jobID,
 	})
-}
-
-func (s *UpdateService) RunUpdateJob(req UpdateRunRequest) {
-	s.ensureDeps()
-	postcheckCfg := s.deps.LoadPostUpdateCheckConfig()
-	behavior := s.deps.LoadScheduledJobBehavior(req.JobID)
-	s.runWithActorShared(
-		req.Server,
-		req.Actor,
-		req.ClientIP,
-		req.JobID,
-		jobKindUpdate,
-		req.Policy,
-		updateCompleteAction,
-		func(status *ServerStatus, policy RetryPolicy) {
-			status.Status = "updating"
-			status.ApprovalScope = ""
-			status.Upgradable = nil
-			status.PendingUpdates = nil
-			status.Logs = fmt.Sprintf(
-				"Starting Linux Updater...\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%",
-				policy.MaxAttempts,
-				policy.BaseDelay,
-				policy.MaxDelay,
-				policy.JitterPct,
-			)
-		},
-		updateRunnerAuditMeta,
-		updateCompletionOutcome,
-		"update.ssh_dial",
-		func(r *withActorRunner) {
-			r.setJobPhase(jobPhasePrechecks)
-			r.postchecksEnabled = postcheckCfg.Enabled
-			r.appendStatusLog("\nRunning pre-checks...")
-
-			precheckSummary := s.deps.RunUpdatePrechecks(r.client)
-			r.precheckResults = precheckSummary.Results
-			for _, result := range precheckSummary.Results {
-				state := "PASS"
-				if !result.Passed {
-					state = "FAIL"
-				}
-				line := fmt.Sprintf("\nPre-check %s [%s]: %s", result.Name, state, result.Details)
-				if trimmed := strings.TrimSpace(result.Output); trimmed != "" {
-					line += fmt.Sprintf(" Output: %s", trimmed)
-				}
-				r.appendStatusLog(line)
-			}
-			if !precheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
-				r.precheckFailed = precheckSummary.FailedCheck
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "error"
-					status.Logs += fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
-				})
-				return
-			}
-			r.prechecksPassed = true
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Logs += "\nPre-checks passed.\nRunning apt update..."
-			})
-
-			preUpdateFailedUnitsMap := make(map[string]struct{})
-			preUpdateFailedUnits, _, preUnitsErr := s.deps.ListFailedSystemdUnits(r.client)
-			if preUnitsErr != nil {
-				r.appendStatusLog(fmt.Sprintf("\nBaseline failed-units snapshot unavailable: %v", preUnitsErr))
-			} else {
-				r.preUpdateFailedUnits = preUpdateFailedUnits
-				for _, unit := range preUpdateFailedUnits {
-					preUpdateFailedUnitsMap[unit] = struct{}{}
-				}
-				if len(preUpdateFailedUnits) > 0 {
-					r.appendStatusLog(fmt.Sprintf(
-						"\nDetected %d pre-existing failed systemd unit(s) before upgrade: %s.",
-						len(preUpdateFailedUnits),
-						summarizeUnitNames(preUpdateFailedUnits, 6),
-					))
-				}
-			}
-
-			r.setJobPhase(jobPhaseAptUpdate)
-			var stdout, stderr string
-			err := s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.apt_update",
-				"\napt update attempt %d/%d failed: %v; retrying in %s",
-				&r.aptUpdateAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, aptUpdateCmd, nil, r.commandTimeout)
-					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
-				},
-			)
-			logs := r.currentLogs() + "\n" + stdout + stderr
-			if err != nil {
-				r.markErrorClass(err)
-				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
-				return
-			}
-
-			var upgradable []string
-			var pendingUpdates []PendingUpdate
-			err = s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.list_upgradable",
-				"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
-				&r.listUpgradableAttempts,
-				func() error {
-					pending, items, listErr := s.deps.GetUpgradable(r.client, r.commandTimeout)
-					if listErr == nil {
-						upgradable = items
-						pendingUpdates = pending
-					}
-					return listErr
-				},
-			)
-			if err != nil {
-				r.markErrorClass(err)
-				r.setErrorLogs(logs + fmt.Sprintf("\nError listing upgradable: %v", err))
-				return
-			}
-
-			if len(upgradable) == 0 {
-				r.refreshFactsAfterSuccessfulUpdate()
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "done"
-					status.ApprovalScope = ""
-					status.PendingUpdates = nil
-					status.Logs = logs + "\nNo packages to upgrade."
-				})
-				return
-			}
-
-			pendingUpdates = preparePendingUpdatesForCVE(pendingUpdates)
-			s.deps.UpdateScheduledDiscoveryMeta(r.jobID, upgradable, pendingUpdates)
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "pending_approval"
-				status.ApprovalScope = ""
-				status.Upgradable = upgradable
-				status.PendingUpdates = clonePendingUpdates(pendingUpdates)
-				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(upgradable, "\n")
-			})
-			if behavior.AutoApproveScope == "" {
-				s.deps.StartPendingCVEEnrichment(r.server, r.config, pendingUpdates, r.jobID, r.actor, r.clientIP)
-			}
-
-			if behavior.AutoApproveScope != "" {
-				autoApproved := false
-				mu.Lock()
-				status := statusMap[r.server.Name]
-				if status != nil && status.Status == "pending_approval" {
-					r.approvalScope = normalizeApprovalScope(behavior.AutoApproveScope)
-					status.ApprovalScope = r.approvalScope
-					status.Status = "approved"
-					if r.approvalScope == "security" {
-						r.approvedPackages = securityPackagesFromPendingUpdates(status.PendingUpdates)
-					} else {
-						r.approvedPackages = packageNamesFromPendingUpdates(status.PendingUpdates)
-					}
-					autoApproved = true
-				}
-				mu.Unlock()
-				if !autoApproved {
-					return
-				}
-				r.approvedAt = s.deps.Now()
-			} else {
-				approvalDeadline := s.deps.Now().Add(behavior.ApprovalTimeout)
-				for {
-					time.Sleep(updateApprovalPollInterval)
-					approved := false
-					cancelledByUser := false
-					approvalTimedOut := false
-					mu.Lock()
-					status := statusMap[r.server.Name]
-					if status != nil {
-						if status.Status == "approved" {
-							r.approvalScope = normalizeApprovalScope(status.ApprovalScope)
-							if r.approvalScope == "security" {
-								r.approvedPackages = securityPackagesFromPendingUpdates(status.PendingUpdates)
-							} else {
-								r.approvedPackages = packageNamesFromPendingUpdates(status.PendingUpdates)
-							}
-							approved = true
-						} else if status.Status == "cancelled" {
-							cancelledByUser = true
-							status.Status = "idle"
-							status.ApprovalScope = ""
-							status.Logs = ""
-							status.Upgradable = nil
-							status.PendingUpdates = nil
-						} else if s.deps.Now().After(approvalDeadline) {
-							approvalTimedOut = true
-							status.Status = "idle"
-							status.ApprovalScope = ""
-							status.Logs = ""
-							status.Upgradable = nil
-							status.PendingUpdates = nil
-						}
-					}
-					mu.Unlock()
-					if approved {
-						r.approvedAt = s.deps.Now()
-						break
-					}
-					if cancelledByUser {
-						return
-					}
-					if approvalTimedOut {
-						jm := s.deps.CurrentJobManager()
-						if jm != nil && strings.TrimSpace(r.jobID) != "" {
-							jobStatus := jobStatusCancelled
-							phase := jobPhaseComplete
-							summary := "Approval window expired"
-							finishedAt := s.deps.JobTimestampNow()
-							_ = jm.UpdateJob(r.jobID, JobUpdate{
-								Status:     &jobStatus,
-								Phase:      &phase,
-								Summary:    &summary,
-								FinishedAt: &finishedAt,
-							})
-						}
-						return
-					}
-				}
-			}
-
-			if r.approvalScope == "security" && len(r.approvedPackages) == 0 {
-				r.refreshFactsAfterSuccessfulUpdate()
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "done"
-					status.ApprovalScope = ""
-					status.Upgradable = nil
-					status.PendingUpdates = nil
-					status.Logs += "\nApproval received: security-only upgrade.\nNo security upgrades detected in pending package set; skipped upgrade."
-				})
-				return
-			}
-
-			r.setJobPhase(jobPhaseAptUpgrade)
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "upgrading"
-				status.ApprovalScope = ""
-				status.Upgradable = nil
-				status.PendingUpdates = nil
-				switch r.approvalScope {
-				case "security":
-					status.Logs += fmt.Sprintf("\nApproval received: security-only upgrade (%d package(s)).", len(r.approvedPackages))
-				default:
-					status.Logs += "\nApproval received: all pending upgrades."
-				}
-			})
-
-			upgradeCmd := aptUpgradeCmd
-			if r.approvalScope == "security" {
-				selectedCmd := buildSelectedUpgradeCmd(r.approvedPackages)
-				if selectedCmd == "" {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: could not build security-only apt command from approved package set")
-					return
-				}
-				upgradeCmd = selectedCmd
-				r.appendStatusLog("\nRunning security-only apt upgrade...")
-			} else {
-				r.appendStatusLog("\nRunning apt upgrade...")
-			}
-			err = s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.apt_upgrade",
-				"\napt upgrade attempt %d/%d failed: %v; retrying in %s",
-				&r.aptUpgradeAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, upgradeCmd, nil, r.commandTimeout)
-					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
-				},
-			)
-			logs = r.currentLogs() + "\n" + stdout + stderr
-			if err != nil {
-				r.markErrorClass(err)
-				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
-				return
-			}
-			r.upgradeCompleted = true
-
-			if !postcheckCfg.Enabled {
-				r.postchecksPassed = true
-				r.refreshFactsAfterSuccessfulUpdate()
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "done"
-					status.ApprovalScope = ""
-					status.PendingUpdates = nil
-					status.Logs = logs + "\nUpgrade completed."
-				})
-				return
-			}
-
-			r.setJobPhase(jobPhasePostchecks)
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "upgrading"
-				status.Logs = logs + "\nUpgrade completed.\nRunning post-update health checks..."
-			})
-
-			postcheckSummary := s.deps.RunPostUpdateHealthChecks(r.client, postcheckCfg, preUpdateFailedUnitsMap)
-			r.postcheckResults = postcheckSummary.Results
-			r.postcheckWarnings = postcheckSummary.Warnings
-			for _, result := range postcheckSummary.Results {
-				state := "PASS"
-				if !result.Passed {
-					if isPostcheckFailureBlocking(result.Name, postcheckCfg) {
-						state = "FAIL"
-					} else {
-						state = "WARN"
-					}
-				}
-				line := fmt.Sprintf("\nPost-check %s [%s]: %s", result.Name, state, result.Details)
-				if trimmed := strings.TrimSpace(result.Output); trimmed != "" {
-					line += fmt.Sprintf("\nOutput:\n%s", trimmed)
-				}
-				r.appendStatusLog(line)
-			}
-			if !postcheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
-				r.postcheckFailed = postcheckSummary.FailedCheck
-				r.postchecksPassed = false
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "error"
-					status.ApprovalScope = ""
-					status.PendingUpdates = nil
-					status.Logs += fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
-				})
-				return
-			}
-
-			r.postchecksPassed = true
-			finalLogs := r.currentLogs()
-			if postcheckSummary.Warnings > 0 {
-				r.refreshFactsAfterSuccessfulUpdate()
-				_ = r.withStatus(func(status *ServerStatus) {
-					status.Status = "done"
-					status.ApprovalScope = ""
-					status.PendingUpdates = nil
-					status.Logs = finalLogs + fmt.Sprintf("\nUpgrade completed with %d post-check warning(s).", postcheckSummary.Warnings)
-				})
-				return
-			}
-
-			r.refreshFactsAfterSuccessfulUpdate()
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "done"
-				status.ApprovalScope = ""
-				status.PendingUpdates = nil
-				status.Logs = finalLogs + "\nUpgrade completed.\nPost-update health checks passed."
-			})
-		},
-	)
 }
 
 func runSudoersBootstrapWithActor(server Server, sudoPassword, actor, clientIP string, policy RetryPolicy) {
@@ -4177,68 +3208,6 @@ func runSudoersBootstrapJobWithActor(server Server, sudoPassword, actor, clientI
 	})
 }
 
-func (s *UpdateService) RunSudoersBootstrapJob(req SudoersRunRequest) {
-	s.ensureDeps()
-	s.runWithActorShared(
-		req.Server,
-		req.Actor,
-		req.ClientIP,
-		req.JobID,
-		jobKindSudoersEnable,
-		req.Policy,
-		"sudoers.enable.complete",
-		func(status *ServerStatus, policy RetryPolicy) {
-			status.Status = "sudoers"
-			if strings.TrimSpace(status.Logs) == "" {
-				status.Logs = "Starting Linux Updater..."
-			}
-			status.Logs += fmt.Sprintf(
-				"\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%\nConfiguring passwordless apt sudoers...",
-				policy.MaxAttempts,
-				policy.BaseDelay,
-				policy.MaxDelay,
-				policy.JitterPct,
-			)
-		},
-		commandRunnerAuditMeta,
-		doneOnlyOutcome,
-		"sudoers.enable.ssh_dial",
-		func(r *withActorRunner) {
-			r.setJobPhase(jobPhaseApply)
-			line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock", r.server.User)
-			escapedLine := shellEscapeSingleQuotes(line)
-			cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
-
-			var stdout, stderr string
-			err := s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"sudoers.enable.command",
-				"\nsudoers enable attempt %d/%d failed: %v; retrying in %s",
-				&r.commandAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, cmd, strings.NewReader(req.SudoPassword+"\n"), r.commandTimeout)
-					return runErr
-				},
-			)
-			logs := r.currentLogs() + "\n" + stdout + stderr
-			if err != nil {
-				r.markErrorClass(err)
-				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
-				return
-			}
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "done"
-				status.Logs = logs + "\nPasswordless apt sudoers enabled."
-			})
-		},
-	)
-}
-
 func runSudoersDisableWithActor(server Server, sudoPassword, actor, clientIP string, policy RetryPolicy) {
 	runSudoersDisableJobWithActor(server, sudoPassword, actor, clientIP, policy, "")
 }
@@ -4252,66 +3221,6 @@ func runSudoersDisableJobWithActor(server Server, sudoPassword, actor, clientIP 
 		Policy:       policy,
 		JobID:        jobID,
 	})
-}
-
-func (s *UpdateService) RunSudoersDisableJob(req SudoersRunRequest) {
-	s.ensureDeps()
-	s.runWithActorShared(
-		req.Server,
-		req.Actor,
-		req.ClientIP,
-		req.JobID,
-		jobKindSudoersDisable,
-		req.Policy,
-		"sudoers.disable.complete",
-		func(status *ServerStatus, policy RetryPolicy) {
-			status.Status = "sudoers"
-			if strings.TrimSpace(status.Logs) == "" {
-				status.Logs = "Starting Linux Updater..."
-			}
-			status.Logs += fmt.Sprintf(
-				"\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%\nDisabling passwordless apt sudoers...",
-				policy.MaxAttempts,
-				policy.BaseDelay,
-				policy.MaxDelay,
-				policy.JitterPct,
-			)
-		},
-		commandRunnerAuditMeta,
-		doneOnlyOutcome,
-		"sudoers.disable.ssh_dial",
-		func(r *withActorRunner) {
-			r.setJobPhase(jobPhaseApply)
-			cmd := "sudo -S -p '' rm -f /etc/sudoers.d/apt-nopasswd"
-
-			var stdout, stderr string
-			err := s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"sudoers.disable.command",
-				"\nsudoers disable attempt %d/%d failed: %v; retrying in %s",
-				&r.commandAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, cmd, strings.NewReader(req.SudoPassword+"\n"), r.commandTimeout)
-					return runErr
-				},
-			)
-			logs := r.currentLogs() + "\n" + stdout + stderr
-			if err != nil {
-				r.markErrorClass(err)
-				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
-				return
-			}
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "done"
-				status.Logs = logs + "\nPasswordless apt sudoers disabled."
-			})
-		},
-	)
 }
 
 func runAutoremoveWithActor(server Server, actor, clientIP string, policy RetryPolicy) {
@@ -4328,64 +3237,6 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 	})
 }
 
-func (s *UpdateService) RunAutoremoveJob(req AutoremoveRunRequest) {
-	s.ensureDeps()
-	s.runWithActorShared(
-		req.Server,
-		req.Actor,
-		req.ClientIP,
-		req.JobID,
-		jobKindAutoremove,
-		req.Policy,
-		"autoremove.complete",
-		func(status *ServerStatus, policy RetryPolicy) {
-			status.Status = "autoremove"
-			if strings.TrimSpace(status.Logs) == "" {
-				status.Logs = "Starting Linux Updater..."
-			}
-			status.Logs += fmt.Sprintf(
-				"\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%\nRunning apt autoremove...",
-				policy.MaxAttempts,
-				policy.BaseDelay,
-				policy.MaxDelay,
-				policy.JitterPct,
-			)
-		},
-		commandRunnerAuditMeta,
-		doneOnlyOutcome,
-		"autoremove.ssh_dial",
-		func(r *withActorRunner) {
-			r.setJobPhase(jobPhaseAutoremove)
-			var stdout, stderr string
-			err := s.deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"autoremove.command",
-				"\nautoremove attempt %d/%d failed: %v; retrying in %s",
-				&r.commandAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(r.client, aptAutoremoveCmd, nil, r.commandTimeout)
-					return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
-				},
-			)
-			logs := r.currentLogs() + "\n" + stdout + stderr
-			if err != nil {
-				r.markErrorClass(err)
-				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
-				return
-			}
-			_ = r.withStatus(func(status *ServerStatus) {
-				status.Status = "done"
-				status.Logs = logs + "\nAutoremove completed."
-			})
-		},
-	)
-}
-
 func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate, []string, error) {
 	stdout, stderr, err := runSSHCommandWithTimeout(client, aptListUpgradableCmd, nil, timeout)
 	if err != nil {
@@ -4395,223 +3246,35 @@ func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate
 }
 
 func parseUpgradableEntries(stdout string) ([]PendingUpdate, []string, error) {
-	lines := strings.Split(stdout, "\n")
-	pendingUpdates := make([]PendingUpdate, 0)
-	upgradable := make([]string, 0)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "Inst ") {
-			continue
-		}
-		entry := strings.TrimSpace(strings.TrimPrefix(trimmed, "Inst "))
-		if entry == "" {
-			continue
-		}
-		upgradable = append(upgradable, entry)
-		pendingUpdates = append(pendingUpdates, parsePendingUpdateEntry(entry))
-	}
-	return pendingUpdates, upgradable, nil
-}
-
-func parsePendingUpdateEntry(entry string) PendingUpdate {
-	parsed := PendingUpdate{
-		Raw:      entry,
-		CVEs:     []string{},
-		CVEState: "",
-	}
-	fields := strings.Fields(entry)
-	if len(fields) == 0 {
-		return parsed
-	}
-	parsed.Package = fields[0]
-	if len(fields) > 1 && strings.HasPrefix(fields[1], "[") && strings.HasSuffix(fields[1], "]") {
-		parsed.CurrentVersion = strings.Trim(fields[1], "[]")
-	}
-
-	openParen := strings.Index(entry, "(")
-	closeParen := strings.LastIndex(entry, ")")
-	if openParen >= 0 && closeParen > openParen+1 {
-		inside := strings.TrimSpace(entry[openParen+1 : closeParen])
-		insideParts := strings.Fields(inside)
-		if len(insideParts) > 0 {
-			parsed.CandidateVersion = insideParts[0]
-		}
-		if len(insideParts) > 1 {
-			parsed.Source = strings.Join(insideParts[1:], " ")
-		}
-	}
-	parsed.Security = isSecurityUpdate(parsed.Raw, parsed.Source)
-	return parsed
-}
-
-func isSecurityUpdate(raw, source string) bool {
-	combined := strings.ToLower(strings.TrimSpace(raw + " " + source))
-	if combined == "" {
-		return false
-	}
-	securityMarkers := []string{
-		"security.debian.org",
-		"debian-security",
-		"/security",
-		"esm-apps",
-		"esm-infra",
-		"ubuntu-security",
-	}
-	for _, marker := range securityMarkers {
-		if strings.Contains(combined, marker) {
-			return true
-		}
-	}
-	sourceOnly := strings.ToLower(strings.TrimSpace(source))
-	if sourceOnly == "" {
-		sourceOnly = combined
-	}
-	return securitySuiteTokenRegex.MatchString(sourceOnly)
+	return updatespkg.ParseUpgradableEntries(stdout)
 }
 
 func sortPendingUpdates(updates []PendingUpdate) {
-	sort.Slice(updates, func(i, j int) bool {
-		if updates[i].Security != updates[j].Security {
-			return updates[i].Security && !updates[j].Security
-		}
-		if len(updates[i].CVEs) != len(updates[j].CVEs) {
-			return len(updates[i].CVEs) > len(updates[j].CVEs)
-		}
-		return updates[i].Package < updates[j].Package
-	})
+	updatespkg.SortPendingUpdates(updates)
 }
 
 func normalizeApprovalScope(scope string) string {
-	normalized := strings.ToLower(strings.TrimSpace(scope))
-	if normalized == "security" {
-		return "security"
-	}
-	return "all"
+	return updatespkg.NormalizeApprovalScope(scope)
 }
 
 func securityPackagesFromPendingUpdates(updates []PendingUpdate) []string {
-	if len(updates) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(updates))
-	packages := make([]string, 0, len(updates))
-	for _, update := range updates {
-		if !update.Security {
-			continue
-		}
-		pkg := strings.TrimSpace(update.Package)
-		if pkg == "" {
-			continue
-		}
-		if _, exists := seen[pkg]; exists {
-			continue
-		}
-		seen[pkg] = struct{}{}
-		packages = append(packages, pkg)
-	}
-	sort.Strings(packages)
-	return packages
-}
-
-func packageNamesFromPendingUpdates(updates []PendingUpdate) []string {
-	if len(updates) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(updates))
-	packages := make([]string, 0, len(updates))
-	for _, update := range updates {
-		pkg := strings.TrimSpace(update.Package)
-		if pkg == "" {
-			continue
-		}
-		if _, exists := seen[pkg]; exists {
-			continue
-		}
-		seen[pkg] = struct{}{}
-		packages = append(packages, pkg)
-	}
-	sort.Strings(packages)
-	return packages
+	return updatespkg.SecurityPackagesFromPendingUpdates(updates)
 }
 
 func buildSelectedUpgradeCmd(packages []string) string {
-	if len(packages) == 0 {
-		return ""
-	}
-	escaped := make([]string, 0, len(packages))
-	for _, pkg := range packages {
-		trimmed := strings.TrimSpace(pkg)
-		if trimmed == "" {
-			continue
-		}
-		escaped = append(escaped, fmt.Sprintf("'%s'", shellEscapeSingleQuotes(trimmed)))
-	}
-	if len(escaped) == 0 {
-		return ""
-	}
-	return aptUpgradeSelectedPrefixCmd + " " + strings.Join(escaped, " ")
+	return updatespkg.BuildSelectedUpgradeCmd(packages)
 }
 
 func preparePendingUpdatesForCVE(updates []PendingUpdate) []PendingUpdate {
-	prepared := clonePendingUpdates(updates)
-	sortPendingUpdates(prepared)
-	for i := range prepared {
-		if prepared[i].CVEs == nil {
-			prepared[i].CVEs = []string{}
-		}
-		if i < cveLookupMaxPackages && strings.TrimSpace(prepared[i].Package) != "" {
-			prepared[i].CVEState = "pending"
-		} else {
-			prepared[i].CVEState = "skipped"
-		}
-	}
-	return prepared
-}
-
-func pendingCVEPackages(updates []PendingUpdate) []string {
-	pkgs := make([]string, 0)
-	for _, update := range updates {
-		if update.CVEState != "pending" {
-			continue
-		}
-		pkg := strings.TrimSpace(update.Package)
-		if pkg == "" {
-			continue
-		}
-		pkgs = append(pkgs, pkg)
-	}
-	return pkgs
+	return updatespkg.PreparePendingUpdatesForCVE(updates)
 }
 
 func extractCVEsFromText(text string, max int) []string {
-	matches := cveRegex.FindAllString(strings.ToUpper(text), -1)
-	if len(matches) == 0 {
-		return []string{}
-	}
-	seen := make(map[string]struct{}, len(matches))
-	out := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if _, exists := seen[match]; exists {
-			continue
-		}
-		seen[match] = struct{}{}
-		out = append(out, match)
-	}
-	sort.Strings(out)
-	if max > 0 && len(out) > max {
-		out = out[:max]
-	}
-	return out
+	return updatespkg.ExtractCVEsFromText(text, max)
 }
 
 func buildPackageCVEQueryCmd(pkg string) string {
-	escapedPkg := fmt.Sprintf("'%s'", shellEscapeSingleQuotes(strings.TrimSpace(pkg)))
-	innerCmd := fmt.Sprintf(
-		"apt-get changelog %s 2>/dev/null | grep -Eo 'CVE-[0-9]{4}-[0-9]+' | sort -u | head -n %d",
-		escapedPkg,
-		cveLookupMaxPerPackage,
-	)
-	return fmt.Sprintf("sh -c '%s'", shellEscapeSingleQuotes(innerCmd))
+	return updatespkg.BuildPackageCVEQueryCmd(pkg)
 }
 
 func queryPackageCVEs(client sshConnection, pkg string) ([]string, error) {
@@ -4622,165 +3285,8 @@ func queryPackageCVEs(client sshConnection, pkg string) ([]string, error) {
 	return extractCVEsFromText(stdout, cveLookupMaxPerPackage), nil
 }
 
-func serverPendingApproval(serverName string) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	status := statusMap[serverName]
-	return status != nil && status.Status == "pending_approval"
-}
-
-func updatePendingPackageCVEState(serverName, pkg, state string, cves []string) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	status := statusMap[serverName]
-	if status == nil || status.Status != "pending_approval" {
-		return false
-	}
-	updated := false
-	for i := range status.PendingUpdates {
-		if status.PendingUpdates[i].Package != pkg {
-			continue
-		}
-		status.PendingUpdates[i].CVEState = state
-		status.PendingUpdates[i].CVEs = append([]string(nil), cves...)
-		updated = true
-	}
-	if updated {
-		sortPendingUpdates(status.PendingUpdates)
-	}
-	return true
-}
-
 func startPendingUpdateCVEEnrichment(server Server, config *ssh.ClientConfig, updates []PendingUpdate, parentJobID, actor, clientIP string) {
-	packages := pendingCVEPackages(updates)
-	if len(packages) == 0 || config == nil {
-		return
-	}
-	configCopy := *config
-	configCopy.Auth = append([]ssh.AuthMethod(nil), config.Auth...)
-
-	var jobID string
-	if jm := currentJobManager(); jm != nil {
-		job, err := jm.CreateJob(JobCreateParams{
-			Kind:        jobKindCVEEnrichment,
-			ParentJobID: strings.TrimSpace(parentJobID),
-			ServerName:  server.Name,
-			Actor:       actor,
-			ClientIP:    clientIP,
-			Status:      jobStatusQueued,
-			Phase:       jobPhaseDial,
-			Summary:     "Enriching pending updates with CVEs",
-		})
-		if err != nil {
-			log.Printf("failed to create CVE enrichment job for %q: %v", server.Name, err)
-			for _, pkg := range packages {
-				if !updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
-					return
-				}
-			}
-			return
-		}
-		jobID = job.ID
-	}
-
-	startJobRunner(jobID, func() {
-		if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-			phase := jobPhaseDial
-			summary := "Connecting for CVE enrichment"
-			_ = jm.UpdateJob(jobID, JobUpdate{Phase: &phase, Summary: &summary})
-		}
-		dial := getDialSSHConnection()
-		cveClient, err := dial(server, &configCopy)
-		if err != nil {
-			log.Printf("CVE enrichment dial attempt 1 failed for server %q: %v", server.Name, err)
-			time.Sleep(250 * time.Millisecond)
-			dial := getDialSSHConnection()
-			cveClient, err = dial(server, &configCopy)
-			if err != nil {
-				log.Printf("CVE enrichment dial attempt 2 failed for server %q: %v", server.Name, err)
-				if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-					status := jobStatusFailed
-					phase := jobPhaseComplete
-					summary := "Failed to connect for CVE enrichment"
-					errorClass := "dial"
-					meta := marshalJobJSON(map[string]any{"error": err.Error()})
-					finishedAt := jobTimestampNow()
-					_ = jm.UpdateJob(jobID, JobUpdate{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						ErrorClass: &errorClass,
-						MetaJSON:   &meta,
-						FinishedAt: &finishedAt,
-					})
-				}
-				for _, pkg := range packages {
-					if !updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
-						return
-					}
-				}
-				return
-			}
-		}
-		defer func() { _ = cveClient.Close() }()
-
-		if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-			phase := jobPhaseLookup
-			summary := "Looking up package CVEs"
-			_ = jm.UpdateJob(jobID, JobUpdate{Phase: &phase, Summary: &summary})
-		}
-		for _, pkg := range packages {
-			if !serverPendingApproval(server.Name) {
-				if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-					status := jobStatusCancelled
-					phase := jobPhaseComplete
-					summary := "Parent update no longer pending approval"
-					finishedAt := jobTimestampNow()
-					_ = jm.UpdateJob(jobID, JobUpdate{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						FinishedAt: &finishedAt,
-					})
-				}
-				return
-			}
-			cves, queryErr := queryPackageCVEs(cveClient, pkg)
-			state := "ready"
-			if queryErr != nil {
-				log.Printf("CVE lookup failed for server %q package %q: %v", server.Name, pkg, queryErr)
-				state = "unavailable"
-				cves = []string{}
-			}
-			if !updatePendingPackageCVEState(server.Name, pkg, state, cves) {
-				if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-					status := jobStatusCancelled
-					phase := jobPhaseComplete
-					summary := "Pending update state changed before CVE enrichment finished"
-					finishedAt := jobTimestampNow()
-					_ = jm.UpdateJob(jobID, JobUpdate{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						FinishedAt: &finishedAt,
-					})
-				}
-				return
-			}
-		}
-		if jm := currentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-			status := jobStatusSucceeded
-			phase := jobPhaseComplete
-			summary := "CVE enrichment completed"
-			finishedAt := jobTimestampNow()
-			_ = jm.UpdateJob(jobID, JobUpdate{
-				Status:     &status,
-				Phase:      &phase,
-				Summary:    &summary,
-				FinishedAt: &finishedAt,
-			})
-		}
-	})
+	defaultUpdateService().StartPendingCVEEnrichment(server, config, updates, parentJobID, actor, clientIP)
 }
 
 func getGlobalKey() string {
@@ -4973,10 +3479,6 @@ func issueMetricsBearerToken() (string, error) {
 	return token, nil
 }
 
-func shellEscapeSingleQuotes(input string) string {
-	return strings.ReplaceAll(input, "'", "'\"'\"'")
-}
-
 func securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -5152,7 +3654,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	updateService := deps.UpdateService
 	actionJobManager := deps.CurrentJobManager
 	if updateService != nil {
-		actionJobManager = updateService.ensureDeps().CurrentJobManager
+		actionJobManager = updateServiceEnsureDeps(updateService).CurrentJobManager
 	}
 
 	r.GET("/api/servers", func(c *gin.Context) {
@@ -5799,7 +4301,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			return
 		}
 
-		jm := currentJobManager()
+		jm := actionJobManager()
 		if jm == nil {
 			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "all", "error": "job manager unavailable"})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
@@ -5825,7 +4327,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
 			return
 		}
-		exists, approved := approvePendingUpdate(name, "all")
+		exists, approved := updateService.ApprovePendingUpdate(name, "all")
 		if !exists || !approved {
 			rollbackStatus := jobStatusWaitingApproval
 			rollbackPhase := jobPhaseApprovalWait
@@ -5860,7 +4362,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			return
 		}
 
-		jm := currentJobManager()
+		jm := actionJobManager()
 		if jm == nil {
 			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security", "error": "job manager unavailable"})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
@@ -5886,7 +4388,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
 			return
 		}
-		exists, approved := approvePendingUpdate(name, "security")
+		exists, approved := updateService.ApprovePendingUpdate(name, "security")
 		if !exists || !approved {
 			rollbackStatus := jobStatusWaitingApproval
 			rollbackPhase := jobPhaseApprovalWait
@@ -5922,7 +4424,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		logsBeforeCancel := preCancelStatus.Logs
 
-		jm := currentJobManager()
+		jm := actionJobManager()
 		if jm == nil {
 			audit(c, "update.cancel", "server", name, "failure", "Failed to persist cancelled update", map[string]any{"error": "job manager unavailable"})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist cancelled update"})
@@ -5949,7 +4451,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist cancelled update"})
 			return
 		}
-		exists, cancelled := cancelPendingUpdate(name)
+		exists, cancelled := updateService.CancelPendingUpdate(name)
 		if !exists || !cancelled {
 			rollbackStatus := jobStatusWaitingApproval
 			rollbackPhase := jobPhaseApprovalWait

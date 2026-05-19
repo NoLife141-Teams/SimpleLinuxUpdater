@@ -73,7 +73,6 @@ func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 			return nil, nil
 		},
 		UpdateScheduledDiscoveryMeta: func(string, []string, []PendingUpdate) {},
-		StartPendingCVEEnrichment:    func(Server, *ssh.ClientConfig, []PendingUpdate, string, string, string) {},
 		UpdatePolicyRun: func(int64, updatePolicyRunUpdate) error {
 			return nil
 		},

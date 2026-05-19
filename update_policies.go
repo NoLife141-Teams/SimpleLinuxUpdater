@@ -13,9 +13,9 @@ import (
 	"time"
 
 	policypkg "debian-updater/internal/policies"
+	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -78,30 +78,6 @@ type scheduledPolicyCandidate struct {
 	policy          UpdatePolicy
 	server          Server
 	scheduledForUTC string
-}
-
-type scheduledJobBehavior struct {
-	ApprovalTimeout  time.Duration
-	AutoApproveScope string
-}
-
-type scheduledJobDiscovery struct {
-	PendingPackageCount  int             `json:"pending_package_count"`
-	SecurityPackageCount int             `json:"security_package_count"`
-	Upgradable           []string        `json:"upgradable"`
-	PendingUpdates       []PendingUpdate `json:"pending_updates"`
-}
-
-type scheduledJobMeta struct {
-	Trigger                string                 `json:"trigger,omitempty"`
-	PolicyID               int64                  `json:"policy_id,omitempty"`
-	PolicyName             string                 `json:"policy_name,omitempty"`
-	ScheduledFor           string                 `json:"scheduled_for,omitempty"`
-	ExecutionMode          string                 `json:"execution_mode,omitempty"`
-	PackageScope           string                 `json:"package_scope,omitempty"`
-	ApprovalTimeoutMinutes int                    `json:"approval_timeout_minutes,omitempty"`
-	AutoApproveScope       string                 `json:"auto_approve_scope,omitempty"`
-	Discovery              *scheduledJobDiscovery `json:"discovery,omitempty"`
 }
 
 func defaultPolicyRepository() *policypkg.SQLiteRepository {
@@ -316,23 +292,7 @@ func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, re
 }
 
 func buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
-	meta := scheduledJobMeta{
-		Trigger:                "scheduled",
-		PolicyID:               policy.ID,
-		PolicyName:             policy.Name,
-		ScheduledFor:           scheduledForUTC,
-		ExecutionMode:          policy.ExecutionMode,
-		PackageScope:           policy.PackageScope,
-		ApprovalTimeoutMinutes: policy.ApprovalTimeoutMinutes,
-	}
-	if policy.ExecutionMode == updatePolicyExecutionAutoApply {
-		if policy.PackageScope == updatePolicyPackageScopeSecurity {
-			meta.AutoApproveScope = "security"
-		} else {
-			meta.AutoApproveScope = "all"
-		}
-	}
-	return meta
+	return updatespkg.BuildScheduledJobMeta(policy, scheduledForUTC)
 }
 
 func createServerActionJobWithMeta(kind, serverName, actor, clientIP string, policy RetryPolicy, meta any) (JobRecord, error) {
@@ -725,204 +685,6 @@ func runScheduledScanJob(jobID string, runID int64, scheduledForUTC string, serv
 		Server:          server,
 		Policy:          policy,
 		RetryPolicy:     retryPolicy,
-	})
-}
-
-func (s *UpdateService) RunScheduledScanJob(req ScheduledScanRunRequest) {
-	s.ensureDeps()
-	jm := s.deps.CurrentJobManager()
-	setFailure := func(summary string, err error, phase string, logs string) {
-		if jm != nil && strings.TrimSpace(req.JobID) != "" {
-			status := jobStatusFailed
-			jobPhase := phase
-			finishedAt := s.deps.JobTimestampNow()
-			errorClass := "permanent"
-			_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, JobUpdate{
-				Status:     &status,
-				Phase:      &jobPhase,
-				Summary:    &summary,
-				LogsText:   &logs,
-				ErrorClass: &errorClass,
-				FinishedAt: &finishedAt,
-			})
-		}
-		runStatus := updatePolicyRunFailed
-		reason := "failed"
-		finishedAt := s.deps.JobTimestampNow()
-		_ = s.deps.UpdatePolicyRun(req.RunID, updatePolicyRunUpdate{
-			Status:     &runStatus,
-			Reason:     &reason,
-			Summary:    &summary,
-			FinishedAt: &finishedAt,
-		})
-		meta := map[string]any{
-			"policy_id":      req.Policy.ID,
-			"policy_name":    req.Policy.Name,
-			"execution_mode": req.Policy.ExecutionMode,
-			"package_scope":  req.Policy.PackageScope,
-		}
-		if err != nil {
-			meta["error"] = err.Error()
-		}
-		s.deps.AuditWithActor("system", "", "schedule.run.failed", "server", req.Server.Name, "failure", summary, meta)
-	}
-
-	authMethods, err := s.deps.BuildAuthMethods(req.Server)
-	if err != nil {
-		setFailure("Scheduled scan auth setup failed", err, jobPhaseDial, "")
-		return
-	}
-	hostKeyCallback, err := s.deps.HostKeyCallback()
-	if err != nil {
-		setFailure("Scheduled scan host key setup failed", err, jobPhaseDial, "")
-		return
-	}
-	config := &ssh.ClientConfig{
-		User:            req.Server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         sshConnectTimeout,
-	}
-	client, err := s.deps.DialSSHWithRetry(req.Server, config, req.RetryPolicy, "scheduled_scan.ssh_dial", nil)
-	if err != nil {
-		setFailure("Scheduled scan SSH connection failed", err, jobPhaseDial, "")
-		return
-	}
-	defer func() { _ = client.Close() }()
-
-	logs := "Starting scheduled package scan..."
-	if jm != nil {
-		phase := jobPhasePrechecks
-		summary := "Running pre-checks"
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, JobUpdate{
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		})
-	}
-	precheckSummary := s.deps.RunUpdatePrechecks(client)
-	for _, result := range precheckSummary.Results {
-		state := "PASS"
-		if !result.Passed {
-			state = "FAIL"
-		}
-		line := fmt.Sprintf("\nPre-check %s [%s]: %s", result.Name, state, result.Details)
-		if trimmed := strings.TrimSpace(result.Output); trimmed != "" {
-			line += fmt.Sprintf(" Output: %s", trimmed)
-		}
-		logs += line
-	}
-	if !precheckSummary.AllPassed {
-		setFailure(fmt.Sprintf("Scheduled scan pre-check failed (%s)", precheckSummary.FailedCheck), nil, jobPhasePrechecks, logs)
-		return
-	}
-
-	if jm != nil {
-		phase := jobPhaseAptUpdate
-		summary := "Running apt update"
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, JobUpdate{
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		})
-	}
-	var stdout, stderr string
-	err = s.deps.RunSSHOperationWithRetry(
-		req.Server,
-		config,
-		&client,
-		req.RetryPolicy,
-		"scheduled_scan.apt_update",
-		"\napt update attempt %d/%d failed: %v; retrying in %s",
-		new(int),
-		func() error {
-			var runErr error
-			stdout, stderr, runErr = s.deps.RunSSHCommandWithTimeout(client, aptUpdateCmd, nil, s.deps.LoadCommandTimeout())
-			return markRetryableFromOutput(runErr, stdout+"\n"+stderr)
-		},
-	)
-	logs += "\n" + stdout + stderr
-	if err != nil {
-		setFailure("Scheduled scan apt update failed", err, jobPhaseAptUpdate, logs)
-		return
-	}
-
-	var pendingUpdates []PendingUpdate
-	var upgradable []string
-	err = s.deps.RunSSHOperationWithRetry(
-		req.Server,
-		config,
-		&client,
-		req.RetryPolicy,
-		"scheduled_scan.list_upgradable",
-		"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
-		new(int),
-		func() error {
-			var listErr error
-			pendingUpdates, upgradable, listErr = s.deps.GetUpgradable(client, s.deps.LoadCommandTimeout())
-			return listErr
-		},
-	)
-	if err != nil {
-		setFailure("Scheduled scan package discovery failed", err, jobPhaseAptUpdate, logs)
-		return
-	}
-
-	pendingUpdates = preparePendingUpdatesForCVE(pendingUpdates)
-	for i := range pendingUpdates {
-		if pendingUpdates[i].CVEState != "pending" {
-			continue
-		}
-		cves, lookupErr := s.deps.QueryPackageCVEs(client, pendingUpdates[i].Package)
-		if lookupErr != nil {
-			pendingUpdates[i].CVEState = "unavailable"
-			pendingUpdates[i].CVEs = []string{}
-			continue
-		}
-		pendingUpdates[i].CVEState = "ready"
-		pendingUpdates[i].CVEs = append([]string(nil), cves...)
-	}
-	sortPendingUpdates(pendingUpdates)
-	result := scheduledJobDiscovery{
-		PendingPackageCount:  len(upgradable),
-		SecurityPackageCount: len(securityPackagesFromPendingUpdates(pendingUpdates)),
-		Upgradable:           append([]string(nil), upgradable...),
-		PendingUpdates:       clonePendingUpdates(pendingUpdates),
-	}
-	resultJSON := marshalJobJSON(result)
-	finalSummary := "Scheduled scan completed"
-	if len(upgradable) == 0 {
-		finalSummary = "Scheduled scan completed: no pending updates"
-	}
-	if jm != nil {
-		status := jobStatusSucceeded
-		phase := jobPhaseComplete
-		meta := buildScheduledJobMeta(req.Policy, req.ScheduledForUTC)
-		meta.Discovery = &result
-		metaJSON := marshalJobJSON(meta)
-		finishedAt := s.deps.JobTimestampNow()
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, JobUpdate{
-			Status:     &status,
-			Phase:      &phase,
-			Summary:    &finalSummary,
-			LogsText:   &logs,
-			MetaJSON:   &metaJSON,
-			FinishedAt: &finishedAt,
-		})
-	}
-	runStatus := updatePolicyRunSucceeded
-	finishedAt := s.deps.JobTimestampNow()
-	_ = s.deps.UpdatePolicyRun(req.RunID, updatePolicyRunUpdate{
-		Status:     &runStatus,
-		Summary:    &finalSummary,
-		ResultJSON: &resultJSON,
-		FinishedAt: &finishedAt,
-	})
-	s.deps.AuditWithActor("system", "", "schedule.run.completed", "server", req.Server.Name, "success", finalSummary, map[string]any{
-		"policy_id":              req.Policy.ID,
-		"policy_name":            req.Policy.Name,
-		"pending_package_count":  result.PendingPackageCount,
-		"security_package_count": result.SecurityPackageCount,
 	})
 }
 

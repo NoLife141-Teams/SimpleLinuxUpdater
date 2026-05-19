@@ -36,66 +36,8 @@ import (
 	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 	_ "modernc.org/sqlite"
 )
-
-type Server struct {
-	Name string   `json:"name"`
-	Host string   `json:"host"`
-	Port int      `json:"port"`
-	User string   `json:"user"`
-	Pass string   `json:"pass"`
-	Key  string   `json:"-"`
-	Tags []string `json:"tags"`
-}
-
-func (s Server) MarshalJSON() ([]byte, error) {
-	type serverResponse struct {
-		Name string   `json:"name"`
-		Host string   `json:"host"`
-		Port int      `json:"port"`
-		User string   `json:"user"`
-		Tags []string `json:"tags"`
-	}
-	return json.Marshal(serverResponse{
-		Name: s.Name,
-		Host: s.Host,
-		Port: s.Port,
-		User: s.User,
-		Tags: append([]string(nil), s.Tags...),
-	})
-}
-
-type ServerStatus struct {
-	Name           string          `json:"name"`
-	Host           string          `json:"host"`
-	Port           int             `json:"port"`
-	User           string          `json:"user"`
-	Status         string          `json:"status"` // idle, updating, pending_approval, approved, cancelled, upgrading, autoremove, sudoers, done, error
-	ApprovalScope  string          `json:"-"`
-	Logs           string          `json:"logs"`
-	Upgradable     []string        `json:"upgradable"`
-	PendingUpdates []PendingUpdate `json:"pending_updates"`
-	HasPassword    bool            `json:"has_password"`
-	HasKey         bool            `json:"has_key"`
-	Tags           []string        `json:"tags"`
-}
-
-type PendingUpdate struct {
-	Package          string   `json:"package"`
-	CurrentVersion   string   `json:"current_version,omitempty"`
-	CandidateVersion string   `json:"candidate_version,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	Security         bool     `json:"security"`
-	CVEs             []string `json:"cves"`
-	CVEState         string   `json:"cve_state"`
-	Raw              string   `json:"raw"`
-}
-
-var servers []Server
-var statusMap = make(map[string]*ServerStatus)
-var mu sync.Mutex
 
 var db *sql.DB
 var dbOnce sync.Once
@@ -108,8 +50,6 @@ var metricsBearerTokenHashMu sync.RWMutex
 var metricsBearerTokenHash string
 var metricsBearerTokenHashLoaded bool
 var metricsBearerTokenHashDBPath string
-var knownHostsMu sync.Mutex
-var scanHostKeyFunc = scanHostKey
 var saveServersFunc = saveServers
 var auditPruneTickerOnce sync.Once
 var observabilityCacheMu sync.RWMutex
@@ -172,8 +112,6 @@ const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
-var errActionInProgress = errors.New("action already in progress")
-var errFingerprintMismatch = errors.New("host key fingerprint mismatch")
 var errInvalidWindow = errors.New("invalid observability window")
 var cveRegex = regexp.MustCompile(`CVE-[0-9]{4}-[0-9]+`)
 var securitySuiteTokenRegex = regexp.MustCompile(`(?:^|[\s/:])[a-z0-9][a-z0-9+.-]*-security(?:$|[\s/\],:\)])`)
@@ -3141,7 +3079,7 @@ func loadServers() {
 type saveServersTxHook func(*sql.Tx) error
 
 func saveServersWithTxHook(txHook saveServersTxHook) error {
-	return serverInventoryService.SaveWithTxHook(txHook)
+	return serverInventoryService.SaveWithTxHook(serverInventoryTxHook(txHook))
 }
 
 func saveServers() error {
@@ -3153,7 +3091,7 @@ func saveServersOrRollbackLocked(prevServers []Server, prevStatusMap map[string]
 }
 
 func saveServersOrRollbackLockedWithTxHook(prevServers []Server, prevStatusMap map[string]*ServerStatus, txHook saveServersTxHook) error {
-	return serverInventoryService.SaveOrRollbackLocked(prevServers, prevStatusMap, txHook)
+	return serverInventoryService.SaveOrRollbackLocked(prevServers, prevStatusMap, serverInventoryTxHook(txHook))
 }
 
 func cloneServers(src []Server) []Server {
@@ -5035,267 +4973,8 @@ func issueMetricsBearerToken() (string, error) {
 	return token, nil
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func updateServerKey(name, key string) error {
-	return serverInventoryService.updateServerKey(name, key)
-}
-
-func knownHostsWritePath() (string, error) {
-	if raw := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_KNOWN_HOSTS")); raw != "" {
-		for _, part := range strings.Split(raw, ":") {
-			path := strings.TrimSpace(part)
-			if path != "" {
-				return path, nil
-			}
-		}
-		return "", errors.New("no known_hosts path configured")
-	}
-	return knownHostsDefaultWritePath(), nil
-}
-
-func knownHostsHostToken(host string, port int) string {
-	cleanHost := strings.Trim(strings.TrimSpace(host), "[]")
-	if normalizePort(port) == 22 {
-		return cleanHost
-	}
-	return fmt.Sprintf("[%s]:%d", cleanHost, normalizePort(port))
-}
-
-func appendKnownHostLine(line string) (bool, error) {
-	cleanLine := strings.TrimSpace(line)
-	if cleanLine == "" {
-		return false, errors.New("empty known_hosts line")
-	}
-	path, err := knownHostsWritePath()
-	if err != nil {
-		return false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return false, fmt.Errorf("create known_hosts dir: %w", err)
-	}
-
-	knownHostsMu.Lock()
-	defer knownHostsMu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("read known_hosts: %w", err)
-	}
-	if strings.Contains("\n"+string(data)+"\n", "\n"+cleanLine+"\n") {
-		return false, nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return false, fmt.Errorf("open known_hosts for append: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.WriteString(cleanLine + "\n"); err != nil {
-		return false, fmt.Errorf("append known_hosts line: %w", err)
-	}
-	return true, nil
-}
-
-func knownHostLineExists(line string) (bool, error) {
-	cleanLine := strings.TrimSpace(line)
-	if cleanLine == "" {
-		return false, errors.New("empty known_hosts line")
-	}
-	path, err := knownHostsWritePath()
-	if err != nil {
-		return false, err
-	}
-
-	knownHostsMu.Lock()
-	defer knownHostsMu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read known_hosts: %w", err)
-	}
-	return strings.Contains("\n"+string(data)+"\n", "\n"+cleanLine+"\n"), nil
-}
-
-func removeKnownHostEntries(host string, port int) (int, error) {
-	token := knownHostsHostToken(host, port)
-	if strings.TrimSpace(token) == "" {
-		return 0, errors.New("host is required")
-	}
-	path, err := knownHostsWritePath()
-	if err != nil {
-		return 0, err
-	}
-
-	knownHostsMu.Lock()
-	defer knownHostsMu.Unlock()
-
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read known_hosts: %w", err)
-	}
-
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(content, "\n")
-	kept := make([]string, 0, len(lines))
-	removed := 0
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			kept = append(kept, line)
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			kept = append(kept, line)
-			continue
-		}
-		hostsField := fields[0]
-		hostTokens := strings.Split(hostsField, ",")
-		keptHostTokens := make([]string, 0, len(hostTokens))
-		removedOnLine := 0
-		for _, hostToken := range hostTokens {
-			trimmedToken := strings.TrimSpace(hostToken)
-			if trimmedToken == "" {
-				continue
-			}
-			if trimmedToken == token {
-				removedOnLine++
-				continue
-			}
-			keptHostTokens = append(keptHostTokens, trimmedToken)
-		}
-		if removedOnLine == 0 {
-			kept = append(kept, line)
-			continue
-		}
-		removed += removedOnLine
-		if len(keptHostTokens) == 0 {
-			continue
-		}
-		fields[0] = strings.Join(keptHostTokens, ",")
-		kept = append(kept, strings.Join(fields, " "))
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-
-	updated := strings.Join(kept, "\n")
-	updated = strings.TrimRight(updated, "\n")
-	if updated != "" {
-		updated += "\n"
-	}
-	if err := os.WriteFile(path, []byte(updated), 0600); err != nil {
-		return 0, fmt.Errorf("write known_hosts: %w", err)
-	}
-	return removed, nil
-}
-
-func scanHostKey(host string, port int) (ssh.PublicKey, error) {
-	cleanHost := strings.TrimSpace(host)
-	if cleanHost == "" {
-		return nil, errors.New("host is required")
-	}
-	address := net.JoinHostPort(cleanHost, strconv.Itoa(normalizePort(port)))
-	var scanned ssh.PublicKey
-	cfg := &ssh.ClientConfig{
-		User: "hostkey-scan",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("invalid"),
-		},
-		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			scanned = key
-			return nil
-		},
-		Timeout: sshConnectTimeout,
-	}
-	client, err := ssh.Dial("tcp", address, cfg)
-	if client != nil {
-		_ = client.Close()
-	}
-	if err != nil {
-		msg := strings.ToLower(err.Error())
-		isAuthErr := strings.Contains(msg, "unable to authenticate") ||
-			strings.Contains(msg, "no auth") ||
-			strings.Contains(msg, "permission denied") ||
-			strings.Contains(msg, "authentication")
-		if scanned != nil && isAuthErr {
-			return scanned, nil
-		}
-		return nil, err
-	}
-	if scanned != nil {
-		return scanned, nil
-	}
-	return nil, errors.New("unable to scan host key")
-}
-
-func buildKnownHostsLine(host string, port int, key ssh.PublicKey) string {
-	return knownhosts.Line([]string{knownHostsHostToken(host, port)}, key)
-}
-
-func trustHostKey(host string, port int, expectedFingerprint string) (string, string, bool, error) {
-	key, err := scanHostKeyFunc(host, port)
-	if err != nil {
-		return "", "", false, err
-	}
-	fingerprint := ssh.FingerprintSHA256(key)
-	if strings.TrimSpace(expectedFingerprint) != "" && !stringsEqualConstantTime(fingerprint, strings.TrimSpace(expectedFingerprint)) {
-		return "", "", false, errFingerprintMismatch
-	}
-	line := buildKnownHostsLine(host, port, key)
-	added, err := appendKnownHostLine(line)
-	if err != nil {
-		return "", "", false, err
-	}
-	return fingerprint, line, !added, nil
-}
-
 func shellEscapeSingleQuotes(input string) string {
 	return strings.ReplaceAll(input, "'", "'\"'\"'")
-}
-
-func isValidSSHUsername(username string) bool {
-	trimmed := strings.TrimSpace(username)
-	if trimmed == "" || len(trimmed) > 64 {
-		return false
-	}
-	for _, r := range trimmed {
-		if (r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') ||
-			r == '_' || r == '-' || r == '.' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func buildAuthMethods(server Server) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
-	key := strings.TrimSpace(server.Key)
-	if key == "" {
-		key = strings.TrimSpace(getGlobalKey())
-	}
-	if key != "" {
-		signer, err := ssh.ParsePrivateKey([]byte(key))
-		if err != nil {
-			return nil, fmt.Errorf("parse key: %w", err)
-		}
-		methods = append(methods, ssh.PublicKeys(signer))
-	}
-	if server.Pass != "" {
-		methods = append(methods, ssh.Password(server.Pass))
-	}
-	if len(methods) == 0 {
-		return nil, errors.New("missing password or SSH key")
-	}
-	return methods, nil
 }
 
 func securityHeadersMiddleware() gin.HandlerFunc {

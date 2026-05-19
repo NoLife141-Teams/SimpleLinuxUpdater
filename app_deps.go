@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"debian-updater/internal/events"
+	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
 )
@@ -17,6 +18,7 @@ type AppDeps struct {
 	AuthService            *AuthService
 	BackupService          *BackupService
 	BackupBarrier          *BackupBarrier
+	ServerState            *serverpkg.State
 	ServerInventoryService *ServerInventoryService
 	PolicyService          *PolicyService
 	UpdateService          *UpdateService
@@ -63,6 +65,9 @@ func (deps AppDeps) withDefaults() AppDeps {
 	}
 	if deps.BackupBarrier == nil {
 		deps.BackupBarrier = backupRestoreBarrier
+	}
+	if deps.ServerState == nil {
+		deps.ServerState = serverState
 	}
 	if deps.ServerInventoryService == nil {
 		deps.ServerInventoryService = serverInventoryService

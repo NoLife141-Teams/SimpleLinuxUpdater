@@ -31,9 +31,9 @@ import (
 
 	appshell "debian-updater/internal/app"
 	"debian-updater/internal/events"
+	observabilitypkg "debian-updater/internal/observability"
 	updatespkg "debian-updater/internal/updates"
 
-	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
@@ -52,8 +52,6 @@ var metricsBearerTokenHashLoaded bool
 var metricsBearerTokenHashDBPath string
 var saveServersFunc = saveServers
 var auditPruneTickerOnce sync.Once
-var observabilityCacheMu sync.RWMutex
-var observabilityCache = make(map[string]observabilityCacheEntry)
 var rebootCheckErrorRe = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
 var rebootRequiredPhraseRe = regexp.MustCompile(`\b(reboot required|requires reboot|restart required|system restart required|needs reboot|need reboot)\b`)
 
@@ -67,7 +65,6 @@ const maxUploadedKeyRequestBytes = maxUploadedKeyBytes + 1024*1024
 const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
-const observabilityMetricsCacheTTL = 45 * time.Second
 const retryMaxAttemptsEnv = "DEBIAN_UPDATER_RETRY_MAX_ATTEMPTS"
 const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
 const retryMaxDelayMSEnv = "DEBIAN_UPDATER_RETRY_MAX_DELAY_MS"
@@ -109,7 +106,7 @@ const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
-var errInvalidWindow = errors.New("invalid observability window")
+var errInvalidWindow = observabilitypkg.ErrInvalidWindow
 
 var dashboardEventBroker = events.NewBroker()
 
@@ -119,121 +116,7 @@ func notifyDashboardEvent(reason string) {
 	}
 }
 
-type observabilityFailureItem struct {
-	Cause string `json:"cause"`
-	Count int    `json:"count"`
-}
-
-type observabilityStatusItem struct {
-	Status string `json:"status"`
-	Count  int    `json:"count"`
-}
-
-type observabilitySummaryResponse struct {
-	Window      string `json:"window"`
-	From        string `json:"from"`
-	FromDisplay string `json:"from_display,omitempty"`
-	To          string `json:"to"`
-	ToDisplay   string `json:"to_display,omitempty"`
-	Totals      struct {
-		UpdatesTotal   int     `json:"updates_total"`
-		UpdatesSuccess int     `json:"updates_success"`
-		UpdatesFailure int     `json:"updates_failure"`
-		SuccessRatePct float64 `json:"success_rate_pct"`
-	} `json:"totals"`
-	Duration struct {
-		AvgMS                  float64 `json:"avg_ms"`
-		SamplesWithDuration    int     `json:"samples_with_duration"`
-		SamplesWithoutDuration int     `json:"samples_without_duration"`
-	} `json:"duration"`
-	FailureCauses   []observabilityFailureItem `json:"failure_causes"`
-	StatusBreakdown []observabilityStatusItem  `json:"status_breakdown"`
-}
-
-type observabilityCacheEntry struct {
-	summary  observabilitySummaryResponse
-	cachedAt time.Time
-}
-
 type serverFactsRecord = updatespkg.ServerFactsRecord
-
-type dashboardUpdateHistory struct {
-	Status            string  `json:"status"`
-	FinishedAt        string  `json:"finished_at"`
-	FinishedAtDisplay string  `json:"finished_at_display,omitempty"`
-	DurationMS        float64 `json:"duration_ms"`
-	Message           string  `json:"message"`
-	FailureCause      string  `json:"failure_cause,omitempty"`
-}
-
-type dashboardCommandHistoryItem struct {
-	CreatedAt        string `json:"created_at"`
-	CreatedAtDisplay string `json:"created_at_display,omitempty"`
-	Action           string `json:"action"`
-	Status           string `json:"status"`
-	Message          string `json:"message"`
-	Actor            string `json:"actor"`
-}
-
-type dashboardScheduleInfo struct {
-	State               string `json:"state"`
-	PolicyName          string `json:"policy_name,omitempty"`
-	ScheduledForUTC     string `json:"scheduled_for_utc,omitempty"`
-	ScheduledForDisplay string `json:"scheduled_for_display,omitempty"`
-	Status              string `json:"status,omitempty"`
-	Reason              string `json:"reason,omitempty"`
-	Summary             string `json:"summary,omitempty"`
-}
-
-type dashboardNoRunInfo struct {
-	Active   bool   `json:"active"`
-	Scope    string `json:"scope,omitempty"`
-	Summary  string `json:"summary"`
-	Timezone string `json:"timezone"`
-}
-
-type dashboardHealthInfo struct {
-	RebootRequired *bool  `json:"reboot_required"`
-	DiskStatus     string `json:"disk_status"`
-	DiskFreeKB     int64  `json:"disk_free_kb"`
-	DiskDetails    string `json:"disk_details"`
-	AptStatus      string `json:"apt_status"`
-	AptDetails     string `json:"apt_details"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	CollectedAt    string `json:"collected_at"`
-	Source         string `json:"source"`
-}
-
-type dashboardRiskInfo struct {
-	Level           string   `json:"level"`
-	Summary         string   `json:"summary"`
-	PendingPackages int      `json:"pending_packages"`
-	SecurityUpdates int      `json:"security_updates"`
-	CVEs            []string `json:"cves"`
-}
-
-type dashboardServerSummary struct {
-	Name             string                        `json:"name"`
-	LastUpdate       *dashboardUpdateHistory       `json:"last_update,omitempty"`
-	LastFailedUpdate *dashboardUpdateHistory       `json:"last_failed_update,omitempty"`
-	AvgDurationMS    float64                       `json:"avg_duration_ms"`
-	DurationSamples  int                           `json:"duration_samples"`
-	NextRun          dashboardScheduleInfo         `json:"next_run"`
-	NoRun            dashboardNoRunInfo            `json:"no_run"`
-	Health           dashboardHealthInfo           `json:"health"`
-	Risk             dashboardRiskInfo             `json:"risk"`
-	CommandHistory   []dashboardCommandHistoryItem `json:"command_history"`
-}
-
-type dashboardSummaryResponse struct {
-	Window      string                   `json:"window"`
-	From        string                   `json:"from"`
-	To          string                   `json:"to"`
-	GeneratedAt string                   `json:"generated_at"`
-	Fleet       map[string]any           `json:"fleet"`
-	Servers     []dashboardServerSummary `json:"servers"`
-}
 
 type RetryPolicy = updatespkg.RetryPolicy
 type PostUpdateCheckConfig = updatespkg.PostUpdateCheckConfig
@@ -1588,226 +1471,23 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 	}
 }
 
-func parseObservabilityWindow(raw string) (string, time.Duration, error) {
-	window := strings.TrimSpace(strings.ToLower(raw))
-	if window == "" {
-		window = "7d"
-	}
-	switch window {
-	case "24h":
-		return window, 24 * time.Hour, nil
-	case "7d":
-		return window, 7 * 24 * time.Hour, nil
-	case "30d":
-		return window, 30 * 24 * time.Hour, nil
-	default:
-		return "", 0, fmt.Errorf("%w: %q", errInvalidWindow, raw)
-	}
-}
-
-func metaStringValue(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return ""
-	}
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
-	}
-}
-
-func metaBoolValue(meta map[string]any, key string) (bool, bool) {
-	if meta == nil {
-		return false, false
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return false, false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, true
-	case string:
-		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-		if err != nil {
-			return false, false
-		}
-		return parsed, true
-	default:
-		return false, false
-	}
-}
-
-func metaDurationMS(meta map[string]any) (float64, bool) {
-	if meta == nil {
-		return 0, false
-	}
-	raw, ok := meta["execution_duration_ms"]
-	if !ok {
-		raw, ok = meta["duration_ms"]
-	}
-	if !ok {
-		return 0, false
-	}
-	switch v := raw.(type) {
-	case float64:
-		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-			return 0, false
-		}
-		return v, true
-	case string:
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
-			return 0, false
-		}
-		return parsed, true
-	default:
-		return 0, false
-	}
-}
-
-func failureCauseFromMeta(meta map[string]any, metaValid bool) string {
-	if !metaValid {
-		return "unknown"
-	}
-	if precheck := metaStringValue(meta, "precheck_failed"); precheck != "" {
-		return "precheck:" + precheck
-	}
-	if postcheck := metaStringValue(meta, "postcheck_failed"); postcheck != "" {
-		return "postcheck:" + postcheck
-	}
-	if retryExhausted, ok := metaBoolValue(meta, "retry_exhausted"); ok && retryExhausted {
-		return "retry_exhausted"
-	}
-	if errClass := strings.ToLower(metaStringValue(meta, "last_error_class")); errClass != "" && errClass != "none" {
-		return "error_class:" + errClass
-	}
-	return "unknown"
-}
-
-func buildObservabilitySummary(rawWindow string, now time.Time) (observabilitySummaryResponse, error) {
-	window, span, err := parseObservabilityWindow(rawWindow)
-	if err != nil {
-		return observabilitySummaryResponse{}, err
-	}
-	to := now.UTC()
-	from := to.Add(-span)
-
-	summary := observabilitySummaryResponse{
-		Window: window,
-		From:   from.Format(time.RFC3339),
-		To:     to.Format(time.RFC3339),
-	}
-	loc, timezoneName := currentAppTimezone()
-	summary.FromDisplay, _ = formatTimestampForAppDisplayWithTimezone(summary.From, loc, timezoneName)
-	summary.ToDisplay, _ = formatTimestampForAppDisplayWithTimezone(summary.To, loc, timezoneName)
-	summary.StatusBreakdown = []observabilityStatusItem{
-		{Status: "success", Count: 0},
-		{Status: "failure", Count: 0},
-	}
-	failureCauseCounts := map[string]int{}
-
-	db := getDB()
-	rows, err := db.Query(
-		`SELECT status, meta_json FROM audit_events
-		WHERE action = ? AND created_at >= ? AND created_at <= ?`,
-		updateCompleteAction,
-		from.Format(time.RFC3339),
-		to.Format(time.RFC3339),
-	)
-	if err != nil {
-		return observabilitySummaryResponse{}, err
-	}
-	defer rows.Close()
-
-	var durationTotal float64
-	for rows.Next() {
-		var status string
-		var metaJSON string
-		if scanErr := rows.Scan(&status, &metaJSON); scanErr != nil {
-			return observabilitySummaryResponse{}, scanErr
-		}
-		normalizedStatus := strings.ToLower(strings.TrimSpace(status))
-		if normalizedStatus != "success" && normalizedStatus != "failure" {
-			continue
-		}
-
-		summary.Totals.UpdatesTotal++
-		if normalizedStatus == "success" {
-			summary.Totals.UpdatesSuccess++
-		} else {
-			summary.Totals.UpdatesFailure++
-		}
-		for i := range summary.StatusBreakdown {
-			if summary.StatusBreakdown[i].Status == normalizedStatus {
-				summary.StatusBreakdown[i].Count++
-				break
-			}
-		}
-
-		meta := map[string]any{}
-		metaValid := false
-		if trimmed := strings.TrimSpace(metaJSON); trimmed != "" {
-			if unmarshalErr := json.Unmarshal([]byte(trimmed), &meta); unmarshalErr == nil {
-				metaValid = true
-			}
-		}
-
-		if durationMS, ok := metaDurationMS(meta); ok {
-			durationTotal += durationMS
-			summary.Duration.SamplesWithDuration++
-		} else {
-			summary.Duration.SamplesWithoutDuration++
-		}
-
-		if normalizedStatus == "failure" {
-			cause := failureCauseFromMeta(meta, metaValid)
-			failureCauseCounts[cause]++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return observabilitySummaryResponse{}, err
-	}
-
-	if summary.Totals.UpdatesTotal > 0 {
-		summary.Totals.SuccessRatePct = (float64(summary.Totals.UpdatesSuccess) / float64(summary.Totals.UpdatesTotal)) * 100
-	}
-	if summary.Duration.SamplesWithDuration > 0 {
-		summary.Duration.AvgMS = durationTotal / float64(summary.Duration.SamplesWithDuration)
-	}
-
-	summary.FailureCauses = make([]observabilityFailureItem, 0, len(failureCauseCounts))
-	for cause, count := range failureCauseCounts {
-		summary.FailureCauses = append(summary.FailureCauses, observabilityFailureItem{
-			Cause: cause,
-			Count: count,
-		})
-	}
-	sort.Slice(summary.FailureCauses, func(i, j int) bool {
-		if summary.FailureCauses[i].Count == summary.FailureCauses[j].Count {
-			return summary.FailureCauses[i].Cause < summary.FailureCauses[j].Cause
-		}
-		return summary.FailureCauses[i].Count > summary.FailureCauses[j].Count
-	})
-
-	return summary, nil
-}
-
 func handleObservabilitySummary(c *gin.Context) {
 	handleObservabilitySummaryWithNow(c, func() time.Time { return time.Now().UTC() })
 }
 
 func handleObservabilitySummaryWithNow(c *gin.Context, now func() time.Time) {
+	handleObservabilitySummaryWithService(c, observabilityService, now)
+}
+
+func handleObservabilitySummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	if service == nil {
+		service = observabilityService
+	}
 	window := c.Query("window")
-	summary, err := buildObservabilitySummary(window, now())
+	summary, err := service.BuildSummary(window, now())
 	if err != nil {
 		if errors.Is(err, errInvalidWindow) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window; allowed values: 24h, 7d, 30d"})
@@ -2094,509 +1774,23 @@ func handleServerFactsRefresh(c *gin.Context) {
 	c.JSON(http.StatusOK, record)
 }
 
-func updateHealthFromResults(health *dashboardHealthInfo, results []updatePrecheckResult, source, collectedAt string) {
-	if health == nil {
-		return
-	}
-	if !healthUpdateIsNewer(health.CollectedAt, collectedAt) {
-		return
-	}
-	for _, result := range results {
-		switch result.Name {
-		case "disk_space":
-			health.DiskStatus = healthStatusFromResult(result)
-			if parsedFreeKB, ok := diskFreeKBFromOutput(result.Output); ok {
-				health.DiskFreeKB = parsedFreeKB
-			}
-			health.DiskDetails = result.Details
-			health.Source = source
-			health.CollectedAt = collectedAt
-		case "apt_health", postcheckNameAptHealth:
-			health.AptStatus = healthStatusFromResult(result)
-			health.AptDetails = result.Details
-			health.Source = source
-			health.CollectedAt = collectedAt
-		case postcheckNameRebootRequired:
-			if strings.TrimSpace(result.Error) != "" {
-				continue
-			}
-			required, known := rebootResultRequiresRestart(result)
-			if !known {
-				continue
-			}
-			health.RebootRequired = &required
-			health.Source = source
-			health.CollectedAt = collectedAt
-		}
-	}
-}
-
-func healthUpdateIsNewer(currentAt, candidateAt string) bool {
-	candidateAt = strings.TrimSpace(candidateAt)
-	if candidateAt == "" {
-		return false
-	}
-	currentAt = strings.TrimSpace(currentAt)
-	if currentAt == "" {
-		return true
-	}
-	candidate, err := parseAppTimestamp(candidateAt)
-	if err != nil {
-		return false
-	}
-	current, err := parseAppTimestamp(currentAt)
-	if err != nil {
-		return true
-	}
-	return candidate.After(current)
-}
-
-func precheckResultsFromMeta(meta map[string]any, key string) []updatePrecheckResult {
-	raw, ok := meta[key]
-	if !ok || raw == nil {
-		return nil
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
-	}
-	var results []updatePrecheckResult
-	if err := json.Unmarshal(data, &results); err != nil {
-		return nil
-	}
-	return results
-}
-
-func dashboardRiskFromStatus(status *ServerStatus) dashboardRiskInfo {
-	risk := dashboardRiskInfo{Level: "unknown", Summary: "No package data", CVEs: []string{}}
-	if status == nil {
-		return risk
-	}
-	updates := status.PendingUpdates
-	risk.PendingPackages = len(updates)
-	if risk.PendingPackages == 0 && len(status.Upgradable) > 0 {
-		risk.PendingPackages = len(status.Upgradable)
-	}
-	seenCVEs := map[string]struct{}{}
-	for _, update := range updates {
-		if update.Security {
-			risk.SecurityUpdates++
-		}
-		for _, cve := range update.CVEs {
-			cve = strings.TrimSpace(cve)
-			if cve == "" {
-				continue
-			}
-			if _, ok := seenCVEs[cve]; ok {
-				continue
-			}
-			seenCVEs[cve] = struct{}{}
-			risk.CVEs = append(risk.CVEs, cve)
-		}
-	}
-	sort.Strings(risk.CVEs)
-	switch {
-	case len(risk.CVEs) > 0:
-		risk.Level = "critical"
-		risk.Summary = fmt.Sprintf("%d CVE", len(risk.CVEs))
-	case risk.SecurityUpdates > 0:
-		risk.Level = "elevated"
-		risk.Summary = fmt.Sprintf("%d security", risk.SecurityUpdates)
-	case risk.PendingPackages > 0:
-		risk.Level = "normal"
-		risk.Summary = fmt.Sprintf("%d package", risk.PendingPackages)
-	default:
-		risk.Level = "normal"
-		risk.Summary = "No CVE exposure"
-	}
-	return risk
-}
-
-func buildNoRunInfo(server Server, policies []UpdatePolicy, overrides map[int64]map[string]bool, globalBlackouts []UpdatePolicyBlackoutWindow, now time.Time) dashboardNoRunInfo {
-	loc, timezoneName := currentAppTimezone()
-	localNow := now.In(loc)
-	if blackoutApplies(localNow, globalBlackouts) {
-		return dashboardNoRunInfo{Active: true, Scope: "global", Summary: "Global no-run window active", Timezone: timezoneName}
-	}
-	for _, policy := range policies {
-		if !policyMatchesServer(policy, server, overrides) {
-			continue
-		}
-		if blackoutApplies(localNow, policy.PolicyBlackouts) {
-			return dashboardNoRunInfo{Active: true, Scope: "policy", Summary: fmt.Sprintf("%s no-run window active", policy.Name), Timezone: timezoneName}
-		}
-	}
-	return dashboardNoRunInfo{Active: false, Summary: "No no-run window active", Timezone: timezoneName}
-}
-
-type dashboardProjectedPolicyRun struct {
-	policy         UpdatePolicy
-	scheduledLocal time.Time
-	scheduledUTC   string
-}
-
-func nextPolicyOccurrenceLocal(policy UpdatePolicy, fromLocal time.Time, globalBlackouts []UpdatePolicyBlackoutWindow) (time.Time, bool) {
-	minutes, err := parseTimeLocalMinutes(policy.TimeLocal)
-	if err != nil {
-		return time.Time{}, false
-	}
-	hour := minutes / 60
-	minute := minutes % 60
-	loc := fromLocal.Location()
-	if loc == nil {
-		loc = currentAppLocation()
-	}
-	startDay := time.Date(fromLocal.Year(), fromLocal.Month(), fromLocal.Day(), 0, 0, 0, 0, loc)
-	for offset := 0; offset <= 14; offset++ {
-		day := startDay.AddDate(0, 0, offset)
-		slot := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
-		if slot.Before(fromLocal) {
-			continue
-		}
-		if !policyDueAt(policy, slot) {
-			continue
-		}
-		if blackoutApplies(slot, globalBlackouts) || blackoutApplies(slot, policy.PolicyBlackouts) {
-			continue
-		}
-		return slot, true
-	}
-	return time.Time{}, false
-}
-
-func projectedPolicyRunBefore(candidate, current dashboardProjectedPolicyRun) bool {
-	if current.scheduledUTC == "" {
-		return true
-	}
-	candidateUTC := candidate.scheduledLocal.UTC()
-	currentUTC := current.scheduledLocal.UTC()
-	if !candidateUTC.Equal(currentUTC) {
-		return candidateUTC.Before(currentUTC)
-	}
-	return comparePolicyCandidates(
-		scheduledPolicyCandidate{policy: candidate.policy, scheduledForUTC: candidate.scheduledUTC},
-		scheduledPolicyCandidate{policy: current.policy, scheduledForUTC: current.scheduledUTC},
-	)
-}
-
-func parseDashboardScheduledUTC(raw string) (time.Time, error) {
-	raw = strings.TrimSpace(raw)
-	if parsed, err := time.Parse(jobTimestampLayout, raw); err == nil {
-		return parsed, nil
-	}
-	return time.Parse(time.RFC3339, raw)
-}
-
-func mergeProjectedNextRun(result map[string]dashboardScheduleInfo, serverName string, projected dashboardProjectedPolicyRun, loc *time.Location, timezoneName string) {
-	if projected.scheduledUTC == "" {
-		return
-	}
-	if current, exists := result[serverName]; exists {
-		currentTime, err := parseDashboardScheduledUTC(current.ScheduledForUTC)
-		if err == nil && !currentTime.After(projected.scheduledLocal.UTC()) {
-			return
-		}
-	}
-	display, _ := formatTimestampForAppDisplayWithTimezone(projected.scheduledUTC, loc, timezoneName)
-	result[serverName] = dashboardScheduleInfo{
-		State:               "scheduled",
-		PolicyName:          projected.policy.Name,
-		ScheduledForUTC:     projected.scheduledUTC,
-		ScheduledForDisplay: display,
-		Status:              "scheduled",
-		Summary:             "Scheduled run pending",
-	}
-}
-
-func buildNextRunMap(now time.Time, serversSnapshot []Server, policies []UpdatePolicy, overrides map[int64]map[string]bool, globalBlackouts []UpdatePolicyBlackoutWindow) (map[string]dashboardScheduleInfo, error) {
-	runs, err := listUpdatePolicyRuns(500)
-	if err != nil {
-		return nil, err
-	}
-	loc, timezoneName := currentAppTimezone()
-	result := map[string]dashboardScheduleInfo{}
-	cutoff := now.UTC().Truncate(time.Minute)
-	for _, run := range runs {
-		scheduled, err := parseDashboardScheduledUTC(run.ScheduledForUTC)
-		if err != nil || scheduled.Before(cutoff) {
-			continue
-		}
-		current, exists := result[run.ServerName]
-		if exists {
-			currentTime, currentErr := parseDashboardScheduledUTC(current.ScheduledForUTC)
-			if currentErr == nil && !scheduled.Before(currentTime) {
-				continue
-			}
-		}
-		display, _ := formatTimestampForAppDisplayWithTimezone(run.ScheduledForUTC, loc, timezoneName)
-		result[run.ServerName] = dashboardScheduleInfo{
-			State:               "scheduled",
-			PolicyName:          run.PolicyName,
-			ScheduledForUTC:     run.ScheduledForUTC,
-			ScheduledForDisplay: display,
-			Status:              run.Status,
-			Reason:              run.Reason,
-			Summary:             run.Summary,
-		}
-	}
-	localNow := now.In(loc).Truncate(time.Minute)
-	projectedByServer := map[string]dashboardProjectedPolicyRun{}
-	for _, server := range serversSnapshot {
-		for _, policy := range policies {
-			if !policyMatchesServer(policy, server, overrides) {
-				continue
-			}
-			slotLocal, ok := nextPolicyOccurrenceLocal(policy, localNow, globalBlackouts)
-			if !ok {
-				continue
-			}
-			projected := dashboardProjectedPolicyRun{
-				policy:         policy,
-				scheduledLocal: slotLocal,
-				scheduledUTC:   canonicalScheduledForUTC(slotLocal),
-			}
-			if projectedPolicyRunBefore(projected, projectedByServer[server.Name]) {
-				projectedByServer[server.Name] = projected
-			}
-		}
-	}
-	for serverName, projected := range projectedByServer {
-		mergeProjectedNextRun(result, serverName, projected, loc, timezoneName)
-	}
-	return result, nil
-}
-
-func defaultScheduleInfo() dashboardScheduleInfo {
-	return dashboardScheduleInfo{State: "none", Summary: "No scheduled run"}
-}
-
-func buildDashboardSummary(rawWindow string, now time.Time) (dashboardSummaryResponse, error) {
-	window, span, err := parseObservabilityWindow(rawWindow)
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	to := now.UTC()
-	from := to.Add(-span)
-	response := dashboardSummaryResponse{
-		Window:      window,
-		From:        from.Format(time.RFC3339),
-		To:          to.Format(time.RFC3339),
-		GeneratedAt: to.Format(time.RFC3339),
-		Fleet:       map[string]any{},
-		Servers:     []dashboardServerSummary{},
-	}
-
-	statusByName := map[string]*ServerStatus{}
-	mu.Lock()
-	serversSnapshot := cloneServers(servers)
-	for _, server := range serversSnapshot {
-		if status := statusMap[server.Name]; status != nil {
-			copyStatus := *status
-			copyStatus.Upgradable = append([]string(nil), status.Upgradable...)
-			copyStatus.PendingUpdates = clonePendingUpdates(status.PendingUpdates)
-			copyStatus.Tags = append([]string(nil), status.Tags...)
-			statusByName[server.Name] = &copyStatus
-		}
-	}
-	mu.Unlock()
-
-	facts, err := loadServerFacts()
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	policies, err := listUpdatePolicies()
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	overrides, err := loadAllUpdatePolicyOverrides()
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	globalBlackouts, err := loadGlobalUpdatePolicyBlackouts()
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	nextRuns, err := buildNextRunMap(now, serversSnapshot, policies, overrides, globalBlackouts)
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	loc, timezoneName := currentAppTimezone()
-
-	type updateAgg struct {
-		lastSuccess *dashboardUpdateHistory
-		lastFailure *dashboardUpdateHistory
-		meta        map[string]any
-		metaAt      string
-		durationSum float64
-		samples     int
-	}
-	updateByServer := map[string]*updateAgg{}
-	rows, err := getDB().Query(
-		`SELECT created_at, target_name, status, message, meta_json
-		   FROM audit_events
-		  WHERE action = ? AND target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC`,
-		updateCompleteAction,
-		from.Format(time.RFC3339),
-		to.Format(time.RFC3339),
-	)
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	for rows.Next() {
-		var createdAt, targetName, status, message, metaJSON string
-		if err := rows.Scan(&createdAt, &targetName, &status, &message, &metaJSON); err != nil {
-			rows.Close()
-			return dashboardSummaryResponse{}, err
-		}
-		agg := updateByServer[targetName]
-		if agg == nil {
-			agg = &updateAgg{}
-			updateByServer[targetName] = agg
-		}
-		meta := map[string]any{}
-		metaValid := false
-		if strings.TrimSpace(metaJSON) != "" {
-			if err := json.Unmarshal([]byte(metaJSON), &meta); err == nil {
-				metaValid = true
-			}
-		}
-		duration, hasDuration := metaDurationMS(meta)
-		if hasDuration {
-			agg.durationSum += duration
-			agg.samples++
-		}
-		display, _ := formatTimestampForAppDisplayWithTimezone(createdAt, loc, timezoneName)
-		item := &dashboardUpdateHistory{
-			Status:            strings.ToLower(strings.TrimSpace(status)),
-			FinishedAt:        createdAt,
-			FinishedAtDisplay: display,
-			DurationMS:        duration,
-			Message:           message,
-		}
-		if item.Status == "failure" {
-			item.FailureCause = failureCauseFromMeta(meta, metaValid)
-			if agg.lastFailure == nil {
-				agg.lastFailure = item
-			}
-		}
-		if item.Status == "success" && agg.lastSuccess == nil {
-			agg.lastSuccess = item
-		}
-		if agg.meta == nil && metaValid {
-			agg.meta = meta
-			agg.metaAt = createdAt
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return dashboardSummaryResponse{}, err
-	}
-	rows.Close()
-
-	commandHistory := map[string][]dashboardCommandHistoryItem{}
-	commandRows, err := getDB().Query(
-		`SELECT created_at, target_name, action, status, message, actor
-		   FROM audit_events
-		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 400`,
-		from.Format(time.RFC3339),
-		to.Format(time.RFC3339),
-	)
-	if err != nil {
-		return dashboardSummaryResponse{}, err
-	}
-	for commandRows.Next() {
-		var item dashboardCommandHistoryItem
-		var targetName string
-		if err := commandRows.Scan(&item.CreatedAt, &targetName, &item.Action, &item.Status, &item.Message, &item.Actor); err != nil {
-			commandRows.Close()
-			return dashboardSummaryResponse{}, err
-		}
-		if len(commandHistory[targetName]) >= 8 {
-			continue
-		}
-		item.CreatedAtDisplay, _ = formatTimestampForAppDisplayWithTimezone(item.CreatedAt, loc, timezoneName)
-		commandHistory[targetName] = append(commandHistory[targetName], item)
-	}
-	if err := commandRows.Err(); err != nil {
-		commandRows.Close()
-		return dashboardSummaryResponse{}, err
-	}
-	commandRows.Close()
-
-	fleetReboot := 0
-	fleetStaleFacts := 0
-	for _, server := range serversSnapshot {
-		status := statusByName[server.Name]
-		fact := facts[server.Name]
-		health := dashboardHealthInfo{
-			DiskStatus:    "unknown",
-			AptStatus:     "unknown",
-			OSPrettyName:  fact.OSPrettyName,
-			UptimeSeconds: fact.UptimeSeconds,
-			CollectedAt:   fact.CollectedAt,
-			Source:        "facts",
-		}
-		if fact.ServerName != "" {
-			health.RebootRequired = fact.RebootRequired
-			health.DiskStatus = fact.DiskStatus
-			health.DiskFreeKB = fact.DiskFreeKB
-			health.DiskDetails = fact.DiskDetails
-			health.AptStatus = fact.AptStatus
-			health.AptDetails = fact.AptDetails
-		} else {
-			health.Source = "unknown"
-			fleetStaleFacts++
-		}
-		agg := updateByServer[server.Name]
-		if agg != nil && agg.meta != nil {
-			auditResults := precheckResultsFromMeta(agg.meta, "precheck_results")
-			auditResults = append(auditResults, precheckResultsFromMeta(agg.meta, "postcheck_results")...)
-			updateHealthFromResults(&health, auditResults, "audit", agg.metaAt)
-		}
-		if health.RebootRequired != nil && *health.RebootRequired {
-			fleetReboot++
-		}
-		nextRun := nextRuns[server.Name]
-		if nextRun.State == "" {
-			nextRun = defaultScheduleInfo()
-		}
-		serverSummary := dashboardServerSummary{
-			Name:           server.Name,
-			NextRun:        nextRun,
-			NoRun:          buildNoRunInfo(server, policies, overrides, globalBlackouts, now),
-			Health:         health,
-			Risk:           dashboardRiskFromStatus(status),
-			CommandHistory: commandHistory[server.Name],
-		}
-		if agg != nil {
-			serverSummary.LastUpdate = agg.lastSuccess
-			serverSummary.LastFailedUpdate = agg.lastFailure
-			serverSummary.DurationSamples = agg.samples
-			if agg.samples > 0 {
-				serverSummary.AvgDurationMS = agg.durationSum / float64(agg.samples)
-			}
-		}
-		response.Servers = append(response.Servers, serverSummary)
-	}
-	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
-	response.Fleet["hosts_needing_reboot"] = fleetReboot
-	response.Fleet["stale_facts"] = fleetStaleFacts
-	return response, nil
-}
-
 //lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
 func handleDashboardSummary(c *gin.Context) {
 	handleDashboardSummaryWithNow(c, func() time.Time { return time.Now().UTC() })
 }
 
 func handleDashboardSummaryWithNow(c *gin.Context, now func() time.Time) {
+	handleDashboardSummaryWithService(c, observabilityService, now)
+}
+
+func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	summary, err := buildDashboardSummary(c.Query("window"), now())
+	if service == nil {
+		service = observabilityService
+	}
+	summary, err := service.BuildDashboardSummary(c.Query("window"), now())
 	if err != nil {
 		if errors.Is(err, errInvalidWindow) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window; allowed values: 24h, 7d, 30d"})
@@ -2609,115 +1803,76 @@ func handleDashboardSummaryWithNow(c *gin.Context, now func() time.Time) {
 	c.JSON(http.StatusOK, summary)
 }
 
-func prometheusEscapeLabel(v string) string {
-	value := strings.ReplaceAll(v, `\`, `\\`)
-	value = strings.ReplaceAll(value, `"`, `\"`)
-	value = strings.ReplaceAll(value, "\n", `\n`)
-	return value
-}
-
-func metricsSummaryCacheKey(window string) string {
-	return dbPath() + "|" + window
-}
-
-func getMetricsSummary(window string, now time.Time) (observabilitySummaryResponse, error) {
-	cacheKey := metricsSummaryCacheKey(window)
-
-	observabilityCacheMu.RLock()
-	if entry, ok := observabilityCache[cacheKey]; ok && now.Sub(entry.cachedAt) < observabilityMetricsCacheTTL {
-		observabilityCacheMu.RUnlock()
-		return entry.summary, nil
-	}
-	observabilityCacheMu.RUnlock()
-
-	summary, err := buildObservabilitySummary(window, now)
-	if err != nil {
-		return observabilitySummaryResponse{}, err
-	}
-
-	observabilityCacheMu.Lock()
-	observabilityCache[cacheKey] = observabilityCacheEntry{
-		summary:  summary,
-		cachedAt: now,
-	}
-	observabilityCacheMu.Unlock()
-
-	return summary, nil
-}
-
 func handleMetrics(c *gin.Context) {
-	windows := []string{"24h", "7d", "30d"}
-	summaries := make([]observabilitySummaryResponse, 0, len(windows))
-	now := time.Now().UTC()
-	for _, window := range windows {
-		summary, err := getMetricsSummary(window, now)
-		if err != nil {
-			log.Printf("handleMetrics: failed to build summary for window=%q: %v", window, err)
-			c.String(http.StatusInternalServerError, "failed to build metrics\n")
-			return
-		}
-		summaries = append(summaries, summary)
-	}
-
-	var b strings.Builder
-
-	b.WriteString("# HELP simplelinuxupdater_update_runs Number of completed update runs by status in the selected window.\n")
-	b.WriteString("# TYPE simplelinuxupdater_update_runs gauge\n")
-	for _, summary := range summaries {
-		fmt.Fprintf(&b, "simplelinuxupdater_update_runs{window=%q,status=%q} %d\n", summary.Window, "success", summary.Totals.UpdatesSuccess)
-		fmt.Fprintf(&b, "simplelinuxupdater_update_runs{window=%q,status=%q} %d\n", summary.Window, "failure", summary.Totals.UpdatesFailure)
-	}
-
-	b.WriteString("# HELP simplelinuxupdater_update_success_rate_percent Update success rate percentage in the selected window.\n")
-	b.WriteString("# TYPE simplelinuxupdater_update_success_rate_percent gauge\n")
-	for _, summary := range summaries {
-		fmt.Fprintf(&b, "simplelinuxupdater_update_success_rate_percent{window=%q} %.4f\n", summary.Window, summary.Totals.SuccessRatePct)
-	}
-
-	b.WriteString("# HELP simplelinuxupdater_update_duration_avg_milliseconds Average update duration in milliseconds for samples with duration data.\n")
-	b.WriteString("# TYPE simplelinuxupdater_update_duration_avg_milliseconds gauge\n")
-	for _, summary := range summaries {
-		fmt.Fprintf(&b, "simplelinuxupdater_update_duration_avg_milliseconds{window=%q} %.4f\n", summary.Window, summary.Duration.AvgMS)
-	}
-
-	b.WriteString("# HELP simplelinuxupdater_update_duration_samples Number of update samples with/without duration metadata.\n")
-	b.WriteString("# TYPE simplelinuxupdater_update_duration_samples gauge\n")
-	for _, summary := range summaries {
-		fmt.Fprintf(&b, "simplelinuxupdater_update_duration_samples{window=%q,kind=%q} %d\n", summary.Window, "with_duration", summary.Duration.SamplesWithDuration)
-		fmt.Fprintf(&b, "simplelinuxupdater_update_duration_samples{window=%q,kind=%q} %d\n", summary.Window, "without_duration", summary.Duration.SamplesWithoutDuration)
-	}
-
-	b.WriteString("# HELP simplelinuxupdater_update_failures_by_cause Number of failed update runs grouped by failure cause.\n")
-	b.WriteString("# TYPE simplelinuxupdater_update_failures_by_cause gauge\n")
-	for _, summary := range summaries {
-		for _, failure := range summary.FailureCauses {
-			fmt.Fprintf(&b, "simplelinuxupdater_update_failures_by_cause{window=%q,cause=\"%s\"} %d\n", summary.Window, prometheusEscapeLabel(failure.Cause), failure.Count)
-		}
-	}
-
-	c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
+	handleMetricsWithService(c, observabilityService)
 }
 
+func handleMetricsWithService(c *gin.Context, service *ObservabilityService) {
+	if service == nil {
+		service = observabilityService
+	}
+	body, err := service.BuildMetrics(time.Now().UTC())
+	if err != nil {
+		c.String(http.StatusInternalServerError, "failed to build metrics\n")
+		return
+	}
+	c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(body))
+}
+
+//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
 func handleMetricsTokenStatus(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"enabled": strings.TrimSpace(getMetricsBearerTokenHash()) != ""})
+	handleMetricsTokenStatusWithService(c, metricsTokenService)
 }
 
+func handleMetricsTokenStatusWithService(c *gin.Context, service *MetricsTokenService) {
+	if service == nil {
+		service = metricsTokenService
+	}
+	enabled := service.Status()
+	if service == metricsTokenService {
+		syncMetricsTokenGlobals(service)
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+}
+
+//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
 func handleMetricsTokenRotate(c *gin.Context) {
-	token, err := issueMetricsBearerToken()
+	handleMetricsTokenRotateWithService(c, metricsTokenService)
+}
+
+func handleMetricsTokenRotateWithService(c *gin.Context, service *MetricsTokenService) {
+	if service == nil {
+		service = metricsTokenService
+	}
+	token, err := service.Rotate()
 	if err != nil {
 		audit(c, "metrics.token.rotate", "metrics_token", "metrics", "failure", "Failed to rotate metrics API token", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rotate metrics token"})
 		return
 	}
+	if service == metricsTokenService {
+		syncMetricsTokenGlobals(service)
+	}
 	audit(c, "metrics.token.rotate", "metrics_token", "metrics", "success", "Metrics API token rotated", nil)
 	c.JSON(http.StatusOK, gin.H{"enabled": true, "token": token})
 }
 
+//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
 func handleMetricsTokenClear(c *gin.Context) {
-	if err := clearMetricsBearerTokenHash(); err != nil {
+	handleMetricsTokenClearWithService(c, metricsTokenService)
+}
+
+func handleMetricsTokenClearWithService(c *gin.Context, service *MetricsTokenService) {
+	if service == nil {
+		service = metricsTokenService
+	}
+	if err := service.Clear(); err != nil {
 		audit(c, "metrics.token.clear", "metrics_token", "metrics", "failure", "Failed to disable metrics API token", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable metrics token"})
 		return
+	}
+	if service == metricsTokenService {
+		syncMetricsTokenGlobals(service)
 	}
 	audit(c, "metrics.token.clear", "metrics_token", "metrics", "success", "Metrics API token disabled", nil)
 	c.JSON(http.StatusOK, gin.H{"enabled": false, "message": "Metrics token disabled"})
@@ -3371,114 +2526,6 @@ func clearGlobalKey() error {
 	return nil
 }
 
-func generateMetricsBearerToken() (string, error) {
-	buf := make([]byte, metricsBearerTokenEntropyBytes)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate metrics token entropy: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func getMetricsBearerTokenHash() string {
-	cacheDBPath := dbPath()
-	db := getDB()
-	runtimeStateMu.RLock()
-	defer runtimeStateMu.RUnlock()
-	metricsBearerTokenHashMu.RLock()
-	if metricsBearerTokenHashLoaded && metricsBearerTokenHashDBPath == cacheDBPath {
-		cached := metricsBearerTokenHash
-		metricsBearerTokenHashMu.RUnlock()
-		return cached
-	}
-	cached := ""
-	if metricsBearerTokenHashDBPath == cacheDBPath {
-		cached = metricsBearerTokenHash
-	}
-	metricsBearerTokenHashMu.RUnlock()
-
-	for attempt := 1; attempt <= 3; attempt++ {
-		var tokenHash string
-		err := db.QueryRow("SELECT value FROM settings WHERE key = ?", metricsBearerTokenHashSetting).Scan(&tokenHash)
-		if err == sql.ErrNoRows {
-			metricsBearerTokenHashMu.Lock()
-			metricsBearerTokenHash = ""
-			metricsBearerTokenHashLoaded = true
-			metricsBearerTokenHashDBPath = cacheDBPath
-			metricsBearerTokenHashMu.Unlock()
-			return ""
-		}
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "database is locked") && attempt < 3 {
-				time.Sleep(75 * time.Millisecond)
-				continue
-			}
-			log.Printf("Failed to load metrics bearer token hash: %v", err)
-			return strings.TrimSpace(cached)
-		}
-		tokenHash = strings.TrimSpace(tokenHash)
-		metricsBearerTokenHashMu.Lock()
-		metricsBearerTokenHash = tokenHash
-		metricsBearerTokenHashLoaded = true
-		metricsBearerTokenHashDBPath = cacheDBPath
-		metricsBearerTokenHashMu.Unlock()
-		return tokenHash
-	}
-	return strings.TrimSpace(cached)
-}
-
-func setMetricsBearerTokenHash(tokenHash string) error {
-	tokenHash = strings.TrimSpace(tokenHash)
-	if tokenHash == "" {
-		return errors.New("metrics bearer token hash is required")
-	}
-	db := getDB()
-	_, err := db.Exec(
-		"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-		metricsBearerTokenHashSetting, tokenHash,
-	)
-	if err != nil {
-		return err
-	}
-	runtimeStateMu.Lock()
-	defer runtimeStateMu.Unlock()
-	metricsBearerTokenHashMu.Lock()
-	defer metricsBearerTokenHashMu.Unlock()
-	metricsBearerTokenHash = tokenHash
-	metricsBearerTokenHashLoaded = true
-	metricsBearerTokenHashDBPath = dbPath()
-	return nil
-}
-
-func clearMetricsBearerTokenHash() error {
-	db := getDB()
-	if _, err := db.Exec("DELETE FROM settings WHERE key = ?", metricsBearerTokenHashSetting); err != nil {
-		return err
-	}
-	runtimeStateMu.Lock()
-	defer runtimeStateMu.Unlock()
-	metricsBearerTokenHashMu.Lock()
-	defer metricsBearerTokenHashMu.Unlock()
-	metricsBearerTokenHash = ""
-	metricsBearerTokenHashLoaded = true
-	metricsBearerTokenHashDBPath = dbPath()
-	return nil
-}
-
-func issueMetricsBearerToken() (string, error) {
-	token, err := generateMetricsBearerToken()
-	if err != nil {
-		return "", err
-	}
-	tokenHash, err := argon2id.CreateHash(token, argon2id.DefaultParams)
-	if err != nil {
-		return "", err
-	}
-	if err := setMetricsBearerTokenHash(tokenHash); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
 func securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -3530,7 +2577,7 @@ func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	deps = deps.withDefaults()
 	r.Use(authRuntimeMiddleware(deps))
-	registerPublicRoutes(r)
+	registerPublicRoutes(r, deps)
 	r.Use(authGateMiddleware())
 	r.Use(sameOriginWriteMiddleware())
 	registerProtectedPageRoutes(r)
@@ -3540,14 +2587,16 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	return nil
 }
 
-func registerPublicRoutes(r *gin.Engine) {
+func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/setup", handleSetupPage)
 	r.GET("/login", handleLoginPage)
 	r.POST("/api/auth/setup", sameOriginWriteMiddleware(), handleAuthSetup)
 	r.POST("/api/auth/login", sameOriginWriteMiddleware(), handleAuthLogin)
 	r.GET("/api/auth/status", handleAuthStatus)
 	r.GET("/api/maintenance", handleMaintenanceStatus)
-	r.GET("/metrics", metricsBearerMiddleware(), handleMetrics)
+	r.GET("/metrics", metricsBearerMiddlewareWithService(deps.MetricsTokenService), func(c *gin.Context) {
+		handleMetricsWithService(c, deps.ObservabilityService)
+	})
 
 }
 
@@ -3580,9 +2629,15 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/auth/sessions", handleAuthSessionsStatus)
 	r.PUT("/api/auth/password", handleAuthPasswordChange)
 	r.DELETE("/api/auth/sessions", handleAuthSessionsClear)
-	r.GET("/api/metrics/token", handleMetricsTokenStatus)
-	r.POST("/api/metrics/token", handleMetricsTokenRotate)
-	r.DELETE("/api/metrics/token", handleMetricsTokenClear)
+	r.GET("/api/metrics/token", func(c *gin.Context) {
+		handleMetricsTokenStatusWithService(c, deps.MetricsTokenService)
+	})
+	r.POST("/api/metrics/token", func(c *gin.Context) {
+		handleMetricsTokenRotateWithService(c, deps.MetricsTokenService)
+	})
+	r.DELETE("/api/metrics/token", func(c *gin.Context) {
+		handleMetricsTokenClearWithService(c, deps.MetricsTokenService)
+	})
 	r.GET("/api/backup/status", func(c *gin.Context) {
 		handleBackupStatusWithService(c, deps.BackupService)
 	})
@@ -3633,10 +2688,10 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 		handleJobReportWithDeps(c, deps)
 	})
 	r.GET("/api/observability/summary", func(c *gin.Context) {
-		handleObservabilitySummaryWithNow(c, deps.Now)
+		handleObservabilitySummaryWithService(c, deps.ObservabilityService, deps.Now)
 	})
 	r.GET("/api/dashboard/summary", func(c *gin.Context) {
-		handleDashboardSummaryWithNow(c, deps.Now)
+		handleDashboardSummaryWithService(c, deps.ObservabilityService, deps.Now)
 	})
 	r.POST("/api/audit-events/prune", func(c *gin.Context) {
 		if err := deps.AuditService.Prune(auditRetentionDays); err != nil {

@@ -22,6 +22,8 @@ type AppDeps struct {
 	ServerInventoryService *ServerInventoryService
 	PolicyService          *PolicyService
 	UpdateService          *UpdateService
+	ObservabilityService   *ObservabilityService
+	MetricsTokenService    *MetricsTokenService
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager
@@ -77,6 +79,12 @@ func (deps AppDeps) withDefaults() AppDeps {
 	}
 	if deps.UpdateService == nil {
 		deps.UpdateService = defaultUpdateService()
+	}
+	if deps.ObservabilityService == nil {
+		deps.ObservabilityService = observabilityService
+	}
+	if deps.MetricsTokenService == nil {
+		deps.MetricsTokenService = metricsTokenService
 	}
 	if deps.CurrentJobManager == nil {
 		deps.CurrentJobManager = currentJobManager

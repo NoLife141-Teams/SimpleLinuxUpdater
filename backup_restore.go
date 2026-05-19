@@ -152,6 +152,9 @@ func resetRuntimeCaches() {
 	metricsBearerTokenHashLoaded = false
 	metricsBearerTokenHashDBPath = ""
 	metricsBearerTokenHashMu.Unlock()
+	if metricsTokenService != nil {
+		metricsTokenService.RestoreCache("", false, "")
+	}
 
 	setCurrentJobManager(nil)
 }

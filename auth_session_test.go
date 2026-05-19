@@ -66,6 +66,7 @@ func preserveMetricsTokenState(t *testing.T) {
 	origLoaded := metricsBearerTokenHashLoaded
 	origDBPath := metricsBearerTokenHashDBPath
 	metricsBearerTokenHashMu.RUnlock()
+	serviceHash, serviceLoaded, serviceDBPath := metricsTokenService.SnapshotCache()
 
 	t.Cleanup(func() {
 		metricsBearerTokenHashMu.Lock()
@@ -73,6 +74,7 @@ func preserveMetricsTokenState(t *testing.T) {
 		metricsBearerTokenHashLoaded = origLoaded
 		metricsBearerTokenHashDBPath = origDBPath
 		metricsBearerTokenHashMu.Unlock()
+		metricsTokenService.RestoreCache(serviceHash, serviceLoaded, serviceDBPath)
 	})
 }
 

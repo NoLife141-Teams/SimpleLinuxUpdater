@@ -74,6 +74,7 @@ type UpdatePolicyRun = policypkg.Run
 type UpdatePolicySettingsResponse = policypkg.SettingsResponse
 type updatePolicyRunUpdate = policypkg.RunUpdate
 
+//lint:ignore U1000 compatibility type retained for transitional policy priority tests.
 type scheduledPolicyCandidate struct {
 	policy          UpdatePolicy
 	server          Server
@@ -279,6 +280,7 @@ func candidatePriority(policy UpdatePolicy) [3]int {
 	return defaultPolicyService().CandidatePriority(policy)
 }
 
+//lint:ignore U1000 compatibility wrapper retained for transitional policy priority tests.
 func comparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
 	return defaultPolicyService().ComparePolicyCandidates(
 		policypkg.ScheduledCandidate{Policy: a.policy, Server: a.server, ScheduledForUTC: a.scheduledForUTC},

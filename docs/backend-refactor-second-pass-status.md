@@ -13,7 +13,7 @@ This checklist tracks the second backend refactor pass described in [backend-ref
 - [x] Phase 6 - Server Inventory Package: complete on `codex/servers-package`
 - [x] Phase 7 - Policy Package: complete on `codex/policies-package`
 - [x] Phase 8 - Update Package: complete on `codex/updates-package`
-- [ ] Phase 9 - Observability And Dashboard Package
+- [x] Phase 9 - Observability And Dashboard Package: complete on `codex/observability-dashboard-package`
 - [ ] Phase 10 - Repository And Schema Ownership
 - [ ] Phase 11 - Final Global And Wrapper Removal
 - [ ] Phase 12 - Documentation And Live Smoke
@@ -192,6 +192,26 @@ Broader gates:
 
 Live disposable-host smoke is not required for Phase 8 because this phase only moves update, autoremove, sudoers, approval/cancel, CVE helper, and scheduled scan ownership behind `internal/updates`.
 
+## Phase 9 Validation
+
+Required:
+
+- [x] `go test -count=1 -run 'TestObservability|TestDashboard|TestMetrics|TestBackendContract|TestRouteInventory|TestAppDeps' ./...`
+- [x] `go test -count=1 ./...`
+- [x] `go vet ./...`
+- [x] `staticcheck ./...`
+- [x] `go build -o webserver .`
+- [x] `npm run test:e2e`
+
+Broader gates:
+
+- [x] `go test -race -count=1 ./...`
+- [x] `govulncheck ./...`
+- [x] `actionlint`
+- [x] `npm audit --audit-level=moderate`
+
+Live disposable-host smoke is not required for Phase 9 because this phase only moves observability summaries, dashboard summaries, metrics rendering, metrics token storage, and metrics summary cache ownership behind `internal/observability`.
+
 ## Compatibility Wrappers To Remove Later
 
 These wrappers are intentionally retained after the first pass and are marked with `//lint:ignore U1000`. They should disappear by Phase 11 after package APIs replace all transitional call sites.
@@ -295,8 +315,9 @@ This inventory is grouped by likely owning phase. Some package-level values are 
 ### Dashboard, Observability, And Metrics State
 
 - `webserver.go`: `dashboardEventBroker` is now only the temporary main-owned default singleton for `internal/events.Broker`; final ownership cleanup is deferred to Phase 11.
-- `webserver.go`: `observabilityCache`, `observabilityCacheMu`
-- `webserver.go`: `metricsBearerTokenHash`, `metricsBearerTokenHashMu`, `metricsBearerTokenHashLoaded`, `metricsBearerTokenHashDBPath`
+- `internal/observability`: owns observability summary builders, dashboard summary builders, Prometheus rendering, metrics token persistence/cache behavior, and metrics summary cache ownership.
+- `observability_service.go`: `observabilityService` and `metricsTokenService` are temporary main-owned default singletons for `internal/observability`; final ownership cleanup is deferred to Phase 11.
+- `webserver.go`: `metricsBearerTokenHash`, `metricsBearerTokenHashMu`, `metricsBearerTokenHashLoaded`, and `metricsBearerTokenHashDBPath` remain temporary compatibility mirrors for existing restore/test hooks until Phase 11.
 
 ## Phase 0 Contract Coverage
 

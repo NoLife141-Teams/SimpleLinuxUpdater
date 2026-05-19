@@ -10,7 +10,7 @@ This checklist tracks the second backend refactor pass described in [backend-ref
 - [x] Phase 3 - App Shell And Config Package: complete on `codex/app-shell-config`
 - [x] Phase 4 - Auth Package: complete on `codex/auth-package`
 - [x] Phase 5 - Backup Package: complete on `codex/backup-package`
-- [ ] Phase 6 - Server Inventory Package
+- [x] Phase 6 - Server Inventory Package: complete on `codex/servers-package`
 - [ ] Phase 7 - Policy Package
 - [ ] Phase 8 - Update Package
 - [ ] Phase 9 - Observability And Dashboard Package
@@ -132,6 +132,26 @@ Broader gates:
 
 Live disposable-host smoke is not required for Phase 5 because this phase only moves backup/export restore behavior behind `internal/backup`.
 
+## Phase 6 Validation
+
+Required:
+
+- [x] `go test -count=1 -run 'TestServer|TestHostKey|TestKnownHosts|TestGlobalKey|TestAPIServers|TestServerInventory|TestBackendContract|TestRouteInventory' ./...`
+- [x] `go test -count=1 ./...`
+- [x] `go vet ./...`
+- [x] `staticcheck ./...`
+- [x] `go build -o webserver .`
+- [x] `npm run test:e2e`
+
+Broader gates:
+
+- [x] `go test -race -count=1 ./...`
+- [x] `govulncheck ./...`
+- [x] `actionlint`
+- [x] `npm audit --audit-level=moderate`
+
+Live disposable-host smoke is not required for Phase 6 because this phase only moves server inventory state, persistence, known_hosts, and SSH auth helper behavior behind `internal/servers`.
+
 ## Compatibility Wrappers To Remove Later
 
 These wrappers are intentionally retained after the first pass and are marked with `//lint:ignore U1000`. They should disappear by Phase 11 after package APIs replace all transitional call sites.
@@ -167,7 +187,10 @@ These wrappers are intentionally retained after the first pass and are marked wi
 - `webserver.go`: `handleDashboardEvents`
 - `webserver.go`: `handleDashboardSummary`
 - `webserver.go`: `createServerActionJob`
-- `webserver.go`: `updateServerKey`
+- `server_inventory_service.go`: `updateServerKey`
+- `server_inventory_service.go`: host-key result type aliases
+- `server_inventory_service.go`: server inventory helper wrappers (`newIdleServerStatus`, `updateStatusFromServer`, normalization helpers, `isValidSSHUsername`)
+- `server_inventory_service.go`: known_hosts helper wrappers (`knownHostsDefaultWritePath`, `knownHostsHostToken`, `buildKnownHostsLine`)
 
 ## Mutable Package State To Move Later
 
@@ -199,11 +222,12 @@ This inventory is grouped by likely owning phase. Some package-level values are 
 
 ### Server Inventory And Runtime State
 
-- `webserver.go`: `servers`, `statusMap`, `mu`
-- `server_inventory_service.go`: `serverInventoryService`
+- `internal/servers`: owns server inventory types, runtime state access methods, SQLite inventory persistence, inventory service behavior, known_hosts helpers, host-key scan/trust/clear helpers, and SSH auth method construction.
+- `server_inventory_service.go`: `servers`, `statusMap`, and `mu` remain temporary compatibility storage behind `internal/servers.State` until direct main-package runner/test access is migrated.
+- `server_inventory_service.go`: `serverState` and `serverInventoryService` are temporary main-owned default singletons for `internal/servers`; final ownership cleanup is deferred to Phase 11.
 - `webserver.go`: `saveServersFunc`
 - `webserver.go`: `globalKey`, `globalKeyMu`
-- `webserver.go`: `knownHostsMu`, `scanHostKeyFunc`
+- `server_inventory_service.go`: `knownHostsMu`, `scanHostKeyFunc`
 
 ### Update Runner And SSH Test Hooks
 

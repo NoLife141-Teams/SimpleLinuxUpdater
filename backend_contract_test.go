@@ -372,8 +372,12 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 	updateDeps.RunSSHCommandWithTimeout = func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
 		return "", "", nil
 	}
+	routeState := globalServerState()
+	updateDeps.ServerState = routeState
 	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "contract-update.db"), AppDeps{
-		UpdateService: NewUpdateService(updateDeps),
+		ServerState:            routeState,
+		ServerInventoryService: newServerInventoryServiceWithState(routeState),
+		UpdateService:          NewUpdateService(updateDeps),
 	})
 	sessionCookie := app.authenticate(t)
 

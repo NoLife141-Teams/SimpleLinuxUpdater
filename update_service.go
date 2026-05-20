@@ -34,7 +34,7 @@ func defaultServerFactsRepository() updatespkg.SQLiteServerFactsRepository {
 
 func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.ServerState == nil {
-		d.ServerState = serverState
+		d.ServerState = globalServerState()
 	}
 	if d.BuildAuthMethods == nil {
 		d.BuildAuthMethods = buildAuthMethods

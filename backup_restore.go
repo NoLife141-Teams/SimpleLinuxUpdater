@@ -13,6 +13,7 @@ import (
 
 	internalbackup "debian-updater/internal/backup"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,43 +40,88 @@ type backupManifestFile = internalbackup.ManifestFile
 var (
 	backupRestoreBarrier = internalbackup.NewBarrier()
 	backupRestoreMu      = backupRestoreBarrier
-	backupService        = NewBackupService()
 )
 
 func NewBackupService() *BackupService {
-	return internalbackup.NewService(backupServiceDeps())
+	return NewBackupServiceWithResetRuntimeCaches(resetRuntimeCaches)
 }
 
-func backupServiceDeps() internalbackup.ServiceDeps {
-	return internalbackup.ServiceDeps{
-		DB:                      getDB,
-		DBPath:                  dbPath,
-		ConfigPath:              configPath,
-		KnownHostsWritePath:     knownHostsWritePath,
-		EnsurePrivateDirForFile: ensurePrivateDirForFile,
-		EnsureSchema:            ensureSchema,
-		DecodeEncryptionKey:     decodeEncryptionKeyValue,
-		CurrentEncryptionKey:    getEncryptionKey,
-		DecryptSecretWithKey:    decryptSecretWithKey,
-		EncryptSecretWithKey:    encryptSecretWithKey,
-		ResetRuntimeCaches:      resetRuntimeCaches,
-		ReloadRuntimeState:      reloadRuntimeState,
-		CurrentMaintenanceState: func() internalbackup.MaintenanceState {
-			return internalbackup.MaintenanceState(currentMaintenanceState())
-		},
-		PersistMaintenanceState: func(state internalbackup.MaintenanceState) error {
-			return persistMaintenanceState(MaintenanceState(state))
-		},
-		Now:  func() time.Time { return time.Now().UTC() },
-		Logf: log.Printf,
+func NewBackupServiceWithResetRuntimeCaches(reset func()) *BackupService {
+	deps := backupServiceDepsWithDefaults(internalbackup.ServiceDeps{})
+	if reset != nil {
+		deps.ResetRuntimeCaches = reset
 	}
+	return internalbackup.NewService(deps)
 }
 
-func expireSessionCookie(c *gin.Context) {
+func NewBackupServiceWithDeps(deps internalbackup.ServiceDeps) *BackupService {
+	return internalbackup.NewService(backupServiceDepsWithDefaults(deps))
+}
+
+func defaultBackupService() *BackupService {
+	return NewBackupService()
+}
+
+func backupServiceDepsWithDefaults(deps internalbackup.ServiceDeps) internalbackup.ServiceDeps {
+	if deps.DB == nil {
+		deps.DB = getDB
+	}
+	if deps.DBPath == nil {
+		deps.DBPath = dbPath
+	}
+	if deps.ConfigPath == nil {
+		deps.ConfigPath = configPath
+	}
+	if deps.KnownHostsWritePath == nil {
+		deps.KnownHostsWritePath = knownHostsWritePath
+	}
+	if deps.EnsurePrivateDirForFile == nil {
+		deps.EnsurePrivateDirForFile = ensurePrivateDirForFile
+	}
+	if deps.EnsureSchema == nil {
+		deps.EnsureSchema = ensureSchema
+	}
+	if deps.DecodeEncryptionKey == nil {
+		deps.DecodeEncryptionKey = decodeEncryptionKeyValue
+	}
+	if deps.CurrentEncryptionKey == nil {
+		deps.CurrentEncryptionKey = getEncryptionKey
+	}
+	if deps.DecryptSecretWithKey == nil {
+		deps.DecryptSecretWithKey = decryptSecretWithKey
+	}
+	if deps.EncryptSecretWithKey == nil {
+		deps.EncryptSecretWithKey = encryptSecretWithKey
+	}
+	if deps.ResetRuntimeCaches == nil {
+		deps.ResetRuntimeCaches = resetRuntimeCaches
+	}
+	if deps.ReloadRuntimeState == nil {
+		deps.ReloadRuntimeState = reloadRuntimeState
+	}
+	if deps.CurrentMaintenanceState == nil {
+		deps.CurrentMaintenanceState = func() internalbackup.MaintenanceState {
+			return internalbackup.MaintenanceState(currentMaintenanceState())
+		}
+	}
+	if deps.PersistMaintenanceState == nil {
+		deps.PersistMaintenanceState = func(state internalbackup.MaintenanceState) error {
+			return persistMaintenanceState(MaintenanceState(state))
+		}
+	}
+	if deps.Now == nil {
+		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if deps.Logf == nil {
+		deps.Logf = log.Printf
+	}
+	return deps
+}
+
+func expireSessionCookieWithManager(c *gin.Context, sm *scs.SessionManager) {
 	if c == nil {
 		return
 	}
-	sm := currentSessionManager()
 	if sm == nil {
 		return
 	}
@@ -100,7 +146,7 @@ func validateBackupPassphrase(passphrase string) error {
 }
 
 func createDBBackupSnapshot() ([]byte, error) {
-	return backupService.CreateDBSnapshot()
+	return defaultBackupService().CreateDBSnapshot()
 }
 
 func buildBackupTarGz(files map[string][]byte) ([]byte, error) {
@@ -124,7 +170,7 @@ func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes in
 }
 
 func persistActiveMaintenanceStateForRestore() error {
-	return backupService.PersistActiveMaintenanceStateForRestore()
+	return defaultBackupService().PersistActiveMaintenanceStateForRestore()
 }
 
 func sqliteSidecarPaths(path string) []string {
@@ -152,10 +198,6 @@ func resetRuntimeCaches() {
 	metricsBearerTokenHashLoaded = false
 	metricsBearerTokenHashDBPath = ""
 	metricsBearerTokenHashMu.Unlock()
-	if metricsTokenService != nil {
-		metricsTokenService.RestoreCache("", false, "")
-	}
-
 	setCurrentJobManager(nil)
 }
 
@@ -202,12 +244,7 @@ func reloadRuntimeState() error {
 }
 
 func applyBackupFiles(ctx context.Context, files map[string][]byte) error {
-	return backupService.ApplyFiles(ctx, files)
-}
-
-//lint:ignore U1000 compatibility adapter retained for transitional route call sites.
-func handleBackupStatus(c *gin.Context) {
-	handleBackupStatusWithService(c, backupService)
+	return defaultBackupService().ApplyFiles(ctx, files)
 }
 
 func handleBackupStatusWithService(c *gin.Context, service *BackupService) {
@@ -218,14 +255,17 @@ func handleBackupStatusWithService(c *gin.Context, service *BackupService) {
 	c.JSON(http.StatusOK, service.Status())
 }
 
-//lint:ignore U1000 compatibility adapter retained for transitional route call sites.
-func handleBackupExport(c *gin.Context) {
-	handleBackupExportWithService(c, backupService)
+func handleBackupExportWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	handleBackupExportWithServiceAndJobManager(c, deps.BackupService, deps.CurrentJobManager)
 }
 
-func handleBackupExportWithService(c *gin.Context, service *BackupService) {
+func handleBackupExportWithServiceAndJobManager(c *gin.Context, service *BackupService, currentJobs func() *JobManager) {
 	actor := actorFromContext(c)
 	clientIP := clientIPFromContext(c)
+	if currentJobs == nil {
+		currentJobs = currentJobManager
+	}
 	var req backupExportRequest
 	if c.Request != nil && c.Writer != nil {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxExportRequestBytes)
@@ -245,7 +285,7 @@ func handleBackupExportWithService(c *gin.Context, service *BackupService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if activeServers := activeServerActionNames(); len(activeServers) > 0 {
+	if activeServers := activeServerActionNamesForContext(c); len(activeServers) > 0 {
 		audit(c, "backup.export", "backup", "state", "failure", "Active server actions must finish before export", map[string]any{
 			"active_servers": activeServers,
 		})
@@ -264,7 +304,7 @@ func handleBackupExportWithService(c *gin.Context, service *BackupService) {
 	}
 	req.DBSnapshot = dbSnapshot
 
-	jm := currentJobManager()
+	jm := currentJobs()
 	if jm == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
 		return
@@ -378,14 +418,20 @@ func readUploadedBackupFile(file *multipart.FileHeader) ([]byte, error) {
 	return internalbackup.ReadUploadedFile(file)
 }
 
-//lint:ignore U1000 compatibility adapter retained for transitional route call sites.
-func handleBackupRestore(c *gin.Context) {
-	handleBackupRestoreWithService(c, backupService)
+func handleBackupRestoreWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	handleBackupRestoreWithServiceAndRuntime(c, deps.BackupService, deps.CurrentJobManager, deps.CurrentSessionManager)
 }
 
-func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
+func handleBackupRestoreWithServiceAndRuntime(c *gin.Context, service *BackupService, currentJobs func() *JobManager, currentSession func() *scs.SessionManager) {
 	actor := actorFromContext(c)
 	clientIP := clientIPFromContext(c)
+	if currentJobs == nil {
+		currentJobs = currentJobManager
+	}
+	if currentSession == nil {
+		currentSession = currentSessionManager
+	}
 	if c.Request != nil && c.Writer != nil {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
 	}
@@ -406,7 +452,7 @@ func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if activeServers := activeServerActionNames(); len(activeServers) > 0 {
+	if activeServers := activeServerActionNamesForContext(c); len(activeServers) > 0 {
 		audit(c, "backup.restore", "backup", "state", "failure", "Active server actions must finish before restore", map[string]any{
 			"active_servers": activeServers,
 		})
@@ -417,7 +463,7 @@ func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
 		return
 	}
 
-	jm := currentJobManager()
+	jm := currentJobs()
 	if jm == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
 		return
@@ -507,7 +553,7 @@ func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup payload"})
 			return
 		default:
-			jm = currentJobManager()
+			jm = currentJobs()
 			if persistErr := persistMaintenanceState(currentMaintenanceState()); persistErr != nil {
 				log.Printf("handleBackupRestore: failed to re-persist active maintenance state after restore error: %v", persistErr)
 			}
@@ -528,7 +574,7 @@ func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
 			return
 		}
 	}
-	jm = currentJobManager()
+	jm = currentJobs()
 	if persistErr := persistMaintenanceState(currentMaintenanceState()); persistErr != nil {
 		log.Printf("handleBackupRestore: failed to re-persist active maintenance state after restore: %v", persistErr)
 	}
@@ -538,7 +584,7 @@ func handleBackupRestoreWithService(c *gin.Context, service *BackupService) {
 		"global_key_present":   result.GlobalKeyPresent,
 		"known_hosts_restored": result.KnownHostsRestored,
 	})
-	expireSessionCookie(c)
+	expireSessionCookieWithManager(c, currentSession())
 	status := jobStatusSucceeded
 	phase := jobPhaseComplete
 	summary := "Backup restore completed"

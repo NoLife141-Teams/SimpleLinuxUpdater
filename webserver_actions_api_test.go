@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -20,7 +21,25 @@ import (
 
 func setupAuthenticatedHandler(t *testing.T, dbFile string) (http.Handler, *http.Cookie) {
 	t.Helper()
-	app := newTestAppWithDB(t, dbFile)
+	state := globalServerState()
+	mu.Lock()
+	seedServers := cloneServers(servers)
+	seedStatusMap := cloneStatusMap(statusMap)
+	mu.Unlock()
+	app := newTestAppWithDeps(t, dbFile, AppDeps{
+		ServerState:            state,
+		ServerInventoryService: newServerInventoryServiceWithState(state),
+		PolicyService: NewPolicyService(PolicyServiceDeps{
+			SnapshotServers:       snapshotServers,
+			CurrentStatusSnapshot: currentStatusSnapshot,
+		}),
+	})
+	if len(seedServers) > 0 || len(seedStatusMap) > 0 {
+		mu.Lock()
+		servers = seedServers
+		statusMap = seedStatusMap
+		mu.Unlock()
+	}
 	return app.Handler, app.authenticate(t)
 }
 
@@ -797,7 +816,46 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 			preserveMetricsTokenState(t)
 
 			dbFile := filepath.Join(t.TempDir(), strings.ReplaceAll(tc.name, " ", "-")+".db")
-			handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+			jobDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), strings.ReplaceAll(tc.name, " ", "-")+"-jobs.db"))
+			if err != nil {
+				t.Fatalf("open job db: %v", err)
+			}
+			jobDB.SetMaxOpenConns(1)
+			jobDB.SetMaxIdleConns(1)
+			if err := ensureJobSchema(jobDB); err != nil {
+				_ = jobDB.Close()
+				t.Fatalf("ensure job schema: %v", err)
+			}
+			state := globalServerState()
+			var jobMu sync.RWMutex
+			var scopedJobManager *JobManager
+			app := newTestAppWithDeps(t, dbFile, AppDeps{
+				ServerState:            state,
+				ServerInventoryService: newServerInventoryServiceWithState(state),
+				PolicyService: NewPolicyService(PolicyServiceDeps{
+					SnapshotServers:       snapshotServers,
+					CurrentStatusSnapshot: currentStatusSnapshot,
+				}),
+				NewJobManager: func(*sql.DB) *JobManager {
+					return newJobManagerWithNotify(jobDB, nil)
+				},
+				CurrentJobManager: func() *JobManager {
+					jobMu.RLock()
+					defer jobMu.RUnlock()
+					return scopedJobManager
+				},
+				SetCurrentJobManager: func(jm *JobManager) {
+					jobMu.Lock()
+					scopedJobManager = jm
+					jobMu.Unlock()
+					setCurrentJobManager(jm)
+				},
+			})
+			sessionCookie := app.authenticate(t)
+			if err := jobDB.Close(); err != nil {
+				t.Fatalf("close job db before action request: %v", err)
+			}
+			handler := app.Handler
 
 			server := Server{Name: "srv-" + strings.ReplaceAll(tc.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 			original := &ServerStatus{

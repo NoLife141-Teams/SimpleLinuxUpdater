@@ -26,7 +26,7 @@ func prepareServerInventoryServiceTest(t *testing.T, dbName string) *ServerInven
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), dbName))
 	_ = getDB()
-	return serverInventoryService
+	return newServerInventoryService()
 }
 
 func preserveGlobalKeyState(t *testing.T) {
@@ -167,9 +167,7 @@ func TestServerInventoryServiceRollbackAndActionGuards(t *testing.T) {
 	}
 	wantServers := cloneServers(servers)
 	wantStatusMap := cloneStatusMap(statusMap)
-	saveServersFunc = func() error {
-		return errors.New("forced save failure")
-	}
+	svc.SetSaveOverride(func() error { return errors.New("forced save failure") })
 	mu.Unlock()
 
 	if _, err := svc.Create(Server{Name: "srv-b", Host: "b.example", User: "root"}); err == nil {
@@ -179,7 +177,6 @@ func TestServerInventoryServiceRollbackAndActionGuards(t *testing.T) {
 	if !reflect.DeepEqual(servers, wantServers) || !reflect.DeepEqual(statusMap, wantStatusMap) {
 		t.Fatalf("state after rollback servers=%+v status=%+v, want original", servers, statusMap)
 	}
-	saveServersFunc = saveServers
 	mu.Unlock()
 
 	if err := svc.ClearPassword("srv-a"); !errors.Is(err, errActionInProgress) {

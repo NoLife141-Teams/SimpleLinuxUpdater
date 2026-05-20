@@ -20,8 +20,6 @@ type auditNotifier func(string)
 
 type auditTimezoneProvider func() (*time.Location, string)
 
-var auditService = NewAuditService(getDB, notifyDashboardEvent, currentAppTimezone)
-
 func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider) *AuditService {
 	if db == nil {
 		db = getDB
@@ -40,6 +38,10 @@ func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTim
 		FormatDisplay: formatTimestampForAppDisplayWithTimezone,
 		PruneGuard:    auditPruneGuard,
 	})
+}
+
+func defaultAuditService() *AuditService {
+	return NewAuditService(getDB, notifyDashboardEvent, currentAppTimezone)
 }
 
 func auditPruneGuard(prune func() error) error {
@@ -63,15 +65,15 @@ func sanitizeAuditMeta(meta map[string]any) string {
 }
 
 func writeAuditEvent(evt AuditEvent) error {
-	return auditService.Write(evt)
+	return defaultAuditService().Write(evt)
 }
 
 func auditWithActor(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) {
-	if err := auditService.Record(actor, clientIP, action, targetType, targetName, status, message, meta); err != nil {
+	if err := defaultAuditService().Record(actor, clientIP, action, targetType, targetName, status, message, meta); err != nil {
 		log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
 	}
 }
 
 func pruneAuditEvents(retentionDays int) error {
-	return auditService.Prune(retentionDays)
+	return defaultAuditService().Prune(retentionDays)
 }

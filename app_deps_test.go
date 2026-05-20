@@ -882,6 +882,55 @@ func TestAppDepsDefaultJobManagerSyncsAppScopedServerState(t *testing.T) {
 	}
 }
 
+func TestCreateServerActionJobUsesAppScopedStatusLogs(t *testing.T) {
+	preserveServerState(t)
+	routeDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "action-job-logs.db"))
+	if err != nil {
+		t.Fatalf("open route db: %v", err)
+	}
+	t.Cleanup(func() { _ = routeDB.Close() })
+	if err := ensureJobSchema(routeDB); err != nil {
+		t.Fatalf("ensure job schema: %v", err)
+	}
+
+	state := newServerState()
+	state.Lock()
+	state.SetServers([]Server{{
+		Name: "srv-logs",
+		Host: "192.0.2.70",
+		Port: 22,
+		User: "root",
+	}})
+	state.SetStatusMap(map[string]*ServerStatus{
+		"srv-logs": {
+			Name:   "srv-logs",
+			Status: "updating",
+			Logs:   "app-scoped logs",
+		},
+	})
+	state.Unlock()
+
+	mu.Lock()
+	servers = []Server{{Name: "srv-logs", Host: "192.0.2.71", Port: 22, User: "root"}}
+	statusMap = map[string]*ServerStatus{
+		"srv-logs": {
+			Name:   "srv-logs",
+			Status: "idle",
+			Logs:   "global logs",
+		},
+	}
+	mu.Unlock()
+
+	jm := newJobManagerWithRuntime(routeDB, nil, state, func() bool { return false })
+	job, err := createServerActionJobWithStateAndManager(jm, state, jobKindUpdate, "srv-logs", "actor", "192.0.2.1", RetryPolicy{})
+	if err != nil {
+		t.Fatalf("createServerActionJobWithStateAndManager() error = %v", err)
+	}
+	if job.LogsText != "app-scoped logs" {
+		t.Fatalf("job logs = %q, want app-scoped logs", job.LogsText)
+	}
+}
+
 func TestMetricsRouteUsesAppScopedRateLimiter(t *testing.T) {
 	appLimiter := NewAuthRateLimiter(metricsRateLimitWindow, 5)
 	t.Cleanup(appLimiter.Stop)

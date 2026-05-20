@@ -1880,11 +1880,16 @@ func rejectGlobalKeyMutationIfServerActionsActive(c *gin.Context, action string)
 	return true
 }
 
-func createServerActionJobWithManager(jm *JobManager, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
+func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
 	}
-	snapshot := currentStatusSnapshot(serverName)
+	var snapshot *ServerStatus
+	if state != nil {
+		snapshot = state.CurrentStatusSnapshot(serverName)
+	} else {
+		snapshot = currentStatusSnapshot(serverName)
+	}
 	initialLogs := ""
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
@@ -2815,7 +2820,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start update"})
 			return
 		}
-		job, err := createServerActionJobWithManager(actionJobManager(), jobKindUpdate, name, actor, ip, retryPolicy)
+		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindUpdate, name, actor, ip, retryPolicy)
 		if err != nil {
 			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
@@ -2871,7 +2876,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start autoremove"})
 			return
 		}
-		job, err := createServerActionJobWithManager(actionJobManager(), jobKindAutoremove, name, actor, ip, retryPolicy)
+		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindAutoremove, name, actor, ip, retryPolicy)
 		if err != nil {
 			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
@@ -2940,7 +2945,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start sudoers setup"})
 			return
 		}
-		job, err := createServerActionJobWithManager(actionJobManager(), jobKindSudoersEnable, name, actor, ip, retryPolicy)
+		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindSudoersEnable, name, actor, ip, retryPolicy)
 		if err != nil {
 			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
@@ -3010,7 +3015,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start sudoers disable"})
 			return
 		}
-		job, err := createServerActionJobWithManager(actionJobManager(), jobKindSudoersDisable, name, actor, ip, retryPolicy)
+		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindSudoersDisable, name, actor, ip, retryPolicy)
 		if err != nil {
 			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {

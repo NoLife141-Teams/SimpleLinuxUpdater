@@ -81,7 +81,7 @@ const postcheckRebootRequiredWarningEnv = "DEBIAN_UPDATER_POSTCHECK_REBOOT_REQUI
 const postcheckCustomCmdEnv = "DEBIAN_UPDATER_POSTCHECK_CMD"
 const updatePrecheckMinFreeKB int64 = 1024 * 1024
 const precheckOutputMaxLen = 240
-const precheckDiskSpaceCmd = "df -Pk /var / | awk 'NR>1 {print $4}'"
+const precheckDiskSpaceCmd = "df -Pk /var / | awk 'NR>1 {print $2, $4}'"
 const precheckLocksCmd = "sudo -n /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock"
 const precheckDpkgAuditCmd = "sudo -n dpkg --audit"
 const precheckAptCheckCmd = "sudo -n apt-get check"
@@ -1347,6 +1347,9 @@ func renameServerFactsTx(tx *sql.Tx, oldName, newName string) error {
 }
 
 func diskFreeKBFromOutput(output string) (int64, bool) {
+	if freeKB, _, ok := diskFreeTotalKBFromOutput(output); ok {
+		return freeKB, true
+	}
 	var minFree int64
 	found := false
 	for _, field := range strings.Fields(output) {
@@ -1360,6 +1363,33 @@ func diskFreeKBFromOutput(output string) (int64, bool) {
 		}
 	}
 	return minFree, found
+}
+
+func diskFreeTotalKBFromOutput(output string) (int64, int64, bool) {
+	var minFree int64
+	var totalForMin int64
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		var values []int64
+		for _, field := range strings.Fields(line) {
+			value, err := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
+			if err != nil || value < 0 {
+				continue
+			}
+			values = append(values, value)
+		}
+		if len(values) < 2 {
+			continue
+		}
+		totalKB := values[0]
+		freeKB := values[1]
+		if !found || freeKB < minFree {
+			minFree = freeKB
+			totalForMin = totalKB
+			found = true
+		}
+	}
+	return minFree, totalForMin, found
 }
 
 func healthStatusFromResult(result updatePrecheckResult) string {
@@ -1419,7 +1449,10 @@ func collectServerFactsWithConnection(server Server, client sshConnection, timeo
 	diskOut, _, _ := runSSHCommandWithTimeout(client, precheckDiskSpaceCmd, nil, timeout)
 	disk := checkDiskSpace(client)
 	record.DiskStatus = healthStatusFromResult(disk)
-	if diskFreeKB, ok := diskFreeKBFromOutput(diskOut); ok {
+	if diskFreeKB, diskTotalKB, ok := diskFreeTotalKBFromOutput(diskOut); ok {
+		record.DiskFreeKB = diskFreeKB
+		record.DiskTotalKB = diskTotalKB
+	} else if diskFreeKB, ok := diskFreeKBFromOutput(diskOut); ok {
 		record.DiskFreeKB = diskFreeKB
 	}
 	record.DiskDetails = disk.Details

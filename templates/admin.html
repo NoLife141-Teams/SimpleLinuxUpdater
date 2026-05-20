@@ -49,8 +49,8 @@
                 </div>
                 <div class="admin-block">
                     <label for="app-timezone-input" class="form-label">Global app timezone</label>
-                    <input type="text" id="app-timezone-input" placeholder="America/Toronto" spellcheck="false" autocomplete="off">
-                    <div class="table-secondary">Use an IANA timezone like <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.</div>
+                    <select id="app-timezone-input"></select>
+                    <div class="table-secondary" id="app-timezone-picker-note">Pick an IANA timezone such as <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.</div>
                     <div class="policy-actions app-time-actions">
                         <button class="btn-success" type="button" id="app-timezone-save">Save Timezone</button>
                     </div>
@@ -369,6 +369,6 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js"></script>
-    <script src="/static/js/admin.js"></script>
+    <script src="/static/js/admin.js?v=timezone-select-20260520a"></script>
 </body>
 </html>

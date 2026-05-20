@@ -24,6 +24,7 @@ func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
 		UptimeSeconds:  42,
 		DiskStatus:     "ok",
 		DiskFreeKB:     1234,
+		DiskTotalKB:    5678,
 		DiskDetails:    "disk ok",
 		AptStatus:      "ok",
 		AptDetails:     "apt ok",
@@ -38,7 +39,7 @@ func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
 		t.Fatalf("LoadAll() error = %v", err)
 	}
 	got := loaded["srv-a"]
-	if got.ServerName != record.ServerName || got.OSPrettyName != record.OSPrettyName || got.RawJSON != record.RawJSON {
+	if got.ServerName != record.ServerName || got.OSPrettyName != record.OSPrettyName || got.RawJSON != record.RawJSON || got.DiskTotalKB != record.DiskTotalKB {
 		t.Fatalf("loaded record = %+v, want %+v", got, record)
 	}
 	if got.RebootRequired == nil || !*got.RebootRequired {

@@ -15,6 +15,328 @@ const weekdayOptions = [
     { value: "sun", label: "Sun", fullLabel: "Sunday" }
 ];
 
+
+// Canonical IANA tzdb 2026b zone1970 names. The browser-native list is preferred
+// when available; this keeps the picker complete in older runtimes.
+const ianaTimezoneOptions = Object.freeze([
+    "Africa/Abidjan",
+    "Africa/Algiers",
+    "Africa/Bissau",
+    "Africa/Cairo",
+    "Africa/Casablanca",
+    "Africa/Ceuta",
+    "Africa/El_Aaiun",
+    "Africa/Johannesburg",
+    "Africa/Juba",
+    "Africa/Khartoum",
+    "Africa/Lagos",
+    "Africa/Maputo",
+    "Africa/Monrovia",
+    "Africa/Nairobi",
+    "Africa/Ndjamena",
+    "Africa/Sao_Tome",
+    "Africa/Tripoli",
+    "Africa/Tunis",
+    "Africa/Windhoek",
+    "America/Adak",
+    "America/Anchorage",
+    "America/Araguaina",
+    "America/Argentina/Buenos_Aires",
+    "America/Argentina/Catamarca",
+    "America/Argentina/Cordoba",
+    "America/Argentina/Jujuy",
+    "America/Argentina/La_Rioja",
+    "America/Argentina/Mendoza",
+    "America/Argentina/Rio_Gallegos",
+    "America/Argentina/Salta",
+    "America/Argentina/San_Juan",
+    "America/Argentina/San_Luis",
+    "America/Argentina/Tucuman",
+    "America/Argentina/Ushuaia",
+    "America/Asuncion",
+    "America/Bahia",
+    "America/Bahia_Banderas",
+    "America/Barbados",
+    "America/Belem",
+    "America/Belize",
+    "America/Boa_Vista",
+    "America/Bogota",
+    "America/Boise",
+    "America/Cambridge_Bay",
+    "America/Campo_Grande",
+    "America/Cancun",
+    "America/Caracas",
+    "America/Cayenne",
+    "America/Chicago",
+    "America/Chihuahua",
+    "America/Ciudad_Juarez",
+    "America/Costa_Rica",
+    "America/Coyhaique",
+    "America/Cuiaba",
+    "America/Danmarkshavn",
+    "America/Dawson",
+    "America/Dawson_Creek",
+    "America/Denver",
+    "America/Detroit",
+    "America/Edmonton",
+    "America/Eirunepe",
+    "America/El_Salvador",
+    "America/Fort_Nelson",
+    "America/Fortaleza",
+    "America/Glace_Bay",
+    "America/Goose_Bay",
+    "America/Grand_Turk",
+    "America/Guatemala",
+    "America/Guayaquil",
+    "America/Guyana",
+    "America/Halifax",
+    "America/Havana",
+    "America/Hermosillo",
+    "America/Indiana/Indianapolis",
+    "America/Indiana/Knox",
+    "America/Indiana/Marengo",
+    "America/Indiana/Petersburg",
+    "America/Indiana/Tell_City",
+    "America/Indiana/Vevay",
+    "America/Indiana/Vincennes",
+    "America/Indiana/Winamac",
+    "America/Inuvik",
+    "America/Iqaluit",
+    "America/Jamaica",
+    "America/Juneau",
+    "America/Kentucky/Louisville",
+    "America/Kentucky/Monticello",
+    "America/La_Paz",
+    "America/Lima",
+    "America/Los_Angeles",
+    "America/Maceio",
+    "America/Managua",
+    "America/Manaus",
+    "America/Martinique",
+    "America/Matamoros",
+    "America/Mazatlan",
+    "America/Menominee",
+    "America/Merida",
+    "America/Metlakatla",
+    "America/Mexico_City",
+    "America/Miquelon",
+    "America/Moncton",
+    "America/Monterrey",
+    "America/Montevideo",
+    "America/New_York",
+    "America/Nome",
+    "America/Noronha",
+    "America/North_Dakota/Beulah",
+    "America/North_Dakota/Center",
+    "America/North_Dakota/New_Salem",
+    "America/Nuuk",
+    "America/Ojinaga",
+    "America/Panama",
+    "America/Paramaribo",
+    "America/Phoenix",
+    "America/Port-au-Prince",
+    "America/Porto_Velho",
+    "America/Puerto_Rico",
+    "America/Punta_Arenas",
+    "America/Rankin_Inlet",
+    "America/Recife",
+    "America/Regina",
+    "America/Resolute",
+    "America/Rio_Branco",
+    "America/Santarem",
+    "America/Santiago",
+    "America/Santo_Domingo",
+    "America/Sao_Paulo",
+    "America/Scoresbysund",
+    "America/Sitka",
+    "America/St_Johns",
+    "America/Swift_Current",
+    "America/Tegucigalpa",
+    "America/Thule",
+    "America/Tijuana",
+    "America/Toronto",
+    "America/Vancouver",
+    "America/Whitehorse",
+    "America/Winnipeg",
+    "America/Yakutat",
+    "Antarctica/Casey",
+    "Antarctica/Davis",
+    "Antarctica/Macquarie",
+    "Antarctica/Mawson",
+    "Antarctica/Palmer",
+    "Antarctica/Rothera",
+    "Antarctica/Troll",
+    "Antarctica/Vostok",
+    "Asia/Almaty",
+    "Asia/Amman",
+    "Asia/Anadyr",
+    "Asia/Aqtau",
+    "Asia/Aqtobe",
+    "Asia/Ashgabat",
+    "Asia/Atyrau",
+    "Asia/Baghdad",
+    "Asia/Baku",
+    "Asia/Bangkok",
+    "Asia/Barnaul",
+    "Asia/Beirut",
+    "Asia/Bishkek",
+    "Asia/Chita",
+    "Asia/Colombo",
+    "Asia/Damascus",
+    "Asia/Dhaka",
+    "Asia/Dili",
+    "Asia/Dubai",
+    "Asia/Dushanbe",
+    "Asia/Famagusta",
+    "Asia/Gaza",
+    "Asia/Hebron",
+    "Asia/Ho_Chi_Minh",
+    "Asia/Hong_Kong",
+    "Asia/Hovd",
+    "Asia/Irkutsk",
+    "Asia/Jakarta",
+    "Asia/Jayapura",
+    "Asia/Jerusalem",
+    "Asia/Kabul",
+    "Asia/Kamchatka",
+    "Asia/Karachi",
+    "Asia/Kathmandu",
+    "Asia/Khandyga",
+    "Asia/Kolkata",
+    "Asia/Krasnoyarsk",
+    "Asia/Kuching",
+    "Asia/Macau",
+    "Asia/Magadan",
+    "Asia/Makassar",
+    "Asia/Manila",
+    "Asia/Nicosia",
+    "Asia/Novokuznetsk",
+    "Asia/Novosibirsk",
+    "Asia/Omsk",
+    "Asia/Oral",
+    "Asia/Pontianak",
+    "Asia/Pyongyang",
+    "Asia/Qatar",
+    "Asia/Qostanay",
+    "Asia/Qyzylorda",
+    "Asia/Riyadh",
+    "Asia/Sakhalin",
+    "Asia/Samarkand",
+    "Asia/Seoul",
+    "Asia/Shanghai",
+    "Asia/Singapore",
+    "Asia/Srednekolymsk",
+    "Asia/Taipei",
+    "Asia/Tashkent",
+    "Asia/Tbilisi",
+    "Asia/Tehran",
+    "Asia/Thimphu",
+    "Asia/Tokyo",
+    "Asia/Tomsk",
+    "Asia/Ulaanbaatar",
+    "Asia/Urumqi",
+    "Asia/Ust-Nera",
+    "Asia/Vladivostok",
+    "Asia/Yakutsk",
+    "Asia/Yangon",
+    "Asia/Yekaterinburg",
+    "Asia/Yerevan",
+    "Atlantic/Azores",
+    "Atlantic/Bermuda",
+    "Atlantic/Canary",
+    "Atlantic/Cape_Verde",
+    "Atlantic/Faroe",
+    "Atlantic/Madeira",
+    "Atlantic/South_Georgia",
+    "Atlantic/Stanley",
+    "Australia/Adelaide",
+    "Australia/Brisbane",
+    "Australia/Broken_Hill",
+    "Australia/Darwin",
+    "Australia/Eucla",
+    "Australia/Hobart",
+    "Australia/Lindeman",
+    "Australia/Lord_Howe",
+    "Australia/Melbourne",
+    "Australia/Perth",
+    "Australia/Sydney",
+    "Europe/Andorra",
+    "Europe/Astrakhan",
+    "Europe/Athens",
+    "Europe/Belgrade",
+    "Europe/Berlin",
+    "Europe/Brussels",
+    "Europe/Bucharest",
+    "Europe/Budapest",
+    "Europe/Chisinau",
+    "Europe/Dublin",
+    "Europe/Gibraltar",
+    "Europe/Helsinki",
+    "Europe/Istanbul",
+    "Europe/Kaliningrad",
+    "Europe/Kirov",
+    "Europe/Kyiv",
+    "Europe/Lisbon",
+    "Europe/London",
+    "Europe/Madrid",
+    "Europe/Malta",
+    "Europe/Minsk",
+    "Europe/Moscow",
+    "Europe/Paris",
+    "Europe/Prague",
+    "Europe/Riga",
+    "Europe/Rome",
+    "Europe/Samara",
+    "Europe/Saratov",
+    "Europe/Simferopol",
+    "Europe/Sofia",
+    "Europe/Tallinn",
+    "Europe/Tirane",
+    "Europe/Ulyanovsk",
+    "Europe/Vienna",
+    "Europe/Vilnius",
+    "Europe/Volgograd",
+    "Europe/Warsaw",
+    "Europe/Zurich",
+    "Indian/Chagos",
+    "Indian/Maldives",
+    "Indian/Mauritius",
+    "Pacific/Apia",
+    "Pacific/Auckland",
+    "Pacific/Bougainville",
+    "Pacific/Chatham",
+    "Pacific/Easter",
+    "Pacific/Efate",
+    "Pacific/Fakaofo",
+    "Pacific/Fiji",
+    "Pacific/Galapagos",
+    "Pacific/Gambier",
+    "Pacific/Guadalcanal",
+    "Pacific/Guam",
+    "Pacific/Honolulu",
+    "Pacific/Kanton",
+    "Pacific/Kiritimati",
+    "Pacific/Kosrae",
+    "Pacific/Kwajalein",
+    "Pacific/Marquesas",
+    "Pacific/Nauru",
+    "Pacific/Niue",
+    "Pacific/Norfolk",
+    "Pacific/Noumea",
+    "Pacific/Pago_Pago",
+    "Pacific/Palau",
+    "Pacific/Pitcairn",
+    "Pacific/Port_Moresby",
+    "Pacific/Rarotonga",
+    "Pacific/Tahiti",
+    "Pacific/Tarawa",
+    "Pacific/Tongatapu"
+]);
+
+const fixedOffsetTimezoneOptions = Object.freeze([
+    "-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:00", "-01:00", "+00:00", "+01:00", "+02:00", "+03:00", "+03:30", "+04:00", "+04:30", "+05:00", "+05:30", "+05:45", "+06:00", "+06:30", "+07:00", "+08:00", "+08:45", "+09:00", "+09:30", "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+14:00"
+]);
+
 const blackoutEditors = {
     policy: {
         rows: [],
@@ -34,6 +356,87 @@ const policyFormState = {
     weekdays: []
 };
 
+function browserSupportedTimezones() {
+    try {
+        if (typeof Intl === "undefined" || typeof Intl.supportedValuesOf !== "function") {
+            return [];
+        }
+        return Intl.supportedValuesOf("timeZone");
+    } catch (_) {
+        return [];
+    }
+}
+
+function timezoneOptionLabel(timezone) {
+    if (timezone === "Local") return "Local system timezone";
+    if (timezone === "UTC") return "UTC";
+    if (/^[+-]\d{2}:\d{2}$/.test(timezone)) return `Fixed UTC offset ${timezone}`;
+    return timezone.replace(/_/g, " ");
+}
+
+function ensureTimezoneSelectHasValue(value) {
+    const select = document.getElementById("app-timezone-input");
+    if (!select) return;
+    const timezone = String(value || "").trim();
+    if (!timezone) return;
+    const exists = Array.from(select.options || []).some((option) => option.value === timezone);
+    if (exists) return;
+    const option = document.createElement("option");
+    option.value = timezone;
+    option.textContent = `${timezoneOptionLabel(timezone)} (saved)`;
+    select.appendChild(option);
+}
+
+function populateTimezonePicker() {
+    const select = document.getElementById("app-timezone-input");
+    if (!select) return;
+    const currentValue = select.value || scheduledPoliciesState.editableTimezone || "";
+    const combined = [
+        "",
+        "Local",
+        "UTC",
+        ...browserSupportedTimezones(),
+        ...ianaTimezoneOptions,
+        ...fixedOffsetTimezoneOptions
+    ];
+    const seen = new Set();
+    const options = [];
+    combined.forEach((timezone) => {
+        const value = String(timezone || "").trim();
+        if (seen.has(value)) return;
+        seen.add(value);
+        options.push(value);
+    });
+    const priority = new Map([
+        ["Local", 0],
+        ["UTC", 1],
+        ["America/Toronto", 2],
+        ["America/New_York", 3],
+        ["America/Chicago", 4],
+        ["America/Denver", 5],
+        ["America/Los_Angeles", 6],
+        ["Europe/London", 7],
+        ["Europe/Paris", 8]
+    ]);
+    options.sort((a, b) => {
+        if (a === "") return -1;
+        if (b === "") return 1;
+        const aRank = priority.has(a) ? priority.get(a) : 100;
+        const bRank = priority.has(b) ? priority.get(b) : 100;
+        if (aRank !== bRank) return aRank - bRank;
+        return a.localeCompare(b);
+    });
+    select.innerHTML = options.map((timezone) => (
+        `<option value="${escapeHtml(timezone)}">${escapeHtml(timezone === "" ? "System default timezone" : timezoneOptionLabel(timezone))}</option>`
+    )).join("");
+    ensureTimezoneSelectHasValue(currentValue);
+    select.value = currentValue;
+    const note = document.getElementById("app-timezone-picker-note");
+    if (note) {
+        note.innerHTML = `Pick from ${options.length} IANA/fixed timezone choices, including <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.`;
+    }
+}
+
 function applyScheduledTimezone(payload) {
     const timezoneState = window.setAppTimezoneCache
         ? window.setAppTimezoneCache(payload)
@@ -52,6 +455,7 @@ function applyScheduledTimezone(payload) {
     }
     const timezoneInput = document.getElementById("app-timezone-input");
     if (timezoneInput && document.activeElement !== timezoneInput) {
+        ensureTimezoneSelectHasValue(scheduledPoliciesState.editableTimezone);
         timezoneInput.value = scheduledPoliciesState.editableTimezone;
     }
     updatePolicySummary();
@@ -828,9 +1232,12 @@ function renderPolicySchedule(policy) {
 function renderMatchedServers(policy) {
     const matchedServers = Array.isArray(policy.matched_servers) ? policy.matched_servers : [];
     if (!matchedServers.length) {
+        const emptyMessage = policy && policy.enabled === false
+            ? "Disabled policies do not match servers until enabled."
+            : "No current server matches this target.";
         return `
             <div><span class="pill pill-muted">0 matched</span></div>
-            <div class="table-secondary">No current server matches this tag.</div>
+            <div class="table-secondary">${escapeHtml(emptyMessage)}</div>
         `;
     }
     return `
@@ -1325,6 +1732,7 @@ document.getElementById("policy-blackout-rows").addEventListener("input", handle
 document.getElementById("global-blackout-rows").addEventListener("input", handleBlackoutEditorInput);
 
 bindPolicyFormInteractions();
+populateTimezonePicker();
 resetPolicyForm();
 fetchMetricsTokenStatus();
 fetchAuthSessionStatus();

@@ -108,6 +108,7 @@ type ServerFactsRecord struct {
 	UptimeSeconds  int64  `json:"uptime_seconds"`
 	DiskStatus     string `json:"disk_status"`
 	DiskFreeKB     int64  `json:"disk_free_kb"`
+	DiskTotalKB    int64  `json:"disk_total_kb"`
 	DiskDetails    string `json:"disk_details"`
 	AptStatus      string `json:"apt_status"`
 	AptDetails     string `json:"apt_details"`

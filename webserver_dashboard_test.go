@@ -234,6 +234,7 @@ func TestDiskFreeKBFromOutputPreservesZeroMinimum(t *testing.T) {
 	}{
 		{name: "zero before positive", output: "0\n2097152\n", want: 0, wantOK: true},
 		{name: "zero after positive", output: "2097152\n0\n", want: 0, wantOK: true},
+		{name: "total and free pairs", output: "41943040 2097152\n10485760 3145728\n", want: 2097152, wantOK: true},
 		{name: "ignores labels", output: "available_kb\n1024\n", want: 1024, wantOK: true},
 		{name: "missing values", output: "", want: 0, wantOK: false},
 	}
@@ -245,6 +246,17 @@ func TestDiskFreeKBFromOutputPreservesZeroMinimum(t *testing.T) {
 				t.Fatalf("diskFreeKBFromOutput(%q) = %d/%v, want %d/%v", tt.output, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+func TestDiskFreeTotalKBFromOutputUsesLowestFreeFilesystem(t *testing.T) {
+	freeKB, totalKB, ok := diskFreeTotalKBFromOutput("41943040 2097152\n10485760 3145728\n")
+	if !ok || freeKB != 2097152 || totalKB != 41943040 {
+		t.Fatalf("diskFreeTotalKBFromOutput() = %d/%d/%v, want 2097152/41943040/true", freeKB, totalKB, ok)
+	}
+	_, _, ok = diskFreeTotalKBFromOutput("2097152\n3145728\n")
+	if ok {
+		t.Fatalf("diskFreeTotalKBFromOutput() ok = true for legacy free-only output, want false")
 	}
 }
 
@@ -497,7 +509,7 @@ func TestCollectServerFactsWithConnectionParsesHostFacts(t *testing.T) {
 			responses: map[string]scriptedResponse{
 				serverFactsOSCmd:           {stdout: "Ubuntu 24.04 LTS\n"},
 				serverFactsUptimeCmd:       {stdout: "12345.67 100.00\n"},
-				precheckDiskSpaceCmd:       {stdout: "2097152\n3145728\n"},
+				precheckDiskSpaceCmd:       {stdout: "41943040 2097152\n10485760 3145728\n"},
 				precheckDpkgAuditCmd:       {},
 				precheckAptCheckCmd:        {},
 				postcheckRebootRequiredCmd: {stdout: "System restart required\n"},
@@ -511,8 +523,8 @@ func TestCollectServerFactsWithConnectionParsesHostFacts(t *testing.T) {
 		if got.UptimeSeconds != 12345 {
 			t.Fatalf("UptimeSeconds = %d, want 12345", got.UptimeSeconds)
 		}
-		if got.DiskStatus != "ok" || got.DiskFreeKB != 2097152 {
-			t.Fatalf("disk = %s/%d, want ok/2097152", got.DiskStatus, got.DiskFreeKB)
+		if got.DiskStatus != "ok" || got.DiskFreeKB != 2097152 || got.DiskTotalKB != 41943040 {
+			t.Fatalf("disk = %s/%d/%d, want ok/2097152/41943040", got.DiskStatus, got.DiskFreeKB, got.DiskTotalKB)
 		}
 		if got.AptStatus != "ok" {
 			t.Fatalf("AptStatus = %q, want ok", got.AptStatus)

@@ -446,6 +446,101 @@ func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
 	}
 }
 
+func TestAppScopedBackupRestoreClearsMetricsTokenCache(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	dbFile := filepath.Join(t.TempDir(), "restore-metrics-cache.db")
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+
+	servers = []Server{{Name: "srv-cache", Host: "example.org", Port: 22, User: "root", Pass: "pw"}}
+	if err := saveServers(); err != nil {
+		t.Fatalf("saveServers() unexpected error: %v", err)
+	}
+	dbSnapshot, err := createDBBackupSnapshot()
+	if err != nil {
+		t.Fatalf("createDBBackupSnapshot() unexpected error: %v", err)
+	}
+	configData, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
+	}
+
+	deps := AppDeps{}.withDefaults()
+	deps.MetricsTokenService.RestoreCache("stale-token-hash", true, dbPath())
+	if hash, loaded, _ := deps.MetricsTokenService.SnapshotCache(); hash != "stale-token-hash" || !loaded {
+		t.Fatalf("metrics token cache was not primed: hash=%q loaded=%t", hash, loaded)
+	}
+
+	if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{
+		"servers.db":  dbSnapshot,
+		"config.json": configData,
+	}); err != nil {
+		t.Fatalf("ApplyFiles() unexpected error: %v", err)
+	}
+	if hash, loaded, cachePath := deps.MetricsTokenService.SnapshotCache(); hash != "" || loaded || cachePath != "" {
+		t.Fatalf("metrics token cache after restore = hash %q loaded %t path %q, want cleared", hash, loaded, cachePath)
+	}
+}
+
+func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	dbFile := filepath.Join(t.TempDir(), "restore-app-runtime.db")
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+
+	routeState := newServerState()
+	deps := AppDeps{ServerState: routeState}.withDefaults()
+	if _, err := setupRouterWithDeps(deps); err != nil {
+		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)
+	}
+	initialSessionManager := deps.CurrentSessionManager()
+	if initialSessionManager == nil {
+		t.Fatalf("app-scoped session manager was not initialized")
+	}
+
+	backupKey := append([]byte(nil), getEncryptionKey()...)
+	restoredServer := Server{
+		Name: "srv-restored-runtime",
+		Host: "runtime-restored.example.org",
+		Port: 2202,
+		User: "root",
+		Pass: "restored-password",
+		Key:  "restored-private-key",
+		Tags: []string{"restored"},
+	}
+	backupDB := buildBackupDatabaseDataWithKey(t, backupKey, restoredServer, "")
+	backupConfig, err := json.Marshal(map[string]string{
+		"encryption_key": base64.StdEncoding.EncodeToString(backupKey),
+	})
+	if err != nil {
+		t.Fatalf("marshal backup config: %v", err)
+	}
+
+	if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{
+		"servers.db":  backupDB,
+		"config.json": backupConfig,
+	}); err != nil {
+		t.Fatalf("ApplyFiles() unexpected error: %v", err)
+	}
+	loaded := deps.ServerState.CloneServers()
+	if len(loaded) != 1 || loaded[0].Name != restoredServer.Name || loaded[0].Pass != restoredServer.Pass || loaded[0].Key != restoredServer.Key {
+		t.Fatalf("app-scoped servers after restore = %+v, want restored server", loaded)
+	}
+	status := deps.ServerState.CurrentStatusSnapshot(restoredServer.Name)
+	if status == nil || status.Status != "idle" || status.HasPassword != true || status.HasKey != true {
+		t.Fatalf("app-scoped status after restore = %+v, want idle restored credentials", status)
+	}
+	if got := deps.CurrentSessionManager(); got == nil || got == initialSessionManager {
+		t.Fatalf("app-scoped session manager after restore = %p, want fresh manager different from %p", got, initialSessionManager)
+	}
+}
+
 func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
@@ -795,7 +890,11 @@ func TestBackupRoutesRejectWhileServerActionsAreActive(t *testing.T) {
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-busy-actions.db"))
 
-	r, err := setupRouter()
+	routeState := newServerState()
+	r, err := setupRouterWithDeps(AppDeps{
+		ServerState:            routeState,
+		ServerInventoryService: newServerInventoryServiceWithState(routeState),
+	})
 	if err != nil {
 		t.Fatalf("setupRouter() unexpected error: %v", err)
 	}
@@ -812,12 +911,12 @@ func TestBackupRoutesRejectWhileServerActionsAreActive(t *testing.T) {
 	}
 	sessionCookie := testSessionCookieFromRecorder(t, rec)
 
-	mu.Lock()
-	servers = []Server{{Name: "srv-busy", Host: "example.org", Port: 22, User: "root", Pass: "pw"}}
-	statusMap = map[string]*ServerStatus{
+	routeState.Lock()
+	routeState.SetServers([]Server{{Name: "srv-busy", Host: "example.org", Port: 22, User: "root", Pass: "pw"}})
+	routeState.SetStatusMap(map[string]*ServerStatus{
 		"srv-busy": {Name: "srv-busy", Status: "pending_approval", Upgradable: []string{"openssl"}},
-	}
-	mu.Unlock()
+	})
+	routeState.Unlock()
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/backup/export", bytes.NewBufferString(`{"passphrase":"very-strong-passphrase"}`))

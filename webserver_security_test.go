@@ -786,10 +786,11 @@ func TestSaveServersOrRollbackLockedOnFailure(t *testing.T) {
 	servers = append(servers, Server{Name: "srv-b", Host: "b.example", Port: 22, User: "user-b"})
 	statusMap["srv-b"] = &ServerStatus{Name: "srv-b", Status: "idle", Upgradable: []string{}}
 
-	saveServersFunc = func() error {
+	service := newServerInventoryService()
+	service.SetSaveOverride(func() error {
 		return errors.New("forced save failure")
-	}
-	err := saveServersOrRollbackLocked(prevServers, prevStatusMap)
+	})
+	err := service.SaveOrRollbackLocked(prevServers, prevStatusMap, nil)
 	if err == nil {
 		mu.Unlock()
 		t.Fatalf("saveServersOrRollbackLocked() error = nil, want non-nil")

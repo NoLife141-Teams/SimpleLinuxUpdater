@@ -12,6 +12,7 @@ import (
 	"time"
 
 	authpkg "debian-updater/internal/auth"
+	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
@@ -49,10 +50,12 @@ type AuthRateBucket = authpkg.RateBucket
 type AuthCredentialsRequest = authpkg.CredentialsRequest
 type AuthPasswordChangeRequest = authpkg.PasswordChangeRequest
 
-var authService = NewAuthService(getDB)
-
 func NewAuthService(db authpkg.DBProvider) *AuthService {
 	return authpkg.NewService(authpkg.ServiceOptions{DB: db})
+}
+
+func defaultAuthService() *AuthService {
+	return NewAuthService(getDB)
 }
 
 func NewAuthRateLimiter(window time.Duration, max int) *AuthRateLimiter {
@@ -82,6 +85,9 @@ const authRuntimeDepsContextKey = "auth_runtime_deps"
 
 type authRuntimeDeps struct {
 	service                   *AuthService
+	auditService              *AuditService
+	serverState               *serverpkg.State
+	sessionManager            func() *scs.SessionManager
 	loginRateLimiter          *AuthRateLimiter
 	passwordChangeRateLimiter *AuthRateLimiter
 	setupRateLimiter          *AuthRateLimiter
@@ -91,6 +97,9 @@ func authRuntimeMiddleware(deps AppDeps) gin.HandlerFunc {
 	deps = deps.withDefaults()
 	runtime := authRuntimeDeps{
 		service:                   deps.AuthService,
+		auditService:              deps.AuditService,
+		serverState:               deps.ServerState,
+		sessionManager:            deps.CurrentSessionManager,
 		loginRateLimiter:          deps.LoginRateLimiter,
 		passwordChangeRateLimiter: deps.PasswordChangeRateLimiter,
 		setupRateLimiter:          deps.SetupRateLimiter,
@@ -117,10 +126,29 @@ func authServiceForContext(c *gin.Context) *AuthService {
 	if runtime, ok := authRuntimeFromContext(c); ok && runtime.service != nil {
 		return runtime.service
 	}
-	return authService
+	return defaultAuthService()
+}
+
+func auditServiceForContext(c *gin.Context) *AuditService {
+	if runtime, ok := authRuntimeFromContext(c); ok && runtime.auditService != nil {
+		return runtime.auditService
+	}
+	return nil
+}
+
+func serverStateForContext(c *gin.Context) *serverpkg.State {
+	if runtime, ok := authRuntimeFromContext(c); ok && runtime.serverState != nil {
+		return runtime.serverState
+	}
+	return nil
 }
 
 func sessionManagerForContext(c *gin.Context) *scs.SessionManager {
+	if runtime, ok := authRuntimeFromContext(c); ok && runtime.sessionManager != nil {
+		if sm := runtime.sessionManager(); sm != nil {
+			return sm
+		}
+	}
 	return currentSessionManager()
 }
 
@@ -214,7 +242,7 @@ func sessionHandler(next http.Handler) http.Handler {
 }
 
 func setupRequired() (bool, error) {
-	return authService.SetupRequired()
+	return defaultAuthService().SetupRequired()
 }
 
 func setupRequiredForContext(c *gin.Context) (bool, error) {
@@ -222,19 +250,19 @@ func setupRequiredForContext(c *gin.Context) (bool, error) {
 }
 
 func getSingleUser() (username, passwordHash string, exists bool, err error) {
-	return authService.GetSingleUser()
+	return defaultAuthService().GetSingleUser()
 }
 
 func validatePasswordPolicy(password string) error {
-	return authService.ValidatePasswordPolicy(password)
+	return defaultAuthService().ValidatePasswordPolicy(password)
 }
 
 func validateAuthUsername(username string) error {
-	return authService.ValidateUsername(username)
+	return defaultAuthService().ValidateUsername(username)
 }
 
 func createInitialUser(username, password string) error {
-	return authService.CreateInitialUser(username, password)
+	return defaultAuthService().CreateInitialUser(username, password)
 }
 
 func createInitialUserForContext(c *gin.Context, username, password string) error {
@@ -242,16 +270,11 @@ func createInitialUserForContext(c *gin.Context, username, password string) erro
 }
 
 func authenticateUser(username, password string) (bool, error) {
-	return authService.Authenticate(username, password)
+	return defaultAuthService().Authenticate(username, password)
 }
 
 func authenticateUserForContext(c *gin.Context, username, password string) (bool, error) {
 	return authServiceForContext(c).Authenticate(username, password)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional call sites.
-func changeSingleUserPassword(currentPassword, newPassword, confirmPassword string) error {
-	return authService.ChangePassword(currentPassword, newPassword, confirmPassword)
 }
 
 func changeSingleUserPasswordForContext(c *gin.Context, currentPassword, newPassword, confirmPassword string) error {
@@ -259,16 +282,11 @@ func changeSingleUserPasswordForContext(c *gin.Context, currentPassword, newPass
 }
 
 func countStoredSessions() (int, error) {
-	return authService.CountSessions()
+	return defaultAuthService().CountSessions()
 }
 
 func countStoredSessionsForContext(c *gin.Context) (int, error) {
 	return authServiceForContext(c).CountSessions()
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional call sites.
-func clearStoredSessions() (int64, error) {
-	return authService.ClearSessions()
 }
 
 func clearStoredSessionsForContext(c *gin.Context) (int64, error) {
@@ -276,7 +294,25 @@ func clearStoredSessionsForContext(c *gin.Context) (int64, error) {
 }
 
 func sessionUsername(c *gin.Context) string {
-	return authpkg.SessionUsername(c, sessionManagerForContext(c))
+	if runtime, ok := authRuntimeFromContext(c); ok && runtime.sessionManager != nil {
+		if sm := runtime.sessionManager(); sm != nil {
+			if username, ok := sessionUsernameWithManager(c, sm); ok {
+				return username
+			}
+		}
+	}
+	username, _ := sessionUsernameWithManager(c, currentSessionManager())
+	return username
+}
+
+func sessionUsernameWithManager(c *gin.Context, sm *scs.SessionManager) (username string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			username = ""
+			ok = false
+		}
+	}()
+	return authpkg.SessionUsername(c, sm), true
 }
 
 func currentSessionManager() *scs.SessionManager {
@@ -378,6 +414,10 @@ func metricsBearerMiddleware() gin.HandlerFunc {
 }
 
 func metricsBearerMiddlewareWithService(service *MetricsTokenService) gin.HandlerFunc {
+	return metricsBearerMiddlewareWithServiceAndLimiter(service, nil)
+}
+
+func metricsBearerMiddlewareWithServiceAndLimiter(service *MetricsTokenService, limiter *AuthRateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := service
 		if svc == nil {
@@ -392,7 +432,11 @@ func metricsBearerMiddlewareWithService(service *MetricsTokenService) gin.Handle
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if metricsRateLimiter != nil && !metricsRateLimiter.Allow(rateLimitClientIP(c)) {
+		activeLimiter := limiter
+		if activeLimiter == nil {
+			activeLimiter = metricsRateLimiter
+		}
+		if activeLimiter != nil && !activeLimiter.Allow(rateLimitClientIP(c)) {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
 			return
 		}
@@ -559,7 +603,7 @@ func handleAuthSessionsClear(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear sessions"})
 		return
 	}
-	auditWithActor(actor, clientIPFromContext(c), "auth.sessions.clear", "auth_user", actor, "success", "All sessions cleared", map[string]any{"deleted_sessions": deleted})
+	audit(c, "auth.sessions.clear", "auth_user", actor, "success", "All sessions cleared", map[string]any{"deleted_sessions": deleted})
 	c.JSON(http.StatusOK, gin.H{"message": "sessions cleared", "deleted_sessions": deleted})
 }
 
@@ -679,7 +723,7 @@ func handleAuthLogin(c *gin.Context) {
 		return
 	}
 	if !ok {
-		auditWithActor("unknown", clientIPFromContext(c), "auth.login", "auth_user", username, "failure", "Invalid credentials", nil)
+		audit(c, "auth.login", "auth_user", username, "failure", "Invalid credentials", nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -718,6 +762,6 @@ func handleAuthLogout(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to logout"})
 		return
 	}
-	auditWithActor(actor, clientIPFromContext(c), "auth.logout", "auth_user", actor, "success", "User logged out", nil)
+	audit(c, "auth.logout", "auth_user", actor, "success", "User logged out", nil)
 	c.JSON(http.StatusOK, gin.H{"message": "logout successful"})
 }

@@ -21,11 +21,14 @@ type ObservabilityService = observabilitypkg.Service
 type MetricsTokenDeps = observabilitypkg.MetricsTokenDeps
 type MetricsTokenService = observabilitypkg.MetricsTokenService
 
-var observabilityService = NewObservabilityService(ObservabilityServiceDeps{})
 var metricsTokenService = NewMetricsTokenService(MetricsTokenDeps{})
 
 func NewObservabilityService(deps ObservabilityServiceDeps) *ObservabilityService {
 	return observabilitypkg.NewService(observabilityServiceDepsWithDefaults(deps))
+}
+
+func defaultObservabilityService() *ObservabilityService {
+	return NewObservabilityService(ObservabilityServiceDeps{})
 }
 
 func NewMetricsTokenService(deps MetricsTokenDeps) *MetricsTokenService {
@@ -167,7 +170,7 @@ func observabilityServerSnapshot() ([]Server, map[string]*ServerStatus) {
 }
 
 func buildObservabilitySummary(rawWindow string, now time.Time) (observabilitySummaryResponse, error) {
-	return observabilityService.BuildSummary(rawWindow, now)
+	return defaultObservabilityService().BuildSummary(rawWindow, now)
 }
 
 func updateHealthFromResults(health *dashboardHealthInfo, results []updatePrecheckResult, source, collectedAt string) {
@@ -175,7 +178,7 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 }
 
 func buildDashboardSummary(rawWindow string, now time.Time) (dashboardSummaryResponse, error) {
-	return observabilityService.BuildDashboardSummary(rawWindow, now)
+	return defaultObservabilityService().BuildDashboardSummary(rawWindow, now)
 }
 
 func getMetricsBearerTokenHash() string {
@@ -191,15 +194,6 @@ func getMetricsBearerTokenHash() string {
 	tokenHash := metricsTokenService.Hash()
 	syncMetricsTokenGlobals(metricsTokenService)
 	return tokenHash
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional metrics-token tests.
-func setMetricsBearerTokenHash(tokenHash string) error {
-	if err := metricsTokenService.SetHash(tokenHash); err != nil {
-		return err
-	}
-	syncMetricsTokenGlobals(metricsTokenService)
-	return nil
 }
 
 func clearMetricsBearerTokenHash() error {

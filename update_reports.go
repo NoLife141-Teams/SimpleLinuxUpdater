@@ -28,19 +28,9 @@ func writeMarkdownDownload(c *gin.Context, filename string, body string) {
 	c.String(http.StatusOK, body)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional report call sites.
-func loadAuditEventByID(id string) (AuditEvent, error) {
-	return auditService.LoadByID(id)
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleAuditReport(c *gin.Context) {
-	handleAuditReportWithService(c, auditService)
-}
-
 func handleAuditReportWithService(c *gin.Context, service *AuditService) {
 	if service == nil {
-		service = auditService
+		service = NewDefaultAppDeps().AuditService
 	}
 	evt, err := service.LoadByID(c.Param("id"))
 	if err != nil {
@@ -52,21 +42,6 @@ func handleAuditReportWithService(c *gin.Context, service *AuditService) {
 		return
 	}
 	writeMarkdownDownload(c, markdownReportFilename("audit", fmt.Sprintf("%d", evt.ID)), service.BuildAuditMarkdownReport(evt))
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional report call sites.
-func buildAuditMarkdownReport(evt AuditEvent) string {
-	return auditService.BuildAuditMarkdownReport(evt)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional report call sites.
-func buildJobMarkdownReport(job JobRecord) string {
-	return auditService.BuildJobMarkdownReport(job)
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleJobReport(c *gin.Context) {
-	handleJobReportWithDeps(c, NewDefaultAppDeps())
 }
 
 func handleJobReportWithDeps(c *gin.Context, deps AppDeps) {

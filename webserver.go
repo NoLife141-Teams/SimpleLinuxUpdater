@@ -180,12 +180,6 @@ func startTrackedActionRunner(run func()) {
 	}()
 }
 
-func startUpdateRunner(server Server, actor, clientIP string, policy RetryPolicy, jobID string) {
-	startJobRunner(jobID, func() {
-		runUpdateJobWithActor(server, actor, clientIP, policy, jobID)
-	})
-}
-
 func waitForUpdateRunners() {
 	updateRunnerWG.Wait()
 }
@@ -1181,12 +1175,12 @@ func runUpdatePrechecks(client sshConnection) updatePrecheckSummary {
 }
 
 func handleAuditEvents(c *gin.Context) {
-	handleAuditEventsWithService(c, auditService)
+	handleAuditEventsWithService(c, defaultAuditService())
 }
 
 func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	if service == nil {
-		service = auditService
+		service = defaultAuditService()
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
@@ -1256,11 +1250,6 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	})
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleDashboardEvents(c *gin.Context) {
-	handleDashboardEventsWithBroker(c, dashboardEventBroker)
-}
-
 func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -1305,7 +1294,7 @@ func handleObservabilitySummary(c *gin.Context) {
 }
 
 func handleObservabilitySummaryWithNow(c *gin.Context, now func() time.Time) {
-	handleObservabilitySummaryWithService(c, observabilityService, now)
+	handleObservabilitySummaryWithService(c, defaultObservabilityService(), now)
 }
 
 func handleObservabilitySummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
@@ -1313,7 +1302,7 @@ func handleObservabilitySummaryWithService(c *gin.Context, service *Observabilit
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	if service == nil {
-		service = observabilityService
+		service = defaultObservabilityService()
 	}
 	window := c.Query("window")
 	summary, err := service.BuildSummary(window, now())
@@ -1465,12 +1454,13 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-func refreshServerFacts(server Server) (serverFactsRecord, error) {
-	authMethods, err := buildAuthMethods(server)
+func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
+	deps = updateServiceDepsWithDefaults(deps)
+	authMethods, err := deps.BuildAuthMethods(server)
 	if err != nil {
 		return serverFactsRecord{}, err
 	}
-	hostKeyCallback, err := getHostKeyCallback()
+	hostKeyCallback, err := deps.HostKeyCallback()
 	if err != nil {
 		return serverFactsRecord{}, err
 	}
@@ -1478,30 +1468,38 @@ func refreshServerFacts(server Server) (serverFactsRecord, error) {
 		User:            server.User,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         sshConnectTimeout,
+		Timeout:         deps.SSHConnectTimeout,
 	}
-	conn, err := getDialSSHConnection()(server, config)
+	conn, err := deps.DialSSH(server, config)
 	if err != nil {
 		return serverFactsRecord{}, err
 	}
 	defer conn.Close()
-	record := collectServerFactsWithConnection(server, conn, loadSSHCommandTimeoutFromEnv())
-	if err := saveServerFacts(record); err != nil {
+	record := deps.CollectServerFacts(server, conn, deps.LoadCommandTimeout())
+	if err := deps.SaveServerFacts(record); err != nil {
 		return serverFactsRecord{}, err
 	}
 	return record, nil
 }
 
-func handleServerFactsRefresh(c *gin.Context) {
+func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
 	name := strings.TrimSpace(c.Param("name"))
-	server, preRefreshStatus, err := beginServerTransientAction(name, "facts_refresh")
+	state := deps.ServerState
+	if state == nil {
+		state = serverStateForContext(c)
+	}
+	if state == nil {
+		state = globalServerState()
+	}
+	server, preRefreshStatus, err := state.BeginTransientAction(name, "facts_refresh")
 	if errors.Is(err, sql.ErrNoRows) {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
 		return
 	}
 	if errors.Is(err, errActionInProgress) {
-		_, status := serverActionStatusInProgress(name)
+		_, status := state.ActionStatusInProgress(name)
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
 		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
 		return
@@ -1511,9 +1509,9 @@ func handleServerFactsRefresh(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start host facts refresh"})
 		return
 	}
-	defer restoreStatusSnapshot(name, preRefreshStatus)
+	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
 
-	record, err := refreshServerFacts(server)
+	record, err := refreshServerFactsWithUpdateDeps(server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh failed", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh host facts: %v", err)})
@@ -1530,21 +1528,12 @@ func handleServerFactsRefresh(c *gin.Context) {
 	c.JSON(http.StatusOK, record)
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleDashboardSummary(c *gin.Context) {
-	handleDashboardSummaryWithNow(c, func() time.Time { return time.Now().UTC() })
-}
-
-func handleDashboardSummaryWithNow(c *gin.Context, now func() time.Time) {
-	handleDashboardSummaryWithService(c, observabilityService, now)
-}
-
 func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	if service == nil {
-		service = observabilityService
+		service = defaultObservabilityService()
 	}
 	summary, err := service.BuildDashboardSummary(c.Query("window"), now())
 	if err != nil {
@@ -1560,12 +1549,12 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 }
 
 func handleMetrics(c *gin.Context) {
-	handleMetricsWithService(c, observabilityService)
+	handleMetricsWithService(c, defaultObservabilityService())
 }
 
 func handleMetricsWithService(c *gin.Context, service *ObservabilityService) {
 	if service == nil {
-		service = observabilityService
+		service = defaultObservabilityService()
 	}
 	body, err := service.BuildMetrics(time.Now().UTC())
 	if err != nil {
@@ -1573,11 +1562,6 @@ func handleMetricsWithService(c *gin.Context, service *ObservabilityService) {
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(body))
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleMetricsTokenStatus(c *gin.Context) {
-	handleMetricsTokenStatusWithService(c, metricsTokenService)
 }
 
 func handleMetricsTokenStatusWithService(c *gin.Context, service *MetricsTokenService) {
@@ -1589,11 +1573,6 @@ func handleMetricsTokenStatusWithService(c *gin.Context, service *MetricsTokenSe
 		syncMetricsTokenGlobals(service)
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleMetricsTokenRotate(c *gin.Context) {
-	handleMetricsTokenRotateWithService(c, metricsTokenService)
 }
 
 func handleMetricsTokenRotateWithService(c *gin.Context, service *MetricsTokenService) {
@@ -1611,11 +1590,6 @@ func handleMetricsTokenRotateWithService(c *gin.Context, service *MetricsTokenSe
 	}
 	audit(c, "metrics.token.rotate", "metrics_token", "metrics", "success", "Metrics API token rotated", nil)
 	c.JSON(http.StatusOK, gin.H{"enabled": true, "token": token})
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleMetricsTokenClear(c *gin.Context) {
-	handleMetricsTokenClearWithService(c, metricsTokenService)
 }
 
 func handleMetricsTokenClearWithService(c *gin.Context, service *MetricsTokenService) {
@@ -1654,6 +1628,12 @@ func clientIPFromContext(c *gin.Context) string {
 }
 
 func audit(c *gin.Context, action, targetType, targetName, status, message string, meta map[string]any) {
+	if service := auditServiceForContext(c); service != nil {
+		if err := service.Record(actorFromContext(c), clientIPFromContext(c), action, targetType, targetName, status, message, meta); err != nil {
+			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
+		}
+		return
+	}
 	auditWithActor(actorFromContext(c), clientIPFromContext(c), action, targetType, targetName, status, message, meta)
 }
 
@@ -1749,6 +1729,13 @@ func decryptSecretWithKey(encoded string, key []byte) (string, error) {
 }
 
 func loadLegacyServers() bool {
+	return loadLegacyServersIntoService(newServerInventoryServiceWithState(globalServerState()), globalServerState())
+}
+
+func loadLegacyServersIntoService(service *ServerInventoryService, state *serverpkg.State) bool {
+	if service == nil || state == nil {
+		return false
+	}
 	paths := []string{}
 	if dirExists("/data") {
 		paths = append(paths, filepath.Join("/data", legacyServersFileName))
@@ -1767,8 +1754,14 @@ func loadLegacyServers() bool {
 		if len(legacy) == 0 {
 			continue
 		}
-		servers = legacy
-		if err := saveServersFunc(); err != nil {
+		state.Lock()
+		prevServers := state.CloneServers()
+		state.SetServers(legacy)
+		state.Unlock()
+		if err := service.SaveWithTxHook(nil); err != nil {
+			state.Lock()
+			state.SetServers(prevServers)
+			state.Unlock()
 			log.Printf("Failed to import legacy servers from %s: %v", path, err)
 			continue
 		}
@@ -1779,25 +1772,18 @@ func loadLegacyServers() bool {
 }
 
 func loadServers() {
-	serverInventoryService.Load()
+	service := newServerInventoryService()
+	service.Load()
 }
 
 type saveServersTxHook func(*sql.Tx) error
 
 func saveServersWithTxHook(txHook saveServersTxHook) error {
-	return serverInventoryService.SaveWithTxHook(serverInventoryTxHook(txHook))
+	return newServerInventoryService().SaveWithTxHook(serverInventoryTxHook(txHook))
 }
 
 func saveServers() error {
 	return saveServersWithTxHook(nil)
-}
-
-func saveServersOrRollbackLocked(prevServers []Server, prevStatusMap map[string]*ServerStatus) error {
-	return saveServersOrRollbackLockedWithTxHook(prevServers, prevStatusMap, nil)
-}
-
-func saveServersOrRollbackLockedWithTxHook(prevServers []Server, prevStatusMap map[string]*ServerStatus, txHook saveServersTxHook) error {
-	return serverInventoryService.SaveOrRollbackLocked(prevServers, prevStatusMap, serverInventoryTxHook(txHook))
 }
 
 func cloneServers(src []Server) []Server {
@@ -1853,20 +1839,6 @@ func currentStatusSnapshot(name string) *ServerStatus {
 	return cloneServerStatus(statusMap[name])
 }
 
-func restoreStatusSnapshot(name string, snapshot *ServerStatus) {
-	mu.Lock()
-	defer mu.Unlock()
-	if snapshot == nil {
-		delete(statusMap, name)
-		return
-	}
-	restored := *snapshot
-	restored.Upgradable = append([]string(nil), snapshot.Upgradable...)
-	restored.PendingUpdates = clonePendingUpdates(snapshot.PendingUpdates)
-	restored.Tags = append([]string(nil), snapshot.Tags...)
-	statusMap[name] = &restored
-}
-
 func currentStatusLogs(name string) string {
 	snapshot := currentStatusSnapshot(name)
 	if snapshot == nil {
@@ -1890,8 +1862,15 @@ func activeServerActionNames() []string {
 	return names
 }
 
+func activeServerActionNamesForContext(c *gin.Context) []string {
+	if state := serverStateForContext(c); state != nil {
+		return state.ActiveActionNames()
+	}
+	return activeServerActionNames()
+}
+
 func rejectGlobalKeyMutationIfServerActionsActive(c *gin.Context, action string) bool {
-	activeNames := activeServerActionNames()
+	activeNames := activeServerActionNamesForContext(c)
 	if len(activeNames) == 0 {
 		return false
 	}
@@ -1903,11 +1882,6 @@ func rejectGlobalKeyMutationIfServerActionsActive(c *gin.Context, action string)
 		"active_servers": activeNames,
 	})
 	return true
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional action call sites.
-func createServerActionJob(kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
-	return createServerActionJobWithManager(currentJobManager(), kind, serverName, actor, clientIP, policy)
 }
 
 func createServerActionJobWithManager(jm *JobManager, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
@@ -1950,20 +1924,6 @@ func findServerByNameLocked(name string) (Server, bool) {
 	return Server{}, false
 }
 
-func serverActionStatusInProgressLocked(name string) (bool, string) {
-	status := statusMap[name]
-	if status == nil {
-		return false, ""
-	}
-	return statusInProgress(status.Status), status.Status
-}
-
-func serverActionStatusInProgress(name string) (bool, string) {
-	mu.Lock()
-	defer mu.Unlock()
-	return serverActionStatusInProgressLocked(name)
-}
-
 func beginServerAction(name, newStatus string) (Server, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -1985,25 +1945,6 @@ func beginServerAction(name, newStatus string) (Server, error) {
 	return server, nil
 }
 
-func beginServerTransientAction(name, newStatus string) (Server, *ServerStatus, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	status, exists := statusMap[name]
-	if !exists || status == nil {
-		return Server{}, nil, sql.ErrNoRows
-	}
-	if statusInProgress(status.Status) {
-		return Server{}, nil, errActionInProgress
-	}
-	server, found := findServerByNameLocked(name)
-	if !found {
-		return Server{}, nil, sql.ErrNoRows
-	}
-	snapshot := cloneServerStatus(status)
-	status.Status = newStatus
-	return server, snapshot, nil
-}
-
 func approvePendingUpdate(name, scope string) (exists bool, approved bool) {
 	normalizedScope := normalizeApprovalScope(scope)
 	mu.Lock()
@@ -2018,11 +1959,6 @@ func approvePendingUpdate(name, scope string) (exists bool, approved bool) {
 	status.ApprovalScope = normalizedScope
 	status.Status = "approved"
 	return exists, true
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional approval tests.
-func cancelPendingUpdate(name string) (exists bool, cancelled bool) {
-	return defaultUpdateService().CancelPendingUpdate(name)
 }
 
 func readUploadedKeyData(r io.Reader) (string, error) {
@@ -2089,7 +2025,6 @@ func init() {
 	}
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional action call sites.
 func runUpdateWithActor(server Server, actor, clientIP string, policy RetryPolicy) {
 	runUpdateJobWithActor(server, actor, clientIP, policy, "")
 }
@@ -2269,19 +2204,6 @@ func setGlobalKey(key string) error {
 	return nil
 }
 
-func clearGlobalKey() error {
-	db := getDB()
-	if _, err := db.Exec("DELETE FROM settings WHERE key = ?", globalKeySetting); err != nil {
-		return err
-	}
-	runtimeStateMu.Lock()
-	defer runtimeStateMu.Unlock()
-	globalKeyMu.Lock()
-	defer globalKeyMu.Unlock()
-	globalKey = ""
-	return nil
-}
-
 func securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -2315,6 +2237,10 @@ func setupRouter() (*gin.Engine, error) {
 
 func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 	deps = deps.withDefaults()
+	if deps.ServerInventoryService != nil {
+		deps.ServerInventoryService.Load()
+		initializeServerStateStatuses(deps.ServerState)
+	}
 	return appshell.NewRouter(appshell.RouterConfig{
 		TrustedProxies:        deps.TrustedProxies,
 		GlobalMiddleware:      []gin.HandlerFunc{securityHeadersMiddleware(), backupRestoreBarrierMiddleware(deps.BackupBarrier)},
@@ -2350,7 +2276,7 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/auth/login", sameOriginWriteMiddleware(), handleAuthLogin)
 	r.GET("/api/auth/status", handleAuthStatus)
 	r.GET("/api/maintenance", handleMaintenanceStatus)
-	r.GET("/metrics", metricsBearerMiddlewareWithService(deps.MetricsTokenService), func(c *gin.Context) {
+	r.GET("/metrics", metricsBearerMiddlewareWithServiceAndLimiter(deps.MetricsTokenService, deps.MetricsRateLimiter), func(c *gin.Context) {
 		handleMetricsWithService(c, deps.ObservabilityService)
 	})
 
@@ -2403,10 +2329,10 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/app-settings/timezone", handleAppTimezoneStatus)
 	r.PUT("/api/app-settings/timezone", handleAppTimezoneUpdate)
 	r.POST("/api/backup/export", func(c *gin.Context) {
-		handleBackupExportWithService(c, deps.BackupService)
+		handleBackupExportWithDeps(c, deps)
 	})
 	r.POST("/api/backup/restore", func(c *gin.Context) {
-		handleBackupRestoreWithService(c, deps.BackupService)
+		handleBackupRestoreWithDeps(c, deps)
 	})
 }
 
@@ -2427,12 +2353,18 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	r.PUT("/api/update-policies/settings", func(c *gin.Context) {
 		handleUpdatePolicySettingsUpdateWithDeps(c, deps)
 	})
-	r.GET("/api/update-policies/:id/overrides", handleUpdatePolicyOverrides)
-	r.PUT("/api/update-policies/:id/overrides/:server", handleUpdatePolicyOverrideUpsert)
+	r.GET("/api/update-policies/:id/overrides", func(c *gin.Context) {
+		handleUpdatePolicyOverridesWithDeps(c, deps)
+	})
+	r.PUT("/api/update-policies/:id/overrides/:server", func(c *gin.Context) {
+		handleUpdatePolicyOverrideUpsertWithDeps(c, deps)
+	})
 	r.PUT("/api/update-policies/:id", func(c *gin.Context) {
 		handleUpdatePolicyUpdateWithDeps(c, deps)
 	})
-	r.DELETE("/api/update-policies/:id", handleUpdatePolicyDelete)
+	r.DELETE("/api/update-policies/:id", func(c *gin.Context) {
+		handleUpdatePolicyDeleteWithDeps(c, deps)
+	})
 
 	r.GET("/api/audit-events", func(c *gin.Context) {
 		handleAuditEventsWithService(c, deps.AuditService)
@@ -2463,16 +2395,21 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	inventoryService := deps.ServerInventoryService
 	updateService := deps.UpdateService
+	serverState := func() *serverpkg.State {
+		return deps.ServerState
+	}
 	actionJobManager := deps.CurrentJobManager
 	if updateService != nil {
 		actionJobManager = updateServiceEnsureDeps(updateService).CurrentJobManager
 	}
 
 	r.GET("/api/servers", func(c *gin.Context) {
+		serverState()
 		c.JSON(http.StatusOK, inventoryService.ListStatuses())
 	})
 
 	r.POST("/api/servers", func(c *gin.Context) {
+		serverState()
 		var newServer Server
 		if err := c.ShouldBindJSON(&newServer); err != nil {
 			audit(c, "server.create", "server", "-", "failure", "Invalid request payload", nil)
@@ -2510,6 +2447,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.PUT("/api/servers/:name", func(c *gin.Context) {
+		serverState()
 		name := c.Param("name")
 		var updatedServer Server
 		if err := c.ShouldBindJSON(&updatedServer); err != nil {
@@ -2549,6 +2487,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.DELETE("/api/servers/:name", func(c *gin.Context) {
+		serverState()
 		name := c.Param("name")
 		err := inventoryService.Delete(name)
 		switch {
@@ -2568,6 +2507,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.DELETE("/api/servers/:name/password", func(c *gin.Context) {
+		serverState()
 		name := c.Param("name")
 		err := inventoryService.ClearPassword(name)
 		switch {
@@ -2587,6 +2527,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.POST("/api/servers/:name/key", func(c *gin.Context) {
+		serverState()
 		name := c.Param("name")
 		limitUploadedKeyRequest(c)
 		if err := inventoryService.CheckMutationAllowed(name); errors.Is(err, errServerNotFound) {
@@ -2646,6 +2587,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.DELETE("/api/servers/:name/key", func(c *gin.Context) {
+		serverState()
 		name := c.Param("name")
 		err := inventoryService.ClearKey(name)
 		switch {
@@ -2695,7 +2637,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read key"})
 			return
 		}
-		if err := setGlobalKey(key); err != nil {
+		if err := deps.SetGlobalKey(key); err != nil {
 			audit(c, "global_key.upload", "global_key", "global", "failure", "Failed to save global key", map[string]any{"error": err.Error()})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -2708,7 +2650,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		if rejectGlobalKeyMutationIfServerActionsActive(c, "global_key.clear") {
 			return
 		}
-		if err := clearGlobalKey(); err != nil {
+		if err := deps.ClearGlobalKey(); err != nil {
 			audit(c, "global_key.clear", "global_key", "global", "failure", "Failed to clear global key", map[string]any{"error": err.Error()})
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -2718,21 +2660,21 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.GET("/api/keys/global", func(c *gin.Context) {
-		db := getDB()
-		var enc string
-		err := db.QueryRow("SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&enc)
-		if err == sql.ErrNoRows || strings.TrimSpace(enc) == "" {
-			c.JSON(http.StatusOK, gin.H{"has_key": false})
-			return
-		}
+		hasKey, err := deps.HasGlobalKey()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read global key"})
+			return
+		}
+		if !hasKey {
+			c.JSON(http.StatusOK, gin.H{"has_key": false})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"has_key": true})
 	})
 
-	r.POST("/api/servers/:name/facts/refresh", handleServerFactsRefresh)
+	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {
+		handleServerFactsRefreshWithDeps(c, deps)
+	})
 
 	r.POST("/api/hostkeys/scan", func(c *gin.Context) {
 		var req struct {
@@ -2859,8 +2801,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			"total_attempts_used": 0,
 			"retry_exhausted":     false,
 		}
-		preStartStatus := currentStatusSnapshot(name)
-		server, err := beginServerAction(name, "updating")
+		preStartStatus := serverState().CurrentStatusSnapshot(name)
+		server, err := serverState().BeginAction(name, "updating")
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				audit(c, "update.start", "server", name, "failure", "Server not found", retryMeta)
@@ -2879,7 +2821,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		job, err := createServerActionJobWithManager(actionJobManager(), jobKindUpdate, name, actor, ip, retryPolicy)
 		if err != nil {
-			restoreStatusSnapshot(name, preStartStatus)
+			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
 				writeMaintenanceBlockedResponse(c)
 				return
@@ -2915,8 +2857,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			"total_attempts_used": 0,
 			"retry_exhausted":     false,
 		}
-		preStartStatus := currentStatusSnapshot(name)
-		server, err := beginServerAction(name, "autoremove")
+		preStartStatus := serverState().CurrentStatusSnapshot(name)
+		server, err := serverState().BeginAction(name, "autoremove")
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				audit(c, "autoremove.start", "server", name, "failure", "Server not found", retryMeta)
@@ -2935,7 +2877,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		job, err := createServerActionJobWithManager(actionJobManager(), jobKindAutoremove, name, actor, ip, retryPolicy)
 		if err != nil {
-			restoreStatusSnapshot(name, preStartStatus)
+			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
 				writeMaintenanceBlockedResponse(c)
 				return
@@ -2984,8 +2926,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing sudo password"})
 			return
 		}
-		preStartStatus := currentStatusSnapshot(name)
-		server, err := beginServerAction(name, "sudoers")
+		preStartStatus := serverState().CurrentStatusSnapshot(name)
+		server, err := serverState().BeginAction(name, "sudoers")
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				audit(c, "sudoers.enable.start", "server", name, "failure", "Server not found", retryMeta)
@@ -3004,7 +2946,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		job, err := createServerActionJobWithManager(actionJobManager(), jobKindSudoersEnable, name, actor, ip, retryPolicy)
 		if err != nil {
-			restoreStatusSnapshot(name, preStartStatus)
+			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
 				writeMaintenanceBlockedResponse(c)
 				return
@@ -3054,8 +2996,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing sudo password"})
 			return
 		}
-		preStartStatus := currentStatusSnapshot(name)
-		server, err := beginServerAction(name, "sudoers")
+		preStartStatus := serverState().CurrentStatusSnapshot(name)
+		server, err := serverState().BeginAction(name, "sudoers")
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				audit(c, "sudoers.disable.start", "server", name, "failure", "Server not found", retryMeta)
@@ -3074,7 +3016,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		job, err := createServerActionJobWithManager(actionJobManager(), jobKindSudoersDisable, name, actor, ip, retryPolicy)
 		if err != nil {
-			restoreStatusSnapshot(name, preStartStatus)
+			serverState().RestoreStatusSnapshot(name, preStartStatus)
 			if errors.Is(err, errMaintenanceModeActive) {
 				writeMaintenanceBlockedResponse(c)
 				return
@@ -3100,7 +3042,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 	r.POST("/api/approve/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		preApproveStatus := currentStatusSnapshot(name)
+		preApproveStatus := serverState().CurrentStatusSnapshot(name)
 		if preApproveStatus == nil {
 			audit(c, "update.approve", "server", name, "failure", "Server not found", nil)
 			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
@@ -3161,7 +3103,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 	r.POST("/api/approve-security/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		preApproveStatus := currentStatusSnapshot(name)
+		preApproveStatus := serverState().CurrentStatusSnapshot(name)
 		if preApproveStatus == nil {
 			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "security"})
 			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
@@ -3222,7 +3164,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 	r.POST("/api/cancel/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		preCancelStatus := currentStatusSnapshot(name)
+		preCancelStatus := serverState().CurrentStatusSnapshot(name)
 		if preCancelStatus == nil {
 			audit(c, "update.cancel", "server", name, "failure", "Server not found", nil)
 			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
@@ -3286,14 +3228,15 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 }
 
 func main() {
-	r, err := setupRouter()
+	deps := NewDefaultAppDeps()
+	r, err := setupRouterWithDeps(deps)
 	if err != nil {
 		log.Fatalf("Failed to setup router: %v", err)
 	}
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startAuditPruner(shutdownCtx)
-	startUpdatePolicyScheduler(shutdownCtx)
+	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})
 	defer StopAuthRateLimiters()
 	server := &http.Server{
 		Addr:         ":8080",

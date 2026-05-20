@@ -17,15 +17,6 @@ type PendingUpdate = serverpkg.PendingUpdate
 type ServerInventoryService = serverpkg.Service
 type serverInventoryActionError = serverpkg.ActionError
 
-//lint:ignore U1000 compatibility alias retained for transitional host-key call sites.
-type serverHostKeyScanResult = serverpkg.HostKeyScanResult
-
-//lint:ignore U1000 compatibility alias retained for transitional host-key call sites.
-type serverHostKeyTrustResult = serverpkg.HostKeyTrustResult
-
-//lint:ignore U1000 compatibility alias retained for transitional host-key call sites.
-type serverHostKeyClearResult = serverpkg.HostKeyClearResult
-
 var (
 	errServerRequiredFields = serverpkg.ErrRequiredFields
 	errInvalidSSHUsername   = serverpkg.ErrInvalidSSHUsername
@@ -37,48 +28,95 @@ var (
 )
 
 func newServerState() *serverpkg.State {
-	return serverpkg.NewState(&mu, &servers, &statusMap, statusInProgress)
+	var stateMu sync.Mutex
+	stateServers := []Server{}
+	stateStatusMap := map[string]*ServerStatus{}
+	return serverpkg.NewState(&stateMu, &stateServers, &stateStatusMap, statusInProgress)
 }
 
 func newServerInventoryService() *ServerInventoryService {
-	return serverpkg.NewService(serverpkg.ServiceDeps{
-		State: newServerState(),
+	return newServerInventoryServiceWithStateAndDB(globalServerState(), getDB)
+}
+
+func globalServerState() *serverpkg.State {
+	return serverpkg.NewState(&mu, &servers, &statusMap, statusInProgress)
+}
+
+func newServerInventoryServiceWithState(state *serverpkg.State) *ServerInventoryService {
+	return newServerInventoryServiceWithStateAndDB(state, getDB)
+}
+
+func newServerInventoryServiceWithStateAndDB(state *serverpkg.State, dbProvider func() *sql.DB) *ServerInventoryService {
+	return newServerInventoryServiceWithStateDBPath(state, dbProvider, dbPath)
+}
+
+func newServerInventoryServiceWithStateDBPath(state *serverpkg.State, dbProvider func() *sql.DB, dbPathProvider func() string) *ServerInventoryService {
+	if state == nil {
+		state = newServerState()
+	}
+	if dbProvider == nil {
+		dbProvider = getDB
+	}
+	if dbPathProvider == nil {
+		dbPathProvider = dbPath
+	}
+	var service *ServerInventoryService
+	service = serverpkg.NewService(serverpkg.ServiceDeps{
+		State: state,
 		Repository: serverpkg.SQLiteRepository{
-			DB:      getDB,
+			DB:      dbProvider,
 			Encrypt: encryptSecret,
 			Decrypt: decryptSecret,
 		},
-		KnownHosts: serverpkg.KnownHostsDeps{
-			DBPath:              dbPath,
-			UserHomeDir:         os.UserHomeDir,
-			Getenv:              os.Getenv,
-			ScanHostKey:         func(host string, port int) (ssh.PublicKey, error) { return scanHostKeyFunc(host, port) },
-			KnownHostsMu:        &knownHostsMu,
-			SSHConnectTimeout:   sshConnectTimeout,
-			ConstantTimeCompare: stringsEqualConstantTime,
-		},
+		KnownHosts:                     appKnownHostsDeps(dbPathProvider),
 		PrunePolicyOverridesForServers: pruneUpdatePolicyOverridesForServersTx,
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,
 		RenamePolicyTargetServers:      renameUpdatePolicyTargetServersTx,
 		RenameServerFacts:              renameServerFactsTx,
 		DeleteServerFacts:              defaultServerFactsRepository().DeleteServerTx,
 	})
+	service.SetLegacyImport(func() bool {
+		return loadLegacyServersIntoService(service, state)
+	})
+	return service
+}
+
+func appKnownHostsDeps(dbPathProvider func() string) serverpkg.KnownHostsDeps {
+	if dbPathProvider == nil {
+		dbPathProvider = dbPath
+	}
+	return serverpkg.KnownHostsDeps{
+		DBPath:              dbPathProvider,
+		UserHomeDir:         os.UserHomeDir,
+		Getenv:              os.Getenv,
+		ScanHostKey:         func(host string, port int) (ssh.PublicKey, error) { return scanHostKeyFunc(host, port) },
+		KnownHostsMu:        &knownHostsMu,
+		SSHConnectTimeout:   sshConnectTimeout,
+		ConstantTimeCompare: stringsEqualConstantTime,
+	}
+}
+
+func initializeServerStateStatuses(state *serverpkg.State) {
+	if state == nil {
+		return
+	}
+	state.Lock()
+	defer state.Unlock()
+	servers := state.Servers()
+	statuses := make(map[string]*ServerStatus, len(servers))
+	for _, server := range servers {
+		statuses[server.Name] = serverpkg.NewIdleStatus(server)
+	}
+	state.SetStatusMap(statuses)
 }
 
 var (
-	servers                []Server
-	statusMap              = make(map[string]*ServerStatus)
-	mu                     sync.Mutex
-	knownHostsMu           sync.Mutex
-	scanHostKeyFunc        = scanHostKey
-	serverState            = newServerState()
-	serverInventoryService = newServerInventoryService()
+	servers         []Server
+	statusMap       = make(map[string]*ServerStatus)
+	mu              sync.Mutex
+	knownHostsMu    sync.Mutex
+	scanHostKeyFunc = scanHostKey
 )
-
-func init() {
-	serverInventoryService.SetLegacyImport(loadLegacyServers)
-	serverInventoryService.SetSaveOverride(func() error { return saveServersFunc() })
-}
 
 func serverInventoryTxHook(txHook saveServersTxHook) serverpkg.TxHook {
 	if txHook == nil {
@@ -87,16 +125,6 @@ func serverInventoryTxHook(txHook saveServersTxHook) serverpkg.TxHook {
 	return func(tx *sql.Tx) error {
 		return txHook(tx)
 	}
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func newIdleServerStatus(server Server) *ServerStatus {
-	return serverpkg.NewIdleStatus(server)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func updateStatusFromServer(name string, server Server) {
-	serverpkg.UpdateStatusFromServer(statusMap, name, server)
 }
 
 func serverInventoryActionStatus(err error) string {
@@ -119,16 +147,6 @@ func normalizePort(port int) int {
 	return serverpkg.NormalizePort(port)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func normalizeServerName(value string) string {
-	return serverpkg.NormalizeServerName(value)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func normalizeServerHost(value string) string {
-	return serverpkg.NormalizeServerHost(value)
-}
-
 func serverNameExistsLocked(name string, skipIndex int) bool {
 	return serverpkg.ServerNameExists(servers, name, skipIndex)
 }
@@ -141,22 +159,12 @@ func knownHostsPaths() []string {
 	return serverpkg.KnownHostsPaths(defaultKnownHostsDeps())
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional known_hosts call sites.
-func knownHostsDefaultWritePath() string {
-	return serverpkg.KnownHostsDefaultWritePath(defaultKnownHostsDeps())
-}
-
 func getHostKeyCallback() (ssh.HostKeyCallback, error) {
 	return serverpkg.HostKeyCallback(defaultKnownHostsDeps())
 }
 
 func knownHostsWritePath() (string, error) {
 	return serverpkg.KnownHostsWritePath(defaultKnownHostsDeps())
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional known_hosts call sites.
-func knownHostsHostToken(host string, port int) string {
-	return serverpkg.KnownHostsHostToken(host, port)
 }
 
 func appendKnownHostLine(line string) (bool, error) {
@@ -175,27 +183,12 @@ func scanHostKey(host string, port int) (ssh.PublicKey, error) {
 	return serverpkg.ScanHostKey(host, port, sshConnectTimeout)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional known_hosts call sites.
-func buildKnownHostsLine(host string, port int, key ssh.PublicKey) string {
-	return serverpkg.BuildKnownHostsLine(host, port, key)
-}
-
 func trustHostKey(host string, port int, expectedFingerprint string) (string, string, bool, error) {
 	return serverpkg.TrustHostKey(defaultKnownHostsDeps(), host, port, expectedFingerprint)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func isValidSSHUsername(username string) bool {
-	return serverpkg.IsValidSSHUsername(username)
-}
-
 func buildAuthMethods(server Server) ([]ssh.AuthMethod, error) {
 	return serverpkg.BuildAuthMethods(server, getGlobalKey)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional server inventory call sites.
-func updateServerKey(name, key string) error {
-	return serverInventoryService.UpdateServerKey(name, key)
 }
 
 func defaultKnownHostsDeps() serverpkg.KnownHostsDeps {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,11 +47,6 @@ func newIsolatedTestApp(t *testing.T) *testApp {
 	return newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "app.db")})
 }
 
-func newTestAppWithDB(t *testing.T, dbFile string) *testApp {
-	t.Helper()
-	return newTestApp(t, testAppOptions{DBPath: dbFile})
-}
-
 func newTestAppWithDeps(t *testing.T, dbFile string, deps AppDeps) *testApp {
 	t.Helper()
 	return newTestApp(t, testAppOptions{DBPath: dbFile, Deps: deps})
@@ -71,6 +68,41 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 		dbFile = filepath.Join(t.TempDir(), "app.db")
 	}
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+	if opts.Deps.DBPath == nil {
+		opts.Deps.DBPath = func() string {
+			return dbFile
+		}
+	}
+	if opts.Deps.DB == nil {
+		appDB, err := sql.Open("sqlite", dbFile)
+		if err != nil {
+			t.Fatalf("open test app db: %v", err)
+		}
+		appDB.SetMaxOpenConns(1)
+		appDB.SetMaxIdleConns(1)
+		if _, err := appDB.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", sqliteBusyTimeoutMS)); err != nil {
+			_ = appDB.Close()
+			t.Fatalf("set test app db busy_timeout: %v", err)
+		}
+		if _, err := appDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			_ = appDB.Close()
+			t.Fatalf("set test app db journal_mode: %v", err)
+		}
+		if _, err := appDB.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+			_ = appDB.Close()
+			t.Fatalf("set test app db synchronous mode: %v", err)
+		}
+		if err := ensureSchema(appDB); err != nil {
+			_ = appDB.Close()
+			t.Fatalf("migrate test app db schema: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = appDB.Close()
+		})
+		opts.Deps.DB = func() *sql.DB {
+			return appDB
+		}
+	}
 
 	knownHostsPath := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_KNOWN_HOSTS"))
 	if knownHostsPath == "" {
@@ -86,9 +118,13 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 	if err != nil {
 		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)
 	}
+	sm := currentSessionManager()
+	if sm == nil {
+		t.Fatalf("setupRouterWithDeps() did not initialize a session manager")
+	}
 	return &testApp{
 		Router:         router,
-		Handler:        sessionManager.LoadAndSave(router),
+		Handler:        sm.LoadAndSave(router),
 		DBPath:         dbFile,
 		KnownHostsPath: knownHostsPath,
 		Deps:           deps,

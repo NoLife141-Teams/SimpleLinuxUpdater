@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	policypkg "debian-updater/internal/policies"
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
@@ -74,13 +74,6 @@ type UpdatePolicyRun = policypkg.Run
 type UpdatePolicySettingsResponse = policypkg.SettingsResponse
 type updatePolicyRunUpdate = policypkg.RunUpdate
 
-//lint:ignore U1000 compatibility type retained for transitional policy priority tests.
-type scheduledPolicyCandidate struct {
-	policy          UpdatePolicy
-	server          Server
-	scheduledForUTC string
-}
-
 func defaultPolicyRepository() *policypkg.SQLiteRepository {
 	return policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{
 		DB:          getDB,
@@ -115,24 +108,19 @@ func loadGlobalUpdatePolicyBlackouts() ([]UpdatePolicyBlackoutWindow, error) {
 	return defaultPolicyRepository().LoadGlobalBlackouts()
 }
 
-func saveGlobalUpdatePolicyBlackouts(windows []UpdatePolicyBlackoutWindow) ([]UpdatePolicyBlackoutWindow, error) {
+func saveGlobalUpdatePolicyBlackoutsWithRepository(repo policypkg.Repository, windows []UpdatePolicyBlackoutWindow) ([]UpdatePolicyBlackoutWindow, error) {
+	if repo == nil {
+		repo = defaultPolicyRepository()
+	}
 	normalized, err := policypkg.NormalizeBlackouts(windows)
 	if err != nil {
 		return nil, wrapUpdatePolicyValidationError(err)
 	}
-	if err := upsertSettingValue(updatePolicyGlobalBlackoutsSetting, marshalJobJSON(normalized)); err != nil {
-		return nil, err
-	}
-	return normalized, nil
+	return repo.SaveGlobalBlackouts(normalized)
 }
 
 func parseTimeLocalMinutes(raw string) (int, error) {
 	return policypkg.ParseTimeLocalMinutes(raw)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional policy call sites.
-func normalizeUpdatePolicy(policy *UpdatePolicy) error {
-	return defaultPolicyService().NormalizePolicy(policy)
 }
 
 func listUpdatePolicies() ([]UpdatePolicy, error) {
@@ -144,25 +132,23 @@ func getUpdatePolicy(id int64) (UpdatePolicy, error) {
 }
 
 func createUpdatePolicy(policy UpdatePolicy) (UpdatePolicy, error) {
-	return createUpdatePolicyWithService(defaultPolicyService(), policy)
+	return createUpdatePolicyWithRepository(defaultPolicyService(), defaultPolicyRepository(), policy)
 }
 
-func createUpdatePolicyWithService(service *PolicyService, policy UpdatePolicy) (UpdatePolicy, error) {
+func createUpdatePolicyWithRepository(service *PolicyService, repo policypkg.Repository, policy UpdatePolicy) (UpdatePolicy, error) {
 	if service == nil {
 		service = defaultPolicyService()
+	}
+	if repo == nil {
+		repo = defaultPolicyRepository()
 	}
 	if err := service.NormalizePolicy(&policy); err != nil {
 		return UpdatePolicy{}, wrapUpdatePolicyValidationError(err)
 	}
-	return defaultPolicyRepository().CreatePolicy(policy)
+	return repo.CreatePolicy(policy)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional policy call sites.
-func updateUpdatePolicy(id int64, policy UpdatePolicy) (UpdatePolicy, error) {
-	return updateUpdatePolicyWithService(defaultPolicyService(), id, policy)
-}
-
-func updateUpdatePolicyWithService(service *PolicyService, id int64, policy UpdatePolicy) (UpdatePolicy, error) {
+func updateUpdatePolicyWithRepository(service *PolicyService, repo policypkg.Repository, id int64, policy UpdatePolicy) (UpdatePolicy, error) {
 	if id <= 0 {
 		return UpdatePolicy{}, sql.ErrNoRows
 	}
@@ -170,14 +156,13 @@ func updateUpdatePolicyWithService(service *PolicyService, id int64, policy Upda
 	if service == nil {
 		service = defaultPolicyService()
 	}
+	if repo == nil {
+		repo = defaultPolicyRepository()
+	}
 	if err := service.NormalizePolicy(&policy); err != nil {
 		return UpdatePolicy{}, wrapUpdatePolicyValidationError(err)
 	}
-	return defaultPolicyRepository().UpdatePolicy(id, policy)
-}
-
-func deleteUpdatePolicy(id int64) error {
-	return defaultPolicyRepository().DeletePolicy(id)
+	return repo.UpdatePolicy(id, policy)
 }
 
 func listUpdatePolicyOverrides(policyID int64) ([]UpdatePolicyOverride, error) {
@@ -243,13 +228,21 @@ func serverExistsByName(name string) bool {
 	return false
 }
 
-func policyMatchesServer(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
-	return defaultPolicyService().PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides})
+func serverExistsByNameInState(state *serverpkg.State, name string) bool {
+	name = strings.TrimSpace(name)
+	if state == nil {
+		return serverExistsByName(name)
+	}
+	for _, server := range state.CloneServers() {
+		if server.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional policy call sites.
-func enrichPoliciesWithMatches(policies []UpdatePolicy) []UpdatePolicy {
-	return enrichPoliciesWithMatchesUsing(defaultPolicyService(), policies)
+func policyMatchesServer(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
+	return defaultPolicyService().PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides})
 }
 
 func enrichPoliciesWithMatchesUsing(service *PolicyService, policies []UpdatePolicy) []UpdatePolicy {
@@ -271,34 +264,20 @@ func blackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) 
 	return defaultPolicyService().BlackoutApplies(slotLocal, windows)
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional policy scheduler tests.
-func candidatePriority(policy UpdatePolicy) [3]int {
-	return defaultPolicyService().CandidatePriority(policy)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional policy priority tests.
-func comparePolicyCandidates(a, b scheduledPolicyCandidate) bool {
-	return defaultPolicyService().ComparePolicyCandidates(
-		policypkg.ScheduledCandidate{Policy: a.policy, Server: a.server, ScheduledForUTC: a.scheduledForUTC},
-		policypkg.ScheduledCandidate{Policy: b.policy, Server: b.server, ScheduledForUTC: b.scheduledForUTC},
-	)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional policy scheduler tests.
-func createSkippedPolicyRun(policy UpdatePolicy, serverName, scheduledForUTC, reason, summary string) {
-	defaultPolicyService().CreateSkippedRun(policy, serverName, scheduledForUTC, reason, summary)
-}
-
 func buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
 	return updatespkg.BuildScheduledJobMeta(policy, scheduledForUTC)
 }
 
-func createServerActionJobWithMeta(kind, serverName, actor, clientIP string, policy RetryPolicy, meta any) (JobRecord, error) {
-	jm := currentJobManager()
+func createServerActionJobWithMetaAndState(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, meta any) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
 	}
-	snapshot := currentStatusSnapshot(serverName)
+	var snapshot *ServerStatus
+	if state != nil {
+		snapshot = state.CurrentStatusSnapshot(serverName)
+	} else {
+		snapshot = currentStatusSnapshot(serverName)
+	}
 	initialLogs := ""
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
@@ -315,7 +294,10 @@ func createServerActionJobWithMeta(kind, serverName, actor, clientIP string, pol
 	})
 }
 
-func updatePolicyRunFromJobRecord(runID int64, job JobRecord) {
+func updatePolicyRunFromJobRecordWithRepository(repo policypkg.Repository, runID int64, job JobRecord) {
+	if repo == nil {
+		repo = defaultPolicyRepository()
+	}
 	status := updatePolicyRunRunning
 	switch job.Status {
 	case jobStatusQueued:
@@ -353,15 +335,16 @@ func updatePolicyRunFromJobRecord(runID int64, job JobRecord) {
 		reason := status
 		update.Reason = &reason
 	}
-	_ = updateUpdatePolicyRun(runID, update)
+	_ = repo.UpdateRun(runID, update)
 }
 
-func watchUpdatePolicyRunForJob(runID int64, jobID string) {
+func watchUpdatePolicyRunForJobWithDeps(deps AppDeps, runID int64, jobID string) {
+	deps = deps.withDefaults()
 	startTrackedActionRunner(func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
-			jm := currentJobManager()
+			jm := deps.CurrentJobManager()
 			if jm == nil {
 				return
 			}
@@ -370,7 +353,7 @@ func watchUpdatePolicyRunForJob(runID int64, jobID string) {
 				log.Printf("failed to read scheduled job %q for run %d: %v", jobID, runID, err)
 				return
 			}
-			updatePolicyRunFromJobRecord(runID, job)
+			updatePolicyRunFromJobRecordWithRepository(deps.PolicyRepository, runID, job)
 			switch job.Status {
 			case jobStatusSucceeded, jobStatusFailed, jobStatusCancelled, jobStatusInterrupted:
 				return
@@ -381,12 +364,19 @@ func watchUpdatePolicyRunForJob(runID int64, jobID string) {
 }
 
 func loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
+	return loadScheduledJobBehaviorWithManager(currentJobManager, jobID)
+}
+
+func loadScheduledJobBehaviorWithManager(current func() *JobManager, jobID string) scheduledJobBehavior {
 	behavior := scheduledJobBehavior{ApprovalTimeout: 30 * time.Minute}
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return behavior
 	}
-	jm := currentJobManager()
+	if current == nil {
+		current = currentJobManager
+	}
+	jm := current()
 	if jm == nil {
 		return behavior
 	}
@@ -416,11 +406,18 @@ func loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
 }
 
 func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate) {
+	updateScheduledJobDiscoveryMetaWithManager(currentJobManager, jobID, upgradable, pendingUpdates)
+}
+
+func updateScheduledJobDiscoveryMetaWithManager(current func() *JobManager, jobID string, upgradable []string, pendingUpdates []PendingUpdate) {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return
 	}
-	jm := currentJobManager()
+	if current == nil {
+		current = currentJobManager
+	}
+	jm := current()
 	if jm == nil {
 		return
 	}
@@ -467,17 +464,64 @@ func executeScheduledPolicyRun(run UpdatePolicyRun, policy UpdatePolicy, server 
 	}
 }
 
+func globalRuntimeAppDeps() AppDeps {
+	state := globalServerState()
+	return AppDeps{
+		DB:                     getDB,
+		DBPath:                 dbPath,
+		AuditService:           defaultAuditService(),
+		BackupBarrier:          backupRestoreMu,
+		ServerState:            state,
+		ServerInventoryService: newServerInventoryServiceWithStateAndDB(state, getDB),
+		PolicyRepository:       defaultPolicyRepository(),
+		CurrentJobManager:      currentJobManager,
+		UpdateService:          defaultUpdateService(),
+		NotifyDashboardEvent:   notifyDashboardEvent,
+		DashboardEventBroker:   dashboardEventBroker,
+		CurrentMaintenanceActive: func() bool {
+			return currentMaintenanceState().Active
+		},
+	}
+}
+
+func executeScheduledPolicyRunWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	deps = deps.withDefaults()
+	if deps.BackupBarrier != nil && !deps.BackupBarrier.TryRLock() {
+		markScheduledPolicyRunMaintenanceSkippedWithDeps(deps, run, policy, server, "Maintenance mode active; scheduled run skipped")
+		return
+	}
+	if deps.BackupBarrier != nil {
+		defer deps.BackupBarrier.RUnlock()
+	}
+	if deps.CurrentMaintenanceActive != nil && deps.CurrentMaintenanceActive() {
+		markScheduledPolicyRunMaintenanceSkippedWithDeps(deps, run, policy, server, "Maintenance mode active; scheduled run skipped")
+		return
+	}
+
+	switch policy.ExecutionMode {
+	case updatePolicyExecutionScanOnly:
+		runScheduledScanPolicyWithDeps(deps, run, policy, server)
+	default:
+		runScheduledUpdatePolicyWithDeps(deps, run, policy, server)
+	}
+}
+
 func markScheduledPolicyRunMaintenanceSkipped(run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
+	markScheduledPolicyRunMaintenanceSkippedWithDeps(globalRuntimeAppDeps(), run, policy, server, summary)
+}
+
+func markScheduledPolicyRunMaintenanceSkippedWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
+	deps = deps.withDefaults()
 	status := updatePolicyRunSkipped
 	reason := updatePolicyRunReasonMaintenance
 	finishedAt := jobTimestampNow()
-	_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+	_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 		Status:     &status,
 		Reason:     &reason,
 		Summary:    &summary,
 		FinishedAt: &finishedAt,
 	})
-	auditWithActor("system", "", "schedule.run.skipped", "server", server.Name, "skipped", summary, map[string]any{
+	_ = deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "skipped", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -485,8 +529,16 @@ func markScheduledPolicyRunMaintenanceSkipped(run UpdatePolicyRun, policy Update
 }
 
 func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	runScheduledUpdatePolicyWithDeps(globalRuntimeAppDeps(), run, policy, server)
+}
+
+func runScheduledUpdatePolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	deps = deps.withDefaults()
 	preStartStatus := currentStatusSnapshot(server.Name)
-	serverForRun, err := beginServerAction(server.Name, "updating")
+	if deps.ServerState != nil {
+		preStartStatus = deps.ServerState.CurrentStatusSnapshot(server.Name)
+	}
+	serverForRun, err := deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
 		status := updatePolicyRunFailed
 		reason := updatePolicyRunReasonMissing
@@ -497,13 +549,13 @@ func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server S
 			summary = "Server busy; scheduled update skipped"
 		}
 		finishedAt := jobTimestampNow()
-		_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
 			FinishedAt: &finishedAt,
 		})
-		auditWithActor("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
+		_ = deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -511,9 +563,9 @@ func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server S
 		return
 	}
 	meta := buildScheduledJobMeta(policy, run.ScheduledForUTC)
-	job, err := createServerActionJobWithMeta(jobKindUpdate, server.Name, "system", "", loadRetryPolicyFromEnv(), meta)
+	job, err := createServerActionJobWithMetaAndState(deps.CurrentJobManager(), deps.ServerState, jobKindUpdate, server.Name, "system", "", loadRetryPolicyFromEnv(), meta)
 	if err != nil {
-		restoreStatusSnapshot(server.Name, preStartStatus)
+		deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		status := updatePolicyRunFailed
 		reason := updatePolicyRunReasonPersistence
 		summary := "Failed to create scheduled update job"
@@ -527,13 +579,13 @@ func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server S
 			auditStatus = "skipped"
 		}
 		finishedAt := jobTimestampNow()
-		_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
 			FinishedAt: &finishedAt,
 		})
-		auditWithActor("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
+		_ = deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -544,13 +596,13 @@ func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server S
 	runningStatus := updatePolicyRunRunning
 	startedAt := jobTimestampNow()
 	summary := "Scheduled update started"
-	_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+	_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
 		StartedAt: &startedAt,
 	})
-	auditWithActor("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
+	_ = deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -558,13 +610,29 @@ func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server S
 		"execution_mode":    policy.ExecutionMode,
 		"package_scope":     policy.PackageScope,
 	})
-	startUpdateRunner(serverForRun, "system", "", loadRetryPolicyFromEnv(), job.ID)
-	watchUpdatePolicyRunForJob(run.ID, job.ID)
+	startJobRunnerWithManager(deps.CurrentJobManager, job.ID, func() {
+		deps.UpdateService.RunUpdateJob(UpdateRunRequest{
+			Server:   serverForRun,
+			Actor:    "system",
+			ClientIP: "",
+			Policy:   loadRetryPolicyFromEnv(),
+			JobID:    job.ID,
+		})
+	})
+	watchUpdatePolicyRunForJobWithDeps(deps, run.ID, job.ID)
 }
 
 func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	runScheduledScanPolicyWithDeps(globalRuntimeAppDeps(), run, policy, server)
+}
+
+func runScheduledScanPolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+	deps = deps.withDefaults()
 	preStartStatus := currentStatusSnapshot(server.Name)
-	serverForRun, err := beginServerAction(server.Name, "updating")
+	if deps.ServerState != nil {
+		preStartStatus = deps.ServerState.CurrentStatusSnapshot(server.Name)
+	}
+	serverForRun, err := deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
 		status := updatePolicyRunFailed
 		reason := updatePolicyRunReasonMissing
@@ -575,13 +643,13 @@ func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Ser
 			summary = "Server busy; scheduled scan skipped"
 		}
 		finishedAt := jobTimestampNow()
-		_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
 			FinishedAt: &finishedAt,
 		})
-		auditWithActor("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
+		_ = deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -591,25 +659,25 @@ func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Ser
 
 	retryPolicy := loadRetryPolicyFromEnv()
 	meta := buildScheduledJobMeta(policy, run.ScheduledForUTC)
-	jm := currentJobManager()
+	jm := deps.CurrentJobManager()
 	if jm == nil {
 		status := updatePolicyRunFailed
 		reason := updatePolicyRunReasonPersistence
 		summary := "Job manager unavailable"
 		finishedAt := jobTimestampNow()
-		_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
 			FinishedAt: &finishedAt,
 		})
-		auditWithActor("system", "", "schedule.run.failed", "server", server.Name, "failure", summary, map[string]any{
+		_ = deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
 			"error":             "job manager unavailable",
 		})
-		restoreStatusSnapshot(server.Name, preStartStatus)
+		deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		return
 	}
 	job, err := jm.CreateJob(JobCreateParams{
@@ -635,31 +703,31 @@ func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Ser
 			auditStatus = "skipped"
 		}
 		finishedAt := jobTimestampNow()
-		_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+		_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
 			FinishedAt: &finishedAt,
 		})
-		auditWithActor("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
+		_ = deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
 			"error":             err.Error(),
 		})
-		restoreStatusSnapshot(server.Name, preStartStatus)
+		deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		return
 	}
 	runningStatus := updatePolicyRunRunning
 	startedAt := jobTimestampNow()
 	summary := "Scheduled scan started"
-	_ = updateUpdatePolicyRun(run.ID, updatePolicyRunUpdate{
+	_ = deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
 		StartedAt: &startedAt,
 	})
-	auditWithActor("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
+	_ = deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -668,59 +736,26 @@ func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Ser
 		"package_scope":     policy.PackageScope,
 	})
 
-	startJobRunner(job.ID, func() {
-		defer restoreStatusSnapshot(server.Name, preStartStatus)
-		runScheduledScanJob(job.ID, run.ID, run.ScheduledForUTC, serverForRun, policy, retryPolicy)
+	startJobRunnerWithManager(deps.CurrentJobManager, job.ID, func() {
+		defer deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+		deps.UpdateService.RunScheduledScanJob(ScheduledScanRunRequest{
+			JobID:           job.ID,
+			RunID:           run.ID,
+			ScheduledForUTC: run.ScheduledForUTC,
+			Server:          serverForRun,
+			Policy:          policy,
+			RetryPolicy:     retryPolicy,
+		})
 	})
-	watchUpdatePolicyRunForJob(run.ID, job.ID)
-}
-
-func runScheduledScanJob(jobID string, runID int64, scheduledForUTC string, server Server, policy UpdatePolicy, retryPolicy RetryPolicy) {
-	defaultUpdateService().RunScheduledScanJob(ScheduledScanRunRequest{
-		JobID:           jobID,
-		RunID:           runID,
-		ScheduledForUTC: scheduledForUTC,
-		Server:          server,
-		Policy:          policy,
-		RetryPolicy:     retryPolicy,
-	})
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional missed-tick tests.
-func rememberMissedUpdatePolicyTick(now time.Time) {
-	defaultPolicyService().RememberMissedTick(now)
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional missed-tick tests.
-func pendingMissedUpdatePolicyTicks() []time.Time {
-	return defaultPolicyService().PendingMissedTicks()
-}
-
-//lint:ignore U1000 compatibility wrapper retained for transitional missed-tick tests.
-func forgetMissedUpdatePolicyTick(tick time.Time) {
-	defaultPolicyService().ForgetMissedTick(tick)
+	watchUpdatePolicyRunForJobWithDeps(deps, run.ID, job.ID)
 }
 
 func resetMissedUpdatePolicyTicksForTest() {
 	defaultPolicyService().ResetMissedTicksForTest()
 }
 
-//lint:ignore U1000 compatibility wrapper retained for transitional policy scheduler tests.
-func processDueUpdatePolicySlot(now time.Time, maintenanceActive bool) error {
-	return defaultPolicyService().ProcessDueSlot(PolicyScheduleRequest{Now: now, MaintenanceActive: maintenanceActive})
-}
-
 func processDueUpdatePolicies(now time.Time) error {
 	return defaultPolicyService().ProcessDue(now)
-}
-
-func startUpdatePolicyScheduler(ctx context.Context) {
-	startPolicyScheduler(defaultPolicyService(), ctx, PolicySchedulerOptions{})
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePoliciesList(c *gin.Context) {
-	handleUpdatePoliciesListWithDeps(c, NewDefaultAppDeps())
 }
 
 func handleUpdatePoliciesListWithDeps(c *gin.Context, deps AppDeps) {
@@ -738,11 +773,6 @@ func handleUpdatePoliciesListWithDeps(c *gin.Context, deps AppDeps) {
 	})
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePolicyCreate(c *gin.Context) {
-	handleUpdatePolicyCreateWithDeps(c, NewDefaultAppDeps())
-}
-
 func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
 	var policy UpdatePolicy
@@ -751,7 +781,7 @@ func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	created, err := createUpdatePolicyWithService(deps.PolicyService, policy)
+	created, err := createUpdatePolicyWithRepository(deps.PolicyService, deps.PolicyRepository, policy)
 	if err != nil {
 		audit(c, "update_policy.create", "update_policy", policy.Name, "failure", "Failed to create policy", map[string]any{"error": err.Error()})
 		statusCode := http.StatusInternalServerError
@@ -772,11 +802,6 @@ func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 	c.JSON(http.StatusCreated, created)
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePolicyUpdate(c *gin.Context) {
-	handleUpdatePolicyUpdateWithDeps(c, NewDefaultAppDeps())
-}
-
 func handleUpdatePolicyUpdateWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
 	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
@@ -790,7 +815,7 @@ func handleUpdatePolicyUpdateWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	updated, err := updateUpdatePolicyWithService(deps.PolicyService, id, policy)
+	updated, err := updateUpdatePolicyWithRepository(deps.PolicyService, deps.PolicyRepository, id, policy)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "policy not found"})
@@ -808,14 +833,15 @@ func handleUpdatePolicyUpdateWithDeps(c *gin.Context, deps AppDeps) {
 	c.JSON(http.StatusOK, updated)
 }
 
-func handleUpdatePolicyDelete(c *gin.Context) {
+func handleUpdatePolicyDeleteWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
 	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid policy id"})
 		return
 	}
-	policy, _ := getUpdatePolicy(id)
-	if err := deleteUpdatePolicy(id); err != nil {
+	policy, _ := deps.PolicyRepository.GetPolicy(id)
+	if err := deps.PolicyRepository.DeletePolicy(id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "policy not found"})
 			return
@@ -826,11 +852,6 @@ func handleUpdatePolicyDelete(c *gin.Context) {
 	}
 	audit(c, "update_policy.delete", "update_policy", policy.Name, "success", "Update policy deleted", map[string]any{"policy_id": id})
 	c.JSON(http.StatusOK, gin.H{"message": "policy deleted"})
-}
-
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePolicyRuns(c *gin.Context) {
-	handleUpdatePolicyRunsWithDeps(c, NewDefaultAppDeps())
 }
 
 func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
@@ -844,7 +865,7 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 	if limit > maxUpdatePolicyRunsLimit {
 		limit = maxUpdatePolicyRunsLimit
 	}
-	runs, err := listUpdatePolicyRuns(limit)
+	runs, err := deps.PolicyRepository.ListRuns(limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load policy runs"})
 		return
@@ -860,18 +881,19 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 	})
 }
 
-func handleUpdatePolicyOverrides(c *gin.Context) {
+func handleUpdatePolicyOverridesWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
 	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid policy id"})
 		return
 	}
-	policy, err := getUpdatePolicy(id)
+	policy, err := deps.PolicyRepository.GetPolicy(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "policy not found"})
 		return
 	}
-	items, err := listUpdatePolicyOverrides(id)
+	items, err := deps.PolicyRepository.ListOverrides(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load overrides"})
 		return
@@ -883,7 +905,8 @@ func handleUpdatePolicyOverrides(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
-func handleUpdatePolicyOverrideUpsert(c *gin.Context) {
+func handleUpdatePolicyOverrideUpsertWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
 	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
 	if err != nil || id <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid policy id"})
@@ -894,11 +917,11 @@ func handleUpdatePolicyOverrideUpsert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "server name is required"})
 		return
 	}
-	if _, err := getUpdatePolicy(id); err != nil {
+	if _, err := deps.PolicyRepository.GetPolicy(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "policy not found"})
 		return
 	}
-	if !serverExistsByName(serverName) {
+	if !serverExistsByNameInState(deps.ServerState, serverName) {
 		audit(c, "update_policy.override", "server", serverName, "failure", "Server not found", map[string]any{"policy_id": id})
 		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
 		return
@@ -911,7 +934,7 @@ func handleUpdatePolicyOverrideUpsert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	override, err := setUpdatePolicyOverride(id, serverName, req.Disabled)
+	override, err := deps.PolicyRepository.SetOverride(id, serverName, req.Disabled)
 	if err != nil {
 		audit(c, "update_policy.override", "server", serverName, "failure", "Failed to save override", map[string]any{"error": err.Error(), "policy_id": id})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save override"})
@@ -925,14 +948,9 @@ func handleUpdatePolicyOverrideUpsert(c *gin.Context) {
 	c.JSON(http.StatusOK, override)
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePolicySettingsStatus(c *gin.Context) {
-	handleUpdatePolicySettingsStatusWithDeps(c, NewDefaultAppDeps())
-}
-
 func handleUpdatePolicySettingsStatusWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
-	windows, err := loadGlobalUpdatePolicyBlackouts()
+	windows, err := deps.PolicyRepository.LoadGlobalBlackouts()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load scheduled update settings"})
 		return
@@ -944,11 +962,6 @@ func handleUpdatePolicySettingsStatusWithDeps(c *gin.Context, deps AppDeps) {
 	})
 }
 
-//lint:ignore U1000 compatibility handler retained for direct handler tests and route migration.
-func handleUpdatePolicySettingsUpdate(c *gin.Context) {
-	handleUpdatePolicySettingsUpdateWithDeps(c, NewDefaultAppDeps())
-}
-
 func handleUpdatePolicySettingsUpdateWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
 	var req UpdatePolicySettingsResponse
@@ -957,7 +970,7 @@ func handleUpdatePolicySettingsUpdateWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	normalizedBlackouts, err := saveGlobalUpdatePolicyBlackouts(req.GlobalBlackouts)
+	normalizedBlackouts, err := saveGlobalUpdatePolicyBlackoutsWithRepository(deps.PolicyRepository, req.GlobalBlackouts)
 	if err != nil {
 		audit(c, "update_policy.settings", "update_policy", "global", "failure", "Failed to save scheduled update settings", map[string]any{"error": err.Error()})
 		statusCode := http.StatusInternalServerError

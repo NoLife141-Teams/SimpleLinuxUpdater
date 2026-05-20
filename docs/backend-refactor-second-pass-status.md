@@ -15,7 +15,7 @@ This checklist tracks the second backend refactor pass described in [backend-ref
 - [x] Phase 8 - Update Package: complete on `codex/updates-package`
 - [x] Phase 9 - Observability And Dashboard Package: complete on `codex/observability-dashboard-package`
 - [x] Phase 10 - Repository And Schema Ownership: complete on `codex/repository-schema-ownership`
-- [ ] Phase 11 - Final Global And Wrapper Removal
+- [x] Phase 11 - Final Global And Wrapper Removal: complete on `codex/final-global-wrapper-removal`
 - [ ] Phase 12 - Documentation And Live Smoke
 
 ## Phase 0 Validation
@@ -232,113 +232,31 @@ Broader gates:
 
 Live disposable-host smoke is not required for Phase 10 because this phase only moves SQLite schema creation/migration and server-facts repository ownership behind domain packages.
 
-## Compatibility Wrappers To Remove Later
+## Phase 11 Validation
 
-These wrappers are intentionally retained after the first pass and are marked with `//lint:ignore U1000`. They should disappear by Phase 11 after package APIs replace all transitional call sites.
+Required:
 
-### Policy Wrappers And Handlers
+- [x] `go test -count=1 -run 'TestAppDeps|TestBackendContract|TestRouteInventory|TestAuth|TestSession|TestServer|TestBackup|TestAudit|TestPolicy|TestUpdate|TestObservability|TestMetrics|TestJob' ./...`
+- [x] `go test -count=1 ./...`
+- [x] `go vet ./...`
+- [x] `staticcheck ./...`
+- [x] `go test -race -count=1 ./...`
+- [x] `go build -o webserver .`
+- [x] `npm run test:e2e`
 
-Policy ownership now lives in `internal/policies`; these main-package wrappers remain temporary adapters for routes, dashboard projections, update-runner integration, and direct transitional tests until Phase 11.
+Broader gates:
 
-- `update_policies.go`: `normalizeUpdatePolicy`
-- `update_policies.go`: `updateUpdatePolicy`
-- `update_policies.go`: `enrichPoliciesWithMatches`
-- `update_policies.go`: `candidatePriority`
-- `update_policies.go`: `createSkippedPolicyRun`
-- `update_policies.go`: `rememberMissedUpdatePolicyTick`
-- `update_policies.go`: `pendingMissedUpdatePolicyTicks`
-- `update_policies.go`: `forgetMissedUpdatePolicyTick`
-- `update_policies.go`: `processDueUpdatePolicySlot`
-- `update_policies.go`: `handleUpdatePoliciesList`
-- `update_policies.go`: `handleUpdatePolicyCreate`
-- `update_policies.go`: `handleUpdatePolicyUpdate`
-- `update_policies.go`: `handleUpdatePolicyRuns`
-- `update_policies.go`: `handleUpdatePolicySettingsStatus`
-- `update_policies.go`: `handleUpdatePolicySettingsUpdate`
+- [x] `govulncheck ./...`
+- [x] `actionlint`
+- [x] `npm audit --audit-level=moderate`
 
-### Report Wrappers And Handlers
+Live disposable-host smoke is not required for Phase 11 because this phase only removes compatibility wrappers and app-scopes default runtime dependencies.
 
-- `update_reports.go`: `loadAuditEventByID`
-- `update_reports.go`: `handleAuditReport`
-- `update_reports.go`: `buildAuditMarkdownReport`
-- `update_reports.go`: `buildJobMarkdownReport`
-- `update_reports.go`: `handleJobReport`
+## Compatibility Cleanup
 
-### Dashboard And Server Action Wrappers
-
-- `webserver.go`: `handleDashboardEvents`
-- `webserver.go`: `handleDashboardSummary`
-- `webserver.go`: `createServerActionJob`
-- `webserver.go`: update/action route entrypoint wrappers (`runUpdateWithActor`, `runUpdateJobWithActor`, `runAutoremoveWithActor`, `runAutoremoveJobWithActor`, `runSudoersBootstrapWithActor`, `runSudoersBootstrapJobWithActor`, `runSudoersDisableWithActor`, `runSudoersDisableJobWithActor`)
-- `update_service.go`: `NewUpdateService`, default dependency composition, and the temporary `withActorRunner` test seam are Phase 11 cleanup glue around `internal/updates`.
-- `server_inventory_service.go`: `updateServerKey`
-- `server_inventory_service.go`: host-key result type aliases
-- `server_inventory_service.go`: server inventory helper wrappers (`newIdleServerStatus`, `updateStatusFromServer`, normalization helpers, `isValidSSHUsername`)
-- `server_inventory_service.go`: known_hosts helper wrappers (`knownHostsDefaultWritePath`, `knownHostsHostToken`, `buildKnownHostsLine`)
-
-## Mutable Package State To Move Later
-
-This inventory is grouped by likely owning phase. Some package-level values are constants or compiled regex helpers and may remain package-owned after extraction; this list focuses on mutable app state, service singletons, and test hooks.
-
-### App, DB, And Encryption State
-
-- `internal/app`: owns Gin router composition, trusted proxy parsing, global middleware ordering, initialization ordering, template loading, static mounting, and route registration callback execution.
-- Domain packages now own SQLite schema creation for their tables; `package main` remains the temporary deterministic schema orchestrator and owns the shared `settings` table until Phase 11.
-- `app_deps.go`: `AppDeps` remains a temporary main-package compatibility boundary for main-owned services until later package extractions.
-- `webserver.go`: `db`, `dbOnce`
-- `webserver.go`: `keyOnce`, `encryptionKey`
-- `webserver.go`: `runtimeStateMu`
-- `app_timezone.go`: `detectSystemTimezoneNameFunc`, timezone metadata paths, localtime path, and zoneinfo roots
-
-### Auth And Session State
-
-- `internal/auth`: owns auth service logic, auth/session repositories, session manager construction helpers, same-origin helpers, and auth rate limiter implementation.
-- `auth_session.go`: `sessionManager`, `sessionManagerMu`
-- `auth_session.go`: temporary default auth service and auth/setup/login/password rate limiter singletons remain until final app-scoped ownership cleanup.
-
-### Job State
-
-- `jobs.go`: `jobManager`, `jobManagerMu`
-
-### Audit State
-
-- `audit_service.go`: `auditService` is now only the temporary main-owned default singleton for `internal/audit.Service`; final ownership cleanup is deferred to Phase 11.
-- `webserver.go`: `auditPruneTickerOnce`
-
-### Server Inventory And Runtime State
-
-- `internal/servers`: owns server inventory types, runtime state access methods, SQLite inventory persistence, inventory service behavior, known_hosts helpers, host-key scan/trust/clear helpers, and SSH auth method construction.
-- `server_inventory_service.go`: `servers`, `statusMap`, and `mu` remain temporary compatibility storage behind `internal/servers.State` until direct main-package runner/test access is migrated.
-- `server_inventory_service.go`: `serverState` and `serverInventoryService` are temporary main-owned default singletons for `internal/servers`; final ownership cleanup is deferred to Phase 11.
-- `webserver.go`: `saveServersFunc`
-- `webserver.go`: `globalKey`, `globalKeyMu`
-- `server_inventory_service.go`: `knownHostsMu`, `scanHostKeyFunc`
-
-### Update Runner And SSH Test Hooks
-
-- `internal/updates`: owns update/autoremove/sudoers runner orchestration, retry/error classification helpers, apt package parsing and selected-upgrade command building, approval/cancel service methods, scheduled scan execution, scheduled job metadata helpers, and CVE preparation/query-command helpers.
-- `update_service.go`: temporary main-owned default update service composition and compatibility type aliases remain until final app-scoped ownership cleanup.
-- `webserver.go`: `dialSSHConnection`, `dialSSHConnectionMu`
-- `webserver.go`: `updateRunnerWG`
-
-### Policy Scheduler State
-
-- `internal/policies`: owns scheduler once/tick locking, missed-tick replay state, policy validation, matching, blackout checks, due-slot detection, run creation orchestration, and SQLite policy/run/settings repositories.
-- `policy_service.go`: temporary main-owned default service composition and callback defaults remain until final app-scoped ownership cleanup.
-
-### Backup And Maintenance State
-
-- `internal/backup`: owns backup archive format, export/restore service behavior, and the restore/export barrier implementation.
-- `backup_restore.go`: `backupRestoreMu`
-- `backup_restore.go`: temporary default backup service/barrier singletons and handler adapters remain until final app-scoped ownership cleanup.
-- `maintenance.go`: maintenance state and lock
-
-### Dashboard, Observability, And Metrics State
-
-- `webserver.go`: `dashboardEventBroker` is now only the temporary main-owned default singleton for `internal/events.Broker`; final ownership cleanup is deferred to Phase 11.
-- `internal/observability`: owns observability summary builders, dashboard summary builders, Prometheus rendering, metrics token persistence/cache behavior, and metrics summary cache ownership.
-- `observability_service.go`: `observabilityService` and `metricsTokenService` are temporary main-owned default singletons for `internal/observability`; final ownership cleanup is deferred to Phase 11.
-- `webserver.go`: `metricsBearerTokenHash`, `metricsBearerTokenHashMu`, `metricsBearerTokenHashLoaded`, and `metricsBearerTokenHashDBPath` remain temporary compatibility mirrors for existing restore/test hooks until Phase 11.
+- No `//lint:ignore U1000` compatibility wrappers remain.
+- Default router dependencies now create fresh app-scoped service, broker, barrier, rate-limiter, server-state, metrics-token, policy, update, backup, audit, and observability instances instead of reusing mutable service singletons.
+- Remaining package-level values are process startup state, constants, pure helper functions, compiled regexes, or low-level test hooks that require process-wide replacement until the final command-layout/documentation phase.
 
 ## Phase 0 Contract Coverage
 

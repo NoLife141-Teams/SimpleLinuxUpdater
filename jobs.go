@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internaljobs "debian-updater/internal/jobs"
+	serverpkg "debian-updater/internal/servers"
 )
 
 const (
@@ -68,15 +69,36 @@ func setCurrentJobManager(jm *JobManager) {
 }
 
 func newJobManager(db *sql.DB) *JobManager {
-	return internaljobs.NewManager(internaljobs.NewSQLiteRepository(db), internaljobs.ManagerOptions{
-		MaintenanceActive: func() bool {
+	return newJobManagerWithNotify(db, notifyDashboardEvent)
+}
+
+func newJobManagerWithNotify(db *sql.DB, notify func(string)) *JobManager {
+	return newJobManagerWithRuntime(db, notify, globalServerState(), func() bool {
+		return currentMaintenanceState().Active
+	})
+}
+
+func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.State, maintenanceActive func() bool) *JobManager {
+	if notify == nil {
+		notify = notifyDashboardEvent
+	}
+	if state == nil {
+		state = globalServerState()
+	}
+	if maintenanceActive == nil {
+		maintenanceActive = func() bool {
 			return currentMaintenanceState().Active
+		}
+	}
+	return internaljobs.NewManager(internaljobs.NewSQLiteRepository(db), internaljobs.ManagerOptions{
+		MaintenanceActive: maintenanceActive,
+		MaintenanceError:  errMaintenanceModeActive,
+		Notify:            notify,
+		SyncRuntime: func(record JobRecord) {
+			syncServerStateFromJobRecord(state, record)
 		},
-		MaintenanceError: errMaintenanceModeActive,
-		Notify:           notifyDashboardEvent,
-		SyncRuntime:      syncStatusMapFromJobRecord,
 		SyncInterruptedServer: func(serverNames []string) {
-			markInterruptedServersIdle(serverNames)
+			markInterruptedServerStateIdle(state, serverNames)
 		},
 	})
 }
@@ -144,7 +166,7 @@ func runtimeStatusFromJob(record JobRecord) string {
 	}
 }
 
-func syncStatusMapFromJobRecord(record JobRecord) {
+func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 	if strings.TrimSpace(record.ServerName) == "" {
 		return
 	}
@@ -152,9 +174,12 @@ func syncStatusMapFromJobRecord(record JobRecord) {
 	if statusValue == "" {
 		return
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	status := statusMap[record.ServerName]
+	if state == nil {
+		return
+	}
+	state.Lock()
+	defer state.Unlock()
+	status := state.StatusMap()[record.ServerName]
 	if status == nil {
 		return
 	}
@@ -169,11 +194,14 @@ func syncStatusMapFromJobRecord(record JobRecord) {
 	}
 }
 
-func markInterruptedServersIdle(serverNames []string) {
-	mu.Lock()
-	defer mu.Unlock()
+func markInterruptedServerStateIdle(state *serverpkg.State, serverNames []string) {
+	if state == nil {
+		return
+	}
+	state.Lock()
+	defer state.Unlock()
 	for _, serverName := range serverNames {
-		status := statusMap[serverName]
+		status := state.StatusMap()[serverName]
 		if status == nil {
 			continue
 		}

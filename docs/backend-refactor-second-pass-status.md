@@ -280,7 +280,7 @@ Live smoke:
 Smoke result:
 
 - Runtime code under test: `a5e9c17`
-- Phase 12 docs/status commit: pending until this branch is committed.
+- Phase 12 docs/status commit: `49f09c4`
 - Disposable app DB path: `/tmp/slu-phase12-smoke.kw7zeX/servers.db`
 - Disposable known-hosts path: `/tmp/slu-phase12-smoke.kw7zeX/known_hosts`
 - Disposable target name: `release-smoke-target`

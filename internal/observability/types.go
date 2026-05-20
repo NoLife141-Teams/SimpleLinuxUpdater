@@ -88,6 +88,7 @@ type DashboardHealthInfo struct {
 	RebootRequired *bool  `json:"reboot_required"`
 	DiskStatus     string `json:"disk_status"`
 	DiskFreeKB     int64  `json:"disk_free_kb"`
+	DiskTotalKB    int64  `json:"disk_total_kb"`
 	DiskDetails    string `json:"disk_details"`
 	AptStatus      string `json:"apt_status"`
 	AptDetails     string `json:"apt_details"`
@@ -148,6 +149,7 @@ type ServiceDeps struct {
 	ParseAppTimestamp           func(string) (time.Time, error)
 	HealthStatusFromResult      func(updates.PrecheckResult) string
 	DiskFreeKBFromOutput        func(string) (int64, bool)
+	DiskFreeTotalKBFromOutput   func(string) (int64, int64, bool)
 	RebootResultRequiresRestart func(updates.PrecheckResult) (bool, bool)
 	UpdateCompleteAction        string
 	JobTimestampLayout          string

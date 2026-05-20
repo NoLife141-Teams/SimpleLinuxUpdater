@@ -98,6 +98,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return `${Math.round(value / 1024)} MiB`;
         }
 
+        function formatDiskCapacity(freeKB, totalKB) {
+            const free = formatDiskFree(freeKB);
+            const total = formatDiskFree(totalKB);
+            if (free === "--" && total === "--") return "--";
+            if (total === "--") return `${free} free`;
+            if (free === "--") return `${total} total`;
+            return `${free} free of ${total} total`;
+        }
+
         function formatUptime(seconds) {
             const value = Number(seconds || 0);
             if (!Number.isFinite(value) || value <= 0) return "--";
@@ -610,7 +619,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <div><dt>Next run</dt><dd>${escapeHtml(nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run")}</dd></div>
                     <div><dt>No-run</dt><dd>${escapeHtml(noRun.summary || "No no-run window active")}</dd></div>
                     <div><dt>Reboot</dt><dd>${escapeHtml(rebootText)}</dd></div>
-                    <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskFree(health.disk_free_kb)}`)}</dd></div>
+                    <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskCapacity(health.disk_free_kb, health.disk_total_kb)}`)}</dd></div>
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>
                     <div><dt>Facts</dt><dd>${escapeHtml(factsAge)}</dd></div>
                     <div><dt>Tags</dt><dd><div class="chip-list">${renderServerTags(server)}</div></dd></div>

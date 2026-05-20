@@ -96,6 +96,9 @@ func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) Observa
 	if deps.DiskFreeKBFromOutput == nil {
 		deps.DiskFreeKBFromOutput = diskFreeKBFromOutput
 	}
+	if deps.DiskFreeTotalKBFromOutput == nil {
+		deps.DiskFreeTotalKBFromOutput = diskFreeTotalKBFromOutput
+	}
 	if deps.RebootResultRequiresRestart == nil {
 		deps.RebootResultRequiresRestart = rebootResultRequiresRestart
 	}

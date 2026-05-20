@@ -289,6 +289,16 @@ h3 {
     color: var(--warning);
 }
 
+#last-sync-label {
+    justify-content: center;
+    width: 128px;
+}
+
+#last-sync-label.warning {
+    width: auto;
+    min-width: 128px;
+}
+
 .metric-strip {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -561,13 +571,19 @@ tbody tr {
 }
 
 tbody tr:hover,
-.row-hover,
-.row-selected {
+.row-hover {
     background: rgba(92, 200, 255, 0.045);
 }
 
-.row-selected {
-    box-shadow: inset 3px 0 0 var(--accent);
+tbody tr.row-selected,
+tbody tr.row-selected:hover,
+.row-selected.row-hover {
+    background: rgba(92, 200, 255, 0.13);
+    box-shadow: inset 4px 0 0 var(--accent), inset 0 0 0 1px rgba(92, 200, 255, 0.2);
+}
+
+tbody tr.row-selected .select-host {
+    color: #f8fafc;
 }
 
 tbody tr:last-child td {
@@ -841,6 +857,17 @@ th.resizing .col-resize-handle::before {
     line-height: 1.12;
     white-space: normal;
     overflow-wrap: anywhere;
+}
+
+.chip {
+    flex: 0 0 auto;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: normal;
 }
 
 .risk-critical,

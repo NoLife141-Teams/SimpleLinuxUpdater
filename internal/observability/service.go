@@ -110,6 +110,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.DiskFreeKBFromOutput == nil {
 		d.DiskFreeKBFromOutput = func(string) (int64, bool) { return 0, false }
 	}
+	if d.DiskFreeTotalKBFromOutput == nil {
+		d.DiskFreeTotalKBFromOutput = func(string) (int64, int64, bool) { return 0, 0, false }
+	}
 	if d.RebootResultRequiresRestart == nil {
 		d.RebootResultRequiresRestart = func(updates.PrecheckResult) (bool, bool) { return false, false }
 	}
@@ -414,7 +417,10 @@ func UpdateHealthFromResults(health *DashboardHealthInfo, results []updates.Prec
 		switch result.Name {
 		case "disk_space":
 			health.DiskStatus = deps.HealthStatusFromResult(result)
-			if parsedFreeKB, ok := deps.DiskFreeKBFromOutput(result.Output); ok {
+			if parsedFreeKB, parsedTotalKB, ok := deps.DiskFreeTotalKBFromOutput(result.Output); ok {
+				health.DiskFreeKB = parsedFreeKB
+				health.DiskTotalKB = parsedTotalKB
+			} else if parsedFreeKB, ok := deps.DiskFreeKBFromOutput(result.Output); ok {
 				health.DiskFreeKB = parsedFreeKB
 			}
 			health.DiskDetails = result.Details
@@ -848,6 +854,7 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 			health.RebootRequired = fact.RebootRequired
 			health.DiskStatus = fact.DiskStatus
 			health.DiskFreeKB = fact.DiskFreeKB
+			health.DiskTotalKB = fact.DiskTotalKB
 			health.DiskDetails = fact.DiskDetails
 			health.AptStatus = fact.AptStatus
 			health.AptDetails = fact.AptDetails

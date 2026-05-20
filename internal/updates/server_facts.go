@@ -42,6 +42,7 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 			uptime_seconds INTEGER NOT NULL DEFAULT 0,
 			disk_status TEXT NOT NULL DEFAULT 'unknown',
 			disk_free_kb INTEGER NOT NULL DEFAULT 0,
+			disk_total_kb INTEGER NOT NULL DEFAULT 0,
 			disk_details TEXT NOT NULL DEFAULT '',
 			apt_status TEXT NOT NULL DEFAULT 'unknown',
 			apt_details TEXT NOT NULL DEFAULT '',
@@ -54,7 +55,36 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_server_facts_collected_at ON server_facts (collected_at DESC)"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "server_facts", "disk_total_kb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureColumn(db *sql.DB, table, name, definition string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var columnName, columnType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if columnName == name {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + name + " " + definition)
+	return err
 }
 
 func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
@@ -85,15 +115,16 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 	_, err := db.Exec(`
 		INSERT INTO server_facts (
 			server_name, collected_at, os_pretty_name, uptime_seconds,
-			disk_status, disk_free_kb, disk_details, apt_status, apt_details,
+			disk_status, disk_free_kb, disk_total_kb, disk_details, apt_status, apt_details,
 			reboot_required, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(server_name) DO UPDATE SET
 			collected_at = excluded.collected_at,
 			os_pretty_name = excluded.os_pretty_name,
 			uptime_seconds = excluded.uptime_seconds,
 			disk_status = excluded.disk_status,
 			disk_free_kb = excluded.disk_free_kb,
+			disk_total_kb = excluded.disk_total_kb,
 			disk_details = excluded.disk_details,
 			apt_status = excluded.apt_status,
 			apt_details = excluded.apt_details,
@@ -106,6 +137,7 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 		record.UptimeSeconds,
 		record.DiskStatus,
 		record.DiskFreeKB,
+		record.DiskTotalKB,
 		record.DiskDetails,
 		record.AptStatus,
 		record.AptDetails,
@@ -122,7 +154,7 @@ func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, er
 	}
 	rows, err := db.Query(`
 		SELECT server_name, collected_at, os_pretty_name, uptime_seconds,
-		       disk_status, disk_free_kb, disk_details, apt_status, apt_details,
+		       disk_status, disk_free_kb, disk_total_kb, disk_details, apt_status, apt_details,
 		       reboot_required, raw_json
 		  FROM server_facts
 	`)
@@ -141,6 +173,7 @@ func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, er
 			&record.UptimeSeconds,
 			&record.DiskStatus,
 			&record.DiskFreeKB,
+			&record.DiskTotalKB,
 			&record.DiskDetails,
 			&record.AptStatus,
 			&record.AptDetails,

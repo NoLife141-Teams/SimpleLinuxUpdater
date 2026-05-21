@@ -297,6 +297,10 @@ func ShellEscapeSingleQuotes(value string) string {
 	return strings.ReplaceAll(value, "'", "'\"'\"'")
 }
 
+func RootOrSudoCommand(command string) string {
+	return fmt.Sprintf("if [ \"$(id -u)\" -eq 0 ]; then %s; else sudo -n %s; fi", command, command)
+}
+
 func BuildSelectedUpgradeCmd(packages []string) string {
 	if len(packages) == 0 {
 		return ""
@@ -312,7 +316,7 @@ func BuildSelectedUpgradeCmd(packages []string) string {
 	if len(escaped) == 0 {
 		return ""
 	}
-	return AptUpgradeSelectedPrefixCmd + " " + strings.Join(escaped, " ")
+	return RootOrSudoCommand("apt-get -y install --only-upgrade -- " + strings.Join(escaped, " "))
 }
 
 func PreparePendingUpdatesForCVE(updates []servers.PendingUpdate) []servers.PendingUpdate {

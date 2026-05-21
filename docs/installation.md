@@ -13,7 +13,7 @@
 ## Requirements
 
 - Go 1.26+ (only required if building from source)
-- A Debian-based target host (Debian, Ubuntu, etc.) with `apt` and `sudo`
+- A Debian-based target host (Debian, Ubuntu, Proxmox, etc.) with `apt`; non-root SSH users also need `sudo`
 - Network access from the updater host to targets over SSH
 
 ## Install with Docker
@@ -22,8 +22,8 @@ Use the published image from GHCR (recommended):
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141/simplelinuxupdater:v0.2.4
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141/simplelinuxupdater:v0.2.4
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.2.5
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.2.5
 ```
 
 Open the UI:

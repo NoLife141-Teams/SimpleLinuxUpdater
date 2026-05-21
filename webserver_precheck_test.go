@@ -182,6 +182,18 @@ func TestCheckAptLocks(t *testing.T) {
 		t.Fatalf("checkAptLocks(sudo password required) = passed, want fail")
 	}
 
+	sudoMissingConn := &scriptedSSHConnection{
+		responses: map[string]scriptedResponse{
+			precheckLocksCmd: {
+				stderr: "sh: 1: sudo: not found\n",
+				err:    fakeExitStatusError{code: 127, msg: "exit status 127"},
+			},
+		},
+	}
+	if got := checkAptLocks(sudoMissingConn); got.Passed || !strings.Contains(got.Details, "Remote user is not root") {
+		t.Fatalf("checkAptLocks(sudo missing) = %+v, want non-root sudo guidance", got)
+	}
+
 	commandNotFoundConn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			precheckLocksCmd: {

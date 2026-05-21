@@ -33,9 +33,17 @@ func TestParseUpgradableEntriesAndPackageSelection(t *testing.T) {
 
 func TestBuildSelectedUpgradeCmdEscapesPackages(t *testing.T) {
 	got := BuildSelectedUpgradeCmd([]string{"openssl", "libfoo'bar"})
-	want := `sudo -n apt-get -y install --only-upgrade -- 'openssl' 'libfoo'"'"'bar'`
+	want := RootOrSudoCommand(`apt-get -y install --only-upgrade -- 'openssl' 'libfoo'"'"'bar'`)
 	if got != want {
 		t.Fatalf("BuildSelectedUpgradeCmd() = %q, want %q", got, want)
+	}
+}
+
+func TestRootOrSudoCommand(t *testing.T) {
+	got := RootOrSudoCommand("apt-get update")
+	want := `if [ "$(id -u)" -eq 0 ]; then apt-get update; else sudo -n apt-get update; fi`
+	if got != want {
+		t.Fatalf("RootOrSudoCommand() = %q, want %q", got, want)
 	}
 }
 

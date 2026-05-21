@@ -130,7 +130,7 @@ The Status page shows current state and allows you to inspect logs. Logs are upd
 
 ### Passwordless apt toggle
 
-From the Status page, you can enable or disable passwordless apt (per server). This creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so apt commands can be executed via sudo without prompting.
+From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so apt commands can be executed via sudo without prompting. Root SSH sessions run apt commands directly.
 
 ## Audit trail
 

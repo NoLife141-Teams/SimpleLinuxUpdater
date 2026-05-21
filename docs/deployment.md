@@ -17,20 +17,20 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141/simplelinuxupdater:v0.2.4
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.2.5
 ```
 
 ## GHCR images
 
 Release tags publish images to GitHub Container Registry:
 
-- `ghcr.io/nolife141/simplelinuxupdater:vX.Y.Z`
-- `ghcr.io/nolife141/simplelinuxupdater:latest`
+- `ghcr.io/nolife141-teams/simplelinuxupdater:vX.Y.Z`
+- `ghcr.io/nolife141-teams/simplelinuxupdater:latest`
 
 Example:
 
 ```bash
-docker pull ghcr.io/nolife141/simplelinuxupdater:v0.2.4
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.2.5
 ```
 
 ## Binary deployment

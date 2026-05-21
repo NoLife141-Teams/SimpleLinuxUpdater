@@ -11,13 +11,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const (
-	AptUpdateCmd                = "sudo -n apt-get update"
-	AptUpgradeCmd               = "sudo -n apt-get -y upgrade"
-	AptUpgradeSelectedPrefixCmd = "sudo -n apt-get -y install --only-upgrade --"
-	AptAutoremoveCmd            = "sudo -n apt-get -y autoremove"
-	AptListUpgradableCmd        = "sudo -n apt-get -s upgrade"
+var (
+	AptUpdateCmd         = RootOrSudoCommand("apt-get update")
+	AptUpgradeCmd        = RootOrSudoCommand("apt-get -y upgrade")
+	AptAutoremoveCmd     = RootOrSudoCommand("apt-get -y autoremove")
+	AptListUpgradableCmd = RootOrSudoCommand("apt-get -s upgrade")
+)
 
+const (
 	DefaultSSHCommandTimeout = 5 * time.Minute
 	MinSSHCommandTimeout     = 1 * time.Second
 	MaxSSHCommandTimeout     = 30 * time.Minute

@@ -82,13 +82,15 @@ const postcheckCustomCmdEnv = "DEBIAN_UPDATER_POSTCHECK_CMD"
 const updatePrecheckMinFreeKB int64 = 1024 * 1024
 const precheckOutputMaxLen = 240
 const precheckDiskSpaceCmd = "df -Pk /var / | awk 'NR>1 {print $2, $4}'"
-const precheckLocksCmd = "sudo -n /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock"
-const precheckDpkgAuditCmd = "sudo -n dpkg --audit"
-const precheckAptCheckCmd = "sudo -n apt-get check"
-const aptUpdateCmd = "sudo -n apt-get update"
-const aptUpgradeCmd = "sudo -n apt-get -y upgrade"
-const aptAutoremoveCmd = "sudo -n apt-get -y autoremove"
-const aptListUpgradableCmd = "sudo -n apt-get -s upgrade"
+
+var precheckLocksCmd = updatespkg.RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
+var precheckDpkgAuditCmd = updatespkg.RootOrSudoCommand("dpkg --audit")
+var precheckAptCheckCmd = updatespkg.RootOrSudoCommand("apt-get check")
+var aptUpdateCmd = updatespkg.AptUpdateCmd
+var aptUpgradeCmd = updatespkg.AptUpgradeCmd
+var aptAutoremoveCmd = updatespkg.AptAutoremoveCmd
+var aptListUpgradableCmd = updatespkg.AptListUpgradableCmd
+
 const defaultSSHCommandTimeout = 5 * time.Minute
 const minSSHCommandTimeout = 1 * time.Second
 const maxSSHCommandTimeout = 30 * time.Minute
@@ -636,6 +638,12 @@ func isSudoPolicyOrPasswordError(msg string) bool {
 		strings.Contains(normalized, "is not in the sudoers file")
 }
 
+func isSudoCommandNotFoundError(msg string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(normalized, "sudo: command not found") ||
+		strings.Contains(normalized, "sudo: not found")
+}
+
 func isCommandNotFoundError(msg string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(msg))
 	return strings.Contains(normalized, "/usr/bin/fuser: command not found") ||
@@ -846,6 +854,14 @@ func checkAptLocks(client sshConnection) updatePrecheckResult {
 			Output:  output,
 		}
 	}
+	if isSudoCommandNotFoundError(output + "\n" + err.Error()) {
+		return updatePrecheckResult{
+			Name:    "apt_locks",
+			Passed:  false,
+			Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
+			Output:  output,
+		}
+	}
 	if isCommandNotFoundError(output + "\n" + err.Error()) {
 		return updatePrecheckResult{
 			Name:    "apt_locks",
@@ -875,7 +891,7 @@ func checkAptLocks(client sshConnection) updatePrecheckResult {
 		return updatePrecheckResult{
 			Name:    "apt_locks",
 			Passed:  false,
-			Details: "Lock check command not found. Install package `psmisc` (provides /usr/bin/fuser).",
+			Details: "Lock check command failed because a required command was not found. Install `sudo` for non-root users or `psmisc` for `/usr/bin/fuser`.",
 			Output:  output,
 		}
 	}
@@ -896,6 +912,14 @@ func runAptHealthCheck(client sshConnection, checkName string) updatePrecheckRes
 				Name:    checkName,
 				Passed:  false,
 				Details: "APT health pre-check requires passwordless sudo for `/usr/bin/dpkg`. Click \"Enable passwordless apt\" for this server, then retry.",
+				Output:  dpkgOutput,
+			}
+		}
+		if isSudoCommandNotFoundError(dpkgOutput + "\n" + dpkgErr.Error()) {
+			return updatePrecheckResult{
+				Name:    checkName,
+				Passed:  false,
+				Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
 				Output:  dpkgOutput,
 			}
 		}
@@ -922,6 +946,14 @@ func runAptHealthCheck(client sshConnection, checkName string) updatePrecheckRes
 				Name:    checkName,
 				Passed:  false,
 				Details: "APT health pre-check requires passwordless sudo for `/usr/bin/apt-get`. Click \"Enable passwordless apt\" for this server, then retry.",
+				Output:  aptOutput,
+			}
+		}
+		if isSudoCommandNotFoundError(aptOutput + "\n" + aptErr.Error()) {
+			return updatePrecheckResult{
+				Name:    checkName,
+				Passed:  false,
+				Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
 				Output:  aptOutput,
 			}
 		}

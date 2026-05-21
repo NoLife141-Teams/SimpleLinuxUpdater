@@ -67,7 +67,7 @@ Symptom: `apt_locks` pre-check fails before `apt-get update`.
 
 Notes:
 
-- The lock pre-check requires `sudo /usr/bin/fuser` from the `psmisc` package.
+- The lock pre-check requires `/usr/bin/fuser` from the `psmisc` package. Root SSH sessions run it directly; non-root SSH users run it through `sudo`.
 - Since v0.2.3, missing `fuser` is a blocking pre-check failure. The older process-name fallback was removed because it could be spoofed by unrelated processes.
 - Missing lock files are treated as no-lock (non-fatal).
 
@@ -76,6 +76,9 @@ Examples you may see in logs:
 - Missing `fuser`:
   - `sudo: /usr/bin/fuser: command not found`
   - `sudo: unable to execute /usr/bin/fuser: No such file or directory`
+- Non-root user on a host without `sudo`:
+  - `sh: 1: sudo: not found`
+  - `bash: line 1: sudo: command not found`
 - Lock file path missing (non-fatal/no-lock):
   - `/usr/bin/fuser: /var/cache/apt/archives/lock: No such file or directory`
 
@@ -87,6 +90,8 @@ sudo apt-get install -y psmisc
 ```
 
 After installing `psmisc`, rerun the app's passwordless apt helper or add a sudoers rule that allows the exact `fuser` lock-check command shown in [security.md](security.md).
+
+If the host intentionally uses root SSH without `sudo` (common on Proxmox), connect as `root`; the updater will run apt and pre-check commands directly.
 
 ## Pre-check failures
 

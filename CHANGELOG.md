@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.2.5] - 2026-05-21
+
+### Fixed
+
+- Support root SSH sessions on minimal Debian/Proxmox hosts without requiring `sudo` for apt operations or update pre-checks.
+- Report missing `sudo` accurately for non-root SSH users instead of mislabeling the apt lock check as missing `fuser`.
+
 ## [v0.2.4] - 2026-05-20
 
 ### Added

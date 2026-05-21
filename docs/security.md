@@ -112,7 +112,7 @@ If an attacker obtains both the database and the encryption key file (or the mou
 
 ## Remote sudo behavior
 
-The updater uses `sudo apt ...` over SSH.
+The updater runs apt operations directly when the SSH user is root. For non-root SSH users, it uses `sudo -n ...` over SSH.
 
 The UI can enable/disable passwordless apt by creating/removing:
 

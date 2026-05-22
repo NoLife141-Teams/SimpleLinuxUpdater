@@ -559,18 +559,14 @@ function resetFileInputLabel(input) {
         };
 
         document.querySelectorAll('#manage-servers-table th.sortable').forEach((th) => {
-            th.setAttribute('tabindex', '0');
-            th.setAttribute('role', 'button');
-            if (!th.getAttribute('aria-label')) {
-                const label = th.textContent?.trim() || 'column';
-                th.setAttribute('aria-label', `Sort by ${label}`);
+            const trigger = th.querySelector('.sort-header-btn');
+            if (trigger) {
+                trigger.addEventListener('click', () => {
+                    applyManageSortFromHeader(th);
+                });
+                return;
             }
             th.addEventListener('click', () => {
-                applyManageSortFromHeader(th);
-            });
-            th.addEventListener('keydown', (event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
                 applyManageSortFromHeader(th);
             });
         });

@@ -1567,18 +1567,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         };
 
         document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
-            th.setAttribute('tabindex', '0');
-            th.setAttribute('role', 'button');
-            if (!th.getAttribute('aria-label')) {
-                const label = th.querySelector('.head-main')?.textContent?.trim() || 'column';
-                th.setAttribute('aria-label', `Sort by ${label}`);
+            const trigger = th.querySelector('.sort-header-btn');
+            if (trigger) {
+                trigger.addEventListener('click', () => {
+                    applySortFromHeader(th);
+                });
+                return;
             }
             th.addEventListener('click', () => {
-                applySortFromHeader(th);
-            });
-            th.addEventListener('keydown', (event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
                 applySortFromHeader(th);
             });
         });
@@ -1893,8 +1889,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         window.addEventListener('keydown', (e) => {
             const backdrop = document.getElementById('password-modal');
             if (backdrop && backdrop.classList.contains('active')) {
-                if (e.key === 'Tab' && trapPasswordModalFocus(e)) {
-                    e.stopImmediatePropagation();
+                if (e.key === 'Tab') {
+                    if (trapPasswordModalFocus(e)) {
+                        e.stopImmediatePropagation();
+                    }
                     return;
                 }
                 if (e.key === 'Escape') {

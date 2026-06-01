@@ -64,26 +64,51 @@ func seedVariantCDemoRuntime(deps AppDeps) error {
 		"worker-04": newDemoStatus(demoServers[4], "done", "Maintenance completed successfully", nil),
 	}
 
+	var prevServers []Server
+	var prevStatusMap map[string]*ServerStatus
 	if deps.ServerState != nil {
 		deps.ServerState.Lock()
+		prevServers = cloneServers(deps.ServerState.Servers())
+		prevStatusMap = cloneStatusMap(deps.ServerState.StatusMap())
 		deps.ServerState.SetServers(demoServers)
 		deps.ServerState.SetStatusMap(demoStatuses)
 		deps.ServerState.Unlock()
 	} else {
 		mu.Lock()
+		prevServers = cloneServers(servers)
+		prevStatusMap = cloneStatusMap(statusMap)
 		servers = demoServers
 		statusMap = demoStatuses
 		mu.Unlock()
 	}
 
+	seedHook := func(tx *sql.Tx) error {
+		return seedVariantCDemoDatabaseTx(tx, now)
+	}
 	if deps.ServerInventoryService != nil {
-		if err := deps.ServerInventoryService.SaveWithTxHook(nil); err != nil {
+		if err := deps.ServerInventoryService.SaveWithTxHook(seedHook); err != nil {
+			restoreVariantCDemoRuntimeState(deps, prevServers, prevStatusMap)
 			return fmt.Errorf("save demo servers: %w", err)
 		}
-	} else if err := saveServers(); err != nil {
+	} else if err := saveServersWithTxHook(seedHook); err != nil {
+		restoreVariantCDemoRuntimeState(deps, prevServers, prevStatusMap)
 		return fmt.Errorf("save demo servers: %w", err)
 	}
-	return seedVariantCDemoDatabase(deps.DB(), now)
+	return nil
+}
+
+func restoreVariantCDemoRuntimeState(deps AppDeps, prevServers []Server, prevStatusMap map[string]*ServerStatus) {
+	if deps.ServerState != nil {
+		deps.ServerState.Lock()
+		deps.ServerState.SetServers(prevServers)
+		deps.ServerState.SetStatusMap(prevStatusMap)
+		deps.ServerState.Unlock()
+		return
+	}
+	mu.Lock()
+	servers = prevServers
+	statusMap = prevStatusMap
+	mu.Unlock()
 }
 
 func newDemoStatus(server Server, status, logs string, pending []PendingUpdate) *ServerStatus {
@@ -129,7 +154,13 @@ func seedVariantCDemoDatabase(db *sql.DB, now time.Time) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := seedVariantCDemoDatabaseTx(tx, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+func seedVariantCDemoDatabaseTx(tx *sql.Tx, now time.Time) error {
 	for _, stmt := range []string{
 		"DELETE FROM jobs",
 		"DELETE FROM audit_events",
@@ -155,7 +186,7 @@ func seedVariantCDemoDatabase(db *sql.DB, now time.Time) error {
 	if err := insertDemoAudit(tx, now); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func insertDemoFacts(tx *sql.Tx, now time.Time) error {

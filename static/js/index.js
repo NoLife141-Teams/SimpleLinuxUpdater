@@ -876,6 +876,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const lastFailed = intelligence?.last_failed_update;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
             const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
+            const canRunUpdate = !!triage.can_run_checks && server.status !== "pending_approval";
             const packageSummary = `${Number(triage.pending_packages ?? pendingCount)} pending · ${Number(triage.security_updates ?? securityCount)} security · ${Number(triage.cve_count || 0)} CVE`;
             const lastUpdateSummary = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history";
             const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run";
@@ -890,7 +891,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}">Approve</button>` : ""}
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only security updates">Security</button>` : ""}
-                    <button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>
+                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                     ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
                 </div>

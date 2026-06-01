@@ -413,6 +413,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.getByRole('heading', { name: 'Running operations' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
     await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
+    await expect(page.locator('#selected-host-title')).toHaveText('demo-host');
+    await expect(page.locator('#selected-host-panel').getByRole('button', { name: 'Update' })).toHaveCount(0);
     await expect(page.locator('#approval-triage-table tbody')).toContainText('demo-host');
     await expect(page.locator('#scheduled-runs')).toContainText('Nightly security');
 

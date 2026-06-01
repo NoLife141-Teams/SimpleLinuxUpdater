@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 test.describe.serial('setup and login flows', () => {
   const username = 'admin';
   const password = 'StrongPass1234';
+  const changedPassword = 'NewStrongPass123';
 
   async function signIn(page) {
     await page.locator('#username').fill(username);
@@ -31,15 +32,20 @@ test.describe.serial('setup and login flows', () => {
 
     if (!status.authenticated) {
       const endpoint = status.setup_required ? '/api/auth/setup' : '/api/auth/login';
-      const result = await page.evaluate(async ({ endpoint, username, password }) => {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        return { ok: response.ok, status: response.status, payload };
-      }, { endpoint, username, password });
+      const candidates = [password];
+      let result = { ok: false, status: 0, payload: {} };
+      for (const candidatePassword of candidates) {
+        result = await page.evaluate(async ({ endpoint, username, password }) => {
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          return { ok: response.ok, status: response.status, payload };
+        }, { endpoint, username, password: candidatePassword });
+        if (result.ok) break;
+      }
 
       expect(result, `${endpoint} should create an authenticated test session`).toMatchObject({ ok: true });
     }
@@ -56,16 +62,113 @@ test.describe.serial('setup and login flows', () => {
     });
   }
 
+  function makeTimeline(status) {
+    const phases = [
+      ['pending_approval', 'Pending approval'],
+      ['prechecks', 'Pre-checks'],
+      ['apt_update', 'APT update'],
+      ['upgrade', 'Upgrade'],
+      ['postchecks', 'Post-checks'],
+      ['done_error', 'Done / Error'],
+    ];
+    const statusMap = {
+      pending_approval: ['pending_approval', 'waiting', 12],
+      updating: ['prechecks', 'active', 32],
+      upgrading: ['upgrade', 'active', 72],
+      done: ['done_error', 'done', 100],
+      error: ['done_error', 'error', 100],
+    };
+    const [currentPhase, state, progress] = statusMap[status] || ['', 'idle', 0];
+    const currentIndex = phases.findIndex(([key]) => key === currentPhase);
+    return {
+      current_phase: currentPhase,
+      current_label: phases[currentIndex]?.[1] || 'Idle',
+      state,
+      progress_pct: progress,
+      summary: state === 'idle' ? 'No maintenance activity' : `Runtime status: ${status}`,
+      updated_at: '2026-05-28T12:00:00Z',
+      updated_at_display: 'May 28, 2026 12:00',
+      phases: phases.map(([key, label], index) => {
+        let phaseState = 'pending';
+        if (state === 'done') phaseState = 'done';
+        else if (state === 'error') phaseState = index < currentIndex ? 'done' : (index === currentIndex ? 'error' : 'pending');
+        else if (currentIndex >= 0) phaseState = index < currentIndex ? 'done' : (index === currentIndex ? state : 'pending');
+        return { key, label, state: phaseState, progress_pct: index === currentIndex ? progress : 0 };
+      }),
+    };
+  }
+
+  function makeDashboardSummary(servers) {
+    const dashboardServers = servers.map(server => {
+      const pendingUpdates = Array.isArray(server.pending_updates) ? server.pending_updates : [];
+      const cves = pendingUpdates.flatMap(update => update.cves || []);
+      const securityUpdates = pendingUpdates.filter(update => update.security).length;
+      const riskLevel = cves.length > 0 ? 'critical' : (securityUpdates > 0 ? 'elevated' : 'normal');
+      return {
+        name: server.name,
+        next_run: server.next_run || { state: 'none', summary: 'No scheduled run' },
+        no_run: { active: false, summary: 'No no-run window active', timezone: 'UTC' },
+        health: {
+          source: server.facts_state === 'stale' ? 'unknown' : 'facts',
+          collected_at: server.facts_state === 'stale' ? '' : '2026-05-28T12:00:00Z',
+          disk_status: 'ok',
+          apt_status: 'ok',
+          os_pretty_name: 'Ubuntu',
+          uptime_seconds: 3600,
+        },
+        risk: {
+          level: riskLevel,
+          summary: cves.length > 0 ? `${cves.length} CVE` : (securityUpdates > 0 ? `${securityUpdates} security` : 'No CVE exposure'),
+          pending_packages: pendingUpdates.length,
+          security_updates: securityUpdates,
+          cves,
+        },
+        timeline: makeTimeline(server.status),
+        approval_triage: {
+          eligible: server.status === 'pending_approval' || pendingUpdates.length > 0,
+          pending_packages: pendingUpdates.length,
+          security_updates: securityUpdates,
+          cve_count: cves.length,
+          risk_level: riskLevel,
+          risk_label: cves.length > 0 ? `${cves.length} CVE` : (securityUpdates > 0 ? `${securityUpdates} security` : 'No CVE exposure'),
+          risk_order: cves.length > 0 ? 4 : (securityUpdates > 0 ? 3 : 2),
+          facts_state: server.facts_state || 'fresh',
+          last_check_display: 'May 28, 2026 12:00',
+          can_approve_all: server.status === 'pending_approval',
+          can_approve_security: server.status === 'pending_approval' && securityUpdates > 0,
+          can_cancel: server.status === 'pending_approval',
+          can_refresh_facts: true,
+          can_run_checks: !['updating', 'upgrading'].includes(server.status),
+        },
+        command_history: [],
+      };
+    });
+    return {
+      generated_at: '2026-05-28T12:00:00Z',
+      fleet: {
+        pending_approval: servers.filter(server => server.status === 'pending_approval').length,
+        prechecks_running: servers.filter(server => ['updating', 'upgrading'].includes(server.status)).length,
+        in_progress: servers.filter(server => ['updating', 'upgrading'].includes(server.status)).length,
+        done: servers.filter(server => server.status === 'done').length,
+        stale_facts: servers.filter(server => server.facts_state === 'stale').length,
+        high_risk_cve: dashboardServers.filter(server => server.approval_triage.cve_count > 0).length,
+        pending_packages: dashboardServers.reduce((sum, server) => sum + server.approval_triage.pending_packages, 0),
+        security_updates: dashboardServers.reduce((sum, server) => sum + server.approval_triage.security_updates, 0),
+      },
+      servers: dashboardServers,
+    };
+  }
+
   async function stubDashboardApi(page, getServers) {
     await page.route('**/api/servers', route => fulfillJson(route, getServers()));
     await page.route('**/api/keys/global', route => fulfillJson(route, { has_key: false }));
     await page.route('**/api/audit-events*', route => fulfillJson(route, { items: [] }));
     await page.route('**/api/observability/summary*', route => fulfillJson(route, { totals: { updates_total: 0, success_rate_pct: 0 } }));
     await page.route('**/api/update-policies', route => fulfillJson(route, []));
-    await page.route('**/api/dashboard/summary*', route => fulfillJson(route, { servers: [] }));
+    await page.route('**/api/dashboard/summary*', route => fulfillJson(route, makeDashboardSummary(getServers())));
   }
 
-  function makeServer(name, status = 'idle', pendingUpdates = []) {
+  function makeServer(name, status = 'idle', pendingUpdates = [], overrides = {}) {
     return {
       name,
       host: `${name}.example.test`,
@@ -77,6 +180,7 @@ test.describe.serial('setup and login flows', () => {
       pending_package_count: pendingUpdates.length,
       security_update_count: pendingUpdates.filter(update => update.security).length,
       logs: 'ready',
+      ...overrides,
     };
   }
 
@@ -271,10 +375,55 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
-    let servers = [makeServer('demo-host', 'pending_approval', makePendingUpdates(80))];
+    let servers = [
+      makeServer('demo-host', 'pending_approval', makePendingUpdates(80), { tags: ['prod'] }),
+      makeServer('runner-host', 'updating', [], {
+        tags: ['web'],
+        next_run: {
+          state: 'scheduled',
+          policy_name: 'Nightly security',
+          scheduled_for_utc: '2026-05-29T06:00:00Z',
+          scheduled_for_display: 'May 29, 2026 06:00',
+          status: 'scheduled',
+        },
+      }),
+    ];
+    const state = {};
     await stubDashboardApi(page, () => servers);
+    await page.route('**/api/approve/demo-host', route => {
+      state.approveAll = (state.approveAll || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/approve-security/demo-host', route => {
+      state.approveSecurity = (state.approveSecurity || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/cancel/demo-host', route => {
+      state.cancel = (state.cancel || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
 
     await ensureAuthenticatedSession(page);
+
+    await expect(page.locator('.fleet-rail h2')).toHaveText('Fleet filters');
+    await expect(page.locator('#maintenance-timeline-title')).toBeVisible();
+    await expect(page.locator('#approval-triage-title')).toBeVisible();
+    await expect(page.locator('#selected-host-title')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Scheduled runs' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Running operations' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
+    await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
+    await expect(page.locator('#selected-host-title')).toHaveText('demo-host');
+    await expect(page.locator('#selected-host-panel').getByRole('button', { name: 'Update' })).toHaveCount(0);
+    await expect(page.locator('#approval-triage-table tbody')).toContainText('demo-host');
+    await expect(page.locator('#scheduled-runs')).toContainText('Nightly security');
+
+    await page.locator('#approval-triage-table button[data-action="approve-all"][data-name="demo-host"]').click();
+    await page.locator('#approval-triage-table button[data-action="approve-security"][data-name="demo-host"]').click();
+    await page.locator('#approval-triage-table button[data-action="cancel-upgrade"][data-name="demo-host"]').click();
+    await expect.poll(() => state.approveAll || 0).toBe(1);
+    await expect.poll(() => state.approveSecurity || 0).toBe(1);
+    await expect.poll(() => state.cancel || 0).toBe(1);
 
     await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="pending"]').click();
     const pendingPanel = page.locator('#drawer-panel-pending');
@@ -285,7 +434,10 @@ test.describe.serial('setup and login flows', () => {
     const beforeRefresh = await pendingPanel.evaluate(el => el.scrollTop);
     expect(beforeRefresh).toBeGreaterThan(0);
 
-    servers = [makeServer('demo-host', 'pending_approval', makePendingUpdates(80).map(update => ({ ...update, cve_state: 'ready' })))];
+    servers = [
+      makeServer('demo-host', 'pending_approval', makePendingUpdates(80).map(update => ({ ...update, cve_state: 'ready' })), { tags: ['prod'] }),
+      servers[1],
+    ];
     await page.evaluate(() => window.fetchServers());
 
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
@@ -436,13 +588,13 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin');
     await expect(page.locator('#auth-session-status')).toContainText('2 server-side session');
     await page.locator('#auth-current-password').fill(password);
-    await page.locator('#auth-new-password').fill('NewStrongPass123');
-    await page.locator('#auth-confirm-password').fill('NewStrongPass123');
+    await page.locator('#auth-new-password').fill(changedPassword);
+    await page.locator('#auth-confirm-password').fill(changedPassword);
     await page.locator('#auth-password-save').click();
     await expect.poll(() => state.passwordPayload).toEqual({
       current_password: password,
-      new_password: 'NewStrongPass123',
-      confirm_password: 'NewStrongPass123',
+      new_password: changedPassword,
+      confirm_password: changedPassword,
     });
     await expect(page.locator('#auth-password-status')).toContainText('Password changed');
 

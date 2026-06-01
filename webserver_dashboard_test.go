@@ -125,6 +125,15 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 	if got.NextRun.State != "none" {
 		t.Fatalf("NextRun.State = %q, want none", got.NextRun.State)
 	}
+	if got.Timeline.CurrentPhase != "pending_approval" || got.Timeline.State != "waiting" {
+		t.Fatalf("Timeline = %+v, want pending approval waiting state", got.Timeline)
+	}
+	if !got.ApprovalTriage.Eligible || got.ApprovalTriage.CVECount != 1 || !got.ApprovalTriage.CanApproveAll || !got.ApprovalTriage.CanApproveSecurity || !got.ApprovalTriage.CanCancel {
+		t.Fatalf("ApprovalTriage = %+v, want critical approval queue with actions", got.ApprovalTriage)
+	}
+	if summary.Fleet["pending_approval"] != 1 || summary.Fleet["high_risk_cve"] != 1 || summary.Fleet["pending_packages"] != 2 || summary.Fleet["security_updates"] != 1 {
+		t.Fatalf("fleet counts = %+v, want approval/risk/package/security totals", summary.Fleet)
+	}
 
 	t.Run("malformed audit metadata leaves facts free space intact", func(t *testing.T) {
 		badMetaServer := Server{Name: "srv-bad-meta", Host: "10.0.0.11", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
@@ -205,6 +214,9 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 		}
 		if found.Health.Source != "unknown" || found.Health.DiskStatus != "unknown" || found.Health.AptStatus != "unknown" {
 			t.Fatalf("Health = %+v, want unknown source/statuses", found.Health)
+		}
+		if found.ApprovalTriage.FactsState != "stale" {
+			t.Fatalf("FactsState = %q, want stale for missing facts", found.ApprovalTriage.FactsState)
 		}
 	})
 }

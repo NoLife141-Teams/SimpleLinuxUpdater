@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
@@ -47,6 +48,9 @@ func newTestDB(t *testing.T, name string) (*sql.DB, string) {
 	if err != nil {
 		t.Fatalf("create test schema: %v", err)
 	}
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("create jobs schema: %v", err)
+	}
 	return db, path
 }
 
@@ -66,6 +70,28 @@ func insertAudit(t *testing.T, db *sql.DB, createdAt, action, status, targetType
 		createdAt, action, status, targetType, targetName, message, metaJSON,
 	); err != nil {
 		t.Fatalf("insert audit event: %v", err)
+	}
+}
+
+func insertDashboardJob(t *testing.T, db *sql.DB, id, serverName, status, phase, summary string, createdAt time.Time) {
+	t.Helper()
+	timestamp := jobs.FormatTimestamp(createdAt)
+	if _, err := db.Exec(
+		`INSERT INTO jobs (
+			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		) VALUES (?, ?, '', ?, 'tester', '', ?, ?, ?, '', '', '{}', '{}', ?, ?, ?, '')`,
+		id,
+		jobs.KindUpdate,
+		serverName,
+		status,
+		phase,
+		summary,
+		timestamp,
+		timestamp,
+		timestamp,
+	); err != nil {
+		t.Fatalf("insert dashboard job: %v", err)
 	}
 }
 
@@ -121,6 +147,7 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 		},
 	})
 	insertAudit(t, db, now.Add(-30*time.Minute).Format(time.RFC3339), "server.facts.refresh", "success", "server", "srv-a", "facts", nil)
+	insertDashboardJob(t, db, "job-srv-a", "srv-a", jobs.StatusWaitingApproval, jobs.PhaseApprovalWait, "Waiting for approval", now.Add(-20*time.Minute))
 
 	service := NewService(ServiceDeps{
 		DB:              func() *sql.DB { return db },
@@ -132,7 +159,7 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 		},
 		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
 			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}}, map[string]*servers.ServerStatus{
-				"srv-a": {Name: "srv-a", PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}}}},
+				"srv-a": {Name: "srv-a", Status: "pending_approval", PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}}}},
 			}
 		},
 		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
@@ -183,6 +210,100 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 	}
 	if got.NextRun.State != "none" || got.NoRun.Active {
 		t.Fatalf("schedule/no-run = %+v/%+v, want no scheduled run and inactive blackout", got.NextRun, got.NoRun)
+	}
+	if got.Timeline.CurrentPhase != "pending_approval" || got.Timeline.State != "waiting" || got.Timeline.ProgressPct != 12 {
+		t.Fatalf("timeline = %+v, want pending approval waiting at default progress", got.Timeline)
+	}
+	if len(got.Timeline.Phases) != 6 || got.Timeline.Phases[0].Key != "pending_approval" || got.Timeline.Phases[0].State != "waiting" {
+		t.Fatalf("timeline phases = %+v, want fixed pending approval first phase", got.Timeline.Phases)
+	}
+	if !got.ApprovalTriage.Eligible || got.ApprovalTriage.PendingPackages != 1 || got.ApprovalTriage.SecurityUpdates != 1 || got.ApprovalTriage.CVECount != 1 {
+		t.Fatalf("approval triage = %+v, want eligible one-package critical queue", got.ApprovalTriage)
+	}
+	if !got.ApprovalTriage.CanApproveAll || !got.ApprovalTriage.CanApproveSecurity || !got.ApprovalTriage.CanCancel {
+		t.Fatalf("approval actions = %+v, want approval controls enabled", got.ApprovalTriage)
+	}
+	if got.ApprovalTriage.FactsState != "fresh" || got.ApprovalTriage.RiskOrder != 4 {
+		t.Fatalf("approval freshness/risk = %+v, want fresh critical ordering", got.ApprovalTriage)
+	}
+	if summary.Fleet["pending_approval"] != 1 || summary.Fleet["high_risk_cve"] != 1 || summary.Fleet["pending_packages"] != 1 || summary.Fleet["security_updates"] != 1 {
+		t.Fatalf("fleet counts = %+v, want pending approval/high risk/package/security counts", summary.Fleet)
+	}
+}
+
+func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-timeline.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	insertDashboardJob(t, db, "job-active", "srv-active", jobs.StatusRunning, jobs.PhaseAptUpdate, "Running apt update", now.Add(-12*time.Minute))
+	insertDashboardJob(t, db, "job-stale-terminal-active", "srv-stale-terminal-active", jobs.StatusFailed, jobs.PhasePostchecks, "Old post-check failed", now.Add(-8*time.Minute))
+	insertDashboardJob(t, db, "job-failed", "srv-failed", jobs.StatusFailed, jobs.PhasePostchecks, "Post-check failed", now.Add(-9*time.Minute))
+	insertDashboardJob(t, db, "job-done", "srv-done", jobs.StatusSucceeded, jobs.PhaseComplete, "Update completed", now.Add(-6*time.Minute))
+
+	service := NewService(ServiceDeps{
+		DB:              func() *sql.DB { return db },
+		DBPath:          func() string { return path },
+		CurrentTimezone: func() (*time.Location, string) { return time.UTC, "UTC" },
+		CurrentLocation: func() *time.Location { return time.UTC },
+		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
+			return raw, "UTC"
+		},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			snapshot := []servers.Server{
+				{Name: "srv-active"},
+				{Name: "srv-done"},
+				{Name: "srv-failed"},
+				{Name: "srv-stale-terminal-active"},
+			}
+			return snapshot, map[string]*servers.ServerStatus{
+				"srv-active":                {Name: "srv-active", Status: "updating"},
+				"srv-done":                  {Name: "srv-done", Status: "done"},
+				"srv-failed":                {Name: "srv-failed", Status: "error"},
+				"srv-stale-terminal-active": {Name: "srv-stale-terminal-active", Status: "updating"},
+			}
+		},
+		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
+			return map[string]updates.ServerFactsRecord{
+				"srv-active":                {ServerName: "srv-active", CollectedAt: now.Add(-49 * time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				"srv-done":                  {ServerName: "srv-done", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				"srv-failed":                {ServerName: "srv-failed", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				"srv-stale-terminal-active": {ServerName: "srv-stale-terminal-active", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+			}, nil
+		},
+		ListPolicies:        func() ([]policies.Policy, error) { return nil, nil },
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return nil, nil },
+		LoadGlobalBlackouts: func() ([]policies.BlackoutWindow, error) { return nil, nil },
+		ListPolicyRuns:      func(int) ([]policies.Run, error) { return nil, nil },
+		ParseAppTimestamp: func(raw string) (time.Time, error) {
+			return time.Parse(time.RFC3339, raw)
+		},
+		UpdateCompleteAction: "update.complete",
+	})
+
+	summary, err := service.BuildDashboardSummary("7d", now)
+	if err != nil {
+		t.Fatalf("BuildDashboardSummary() error = %v", err)
+	}
+	byName := map[string]DashboardServerSummary{}
+	for _, item := range summary.Servers {
+		byName[item.Name] = item
+	}
+	if got := byName["srv-active"].Timeline; got.CurrentPhase != "apt_update" || got.State != "active" || got.ProgressPct != 52 {
+		t.Fatalf("srv-active timeline = %+v, want active apt update", got)
+	}
+	if got := byName["srv-active"].ApprovalTriage.FactsState; got != "stale" {
+		t.Fatalf("srv-active facts state = %q, want stale", got)
+	}
+	if got := byName["srv-stale-terminal-active"].Timeline; got.CurrentPhase != "prechecks" || got.State != "active" {
+		t.Fatalf("srv-stale-terminal-active timeline = %+v, want live updating state instead of stale failed job", got)
+	}
+	if got := byName["srv-failed"].Timeline; got.CurrentPhase != "done_error" || got.State != "error" {
+		t.Fatalf("srv-failed timeline = %+v, want terminal error", got)
+	}
+	if got := byName["srv-done"].Timeline; got.CurrentPhase != "done_error" || got.State != "done" {
+		t.Fatalf("srv-done timeline = %+v, want terminal done", got)
+	}
+	if summary.Fleet["in_progress"] != 2 || summary.Fleet["prechecks_running"] != 2 || summary.Fleet["done"] != 1 || summary.Fleet["stale_facts"] != 1 {
+		t.Fatalf("fleet counts = %+v, want active/done/stale facts counts", summary.Fleet)
 	}
 }
 

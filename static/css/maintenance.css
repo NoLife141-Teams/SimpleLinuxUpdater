@@ -1,16 +1,49 @@
 :root {
+    color-scheme: dark;
     --bg: #1e1e1e;
     --card: #252526;
     --card-alt: #2d2d30;
+    --panel: var(--card);
+    --panel-2: var(--card-alt);
+    --surface: rgba(37, 37, 38, 0.96);
+    --surface-soft: rgba(45, 45, 48, 0.82);
     --text: #d4d4d4;
-    --subtle: #9d9d9d;
-    --accent: #007acc;
-    --accent-text: #4daafc;
+    --muted: #a6a6a6;
+    --subtle: #858585;
+    --faint: #6f6f6f;
+    --accent: #3794ff;
+    --accent-strong: #75beff;
+    --accent-text: #9cdcfe;
+    --accent-soft: rgba(55, 148, 255, 0.14);
     --success: #89d185;
-    --accent-rgb: 0, 122, 204;
+    --warning: #dcdcaa;
+    --danger: #f14c4c;
+    --phase-blue: #4fc1ff;
+    --action-blue: #0e639c;
+    --action-blue-hover: #1177bb;
+    --action-green: #2ea043;
+    --action-green-hover: #3fb950;
+    --action-yellow: #8a6f00;
+    --action-yellow-hover: #a88600;
+    --action-red: #a1260d;
+    --action-red-hover: #c42b1c;
+    --warning-text: #fff4b0;
+    --accent-rgb: 55, 148, 255;
+    --accent-strong-rgb: 117, 190, 255;
     --success-rgb: 137, 209, 133;
-    --border: rgba(60, 60, 60, 0.9);
-    --shadow: 0 20px 54px rgba(0, 0, 0, 0.34);
+    --warning-rgb: 220, 220, 170;
+    --danger-rgb: 241, 76, 76;
+    --phase-blue-rgb: 79, 193, 255;
+    --border-rgb: 63, 63, 70;
+    --panel-rgb: 37, 37, 38;
+    --field-rgb: 30, 30, 30;
+    --border: rgba(63, 63, 70, 0.86);
+    --border-strong: rgba(55, 148, 255, 0.72);
+    --shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+    --radius: 8px;
+    --radius-sm: 7px;
+    --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", Monaco, monospace;
+    --sans: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
 * {
@@ -20,7 +53,7 @@
 body {
     margin: 0;
     min-height: 100vh;
-    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-family: var(--sans);
     background: linear-gradient(180deg, #1f1f1f 0%, #181818 100%);
     color: var(--text);
     display: grid;
@@ -30,9 +63,9 @@ body {
 
 main {
     width: min(560px, 100%);
-    background: linear-gradient(180deg, var(--card), var(--card-alt));
+    background: linear-gradient(180deg, rgba(var(--panel-rgb), 0.94), rgba(var(--field-rgb), 0.96));
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--radius);
     box-shadow: var(--shadow);
     padding: 32px;
 }
@@ -51,9 +84,9 @@ p {
 .meta {
     margin-top: 24px;
     padding: 16px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
 }
 
 .label {

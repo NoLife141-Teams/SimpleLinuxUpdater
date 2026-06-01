@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=vscode-dark-20260521a">
-    <link rel="stylesheet" href="/static/css/index.css?v=vscode-dark-20260521a">
+    <link rel="stylesheet" href="/static/css/base.css?v=vscode-dark-20260601b">
+    <link rel="stylesheet" href="/static/css/index.css?v=vscode-dark-20260601b">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -27,12 +27,12 @@
             </nav>
         </header>
 
-        <main class="dashboard-main">
+        <main class="dashboard-main variant-c-dashboard">
             <section class="dashboard-head fade-in" aria-label="Dashboard summary">
                 <div>
                     <div class="eyebrow">Status dashboard</div>
                     <h1>Fleet status</h1>
-                    <p class="muted">Monitor package state, approvals, and update actions from one compact workspace.</p>
+                    <p class="muted">Package approvals, running phases, and host facts are tracked from one operator surface.</p>
                 </div>
                 <div class="head-meta" aria-label="Runtime metadata">
                     <span class="meta-pill live" id="polling-state-label">Live polling 2s</span>
@@ -42,68 +42,17 @@
                 </div>
             </section>
 
-            <section class="metric-strip fade-in" aria-label="Fleet metrics">
-                <article class="metric-item">
-                    <span>Total hosts</span>
-                    <strong id="metric-total-hosts">0</strong>
-                    <small id="metric-total-note">No servers loaded</small>
-                </article>
-                <article class="metric-item">
-                    <span>Reachable hosts</span>
-                    <strong id="metric-reachable-hosts">0</strong>
-                    <small>Not currently failed</small>
-                </article>
-                <article class="metric-item">
-                    <span>Pending approvals</span>
-                    <strong id="metric-pending-approvals">0</strong>
-                    <small>Awaiting operator review</small>
-                </article>
-                <article class="metric-item">
-                    <span>Active runs</span>
-                    <strong id="metric-active-runs">0</strong>
-                    <small>Updates, autoremove, sudo</small>
-                </article>
-                <article class="metric-item">
-                    <span>Failed hosts</span>
-                    <strong id="metric-failed-hosts">0</strong>
-                    <small>Needs attention</small>
-                </article>
-                <article class="metric-item">
-                    <span>Pending packages</span>
-                    <strong id="metric-pending-packages">0</strong>
-                    <small>Across approval queues</small>
-                </article>
-                <article class="metric-item">
-                    <span>Security updates</span>
-                    <strong id="metric-security-updates">0</strong>
-                    <small>Security-marked packages</small>
-                </article>
-                <article class="metric-item">
-                    <span>Facts stale</span>
-                    <strong id="metric-stale-facts">0</strong>
-                    <small>Refresh host intelligence</small>
-                </article>
-                <article class="metric-item metric-wide">
-                    <span>Auth posture</span>
-                    <strong id="metric-auth-posture">--</strong>
-                    <small id="metric-auth-note">Password/key mix</small>
-                </article>
-            </section>
-
-            <section class="dashboard-grid">
-                <section class="workspace fade-in">
-                    <div class="workspace-head">
-                        <div>
-                            <div class="eyebrow">Control surface</div>
-                            <h2>Server table</h2>
-                        </div>
-                        <p class="muted workspace-note">Use filters for focus, select rows for bulk actions, and open logs from the table.</p>
+            <section class="variant-c-layout">
+                <aside class="fleet-rail fade-in" aria-label="Fleet filters">
+                    <div class="rail-section">
+                        <div class="eyebrow">Fleet filters</div>
+                        <h2>Fleet filters</h2>
+                        <p class="rail-summary" id="fleet-filter-summary">Waiting for hosts</p>
                     </div>
-
-                    <div class="control-strip">
+                    <div class="rail-section rail-controls">
                         <div class="controls">
                             <label class="sr-only" for="search">Search</label>
-                            <input type="text" id="search" placeholder="Search name, host, user, or tags">
+                            <input type="text" id="search" placeholder="Search hosts or tags">
                             <select id="status-filter" aria-label="Status">
                                 <option value="">All statuses</option>
                                 <option value="idle">Idle</option>
@@ -130,37 +79,126 @@
                                 <option value="100">100 per page</option>
                             </select>
                         </div>
+                    </div>
+                    <div class="rail-section rail-bulk">
+                        <div class="rail-label">Bulk actions</div>
                         <div class="bulk-actions">
                             <label class="select-page"><input type="checkbox" id="select-all"> Select page</label>
-                            <button class="inline-btn primary-action" type="button" id="bulk-update">Bulk update</button>
-                            <button class="inline-btn" type="button" id="bulk-approve">Bulk approve</button>
-                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Bulk cancel</button>
-                            <button class="inline-btn" type="button" id="bulk-autoremove">Bulk apt autoremove</button>
+                            <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
+                            <button class="inline-btn" type="button" id="bulk-approve">Approve</button>
+                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
+                            <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
                         </div>
                     </div>
+                    <div class="rail-section">
+                        <div class="rail-label">Status focus</div>
+                        <div id="fleet-status-filters" class="filter-pill-list" aria-label="Status focus filters"></div>
+                    </div>
+                    <div class="rail-section">
+                        <div class="rail-label">Tags</div>
+                        <div id="fleet-tag-list" class="filter-pill-list" aria-label="Tag filters"></div>
+                    </div>
+                    <div class="rail-section rail-auth">
+                        <div class="rail-label">Auth posture</div>
+                        <strong id="metric-auth-posture">--</strong>
+                        <span id="metric-auth-note">Password/key mix</span>
+                    </div>
+                </aside>
 
-                    <div class="table-shell">
-                        <div class="table-shell-head">
-                            <div class="table-shell-title">
-                                <span class="table-shell-label">Fleet view</span>
-                                <span class="table-shell-subtle" id="table-summary">Waiting for status data</span>
+                <section class="timeline-column">
+                    <section class="metric-strip fade-in" aria-label="Fleet metrics">
+                        <article class="metric-item">
+                            <span>Total hosts</span>
+                            <strong id="metric-total-hosts">0</strong>
+                            <small id="metric-total-note">No servers loaded</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Pending approvals</span>
+                            <strong id="metric-pending-approvals">0</strong>
+                            <small>Awaiting operator review</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Active phases</span>
+                            <strong id="metric-prechecks">0</strong>
+                            <small>Queued or running jobs</small>
+                        </article>
+                        <article class="metric-item metric-hidden">
+                            <span>In progress</span>
+                            <strong id="metric-active-runs">0</strong>
+                            <small>Live maintenance jobs</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Done</span>
+                            <strong id="metric-done-hosts">0</strong>
+                            <small>Terminal success</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Pending packages</span>
+                            <strong id="metric-pending-packages">0</strong>
+                            <small>Across approval queues</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Security updates</span>
+                            <strong id="metric-security-updates">0</strong>
+                            <small>Security-marked packages</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>Facts stale</span>
+                            <strong id="metric-stale-facts">0</strong>
+                            <small>Refresh host intelligence</small>
+                        </article>
+                        <article class="metric-item">
+                            <span>High risk CVE</span>
+                            <strong id="metric-high-risk-cve">0</strong>
+                            <small>CVE-exposed hosts</small>
+                        </article>
+                        <article class="metric-item metric-hidden">
+                            <span>Reachable hosts</span>
+                            <strong id="metric-reachable-hosts">0</strong>
+                            <small>Not currently failed</small>
+                        </article>
+                        <article class="metric-item metric-hidden">
+                            <span>Failed hosts</span>
+                            <strong id="metric-failed-hosts">0</strong>
+                            <small>Needs attention</small>
+                        </article>
+                    </section>
+
+                    <section class="workspace timeline-workspace fade-in" aria-labelledby="maintenance-timeline-title">
+                        <div class="workspace-head">
+                            <div>
+                                <div class="eyebrow">Maintenance queue</div>
+                                <h2 id="maintenance-timeline-title">Maintenance timeline</h2>
+                                <div class="phase-legend" aria-label="Timeline state legend">
+                                    <span><i class="legend-dot phase-waiting"></i>Waiting</span>
+                                    <span><i class="legend-dot phase-active"></i>Running</span>
+                                    <span><i class="legend-dot phase-done"></i>Done</span>
+                                    <span><i class="legend-dot phase-error"></i>Error</span>
+                                </div>
                             </div>
-                            <div class="pagination">
-                                <button class="btn-ghost inline-btn" type="button" id="prev-page">Prev</button>
-                                <span id="page-info" class="muted"></span>
-                                <button class="btn-ghost inline-btn" type="button" id="next-page">Next</button>
+                            <div class="table-meta">
+                                <span class="table-shell-subtle" id="table-summary">Waiting for status data</span>
+                                <div class="pagination">
+                                    <button class="btn-ghost inline-btn" type="button" id="prev-page">Prev</button>
+                                    <span id="page-info" class="muted"></span>
+                                    <button class="btn-ghost inline-btn" type="button" id="next-page">Next</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="table-scroll-hint">Horizontal scroll is limited to the table when action columns overflow.</div>
+                    <div class="table-shell">
                         <div class="table-wrap">
-                            <table id="servers-table">
+                            <table id="servers-table" class="maintenance-table">
                                 <colgroup>
                                     <col data-col-key="select" class="col-select">
                                     <col data-col-key="name" class="col-name">
                                     <col data-col-key="status" class="col-status">
-                                    <col data-col-key="risk" class="col-risk">
-                                    <col data-col-key="last-update" class="col-last-update">
-                                    <col data-col-key="next-run" class="col-next-run">
+                                    <col class="col-phase">
+                                    <col class="col-phase">
+                                    <col class="col-phase">
+                                    <col class="col-phase">
+                                    <col class="col-phase">
+                                    <col class="col-phase col-terminal">
+                                    <col class="col-summary">
                                     <col data-col-key="actions" class="col-actions">
                                 </colgroup>
                                 <thead>
@@ -179,15 +217,13 @@
                                                 <span class="sort-indicator" aria-hidden="true"></span>
                                             </button>
                                         </th>
-                                        <th class="risk-col">
-                                            <span class="col-title">Risk</span>
-                                        </th>
-                                        <th class="last-update-col">
-                                            <span class="col-title">Last update</span>
-                                        </th>
-                                        <th class="next-run-col">
-                                            <span class="col-title">Next run</span>
-                                        </th>
+                                        <th class="phase-header"><span class="col-title" aria-label="Pending approval" title="Pending approval">Approval</span></th>
+                                        <th class="phase-header"><span class="col-title" aria-label="Pre-checks" title="Pre-checks">Prechecks</span></th>
+                                        <th class="phase-header"><span class="col-title" aria-label="APT update" title="APT update">APT update</span></th>
+                                        <th class="phase-header"><span class="col-title" aria-label="Upgrade" title="Upgrade">Upgrade</span></th>
+                                        <th class="phase-header"><span class="col-title" aria-label="Post-checks" title="Post-checks">Verify</span></th>
+                                        <th class="phase-header phase-terminal"><span class="col-title" aria-label="Done / Error" title="Done / Error">Done/Error</span></th>
+                                        <th><span class="col-title">Window</span></th>
                                         <th class="actions-col resizable">
                                             <span class="col-title">Actions</span>
                                             <span class="col-resize-handle" data-col-key="actions" aria-hidden="true"></span>
@@ -198,50 +234,101 @@
                             </table>
                         </div>
                     </div>
+                    </section>
+
+                    <section class="approval-triage-panel fade-in" aria-labelledby="approval-triage-title">
+                        <div class="panel-head">
+                            <div>
+                                <div class="eyebrow">Approval queue</div>
+                                <h2 id="approval-triage-title">Approval triage</h2>
+                            </div>
+                            <span class="mini-badge warning" id="approval-queue-count">0</span>
+                        </div>
+                        <div class="table-wrap triage-wrap">
+                            <table id="approval-triage-table" class="triage-table">
+                                <thead>
+                                    <tr>
+                                        <th>Host</th>
+                                        <th>Group</th>
+                                        <th>Pending packages</th>
+                                        <th>Security updates</th>
+                                        <th>CVE exposure</th>
+                                        <th>Facts</th>
+                                        <th>Last check</th>
+                                        <th>Risk</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="approval-triage-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
                 </section>
 
-                <aside class="context-panel fade-in" aria-label="Operational context">
+                <aside class="context-panel fade-in" aria-label="Selected host">
                     <div class="context-block">
                         <div class="eyebrow">Selected host</div>
-                        <h2 id="selected-host-title">No host selected</h2>
+                        <h2 id="selected-host-title">Selected host</h2>
                         <p class="muted" id="selected-host-subtitle">Select a table row to inspect host details.</p>
                     </div>
                     <div id="selected-host-panel" class="selected-host-panel" aria-live="polite">
                         <p class="empty-state">No host selected.</p>
                     </div>
+                    <section class="context-ops-grid" aria-label="Immediate operations">
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Policy queue</div>
+                                    <h2>Scheduled runs</h2>
+                                </div>
+                                <span class="mini-badge" id="scheduled-runs-count">0</span>
+                            </div>
+                            <div id="scheduled-runs" class="mini-list"></div>
+                        </article>
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Active ops</div>
+                                    <h2>Running operations</h2>
+                                </div>
+                                <span class="mini-badge" id="active-operations-count">0</span>
+                            </div>
+                            <div id="active-operations" class="mini-list"></div>
+                        </article>
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Risk</div>
+                                    <h2>Security exposure</h2>
+                                </div>
+                                <span class="mini-badge danger" id="risk-exposure-count">0</span>
+                            </div>
+                            <div id="risk-exposure-panel" class="mini-list"></div>
+                        </article>
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Reboot</div>
+                                    <h2>Restart required</h2>
+                                </div>
+                                <span class="mini-badge warning" id="reboot-required-count">0</span>
+                            </div>
+                            <div id="reboot-required-panel" class="mini-list"></div>
+                        </article>
+                    </section>
                 </aside>
             </section>
 
-            <section class="operations-grid fade-in" aria-label="Operational panels">
-                <article class="ops-panel">
+            <section class="operations-grid operations-grid-secondary fade-in" aria-label="Operational panels">
+                <article class="ops-panel ops-panel-wide">
                     <div class="panel-head">
                         <div>
-                            <div class="eyebrow">Approval queue</div>
-                            <h2>Pending review</h2>
+                            <div class="eyebrow">Audit trail</div>
+                            <h2>Audit trail</h2>
                         </div>
-                        <span class="mini-badge" id="approval-queue-count">0</span>
+                        <span class="mini-badge" id="observability-summary-label">7d --</span>
                     </div>
-                    <div id="approval-queue" class="mini-list"></div>
-                </article>
-                <article class="ops-panel">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Active operations</div>
-                            <h2>Running now</h2>
-                        </div>
-                        <span class="mini-badge" id="active-operations-count">0</span>
-                    </div>
-                    <div id="active-operations" class="mini-list"></div>
-                </article>
-                <article class="ops-panel">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Failures</div>
-                            <h2>Needs attention</h2>
-                        </div>
-                        <span class="mini-badge danger" id="failed-hosts-count">0</span>
-                    </div>
-                    <div id="failed-hosts-panel" class="mini-list"></div>
+                    <div id="recent-activity" class="activity-list"></div>
                 </article>
                 <article class="ops-panel">
                     <div class="panel-head">
@@ -256,38 +343,18 @@
                 <article class="ops-panel">
                     <div class="panel-head">
                         <div>
-                            <div class="eyebrow">Reboot</div>
-                            <h2>Restart required</h2>
+                            <div class="eyebrow">Failures</div>
+                            <h2>Needs attention</h2>
                         </div>
-                        <span class="mini-badge warning" id="reboot-required-count">0</span>
+                        <span class="mini-badge danger" id="failed-hosts-count">0</span>
                     </div>
-                    <div id="reboot-required-panel" class="mini-list"></div>
-                </article>
-                <article class="ops-panel">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Risk</div>
-                            <h2>Security exposure</h2>
-                        </div>
-                        <span class="mini-badge danger" id="risk-exposure-count">0</span>
-                    </div>
-                    <div id="risk-exposure-panel" class="mini-list"></div>
+                    <div id="failed-hosts-panel" class="mini-list"></div>
                 </article>
                 <article class="ops-panel ops-panel-wide">
                     <div class="panel-head">
                         <div>
-                            <div class="eyebrow">Recent activity</div>
-                            <h2>Audit trail</h2>
-                        </div>
-                        <span class="mini-badge" id="observability-summary-label">7d --</span>
-                    </div>
-                    <div id="recent-activity" class="activity-list"></div>
-                </article>
-                <article class="ops-panel ops-panel-wide">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Command history</div>
-                            <h2>Selected host</h2>
+                            <div class="eyebrow">Selected host</div>
+                            <h2>Command history</h2>
                         </div>
                         <span class="mini-badge" id="command-history-count">0</span>
                     </div>
@@ -311,8 +378,8 @@
             <button class="btn-ghost inline-btn drawer-tab" id="drawer-tab-pending">Pending updates</button>
         </div>
         <div class="drawer-approval-actions hidden" id="status-drawer-approval-actions">
-            <button class="btn-success inline-btn" id="drawer-approve-all">Approve all (0)</button>
-            <button class="btn-security inline-btn" id="drawer-approve-security">Approve security only (0)</button>
+            <button class="btn-success inline-btn" id="drawer-approve-all">Approve (0)</button>
+            <button class="btn-security inline-btn" id="drawer-approve-security">Security (0)</button>
         </div>
         <div class="drawer-content">
             <section class="drawer-panel" id="drawer-panel-logs">
@@ -337,13 +404,13 @@
             <input type="password" id="password-modal-input" placeholder="Password" autocomplete="new-password" aria-describedby="password-modal-message">
             <div class="modal-actions">
                 <button class="btn-ghost inline-btn" type="button" id="password-modal-cancel">Cancel</button>
-                <button class="btn-success inline-btn" type="submit" id="password-modal-submit">Submit</button>
+                <button class="primary-action inline-btn" type="submit" id="password-modal-submit">Submit</button>
             </div>
         </form>
     </div>
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js"></script>
-    <script src="/static/js/index.js?v=host-disk-capacity-20260520a"></script>
+    <script src="/static/js/index.js?v=vscode-dark-20260601b"></script>
 </body>
 </html>

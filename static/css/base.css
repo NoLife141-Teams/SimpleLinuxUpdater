@@ -1,33 +1,47 @@
 :root {
     color-scheme: dark;
     --bg: #1e1e1e;
-    --panel: #252526;
-    --panel-2: #2d2d30;
+    --card: #252526;
+    --card-alt: #2d2d30;
+    --panel: var(--card);
+    --panel-2: var(--card-alt);
     --surface: rgba(37, 37, 38, 0.96);
     --surface-soft: rgba(45, 45, 48, 0.82);
     --text: #d4d4d4;
-    --muted: #9d9d9d;
-    --faint: #858585;
-    --accent: #007acc;
-    --accent-strong: #3794ff;
-    --accent-text: #4daafc;
-    --accent-soft: rgba(0, 122, 204, 0.16);
+    --muted: #a6a6a6;
+    --subtle: #858585;
+    --faint: #6f6f6f;
+    --accent: #3794ff;
+    --accent-strong: #75beff;
+    --accent-text: #9cdcfe;
+    --accent-soft: rgba(55, 148, 255, 0.14);
     --success: #89d185;
-    --warning: #cca700;
+    --warning: #dcdcaa;
     --danger: #f14c4c;
-    --accent-rgb: 0, 122, 204;
-    --accent-strong-rgb: 55, 148, 255;
+    --phase-blue: #4fc1ff;
+    --action-blue: #0e639c;
+    --action-blue-hover: #1177bb;
+    --action-green: #2ea043;
+    --action-green-hover: #3fb950;
+    --action-yellow: #8a6f00;
+    --action-yellow-hover: #a88600;
+    --action-red: #a1260d;
+    --action-red-hover: #c42b1c;
+    --warning-text: #fff4b0;
+    --accent-rgb: 55, 148, 255;
+    --accent-strong-rgb: 117, 190, 255;
     --success-rgb: 137, 209, 133;
-    --warning-rgb: 204, 167, 0;
+    --warning-rgb: 220, 220, 170;
     --danger-rgb: 241, 76, 76;
-    --border-rgb: 60, 60, 60;
+    --phase-blue-rgb: 79, 193, 255;
+    --border-rgb: 63, 63, 70;
     --panel-rgb: 37, 37, 38;
     --field-rgb: 30, 30, 30;
-    --border: rgba(60, 60, 60, 0.9);
-    --border-strong: rgba(0, 122, 204, 0.78);
-    --shadow: 0 16px 42px rgba(0, 0, 0, 0.3);
-    --radius: 14px;
-    --radius-sm: 9px;
+    --border: rgba(63, 63, 70, 0.86);
+    --border-strong: rgba(55, 148, 255, 0.72);
+    --shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+    --radius: 8px;
+    --radius-sm: 7px;
     --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", Monaco, monospace;
     --sans: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
@@ -100,7 +114,7 @@ button {
     min-height: 72px;
     padding: 12px clamp(18px, 2.2vw, 34px);
     border-bottom: 1px solid var(--border);
-    background: rgba(37, 37, 38, 0.92);
+    background: rgba(var(--panel-rgb), 0.92);
     backdrop-filter: blur(18px);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
@@ -526,22 +540,38 @@ input[type="checkbox"] {
 
 .primary-action,
 .btn-success {
-    border-color: rgba(var(--accent-rgb), 0.36);
-    background: rgba(var(--accent-rgb), 0.12);
+    border-color: var(--action-blue);
+    background: var(--action-blue);
     color: #ffffff;
 }
 
 .btn-success {
-    border-color: rgba(var(--success-rgb), 0.32);
-    background: rgba(var(--success-rgb), 0.12);
-    color: #dff6dd;
+    border-color: var(--action-green);
+    background: var(--action-green);
+    color: #ffffff;
 }
 
 .danger-action,
 .btn-danger {
-    border-color: rgba(var(--danger-rgb), 0.32);
-    background: rgba(var(--danger-rgb), 0.1);
-    color: #ffd7d7;
+    border-color: var(--action-red);
+    background: var(--action-red);
+    color: #ffffff;
+}
+
+.primary-action:hover:not(:disabled) {
+    border-color: var(--action-blue-hover);
+    background: var(--action-blue-hover);
+}
+
+.btn-success:hover:not(:disabled) {
+    border-color: var(--action-green-hover);
+    background: var(--action-green-hover);
+}
+
+.danger-action:hover:not(:disabled),
+.btn-danger:hover:not(:disabled) {
+    border-color: var(--action-red-hover);
+    background: var(--action-red-hover);
 }
 
 .btn-ghost {
@@ -599,7 +629,7 @@ button:disabled,
     overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: #1e1e1e;
+    background: rgba(var(--field-rgb), 0.82);
 }
 
 table {

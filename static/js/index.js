@@ -18,6 +18,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let fetchInFlight = false;
         let fetchQueued = false;
         let queuedForceRender = false;
+        let fleetQuickFilter = "";
+        let fleetTagFilter = "";
         let drawerOpen = false;
         let drawerServerName = "";
         let drawerTab = "logs";
@@ -42,22 +44,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
         const fallbackServerPollMs = 5000;
         const eventBackedExtrasPollMs = 60000;
         const fallbackExtrasPollMs = 30000;
-        const columnResizeStorageKey = "simplelinuxupdater.statusTableColWidths.v8";
+        const columnResizeStorageKey = "simplelinuxupdater.statusTableColWidths.v15";
         const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
         const defaultColumnWidths = Object.freeze({
-            name: 154,
-            status: 126,
-            actions: 312
+            name: 140,
+            status: 116,
+            actions: 280
         });
         const minColumnWidths = Object.freeze({
-            name: 120,
-            status: 110,
-            actions: 260
+            name: 112,
+            status: 96,
+            actions: 248
         });
         const maxColumnWidths = Object.freeze({
             name: 240,
             status: 170,
-            actions: 420
+            actions: 360
         });
         const allowedStatuses = new Set([
             "idle", "updating", "pending_approval", "approved", "cancelled",
@@ -68,6 +70,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
         const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
 
+        function isRunningTimelineState(state) {
+            return ["active", "queued"].includes(String(state || "").toLowerCase());
+        }
+
         function setText(id, value) {
             const el = document.getElementById(id);
             if (el) {
@@ -77,6 +83,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function pluralize(count, singular, plural = `${singular}s`) {
             return `${count} ${count === 1 ? singular : plural}`;
+        }
+
+        function progressClass(value) {
+            const numeric = Number(value || 0);
+            const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+            return `progress-${Math.round(clamped / 5) * 5}`;
         }
 
         function formatDuration(ms) {
@@ -143,6 +155,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const hours = Math.floor(minutes / 60);
             if (hours < 48) return `${hours}h ago`;
             return `${Math.floor(hours / 24)}d ago`;
+        }
+
+        function formatCompactSchedule(raw) {
+            if (!raw) return "Scheduled";
+            const parsed = new Date(raw);
+            if (Number.isNaN(parsed.getTime())) return raw;
+            const month = parsed.toLocaleString(undefined, { month: "short" });
+            const day = parsed.getDate();
+            const time = parsed.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+            return `${month} ${day} ${time}`;
         }
 
         function isFailedServer(server) {
@@ -220,10 +242,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getPendingPackageCount(server) {
+            const triageCount = Number(getServerIntelligence(server?.name)?.approval_triage?.pending_packages);
+            if (Number.isFinite(triageCount) && triageCount >= 0) return triageCount;
             return getPendingApprovalCounts(server).total;
         }
 
         function getSecurityUpdateCount(server) {
+            const triageCount = Number(getServerIntelligence(server?.name)?.approval_triage?.security_updates);
+            if (Number.isFinite(triageCount) && triageCount >= 0) return triageCount;
             const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
             if (updates.length > 0) {
                 return updates.filter(update => !!update?.security).length;
@@ -233,6 +259,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function getRiskLabel(server) {
             const intelligence = getServerIntelligence(server?.name);
+            if (intelligence?.approval_triage?.risk_label) return intelligence.approval_triage.risk_label;
             if (intelligence?.risk?.summary) return intelligence.risk.summary;
             const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
             const cveCount = updates.reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0);
@@ -244,12 +271,63 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getRiskLevel(server) {
-            return String(getServerIntelligence(server?.name)?.risk?.level || "normal").toLowerCase();
+            const intelligence = getServerIntelligence(server?.name);
+            return String(intelligence?.approval_triage?.risk_level || intelligence?.risk?.level || "normal").toLowerCase();
         }
 
         function getServerIntelligence(name) {
             if (!name) return null;
             return dashboardByServer.get(name) || null;
+        }
+
+        function getServerTimeline(server) {
+            const intelligence = getServerIntelligence(server?.name);
+            return intelligence?.timeline || {
+                current_phase: "",
+                current_label: "Idle",
+                state: "idle",
+                progress_pct: 0,
+                summary: "No maintenance activity",
+                phases: []
+            };
+        }
+
+        function getServerApprovalTriage(server) {
+            const intelligence = getServerIntelligence(server?.name);
+            return intelligence?.approval_triage || {
+                eligible: hasPendingUpdates(server) || getPendingApprovalCounts(server).total > 0,
+                pending_packages: getPendingApprovalCounts(server).total,
+                security_updates: getSecurityUpdateCount(server),
+                cve_count: (Array.isArray(server?.pending_updates) ? server.pending_updates : [])
+                    .reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0),
+                risk_level: getRiskLevel(server),
+                risk_label: getRiskLabel(server),
+                risk_order: 1,
+                facts_state: "stale",
+                last_check_display: "--",
+                can_approve_all: server?.status === "pending_approval",
+                can_approve_security: server?.status === "pending_approval" && getSecurityUpdateCount(server) > 0,
+                can_cancel: server?.status === "pending_approval",
+                can_refresh_facts: true,
+                can_run_checks: true
+            };
+        }
+
+        function timelinePhaseMap(server) {
+            const phases = Array.isArray(getServerTimeline(server)?.phases) ? getServerTimeline(server).phases : [];
+            return new Map(phases.map(phase => [phase.key, phase]));
+        }
+
+        function timelinePhaseCell(server, key) {
+            const phase = timelinePhaseMap(server).get(key) || { state: "pending", progress_pct: 0 };
+            const state = String(phase.state || "pending").toLowerCase();
+            const pct = Math.max(0, Math.min(100, Number(phase.progress_pct || 0)));
+            const title = [phase.label, phase.summary, phase.updated_at_display].filter(Boolean).join(" · ");
+            return `
+                <span class="timeline-dot phase-${escapeHtml(state)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(`${phase.label || key}: ${state}`)}">
+                    <span class="${progressClass(pct)}"></span>
+                </span>
+            `;
         }
 
         function hasEffectiveKey(server) {
@@ -304,11 +382,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderDashboardMetrics() {
             const total = allServers.length;
             const reachable = allServers.filter(isReachableServer).length;
-            const pending = allServers.filter(server => server.status === "pending_approval").length;
-            const active = allServers.filter(server => activeStatuses.has(server.status)).length;
+            const pending = Number(dashboardSummary?.fleet?.pending_approval ?? allServers.filter(server => server.status === "pending_approval").length);
+            const active = Number(dashboardSummary?.fleet?.in_progress ?? allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length);
             const failed = allServers.filter(server => server.status === "error").length;
-            const pendingPackages = allServers.reduce((sum, server) => sum + getPendingPackageCount(server), 0);
-            const securityUpdates = allServers.reduce((sum, server) => sum + getSecurityUpdateCount(server), 0);
+            const done = Number(dashboardSummary?.fleet?.done ?? allServers.filter(server => server.status === "done").length);
+            const prechecks = Number(dashboardSummary?.fleet?.prechecks_running ?? active);
+            const highRiskCVE = Number(dashboardSummary?.fleet?.high_risk_cve ?? 0);
+            const pendingPackages = Number(dashboardSummary?.fleet?.pending_packages ?? allServers.reduce((sum, server) => sum + getPendingPackageCount(server), 0));
+            const securityUpdates = Number(dashboardSummary?.fleet?.security_updates ?? allServers.reduce((sum, server) => sum + getSecurityUpdateCount(server), 0));
             const staleFacts = Number(dashboardSummary?.fleet?.stale_facts || 0);
             const auth = getAuthPostureMetrics(allServers);
 
@@ -316,11 +397,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             setText("metric-total-note", total === 0 ? "No servers loaded" : `${pluralize(total, "host")} monitored`);
             setText("metric-reachable-hosts", String(reachable));
             setText("metric-pending-approvals", String(pending));
+            setText("metric-prechecks", String(prechecks));
             setText("metric-active-runs", String(active));
+            setText("metric-done-hosts", String(done));
             setText("metric-failed-hosts", String(failed));
             setText("metric-pending-packages", String(pendingPackages));
             setText("metric-security-updates", String(securityUpdates));
             setText("metric-stale-facts", String(staleFacts));
+            setText("metric-high-risk-cve", String(highRiskCVE));
             setText("metric-auth-posture", auth.label);
             setText("metric-auth-note", `${auth.withServerKey} server key · ${auth.withGlobalKey} global SSH key · ${auth.withPassword} password · ${auth.missing} missing`);
         }
@@ -449,7 +533,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 el.innerHTML = miniEmpty(emptyText);
                 return;
             }
-            el.innerHTML = servers.slice(0, options.limit || 5).map(server => {
+            const limit = Math.max(1, Number(options.limit || 3));
+            const visibleServers = servers.slice(0, limit);
+            const hiddenCount = Math.max(0, servers.length - visibleServers.length);
+            const rows = visibleServers.map(server => {
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
                 const status = statusLabel(server.status);
@@ -457,16 +544,46 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const action = options.action || "open-drawer";
                 const actionLabel = options.actionLabel || "Logs";
                 const actionTab = options.actionTab || "logs";
+                const detail = options.compactDetail
+                    ? risk
+                    : `${status} · ${risk}`;
                 return `
-                    <div class="mini-row">
+                    <div class="mini-row compact-row">
                         <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
                             <strong>${safeName || "Unnamed host"}</strong>
-                            <span>${escapeHtml(status)} · ${escapeHtml(risk)}</span>
+                            <span>${escapeHtml(detail)}</span>
                         </button>
                         <button type="button" class="mini-action" data-action="${action}" data-name="${safeDataName}" data-tab="${actionTab}">${actionLabel}</button>
                     </div>
                 `;
-            }).join("");
+            });
+            if (hiddenCount > 0) {
+                const moreText = typeof options.moreLabel === "function"
+                    ? options.moreLabel(hiddenCount, servers.length)
+                    : `+${hiddenCount} more`;
+                rows.push(`<div class="mini-more-row">${escapeHtml(moreText)}</div>`);
+            }
+            el.innerHTML = rows.join("");
+        }
+
+        function compareRiskPriority(a, b) {
+            const aTriage = getServerApprovalTriage(a);
+            const bTriage = getServerApprovalTriage(b);
+            const fallbackOrder = {
+                critical: 4,
+                high: 4,
+                elevated: 3,
+                warning: 2,
+                normal: 1,
+                routine: 1
+            };
+            const aOrder = Number(aTriage.risk_order || 0) || fallbackOrder[getRiskLevel(a)] || 0;
+            const bOrder = Number(bTriage.risk_order || 0) || fallbackOrder[getRiskLevel(b)] || 0;
+            return bOrder - aOrder
+                || Number(bTriage.cve_count || 0) - Number(aTriage.cve_count || 0)
+                || Number(bTriage.security_updates || 0) - Number(aTriage.security_updates || 0)
+                || Number(bTriage.pending_packages || 0) - Number(aTriage.pending_packages || 0)
+                || String(a.name || "").localeCompare(String(b.name || ""));
         }
 
         function renderTagSummary() {
@@ -490,6 +607,144 @@ const LOG_BOTTOM_THRESHOLD = 20;
             )).join("");
         }
 
+        function renderFleetFilters() {
+            setText("fleet-filter-summary", `${pluralize(applyFilters(allServers).length, "host")} visible`);
+            const statusEl = document.getElementById('fleet-status-filters');
+            if (statusEl) {
+                const activeCount = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length;
+                const staleCount = allServers.filter(server => getServerApprovalTriage(server).facts_state === "stale").length;
+                const highRiskCount = allServers.filter(server => getServerApprovalTriage(server).cve_count > 0 || getRiskLevel(server) === "critical").length;
+                const filters = [
+                    { key: "", label: "All", count: allServers.length },
+                    { key: "pending_approval", label: "Pending", count: allServers.filter(server => server.status === "pending_approval").length },
+                    { key: "active", label: "Active", count: activeCount },
+                    { key: "stale_facts", label: "Stale", count: staleCount },
+                    { key: "high_risk", label: "High risk", count: highRiskCount }
+                ];
+                statusEl.innerHTML = filters.map(item => `
+                    <button type="button" class="filter-pill${fleetQuickFilter === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}">
+                        <span>${escapeHtml(item.label)}</span>
+                        <strong>${item.count}</strong>
+                    </button>
+                `).join("");
+            }
+
+            const tagEl = document.getElementById('fleet-tag-list');
+            if (!tagEl) return;
+            const counts = new Map();
+            allServers.forEach(server => {
+                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
+                tags.forEach(tag => counts.set(tag, (counts.get(tag) || 0) + 1));
+            });
+            const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+            if (entries.length === 0) {
+                tagEl.innerHTML = `<span class="empty-state compact-empty">No tags</span>`;
+                return;
+            }
+            tagEl.innerHTML = [
+                `<button type="button" class="filter-pill${fleetTagFilter === "" ? " active" : ""}" data-fleet-tag=""><span>All tags</span><strong>${allServers.length}</strong></button>`,
+                ...entries.slice(0, 8).map(([tag, count]) => `
+                    <button type="button" class="filter-pill${fleetTagFilter === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}">
+                        <span>${escapeHtml(tag)}</span>
+                        <strong>${count}</strong>
+                    </button>
+                `)
+            ].join("");
+        }
+
+        function renderApprovalTriage() {
+            const body = document.getElementById('approval-triage-body');
+            if (!body) return;
+            const servers = applyFilters(allServers)
+                .filter(server => getServerApprovalTriage(server).eligible || server.status === "pending_approval")
+                .sort((a, b) => {
+                    const aTriage = getServerApprovalTriage(a);
+                    const bTriage = getServerApprovalTriage(b);
+                    const riskDelta = Number(bTriage.risk_order || 0) - Number(aTriage.risk_order || 0);
+                    if (riskDelta !== 0) return riskDelta;
+                    const pendingDelta = Number(bTriage.pending_packages || 0) - Number(aTriage.pending_packages || 0);
+                    if (pendingDelta !== 0) return pendingDelta;
+                    return String(a.name || "").localeCompare(String(b.name || ""));
+                });
+            setText("approval-queue-count", String(servers.length));
+            if (servers.length === 0) {
+                body.innerHTML = `<tr><td colspan="9">${miniEmpty("No approvals require triage.")}</td></tr>`;
+                return;
+            }
+            body.innerHTML = servers.slice(0, 12).map(server => {
+                const safeName = escapeHtml(server.name || "");
+                const safeDataName = escapeHtml(server.name || "");
+                const triage = getServerApprovalTriage(server);
+                const riskLevel = String(triage.risk_level || getRiskLevel(server)).toLowerCase();
+                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags.join(", ") : "ungrouped";
+                const factsState = String(triage.facts_state || "stale").toLowerCase();
+                const actions = server.status === "pending_approval"
+                    ? `
+                        <div class="triage-actions">
+                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${triage.can_approve_all ? "" : "disabled"}>Approve</button>
+                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${triage.can_approve_security ? "" : "disabled"} title="Approve only security updates">Security</button>
+                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
+                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
+                        </div>
+                    `
+                    : `
+                        <div class="triage-actions">
+                            <button type="button" data-action="update-server" data-name="${safeDataName}" ${triage.can_run_checks ? "" : "disabled"}>Update</button>
+                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" title="Refresh host facts">Facts</button>
+                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+                        </div>
+                    `;
+                return `
+                    <tr data-name="${safeDataName}" class="${selectedServerName === server.name ? "row-selected" : ""}">
+                        <td><button type="button" class="select-host" data-select-host="${safeDataName}">${safeName || "Unnamed host"}</button></td>
+                        <td>${escapeHtml(tags)}</td>
+                        <td>${Number(triage.pending_packages || 0)}</td>
+                        <td>${Number(triage.security_updates || 0)}</td>
+                        <td>${Number(triage.cve_count || 0)}</td>
+                        <td><span class="facts-pill facts-${escapeHtml(factsState)}">${escapeHtml(factsState)}</span></td>
+                        <td>${escapeHtml(triage.last_check_display || triage.last_check_at || "--")}</td>
+                        <td><span class="risk-chip risk-${escapeHtml(riskLevel)}">${escapeHtml(triage.risk_label || getRiskLabel(server))}</span></td>
+                        <td>${actions}</td>
+                    </tr>
+                `;
+            }).join("");
+        }
+
+        function renderScheduledRuns() {
+            const el = document.getElementById('scheduled-runs');
+            if (!el) return;
+            const scheduled = allServers
+                .map(server => ({ server, nextRun: getServerIntelligence(server.name)?.next_run || {} }))
+                .filter(item => item.nextRun.state === "scheduled")
+                .sort((a, b) => String(a.nextRun.scheduled_for_utc || "").localeCompare(String(b.nextRun.scheduled_for_utc || "")));
+            setText("scheduled-runs-count", String(scheduled.length));
+            if (scheduled.length === 0) {
+                el.innerHTML = miniEmpty("No scheduled runs.");
+                return;
+            }
+            const visibleScheduled = scheduled.slice(0, 6);
+            const rows = visibleScheduled.map(({ server, nextRun }) => {
+                const safeName = escapeHtml(server.name || "");
+                const safeDataName = escapeHtml(server.name || "");
+                const label = nextRun.policy_name || "Policy";
+                const when = formatCompactSchedule(nextRun.scheduled_for_utc || nextRun.scheduled_for_display);
+                return `
+                    <div class="mini-row compact-row">
+                        <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
+                            <strong>${safeName}</strong>
+                            <span>${escapeHtml(label)} · ${escapeHtml(when)}</span>
+                        </button>
+                        <span class="mini-badge">${escapeHtml(nextRun.status || "scheduled")}</span>
+                    </div>
+                `;
+            });
+            const hiddenCount = scheduled.length - visibleScheduled.length;
+            if (hiddenCount > 0) {
+                rows.push(`<div class="mini-more-row">+${hiddenCount} more scheduled</div>`);
+            }
+            el.innerHTML = rows.join("");
+        }
+
         function formatActivityTime(evt) {
             if (window.formatAppTimestamp) {
                 const formatted = window.formatAppTimestamp(evt?.created_at, { titleUTC: true, preformattedPrimary: evt?.created_at_display });
@@ -505,7 +760,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 el.innerHTML = miniEmpty("No recent activity.");
                 return;
             }
-            el.innerHTML = recentActivity.slice(0, 8).map(evt => {
+            el.innerHTML = recentActivity.slice(0, 2).map(evt => {
                 const status = String(evt.status || "unknown").toLowerCase();
                 const statusClass = safeStatusClass(status === "failure" ? "error" : status);
                 const target = [evt.target_type, evt.target_name].filter(Boolean).join(": ");
@@ -522,15 +777,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderIntelligenceLists() {
-            const rebootHosts = allServers.filter(server => getServerIntelligence(server.name)?.health?.reboot_required === true);
+            const rebootHosts = allServers
+                .filter(server => getServerIntelligence(server.name)?.health?.reboot_required === true)
+                .sort(compareRiskPriority);
             const riskHosts = allServers.filter(server => {
                 const level = getRiskLevel(server);
                 return level === "critical" || level === "elevated";
-            });
+            }).sort(compareRiskPriority);
             setText("reboot-required-count", String(rebootHosts.length));
             setText("risk-exposure-count", String(riskHosts.length));
-            renderMiniServerList("reboot-required-panel", rebootHosts, "No reboot required.", { action: "open-drawer", actionLabel: "Logs" });
-            renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", { action: "open-drawer", actionLabel: "Review", actionTab: "pending" });
+            renderMiniServerList("reboot-required-panel", rebootHosts, "No reboot required.", {
+                limit: 1,
+                compactDetail: true,
+                action: "open-drawer",
+                actionLabel: "Logs",
+                moreLabel: hidden => `+${hidden} more reboot host${hidden === 1 ? "" : "s"}`
+            });
+            renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", {
+                limit: 1,
+                compactDetail: true,
+                action: "open-drawer",
+                actionLabel: "Review",
+                actionTab: "pending",
+                moreLabel: hidden => `+${hidden} more risk host${hidden === 1 ? "" : "s"}`
+            });
             renderCommandHistoryPanel();
         }
 
@@ -544,7 +814,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 el.innerHTML = miniEmpty("No command history.");
                 return;
             }
-            el.innerHTML = history.slice(0, 8).map(item => {
+            const visibleHistory = history.slice(0, 3);
+            const rows = visibleHistory.map(item => {
                 const status = String(item.status || "unknown").toLowerCase();
                 const statusClass = safeStatusClass(status === "failure" ? "error" : status);
                 return `
@@ -556,7 +827,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         </div>
                     </div>
                 `;
-            }).join("");
+            });
+            const hiddenCount = history.length - visibleHistory.length;
+            if (hiddenCount > 0) {
+                rows.push(`<div class="mini-more-row">+${hiddenCount} more command${hiddenCount === 1 ? "" : "s"}</div>`);
+            }
+            el.innerHTML = rows.join("");
         }
 
         function renderSummaryBadges() {
@@ -590,8 +866,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const safeStatus = safeStatusClass(server.status);
             const pendingCount = getPendingPackageCount(server);
             const securityCount = getSecurityUpdateCount(server);
-            const latestLogs = getLatestLogLines(server, 5);
             const intelligence = getServerIntelligence(server.name);
+            const timeline = getServerTimeline(server);
+            const triage = getServerApprovalTriage(server);
             const health = intelligence?.health || {};
             const nextRun = intelligence?.next_run || {};
             const noRun = intelligence?.no_run || {};
@@ -599,56 +876,77 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const lastFailed = intelligence?.last_failed_update;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
             const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
+            const packageSummary = `${Number(triage.pending_packages ?? pendingCount)} pending · ${Number(triage.security_updates ?? securityCount)} security · ${Number(triage.cve_count || 0)} CVE`;
+            const lastUpdateSummary = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history";
+            const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run";
             title.textContent = server.name || "Selected host";
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
             panel.innerHTML = `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(statusLabel(server.status))}</span>
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
+                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timeline.current_label || "Idle")}</span>
                 </div>
-                <dl class="host-facts">
-                    <div><dt>Host</dt><dd>${escapeHtml(server.host || "-")}</dd></div>
-                    <div><dt>User</dt><dd>${escapeHtml(server.user || "-")}</dd></div>
-                    <div><dt>Port</dt><dd>${escapeHtml(String(server.port || 22))}</dd></div>
-                    <div><dt>Auth</dt><dd>${escapeHtml(getAuthLabel(server))}</dd></div>
-                    <div><dt>Packages</dt><dd>${pendingCount} pending · ${securityCount} security</dd></div>
+                <div class="inspector-actions inspector-actions-primary">
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}">Approve</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only security updates">Security</button>` : ""}
+                    <button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>
+                    <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+                    ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
+                </div>
+                <div class="inspector-tools">
+                    <span class="mini-label">Tools</span>
+                    <div class="inspector-actions inspector-actions-secondary">
+                        <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}">Autoremove</button>
+                        <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}">Facts</button>
+                        <button type="button" class="inline-btn" data-action="enable-apt" data-name="${safeDataName}" title="Enable passwordless apt">Enable apt</button>
+                        <button type="button" class="inline-btn" data-action="disable-apt" data-name="${safeDataName}" title="Disable passwordless apt">Disable apt</button>
+                    </div>
+                </div>
+                <dl class="host-facts host-facts-primary">
+                    <div><dt>Packages</dt><dd>${escapeHtml(packageSummary)}</dd></div>
                     <div><dt>OS</dt><dd>${escapeHtml(health.os_pretty_name || "Facts not collected")}</dd></div>
-                    <div><dt>Uptime</dt><dd>${escapeHtml(formatUptime(health.uptime_seconds))}</dd></div>
-                    <div><dt>Last update</dt><dd>${escapeHtml(lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history")}</dd></div>
-                    <div><dt>Avg duration</dt><dd>${escapeHtml(intelligence?.duration_samples ? formatDuration(intelligence.avg_duration_ms) : "No samples")}</dd></div>
-                    <div><dt>Last failure</dt><dd>${escapeHtml(lastFailed ? `${formatRelativeTimestamp(lastFailed.finished_at)} · ${lastFailed.failure_cause || "failure"}` : "No failed update")}</dd></div>
-                    <div><dt>Next run</dt><dd>${escapeHtml(nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run")}</dd></div>
-                    <div><dt>No-run</dt><dd>${escapeHtml(noRun.summary || "No no-run window active")}</dd></div>
                     <div><dt>Reboot</dt><dd>${escapeHtml(rebootText)}</dd></div>
                     <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskCapacity(health.disk_free_kb, health.disk_total_kb)}`)}</dd></div>
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>
-                    <div><dt>Facts</dt><dd>${escapeHtml(factsAge)}</dd></div>
-                    <div><dt>Tags</dt><dd><div class="chip-list">${renderServerTags(server)}</div></dd></div>
+                    <div><dt>Facts</dt><dd>${escapeHtml(triage.facts_state || "stale")} · ${escapeHtml(factsAge)}</dd></div>
                 </dl>
-                <div class="inspector-actions">
-                    <button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>
-                    <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}">Autoremove</button>
-                    <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}">Refresh facts</button>
-                    <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                    ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-security" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Pending</button>` : ""}
-                </div>
-                <div class="log-tail">
-                    <div class="mini-label">Latest log tail</div>
-                    ${latestLogs.length ? latestLogs.map(line => `<div>${escapeHtml(line)}</div>`).join("") : `<p class="empty-state">No logs yet.</p>`}
-                </div>
+                <details class="inspector-more facts-more">
+                    <summary>More host facts</summary>
+                    <dl class="host-facts host-facts-secondary">
+                        <div><dt>Host</dt><dd>${escapeHtml(server.host || "-")}</dd></div>
+                        <div><dt>User</dt><dd>${escapeHtml(server.user || "-")}</dd></div>
+                        <div><dt>Port</dt><dd>${escapeHtml(String(server.port || 22))}</dd></div>
+                        <div><dt>Auth</dt><dd>${escapeHtml(getAuthLabel(server))}</dd></div>
+                        <div><dt>Tags</dt><dd><div class="chip-list">${renderServerTags(server)}</div></dd></div>
+                        <div><dt>Timeline</dt><dd>${escapeHtml(timeline.summary || "No maintenance activity")}</dd></div>
+                        <div><dt>Uptime</dt><dd>${escapeHtml(formatUptime(health.uptime_seconds))}</dd></div>
+                        <div><dt>Last update</dt><dd>${escapeHtml(lastUpdateSummary)}</dd></div>
+                        <div><dt>Avg duration</dt><dd>${escapeHtml(intelligence?.duration_samples ? formatDuration(intelligence.avg_duration_ms) : "No samples")}</dd></div>
+                        <div><dt>Last failure</dt><dd>${escapeHtml(lastFailed ? `${formatRelativeTimestamp(lastFailed.finished_at)} · ${lastFailed.failure_cause || "failure"}` : "No failed update")}</dd></div>
+                        <div><dt>Next run</dt><dd>${escapeHtml(nextRunSummary)}</dd></div>
+                        <div><dt>No-run</dt><dd>${escapeHtml(noRun.summary || "No no-run window active")}</dd></div>
+                    </dl>
+                </details>
             `;
         }
 
         function renderDashboardPanels() {
-            const pendingServers = allServers.filter(server => server.status === "pending_approval");
-            const activeServers = allServers.filter(server => activeStatuses.has(server.status));
-            const failedServers = allServers.filter(isFailedServer);
-            setText("approval-queue-count", String(pendingServers.length));
+            const activeServers = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
+            const failedServers = allServers.filter(server => isFailedServer(server) || getServerTimeline(server).state === "error");
             setText("active-operations-count", String(activeServers.length));
             setText("failed-hosts-count", String(failedServers.length));
-            renderMiniServerList("approval-queue", pendingServers, "No approvals.", { action: "open-drawer", actionLabel: "Review", actionTab: "pending" });
-            renderMiniServerList("active-operations", activeServers, "No active runs.");
-            renderMiniServerList("failed-hosts-panel", failedServers, "No failures.");
+            renderMiniServerList("active-operations", activeServers, "No active runs.", {
+                limit: 1,
+                moreLabel: hidden => `+${hidden} more running`
+            });
+            renderMiniServerList("failed-hosts-panel", failedServers, "No failures.", {
+                limit: 1,
+                moreLabel: hidden => `+${hidden} more failure${hidden === 1 ? "" : "s"}`
+            });
+            renderScheduledRuns();
+            renderApprovalTriage();
+            renderFleetFilters();
             renderTagSummary();
             renderRecentActivity();
             renderIntelligenceLists();
@@ -713,6 +1011,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
             renderDashboardMetrics();
             renderDashboardPanels();
+            if (allServers.length > 0) {
+                renderTable();
+            }
         }
 
         async function fetchGlobalKeyStatus() {
@@ -945,6 +1246,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function applyColumnWidths(widths) {
+            if (!widths || Object.keys(widths).length === 0) return;
             Object.keys(defaultColumnWidths).forEach((key) => {
                 const col = getTableColByKey(key);
                 if (!col) return;
@@ -1100,6 +1402,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const authFilter = document.getElementById('auth-filter').value;
             return servers.filter(server => {
                 if (statusFilter && server.status !== statusFilter) return false;
+                if (fleetTagFilter) {
+                    const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
+                    if (!tags.includes(fleetTagFilter)) return false;
+                }
+                if (fleetQuickFilter === "pending_approval" && server.status !== "pending_approval") return false;
+                if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !["active", "queued", "waiting"].includes(getServerTimeline(server).state)) return false;
+                if (fleetQuickFilter === "stale_facts" && getServerApprovalTriage(server).facts_state !== "stale") return false;
+                if (fleetQuickFilter === "high_risk" && getServerApprovalTriage(server).cve_count <= 0 && getRiskLevel(server) !== "critical") return false;
                 if (authFilter === "password" && !server.has_password) return false;
                 if (authFilter === "key" && !hasEffectiveKey(server)) return false;
                 if (!search) return true;
@@ -1120,7 +1430,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             page = Math.min(page, totalPages);
             const start = (page - 1) * size;
             const end = start + size;
-            document.getElementById('page-info').textContent = `Page ${page} of ${totalPages} (${pluralize(servers.length, "host")})`;
+            const pageInfo = document.getElementById('page-info');
+            const pagination = document.querySelector('.pagination');
+            pageInfo.textContent = `Page ${page} of ${totalPages} (${pluralize(servers.length, "host")})`;
+            pagination?.classList.toggle('single-page', totalPages <= 1);
+            document.getElementById('prev-page').disabled = page <= 1;
+            document.getElementById('next-page').disabled = page >= totalPages;
             return servers.slice(start, end);
         }
 
@@ -1282,8 +1597,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const hasPending = hasPendingUpdates(server);
             const approvalCounts = getPendingApprovalCounts(server);
             const securityApprovalLabel = approvalCounts.security === null
-                ? "Approve security only (unknown)"
-                : `Approve security only (${approvalCounts.security})`;
+                ? "Security (?)"
+                : `Security (${approvalCounts.security})`;
             if (drawerTab === "pending" && !hasPending) {
                 drawerTab = "logs";
                 drawerPendingScrollTop = 0;
@@ -1292,7 +1607,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `<span class="status-pill status-${safeStatus}">${safeStatusText}</span>`;
             approvalActions.classList.toggle('hidden', !isPendingApproval);
-            drawerApproveAllBtn.textContent = `Approve all (${approvalCounts.total})`;
+            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.total})`;
             drawerApproveSecurityBtn.textContent = securityApprovalLabel;
 
             pendingTabBtn.disabled = !hasPending;
@@ -1351,7 +1666,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (group.key) {
                     const groupRow = document.createElement('tr');
                     groupRow.className = 'group-row';
-                    groupRow.innerHTML = `<td colspan="7">${escapeHtml(group.key)}</td>`;
+                    groupRow.innerHTML = `<td colspan="11">${escapeHtml(group.key)}</td>`;
                     tbody.appendChild(groupRow);
                 }
                 group.items.forEach(server => {
@@ -1371,44 +1686,60 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     const safeStatus = safeStatusClass(server.status);
                     const safeDataName = escapeHtml(server.name);
                     const intelligence = getServerIntelligence(server.name);
-                    const riskLevel = getRiskLevel(server);
-                    const riskLabel = getRiskLabel(server);
+                    const timeline = getServerTimeline(server);
+                    const triage = getServerApprovalTriage(server);
                     const lastUpdate = intelligence?.last_update;
                     const nextRun = intelligence?.next_run;
                     const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
                     const nextRunLabel = nextRun?.state === "scheduled"
                         ? (nextRun.scheduled_for_display || nextRun.scheduled_for_utc || "Scheduled")
                         : "None";
+                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
                     const approvalCounts = getPendingApprovalCounts(server);
                     const securityApprovalLabel = approvalCounts.security === null
-                        ? "Approve security only (unknown)"
-                        : `Approve security only (${approvalCounts.security})`;
+                        ? "Security (?)"
+                        : `Security (${approvalCounts.security})`;
                     const actionButtons = server.status === 'pending_approval'
                         ? `
-                            <div class="actions-grid">
-                                <button type="button" data-action="approve-all" data-name="${safeDataName}" title="Approve all updates">Approve all (${approvalCounts.total})</button>
+                            <div class="actions-grid timeline-actions">
+                                <button type="button" data-action="approve-all" data-name="${safeDataName}" title="Approve all updates">Approve (${approvalCounts.total})</button>
                                 <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only security updates">${securityApprovalLabel}</button>
-                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                                <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}">Cancel</button>
-                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Pending updates</button>
+                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                             </div>
                           `
+                        : isBusy
+                            ? `
+                                <div class="actions-grid timeline-actions">
+                                    <button type="button" class="btn-ghost action-span" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+                                </div>
+                              `
                         : `
-                            <div class="actions-grid">
-                                <button type="button" data-action="update-server" data-name="${safeDataName}" ${isBusy ? 'disabled' : ''}>Update</button>
-                                <button type="button" data-action="run-autoremove" data-name="${safeDataName}" ${isBusy ? 'disabled' : ''} title="Run apt autoremove">Autoremove</button>
+                            <div class="actions-grid timeline-actions">
+                                <button type="button" data-action="update-server" data-name="${safeDataName}">Update</button>
                                 <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                                <button type="button" data-action="enable-apt" data-name="${safeDataName}" ${isBusy ? 'disabled' : ''} title="Enable passwordless apt">Enable apt</button>
-                                <button type="button" data-action="disable-apt" data-name="${safeDataName}" ${isBusy ? 'disabled' : ''} title="Disable passwordless apt">Disable apt</button>
                             </div>
                           `;
                     row.innerHTML = `
                         <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" ${selectedServers.has(server.name) ? "checked" : ""}></td>
-                        <td class="name-cell" title="${safeNameHtml}"><button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button></td>
-                        <td class="status-col"><span class="status-pill status-${safeStatus}">${safeStatusText}</span></td>
-                        <td class="risk-col"><span class="risk-chip risk-${escapeHtml(riskLevel)}">${escapeHtml(riskLabel)}</span></td>
-                        <td class="last-update-col">${escapeHtml(lastUpdateLabel)}</td>
-                        <td class="next-run-col">${escapeHtml(nextRunLabel)}</td>
+                        <td class="name-cell" title="${safeNameHtml}">
+                            <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button>
+                            <span class="server-subline">${escapeHtml((server.tags || []).join(", ") || "ungrouped")}</span>
+                        </td>
+                        <td class="status-col">
+                            <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+                            <span class="stage-progress" aria-label="${escapeHtml(`${timeline.current_label || "Idle"} ${timeline.progress_pct || 0}%`)}"><span class="${progressClass(timeline.progress_pct)}"></span></span>
+                        </td>
+                        <td class="phase-col">${timelinePhaseCell(server, "pending_approval")}</td>
+                        <td class="phase-col">${timelinePhaseCell(server, "prechecks")}</td>
+                        <td class="phase-col">${timelinePhaseCell(server, "apt_update")}</td>
+                        <td class="phase-col">${timelinePhaseCell(server, "upgrade")}</td>
+                        <td class="phase-col">${timelinePhaseCell(server, "postchecks")}</td>
+                        <td class="phase-col">${timelinePhaseCell(server, "done_error")}</td>
+                        <td class="timeline-summary-col">
+                            <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
+                            <span>${escapeHtml(timeline.summary || timelineWindow || "No activity")}</span>
+                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                        </td>
                         <td class="actions-col">${actionButtons}</td>
                     `;
                     tbody.appendChild(row);
@@ -1549,6 +1880,45 @@ const LOG_BOTTOM_THRESHOLD = 20;
             hoveredName = null;
             applyHoverClass();
         });
+
+        const triageTable = document.getElementById('approval-triage-table');
+        if (triageTable) {
+            triageTable.addEventListener('click', (e) => {
+                const button = e.target.closest('button[data-action]');
+                if (button) {
+                    handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
+                    return;
+                }
+                const selectHostButton = e.target.closest('button[data-select-host]');
+                if (selectHostButton) {
+                    selectServer(selectHostButton.dataset.selectHost || "");
+                    return;
+                }
+                const row = e.target.closest('tr[data-name]');
+                if (row) {
+                    selectServer(row.dataset.name || "");
+                }
+            });
+        }
+
+        const fleetRail = document.querySelector('.fleet-rail');
+        if (fleetRail) {
+            fleetRail.addEventListener('click', (e) => {
+                const filterButton = e.target.closest('button[data-fleet-filter]');
+                if (filterButton) {
+                    fleetQuickFilter = filterButton.dataset.fleetFilter || "";
+                    page = 1;
+                    renderTable();
+                    return;
+                }
+                const tagButton = e.target.closest('button[data-fleet-tag]');
+                if (tagButton) {
+                    fleetTagFilter = tagButton.dataset.fleetTag || "";
+                    page = 1;
+                    renderTable();
+                }
+            });
+        }
 
         const applySortFromHeader = (th) => {
             if (!th) return;

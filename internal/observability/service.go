@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
@@ -693,6 +694,382 @@ func defaultScheduleInfo() DashboardScheduleInfo {
 	return DashboardScheduleInfo{State: "none", Summary: "No scheduled run"}
 }
 
+var dashboardTimelinePhases = []struct {
+	key      string
+	label    string
+	progress int
+}{
+	{key: "pending_approval", label: "Pending approval", progress: 12},
+	{key: "prechecks", label: "Pre-checks", progress: 32},
+	{key: "apt_update", label: "APT update", progress: 52},
+	{key: "upgrade", label: "Upgrade", progress: 72},
+	{key: "postchecks", label: "Post-checks", progress: 88},
+	{key: "done_error", label: "Done / Error", progress: 100},
+}
+
+func timelinePhaseIndex(key string) int {
+	for i, phase := range dashboardTimelinePhases {
+		if phase.key == key {
+			return i
+		}
+	}
+	return -1
+}
+
+func timelinePhaseLabel(key string) string {
+	if index := timelinePhaseIndex(key); index >= 0 {
+		return dashboardTimelinePhases[index].label
+	}
+	return "Idle"
+}
+
+func timelinePhaseProgress(key string) int {
+	if index := timelinePhaseIndex(key); index >= 0 {
+		return dashboardTimelinePhases[index].progress
+	}
+	return 0
+}
+
+func activeTimelineState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "active", "queued", "waiting":
+		return true
+	default:
+		return false
+	}
+}
+
+func runningTimelineState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "active", "queued":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalTimelineState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "done", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func timelinePhaseFromJobPhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case jobs.PhaseDial, jobs.PhasePrechecks:
+		return "prechecks"
+	case jobs.PhaseAptUpdate:
+		return "apt_update"
+	case jobs.PhaseApprovalWait:
+		return "pending_approval"
+	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseApply:
+		return "upgrade"
+	case jobs.PhasePostchecks:
+		return "postchecks"
+	case jobs.PhaseComplete:
+		return "done_error"
+	default:
+		return ""
+	}
+}
+
+func timelinePhaseFromServerStatus(status string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending_approval":
+		return "pending_approval", "waiting"
+	case "updating":
+		return "prechecks", "active"
+	case "upgrading", "autoremove":
+		return "upgrade", "active"
+	case "done", "success", "approved":
+		return "done_error", "done"
+	case "error", "failure", "failed", "cancelled":
+		return "done_error", "error"
+	default:
+		return "", "idle"
+	}
+}
+
+func timelineStateFromJob(job jobs.Record) (string, string) {
+	status := strings.ToLower(strings.TrimSpace(job.Status))
+	phase := timelinePhaseFromJobPhase(job.Phase)
+	switch status {
+	case jobs.StatusSucceeded:
+		return "done_error", "done"
+	case jobs.StatusFailed, jobs.StatusCancelled, jobs.StatusInterrupted:
+		return "done_error", "error"
+	case jobs.StatusWaitingApproval:
+		return "pending_approval", "waiting"
+	case jobs.StatusQueued:
+		if phase == "" {
+			phase = "prechecks"
+		}
+		return phase, "queued"
+	case jobs.StatusRunning:
+		if phase == "" {
+			phase = "prechecks"
+		}
+		return phase, "active"
+	default:
+		if phase != "" {
+			return phase, "active"
+		}
+		return "", "idle"
+	}
+}
+
+func dashboardTimelineJobForStatus(status *servers.ServerStatus, job *jobs.Record) *jobs.Record {
+	if job == nil || strings.TrimSpace(job.ID) == "" {
+		return nil
+	}
+	if status == nil {
+		return job
+	}
+	_, serverState := timelinePhaseFromServerStatus(status.Status)
+	_, jobState := timelineStateFromJob(*job)
+	if jobState == "idle" {
+		return nil
+	}
+	if activeTimelineState(serverState) && !activeTimelineState(jobState) {
+		return nil
+	}
+	if terminalTimelineState(serverState) && terminalTimelineState(jobState) && serverState != jobState {
+		return nil
+	}
+	return job
+}
+
+func (s *Service) latestUpdateJobsByServer() (map[string]jobs.Record, error) {
+	deps := s.EnsureDeps()
+	result := map[string]jobs.Record{}
+	db := deps.DB()
+	if db == nil {
+		return result, nil
+	}
+	rows, err := db.Query(
+		`SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
+		        error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		   FROM jobs
+		  WHERE kind = ?
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT 1000`,
+		jobs.KindUpdate,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return result, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record jobs.Record
+		if err := rows.Scan(
+			&record.ID,
+			&record.Kind,
+			&record.ParentJobID,
+			&record.ServerName,
+			&record.Actor,
+			&record.ClientIP,
+			&record.Status,
+			&record.Phase,
+			&record.Summary,
+			&record.LogsText,
+			&record.ErrorClass,
+			&record.RetryPolicyJSON,
+			&record.MetaJSON,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+			&record.StartedAt,
+			&record.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		serverName := strings.TrimSpace(record.ServerName)
+		if serverName == "" {
+			continue
+		}
+		if _, exists := result[serverName]; !exists {
+			result[serverName] = record
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func formatDashboardTimestamp(raw string, deps ServiceDeps, loc *time.Location, timezoneName string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	display, _ := deps.FormatTimestamp(raw, loc, timezoneName)
+	return display
+}
+
+func buildDashboardTimeline(status *servers.ServerStatus, job *jobs.Record, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardTimelineInfo {
+	deps = deps.withDefaults()
+	currentPhase := ""
+	state := "idle"
+	summary := "No maintenance activity"
+	startedAt := ""
+	updatedAt := ""
+	if job != nil && strings.TrimSpace(job.ID) != "" {
+		currentPhase, state = timelineStateFromJob(*job)
+		summary = strings.TrimSpace(job.Summary)
+		if summary == "" {
+			summary = fmt.Sprintf("Update job %s", strings.TrimSpace(job.Status))
+		}
+		startedAt = strings.TrimSpace(job.StartedAt)
+		updatedAt = strings.TrimSpace(job.UpdatedAt)
+		if updatedAt == "" {
+			updatedAt = strings.TrimSpace(job.CreatedAt)
+		}
+	} else if status != nil {
+		currentPhase, state = timelinePhaseFromServerStatus(status.Status)
+		if state != "idle" {
+			summary = fmt.Sprintf("Runtime status: %s", statusLabelText(status.Status))
+		}
+	}
+	currentLabel := timelinePhaseLabel(currentPhase)
+	progress := timelinePhaseProgress(currentPhase)
+	if currentPhase == "" || state == "idle" {
+		currentLabel = "Idle"
+		progress = 0
+	}
+	if terminalTimelineState(state) {
+		progress = 100
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = "No maintenance activity"
+	}
+
+	currentIndex := timelinePhaseIndex(currentPhase)
+	phases := make([]DashboardTimelinePhase, 0, len(dashboardTimelinePhases))
+	for index, phase := range dashboardTimelinePhases {
+		phaseState := "pending"
+		switch {
+		case currentIndex < 0:
+			phaseState = "pending"
+		case state == "done":
+			phaseState = "done"
+		case state == "error":
+			if index < currentIndex {
+				phaseState = "done"
+			} else if index == currentIndex {
+				phaseState = "error"
+			}
+		default:
+			if index < currentIndex {
+				phaseState = "done"
+			} else if index == currentIndex {
+				phaseState = state
+			}
+		}
+		phaseSummary := ""
+		phaseUpdatedAt := ""
+		phaseUpdatedDisplay := ""
+		if index == currentIndex {
+			phaseSummary = summary
+			phaseUpdatedAt = updatedAt
+			phaseUpdatedDisplay = formatDashboardTimestamp(updatedAt, deps, loc, timezoneName)
+		}
+		phases = append(phases, DashboardTimelinePhase{
+			Key:              phase.key,
+			Label:            phase.label,
+			State:            phaseState,
+			ProgressPct:      phase.progress,
+			Summary:          phaseSummary,
+			UpdatedAt:        phaseUpdatedAt,
+			UpdatedAtDisplay: phaseUpdatedDisplay,
+		})
+	}
+	return DashboardTimelineInfo{
+		CurrentPhase:     currentPhase,
+		CurrentLabel:     currentLabel,
+		State:            state,
+		ProgressPct:      progress,
+		Summary:          summary,
+		StartedAt:        startedAt,
+		StartedAtDisplay: formatDashboardTimestamp(startedAt, deps, loc, timezoneName),
+		UpdatedAt:        updatedAt,
+		UpdatedAtDisplay: formatDashboardTimestamp(updatedAt, deps, loc, timezoneName),
+		Phases:           phases,
+	}
+}
+
+func statusLabelText(value string) string {
+	return strings.ReplaceAll(strings.TrimSpace(value), "_", " ")
+}
+
+func dashboardRiskOrder(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "critical":
+		return 4
+	case "elevated":
+		return 3
+	case "normal":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func factsFreshnessState(health DashboardHealthInfo, now time.Time, deps ServiceDeps) string {
+	if strings.TrimSpace(health.Source) == "" || strings.EqualFold(strings.TrimSpace(health.Source), "unknown") || strings.TrimSpace(health.CollectedAt) == "" {
+		return "stale"
+	}
+	collected, err := deps.ParseAppTimestamp(health.CollectedAt)
+	if err != nil {
+		return "stale"
+	}
+	if now.UTC().Sub(collected.UTC()) > 24*time.Hour {
+		return "stale"
+	}
+	return "fresh"
+}
+
+func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, lastUpdate *DashboardUpdateHistory, now time.Time, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardApprovalTriageInfo {
+	deps = deps.withDefaults()
+	statusValue := ""
+	if status != nil {
+		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
+	}
+	lastCheckAt := strings.TrimSpace(health.CollectedAt)
+	if lastCheckAt == "" && lastUpdate != nil {
+		lastCheckAt = strings.TrimSpace(lastUpdate.FinishedAt)
+	}
+	if lastCheckAt == "" {
+		lastCheckAt = strings.TrimSpace(timeline.UpdatedAt)
+	}
+	factsState := factsFreshnessState(health, now, deps)
+	eligible := statusValue == "pending_approval" || risk.PendingPackages > 0 || risk.SecurityUpdates > 0 || len(risk.CVEs) > 0
+	canActOnApproval := statusValue == "pending_approval"
+	return DashboardApprovalTriageInfo{
+		Eligible:                eligible,
+		PendingPackages:         risk.PendingPackages,
+		SecurityUpdates:         risk.SecurityUpdates,
+		CVECount:                len(risk.CVEs),
+		RiskLevel:               risk.Level,
+		RiskLabel:               risk.Summary,
+		RiskOrder:               dashboardRiskOrder(risk.Level),
+		FactsState:              factsState,
+		FactsCollectedAt:        health.CollectedAt,
+		FactsCollectedAtDisplay: formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
+		LastCheckAt:             lastCheckAt,
+		LastCheckDisplay:        formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
+		CanApproveAll:           canActOnApproval,
+		CanApproveSecurity:      canActOnApproval && risk.SecurityUpdates > 0,
+		CanCancel:               canActOnApproval,
+		CanRefreshFacts:         true,
+		CanRunChecks:            !activeTimelineState(timeline.State),
+	}
+}
+
 func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (DashboardSummaryResponse, error) {
 	deps := s.EnsureDeps()
 	window, span, err := ParseWindow(rawWindow)
@@ -728,6 +1105,10 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		return DashboardSummaryResponse{}, err
 	}
 	nextRuns, err := s.buildNextRunMap(now, serversSnapshot, policyList, overrides, globalBlackouts)
+	if err != nil {
+		return DashboardSummaryResponse{}, err
+	}
+	latestUpdateJobs, err := s.latestUpdateJobsByServer()
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
@@ -837,6 +1218,13 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	}
 	commandRows.Close()
 
+	fleetPendingApproval := 0
+	fleetPrechecksRunning := 0
+	fleetInProgress := 0
+	fleetDone := 0
+	fleetPendingPackages := 0
+	fleetSecurityUpdates := 0
+	fleetHighRiskCVE := 0
 	fleetReboot := 0
 	fleetStaleFacts := 0
 	for _, server := range serversSnapshot {
@@ -860,7 +1248,6 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 			health.AptDetails = fact.AptDetails
 		} else {
 			health.Source = "unknown"
-			fleetStaleFacts++
 		}
 		agg := updateByServer[server.Name]
 		if agg != nil && agg.meta != nil {
@@ -875,25 +1262,70 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		if nextRun.State == "" {
 			nextRun = defaultScheduleInfo()
 		}
-		serverSummary := DashboardServerSummary{
-			Name:           server.Name,
-			NextRun:        nextRun,
-			NoRun:          s.buildNoRunInfo(server, policyList, overrides, globalBlackouts, now),
-			Health:         health,
-			Risk:           DashboardRiskFromStatus(status),
-			CommandHistory: commandHistory[server.Name],
+		risk := DashboardRiskFromStatus(status)
+		var jobPtr *jobs.Record
+		if job, ok := latestUpdateJobs[server.Name]; ok {
+			jobCopy := job
+			jobPtr = dashboardTimelineJobForStatus(status, &jobCopy)
 		}
+		timeline := buildDashboardTimeline(status, jobPtr, deps, loc, timezoneName)
+		var lastUpdate *DashboardUpdateHistory
+		var lastFailedUpdate *DashboardUpdateHistory
+		durationSamples := 0
+		avgDurationMS := 0.0
 		if agg != nil {
-			serverSummary.LastUpdate = agg.lastSuccess
-			serverSummary.LastFailedUpdate = agg.lastFailure
-			serverSummary.DurationSamples = agg.samples
+			lastUpdate = agg.lastSuccess
+			lastFailedUpdate = agg.lastFailure
+			durationSamples = agg.samples
 			if agg.samples > 0 {
-				serverSummary.AvgDurationMS = agg.durationSum / float64(agg.samples)
+				avgDurationMS = agg.durationSum / float64(agg.samples)
 			}
+		}
+		triage := buildApprovalTriage(status, health, risk, timeline, lastUpdate, now, deps, loc, timezoneName)
+		if triage.FactsState == "stale" {
+			fleetStaleFacts++
+		}
+		fleetPendingPackages += triage.PendingPackages
+		fleetSecurityUpdates += triage.SecurityUpdates
+		if triage.CVECount > 0 {
+			fleetHighRiskCVE++
+		}
+		if triage.CanApproveAll || timeline.CurrentPhase == "pending_approval" {
+			fleetPendingApproval++
+		}
+		if timeline.CurrentPhase == "prechecks" || timeline.State == "queued" || timeline.State == "active" {
+			fleetPrechecksRunning++
+		}
+		if runningTimelineState(timeline.State) {
+			fleetInProgress++
+		}
+		if timeline.State == "done" {
+			fleetDone++
+		}
+		serverSummary := DashboardServerSummary{
+			Name:             server.Name,
+			LastUpdate:       lastUpdate,
+			LastFailedUpdate: lastFailedUpdate,
+			AvgDurationMS:    avgDurationMS,
+			DurationSamples:  durationSamples,
+			NextRun:          nextRun,
+			NoRun:            s.buildNoRunInfo(server, policyList, overrides, globalBlackouts, now),
+			Health:           health,
+			Risk:             risk,
+			Timeline:         timeline,
+			ApprovalTriage:   triage,
+			CommandHistory:   commandHistory[server.Name],
 		}
 		response.Servers = append(response.Servers, serverSummary)
 	}
 	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
+	response.Fleet["pending_approval"] = fleetPendingApproval
+	response.Fleet["prechecks_running"] = fleetPrechecksRunning
+	response.Fleet["in_progress"] = fleetInProgress
+	response.Fleet["done"] = fleetDone
+	response.Fleet["pending_packages"] = fleetPendingPackages
+	response.Fleet["security_updates"] = fleetSecurityUpdates
+	response.Fleet["high_risk_cve"] = fleetHighRiskCVE
 	response.Fleet["hosts_needing_reboot"] = fleetReboot
 	response.Fleet["stale_facts"] = fleetStaleFacts
 	return response, nil

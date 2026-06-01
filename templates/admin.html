@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=vscode-dark-20260521a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=vscode-dark-20260521a">
+    <link rel="stylesheet" href="/static/css/base.css?v=vscode-dark-20260601b">
+    <link rel="stylesheet" href="/static/css/admin.css?v=vscode-dark-20260601b">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -35,7 +35,7 @@
                 <p class="muted">Handle scheduling, backup, metrics access, and app-wide settings from one deliberate control page.</p>
             </div>
             <div class="head-meta" aria-label="Admin metadata">
-                <span class="meta-pill warning">Sensitive controls</span>
+                <span class="meta-pill danger">Sensitive controls</span>
                 <span class="meta-pill">Scheduled policy</span>
                 <span class="meta-pill">Disaster recovery</span>
             </div>
@@ -52,7 +52,7 @@
                     <select id="app-timezone-input"></select>
                     <div class="table-secondary" id="app-timezone-picker-note">Pick an IANA timezone such as <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.</div>
                     <div class="policy-actions app-time-actions">
-                        <button class="btn-success" type="button" id="app-timezone-save">Save Timezone</button>
+                        <button class="primary-action" type="button" id="app-timezone-save">Save Timezone</button>
                     </div>
                     <div id="app-timezone-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="app-timezone-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -75,7 +75,7 @@
                     <input type="password" id="auth-new-password" placeholder="New password" autocomplete="new-password">
                     <input type="password" id="auth-confirm-password" placeholder="Confirm new password" autocomplete="new-password">
                     <div class="policy-actions">
-                        <button class="btn-success" type="button" id="auth-password-save">Change Password</button>
+                        <button class="primary-action" type="button" id="auth-password-save">Change Password</button>
                     </div>
                     <div id="auth-password-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="auth-password-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -223,7 +223,7 @@
                             </details>
                         </div>
                         <div class="field-span policy-actions">
-                            <button class="btn-success" type="submit" id="policy-save-btn">Create Policy</button>
+                            <button class="primary-action" type="submit" id="policy-save-btn">Create Policy</button>
                             <button class="btn-ghost" type="button" id="policy-reset-btn">Start New Policy</button>
                         </div>
                         <div id="update-policy-error" class="form-feedback form-feedback-error field-span" aria-live="polite" aria-atomic="true"></div>
@@ -262,7 +262,7 @@
                         </details>
                     </div>
                     <div class="policy-actions">
-                        <button class="btn-success" type="button" id="scheduled-settings-save">Save Global No-Run Windows</button>
+                        <button class="primary-action" type="button" id="scheduled-settings-save">Save Global No-Run Windows</button>
                     </div>
                     <div id="scheduled-settings-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="scheduled-settings-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -331,7 +331,7 @@
                     <input type="password" id="backup-export-passphrase" placeholder="Backup passphrase (min 12 chars)">
                     <input type="password" id="backup-export-passphrase-confirm" placeholder="Confirm passphrase">
                     <label class="checkbox-inline"><input type="checkbox" id="backup-include-known-hosts" checked> Include known_hosts</label>
-                    <button class="btn-success" type="button" id="backup-export-btn">Download Backup</button>
+                    <button class="primary-action" type="button" id="backup-export-btn">Download Backup</button>
                 </div>
                 <div class="backup-block">
                     <h3>Restore Backup</h3>
@@ -353,7 +353,7 @@
                 <p class="muted workspace-note"><code>/metrics</code> stays disabled until you generate a token. The token is shown once.</p>
             </div>
             <div class="nav key-actions">
-                <button class="btn-success" type="button" id="metrics-token-generate">Generate Token</button>
+                <button class="primary-action" type="button" id="metrics-token-generate">Generate Token</button>
                 <button class="btn-ghost" type="button" id="metrics-token-rotate">Rotate Token</button>
                 <button class="btn-danger" type="button" id="metrics-token-disable">Disable Token</button>
             </div>

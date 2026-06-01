@@ -106,6 +106,49 @@ type DashboardRiskInfo struct {
 	CVEs            []string `json:"cves"`
 }
 
+type DashboardTimelinePhase struct {
+	Key              string `json:"key"`
+	Label            string `json:"label"`
+	State            string `json:"state"`
+	ProgressPct      int    `json:"progress_pct"`
+	Summary          string `json:"summary,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
+	UpdatedAtDisplay string `json:"updated_at_display,omitempty"`
+}
+
+type DashboardTimelineInfo struct {
+	CurrentPhase     string                   `json:"current_phase"`
+	CurrentLabel     string                   `json:"current_label"`
+	State            string                   `json:"state"`
+	ProgressPct      int                      `json:"progress_pct"`
+	Summary          string                   `json:"summary"`
+	StartedAt        string                   `json:"started_at,omitempty"`
+	StartedAtDisplay string                   `json:"started_at_display,omitempty"`
+	UpdatedAt        string                   `json:"updated_at,omitempty"`
+	UpdatedAtDisplay string                   `json:"updated_at_display,omitempty"`
+	Phases           []DashboardTimelinePhase `json:"phases"`
+}
+
+type DashboardApprovalTriageInfo struct {
+	Eligible                bool   `json:"eligible"`
+	PendingPackages         int    `json:"pending_packages"`
+	SecurityUpdates         int    `json:"security_updates"`
+	CVECount                int    `json:"cve_count"`
+	RiskLevel               string `json:"risk_level"`
+	RiskLabel               string `json:"risk_label"`
+	RiskOrder               int    `json:"risk_order"`
+	FactsState              string `json:"facts_state"`
+	FactsCollectedAt        string `json:"facts_collected_at,omitempty"`
+	FactsCollectedAtDisplay string `json:"facts_collected_at_display,omitempty"`
+	LastCheckAt             string `json:"last_check_at,omitempty"`
+	LastCheckDisplay        string `json:"last_check_display,omitempty"`
+	CanApproveAll           bool   `json:"can_approve_all"`
+	CanApproveSecurity      bool   `json:"can_approve_security"`
+	CanCancel               bool   `json:"can_cancel"`
+	CanRefreshFacts         bool   `json:"can_refresh_facts"`
+	CanRunChecks            bool   `json:"can_run_checks"`
+}
+
 type DashboardServerSummary struct {
 	Name             string                        `json:"name"`
 	LastUpdate       *DashboardUpdateHistory       `json:"last_update,omitempty"`
@@ -116,6 +159,8 @@ type DashboardServerSummary struct {
 	NoRun            DashboardNoRunInfo            `json:"no_run"`
 	Health           DashboardHealthInfo           `json:"health"`
 	Risk             DashboardRiskInfo             `json:"risk"`
+	Timeline         DashboardTimelineInfo         `json:"timeline"`
+	ApprovalTriage   DashboardApprovalTriageInfo   `json:"approval_triage"`
 	CommandHistory   []DashboardCommandHistoryItem `json:"command_history"`
 }
 

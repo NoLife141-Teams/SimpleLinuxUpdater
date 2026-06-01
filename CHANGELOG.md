@@ -6,6 +6,25 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.2.7] - 2026-06-01
+
+### Added
+
+- Add an operator-focused maintenance dashboard triage view with richer fleet filters, host facts, approval queues, action timelines, and pending-update context.
+- Add guarded local demo seeding for the variant-C dashboard review flow.
+
+### Changed
+
+- Refresh dashboard and shared page styling across status, admin, setup, login, manage, maintenance, and observability screens for better responsiveness and visual consistency.
+- Strengthen PR workflow gates and contributor release-check expectations.
+- Upgrade the SQLite runtime dependency to the latest compatible patch baseline.
+
+### Fixed
+
+- Improve dashboard and manage-page accessibility around dynamic status controls, destructive confirmations, and keyboard-visible actions.
+- Preserve backup snapshot reliability during backup restore/export handling.
+- Upgrade SSH-related Go modules to clear reachable `golang.org/x/crypto` vulnerabilities before release.
+
 ## [v0.2.6] - 2026-05-22
 
 ### Changed

@@ -148,18 +148,6 @@ func demoUpdate(pkg string, security bool, cves ...string) PendingUpdate {
 	}
 }
 
-func seedVariantCDemoDatabase(db *sql.DB, now time.Time) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := seedVariantCDemoDatabaseTx(tx, now); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func seedVariantCDemoDatabaseTx(tx *sql.Tx, now time.Time) error {
 	for _, stmt := range []string{
 		"DELETE FROM jobs",

@@ -1407,7 +1407,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     if (!tags.includes(fleetTagFilter)) return false;
                 }
                 if (fleetQuickFilter === "pending_approval" && server.status !== "pending_approval") return false;
-                if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !["active", "queued", "waiting"].includes(getServerTimeline(server).state)) return false;
+                if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !isRunningTimelineState(getServerTimeline(server).state)) return false;
                 if (fleetQuickFilter === "stale_facts" && getServerApprovalTriage(server).facts_state !== "stale") return false;
                 if (fleetQuickFilter === "high_risk" && getServerApprovalTriage(server).cve_count <= 0 && getRiskLevel(server) !== "critical") return false;
                 if (authFilter === "password" && !server.has_password) return false;
@@ -2385,16 +2385,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         });
 
-        document.querySelector('.operations-grid').addEventListener('click', (e) => {
-            const actionButton = e.target.closest('button[data-action]');
-            if (actionButton) {
-                handleServerAction(actionButton.dataset.action || "", actionButton.dataset.name || "", actionButton.dataset.tab || "logs");
-                return;
-            }
-            const selectButton = e.target.closest('button[data-select-server]');
-            if (selectButton) {
-                selectServer(selectButton.dataset.selectServer || "");
-            }
+        document.querySelectorAll('.operations-grid, .context-ops-grid').forEach((panel) => {
+            panel.addEventListener('click', (e) => {
+                const actionButton = e.target.closest('button[data-action]');
+                if (actionButton) {
+                    handleServerAction(actionButton.dataset.action || "", actionButton.dataset.name || "", actionButton.dataset.tab || "logs");
+                    return;
+                }
+                const selectButton = e.target.closest('button[data-select-server]');
+                if (selectButton) {
+                    selectServer(selectButton.dataset.selectServer || "");
+                }
+            });
         });
 
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());

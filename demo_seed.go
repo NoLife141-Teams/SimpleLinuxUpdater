@@ -13,11 +13,24 @@ func seedVariantCDemoIfRequested(deps AppDeps) {
 	if strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_DEMO_SEED")) != "variant-c" {
 		return
 	}
+	if !demoSeedResetEnabled(os.Getenv("DEBIAN_UPDATER_DEMO_RESET")) {
+		log.Printf("variant c demo seed requested but DEBIAN_UPDATER_DEMO_RESET is not enabled; skipping destructive demo reset")
+		return
+	}
 	if err := seedVariantCDemoRuntime(deps.withDefaults()); err != nil {
 		log.Printf("failed to seed variant c demo runtime: %v", err)
 		return
 	}
 	log.Printf("seeded variant c demo runtime")
+}
+
+func demoSeedResetEnabled(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "reset", "variant-c":
+		return true
+	default:
+		return false
+	}
 }
 
 func seedVariantCDemoRuntime(deps AppDeps) error {

@@ -228,7 +228,7 @@ func ParseAptListMetadataEntries(stdout string, packageNames []string) ([]server
 		if selector.base == "" {
 			continue
 		}
-		key := selector.base
+		key := selector.selector
 		if len(requested) > 0 {
 			if _, exists := allowedExact[selector.selector]; exists {
 				key = selector.selector
@@ -301,6 +301,161 @@ func MergePendingUpdatesWithMetadata(summaryPending []servers.PendingUpdate, met
 		mergedUpgradable = append(mergedUpgradable, update.Raw)
 	}
 	return mergedPending, mergedUpgradable
+}
+
+func MergeAvailableUpdatesWithStandard(standardPending []servers.PendingUpdate, standardUpgradable []string, availablePending []servers.PendingUpdate, availableUpgradable []string, fullUpgradeStdout string, fullUpgradePlanAvailable bool) ([]servers.PendingUpdate, []string, servers.UpgradePlan) {
+	if len(availablePending) == 0 {
+		pending := servers.ClonePendingUpdates(standardPending)
+		upgradable := append([]string(nil), standardUpgradable...)
+		plan := BuildUpgradePlan(pending, fullUpgradeStdout, fullUpgradePlanAvailable)
+		return pending, upgradable, plan
+	}
+
+	type availableRecord struct {
+		update   servers.PendingUpdate
+		raw      string
+		selector packageSelector
+	}
+	records := make([]availableRecord, 0, len(availablePending))
+	bySelector := make(map[string]int, len(availablePending))
+	byBase := make(map[string]int, len(availablePending))
+	for i, update := range availablePending {
+		selector := aptListMetadataSelector(update)
+		if selector.selector == "" {
+			continue
+		}
+		raw := update.Raw
+		if i < len(availableUpgradable) && strings.TrimSpace(availableUpgradable[i]) != "" {
+			raw = availableUpgradable[i]
+		}
+		idx := len(records)
+		records = append(records, availableRecord{update: update, raw: raw, selector: selector})
+		if _, exists := bySelector[selector.selector]; !exists {
+			bySelector[selector.selector] = idx
+		}
+		if _, exists := byBase[selector.base]; !exists {
+			byBase[selector.base] = idx
+		}
+	}
+
+	seen := make(map[string]struct{}, len(records)+len(standardPending))
+	pending := make([]servers.PendingUpdate, 0, len(availablePending)+len(standardPending))
+	upgradable := make([]string, 0, len(availableUpgradable)+len(standardUpgradable))
+
+	appendUpdate := func(update servers.PendingUpdate, raw string, selector packageSelector, requiresFull bool) {
+		update.KeptBack = requiresFull
+		update.RequiresFull = requiresFull
+		if requiresFull && selector.arch != "" && selector.arch != "all" {
+			update.InstallPackage = selector.selector
+		}
+		pending = append(pending, update)
+		if strings.TrimSpace(raw) != "" {
+			upgradable = append(upgradable, raw)
+		} else if strings.TrimSpace(update.Raw) != "" {
+			upgradable = append(upgradable, update.Raw)
+		} else {
+			upgradable = append(upgradable, update.Package)
+		}
+		if selector.selector != "" {
+			seen[selector.selector] = struct{}{}
+		}
+		if selector.arch == "" && selector.base != "" {
+			seen[selector.base] = struct{}{}
+		}
+	}
+
+	for i, update := range standardPending {
+		selector := packageSelectorFromPackage(update.Package)
+		if selector.selector == "" {
+			continue
+		}
+		raw := ""
+		if i < len(standardUpgradable) {
+			raw = standardUpgradable[i]
+		}
+		if idx, exists := bySelector[selector.selector]; exists {
+			record := records[idx]
+			enriched := record.update
+			if selector.arch != "" {
+				enriched.Package = selector.selector
+			} else {
+				enriched.Package = selector.base
+			}
+			appendUpdate(enriched, record.raw, record.selector, false)
+			if selector.arch == "" && record.selector.selector != "" {
+				seen[record.selector.selector] = struct{}{}
+			}
+			continue
+		}
+		if selector.arch == "" {
+			if idx, exists := byBase[selector.base]; exists {
+				record := records[idx]
+				enriched := record.update
+				enriched.Package = selector.base
+				appendUpdate(enriched, record.raw, packageSelector{selector: selector.base, base: selector.base}, false)
+				if record.selector.selector != "" {
+					seen[record.selector.selector] = struct{}{}
+				}
+				continue
+			}
+		}
+		appendUpdate(update, raw, selector, false)
+	}
+
+	for _, record := range records {
+		selector := record.selector
+		if _, exists := seen[selector.selector]; exists {
+			continue
+		}
+		if _, exists := seen[selector.base]; exists && selector.arch != "" {
+			continue
+		}
+		update := record.update
+		if selector.arch != "" {
+			update.Package = selector.base
+		}
+		appendUpdate(update, record.raw, selector, true)
+	}
+
+	plan := BuildUpgradePlan(pending, fullUpgradeStdout, fullUpgradePlanAvailable)
+	return pending, upgradable, plan
+}
+
+func BuildUpgradePlan(pending []servers.PendingUpdate, fullUpgradeStdout string, fullUpgradePlanAvailable bool) servers.UpgradePlan {
+	plan := servers.UpgradePlan{
+		FullUpgradePlanAvailable:   fullUpgradePlanAvailable,
+		FullUpgradeNewPackages:     parseAptSummaryPackages(fullUpgradeStdout, "the following new packages will be installed:"),
+		FullUpgradeRemovedPackages: parseAptSummaryPackages(fullUpgradeStdout, "the following packages will be removed:"),
+	}
+	plan.KeptBackSecurityPackageCount = len(KeptBackSecurityPackagesFromPendingUpdates(pending))
+	fullUpgradePackages := parseAptUpgradeSummaryPackages(strings.Split(fullUpgradeStdout, "\n"))
+	plan.FullUpgradePackageCount = len(fullUpgradePackages)
+	if plan.FullUpgradePackageCount == 0 {
+		plan.FullUpgradePackageCount = len(pending)
+	}
+	for _, update := range pending {
+		if update.RequiresFull || update.KeptBack {
+			plan.KeptBackPackageCount++
+		} else {
+			plan.StandardPackageCount++
+			if update.Security {
+				plan.StandardSecurityCount++
+			}
+		}
+		if update.Security {
+			plan.TotalSecurityCount++
+		}
+	}
+	return plan
+}
+
+func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
+	if plan == nil {
+		return
+	}
+	plan.KeptBackSecurityPlanAvailable = true
+	plan.KeptBackSecurityNewPackages = parseAptSummaryPackages(stdout, "the following new packages will be installed:")
+	plan.KeptBackSecurityRemovedPackages = parseAptSummaryPackages(stdout, "the following packages will be removed:")
 }
 
 func ParseAptListMetadataEntry(line string) (servers.PendingUpdate, bool) {
@@ -428,12 +583,17 @@ func normalizePackageName(pkg string) string {
 }
 
 func parseAptUpgradeSummaryPackages(lines []string) []string {
+	return parseAptSummaryPackages(strings.Join(lines, "\n"), "the following packages will be upgraded:")
+}
+
+func parseAptSummaryPackages(stdout, header string) []string {
+	lines := strings.Split(stdout, "\n")
 	packages := make([]string, 0)
 	inUpgradeBlock := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		lower := strings.ToLower(trimmed)
-		if lower == "the following packages will be upgraded:" {
+		if lower == header {
 			inUpgradeBlock = true
 			continue
 		}
@@ -517,6 +677,9 @@ func SortPendingUpdates(updates []servers.PendingUpdate) {
 		if updates[i].Security != updates[j].Security {
 			return updates[i].Security && !updates[j].Security
 		}
+		if updates[i].RequiresFull != updates[j].RequiresFull {
+			return !updates[i].RequiresFull && updates[j].RequiresFull
+		}
 		if len(updates[i].CVEs) != len(updates[j].CVEs) {
 			return len(updates[i].CVEs) > len(updates[j].CVEs)
 		}
@@ -526,8 +689,8 @@ func SortPendingUpdates(updates []servers.PendingUpdate) {
 
 func NormalizeApprovalScope(scope string) string {
 	normalized := strings.ToLower(strings.TrimSpace(scope))
-	if normalized == "security" {
-		return "security"
+	if normalized == "security" || normalized == "security_kept_back" || normalized == "full_upgrade" {
+		return normalized
 	}
 	return "all"
 }
@@ -536,18 +699,56 @@ func SecurityPackagesFromPendingUpdates(updates []servers.PendingUpdate) []strin
 	return packageNamesFromPendingUpdates(updates, true)
 }
 
-func PackageNamesFromPendingUpdates(updates []servers.PendingUpdate) []string {
-	return packageNamesFromPendingUpdates(updates, false)
-}
-
-func packageNamesFromPendingUpdates(updates []servers.PendingUpdate, securityOnly bool) []string {
+func KeptBackSecurityPackagesFromPendingUpdates(updates []servers.PendingUpdate) []string {
 	if len(updates) == 0 {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(updates))
 	packages := make([]string, 0, len(updates))
 	for _, update := range updates {
+		if !update.Security || !(update.RequiresFull || update.KeptBack) {
+			continue
+		}
+		pkg := strings.TrimSpace(update.Package)
+		if installPackage := strings.TrimSpace(update.InstallPackage); installPackage != "" {
+			pkg = installPackage
+		}
+		if pkg == "" {
+			continue
+		}
+		if _, exists := seen[pkg]; exists {
+			continue
+		}
+		seen[pkg] = struct{}{}
+		packages = append(packages, pkg)
+	}
+	sort.Strings(packages)
+	return packages
+}
+
+func PackageNamesFromPendingUpdates(updates []servers.PendingUpdate) []string {
+	return packageNamesFromPendingUpdates(updates, false)
+}
+
+func FullUpgradePackagesFromPendingUpdates(updates []servers.PendingUpdate) []string {
+	return packageNamesFromPendingUpdates(updates, false, true)
+}
+
+func packageNamesFromPendingUpdates(updates []servers.PendingUpdate, securityOnly bool, includeRequiresFullOpt ...bool) []string {
+	if len(updates) == 0 {
+		return nil
+	}
+	includeRequiresFull := false
+	if len(includeRequiresFullOpt) > 0 {
+		includeRequiresFull = includeRequiresFullOpt[0]
+	}
+	seen := make(map[string]struct{}, len(updates))
+	packages := make([]string, 0, len(updates))
+	for _, update := range updates {
 		if securityOnly && !update.Security {
+			continue
+		}
+		if !includeRequiresFull && (update.RequiresFull || update.KeptBack) {
 			continue
 		}
 		pkg := strings.TrimSpace(update.Package)
@@ -573,8 +774,44 @@ func RootOrSudoCommand(command string) string {
 }
 
 func BuildSelectedUpgradeCmd(packages []string) string {
-	if len(packages) == 0 {
+	return buildSelectedInstallCmd(packages, true)
+}
+
+func BuildSelectedInstallCmd(packages []string) string {
+	return buildSelectedInstallCmd(packages, false)
+}
+
+func BuildSelectedInstallSimulationCmd(packages []string) string {
+	escaped := shellEscapedPackageArgs(packages)
+	if len(escaped) == 0 {
 		return ""
+	}
+	return "LC_ALL=C apt-get -s install -- " + strings.Join(escaped, " ")
+}
+
+func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
+	args := buildSelectedInstallArgs(packages, onlyUpgrade)
+	if args == "" {
+		return ""
+	}
+	return RootOrSudoCommand(args)
+}
+
+func buildSelectedInstallArgs(packages []string, onlyUpgrade bool) string {
+	escaped := shellEscapedPackageArgs(packages)
+	if len(escaped) == 0 {
+		return ""
+	}
+	args := "apt-get -y install"
+	if onlyUpgrade {
+		args += " --only-upgrade"
+	}
+	return args + " -- " + strings.Join(escaped, " ")
+}
+
+func shellEscapedPackageArgs(packages []string) []string {
+	if len(packages) == 0 {
+		return nil
 	}
 	escaped := make([]string, 0, len(packages))
 	for _, pkg := range packages {
@@ -584,10 +821,7 @@ func BuildSelectedUpgradeCmd(packages []string) string {
 		}
 		escaped = append(escaped, fmt.Sprintf("'%s'", ShellEscapeSingleQuotes(trimmed)))
 	}
-	if len(escaped) == 0 {
-		return ""
-	}
-	return RootOrSudoCommand("apt-get -y install --only-upgrade -- " + strings.Join(escaped, " "))
+	return escaped
 }
 
 func PreparePendingUpdatesForCVE(updates []servers.PendingUpdate) []servers.PendingUpdate {

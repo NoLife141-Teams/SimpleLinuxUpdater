@@ -62,6 +62,24 @@ test.describe.serial('setup and login flows', () => {
     });
   }
 
+  async function dismissTypedConfirm(page, trigger, wrongText = 'WRONG') {
+    await trigger.click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill(wrongText);
+    await expect(page.locator('#typed-confirm-submit')).toBeDisabled();
+    await page.locator('#typed-confirm-cancel').click();
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
+  }
+
+  async function acceptTypedConfirm(page, trigger, requiredText) {
+    await trigger.click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill(requiredText);
+    await expect(page.locator('#typed-confirm-submit')).toBeEnabled();
+    await page.locator('#typed-confirm-submit').click();
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
+  }
+
   function makeTimeline(status) {
     const phases = [
       ['pending_approval', 'Pending approval'],
@@ -456,30 +474,16 @@ test.describe.serial('setup and login flows', () => {
 
     const updateButton = page.locator('#servers-table tbody button[data-action="update-server"][data-name="demo-host"]');
     await expect(updateButton).toBeVisible();
-    const updateButtonHandle = await updateButton.elementHandle();
-    expect(updateButtonHandle).not.toBeNull();
 
-    await updateButtonHandle.dispatchEvent('pointerdown', {
-      pointerId: 1,
-      pointerType: 'mouse',
-      isPrimary: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    await updateButton.hover();
+    await page.mouse.down();
     await page.waitForTimeout(25);
 
     servers = [makeServer('renamed-host')];
     await page.evaluate(() => window.fetchServers());
     await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
 
-    await updateButtonHandle.dispatchEvent('pointerup', {
-      pointerId: 1,
-      pointerType: 'mouse',
-      isPrimary: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    await updateButtonHandle.dispatchEvent('click', { bubbles: true, cancelable: true });
+    await page.mouse.up();
 
     await expect.poll(() => updateRequests).toBe(1);
   });
@@ -492,16 +496,9 @@ test.describe.serial('setup and login flows', () => {
 
     const updateButton = page.locator('#servers-table tbody button[data-action="update-server"][data-name="demo-host"]');
     await expect(updateButton).toBeVisible();
-    const updateButtonHandle = await updateButton.elementHandle();
-    expect(updateButtonHandle).not.toBeNull();
 
-    await updateButtonHandle.dispatchEvent('pointerdown', {
-      pointerId: 1,
-      pointerType: 'mouse',
-      isPrimary: true,
-      bubbles: true,
-      cancelable: true,
-    });
+    await updateButton.hover();
+    await page.mouse.down();
     await page.waitForTimeout(25);
 
     servers = [makeServer('renamed-host')];
@@ -511,6 +508,7 @@ test.describe.serial('setup and login flows', () => {
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
 
     await expect(page.locator('#servers-table tbody tr[data-name="renamed-host"]')).toBeVisible();
+    await page.mouse.up();
   });
 
   test('admin scheduled policy editor submits rich targeting fields and renders report links', async ({ page }) => {
@@ -557,26 +555,24 @@ test.describe.serial('setup and login flows', () => {
       buffer: Buffer.from('fake-backup'),
     });
     await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
-    await page.evaluate(() => { window.prompt = () => 'WRONG'; });
-    await page.locator('#backup-restore-btn').click();
+    await dismissTypedConfirm(page, page.locator('#backup-restore-btn'));
     await expect.poll(() => state.restoreCount || 0).toBe(0);
 
-    await page.evaluate(() => { window.prompt = () => 'RESTORE'; window.alert = () => {}; });
+    await page.evaluate(() => { window.alert = () => {}; });
     await page.locator('#backup-restore-file').setInputFiles({
       name: 'backup.slubkp',
       mimeType: 'application/octet-stream',
       buffer: Buffer.from('fake-backup'),
     });
     await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
-    await page.locator('#backup-restore-btn').click();
+    await acceptTypedConfirm(page, page.locator('#backup-restore-btn'), 'RESTORE');
     await expect.poll(() => state.restoreCount || 0).toBe(1);
 
-    await page.evaluate(() => { window.prompt = () => 'WRONG'; });
-    await page.locator('#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]').click();
+    const deletePolicyButton = page.locator('#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]');
+    await dismissTypedConfirm(page, deletePolicyButton);
     await expect.poll(() => state.policyDeleteCount || 0).toBe(0);
 
-    await page.evaluate(() => { window.prompt = () => 'Nightly security'; });
-    await page.locator('#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]').click();
+    await acceptTypedConfirm(page, deletePolicyButton, 'Nightly security');
     await expect.poll(() => state.policyDeleteCount || 0).toBe(1);
   });
 
@@ -598,15 +594,13 @@ test.describe.serial('setup and login flows', () => {
     });
     await expect(page.locator('#auth-password-status')).toContainText('Password changed');
 
-    await page.evaluate(() => { window.prompt = () => 'WRONG'; });
-    await page.locator('#auth-sessions-clear').click();
+    await dismissTypedConfirm(page, page.locator('#auth-sessions-clear'));
     await expect.poll(() => state.sessionClearCount || 0).toBe(0);
 
     await page.evaluate(() => {
-      window.prompt = () => 'LOGOUT ALL';
       window.location.assign = () => {};
     });
-    await page.locator('#auth-sessions-clear').click();
+    await acceptTypedConfirm(page, page.locator('#auth-sessions-clear'), 'LOGOUT ALL');
     await expect.poll(() => state.sessionClearCount || 0).toBe(1);
   });
 
@@ -621,23 +615,23 @@ test.describe.serial('setup and login flows', () => {
 
     await page.evaluate(() => {
       window.alert = () => {};
-      window.prompt = () => 'WRONG';
     });
-    await page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]').click();
-    await page.locator('#audit-prune').click();
-    await page.locator('#clear-global-key-btn').click();
+    const deleteServerButton = page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]');
+    const auditPruneButton = page.locator('#audit-prune');
+    const clearGlobalKeyButton = page.locator('#clear-global-key-btn');
+    await dismissTypedConfirm(page, deleteServerButton);
+    await dismissTypedConfirm(page, auditPruneButton);
+    await dismissTypedConfirm(page, clearGlobalKeyButton);
     await expect.poll(() => state.deleteServerCount || 0).toBe(0);
     await expect.poll(() => state.auditPruneCount || 0).toBe(0);
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(0);
 
-    await page.evaluate(() => { window.prompt = message => message.includes('Delete server') ? 'demo-host' : 'PRUNE'; });
-    await page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]').click();
-    await page.locator('#audit-prune').click();
+    await acceptTypedConfirm(page, deleteServerButton, 'demo-host');
+    await acceptTypedConfirm(page, auditPruneButton, 'PRUNE');
     await expect.poll(() => state.deleteServerCount || 0).toBe(1);
     await expect.poll(() => state.auditPruneCount || 0).toBe(1);
 
-    await page.evaluate(() => { window.prompt = () => 'CLEAR GLOBAL KEY'; });
-    await page.locator('#clear-global-key-btn').click();
+    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
   });
 

@@ -25,6 +25,8 @@ const (
 
 	updatePolicyPackageScopeSecurity = policypkg.PackageScopeSecurity
 	updatePolicyPackageScopeFull     = policypkg.PackageScopeFull
+	updatePolicyUpgradeModeStandard  = policypkg.UpgradeModeStandard
+	updatePolicyUpgradeModeFull      = policypkg.UpgradeModeFull
 
 	updatePolicyCadenceDaily  = policypkg.CadenceDaily
 	updatePolicyCadenceWeekly = policypkg.CadenceWeekly
@@ -398,6 +400,8 @@ func loadScheduledJobBehaviorWithManager(current func() *JobManager, jobID strin
 		switch normalizeApprovalScope(meta.AutoApproveScope) {
 		case "security":
 			behavior.AutoApproveScope = "security"
+		case "full_upgrade":
+			behavior.AutoApproveScope = "full_upgrade"
 		case "all":
 			behavior.AutoApproveScope = "all"
 		}
@@ -405,11 +409,11 @@ func loadScheduledJobBehaviorWithManager(current func() *JobManager, jobID strin
 	return behavior
 }
 
-func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate) {
-	updateScheduledJobDiscoveryMetaWithManager(currentJobManager, jobID, upgradable, pendingUpdates)
+func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
+	updateScheduledJobDiscoveryMetaWithManager(currentJobManager, jobID, upgradable, pendingUpdates, plan)
 }
 
-func updateScheduledJobDiscoveryMetaWithManager(current func() *JobManager, jobID string, upgradable []string, pendingUpdates []PendingUpdate) {
+func updateScheduledJobDiscoveryMetaWithManager(current func() *JobManager, jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return
@@ -432,12 +436,18 @@ func updateScheduledJobDiscoveryMetaWithManager(current func() *JobManager, jobI
 	if meta.Trigger != "scheduled" {
 		return
 	}
-	securityCount := len(securityPackagesFromPendingUpdates(pendingUpdates))
+	securityCount := 0
+	for _, update := range pendingUpdates {
+		if update.Security {
+			securityCount++
+		}
+	}
 	meta.Discovery = &scheduledJobDiscovery{
 		PendingPackageCount:  len(upgradable),
 		SecurityPackageCount: securityCount,
 		Upgradable:           append([]string(nil), upgradable...),
 		PendingUpdates:       clonePendingUpdates(pendingUpdates),
+		UpgradePlan:          plan,
 	}
 	metaJSON := marshalJobJSON(meta)
 	if err := jm.UpdateJobWithoutRuntimeSync(jobID, JobUpdate{MetaJSON: &metaJSON}); err != nil {
@@ -609,6 +619,7 @@ func runScheduledUpdatePolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy 
 		"job_id":            job.ID,
 		"execution_mode":    policy.ExecutionMode,
 		"package_scope":     policy.PackageScope,
+		"upgrade_mode":      policy.UpgradeMode,
 	})
 	startJobRunnerWithManager(deps.CurrentJobManager, job.ID, func() {
 		deps.UpdateService.RunUpdateJob(UpdateRunRequest{
@@ -734,6 +745,7 @@ func runScheduledScanPolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy Up
 		"job_id":            job.ID,
 		"execution_mode":    policy.ExecutionMode,
 		"package_scope":     policy.PackageScope,
+		"upgrade_mode":      policy.UpgradeMode,
 	})
 
 	startJobRunnerWithManager(deps.CurrentJobManager, job.ID, func() {
@@ -795,6 +807,7 @@ func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 		"policy_id":      created.ID,
 		"execution_mode": created.ExecutionMode,
 		"package_scope":  created.PackageScope,
+		"upgrade_mode":   created.UpgradeMode,
 		"target_tag":     created.TargetTag,
 		"cadence_kind":   created.CadenceKind,
 		"time_local":     created.TimeLocal,

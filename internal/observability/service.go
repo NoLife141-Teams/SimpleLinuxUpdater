@@ -1049,24 +1049,67 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 	factsState := factsFreshnessState(health, now, deps)
 	eligible := statusValue == "pending_approval" || risk.PendingPackages > 0 || risk.SecurityUpdates > 0 || len(risk.CVEs) > 0
 	canActOnApproval := statusValue == "pending_approval"
+	standardPackages := risk.PendingPackages
+	keptBackPackages := 0
+	standardSecurityUpdates := risk.SecurityUpdates
+	keptBackSecurityUpdates := 0
+	canApproveFull := false
+	canApproveKeptBackSecurity := false
+	if status != nil {
+		plan := status.UpgradePlan
+		if plan.StandardPackageCount > 0 || plan.KeptBackPackageCount > 0 || plan.FullUpgradePackageCount > 0 {
+			standardPackages = plan.StandardPackageCount
+			keptBackPackages = plan.KeptBackPackageCount
+			standardSecurityUpdates = plan.StandardSecurityCount
+			keptBackSecurityUpdates = plan.TotalSecurityCount - plan.StandardSecurityCount
+			if keptBackSecurityUpdates < 0 {
+				keptBackSecurityUpdates = 0
+			}
+			canApproveKeptBackSecurity = canActOnApproval && keptBackSecurityUpdates > 0 && plan.KeptBackSecurityPlanAvailable
+			canApproveFull = canActOnApproval && plan.FullUpgradePlanAvailable && (plan.KeptBackPackageCount > 0 || len(plan.FullUpgradeNewPackages) > 0 || len(plan.FullUpgradeRemovedPackages) > 0)
+		} else if canActOnApproval {
+			for _, update := range status.PendingUpdates {
+				if update.RequiresFull || update.KeptBack {
+					keptBackPackages++
+				}
+				if update.Security && (update.RequiresFull || update.KeptBack) {
+					keptBackSecurityUpdates++
+				}
+			}
+			standardSecurityUpdates -= keptBackSecurityUpdates
+			if standardSecurityUpdates < 0 {
+				standardSecurityUpdates = 0
+			}
+			standardPackages -= keptBackPackages
+			if standardPackages < 0 {
+				standardPackages = 0
+			}
+		}
+	}
 	return DashboardApprovalTriageInfo{
-		Eligible:                eligible,
-		PendingPackages:         risk.PendingPackages,
-		SecurityUpdates:         risk.SecurityUpdates,
-		CVECount:                len(risk.CVEs),
-		RiskLevel:               risk.Level,
-		RiskLabel:               risk.Summary,
-		RiskOrder:               dashboardRiskOrder(risk.Level),
-		FactsState:              factsState,
-		FactsCollectedAt:        health.CollectedAt,
-		FactsCollectedAtDisplay: formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
-		LastCheckAt:             lastCheckAt,
-		LastCheckDisplay:        formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
-		CanApproveAll:           canActOnApproval,
-		CanApproveSecurity:      canActOnApproval && risk.SecurityUpdates > 0,
-		CanCancel:               canActOnApproval,
-		CanRefreshFacts:         true,
-		CanRunChecks:            !activeTimelineState(timeline.State),
+		Eligible:                   eligible,
+		PendingPackages:            risk.PendingPackages,
+		SecurityUpdates:            risk.SecurityUpdates,
+		StandardPackages:           standardPackages,
+		KeptBackPackages:           keptBackPackages,
+		StandardSecurityUpdates:    standardSecurityUpdates,
+		KeptBackSecurityUpdates:    keptBackSecurityUpdates,
+		CVECount:                   len(risk.CVEs),
+		RiskLevel:                  risk.Level,
+		RiskLabel:                  risk.Summary,
+		RiskOrder:                  dashboardRiskOrder(risk.Level),
+		FactsState:                 factsState,
+		FactsCollectedAt:           health.CollectedAt,
+		FactsCollectedAtDisplay:    formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
+		LastCheckAt:                lastCheckAt,
+		LastCheckDisplay:           formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
+		CanApproveAll:              canActOnApproval && standardPackages > 0,
+		CanApproveSecurity:         canActOnApproval && standardSecurityUpdates > 0,
+		CanApproveKeptBackSecurity: canApproveKeptBackSecurity,
+		CanApproveFull:             canApproveFull,
+		CanCancel:                  canActOnApproval,
+		CanRefreshFacts:            true,
+		CanRunChecks:               !activeTimelineState(timeline.State),
 	}
 }
 

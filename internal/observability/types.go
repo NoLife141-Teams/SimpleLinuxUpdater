@@ -130,23 +130,29 @@ type DashboardTimelineInfo struct {
 }
 
 type DashboardApprovalTriageInfo struct {
-	Eligible                bool   `json:"eligible"`
-	PendingPackages         int    `json:"pending_packages"`
-	SecurityUpdates         int    `json:"security_updates"`
-	CVECount                int    `json:"cve_count"`
-	RiskLevel               string `json:"risk_level"`
-	RiskLabel               string `json:"risk_label"`
-	RiskOrder               int    `json:"risk_order"`
-	FactsState              string `json:"facts_state"`
-	FactsCollectedAt        string `json:"facts_collected_at,omitempty"`
-	FactsCollectedAtDisplay string `json:"facts_collected_at_display,omitempty"`
-	LastCheckAt             string `json:"last_check_at,omitempty"`
-	LastCheckDisplay        string `json:"last_check_display,omitempty"`
-	CanApproveAll           bool   `json:"can_approve_all"`
-	CanApproveSecurity      bool   `json:"can_approve_security"`
-	CanCancel               bool   `json:"can_cancel"`
-	CanRefreshFacts         bool   `json:"can_refresh_facts"`
-	CanRunChecks            bool   `json:"can_run_checks"`
+	Eligible                   bool   `json:"eligible"`
+	PendingPackages            int    `json:"pending_packages"`
+	SecurityUpdates            int    `json:"security_updates"`
+	StandardPackages           int    `json:"standard_packages"`
+	KeptBackPackages           int    `json:"kept_back_packages"`
+	StandardSecurityUpdates    int    `json:"standard_security_updates"`
+	KeptBackSecurityUpdates    int    `json:"kept_back_security_updates"`
+	CVECount                   int    `json:"cve_count"`
+	RiskLevel                  string `json:"risk_level"`
+	RiskLabel                  string `json:"risk_label"`
+	RiskOrder                  int    `json:"risk_order"`
+	FactsState                 string `json:"facts_state"`
+	FactsCollectedAt           string `json:"facts_collected_at,omitempty"`
+	FactsCollectedAtDisplay    string `json:"facts_collected_at_display,omitempty"`
+	LastCheckAt                string `json:"last_check_at,omitempty"`
+	LastCheckDisplay           string `json:"last_check_display,omitempty"`
+	CanApproveAll              bool   `json:"can_approve_all"`
+	CanApproveSecurity         bool   `json:"can_approve_security"`
+	CanApproveKeptBackSecurity bool   `json:"can_approve_kept_back_security"`
+	CanApproveFull             bool   `json:"can_approve_full"`
+	CanCancel                  bool   `json:"can_cancel"`
+	CanRefreshFacts            bool   `json:"can_refresh_facts"`
+	CanRunChecks               bool   `json:"can_run_checks"`
 }
 
 type DashboardServerSummary struct {

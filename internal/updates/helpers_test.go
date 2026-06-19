@@ -261,6 +261,121 @@ func TestBuildSelectedUpgradeCmdEscapesPackages(t *testing.T) {
 	}
 }
 
+func TestKeptBackSecurityPackagesFromPendingUpdates(t *testing.T) {
+	updates := []servers.PendingUpdate{
+		{Package: "openssl", Security: true},
+		{Package: "linux-base", Security: true, KeptBack: false},
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true},
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true},
+		{Package: "docker-ce", Security: false, KeptBack: true, RequiresFull: true},
+		{Package: "linux-headers-amd64", Security: true, RequiresFull: true},
+	}
+	got := KeptBackSecurityPackagesFromPendingUpdates(updates)
+	want := []string{"linux-headers-amd64", "linux-image-amd64"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("KeptBackSecurityPackagesFromPendingUpdates() = %#v, want %#v", got, want)
+	}
+	if got := SecurityPackagesFromPendingUpdates(updates); !reflect.DeepEqual(got, []string{"linux-base", "openssl"}) {
+		t.Fatalf("SecurityPackagesFromPendingUpdates() = %#v, want only standard security packages", got)
+	}
+}
+
+func TestKeptBackSecurityPackagesUseInstallSelectorForForeignArch(t *testing.T) {
+	metadata := []servers.PendingUpdate{
+		{
+			Package:          "openssl",
+			CurrentVersion:   "3.0.16-i386",
+			CandidateVersion: "3.0.18-i386",
+			Source:           "stable-security",
+			Security:         true,
+			Raw:              "openssl/stable-security 3.0.18-i386 i386 [upgradable from: 3.0.16-i386]",
+			CVEs:             []string{},
+		},
+	}
+	pending, _, plan := MergeAvailableUpdatesWithStandard(nil, nil, metadata, []string{metadata[0].Raw}, "", false)
+	if len(pending) != 1 {
+		t.Fatalf("len(pending)=%d, want 1", len(pending))
+	}
+	if pending[0].Package != "openssl" || pending[0].InstallPackage != "openssl:i386" || !pending[0].KeptBack || !pending[0].RequiresFull {
+		t.Fatalf("pending[0] = %+v, want display package plus exact install selector", pending[0])
+	}
+	if got := KeptBackSecurityPackagesFromPendingUpdates(pending); !reflect.DeepEqual(got, []string{"openssl:i386"}) {
+		t.Fatalf("KeptBackSecurityPackagesFromPendingUpdates() = %#v, want exact foreign arch selector", got)
+	}
+	if plan.KeptBackSecurityPackageCount != 1 {
+		t.Fatalf("plan.KeptBackSecurityPackageCount = %d, want 1", plan.KeptBackSecurityPackageCount)
+	}
+}
+
+func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
+	got := BuildSelectedInstallCmd([]string{"linux-image-amd64", "libfoo'bar"})
+	want := RootOrSudoCommand(`apt-get -y install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
+	if got != want {
+		t.Fatalf("BuildSelectedInstallCmd() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "--only-upgrade") {
+		t.Fatalf("BuildSelectedInstallCmd() = %q, should allow dependencies and new packages", got)
+	}
+}
+
+func TestBuildSelectedInstallSimulationCmd(t *testing.T) {
+	got := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64", "libfoo'bar"})
+	want := `LC_ALL=C apt-get -s install -- 'linux-image-amd64' 'libfoo'"'"'bar'`
+	if got != want {
+		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "sudo") || strings.Contains(got, "-y") {
+		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, should be read-only simulation", got)
+	}
+}
+
+func TestBuildUpgradePlanRecordsFullSimulationAvailability(t *testing.T) {
+	pending := []servers.PendingUpdate{
+		{Package: "openssl"},
+		{Package: "linux-image-amd64", KeptBack: true, RequiresFull: true},
+	}
+	stdout := strings.Join([]string{
+		"The following NEW packages will be installed:",
+		"  linux-image-6.1.0-49-amd64",
+		"The following packages will be upgraded:",
+		"  openssl linux-image-amd64",
+	}, "\n")
+	available := BuildUpgradePlan(pending, stdout, true)
+	if !available.FullUpgradePlanAvailable || available.FullUpgradePackageCount != 2 {
+		t.Fatalf("available plan = %+v, want available full-upgrade plan", available)
+	}
+	unavailable := BuildUpgradePlan(pending, stdout, false)
+	if unavailable.FullUpgradePlanAvailable {
+		t.Fatalf("unavailable plan = %+v, should record failed full-upgrade simulation", unavailable)
+	}
+}
+
+func TestApplyKeptBackSecuritySimulationParsesExactImpact(t *testing.T) {
+	plan := BuildUpgradePlan([]servers.PendingUpdate{
+		{Package: "openssl", Security: true},
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true},
+	}, "", false)
+	stdout := strings.Join([]string{
+		"Reading package lists... Done",
+		"The following NEW packages will be installed:",
+		"  linux-image-6.1.0-49-amd64 linux-image-6.1.0-49-cloud-amd64",
+		"The following packages will be removed:",
+		"  obsolete-kernel",
+		"The following packages will be upgraded:",
+		"  linux-image-amd64",
+	}, "\n")
+	ApplyKeptBackSecuritySimulation(&plan, stdout)
+	if !plan.KeptBackSecurityPlanAvailable || plan.KeptBackSecurityPackageCount != 1 {
+		t.Fatalf("kept-back security plan = %+v, want available one-package plan", plan)
+	}
+	if !reflect.DeepEqual(plan.KeptBackSecurityNewPackages, []string{"linux-image-6.1.0-49-amd64", "linux-image-6.1.0-49-cloud-amd64"}) {
+		t.Fatalf("kept-back new packages = %#v", plan.KeptBackSecurityNewPackages)
+	}
+	if !reflect.DeepEqual(plan.KeptBackSecurityRemovedPackages, []string{"obsolete-kernel"}) {
+		t.Fatalf("kept-back removed packages = %#v", plan.KeptBackSecurityRemovedPackages)
+	}
+}
+
 func TestRootOrSudoCommand(t *testing.T) {
 	got := RootOrSudoCommand("apt-get update")
 	want := `if [ "$(id -u)" -eq 0 ]; then apt-get update; else sudo -n apt-get update; fi`

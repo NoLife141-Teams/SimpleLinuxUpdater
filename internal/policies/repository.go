@@ -89,6 +89,7 @@ func EnsureSchema(db *sql.DB) error {
 			exclude_tags_json TEXT NOT NULL DEFAULT '[]',
 			target_servers_json TEXT NOT NULL DEFAULT '[]',
 			package_scope TEXT NOT NULL,
+			upgrade_mode TEXT NOT NULL DEFAULT 'standard',
 			execution_mode TEXT NOT NULL,
 			cadence_kind TEXT NOT NULL,
 			time_local TEXT NOT NULL,
@@ -122,6 +123,7 @@ func EnsureSchema(db *sql.DB) error {
 			scheduled_for_utc TEXT NOT NULL,
 			execution_mode TEXT NOT NULL,
 			package_scope TEXT NOT NULL,
+			upgrade_mode TEXT NOT NULL DEFAULT 'standard',
 			status TEXT NOT NULL,
 			reason TEXT NOT NULL DEFAULT '',
 			summary TEXT NOT NULL DEFAULT '',
@@ -151,11 +153,21 @@ func EnsureSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "target_servers_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := ensureColumn(db, "upgrade_mode", "TEXT NOT NULL DEFAULT 'standard'"); err != nil {
+		return err
+	}
+	if err := ensureTableColumn(db, "update_policy_runs", "upgrade_mode", "TEXT NOT NULL DEFAULT 'standard'"); err != nil {
+		return err
+	}
 	return nil
 }
 
 func ensureColumn(db *sql.DB, name, definition string) error {
-	rows, err := db.Query("PRAGMA table_info(update_policies)")
+	return ensureTableColumn(db, "update_policies", name, definition)
+}
+
+func ensureTableColumn(db *sql.DB, table, name, definition string) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
 		return err
 	}
@@ -175,7 +187,7 @@ func ensureColumn(db *sql.DB, name, definition string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.Exec("ALTER TABLE update_policies ADD COLUMN " + name + " " + definition)
+	_, err = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + name + " " + definition)
 	return err
 }
 
@@ -219,7 +231,7 @@ func (r *SQLiteRepository) SaveGlobalBlackouts(windows []BlackoutWindow) ([]Blac
 func (r *SQLiteRepository) ListPolicies() ([]Policy, error) {
 	rows, err := r.database().Query(`
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
-		       package_scope, execution_mode, cadence_kind, time_local,
+		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 		       weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
 		  FROM update_policies
 		 ORDER BY created_at ASC, id ASC
@@ -245,7 +257,7 @@ func (r *SQLiteRepository) ListPolicies() ([]Policy, error) {
 func (r *SQLiteRepository) GetPolicy(id int64) (Policy, error) {
 	row := r.database().QueryRow(`
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
-		       package_scope, execution_mode, cadence_kind, time_local,
+		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 		       weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
 		  FROM update_policies
 		 WHERE id = ?
@@ -258,9 +270,9 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 	result, err := r.database().Exec(`
 		INSERT INTO update_policies (
 			name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
-			package_scope, execution_mode, cadence_kind, time_local,
+			package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 			weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		policy.Name,
 		BoolToInt(policy.Enabled),
@@ -269,6 +281,7 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 		r.json(policy.ExcludeTags),
 		r.json(policy.TargetServers),
 		policy.PackageScope,
+		normalizedUpgradeMode(policy.UpgradeMode),
 		policy.ExecutionMode,
 		policy.CadenceKind,
 		policy.TimeLocal,
@@ -296,7 +309,7 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 	result, err := r.database().Exec(`
 		UPDATE update_policies
 		   SET name = ?, enabled = ?, target_tag = ?, include_tags_json = ?, exclude_tags_json = ?,
-		       target_servers_json = ?, package_scope = ?, execution_mode = ?,
+		       target_servers_json = ?, package_scope = ?, upgrade_mode = ?, execution_mode = ?,
 		       cadence_kind = ?, time_local = ?, weekdays_json = ?, approval_timeout_minutes = ?,
 		       policy_blackouts_json = ?, updated_at = ?
 		 WHERE id = ?
@@ -308,6 +321,7 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 		r.json(policy.ExcludeTags),
 		r.json(policy.TargetServers),
 		policy.PackageScope,
+		normalizedUpgradeMode(policy.UpgradeMode),
 		policy.ExecutionMode,
 		policy.CadenceKind,
 		policy.TimeLocal,
@@ -373,6 +387,7 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 		&excludeTagsJSON,
 		&targetServersJSON,
 		&policy.PackageScope,
+		&policy.UpgradeMode,
 		&policy.ExecutionMode,
 		&policy.CadenceKind,
 		&policy.TimeLocal,
@@ -386,6 +401,7 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 		return Policy{}, err
 	}
 	policy.Enabled = enabledInt != 0
+	policy.UpgradeMode = normalizedUpgradeMode(policy.UpgradeMode)
 	policy.IncludeTags = ParseStringListJSON(includeTagsJSON)
 	policy.ExcludeTags = ParseStringListJSON(excludeTagsJSON)
 	policy.TargetServers = ParseStringListJSON(targetServersJSON)
@@ -396,6 +412,15 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 	}
 	policy.PolicyBlackouts = blackouts
 	return policy, nil
+}
+
+func normalizedUpgradeMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case UpgradeModeFull:
+		return UpgradeModeFull
+	default:
+		return UpgradeModeStandard
+	}
 }
 
 func (r *SQLiteRepository) ListOverrides(policyID int64) ([]Override, error) {
@@ -625,9 +650,9 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 	}
 	result, err := r.database().Exec(`
 		INSERT INTO update_policy_runs (
-			policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope,
+			policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
 			status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		run.PolicyID,
 		run.PolicyName,
@@ -635,6 +660,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 		run.ScheduledForUTC,
 		run.ExecutionMode,
 		run.PackageScope,
+		normalizedUpgradeMode(run.UpgradeMode),
 		run.Status,
 		run.Reason,
 		run.Summary,
@@ -668,7 +694,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 
 func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC string) (Run, error) {
 	row := r.database().QueryRow(`
-		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope,
+		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
 		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
 		  FROM update_policy_runs
 		 WHERE policy_id = ? AND server_name = ? AND scheduled_for_utc = ?
@@ -678,7 +704,7 @@ func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC s
 
 func (r *SQLiteRepository) GetRun(id int64) (Run, error) {
 	row := r.database().QueryRow(`
-		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope,
+		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
 		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
 		  FROM update_policy_runs
 		 WHERE id = ?
@@ -696,6 +722,7 @@ func scanRunRow(scanner interface{ Scan(dest ...any) error }) (Run, error) {
 		&run.ScheduledForUTC,
 		&run.ExecutionMode,
 		&run.PackageScope,
+		&run.UpgradeMode,
 		&run.Status,
 		&run.Reason,
 		&run.Summary,
@@ -706,6 +733,7 @@ func scanRunRow(scanner interface{ Scan(dest ...any) error }) (Run, error) {
 		&run.StartedAt,
 		&run.FinishedAt,
 	)
+	run.UpgradeMode = normalizedUpgradeMode(run.UpgradeMode)
 	return run, err
 }
 
@@ -754,7 +782,7 @@ func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {
 		limit = DefaultRunsLimit
 	}
 	rows, err := r.database().Query(`
-		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope,
+		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
 		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
 		  FROM update_policy_runs
 		 ORDER BY scheduled_for_utc DESC, id DESC

@@ -162,7 +162,7 @@ func IsValidSSHUsername(username string) bool {
 func NormalizeApprovalScope(scope string) string {
 	normalized := strings.ToLower(strings.TrimSpace(scope))
 	switch normalized {
-	case "security", "all":
+	case "security", "security_kept_back", "all", "full_upgrade":
 		return normalized
 	default:
 		return "all"

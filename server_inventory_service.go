@@ -14,6 +14,7 @@ import (
 type Server = serverpkg.Server
 type ServerStatus = serverpkg.ServerStatus
 type PendingUpdate = serverpkg.PendingUpdate
+type UpgradePlan = serverpkg.UpgradePlan
 type ServerInventoryService = serverpkg.Service
 type serverInventoryActionError = serverpkg.ActionError
 

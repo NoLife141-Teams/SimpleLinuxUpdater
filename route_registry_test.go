@@ -74,6 +74,8 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPost, "/api/sudoers/disable/:name"},
 		{http.MethodPost, "/api/approve/:name"},
 		{http.MethodPost, "/api/approve-security/:name"},
+		{http.MethodPost, "/api/approve-security-kept-back/:name"},
+		{http.MethodPost, "/api/approve-full/:name"},
 		{http.MethodPost, "/api/cancel/:name"},
 	}
 }

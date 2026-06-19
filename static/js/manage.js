@@ -607,7 +607,7 @@ function resetFileInputLabel(input) {
         });
         document.getElementById('audit-refresh').addEventListener('click', fetchAuditEvents);
         document.getElementById('audit-prune').addEventListener('click', async () => {
-            if (!window.confirmTypedAction('Prune audit events older than the configured retention window?', 'PRUNE')) {
+            if (!(await window.confirmTypedAction('Prune audit events older than the configured retention window?', 'PRUNE'))) {
                 return;
             }
             const res = await fetch('/api/audit-events/prune', { method: 'POST' });
@@ -802,7 +802,7 @@ function resetFileInputLabel(input) {
         });
 
         async function deleteServer(name) {
-            if (window.confirmTypedAction(`Delete server "${name}"?`, name)) {
+            if (await window.confirmTypedAction(`Delete server "${name}"?`, name)) {
                 try {
                     const response = await fetch(`/api/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
                     if (!response.ok) {
@@ -990,7 +990,7 @@ function resetFileInputLabel(input) {
                     alert('Host is required.');
                     return;
                 }
-                if (!window.confirmTypedAction(`Remove known_hosts entry for ${host}:${port}?`, `${host}:${port}`)) {
+                if (!(await window.confirmTypedAction(`Remove known_hosts entry for ${host}:${port}?`, `${host}:${port}`))) {
                     return;
                 }
                 setEditKnownHostButtonsState(true, 'Check Known Host', 'Clearing...');
@@ -1252,7 +1252,7 @@ function resetFileInputLabel(input) {
         }
 
         async function clearGlobalKey() {
-            if (!window.confirmTypedAction('Clear the global SSH key?', 'CLEAR GLOBAL KEY')) {
+            if (!(await window.confirmTypedAction('Clear the global SSH key?', 'CLEAR GLOBAL KEY'))) {
                 return;
             }
             const res = await fetch('/api/keys/global', { method: 'DELETE' });

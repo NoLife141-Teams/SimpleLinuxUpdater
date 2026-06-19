@@ -15,6 +15,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let page = 1;
         let selectedServers = new Set();
         let hoveredName = null;
+        let expandedHostFactsServers = new Set();
+        let expandedMiniLists = new Set();
         let fetchInFlight = false;
         let fetchQueued = false;
         let queuedForceRender = false;
@@ -576,7 +578,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
             const limit = Math.max(1, Number(options.limit || 3));
-            const visibleServers = servers.slice(0, limit);
+            const expandable = !!options.expandable;
+            const expanded = expandable && expandedMiniLists.has(id);
+            const visibleServers = expanded ? servers : servers.slice(0, limit);
             const hiddenCount = Math.max(0, servers.length - visibleServers.length);
             const rows = visibleServers.map(server => {
                 const safeName = escapeHtml(server.name || "");
@@ -599,7 +603,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     </div>
                 `;
             });
-            if (hiddenCount > 0) {
+            if (expandable && servers.length > limit) {
+                const moreText = expanded
+                    ? (options.lessLabel || "Show fewer")
+                    : (typeof options.moreLabel === "function" ? options.moreLabel(hiddenCount, servers.length) : `+${hiddenCount} more`);
+                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${escapeHtml(id)}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
+            } else if (hiddenCount > 0) {
                 const moreText = typeof options.moreLabel === "function"
                     ? options.moreLabel(hiddenCount, servers.length)
                     : `+${hiddenCount} more`;
@@ -729,7 +738,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${triage.can_approve_all ? "" : "disabled"}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
 	                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${triage.can_approve_security ? "" : "disabled"} title="Approve only standard security updates">Std sec (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
 	                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
-	                            ${triage.can_approve_full ? `<button type="button" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
+	                            ${triage.can_approve_full ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
 	                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
                             <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                         </div>
@@ -769,7 +778,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 el.innerHTML = miniEmpty("No scheduled runs.");
                 return;
             }
-            const visibleScheduled = scheduled.slice(0, 6);
+            const listID = "scheduled-runs";
+            const limit = 6;
+            const expanded = expandedMiniLists.has(listID);
+            const visibleScheduled = expanded ? scheduled : scheduled.slice(0, limit);
             const rows = visibleScheduled.map(({ server, nextRun }) => {
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
@@ -786,8 +798,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 `;
             });
             const hiddenCount = scheduled.length - visibleScheduled.length;
-            if (hiddenCount > 0) {
-                rows.push(`<div class="mini-more-row">+${hiddenCount} more scheduled</div>`);
+            if (scheduled.length > limit) {
+                const moreText = expanded ? "Show fewer scheduled runs" : `+${hiddenCount} more scheduled`;
+                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
             }
             el.innerHTML = rows.join("");
         }
@@ -835,17 +848,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
             setText("risk-exposure-count", String(riskHosts.length));
             renderMiniServerList("reboot-required-panel", rebootHosts, "No reboot required.", {
                 limit: 1,
+                expandable: true,
                 compactDetail: true,
                 action: "open-drawer",
                 actionLabel: "Logs",
+                lessLabel: "Show fewer reboot hosts",
                 moreLabel: hidden => `+${hidden} more reboot host${hidden === 1 ? "" : "s"}`
             });
             renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", {
                 limit: 1,
+                expandable: true,
                 compactDetail: true,
                 action: "open-drawer",
                 actionLabel: "Review",
                 actionTab: "pending",
+                lessLabel: "Show fewer risk hosts",
                 moreLabel: hidden => `+${hidden} more risk host${hidden === 1 ? "" : "s"}`
             });
             renderCommandHistoryPanel();
@@ -861,7 +878,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 el.innerHTML = miniEmpty("No command history.");
                 return;
             }
-            const visibleHistory = history.slice(0, 3);
+            const listID = "command-history-panel";
+            const limit = 3;
+            const expanded = expandedMiniLists.has(listID);
+            const visibleHistory = expanded ? history : history.slice(0, limit);
             const rows = visibleHistory.map(item => {
                 const status = String(item.status || "unknown").toLowerCase();
                 const statusClass = safeStatusClass(status === "failure" ? "error" : status);
@@ -876,8 +896,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 `;
             });
             const hiddenCount = history.length - visibleHistory.length;
-            if (hiddenCount > 0) {
-                rows.push(`<div class="mini-more-row">+${hiddenCount} more command${hiddenCount === 1 ? "" : "s"}</div>`);
+            if (history.length > limit) {
+                const moreText = expanded ? "Show fewer commands" : `+${hiddenCount} more command${hiddenCount === 1 ? "" : "s"}`;
+                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
             }
             el.innerHTML = rows.join("");
         }
@@ -927,6 +948,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
             const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
             const canRunUpdate = !!triage.can_run_checks && server.status !== "pending_approval";
+            const factsMoreOpen = expandedHostFactsServers.has(server.name);
             const packageSummaryParts = [
                 `${Number(triage.pending_packages ?? pendingCount)} pending`,
                 `${Number(triage.standard_packages ?? approvalCounts.standard)} standard`,
@@ -952,7 +974,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}">Approve</button>` : ""}
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only standard security updates">Std security</button>` : ""}
                     ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
-                    ${triage.can_approve_full ? `<button type="button" class="inline-btn" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
+                    ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
                     ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                     ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
@@ -974,7 +996,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>
                     <div><dt>Facts</dt><dd>${escapeHtml(triage.facts_state || "stale")} · ${escapeHtml(factsAge)}</dd></div>
                 </dl>
-                <details class="inspector-more facts-more">
+                <details class="inspector-more facts-more" data-name="${safeDataName}" ${factsMoreOpen ? "open" : ""}>
                     <summary>More host facts</summary>
                     <dl class="host-facts host-facts-secondary">
                         <div><dt>Host</dt><dd>${escapeHtml(server.host || "-")}</dd></div>
@@ -1001,10 +1023,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             setText("failed-hosts-count", String(failedServers.length));
             renderMiniServerList("active-operations", activeServers, "No active runs.", {
                 limit: 1,
+                expandable: true,
+                lessLabel: "Show fewer running operations",
                 moreLabel: hidden => `+${hidden} more running`
             });
             renderMiniServerList("failed-hosts-panel", failedServers, "No failures.", {
                 limit: 1,
+                expandable: true,
+                lessLabel: "Show fewer failures",
                 moreLabel: hidden => `+${hidden} more failure${hidden === 1 ? "" : "s"}`
             });
             renderScheduledRuns();
@@ -1782,7 +1808,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>`
                         : "";
                     const fullApprovalButton = triage.can_approve_full
-                        ? `<button type="button" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
+                        ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
                         : "";
                     const actionButtons = server.status === 'pending_approval'
                         ? `
@@ -2546,6 +2572,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
             }
         });
+        document.getElementById('selected-host-panel').addEventListener('toggle', (e) => {
+            const details = e.target;
+            if (!details?.matches?.('details.facts-more')) return;
+            const hostName = details.dataset.name || selectedServerName;
+            if (!hostName) return;
+            if (details.open) {
+                expandedHostFactsServers.add(hostName);
+            } else {
+                expandedHostFactsServers.delete(hostName);
+            }
+        }, true);
 
         document.querySelectorAll('.operations-grid, .context-ops-grid').forEach((panel) => {
             panel.addEventListener('click', (e) => {
@@ -2557,6 +2594,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const selectButton = e.target.closest('button[data-select-server]');
                 if (selectButton) {
                     selectServer(selectButton.dataset.selectServer || "");
+                    return;
+                }
+                const miniListButton = e.target.closest('button[data-toggle-mini-list]');
+                if (miniListButton) {
+                    const listID = miniListButton.dataset.toggleMiniList || "";
+                    if (!listID) return;
+                    if (expandedMiniLists.has(listID)) {
+                        expandedMiniLists.delete(listID);
+                    } else {
+                        expandedMiniLists.add(listID);
+                    }
+                    renderDashboardPanels();
                 }
             });
         });

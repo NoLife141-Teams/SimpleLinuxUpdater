@@ -516,6 +516,12 @@ a:focus-visible {
     color: var(--warning-text);
 }
 
+.btn-full-upgrade {
+    border-color: #e2761d;
+    background: #e2761d;
+    color: #ffffff;
+}
+
 .primary-action:hover:not(:disabled) {
     border-color: var(--action-blue-hover);
     background: var(--action-blue-hover);
@@ -530,6 +536,11 @@ a:focus-visible {
     border-color: var(--action-yellow-hover);
     background: var(--action-yellow-hover);
     color: #ffffff;
+}
+
+.btn-full-upgrade:hover:not(:disabled) {
+    border-color: #f08a2c;
+    background: #f08a2c;
 }
 
 .danger-action:hover:not(:disabled),
@@ -817,6 +828,12 @@ tbody tr:last-child td {
     color: var(--warning-text);
 }
 
+#servers-table td button.btn-full-upgrade {
+    border-color: #e2761d;
+    background: #e2761d;
+    color: #ffffff;
+}
+
 #servers-table td button[data-action="update-server"] {
     border-color: var(--action-blue);
     background: var(--action-blue);
@@ -838,6 +855,11 @@ tbody tr:last-child td {
     border-color: var(--action-yellow-hover);
     background: var(--action-yellow-hover);
     color: #ffffff;
+}
+
+#servers-table td button.btn-full-upgrade:hover:not(:disabled) {
+    border-color: #f08a2c;
+    background: #f08a2c;
 }
 
 #servers-table td button[data-action="update-server"]:hover:not(:disabled) {
@@ -1283,6 +1305,20 @@ th.resizing .col-resize-handle::before {
     color: var(--muted);
     font-size: 11px;
     font-weight: 750;
+}
+
+.mini-more-button {
+    width: 100%;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.mini-more-button:hover,
+.mini-more-button:focus-visible {
+    border-color: rgba(var(--accent-rgb), 0.42);
+    background: rgba(var(--accent-rgb), 0.08);
+    color: #ffffff;
 }
 
 .activity-row {

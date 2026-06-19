@@ -47,14 +47,21 @@ func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	if policy.ID == 0 || policy.Name != "Nightly" || len(policy.TargetServers) != 1 {
 		t.Fatalf("CreatePolicy() = %+v, want persisted policy", policy)
 	}
+	if policy.UpgradeMode != UpgradeModeStandard {
+		t.Fatalf("CreatePolicy().UpgradeMode = %q, want default %q", policy.UpgradeMode, UpgradeModeStandard)
+	}
 
 	policy.Name = "Morning"
+	policy.UpgradeMode = UpgradeModeFull
 	updated, err := repo.UpdatePolicy(policy.ID, policy)
 	if err != nil {
 		t.Fatalf("UpdatePolicy() error = %v", err)
 	}
 	if updated.Name != "Morning" {
 		t.Fatalf("UpdatePolicy().Name = %q, want Morning", updated.Name)
+	}
+	if updated.UpgradeMode != UpgradeModeFull {
+		t.Fatalf("UpdatePolicy().UpgradeMode = %q, want %q", updated.UpgradeMode, UpgradeModeFull)
 	}
 
 	override, err := repo.SetOverride(policy.ID, "srv-a", true)
@@ -83,6 +90,9 @@ func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	if err != nil || !inserted {
 		t.Fatalf("CreateRun() = (%+v, %t, %v), want inserted", run, inserted, err)
 	}
+	if run.UpgradeMode != UpgradeModeStandard {
+		t.Fatalf("CreateRun().UpgradeMode = %q, want default %q", run.UpgradeMode, UpgradeModeStandard)
+	}
 	summary := "done"
 	status := RunSucceeded
 	if err := repo.UpdateRun(run.ID, RunUpdate{Status: &status, Summary: &summary}); err != nil {
@@ -94,6 +104,9 @@ func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	}
 	if gotRun.Status != RunSucceeded || gotRun.Summary != "done" {
 		t.Fatalf("GetRun() = %+v, want updated status/summary", gotRun)
+	}
+	if gotRun.UpgradeMode != UpgradeModeStandard {
+		t.Fatalf("GetRun().UpgradeMode = %q, want %q", gotRun.UpgradeMode, UpgradeModeStandard)
 	}
 }
 

@@ -568,7 +568,7 @@ async function changeAdminPassword() {
 }
 
 async function clearAuthSessions() {
-    if (!window.confirmTypedAction("Logout every server-side session, including this browser?", "LOGOUT ALL")) {
+    if (!(await window.confirmTypedAction("Logout every server-side session, including this browser?", "LOGOUT ALL"))) {
         return;
     }
     try {
@@ -617,7 +617,7 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
 }
 
 async function rotateMetricsToken(askConfirm) {
-    if (askConfirm && !window.confirmTypedAction("Rotate metrics token? Existing scrapers using the old token will fail until updated.", "ROTATE TOKEN")) {
+    if (askConfirm && !(await window.confirmTypedAction("Rotate metrics token? Existing scrapers using the old token will fail until updated.", "ROTATE TOKEN"))) {
         return;
     }
     try {
@@ -641,7 +641,7 @@ async function rotateMetricsToken(askConfirm) {
 }
 
 async function disableMetricsToken() {
-    if (!window.confirmTypedAction("Disable metrics token and hide /metrics now?", "DISABLE METRICS")) {
+    if (!(await window.confirmTypedAction("Disable metrics token and hide /metrics now?", "DISABLE METRICS"))) {
         return;
     }
     try {
@@ -765,7 +765,7 @@ async function restoreBackup() {
             alert("Passphrase must be at least 12 characters.");
             return;
         }
-        if (!window.confirmTypedAction("Restore will replace the current DB and optional known_hosts. Local config.json stays in place.", "RESTORE")) {
+        if (!(await window.confirmTypedAction("Restore will replace the current DB and optional known_hosts. Local config.json stays in place.", "RESTORE"))) {
             return;
         }
         const form = new FormData();
@@ -889,14 +889,26 @@ function humanizeExecutionMode(mode) {
 }
 
 function humanizePackageScope(scope) {
-    switch (String(scope || "").trim()) {
-        case "security":
-            return "Security updates";
-        case "full":
-            return "Full updates";
-        default:
-            return "Unknown scope";
-    }
+	switch (String(scope || "").trim()) {
+		case "security":
+			return "Security updates";
+		case "full":
+			return "Full updates";
+		default:
+			return "Unknown scope";
+	}
+}
+
+function humanizeUpgradeMode(mode) {
+	switch (String(mode || "").trim()) {
+		case "full":
+			return "Full upgrade";
+		case "standard":
+		case "":
+			return "Standard upgrade";
+		default:
+			return "Unknown upgrade mode";
+	}
 }
 
 function pluralize(count, singular, plural) {
@@ -1166,15 +1178,17 @@ function updatePolicySummary() {
     const targetServers = parseCommaList(document.getElementById("policy-target-servers").value);
     const cadence = document.getElementById("policy-cadence-kind").value;
     const timeLocal = document.getElementById("policy-time-local").value || "--:--";
-    const executionMode = document.getElementById("policy-execution-mode").value;
-    const packageScope = document.getElementById("policy-package-scope").value;
+	const executionMode = document.getElementById("policy-execution-mode").value;
+	const packageScope = document.getElementById("policy-package-scope").value;
+	const upgradeMode = document.getElementById("policy-upgrade-mode").value;
     const timezone = scheduledPoliciesState.timezone || "UTC";
     const noRunCount = getBlackoutEditor("policy").rows.length;
     const scheduleText = cadence === "weekly"
         ? `Every ${formatWeekdayList(policyFormState.weekdays)} at ${timeLocal}`
         : `Daily at ${timeLocal}`;
     const executionText = humanizeExecutionMode(executionMode);
-    const scopeText = humanizePackageScope(packageScope);
+	const scopeText = humanizePackageScope(packageScope);
+	const upgradeModeText = humanizeUpgradeMode(upgradeMode);
     const timeoutInput = document.getElementById("policy-approval-timeout");
     const timeoutText = executionMode === "approval_required"
         ? `, ${Number(timeoutInput?.value || 720)} minute approval window`
@@ -1190,8 +1204,8 @@ function updatePolicySummary() {
     const targetText = targetBits.length ? targetBits.join("; ") : "no target";
     summary.innerHTML = `
         <div class="summary-title">${escapeHtml(name)}</div>
-        <div class="summary-body">${escapeHtml(`${scheduleText} (${timezone}), ${executionText}, ${scopeText}${timeoutText}, ${targetText}. ${noRunText}.`)}</div>
-    `;
+		<div class="summary-body">${escapeHtml(`${scheduleText} (${timezone}), ${executionText}, ${scopeText}, ${upgradeModeText}${timeoutText}, ${targetText}. ${noRunText}.`)}</div>
+	`;
 }
 
 function formatCadence(policy) {
@@ -1203,15 +1217,16 @@ function formatCadence(policy) {
 }
 
 function renderPolicyExecution(policy) {
-    const mode = humanizeExecutionMode(policy.execution_mode);
-    const scope = humanizePackageScope(policy.package_scope);
-    const timeout = policy.execution_mode === "approval_required"
-        ? ` · ${policy.approval_timeout_minutes || 720} minute approval window`
-        : "";
-    return `
-        <div>${escapeHtml(mode)}</div>
-        <div class="table-secondary">${escapeHtml(scope + timeout)}</div>
-    `;
+	const mode = humanizeExecutionMode(policy.execution_mode);
+	const scope = humanizePackageScope(policy.package_scope);
+	const upgradeMode = humanizeUpgradeMode(policy.upgrade_mode || "standard");
+	const timeout = policy.execution_mode === "approval_required"
+		? ` · ${policy.approval_timeout_minutes || 720} minute approval window`
+		: "";
+	return `
+		<div>${escapeHtml(mode)}</div>
+		<div class="table-secondary">${escapeHtml(`${scope} · ${upgradeMode}${timeout}`)}</div>
+	`;
 }
 
 function renderPolicySchedule(policy) {
@@ -1280,9 +1295,10 @@ function resetPolicyForm() {
     document.getElementById("policy-exclude-tags").value = "";
     document.getElementById("policy-target-servers").value = "";
     document.getElementById("policy-time-local").value = "02:00";
-    document.getElementById("policy-execution-mode").value = "scan_only";
-    document.getElementById("policy-package-scope").value = "security";
-    document.getElementById("policy-cadence-kind").value = "daily";
+	document.getElementById("policy-execution-mode").value = "scan_only";
+	document.getElementById("policy-package-scope").value = "security";
+	document.getElementById("policy-upgrade-mode").value = "standard";
+	document.getElementById("policy-cadence-kind").value = "daily";
     document.getElementById("policy-approval-timeout").value = "720";
     document.getElementById("policy-enabled").checked = true;
     clearPolicyFieldErrors();
@@ -1304,9 +1320,10 @@ function applyPolicyToForm(policy) {
     document.getElementById("policy-exclude-tags").value = (policy.exclude_tags || []).join(", ");
     document.getElementById("policy-target-servers").value = (policy.target_servers || []).join(", ");
     document.getElementById("policy-time-local").value = policy.time_local || "02:00";
-    document.getElementById("policy-execution-mode").value = policy.execution_mode || "scan_only";
-    document.getElementById("policy-package-scope").value = policy.package_scope || "security";
-    document.getElementById("policy-cadence-kind").value = policy.cadence_kind || "daily";
+	document.getElementById("policy-execution-mode").value = policy.execution_mode || "scan_only";
+	document.getElementById("policy-package-scope").value = policy.package_scope || "security";
+	document.getElementById("policy-upgrade-mode").value = policy.upgrade_mode || "standard";
+	document.getElementById("policy-cadence-kind").value = policy.cadence_kind || "daily";
     document.getElementById("policy-approval-timeout").value = policy.approval_timeout_minutes || 720;
     document.getElementById("policy-enabled").checked = !!policy.enabled;
     clearPolicyFieldErrors();
@@ -1452,8 +1469,9 @@ function collectPolicyPayload() {
     const excludeTags = parseCommaList(document.getElementById("policy-exclude-tags").value);
     const targetServers = parseCommaList(document.getElementById("policy-target-servers").value);
     const cadenceKind = document.getElementById("policy-cadence-kind").value;
-    const executionMode = document.getElementById("policy-execution-mode").value;
-    const packageScope = document.getElementById("policy-package-scope").value;
+	const executionMode = document.getElementById("policy-execution-mode").value;
+	const packageScope = document.getElementById("policy-package-scope").value;
+	const upgradeMode = document.getElementById("policy-upgrade-mode").value;
     const timeLocal = document.getElementById("policy-time-local").value;
     const weekdays = cadenceKind === "weekly" ? normalizeWeekdays(policyFormState.weekdays) : [];
     const approvalTimeoutValue = Number(document.getElementById("policy-approval-timeout").value || 0);
@@ -1480,9 +1498,10 @@ function collectPolicyPayload() {
         target_tag: targetTag,
         include_tags: includeTags,
         exclude_tags: excludeTags,
-        target_servers: targetServers,
-        package_scope: packageScope,
-        execution_mode: executionMode,
+		target_servers: targetServers,
+		package_scope: packageScope,
+		upgrade_mode: upgradeMode,
+		execution_mode: executionMode,
         cadence_kind: cadenceKind,
         time_local: timeLocal,
         weekdays,
@@ -1559,7 +1578,7 @@ async function saveScheduledSettings() {
 async function deleteScheduledPolicy(id) {
     const policy = scheduledPoliciesState.items.find((item) => String(item.id) === String(id));
     const required = policy?.name || String(id);
-    if (!window.confirmTypedAction(`Delete scheduled update policy "${required}"?`, required)) {
+    if (!(await window.confirmTypedAction(`Delete scheduled update policy "${required}"?`, required))) {
         return;
     }
     try {
@@ -1669,10 +1688,11 @@ function bindPolicyFormInteractions() {
         "policy-include-tags",
         "policy-exclude-tags",
         "policy-target-servers",
-        "policy-time-local",
-        "policy-execution-mode",
-        "policy-package-scope",
-        "policy-cadence-kind",
+		"policy-time-local",
+		"policy-execution-mode",
+		"policy-package-scope",
+		"policy-upgrade-mode",
+		"policy-cadence-kind",
         "policy-approval-timeout"
     ];
     summaryFields.forEach((fieldId) => {

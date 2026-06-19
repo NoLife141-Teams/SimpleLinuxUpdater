@@ -1047,6 +1047,265 @@ func TestCancelRoutePreservesExplicitCancelSummaryOnUpdateJob(t *testing.T) {
 	}
 }
 
+func TestApproveFullRouteRequiresRemovalConfirmation(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+
+	dbFile := filepath.Join(t.TempDir(), "actions-approve-full-confirm.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	server := Server{Name: "srv-full-confirm", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	pending := []PendingUpdate{
+		{Package: "openssl", Raw: "Inst openssl"},
+		{Package: "linux-image-amd64", KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+	}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {
+				Name:           server.Name,
+				Status:         "pending_approval",
+				Upgradable:     []string{"openssl", "linux-image-amd64"},
+				PendingUpdates: clonePendingUpdates(pending),
+				UpgradePlan: UpgradePlan{
+					StandardPackageCount:       1,
+					KeptBackPackageCount:       1,
+					FullUpgradePackageCount:    2,
+					FullUpgradeRemovedPackages: []string{"obsolete-kernel"},
+					FullUpgradeNewPackages:     []string{"linux-image-6.1.0-39-amd64"},
+				},
+				Logs: "pending",
+			},
+		}
+	}()
+	_, createErr := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		ClientIP:   "127.0.0.1",
+		Status:     jobStatusWaitingApproval,
+		Phase:      jobPhaseApprovalWait,
+		Summary:    "Waiting for approval",
+	})
+	if createErr != nil {
+		t.Fatalf("CreateJob(update pending approval) unexpected error: %v", createErr)
+	}
+
+	staleRec := httptest.NewRecorder()
+	staleReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	staleReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(staleReq)
+	staleReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(staleRec, staleReq)
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("stale full approve status = %d, want %d (body=%s)", staleRec.Code, http.StatusConflict, staleRec.Body.String())
+	}
+	if !strings.Contains(staleRec.Body.String(), "fresh package scan") {
+		t.Fatalf("stale full approve response = %s, want fresh scan error", staleRec.Body.String())
+	}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		statusMap[server.Name].UpgradePlan.FullUpgradePlanAvailable = true
+	}()
+
+	blockedRec := httptest.NewRecorder()
+	blockedReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, nil)
+	blockedReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(blockedReq)
+	handler.ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusConflict {
+		t.Fatalf("unconfirmed full approve status = %d, want %d (body=%s)", blockedRec.Code, http.StatusConflict, blockedRec.Body.String())
+	}
+	statusAfterBlocked := currentStatusSnapshot(server.Name)
+	if statusAfterBlocked == nil || statusAfterBlocked.Status != "pending_approval" || statusAfterBlocked.ApprovalScope != "" {
+		t.Fatalf("status after unconfirmed full approve = %+v, want still pending", statusAfterBlocked)
+	}
+	if !strings.Contains(blockedRec.Body.String(), "obsolete-kernel") {
+		t.Fatalf("unconfirmed full approve response = %s, want removed package name", blockedRec.Body.String())
+	}
+
+	confirmedRec := httptest.NewRecorder()
+	confirmedReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	confirmedReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(confirmedReq)
+	confirmedReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(confirmedRec, confirmedReq)
+	if confirmedRec.Code != http.StatusOK {
+		t.Fatalf("confirmed full approve status = %d, want %d (body=%s)", confirmedRec.Code, http.StatusOK, confirmedRec.Body.String())
+	}
+	statusAfterConfirm := currentStatusSnapshot(server.Name)
+	if statusAfterConfirm == nil || statusAfterConfirm.Status != "approved" || statusAfterConfirm.ApprovalScope != "full_upgrade" {
+		t.Fatalf("status after confirmed full approve = %+v, want approved full_upgrade", statusAfterConfirm)
+	}
+	if !statusAfterConfirm.ApprovalConfirmRemovals {
+		t.Fatalf("status after confirmed full approve did not record removal confirmation")
+	}
+}
+
+func TestApproveKeptBackSecurityRouteRequiresRemovalConfirmation(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+
+	dbFile := filepath.Join(t.TempDir(), "actions-approve-kept-back-security-confirm.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	server := Server{Name: "srv-kept-back-security-confirm", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	pending := []PendingUpdate{
+		{Package: "openssl", Security: true, Raw: "Inst openssl"},
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+	}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {
+				Name:           server.Name,
+				Status:         "pending_approval",
+				Upgradable:     []string{"openssl", "linux-image-amd64"},
+				PendingUpdates: clonePendingUpdates(pending),
+				UpgradePlan: UpgradePlan{
+					FullUpgradePlanAvailable:        true,
+					StandardPackageCount:            1,
+					KeptBackPackageCount:            1,
+					StandardSecurityCount:           1,
+					TotalSecurityCount:              2,
+					FullUpgradePackageCount:         2,
+					FullUpgradeRemovedPackages:      []string{"full-upgrade-only-removal"},
+					FullUpgradeNewPackages:          []string{"linux-image-6.1.0-39-amd64"},
+					KeptBackSecurityPlanAvailable:   true,
+					KeptBackSecurityPackageCount:    1,
+					KeptBackSecurityNewPackages:     []string{"linux-image-6.1.0-39-amd64"},
+					KeptBackSecurityRemovedPackages: []string{"obsolete-kernel"},
+				},
+				Logs: "pending",
+			},
+		}
+	}()
+	_, createErr := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		ClientIP:   "127.0.0.1",
+		Status:     jobStatusWaitingApproval,
+		Phase:      jobPhaseApprovalWait,
+		Summary:    "Waiting for approval",
+	})
+	if createErr != nil {
+		t.Fatalf("CreateJob(update pending approval) unexpected error: %v", createErr)
+	}
+
+	blockedRec := httptest.NewRecorder()
+	blockedReq := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, nil)
+	blockedReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(blockedReq)
+	handler.ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusConflict {
+		t.Fatalf("unconfirmed kept-back security approve status = %d, want %d (body=%s)", blockedRec.Code, http.StatusConflict, blockedRec.Body.String())
+	}
+	statusAfterBlocked := currentStatusSnapshot(server.Name)
+	if statusAfterBlocked == nil || statusAfterBlocked.Status != "pending_approval" || statusAfterBlocked.ApprovalScope != "" {
+		t.Fatalf("status after unconfirmed kept-back security approve = %+v, want still pending", statusAfterBlocked)
+	}
+	if !strings.Contains(blockedRec.Body.String(), "obsolete-kernel") {
+		t.Fatalf("unconfirmed kept-back security approve response = %s, want removed package name", blockedRec.Body.String())
+	}
+	if strings.Contains(blockedRec.Body.String(), "full-upgrade-only-removal") {
+		t.Fatalf("unconfirmed kept-back security approve response = %s, should use targeted removal plan", blockedRec.Body.String())
+	}
+
+	confirmedRec := httptest.NewRecorder()
+	confirmedReq := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	confirmedReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(confirmedReq)
+	confirmedReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(confirmedRec, confirmedReq)
+	if confirmedRec.Code != http.StatusOK {
+		t.Fatalf("confirmed kept-back security approve status = %d, want %d (body=%s)", confirmedRec.Code, http.StatusOK, confirmedRec.Body.String())
+	}
+	statusAfterConfirm := currentStatusSnapshot(server.Name)
+	if statusAfterConfirm == nil || statusAfterConfirm.Status != "approved" || statusAfterConfirm.ApprovalScope != "security_kept_back" {
+		t.Fatalf("status after confirmed kept-back security approve = %+v, want approved security_kept_back", statusAfterConfirm)
+	}
+	if !statusAfterConfirm.ApprovalConfirmRemovals {
+		t.Fatalf("status after confirmed kept-back security approve did not record removal confirmation")
+	}
+}
+
+func TestApproveKeptBackSecurityRouteUsesTargetedRemovalPlan(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	preserveSessionState(t)
+	preserveRateLimiterState(t)
+	preserveMetricsTokenState(t)
+
+	dbFile := filepath.Join(t.TempDir(), "actions-approve-kept-back-security-targeted.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	server := Server{Name: "srv-kept-back-security-targeted", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	pending := []PendingUpdate{
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+	}
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		servers = []Server{server}
+		statusMap = map[string]*ServerStatus{
+			server.Name: {
+				Name:           server.Name,
+				Status:         "pending_approval",
+				Upgradable:     []string{"linux-image-amd64"},
+				PendingUpdates: clonePendingUpdates(pending),
+				UpgradePlan: UpgradePlan{
+					FullUpgradePlanAvailable:      true,
+					KeptBackPackageCount:          1,
+					TotalSecurityCount:            1,
+					FullUpgradePackageCount:       1,
+					FullUpgradeRemovedPackages:    []string{"full-upgrade-only-removal"},
+					KeptBackSecurityPlanAvailable: true,
+					KeptBackSecurityPackageCount:  1,
+					KeptBackSecurityNewPackages:   []string{"linux-image-6.1.0-39-amd64"},
+				},
+				Logs: "pending",
+			},
+		}
+	}()
+	_, createErr := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		ClientIP:   "127.0.0.1",
+		Status:     jobStatusWaitingApproval,
+		Phase:      jobPhaseApprovalWait,
+		Summary:    "Waiting for approval",
+	})
+	if createErr != nil {
+		t.Fatalf("CreateJob(update pending approval) unexpected error: %v", createErr)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, nil)
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("kept-back security approve status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	statusAfterApprove := currentStatusSnapshot(server.Name)
+	if statusAfterApprove == nil || statusAfterApprove.Status != "approved" || statusAfterApprove.ApprovalScope != "security_kept_back" {
+		t.Fatalf("status after kept-back security approve = %+v, want approved security_kept_back", statusAfterApprove)
+	}
+}
+
 func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
 	preserveDBState(t)
 	preserveServerState(t)
@@ -1191,9 +1450,19 @@ func TestApproveRoutesReturnFailureWhenPendingJobCannotBePersisted(t *testing.T)
 		name      string
 		path      string
 		wantScope string
+		pending   []PendingUpdate
 	}{
 		{name: "approve all", path: "/api/approve/%s", wantScope: "all"},
 		{name: "approve security", path: "/api/approve-security/%s", wantScope: "security"},
+		{
+			name:      "approve kept back security",
+			path:      "/api/approve-security-kept-back/%s",
+			wantScope: "security_kept_back",
+			pending: []PendingUpdate{
+				{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+			},
+		},
+		{name: "approve full", path: "/api/approve-full/%s", wantScope: "full_upgrade"},
 	}
 
 	for _, tc := range tests {
@@ -1210,6 +1479,26 @@ func TestApproveRoutesReturnFailureWhenPendingJobCannotBePersisted(t *testing.T)
 
 			server := Server{Name: "srv-" + strings.ReplaceAll(tc.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 			pending := []PendingUpdate{{Package: "openssl", Security: true, Raw: "Inst openssl"}}
+			if tc.pending != nil {
+				pending = clonePendingUpdates(tc.pending)
+			}
+			upgradable := make([]string, 0, len(pending))
+			for _, update := range pending {
+				upgradable = append(upgradable, update.Package)
+			}
+			upgradePlan := UpgradePlan{}
+			if tc.wantScope == "security_kept_back" {
+				upgradePlan = UpgradePlan{
+					KeptBackPackageCount:          1,
+					TotalSecurityCount:            1,
+					KeptBackSecurityPlanAvailable: true,
+					KeptBackSecurityPackageCount:  1,
+				}
+			} else if tc.wantScope == "full_upgrade" {
+				upgradePlan = UpgradePlan{
+					FullUpgradePlanAvailable: true,
+				}
+			}
 			func() {
 				mu.Lock()
 				defer mu.Unlock()
@@ -1219,8 +1508,9 @@ func TestApproveRoutesReturnFailureWhenPendingJobCannotBePersisted(t *testing.T)
 						Name:           server.Name,
 						Status:         "pending_approval",
 						ApprovalScope:  "",
-						Upgradable:     []string{"openssl"},
+						Upgradable:     upgradable,
 						PendingUpdates: clonePendingUpdates(pending),
+						UpgradePlan:    upgradePlan,
 						Logs:           "pending",
 					},
 				}

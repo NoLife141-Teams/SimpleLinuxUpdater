@@ -105,6 +105,9 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	if len(created.TargetServers) != 1 || created.TargetServers[0] != "srv-explicit" {
 		t.Fatalf("created TargetServers = %+v, want [srv-explicit]", created.TargetServers)
 	}
+	if created.UpgradeMode != updatePolicyUpgradeModeStandard {
+		t.Fatalf("created UpgradeMode = %q, want default %q", created.UpgradeMode, updatePolicyUpgradeModeStandard)
+	}
 
 	listRec := httptest.NewRecorder()
 	listReq := httptest.NewRequest(http.MethodGet, "/api/update-policies", nil)
@@ -126,6 +129,9 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	if len(listResp.Items[0].MatchedServers) != 1 || listResp.Items[0].MatchedServers[0] != server.Name {
 		t.Fatalf("matched servers = %+v, want [%q]", listResp.Items[0].MatchedServers, server.Name)
 	}
+	if listResp.Items[0].UpgradeMode != updatePolicyUpgradeModeStandard {
+		t.Fatalf("listed UpgradeMode = %q, want %q", listResp.Items[0].UpgradeMode, updatePolicyUpgradeModeStandard)
+	}
 	if strings.TrimSpace(listResp.Timezone) == "" {
 		t.Fatalf("timezone missing from list response")
 	}
@@ -138,6 +144,7 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 		"exclude_tags":["hold"],
 		"target_servers":[],
 		"package_scope":"full",
+		"upgrade_mode":"full",
 		"execution_mode":"scan_only",
 		"cadence_kind":"weekly",
 		"time_local":"03:30",
@@ -153,6 +160,13 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	handler.ServeHTTP(updateRec, updateReq)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, want %d (body=%s)", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+	var updated UpdatePolicy
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("unmarshal updated policy: %v", err)
+	}
+	if updated.UpgradeMode != updatePolicyUpgradeModeFull {
+		t.Fatalf("updated UpgradeMode = %q, want %q", updated.UpgradeMode, updatePolicyUpgradeModeFull)
 	}
 
 	settingsBody := bytes.NewBufferString(`{
@@ -921,6 +935,64 @@ func TestCurrentAppTimezoneResolvesLegacyLocalSetting(t *testing.T) {
 	}
 	if name != "Europe/London" {
 		t.Fatalf("loadCurrentAppTimezone() name = %q, want %q", name, "Europe/London")
+	}
+}
+
+func TestUpdateScheduledJobDiscoveryMetaCountsKeptBackSecurity(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-discovery-meta.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+
+	server := Server{Name: "srv-discovery-meta", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	meta := buildScheduledJobMeta(UpdatePolicy{
+		ID:                     11,
+		Name:                   "Approval required",
+		ExecutionMode:          updatePolicyExecutionApprovalRequired,
+		PackageScope:           updatePolicyPackageScopeSecurity,
+		ApprovalTimeoutMinutes: defaultScheduledApprovalTimeoutMinutes,
+	}, time.Now().UTC().Format(jobTimestampLayout))
+	job, err := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "system",
+		Status:     jobStatusRunning,
+		MetaJSON:   marshalJobJSON(meta),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(update) unexpected error: %v", err)
+	}
+
+	pending := []PendingUpdate{
+		{Package: "openssl", Security: true, Raw: "Inst openssl"},
+		{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/oldstable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+	}
+	plan := UpgradePlan{
+		StandardPackageCount:          1,
+		KeptBackPackageCount:          1,
+		StandardSecurityCount:         1,
+		TotalSecurityCount:            2,
+		FullUpgradePlanAvailable:      true,
+		FullUpgradePackageCount:       2,
+		KeptBackSecurityPlanAvailable: true,
+		KeptBackSecurityPackageCount:  1,
+	}
+	updateScheduledJobDiscoveryMeta(job.ID, []string{"openssl", "linux-image-amd64"}, pending, plan)
+
+	persistedJob, err := currentJobManager().GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob(update) unexpected error: %v", err)
+	}
+	var persisted scheduledJobMeta
+	if err := json.Unmarshal([]byte(persistedJob.MetaJSON), &persisted); err != nil {
+		t.Fatalf("unmarshal scheduled meta: %v", err)
+	}
+	if persisted.Discovery == nil {
+		t.Fatalf("persisted discovery is nil")
+	}
+	if persisted.Discovery.SecurityPackageCount != 2 {
+		t.Fatalf("SecurityPackageCount = %d, want total security including kept-back", persisted.Discovery.SecurityPackageCount)
+	}
+	if persisted.Discovery.UpgradePlan.StandardSecurityCount != 1 || persisted.Discovery.UpgradePlan.TotalSecurityCount != 2 {
+		t.Fatalf("upgrade plan = %+v, want standard/total security split", persisted.Discovery.UpgradePlan)
 	}
 }
 

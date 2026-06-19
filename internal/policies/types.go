@@ -10,6 +10,9 @@ const (
 	PackageScopeSecurity = "security"
 	PackageScopeFull     = "full"
 
+	UpgradeModeStandard = "standard"
+	UpgradeModeFull     = "full"
+
 	CadenceDaily  = "daily"
 	CadenceWeekly = "weekly"
 
@@ -54,6 +57,7 @@ type Policy struct {
 	ExcludeTags            []string         `json:"exclude_tags"`
 	TargetServers          []string         `json:"target_servers"`
 	PackageScope           string           `json:"package_scope"`
+	UpgradeMode            string           `json:"upgrade_mode"`
 	ExecutionMode          string           `json:"execution_mode"`
 	CadenceKind            string           `json:"cadence_kind"`
 	TimeLocal              string           `json:"time_local"`
@@ -85,6 +89,7 @@ type Run struct {
 	ScheduledForDisplay string `json:"scheduled_for_display,omitempty"`
 	ExecutionMode       string `json:"execution_mode"`
 	PackageScope        string `json:"package_scope"`
+	UpgradeMode         string `json:"upgrade_mode"`
 	Status              string `json:"status"`
 	Reason              string `json:"reason"`
 	Summary             string `json:"summary"`

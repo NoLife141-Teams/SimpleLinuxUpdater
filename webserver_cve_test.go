@@ -79,11 +79,12 @@ func TestGetUpgradableEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
 	conn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			aptListUpgradableCmd: {stdout: summaryStdout},
+			aptFullUpgradeSimCmd: {stdout: summaryStdout},
 			aptListMetadataCmd:   {stdout: metadataStdout},
 		},
 	}
 
-	pending, upgradable, err := getUpgradable(conn, time.Second)
+	pending, upgradable, _, err := getUpgradable(conn, time.Second)
 	if err != nil {
 		t.Fatalf("getUpgradable() error = %v", err)
 	}
@@ -96,7 +97,7 @@ func TestGetUpgradableEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
 	if got := updatespkg.SecurityPackagesFromPendingUpdates(pending); !reflect.DeepEqual(got, []string{"openssl"}) {
 		t.Fatalf("SecurityPackagesFromPendingUpdates() = %#v, want openssl", got)
 	}
-	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptListMetadataCmd}) {
+	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd}) {
 		t.Fatalf("commands = %#v, want apt simulation then apt-list metadata", conn.commands)
 	}
 }
@@ -117,11 +118,12 @@ func TestGetUpgradablePreservesArchQualifiedSummaryPackageWhenEnriched(t *testin
 	conn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			aptListUpgradableCmd: {stdout: summaryStdout},
+			aptFullUpgradeSimCmd: {stdout: summaryStdout},
 			aptListMetadataCmd:   {stdout: metadataStdout},
 		},
 	}
 
-	pending, _, err := getUpgradable(conn, time.Second)
+	pending, _, _, err := getUpgradable(conn, time.Second)
 	if err != nil {
 		t.Fatalf("getUpgradable() error = %v", err)
 	}
@@ -148,11 +150,12 @@ func TestGetUpgradableKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T)
 	conn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			aptListUpgradableCmd: {stdout: summaryStdout},
+			aptFullUpgradeSimCmd: {stdout: summaryStdout},
 			aptListMetadataCmd:   {stdout: metadataStdout},
 		},
 	}
 
-	pending, upgradable, err := getUpgradable(conn, time.Second)
+	pending, upgradable, _, err := getUpgradable(conn, time.Second)
 	if err != nil {
 		t.Fatalf("getUpgradable() error = %v", err)
 	}
@@ -168,7 +171,7 @@ func TestGetUpgradableKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T)
 	if !strings.Contains(upgradable[0], "openssl/stable-security") || upgradable[1] != "bash" {
 		t.Fatalf("upgradable = %#v, want metadata openssl and fallback bash", upgradable)
 	}
-	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptListMetadataCmd}) {
+	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd}) {
 		t.Fatalf("commands = %#v, want apt simulation then apt-list metadata", conn.commands)
 	}
 }
@@ -183,11 +186,12 @@ func TestGetUpgradableFallsBackWhenAptMetadataCommandFails(t *testing.T) {
 	conn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			aptListUpgradableCmd: {stdout: summaryStdout},
+			aptFullUpgradeSimCmd: {stdout: summaryStdout},
 			aptListMetadataCmd:   {err: fakeExitStatusError{code: 127, msg: "apt list failed"}},
 		},
 	}
 
-	pending, upgradable, err := getUpgradable(conn, time.Second)
+	pending, upgradable, _, err := getUpgradable(conn, time.Second)
 	if err != nil {
 		t.Fatalf("getUpgradable() error = %v", err)
 	}
@@ -197,7 +201,7 @@ func TestGetUpgradableFallsBackWhenAptMetadataCommandFails(t *testing.T) {
 	if !reflect.DeepEqual(upgradable, []string{"openssl", "bash"}) {
 		t.Fatalf("upgradable = %#v, want summary fallback list", upgradable)
 	}
-	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptListMetadataCmd}) {
+	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd}) {
 		t.Fatalf("commands = %#v, want apt simulation then apt-list metadata", conn.commands)
 	}
 }
@@ -217,11 +221,12 @@ func TestGetUpgradableRequestsMetadataEvenWhenSummaryPackageLooksSecurityTagged(
 	conn := &scriptedSSHConnection{
 		responses: map[string]scriptedResponse{
 			aptListUpgradableCmd: {stdout: summaryStdout},
+			aptFullUpgradeSimCmd: {stdout: summaryStdout},
 			aptListMetadataCmd:   {stdout: metadataStdout},
 		},
 	}
 
-	pending, _, err := getUpgradable(conn, time.Second)
+	pending, _, _, err := getUpgradable(conn, time.Second)
 	if err != nil {
 		t.Fatalf("getUpgradable() error = %v", err)
 	}
@@ -231,8 +236,119 @@ func TestGetUpgradableRequestsMetadataEvenWhenSummaryPackageLooksSecurityTagged(
 	if pending[0].Package != "jammy-security" || pending[0].Source != "stable" || pending[0].CandidateVersion != "1.2" {
 		t.Fatalf("pending[0] = %+v, want metadata-enriched jammy-security package", pending[0])
 	}
-	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptListMetadataCmd}) {
+	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd}) {
 		t.Fatalf("commands = %#v, want apt simulation then apt-list metadata", conn.commands)
+	}
+}
+
+func TestGetUpgradableMarksKernelMetapackageKeptBack(t *testing.T) {
+	standardStdout := strings.Join([]string{
+		"Reading package lists... Done",
+		"The following packages will be upgraded:",
+		"  apache2-utils linux-base rsync",
+		"3 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.",
+	}, "\n")
+	metadataStdout := strings.Join([]string{
+		"Listing...",
+		"apache2-utils/oldstable-proposed-updates 2.4.68-1~deb12u1 amd64 [upgradable from: 2.4.67-1~deb12u3]",
+		"linux-base/oldstable-proposed-updates,oldstable-security 4.12.1~deb12u1 all [upgradable from: 4.9]",
+		"linux-image-amd64/oldstable-proposed-updates,oldstable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]",
+		"rsync/oldstable-proposed-updates 3.2.7-1+deb12u6 amd64 [upgradable from: 3.2.7-1+deb12u5]",
+	}, "\n")
+	fullStdout := strings.Join([]string{
+		"Reading package lists... Done",
+		"The following NEW packages will be installed:",
+		"  linux-image-6.1.0-49-amd64",
+		"The following packages will be upgraded:",
+		"  apache2-utils linux-base linux-image-amd64 rsync",
+		"4 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.",
+	}, "\n")
+	keptBackSecurityCmd := updatespkg.BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64:amd64"})
+	keptBackSecurityStdout := strings.Join([]string{
+		"Reading package lists... Done",
+		"The following NEW packages will be installed:",
+		"  linux-image-6.1.0-49-amd64",
+		"The following packages will be upgraded:",
+		"  linux-image-amd64",
+		"1 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.",
+	}, "\n")
+	conn := &scriptedSSHConnection{
+		responses: map[string]scriptedResponse{
+			aptListUpgradableCmd: {stdout: standardStdout},
+			aptFullUpgradeSimCmd: {stdout: fullStdout},
+			aptListMetadataCmd:   {stdout: metadataStdout},
+			keptBackSecurityCmd:  {stdout: keptBackSecurityStdout},
+		},
+	}
+
+	pending, upgradable, plan, err := getUpgradable(conn, time.Second)
+	if err != nil {
+		t.Fatalf("getUpgradable() error = %v", err)
+	}
+	if len(pending) != 4 || len(upgradable) != 4 {
+		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 4/4", len(pending), len(upgradable))
+	}
+	var kernel *PendingUpdate
+	for i := range pending {
+		if pending[i].Package == "linux-image-amd64" {
+			kernel = &pending[i]
+			break
+		}
+	}
+	if kernel == nil || !kernel.KeptBack || !kernel.RequiresFull || kernel.InstallPackage != "linux-image-amd64:amd64" {
+		t.Fatalf("linux-image-amd64 = %+v, want kept-back full-upgrade package with exact install selector", kernel)
+	}
+	if !plan.FullUpgradePlanAvailable {
+		t.Fatalf("upgrade plan = %+v, want successful full-upgrade simulation marked available", plan)
+	}
+	if plan.StandardPackageCount != 3 || plan.KeptBackPackageCount != 1 || plan.FullUpgradePackageCount != 4 {
+		t.Fatalf("upgrade plan = %+v, want standard=3 kept_back=1 full=4", plan)
+	}
+	if !reflect.DeepEqual(plan.FullUpgradeNewPackages, []string{"linux-image-6.1.0-49-amd64"}) {
+		t.Fatalf("new packages = %#v, want kernel image", plan.FullUpgradeNewPackages)
+	}
+	if !plan.KeptBackSecurityPlanAvailable || plan.KeptBackSecurityPackageCount != 1 {
+		t.Fatalf("kept-back security plan = %+v, want exact targeted simulation", plan)
+	}
+	if !reflect.DeepEqual(plan.KeptBackSecurityNewPackages, []string{"linux-image-6.1.0-49-amd64"}) || len(plan.KeptBackSecurityRemovedPackages) != 0 {
+		t.Fatalf("kept-back security impact = new %#v removed %#v, want targeted kernel dependency only", plan.KeptBackSecurityNewPackages, plan.KeptBackSecurityRemovedPackages)
+	}
+	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd, keptBackSecurityCmd}) {
+		t.Fatalf("commands = %#v, want exact kept-back security simulation after metadata merge", conn.commands)
+	}
+}
+
+func TestGetUpgradableMarksFullUpgradePlanUnavailableWhenSimulationFails(t *testing.T) {
+	standardStdout := strings.Join([]string{
+		"Reading package lists... Done",
+		"The following packages will be upgraded:",
+		"  openssl",
+		"1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+	}, "\n")
+	metadataStdout := strings.Join([]string{
+		"Listing...",
+		"openssl/oldstable-security 3.0.17-1 amd64 [upgradable from: 3.0.16-1]",
+	}, "\n")
+	conn := &scriptedSSHConnection{
+		responses: map[string]scriptedResponse{
+			aptListUpgradableCmd: {stdout: standardStdout},
+			aptFullUpgradeSimCmd: {stderr: "E: dpkg was interrupted", err: errors.New("exit status 100")},
+			aptListMetadataCmd:   {stdout: metadataStdout},
+		},
+	}
+
+	pending, upgradable, plan, err := getUpgradable(conn, time.Second)
+	if err != nil {
+		t.Fatalf("getUpgradable() error = %v", err)
+	}
+	if len(pending) != 1 || len(upgradable) != 1 {
+		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 1/1", len(pending), len(upgradable))
+	}
+	if plan.FullUpgradePlanAvailable {
+		t.Fatalf("upgrade plan = %+v, should mark failed full-upgrade simulation unavailable", plan)
+	}
+	if len(plan.FullUpgradeRemovedPackages) != 0 || len(plan.FullUpgradeNewPackages) != 0 {
+		t.Fatalf("upgrade plan = %+v, should not infer impact from failed full-upgrade simulation", plan)
 	}
 }
 

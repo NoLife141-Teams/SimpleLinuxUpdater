@@ -19,11 +19,14 @@ func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) Sched
 		ScheduledFor:           scheduledForUTC,
 		ExecutionMode:          policy.ExecutionMode,
 		PackageScope:           policy.PackageScope,
+		UpgradeMode:            policy.UpgradeMode,
 		ApprovalTimeoutMinutes: policy.ApprovalTimeoutMinutes,
 	}
 	if policy.ExecutionMode == policies.ExecutionAutoApply {
 		if policy.PackageScope == policies.PackageScopeSecurity {
 			meta.AutoApproveScope = "security"
+		} else if policy.UpgradeMode == policies.UpgradeModeFull {
+			meta.AutoApproveScope = "full_upgrade"
 		} else {
 			meta.AutoApproveScope = "all"
 		}
@@ -152,6 +155,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 
 	var pendingUpdates []servers.PendingUpdate
 	var upgradable []string
+	var upgradePlan servers.UpgradePlan
 	err = deps.RunSSHOperationWithRetry(
 		req.Server,
 		config,
@@ -162,7 +166,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		new(int),
 		func() error {
 			var listErr error
-			pendingUpdates, upgradable, listErr = deps.GetUpgradable(client, deps.LoadCommandTimeout())
+			pendingUpdates, upgradable, upgradePlan, listErr = deps.GetUpgradable(client, deps.LoadCommandTimeout())
 			return listErr
 		},
 	)
@@ -186,11 +190,18 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		pendingUpdates[i].CVEs = append([]string(nil), cves...)
 	}
 	SortPendingUpdates(pendingUpdates)
+	totalSecurityCount := 0
+	for _, update := range pendingUpdates {
+		if update.Security {
+			totalSecurityCount++
+		}
+	}
 	result := ScheduledJobDiscovery{
 		PendingPackageCount:  len(upgradable),
-		SecurityPackageCount: len(SecurityPackagesFromPendingUpdates(pendingUpdates)),
+		SecurityPackageCount: totalSecurityCount,
 		Upgradable:           append([]string(nil), upgradable...),
 		PendingUpdates:       servers.ClonePendingUpdates(pendingUpdates),
+		UpgradePlan:          servers.CloneUpgradePlan(upgradePlan),
 	}
 	resultJSON := jobs.MarshalJSON(result)
 	finalSummary := "Scheduled scan completed"

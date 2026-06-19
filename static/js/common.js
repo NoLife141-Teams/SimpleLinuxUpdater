@@ -77,13 +77,94 @@
         label.textContent = file ? file.name : emptyLabel;
     };
 
+    function ensureTypedConfirmModal() {
+        let backdrop = document.getElementById("typed-confirm-modal");
+        if (backdrop) return backdrop;
+        backdrop = document.createElement("div");
+        backdrop.className = "modal-backdrop typed-confirm-backdrop";
+        backdrop.id = "typed-confirm-modal";
+        backdrop.innerHTML = `
+            <div class="modal typed-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="typed-confirm-title">
+                <div class="eyebrow">Confirmation required</div>
+                <h2 id="typed-confirm-title">Confirm Action</h2>
+                <p class="muted" id="typed-confirm-message"></p>
+                <label class="field full-width" for="typed-confirm-input">
+                    <span id="typed-confirm-label">Type the confirmation text</span>
+                    <input type="text" id="typed-confirm-input" autocomplete="off" spellcheck="false">
+                </label>
+                <div class="modal-actions">
+                    <button class="btn-ghost inline-btn" id="typed-confirm-cancel" type="button">Cancel</button>
+                    <button class="btn-danger inline-btn" id="typed-confirm-submit" type="button" disabled>Confirm</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(backdrop);
+        return backdrop;
+    }
+
     window.confirmTypedAction = window.confirmTypedAction || function confirmTypedAction(message, requiredText) {
         const required = String(requiredText || "").trim();
         if (!required) {
-            return window.confirm(message);
+            return Promise.resolve(window.confirm(message));
         }
-        const entered = window.prompt(`${message}\n\nType "${required}" to confirm.`);
-        return entered === required;
+        return new Promise((resolve) => {
+            const backdrop = ensureTypedConfirmModal();
+            const input = backdrop.querySelector("#typed-confirm-input");
+            const submit = backdrop.querySelector("#typed-confirm-submit");
+            const cancel = backdrop.querySelector("#typed-confirm-cancel");
+            const messageNode = backdrop.querySelector("#typed-confirm-message");
+            const label = backdrop.querySelector("#typed-confirm-label");
+            const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            const close = (confirmed) => {
+                backdrop.classList.remove("active");
+                input.value = "";
+                submit.disabled = true;
+                input.removeEventListener("input", onInput);
+                input.removeEventListener("keydown", onKeydown);
+                submit.removeEventListener("click", onSubmit);
+                cancel.removeEventListener("click", onCancel);
+                backdrop.removeEventListener("click", onBackdropClick);
+                document.removeEventListener("keydown", onDocumentKeydown);
+                if (previousFocus && typeof previousFocus.focus === "function") {
+                    previousFocus.focus();
+                }
+                resolve(confirmed);
+            };
+            const onInput = () => {
+                submit.disabled = input.value !== required;
+            };
+            const onSubmit = () => {
+                close(input.value === required);
+            };
+            const onCancel = () => close(false);
+            const onBackdropClick = (event) => {
+                if (event.target === backdrop) close(false);
+            };
+            const onKeydown = (event) => {
+                if (event.key === "Enter" && input.value === required) {
+                    event.preventDefault();
+                    close(true);
+                }
+            };
+            const onDocumentKeydown = (event) => {
+                if (event.key === "Escape" && backdrop.classList.contains("active")) {
+                    event.preventDefault();
+                    close(false);
+                }
+            };
+            messageNode.textContent = String(message || "");
+            label.textContent = `Type "${required}" to confirm.`;
+            input.value = "";
+            submit.disabled = true;
+            input.addEventListener("input", onInput);
+            input.addEventListener("keydown", onKeydown);
+            submit.addEventListener("click", onSubmit);
+            cancel.addEventListener("click", onCancel);
+            backdrop.addEventListener("click", onBackdropClick);
+            document.addEventListener("keydown", onDocumentKeydown);
+            backdrop.classList.add("active");
+            window.requestAnimationFrame(() => input.focus());
+        });
     };
 
     window.setAppTimezoneCache = window.setAppTimezoneCache || function setAppTimezoneCache(payload) {

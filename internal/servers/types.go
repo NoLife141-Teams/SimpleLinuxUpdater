@@ -47,29 +47,49 @@ func (s Server) MarshalJSON() ([]byte, error) {
 }
 
 type ServerStatus struct {
-	Name           string          `json:"name"`
-	Host           string          `json:"host"`
-	Port           int             `json:"port"`
-	User           string          `json:"user"`
-	Status         string          `json:"status"`
-	ApprovalScope  string          `json:"-"`
-	Logs           string          `json:"logs"`
-	Upgradable     []string        `json:"upgradable"`
-	PendingUpdates []PendingUpdate `json:"pending_updates"`
-	HasPassword    bool            `json:"has_password"`
-	HasKey         bool            `json:"has_key"`
-	Tags           []string        `json:"tags"`
+	Name                    string          `json:"name"`
+	Host                    string          `json:"host"`
+	Port                    int             `json:"port"`
+	User                    string          `json:"user"`
+	Status                  string          `json:"status"`
+	ApprovalScope           string          `json:"-"`
+	ApprovalConfirmRemovals bool            `json:"-"`
+	Logs                    string          `json:"logs"`
+	Upgradable              []string        `json:"upgradable"`
+	PendingUpdates          []PendingUpdate `json:"pending_updates"`
+	UpgradePlan             UpgradePlan     `json:"upgrade_plan"`
+	HasPassword             bool            `json:"has_password"`
+	HasKey                  bool            `json:"has_key"`
+	Tags                    []string        `json:"tags"`
 }
 
 type PendingUpdate struct {
 	Package          string   `json:"package"`
+	InstallPackage   string   `json:"install_package,omitempty"`
 	CurrentVersion   string   `json:"current_version,omitempty"`
 	CandidateVersion string   `json:"candidate_version,omitempty"`
 	Source           string   `json:"source,omitempty"`
 	Security         bool     `json:"security"`
+	KeptBack         bool     `json:"kept_back"`
+	RequiresFull     bool     `json:"requires_full_upgrade"`
 	CVEs             []string `json:"cves"`
 	CVEState         string   `json:"cve_state"`
 	Raw              string   `json:"raw"`
+}
+
+type UpgradePlan struct {
+	StandardPackageCount            int      `json:"standard_package_count"`
+	KeptBackPackageCount            int      `json:"kept_back_package_count"`
+	StandardSecurityCount           int      `json:"standard_security_count"`
+	TotalSecurityCount              int      `json:"total_security_count"`
+	FullUpgradePlanAvailable        bool     `json:"full_upgrade_plan_available"`
+	FullUpgradePackageCount         int      `json:"full_upgrade_package_count"`
+	FullUpgradeNewPackages          []string `json:"full_upgrade_new_packages"`
+	FullUpgradeRemovedPackages      []string `json:"full_upgrade_removed_packages"`
+	KeptBackSecurityPlanAvailable   bool     `json:"kept_back_security_plan_available"`
+	KeptBackSecurityPackageCount    int      `json:"kept_back_security_package_count"`
+	KeptBackSecurityNewPackages     []string `json:"kept_back_security_new_packages"`
+	KeptBackSecurityRemovedPackages []string `json:"kept_back_security_removed_packages"`
 }
 
 type HostKeyScanResult struct {
@@ -295,6 +315,14 @@ func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerSta
 }
 
 func (s *State) ApprovePendingUpdate(name, scope string) (exists bool, approved bool) {
+	return s.ApprovePendingUpdateWithOptions(name, scope, ApprovalOptions{})
+}
+
+type ApprovalOptions struct {
+	ConfirmRemovals bool
+}
+
+func (s *State) ApprovePendingUpdateWithOptions(name, scope string, opts ApprovalOptions) (exists bool, approved bool) {
 	normalizedScope := NormalizeApprovalScope(scope)
 	s.Lock()
 	defer s.Unlock()
@@ -306,6 +334,7 @@ func (s *State) ApprovePendingUpdate(name, scope string) (exists bool, approved 
 		return exists, false
 	}
 	status.ApprovalScope = normalizedScope
+	status.ApprovalConfirmRemovals = opts.ConfirmRemovals
 	status.Status = "approved"
 	return exists, true
 }
@@ -322,9 +351,11 @@ func (s *State) CancelPendingUpdate(name string) (exists bool, cancelled bool) {
 	}
 	status.Status = "cancelled"
 	status.ApprovalScope = ""
+	status.ApprovalConfirmRemovals = false
 	status.Logs = ""
 	status.Upgradable = nil
 	status.PendingUpdates = nil
+	status.UpgradePlan = UpgradePlan{}
 	return exists, true
 }
 
@@ -360,6 +391,15 @@ func ClonePendingUpdates(src []PendingUpdate) []PendingUpdate {
 	return dst
 }
 
+func CloneUpgradePlan(src UpgradePlan) UpgradePlan {
+	dst := src
+	dst.FullUpgradeNewPackages = append([]string(nil), src.FullUpgradeNewPackages...)
+	dst.FullUpgradeRemovedPackages = append([]string(nil), src.FullUpgradeRemovedPackages...)
+	dst.KeptBackSecurityNewPackages = append([]string(nil), src.KeptBackSecurityNewPackages...)
+	dst.KeptBackSecurityRemovedPackages = append([]string(nil), src.KeptBackSecurityRemovedPackages...)
+	return dst
+}
+
 func CloneServerStatus(status *ServerStatus) *ServerStatus {
 	if status == nil {
 		return nil
@@ -367,6 +407,7 @@ func CloneServerStatus(status *ServerStatus) *ServerStatus {
 	copyStatus := *status
 	copyStatus.Upgradable = append([]string(nil), status.Upgradable...)
 	copyStatus.PendingUpdates = ClonePendingUpdates(status.PendingUpdates)
+	copyStatus.UpgradePlan = CloneUpgradePlan(status.UpgradePlan)
 	copyStatus.Tags = append([]string(nil), status.Tags...)
 	return &copyStatus
 }

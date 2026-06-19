@@ -91,6 +91,7 @@ var aptUpgradeCmd = updatespkg.AptUpgradeCmd
 var aptAutoremoveCmd = updatespkg.AptAutoremoveCmd
 var aptListUpgradableCmd = updatespkg.AptListUpgradableCmd
 var aptListMetadataCmd = updatespkg.AptListMetadataCmd
+var aptFullUpgradeSimCmd = updatespkg.AptFullUpgradeSimCmd
 
 const defaultSSHCommandTimeout = 5 * time.Minute
 const minSSHCommandTimeout = 1 * time.Second
@@ -1891,6 +1892,7 @@ func cloneServerStatus(status *ServerStatus) *ServerStatus {
 	copyStatus := *status
 	copyStatus.Upgradable = append([]string(nil), status.Upgradable...)
 	copyStatus.PendingUpdates = clonePendingUpdates(status.PendingUpdates)
+	copyStatus.UpgradePlan = serverpkg.CloneUpgradePlan(status.UpgradePlan)
 	copyStatus.Tags = append([]string(nil), status.Tags...)
 	return &copyStatus
 }
@@ -2013,6 +2015,10 @@ func beginServerAction(name, newStatus string) (Server, error) {
 }
 
 func approvePendingUpdate(name, scope string) (exists bool, approved bool) {
+	return approvePendingUpdateWithOptions(name, scope, serverpkg.ApprovalOptions{})
+}
+
+func approvePendingUpdateWithOptions(name, scope string, opts serverpkg.ApprovalOptions) (exists bool, approved bool) {
 	normalizedScope := normalizeApprovalScope(scope)
 	mu.Lock()
 	defer mu.Unlock()
@@ -2024,6 +2030,7 @@ func approvePendingUpdate(name, scope string) (exists bool, approved bool) {
 		return exists, false
 	}
 	status.ApprovalScope = normalizedScope
+	status.ApprovalConfirmRemovals = opts.ConfirmRemovals
 	status.Status = "approved"
 	return exists, true
 }
@@ -2150,25 +2157,45 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 	})
 }
 
-func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate, []string, error) {
+func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
 	stdout, stderr, err := runSSHCommandWithTimeout(client, aptListUpgradableCmd, nil, timeout)
 	if err != nil {
-		return nil, nil, markRetryableFromOutput(err, stdout+"\n"+stderr)
+		return nil, nil, UpgradePlan{}, markRetryableFromOutput(err, stdout+"\n"+stderr)
 	}
-	pending, upgradable, err := parseUpgradableEntries(stdout)
+	standardPending, standardUpgradable, err := parseUpgradableEntries(stdout)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, UpgradePlan{}, err
 	}
-	if !updatespkg.NeedsAptListMetadata(pending) {
-		return pending, upgradable, nil
-	}
+
+	fullUpgradeStdout, _, fullUpgradeErr := runSSHCommandWithTimeout(client, aptFullUpgradeSimCmd, nil, timeout)
+	fullUpgradePlanAvailable := fullUpgradeErr == nil
 	metadataStdout, _, metadataErr := runSSHCommandWithTimeout(client, aptListMetadataCmd, nil, timeout)
 	if metadataErr != nil {
-		return pending, upgradable, nil
+		pending, upgradable, plan := updatespkg.MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeStdout, fullUpgradePlanAvailable)
+		plan = enrichKeptBackSecurityPlan(client, timeout, pending, plan)
+		return pending, upgradable, plan, nil
 	}
-	metadataPending, _ := updatespkg.ParseAptListMetadataEntries(metadataStdout, upgradable)
-	mergedPending, mergedUpgradable := updatespkg.MergePendingUpdatesWithMetadata(pending, metadataPending)
-	return mergedPending, mergedUpgradable, nil
+	metadataPending, metadataUpgradable := updatespkg.ParseAptListMetadataEntries(metadataStdout, nil)
+	mergedPending, mergedUpgradable, plan := updatespkg.MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeStdout, fullUpgradePlanAvailable)
+	plan = enrichKeptBackSecurityPlan(client, timeout, mergedPending, plan)
+	return mergedPending, mergedUpgradable, plan, nil
+}
+
+func enrichKeptBackSecurityPlan(client sshConnection, timeout time.Duration, pending []PendingUpdate, plan UpgradePlan) UpgradePlan {
+	packages := keptBackSecurityPackagesFromPendingUpdates(pending)
+	if len(packages) == 0 {
+		return plan
+	}
+	cmd := updatespkg.BuildSelectedInstallSimulationCmd(packages)
+	if cmd == "" {
+		return plan
+	}
+	stdout, stderr, err := runSSHCommandWithTimeout(client, cmd, nil, timeout)
+	if err != nil {
+		return plan
+	}
+	updatespkg.ApplyKeptBackSecuritySimulation(&plan, stdout+"\n"+stderr)
+	return plan
 }
 
 func parseUpgradableEntries(stdout string) ([]PendingUpdate, []string, error) {
@@ -2183,8 +2210,8 @@ func normalizeApprovalScope(scope string) string {
 	return updatespkg.NormalizeApprovalScope(scope)
 }
 
-func securityPackagesFromPendingUpdates(updates []PendingUpdate) []string {
-	return updatespkg.SecurityPackagesFromPendingUpdates(updates)
+func keptBackSecurityPackagesFromPendingUpdates(updates []PendingUpdate) []string {
+	return updatespkg.KeptBackSecurityPackagesFromPendingUpdates(updates)
 }
 
 func buildSelectedUpgradeCmd(packages []string) string {
@@ -3240,6 +3267,196 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		audit(c, "update.approve", "server", name, "success", "Security updates approved", map[string]any{"scope": "security"})
 		c.JSON(http.StatusOK, gin.H{"message": "Security updates approved"})
+	})
+
+	r.POST("/api/approve-security-kept-back/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		var req struct {
+			ConfirmRemovals bool `json:"confirm_removals"`
+		}
+		if c.Request.Body != nil {
+			if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+				return
+			}
+		}
+		preApproveStatus := serverState().CurrentStatusSnapshot(name)
+		if preApproveStatus == nil {
+			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "security_kept_back"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+			return
+		}
+		if preApproveStatus.Status != "pending_approval" {
+			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security_kept_back"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
+			return
+		}
+		packages := keptBackSecurityPackagesFromPendingUpdates(preApproveStatus.PendingUpdates)
+		if len(packages) == 0 {
+			audit(c, "update.approve", "server", name, "ignored", "No kept-back security updates pending", map[string]any{"scope": "security_kept_back"})
+			c.JSON(http.StatusConflict, gin.H{"error": "No kept-back security updates pending"})
+			return
+		}
+		if !preApproveStatus.UpgradePlan.KeptBackSecurityPlanAvailable {
+			audit(c, "update.approve", "server", name, "blocked", "Kept-back security upgrade requires a fresh targeted simulation", map[string]any{"scope": "security_kept_back"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Kept-back security upgrade requires a fresh package scan"})
+			return
+		}
+		if len(preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages) > 0 && !req.ConfirmRemovals {
+			audit(c, "update.approve", "server", name, "blocked", "Kept-back security upgrade requires package removal confirmation", map[string]any{
+				"scope":            "security_kept_back",
+				"removed_packages": preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
+			})
+			c.JSON(http.StatusConflict, gin.H{
+				"error":            "Kept-back security upgrade may remove packages; confirmation required",
+				"removed_packages": preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
+			})
+			return
+		}
+
+		jm := actionJobManager()
+		if jm == nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": "job manager unavailable"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
+		if err != nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		status := jobStatusRunning
+		phase := jobPhaseAptUpgrade
+		summary := "Kept-back security updates approved"
+		logs := preApproveStatus.Logs
+		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+			Status:   &status,
+			Phase:    &phase,
+			Summary:  &summary,
+			LogsText: &logs,
+		}); err != nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		exists, approved := updateService.ApprovePendingUpdateWithOptions(name, "security_kept_back", serverpkg.ApprovalOptions{
+			ConfirmRemovals: req.ConfirmRemovals,
+		})
+		if !exists || !approved {
+			rollbackStatus := jobStatusWaitingApproval
+			rollbackPhase := jobPhaseApprovalWait
+			rollbackSummary := "Waiting for approval"
+			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+				Status:   &rollbackStatus,
+				Phase:    &rollbackPhase,
+				Summary:  &rollbackSummary,
+				LogsText: &logs,
+			}); rollbackErr != nil {
+				log.Printf("kept-back security approve rollback failed for job %q: %v", job.ID, rollbackErr)
+			}
+			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security_kept_back"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
+			return
+		}
+		audit(c, "update.approve", "server", name, "success", "Kept-back security updates approved", map[string]any{
+			"scope":             "security_kept_back",
+			"approved_packages": packages,
+			"new_packages":      preApproveStatus.UpgradePlan.KeptBackSecurityNewPackages,
+			"removed_packages":  preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
+		})
+		c.JSON(http.StatusOK, gin.H{"message": "Kept-back security updates approved"})
+	})
+
+	r.POST("/api/approve-full/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		var req struct {
+			ConfirmRemovals bool `json:"confirm_removals"`
+		}
+		if c.Request.Body != nil {
+			if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+				return
+			}
+		}
+		preApproveStatus := serverState().CurrentStatusSnapshot(name)
+		if preApproveStatus == nil {
+			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "full_upgrade"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+			return
+		}
+		if preApproveStatus.Status != "pending_approval" {
+			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "full_upgrade"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
+			return
+		}
+		if !preApproveStatus.UpgradePlan.FullUpgradePlanAvailable {
+			audit(c, "update.approve", "server", name, "blocked", "Full upgrade requires a fresh full-upgrade simulation", map[string]any{"scope": "full_upgrade"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Full upgrade requires a fresh package scan"})
+			return
+		}
+		if len(preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages) > 0 && !req.ConfirmRemovals {
+			audit(c, "update.approve", "server", name, "blocked", "Full upgrade requires package removal confirmation", map[string]any{
+				"scope":            "full_upgrade",
+				"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
+			})
+			c.JSON(http.StatusConflict, gin.H{
+				"error":            "Full upgrade would remove packages; confirmation required",
+				"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
+			})
+			return
+		}
+
+		jm := actionJobManager()
+		if jm == nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": "job manager unavailable"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
+		if err != nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		status := jobStatusRunning
+		phase := jobPhaseAptUpgrade
+		summary := "Full upgrade approved"
+		logs := preApproveStatus.Logs
+		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+			Status:   &status,
+			Phase:    &phase,
+			Summary:  &summary,
+			LogsText: &logs,
+		}); err != nil {
+			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
+			return
+		}
+		exists, approved := updateService.ApprovePendingUpdateWithOptions(name, "full_upgrade", serverpkg.ApprovalOptions{
+			ConfirmRemovals: req.ConfirmRemovals,
+		})
+		if !exists || !approved {
+			rollbackStatus := jobStatusWaitingApproval
+			rollbackPhase := jobPhaseApprovalWait
+			rollbackSummary := "Waiting for approval"
+			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+				Status:   &rollbackStatus,
+				Phase:    &rollbackPhase,
+				Summary:  &rollbackSummary,
+				LogsText: &logs,
+			}); rollbackErr != nil {
+				log.Printf("full approve rollback failed for job %q: %v", job.ID, rollbackErr)
+			}
+			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "full_upgrade"})
+			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
+			return
+		}
+		audit(c, "update.approve", "server", name, "success", "Full upgrade approved", map[string]any{
+			"scope":            "full_upgrade",
+			"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
+		})
+		c.JSON(http.StatusOK, gin.H{"message": "Full upgrade approved"})
 	})
 
 	r.POST("/api/cancel/:name", func(c *gin.Context) {

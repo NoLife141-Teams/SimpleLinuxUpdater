@@ -117,6 +117,8 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodPost, "/api/sudoers/disable/:name"},
 			{http.MethodPost, "/api/approve/:name"},
 			{http.MethodPost, "/api/approve-security/:name"},
+			{http.MethodPost, "/api/approve-security-kept-back/:name"},
+			{http.MethodPost, "/api/approve-full/:name"},
 			{http.MethodPost, "/api/cancel/:name"},
 		},
 	}
@@ -366,8 +368,8 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 	preserveServerState(t)
 	updateDeps := testUpdateServiceDeps(t)
 	updateDeps.CurrentJobManager = currentJobManager
-	updateDeps.GetUpgradable = func(sshConnection, time.Duration) ([]PendingUpdate, []string, error) {
-		return nil, nil, nil
+	updateDeps.GetUpgradable = func(sshConnection, time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
+		return nil, nil, UpgradePlan{}, nil
 	}
 	updateDeps.RunSSHCommandWithTimeout = func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
 		return "", "", nil

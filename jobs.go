@@ -189,8 +189,10 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 	}
 	if record.Status == jobStatusInterrupted {
 		status.ApprovalScope = ""
+		status.ApprovalConfirmRemovals = false
 		status.Upgradable = nil
 		status.PendingUpdates = nil
+		status.UpgradePlan = serverpkg.UpgradePlan{}
 	}
 }
 
@@ -207,8 +209,10 @@ func markInterruptedServerStateIdle(state *serverpkg.State, serverNames []string
 		}
 		status.Status = "idle"
 		status.ApprovalScope = ""
+		status.ApprovalConfirmRemovals = false
 		status.Upgradable = nil
 		status.PendingUpdates = nil
+		status.UpgradePlan = serverpkg.UpgradePlan{}
 	}
 }
 

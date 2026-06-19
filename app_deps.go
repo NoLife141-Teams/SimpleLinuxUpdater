@@ -224,8 +224,8 @@ func (deps AppDeps) withDefaults() AppDeps {
 			},
 			AuditWithActor:  recordAudit,
 			SaveServerFacts: factsRepo.Save,
-			UpdateScheduledDiscoveryMeta: func(jobID string, upgradable []string, pending []PendingUpdate) {
-				updateScheduledJobDiscoveryMetaWithManager(deps.CurrentJobManager, jobID, upgradable, pending)
+			UpdateScheduledDiscoveryMeta: func(jobID string, upgradable []string, pending []PendingUpdate, plan UpgradePlan) {
+				updateScheduledJobDiscoveryMetaWithManager(deps.CurrentJobManager, jobID, upgradable, pending, plan)
 			},
 			UpdatePolicyRun: deps.PolicyRepository.UpdateRun,
 			LoadScheduledJobBehavior: func(jobID string) scheduledJobBehavior {

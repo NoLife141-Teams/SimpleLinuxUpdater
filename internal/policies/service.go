@@ -166,6 +166,14 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 	default:
 		return errors.New("package_scope must be 'security' or 'full'")
 	}
+	switch strings.ToLower(strings.TrimSpace(policy.UpgradeMode)) {
+	case "", UpgradeModeStandard:
+		policy.UpgradeMode = UpgradeModeStandard
+	case UpgradeModeFull:
+		policy.UpgradeMode = UpgradeModeFull
+	default:
+		return errors.New("upgrade_mode must be 'standard' or 'full'")
+	}
 	switch strings.ToLower(strings.TrimSpace(policy.ExecutionMode)) {
 	case ExecutionScanOnly:
 		policy.ExecutionMode = ExecutionScanOnly
@@ -355,6 +363,7 @@ func (s *Service) CreateSkippedRun(policy Policy, serverName, scheduledForUTC, r
 		ScheduledForUTC: scheduledForUTC,
 		ExecutionMode:   policy.ExecutionMode,
 		PackageScope:    policy.PackageScope,
+		UpgradeMode:     policy.UpgradeMode,
 		Status:          RunSkipped,
 		Reason:          reason,
 		Summary:         summary,
@@ -513,6 +522,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			ScheduledForUTC: winner.ScheduledForUTC,
 			ExecutionMode:   winner.Policy.ExecutionMode,
 			PackageScope:    winner.Policy.PackageScope,
+			UpgradeMode:     winner.Policy.UpgradeMode,
 			Status:          RunQueued,
 			Summary:         "Scheduled run queued",
 			ResultJSON:      "{}",

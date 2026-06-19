@@ -14,9 +14,11 @@ import (
 var (
 	AptUpdateCmd         = RootOrSudoCommand("apt-get update")
 	AptUpgradeCmd        = RootOrSudoCommand("apt-get -y upgrade")
+	AptFullUpgradeCmd    = RootOrSudoCommand("apt-get -y full-upgrade")
 	AptAutoremoveCmd     = RootOrSudoCommand("apt-get -y autoremove")
 	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
 	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
+	AptFullUpgradeSimCmd = "LC_ALL=C apt-get -s full-upgrade"
 )
 
 const (
@@ -128,6 +130,7 @@ type ScheduledJobDiscovery struct {
 	SecurityPackageCount int                     `json:"security_package_count"`
 	Upgradable           []string                `json:"upgradable"`
 	PendingUpdates       []servers.PendingUpdate `json:"pending_updates"`
+	UpgradePlan          servers.UpgradePlan     `json:"upgrade_plan"`
 }
 
 type ScheduledJobMeta struct {
@@ -137,6 +140,7 @@ type ScheduledJobMeta struct {
 	ScheduledFor           string                 `json:"scheduled_for,omitempty"`
 	ExecutionMode          string                 `json:"execution_mode,omitempty"`
 	PackageScope           string                 `json:"package_scope,omitempty"`
+	UpgradeMode            string                 `json:"upgrade_mode,omitempty"`
 	ApprovalTimeoutMinutes int                    `json:"approval_timeout_minutes,omitempty"`
 	AutoApproveScope       string                 `json:"auto_approve_scope,omitempty"`
 	Discovery              *ScheduledJobDiscovery `json:"discovery,omitempty"`
@@ -165,9 +169,9 @@ type ServiceDeps struct {
 	ListFailedSystemdUnits       func(SSHConnection) ([]string, string, error)
 	CollectServerFacts           func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord
 	SaveServerFacts              func(ServerFactsRecord) error
-	GetUpgradable                func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, error)
+	GetUpgradable                func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error)
 	QueryPackageCVEs             func(SSHConnection, string) ([]string, error)
-	UpdateScheduledDiscoveryMeta func(string, []string, []servers.PendingUpdate)
+	UpdateScheduledDiscoveryMeta func(string, []string, []servers.PendingUpdate, servers.UpgradePlan)
 	UpdatePolicyRun              func(int64, policies.RunUpdate) error
 	IsPostcheckFailureBlocking   func(string, PostUpdateCheckConfig) bool
 	SummarizeUnitNames           func([]string, int) string

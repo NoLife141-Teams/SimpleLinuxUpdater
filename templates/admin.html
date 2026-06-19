@@ -197,6 +197,13 @@
                                         <option value="full">Full updates</option>
                                     </select>
                                 </div>
+                                <div>
+                                    <label for="policy-upgrade-mode" class="form-label">Upgrade mode</label>
+                                    <select id="policy-upgrade-mode">
+                                        <option value="standard">Standard upgrade</option>
+                                        <option value="full">Full upgrade</option>
+                                    </select>
+                                </div>
                                 <div id="policy-approval-timeout-wrap">
                                     <label for="policy-approval-timeout" class="form-label">Approval timeout (minutes)</label>
                                     <input type="number" id="policy-approval-timeout" min="1" placeholder="720">
@@ -368,7 +375,7 @@
     </div>
 
     <script src="/static/auth.js"></script>
-    <script src="/static/js/common.js"></script>
-    <script src="/static/js/admin.js?v=timezone-select-20260520a"></script>
+    <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
+    <script src="/static/js/admin.js?v=typed-confirm-20260617a"></script>
 </body>
 </html>

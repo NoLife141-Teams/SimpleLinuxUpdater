@@ -229,15 +229,44 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return Array.isArray(server.pending_updates) && server.pending_updates.length > 0;
         }
 
+        function getUpgradePlan(server) {
+            return server?.upgrade_plan && typeof server.upgrade_plan === "object" ? server.upgrade_plan : {};
+        }
+
         function getPendingApprovalCounts(server) {
             const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
             const totalFromPending = pendingUpdates.length;
+            const plan = getUpgradePlan(server);
+            const planStandard = Number(plan.standard_package_count);
+            const planKeptBack = Number(plan.kept_back_package_count);
+            const planStandardSecurity = Number(plan.standard_security_count);
+            const planTotalSecurity = Number(plan.total_security_count);
+            const hasPlan = Number.isFinite(planStandard) && Number.isFinite(planKeptBack) && (planStandard > 0 || planKeptBack > 0 || Number(plan.full_upgrade_package_count || 0) > 0);
             const securityFromPending = pendingUpdates.filter(update => !!update?.security).length;
+            const keptBackSecurityFromPending = pendingUpdates.filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade)).length;
+            const standardSecurityFromPending = Math.max(0, securityFromPending - keptBackSecurityFromPending);
             const upgradableFallback = Array.isArray(server?.upgradable) ? server.upgradable.length : 0;
             const total = totalFromPending > 0 ? totalFromPending : upgradableFallback;
+            const standard = hasPlan ? planStandard : total;
+            const keptBack = hasPlan ? planKeptBack : pendingUpdates.filter(update => !!update?.kept_back || !!update?.requires_full_upgrade).length;
+            const full = Number(plan.full_upgrade_package_count || 0) || total;
+            const keptBackSecurity = hasPlan && Number.isFinite(planTotalSecurity) && Number.isFinite(planStandardSecurity)
+                ? Math.max(0, planTotalSecurity - planStandardSecurity)
+                : (totalFromPending > 0 ? keptBackSecurityFromPending : 0);
             return {
                 total,
-                security: totalFromPending > 0 ? securityFromPending : null
+                standard,
+                keptBack,
+                full,
+                security: hasPlan && Number.isFinite(planStandardSecurity) ? planStandardSecurity : (totalFromPending > 0 ? standardSecurityFromPending : null),
+                totalSecurity: hasPlan && Number.isFinite(planTotalSecurity) ? planTotalSecurity : (totalFromPending > 0 ? securityFromPending : null),
+                keptBackSecurity,
+                fullPlanAvailable: !!plan.full_upgrade_plan_available,
+                keptBackSecurityPlanAvailable: !!plan.kept_back_security_plan_available,
+                keptBackSecurityNewPackages: Array.isArray(plan.kept_back_security_new_packages) ? plan.kept_back_security_new_packages : [],
+                keptBackSecurityRemovedPackages: Array.isArray(plan.kept_back_security_removed_packages) ? plan.kept_back_security_removed_packages : [],
+                newPackages: Array.isArray(plan.full_upgrade_new_packages) ? plan.full_upgrade_new_packages : [],
+                removedPackages: Array.isArray(plan.full_upgrade_removed_packages) ? plan.full_upgrade_removed_packages : []
             };
         }
 
@@ -294,9 +323,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function getServerApprovalTriage(server) {
             const intelligence = getServerIntelligence(server?.name);
+            const approvalCounts = getPendingApprovalCounts(server);
             return intelligence?.approval_triage || {
-                eligible: hasPendingUpdates(server) || getPendingApprovalCounts(server).total > 0,
-                pending_packages: getPendingApprovalCounts(server).total,
+                eligible: hasPendingUpdates(server) || approvalCounts.total > 0,
+                pending_packages: approvalCounts.total,
                 security_updates: getSecurityUpdateCount(server),
                 cve_count: (Array.isArray(server?.pending_updates) ? server.pending_updates : [])
                     .reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0),
@@ -305,8 +335,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 risk_order: 1,
                 facts_state: "stale",
                 last_check_display: "--",
-                can_approve_all: server?.status === "pending_approval",
-                can_approve_security: server?.status === "pending_approval" && getSecurityUpdateCount(server) > 0,
+                standard_packages: approvalCounts.standard,
+                kept_back_packages: approvalCounts.keptBack,
+                standard_security_updates: approvalCounts.security || 0,
+                kept_back_security_updates: approvalCounts.keptBackSecurity || 0,
+                can_approve_all: server?.status === "pending_approval" && approvalCounts.standard > 0,
+                can_approve_security: server?.status === "pending_approval" && (approvalCounts.security || 0) > 0,
+                can_approve_kept_back_security: server?.status === "pending_approval" && (approvalCounts.keptBackSecurity || 0) > 0 && approvalCounts.keptBackSecurityPlanAvailable,
+                can_approve_full: server?.status === "pending_approval" && approvalCounts.fullPlanAvailable && (approvalCounts.keptBack > 0 || approvalCounts.newPackages.length > 0 || approvalCounts.removedPackages.length > 0),
                 can_cancel: server?.status === "pending_approval",
                 can_refresh_facts: true,
                 can_run_checks: true
@@ -417,6 +453,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
             const hasPending = updates.some(update => String(update.cve_state || "").toLowerCase() === "pending");
             const securityCount = updates.filter(update => !!update.security).length;
+            const keptBackCount = updates.filter(update => !!update.kept_back || !!update.requires_full_upgrade).length;
             const stateCounts = updates.reduce((acc, update) => {
                 const state = String(update.cve_state || "").toLowerCase();
                 acc[state] = (acc[state] || 0) + 1;
@@ -433,6 +470,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
                 const badges = [];
                 if (update.security) badges.push(`<span class="pending-badge pending-badge-security">Security</span>`);
+                if (update.kept_back || update.requires_full_upgrade) {
+                    badges.push(`<span class="pending-badge">Kept back</span>`);
+                    badges.push(`<span class="pending-badge">Requires full-upgrade</span>`);
+                }
                 if (state === "ready") {
                     if (cves.length > 0) {
                         badges.push(`<span class="pending-badge pending-badge-cve">${cves.length} CVE${cves.length > 1 ? "s" : ""}</span>`);
@@ -464,6 +505,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <div class="pending-summary">
                         <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>
                         <span class="pending-badge pending-badge-security">${securityCount} security</span>
+                        <span class="pending-badge">${keptBackCount} kept back</span>
                         <span class="pending-badge">${stateCounts.ready || 0} ready</span>
                         <span class="pending-badge">${stateCounts.pending || 0} scanning</span>
                         <span class="pending-badge">${stateCounts.unavailable || 0} unavailable</span>
@@ -675,15 +717,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
                 const triage = getServerApprovalTriage(server);
+                const approvalCounts = getPendingApprovalCounts(server);
+                const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
+                const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
                 const riskLevel = String(triage.risk_level || getRiskLevel(server)).toLowerCase();
                 const tags = Array.isArray(server.tags) && server.tags.length ? server.tags.join(", ") : "ungrouped";
                 const factsState = String(triage.facts_state || "stale").toLowerCase();
                 const actions = server.status === "pending_approval"
                     ? `
-                        <div class="triage-actions">
-                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${triage.can_approve_all ? "" : "disabled"}>Approve</button>
-                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${triage.can_approve_security ? "" : "disabled"} title="Approve only security updates">Security</button>
-                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
+	                        <div class="triage-actions">
+	                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${triage.can_approve_all ? "" : "disabled"}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
+	                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${triage.can_approve_security ? "" : "disabled"} title="Approve only standard security updates">Std sec (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
+	                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
+	                            ${triage.can_approve_full ? `<button type="button" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
+	                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
                             <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                         </div>
                     `
@@ -866,9 +913,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const safeStatus = safeStatusClass(server.status);
             const pendingCount = getPendingPackageCount(server);
             const securityCount = getSecurityUpdateCount(server);
+            const approvalCounts = getPendingApprovalCounts(server);
             const intelligence = getServerIntelligence(server.name);
             const timeline = getServerTimeline(server);
             const triage = getServerApprovalTriage(server);
+            const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
+            const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
             const health = intelligence?.health || {};
             const nextRun = intelligence?.next_run || {};
             const noRun = intelligence?.no_run || {};
@@ -877,7 +927,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
             const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
             const canRunUpdate = !!triage.can_run_checks && server.status !== "pending_approval";
-            const packageSummary = `${Number(triage.pending_packages ?? pendingCount)} pending · ${Number(triage.security_updates ?? securityCount)} security · ${Number(triage.cve_count || 0)} CVE`;
+            const packageSummaryParts = [
+                `${Number(triage.pending_packages ?? pendingCount)} pending`,
+                `${Number(triage.standard_packages ?? approvalCounts.standard)} standard`,
+                `${Number(triage.kept_back_packages ?? approvalCounts.keptBack)} kept back`,
+                `${Number(triage.security_updates ?? securityCount)} security`,
+            ];
+            if (keptBackSecurityCount > 0) {
+                packageSummaryParts.push(`${keptBackSecurityCount} kept-back security`);
+            }
+            packageSummaryParts.push(`${Number(triage.cve_count || 0)} CVE`);
+            const packageSummary = packageSummaryParts.join(" · ");
             const lastUpdateSummary = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history";
             const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run";
             title.textContent = server.name || "Selected host";
@@ -890,7 +950,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 </div>
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}">Approve</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only security updates">Security</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only standard security updates">Std security</button>` : ""}
+                    ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
+                    ${triage.can_approve_full ? `<button type="button" class="inline-btn" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
                     ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                     ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
@@ -1173,7 +1235,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 '#bulk-cancel',
                 '#bulk-autoremove',
                 '#drawer-approve-all',
-                '#drawer-approve-security'
+                '#drawer-approve-security',
+                '#drawer-approve-security-kept-back',
+                '#drawer-approve-full'
             ].join(','));
         }
 
@@ -1578,6 +1642,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const approvalActions = document.getElementById('status-drawer-approval-actions');
             const drawerApproveAllBtn = document.getElementById('drawer-approve-all');
             const drawerApproveSecurityBtn = document.getElementById('drawer-approve-security');
+            const drawerApproveKeptBackSecurityBtn = document.getElementById('drawer-approve-security-kept-back');
+            const drawerApproveFullBtn = document.getElementById('drawer-approve-full');
 
             if (!drawerOpen) {
                 drawer.classList.remove('open');
@@ -1596,10 +1662,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const safeStatusText = escapeHtml(server.status || "unknown");
             const isPendingApproval = server.status === "pending_approval";
             const hasPending = hasPendingUpdates(server);
+            const triage = getServerApprovalTriage(server);
             const approvalCounts = getPendingApprovalCounts(server);
+            const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
+            const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
             const securityApprovalLabel = approvalCounts.security === null
-                ? "Security (?)"
-                : `Security (${approvalCounts.security})`;
+                ? "Standard security (?)"
+                : `Standard security (${approvalCounts.security})`;
             if (drawerTab === "pending" && !hasPending) {
                 drawerTab = "logs";
                 drawerPendingScrollTop = 0;
@@ -1608,8 +1677,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `<span class="status-pill status-${safeStatus}">${safeStatusText}</span>`;
             approvalActions.classList.toggle('hidden', !isPendingApproval);
-            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.total})`;
+            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
+            drawerApproveAllBtn.disabled = approvalCounts.standard <= 0;
             drawerApproveSecurityBtn.textContent = securityApprovalLabel;
+            drawerApproveSecurityBtn.disabled = !approvalCounts.security || approvalCounts.security <= 0;
+            drawerApproveKeptBackSecurityBtn.textContent = `Kept-back security (${keptBackSecurityCount})`;
+            drawerApproveKeptBackSecurityBtn.disabled = !canApproveKeptBackSecurity;
+            drawerApproveKeptBackSecurityBtn.classList.toggle('hidden', !canApproveKeptBackSecurity);
+            drawerApproveFullBtn.textContent = `Full upgrade (${approvalCounts.full})`;
+            drawerApproveFullBtn.classList.toggle('hidden', !triage.can_approve_full);
 
             pendingTabBtn.disabled = !hasPending;
             pendingTabBtn.classList.toggle('active', drawerTab === "pending");
@@ -1697,14 +1773,24 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         : "None";
                     const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
                     const approvalCounts = getPendingApprovalCounts(server);
+                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
+                    const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
                     const securityApprovalLabel = approvalCounts.security === null
-                        ? "Security (?)"
-                        : `Security (${approvalCounts.security})`;
+                        ? "Std sec (?)"
+                        : `Std sec (${approvalCounts.security})`;
+                    const keptBackSecurityButton = canApproveKeptBackSecurity
+                        ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>`
+                        : "";
+                    const fullApprovalButton = triage.can_approve_full
+                        ? `<button type="button" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
+                        : "";
                     const actionButtons = server.status === 'pending_approval'
                         ? `
                             <div class="actions-grid timeline-actions">
-                                <button type="button" data-action="approve-all" data-name="${safeDataName}" title="Approve all updates">Approve (${approvalCounts.total})</button>
-                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only security updates">${securityApprovalLabel}</button>
+                                <button type="button" data-action="approve-all" data-name="${safeDataName}" title="Approve standard updates">Approve (${approvalCounts.standard})</button>
+                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only standard security updates">${securityApprovalLabel}</button>
+                                ${keptBackSecurityButton}
+                                ${fullApprovalButton}
                                 <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                             </div>
                           `
@@ -1739,7 +1825,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td class="timeline-summary-col">
                             <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
                             <span>${escapeHtml(timeline.summary || timelineWindow || "No activity")}</span>
-                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
                         </td>
                         <td class="actions-col">${actionButtons}</td>
                     `;
@@ -1826,6 +1912,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
             if (action === "approve-security") {
                 approveSecurityUpdates(name);
+                return;
+            }
+            if (action === "approve-security-kept-back") {
+                approveKeptBackSecurityUpdates(name);
+                return;
+            }
+            if (action === "approve-full") {
+                approveFullUpgrade(name);
                 return;
             }
             if (action === "cancel-upgrade") {
@@ -2297,6 +2391,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (!drawerServerName) return;
             approveSecurityUpdates(drawerServerName);
         });
+        document.getElementById('drawer-approve-security-kept-back').addEventListener('click', () => {
+            if (!drawerServerName) return;
+            approveKeptBackSecurityUpdates(drawerServerName);
+        });
+        document.getElementById('drawer-approve-full').addEventListener('click', () => {
+            if (!drawerServerName) return;
+            approveFullUpgrade(drawerServerName);
+        });
 
         const drawerLogsElement = document.getElementById('drawer-logs');
         drawerLogsElement.addEventListener('scroll', () => {
@@ -2354,6 +2456,65 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         async function approveSecurityUpdates(name) {
             if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
+                fetchServers(true);
+            }
+        }
+
+        async function approveKeptBackSecurityUpdates(name) {
+            const server = getServerByName(name);
+            const counts = getPendingApprovalCounts(server);
+            if (!counts.keptBackSecurityPlanAvailable) {
+                window.alert("Run a fresh package scan before approving kept-back security updates.");
+                return;
+            }
+            const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
+            const packages = pendingUpdates
+                .filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade))
+                .map(update => update?.install_package || update?.package)
+                .filter(Boolean);
+            const removed = counts.keptBackSecurityRemovedPackages;
+            const newPackages = counts.keptBackSecurityNewPackages;
+            const impact = [];
+            if (packages.length) impact.push(`Packages: ${packages.join(", ")}`);
+            if (newPackages.length) impact.push(`May install dependencies: ${newPackages.join(", ")}`);
+            if (removed.length) impact.push(`May remove packages: ${removed.join(", ")}`);
+            const confirmText = [
+                `Run kept-back security update on ${name}?`,
+                "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
+                impact.join("\n")
+            ].filter(Boolean).join("\n\n");
+            if (!window.confirm(confirmText)) return;
+            const body = removed.length ? { confirm_removals: true } : {};
+            if (await postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })) {
+                fetchServers(true);
+            }
+        }
+
+        async function approveFullUpgrade(name) {
+            const server = getServerByName(name);
+            const counts = getPendingApprovalCounts(server);
+            if (!counts.fullPlanAvailable) {
+                window.alert("Run a fresh package scan before approving full-upgrade.");
+                return;
+            }
+            const removed = counts.removedPackages;
+            const newPackages = counts.newPackages;
+            const impact = [];
+            if (newPackages.length) impact.push(`New packages: ${newPackages.join(", ")}`);
+            if (removed.length) impact.push(`Removed packages: ${removed.join(", ")}`);
+            const confirmText = [
+                `Run full-upgrade on ${name}?`,
+                impact.join("\n")
+            ].filter(Boolean).join("\n\n");
+            if (!window.confirm(confirmText)) return;
+            const body = removed.length ? { confirm_removals: true } : {};
+            if (await postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })) {
                 fetchServers(true);
             }
         }

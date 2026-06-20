@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=vscode-dark-20260601b">
-    <link rel="stylesheet" href="/static/css/index.css?v=status-list-expand-20260618a">
+    <link rel="stylesheet" href="/static/css/index.css?v=status-review-fixes-20260620f">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -43,85 +43,23 @@
             </section>
 
             <section class="variant-c-layout">
-                <aside class="fleet-rail fade-in" aria-label="Fleet filters">
-                    <div class="rail-section">
-                        <div class="eyebrow">Fleet filters</div>
-                        <h2>Fleet filters</h2>
-                        <p class="rail-summary" id="fleet-filter-summary">Waiting for hosts</p>
-                    </div>
-                    <div class="rail-section rail-controls">
-                        <div class="controls">
-                            <label class="sr-only" for="search">Search</label>
-                            <input type="text" id="search" placeholder="Search hosts or tags">
-                            <select id="status-filter" aria-label="Status">
-                                <option value="">All statuses</option>
-                                <option value="idle">Idle</option>
-                                <option value="updating">Updating</option>
-                                <option value="pending_approval">Pending approval</option>
-                                <option value="upgrading">Upgrading</option>
-                                <option value="autoremove">Autoremove</option>
-                                <option value="done">Done</option>
-                                <option value="error">Error</option>
-                            </select>
-                            <select id="auth-filter" aria-label="Authentication">
-                                <option value="">All auth</option>
-                                <option value="password">Has password</option>
-                                <option value="key">Has key</option>
-                            </select>
-                            <select id="group-by" aria-label="Group by">
-                                <option value="">No grouping</option>
-                                <option value="status">Group by status</option>
-                                <option value="tag">Group by tag</option>
-                            </select>
-                            <select id="page-size" aria-label="Page size">
-                                <option value="25">25 per page</option>
-                                <option value="50">50 per page</option>
-                                <option value="100">100 per page</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="rail-section rail-bulk">
-                        <div class="rail-label">Bulk actions</div>
-                        <div class="bulk-actions">
-                            <label class="select-page"><input type="checkbox" id="select-all"> Select page</label>
-                            <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
-                            <button class="inline-btn" type="button" id="bulk-approve">Approve</button>
-                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
-                            <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
-                        </div>
-                    </div>
-                    <div class="rail-section">
-                        <div class="rail-label">Status focus</div>
-                        <div id="fleet-status-filters" class="filter-pill-list" aria-label="Status focus filters"></div>
-                    </div>
-                    <div class="rail-section">
-                        <div class="rail-label">Tags</div>
-                        <div id="fleet-tag-list" class="filter-pill-list" aria-label="Tag filters"></div>
-                    </div>
-                    <div class="rail-section rail-auth">
-                        <div class="rail-label">Auth posture</div>
-                        <strong id="metric-auth-posture">--</strong>
-                        <span id="metric-auth-note">Password/key mix</span>
-                    </div>
-                </aside>
-
                 <section class="timeline-column">
                     <section class="metric-strip fade-in" aria-label="Fleet metrics">
-                        <article class="metric-item">
+                        <button type="button" class="metric-item metric-button" data-metric-filter="">
                             <span>Total hosts</span>
                             <strong id="metric-total-hosts">0</strong>
                             <small id="metric-total-note">No servers loaded</small>
-                        </article>
-                        <article class="metric-item">
+                        </button>
+                        <button type="button" class="metric-item metric-button" data-metric-filter="pending_approval">
                             <span>Pending approvals</span>
                             <strong id="metric-pending-approvals">0</strong>
                             <small>Awaiting operator review</small>
-                        </article>
-                        <article class="metric-item">
+                        </button>
+                        <button type="button" class="metric-item metric-button" data-metric-filter="active">
                             <span>Active phases</span>
                             <strong id="metric-prechecks">0</strong>
                             <small>Queued or running jobs</small>
-                        </article>
+                        </button>
                         <article class="metric-item metric-hidden">
                             <span>In progress</span>
                             <strong id="metric-active-runs">0</strong>
@@ -142,29 +80,116 @@
                             <strong id="metric-security-updates">0</strong>
                             <small>Security-marked packages</small>
                         </article>
-                        <article class="metric-item">
+                        <button type="button" class="metric-item metric-button" data-metric-filter="stale_facts">
                             <span>Facts stale</span>
                             <strong id="metric-stale-facts">0</strong>
-                            <small>Refresh host intelligence</small>
-                        </article>
-                        <article class="metric-item">
+                            <small>Host intelligence</small>
+                        </button>
+                        <button type="button" class="metric-item metric-button" data-metric-filter="high_risk">
                             <span>High risk CVE</span>
                             <strong id="metric-high-risk-cve">0</strong>
                             <small>CVE-exposed hosts</small>
-                        </article>
+                        </button>
                         <article class="metric-item metric-hidden">
                             <span>Reachable hosts</span>
                             <strong id="metric-reachable-hosts">0</strong>
                             <small>Not currently failed</small>
                         </article>
-                        <article class="metric-item metric-hidden">
-                            <span>Failed hosts</span>
-                            <strong id="metric-failed-hosts">0</strong>
-                            <small>Needs attention</small>
-                        </article>
-                    </section>
+	                        <article class="metric-item metric-hidden">
+	                            <span>Failed hosts</span>
+	                            <strong id="metric-failed-hosts">0</strong>
+	                            <small>Needs attention</small>
+	                        </article>
+		                    </section>
 
-                    <section class="workspace timeline-workspace fade-in" aria-labelledby="maintenance-timeline-title">
+		                    <section class="priority-attention-strip hidden fade-in" id="priority-attention-strip" aria-label="Priority attention">
+	                        <article class="ops-panel priority-panel">
+	                            <div class="panel-head">
+	                                <div>
+	                                    <div class="eyebrow">Failures</div>
+	                                    <h2>Needs attention</h2>
+	                                </div>
+	                                <span class="mini-badge danger" id="priority-failures-count">0</span>
+	                            </div>
+	                            <div id="priority-failures-panel" class="mini-list"></div>
+	                        </article>
+	                        <article class="ops-panel priority-panel">
+	                            <div class="panel-head">
+	                                <div>
+	                                    <div class="eyebrow">Reboot</div>
+	                                    <h2>Restart required</h2>
+	                                </div>
+	                                <span class="mini-badge warning" id="priority-reboot-count">0</span>
+	                            </div>
+	                            <div id="priority-reboot-panel" class="mini-list"></div>
+		                        </article>
+		                    </section>
+
+	                <aside class="fleet-rail fade-in" aria-label="Fleet filters">
+	                    <div class="rail-section">
+	                        <div class="eyebrow">Fleet filters</div>
+	                        <h2>Fleet filters</h2>
+	                        <p class="rail-summary" id="fleet-filter-summary">Waiting for hosts</p>
+	                    </div>
+	                    <div class="rail-section rail-controls">
+	                        <div class="controls">
+	                            <label class="sr-only" for="search">Search</label>
+	                            <input type="text" id="search" placeholder="Search hosts or tags">
+	                            <select id="status-filter" aria-label="Status">
+	                                <option value="">All statuses</option>
+	                                <option value="idle">Idle</option>
+	                                <option value="updating">Updating</option>
+	                                <option value="pending_approval">Pending approval</option>
+	                                <option value="upgrading">Upgrading</option>
+	                                <option value="autoremove">Autoremove</option>
+	                                <option value="done">Done</option>
+	                                <option value="error">Error</option>
+	                            </select>
+	                            <select id="auth-filter" aria-label="Authentication">
+	                                <option value="">All auth</option>
+	                                <option value="password">Has password</option>
+	                                <option value="key">Has key</option>
+	                            </select>
+	                            <select id="group-by" aria-label="Group by">
+	                                <option value="">No grouping</option>
+	                                <option value="status">Group by status</option>
+	                                <option value="tag">Group by tag</option>
+	                            </select>
+	                            <select id="page-size" aria-label="Page size">
+	                                <option value="25">25 per page</option>
+	                                <option value="50">50 per page</option>
+	                                <option value="100">100 per page</option>
+	                            </select>
+	                        </div>
+	                    </div>
+	                    <div class="rail-section rail-bulk">
+	                        <div class="rail-label">Bulk actions</div>
+	                        <div class="bulk-actions">
+	                            <label class="select-page"><input type="checkbox" id="select-all" aria-label="Select all visible hosts on this page"> Select page</label>
+	                            <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
+	                            <button class="inline-btn" type="button" id="bulk-approve">Approve standard</button>
+	                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
+	                            <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
+	                            <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
+	                            <p class="bulk-hint" id="bulk-action-hint">No hosts selected</p>
+	                        </div>
+	                    </div>
+	                    <div class="rail-section">
+	                        <div class="rail-label">Status focus</div>
+	                        <div id="fleet-status-filters" class="filter-pill-list" aria-label="Status focus filters"></div>
+	                    </div>
+	                    <div class="rail-section">
+	                        <div class="rail-label">Tags</div>
+	                        <div id="fleet-tag-list" class="filter-pill-list" aria-label="Tag filters"></div>
+	                    </div>
+	                    <div class="rail-section rail-auth">
+	                        <div class="rail-label">Auth posture</div>
+	                        <strong id="metric-auth-posture">--</strong>
+	                        <span id="metric-auth-note">Password/key mix</span>
+	                    </div>
+	                </aside>
+
+		                    <section class="workspace timeline-workspace fade-in" aria-labelledby="maintenance-timeline-title">
                         <div class="workspace-head">
                             <div>
                                 <div class="eyebrow">Maintenance queue</div>
@@ -413,6 +438,7 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
-    <script src="/static/js/index.js?v=status-list-expand-20260618a"></script>
+    <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
+    <script src="/static/js/index.js?v=status-review-fixes-20260620f"></script>
 </body>
 </html>

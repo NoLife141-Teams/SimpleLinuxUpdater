@@ -15,9 +15,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let page = 1;
         let selectedServers = new Set();
         let hoveredName = null;
-        let expandedHostFactsServers = new Set();
-        let expandedMiniLists = new Set();
-        let fetchInFlight = false;
+	        let expandedHostFactsServers = new Set();
+	        let expandedMiniLists = new Set();
+	        let activePhaseTooltipTarget = null;
+	        let refreshAllFactsInFlight = false;
+	        let bulkActionInFlightLabel = "";
+	        let singleHostActionsInFlight = new Set();
+	        let fetchInFlight = false;
         let fetchQueued = false;
         let queuedForceRender = false;
         let fleetQuickFilter = "";
@@ -71,9 +75,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         ]);
         const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
         const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
+        const transientActionBlockingStatuses = new Set(["updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
 
         function isRunningTimelineState(state) {
             return ["active", "queued"].includes(String(state || "").toLowerCase());
+        }
+
+        function statusBlocksTransientAction(status) {
+            return transientActionBlockingStatuses.has(String(status || "").trim().toLowerCase());
         }
 
         function setText(id, value) {
@@ -227,7 +236,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function hasPendingUpdates(server) {
-            if (!server || server.status !== "pending_approval") return false;
+            if (!server || !isPendingApprovalHost(server)) return false;
             return Array.isArray(server.pending_updates) && server.pending_updates.length > 0;
         }
 
@@ -311,31 +320,73 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return dashboardByServer.get(name) || null;
         }
 
-        function getServerTimeline(server) {
-            const intelligence = getServerIntelligence(server?.name);
-            return intelligence?.timeline || {
-                current_phase: "",
-                current_label: "Idle",
+	        function getServerTimeline(server) {
+	            const intelligence = getServerIntelligence(server?.name);
+	            return intelligence?.timeline || {
+	                current_phase: "",
+	                current_label: "Idle",
                 state: "idle",
                 progress_pct: 0,
                 summary: "No maintenance activity",
                 phases: []
-            };
-        }
+	            };
+	        }
 
-        function getServerApprovalTriage(server) {
-            const intelligence = getServerIntelligence(server?.name);
-            const approvalCounts = getPendingApprovalCounts(server);
-            return intelligence?.approval_triage || {
-                eligible: hasPendingUpdates(server) || approvalCounts.total > 0,
-                pending_packages: approvalCounts.total,
-                security_updates: getSecurityUpdateCount(server),
+	        function isRuntimePendingApproval(server) {
+	            return !!server && server.status === "pending_approval";
+	        }
+
+	        function isTimelinePendingApproval(server) {
+	            return !!server && getServerTimeline(server).current_phase === "pending_approval";
+	        }
+
+	        function isPendingApprovalHost(server) {
+	            return isRuntimePendingApproval(server) || isTimelinePendingApproval(server);
+	        }
+
+	        function pendingApprovalDriftReason(server) {
+	            if (!server || isRuntimePendingApproval(server) || !isTimelinePendingApproval(server)) return "";
+	            const runtimeStatus = statusLabel(server.status || "unknown");
+	            const timeline = getServerTimeline(server);
+	            const summary = String(timeline.summary || "").trim();
+	            const suffix = summary && summary.toLowerCase() !== "no maintenance activity"
+	                ? `: ${summary}`
+	                : ". Run a fresh update check or inspect logs before approving";
+	            return `Timeline is waiting for approval, but runtime status is ${runtimeStatus}${suffix}`;
+	        }
+
+	        function getServerFailureReason(server) {
+	            const intelligence = getServerIntelligence(server?.name);
+	            const timeline = getServerTimeline(server);
+	            const failed = isFailedServer(server) || timeline?.state === "error";
+	            if (!failed) return "";
+	            const candidates = [
+	                timeline?.summary,
+	                intelligence?.last_update?.failure_cause,
+	                intelligence?.last_failed_update?.failure_cause,
+	                intelligence?.last_failed?.failure_cause,
+	                intelligence?.last_failure?.failure_cause,
+	                server?.failure_cause
+	            ];
+	            const reason = candidates
+	                .map(value => String(value || "").trim())
+	                .find(value => value && value.toLowerCase() !== "no maintenance activity");
+	            return reason || "Completed with errors";
+	        }
+
+	        function getServerApprovalTriage(server, options = {}) {
+	            const intelligence = getServerIntelligence(server?.name);
+	            const approvalCounts = getPendingApprovalCounts(server);
+	            const triage = intelligence?.approval_triage || {
+	                eligible: hasPendingUpdates(server) || approvalCounts.total > 0,
+	                pending_packages: approvalCounts.total,
+	                security_updates: getSecurityUpdateCount(server),
                 cve_count: (Array.isArray(server?.pending_updates) ? server.pending_updates : [])
                     .reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0),
                 risk_level: getRiskLevel(server),
                 risk_label: getRiskLabel(server),
                 risk_order: 1,
-                facts_state: "stale",
+                facts_state: "unknown",
                 last_check_display: "--",
                 standard_packages: approvalCounts.standard,
                 kept_back_packages: approvalCounts.keptBack,
@@ -346,27 +397,51 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 can_approve_kept_back_security: server?.status === "pending_approval" && (approvalCounts.keptBackSecurity || 0) > 0 && approvalCounts.keptBackSecurityPlanAvailable,
                 can_approve_full: server?.status === "pending_approval" && approvalCounts.fullPlanAvailable && (approvalCounts.keptBack > 0 || approvalCounts.newPackages.length > 0 || approvalCounts.removedPackages.length > 0),
                 can_cancel: server?.status === "pending_approval",
-                can_refresh_facts: true,
-                can_run_checks: true
-            };
-        }
+	                can_refresh_facts: !server || (!statusBlocksTransientAction(server.status) && !isRunningTimelineState(getServerTimeline(server).state)),
+	                can_run_checks: !server || (!statusBlocksTransientAction(server.status) && !isRunningTimelineState(getServerTimeline(server).state))
+	            };
+	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
+	                return triage;
+	            }
+	            return {
+	                ...triage,
+	                can_approve_all: false,
+	                can_approve_security: false,
+	                can_approve_kept_back_security: false,
+	                can_approve_full: false,
+	                can_cancel: false,
+	                can_refresh_facts: false,
+	                can_run_checks: false
+	            };
+	        }
+
+	        function isFactsStateStale(server) {
+	            return String(getServerApprovalTriage(server).facts_state || "").toLowerCase() === "stale";
+	        }
+
+	        function hasCVEExposure(server) {
+	            return Number(getServerApprovalTriage(server).cve_count || 0) > 0;
+	        }
 
         function timelinePhaseMap(server) {
             const phases = Array.isArray(getServerTimeline(server)?.phases) ? getServerTimeline(server).phases : [];
             return new Map(phases.map(phase => [phase.key, phase]));
         }
 
-        function timelinePhaseCell(server, key) {
-            const phase = timelinePhaseMap(server).get(key) || { state: "pending", progress_pct: 0 };
-            const state = String(phase.state || "pending").toLowerCase();
-            const pct = Math.max(0, Math.min(100, Number(phase.progress_pct || 0)));
-            const title = [phase.label, phase.summary, phase.updated_at_display].filter(Boolean).join(" · ");
-            return `
-                <span class="timeline-dot phase-${escapeHtml(state)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(`${phase.label || key}: ${state}`)}">
-                    <span class="${progressClass(pct)}"></span>
-                </span>
-            `;
-        }
+	        function timelinePhaseCell(server, key) {
+	            const phase = timelinePhaseMap(server).get(key) || { state: "pending", progress_pct: 0 };
+	            const state = String(phase.state || "pending").toLowerCase();
+	            const pct = Math.max(0, Math.min(100, Number(phase.progress_pct || 0)));
+	            const label = phase.label || key;
+	            const summary = phase.summary || "";
+	            const updatedAt = phase.updated_at_display || phase.updated_at || "";
+	            const aria = [label, state, summary, updatedAt].filter(Boolean).join(" · ");
+	            return `
+                <span class="timeline-dot phase-${escapeHtml(state)}" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-phase-label="${escapeHtml(label)}" data-phase-state="${escapeHtml(state)}" data-phase-summary="${escapeHtml(summary)}" data-phase-time="${escapeHtml(updatedAt)}" data-phase-progress="${escapeHtml(String(pct))}">
+	                    <span class="${progressClass(pct)}"></span>
+	                </span>
+	            `;
+	        }
 
         function hasEffectiveKey(server) {
             return !!server?.has_key || (!!globalKeyAvailable && !server?.has_key);
@@ -420,22 +495,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderDashboardMetrics() {
             const total = allServers.length;
             const reachable = allServers.filter(isReachableServer).length;
-            const pending = Number(dashboardSummary?.fleet?.pending_approval ?? allServers.filter(server => server.status === "pending_approval").length);
+            const pending = Number(dashboardSummary?.fleet?.pending_approval ?? allServers.filter(isPendingApprovalHost).length);
             const active = Number(dashboardSummary?.fleet?.in_progress ?? allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length);
             const failed = allServers.filter(server => server.status === "error").length;
             const done = Number(dashboardSummary?.fleet?.done ?? allServers.filter(server => server.status === "done").length);
-            const prechecks = Number(dashboardSummary?.fleet?.prechecks_running ?? active);
-            const highRiskCVE = Number(dashboardSummary?.fleet?.high_risk_cve ?? 0);
+            const highRiskCVE = Number(dashboardSummary?.fleet?.high_risk_cve ?? allServers.filter(hasCVEExposure).length);
             const pendingPackages = Number(dashboardSummary?.fleet?.pending_packages ?? allServers.reduce((sum, server) => sum + getPendingPackageCount(server), 0));
             const securityUpdates = Number(dashboardSummary?.fleet?.security_updates ?? allServers.reduce((sum, server) => sum + getSecurityUpdateCount(server), 0));
-            const staleFacts = Number(dashboardSummary?.fleet?.stale_facts || 0);
+            const staleFacts = Number(dashboardSummary?.fleet?.stale_facts ?? allServers.filter(isFactsStateStale).length);
             const auth = getAuthPostureMetrics(allServers);
 
             setText("metric-total-hosts", String(total));
             setText("metric-total-note", total === 0 ? "No servers loaded" : `${pluralize(total, "host")} monitored`);
             setText("metric-reachable-hosts", String(reachable));
             setText("metric-pending-approvals", String(pending));
-            setText("metric-prechecks", String(prechecks));
+            setText("metric-prechecks", String(active));
             setText("metric-active-runs", String(active));
             setText("metric-done-hosts", String(done));
             setText("metric-failed-hosts", String(failed));
@@ -445,13 +519,49 @@ const LOG_BOTTOM_THRESHOLD = 20;
             setText("metric-high-risk-cve", String(highRiskCVE));
             setText("metric-auth-posture", auth.label);
             setText("metric-auth-note", `${auth.withServerKey} server key · ${auth.withGlobalKey} global SSH key · ${auth.withPassword} password · ${auth.missing} missing`);
+            updateRefreshAllFactsState();
+            updateMetricFilterState();
+        }
+
+        function updateMetricFilterState() {
+            document.querySelectorAll('[data-metric-filter]').forEach(button => {
+                const key = button.dataset.metricFilter || "";
+                const active = fleetQuickFilter === key;
+                const label = quickFilterActionLabel(key);
+                button.classList.toggle('active', active);
+                button.closest('.metric-item')?.classList.toggle('active', active);
+                button.setAttribute('aria-pressed', active ? "true" : "false");
+                button.setAttribute('aria-label', label);
+                button.title = label;
+            });
+        }
+
+        function quickFilterActionLabel(key) {
+            switch (key) {
+                case "pending_approval":
+                    return "Show hosts waiting for approval";
+                case "active":
+                    return "Show hosts with active maintenance phases";
+                case "stale_facts":
+                    return "Show hosts with stale facts";
+                case "high_risk":
+                    return "Show hosts with high risk CVE exposure";
+                default:
+                    return "Show all hosts";
+            }
+        }
+
+        function buttonStateAttrs(enabled, enabledTitle, disabledTitle) {
+            const title = enabled ? enabledTitle : disabledTitle;
+            return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
         function renderPendingUpdatesHtml(server, includeHeading = true) {
             const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
-            if (server?.status !== "pending_approval" || updates.length === 0) {
+            if (!hasPendingUpdates(server)) {
                 return `<p class="drawer-empty">No pending update details for this server.</p>`;
             }
+            const driftReason = pendingApprovalDriftReason(server);
 
             const hasPending = updates.some(update => String(update.cve_state || "").toLowerCase() === "pending");
             const securityCount = updates.filter(update => !!update.security).length;
@@ -504,6 +614,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return `
                 <div class="pending-updates">
                     ${includeHeading ? "<h4>Pending updates (security first)</h4>" : ""}
+                    ${driftReason ? `<p class="pending-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                     <div class="pending-summary">
                         <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>
                         <span class="pending-badge pending-badge-security">${securityCount} security</span>
@@ -587,26 +698,28 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const safeDataName = escapeHtml(server.name || "");
                 const status = statusLabel(server.status);
                 const risk = getRiskLabel(server);
-                const action = options.action || "open-drawer";
-                const actionLabel = options.actionLabel || "Logs";
-                const actionTab = options.actionTab || "logs";
-                const detail = options.compactDetail
-                    ? risk
-                    : `${status} · ${risk}`;
-                return `
-                    <div class="mini-row compact-row">
-                        <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
-                            <strong>${safeName || "Unnamed host"}</strong>
-                            <span>${escapeHtml(detail)}</span>
-                        </button>
-                        <button type="button" class="mini-action" data-action="${action}" data-name="${safeDataName}" data-tab="${actionTab}">${actionLabel}</button>
-                    </div>
-                `;
-            });
-            if (expandable && servers.length > limit) {
-                const moreText = expanded
-                    ? (options.lessLabel || "Show fewer")
-                    : (typeof options.moreLabel === "function" ? options.moreLabel(hiddenCount, servers.length) : `+${hiddenCount} more`);
+	                const action = options.action || "open-drawer";
+	                const actionLabel = options.actionLabel || "Logs";
+	                const actionTab = options.actionTab || "logs";
+	                const detail = typeof options.detail === "function"
+	                    ? options.detail(server)
+	                    : options.compactDetail
+	                    ? risk
+	                    : `${status} · ${risk}`;
+	                return `
+	                    <div class="mini-row compact-row">
+	                        <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
+	                            <strong>${safeName || "Unnamed host"}</strong>
+	                            <span title="${escapeHtml(detail)}">${escapeHtml(detail)}</span>
+	                        </button>
+	                        <button type="button" class="mini-action" data-action="${action}" data-name="${safeDataName}" data-tab="${actionTab}">${actionLabel}</button>
+	                    </div>
+	                `;
+	            });
+	            if (expandable && servers.length > limit) {
+	                const moreText = expanded
+	                    ? (options.lessLabel || "Show fewer")
+	                    : (typeof options.moreLabel === "function" ? options.moreLabel(hiddenCount, servers.length) : `Show all ${servers.length}`);
                 rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${escapeHtml(id)}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
             } else if (hiddenCount > 0) {
                 const moreText = typeof options.moreLabel === "function"
@@ -617,9 +730,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             el.innerHTML = rows.join("");
         }
 
-        function compareRiskPriority(a, b) {
-            const aTriage = getServerApprovalTriage(a);
-            const bTriage = getServerApprovalTriage(b);
+	        function compareRiskPriority(a, b) {
+	            const aTriage = getServerApprovalTriage(a);
+	            const bTriage = getServerApprovalTriage(b);
             const fallbackOrder = {
                 critical: 4,
                 high: 4,
@@ -634,8 +747,39 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 || Number(bTriage.cve_count || 0) - Number(aTriage.cve_count || 0)
                 || Number(bTriage.security_updates || 0) - Number(aTriage.security_updates || 0)
                 || Number(bTriage.pending_packages || 0) - Number(aTriage.pending_packages || 0)
-                || String(a.name || "").localeCompare(String(b.name || ""));
-        }
+	                || String(a.name || "").localeCompare(String(b.name || ""));
+	        }
+
+	        function getFailureTimestamp(server) {
+	            const intelligence = getServerIntelligence(server?.name);
+	            const timeline = getServerTimeline(server);
+	            const candidates = [
+	                intelligence?.last_failed_update?.finished_at,
+	                intelligence?.last_failed?.finished_at,
+	                intelligence?.last_failure?.finished_at,
+	                intelligence?.last_update?.finished_at,
+	                timeline?.updated_at
+	            ];
+	            const parsed = candidates
+	                .map(value => value ? new Date(value).getTime() : 0)
+	                .find(value => Number.isFinite(value) && value > 0);
+	            return parsed || 0;
+	        }
+
+	        function compareFailurePriority(a, b) {
+	            const aTriage = getServerApprovalTriage(a);
+	            const bTriage = getServerApprovalTriage(b);
+	            const riskDelta = Number(bTriage.risk_order || 0) - Number(aTriage.risk_order || 0);
+	            if (riskDelta !== 0) return riskDelta;
+	            const failureDelta = getFailureTimestamp(b) - getFailureTimestamp(a);
+	            if (failureDelta !== 0) return failureDelta;
+	            return String(a.name || "").localeCompare(String(b.name || ""));
+	        }
+
+	        function failureMiniDetail(server) {
+	            const reason = getServerFailureReason(server);
+	            return reason ? `${statusLabel(server.status)} · ${reason}` : `${statusLabel(server.status)} · ${getRiskLabel(server)}`;
+	        }
 
         function renderTagSummary() {
             const el = document.getElementById('tag-summary');
@@ -663,22 +807,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const statusEl = document.getElementById('fleet-status-filters');
             if (statusEl) {
                 const activeCount = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length;
-                const staleCount = allServers.filter(server => getServerApprovalTriage(server).facts_state === "stale").length;
-                const highRiskCount = allServers.filter(server => getServerApprovalTriage(server).cve_count > 0 || getRiskLevel(server) === "critical").length;
+                const staleCount = allServers.filter(isFactsStateStale).length;
+                const highRiskCount = allServers.filter(hasCVEExposure).length;
                 const filters = [
                     { key: "", label: "All", count: allServers.length },
-                    { key: "pending_approval", label: "Pending", count: allServers.filter(server => server.status === "pending_approval").length },
+                    { key: "pending_approval", label: "Pending", count: allServers.filter(isPendingApprovalHost).length },
                     { key: "active", label: "Active", count: activeCount },
                     { key: "stale_facts", label: "Stale", count: staleCount },
                     { key: "high_risk", label: "High risk", count: highRiskCount }
                 ];
                 statusEl.innerHTML = filters.map(item => `
-                    <button type="button" class="filter-pill${fleetQuickFilter === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}">
+                    <button type="button" class="filter-pill${fleetQuickFilter === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
                         <span>${escapeHtml(item.label)}</span>
                         <strong>${item.count}</strong>
                     </button>
                 `).join("");
             }
+            updateMetricFilterState();
 
             const tagEl = document.getElementById('fleet-tag-list');
             if (!tagEl) return;
@@ -692,22 +837,25 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 tagEl.innerHTML = `<span class="empty-state compact-empty">No tags</span>`;
                 return;
             }
-            tagEl.innerHTML = [
-                `<button type="button" class="filter-pill${fleetTagFilter === "" ? " active" : ""}" data-fleet-tag=""><span>All tags</span><strong>${allServers.length}</strong></button>`,
-                ...entries.slice(0, 8).map(([tag, count]) => `
-                    <button type="button" class="filter-pill${fleetTagFilter === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}">
-                        <span>${escapeHtml(tag)}</span>
-                        <strong>${count}</strong>
-                    </button>
-                `)
-            ].join("");
+	            tagEl.innerHTML = [
+	                `<button type="button" class="filter-pill${fleetTagFilter === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
+	                ...entries.slice(0, 8).map(([tag, count]) => `
+	                    <button type="button" class="filter-pill${fleetTagFilter === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
+	                        <span>${escapeHtml(tag)}</span>
+	                        <strong>${count}</strong>
+	                    </button>
+	                `)
+	            ].join("");
         }
 
         function renderApprovalTriage() {
             const body = document.getElementById('approval-triage-body');
             if (!body) return;
+            const listID = "approval-triage";
+            const limit = 12;
+            const expanded = expandedMiniLists.has(listID);
             const servers = applyFilters(allServers)
-                .filter(server => getServerApprovalTriage(server).eligible || server.status === "pending_approval")
+                .filter(server => getServerApprovalTriage(server).eligible || isPendingApprovalHost(server))
                 .sort((a, b) => {
                     const aTriage = getServerApprovalTriage(a);
                     const bTriage = getServerApprovalTriage(b);
@@ -722,37 +870,54 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 body.innerHTML = `<tr><td colspan="9">${miniEmpty("No approvals require triage.")}</td></tr>`;
                 return;
             }
-            body.innerHTML = servers.slice(0, 12).map(server => {
+            const rows = servers.slice(0, expanded ? servers.length : limit).map(server => {
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
                 const triage = getServerApprovalTriage(server);
                 const approvalCounts = getPendingApprovalCounts(server);
                 const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-                const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
-                const riskLevel = String(triage.risk_level || getRiskLevel(server)).toLowerCase();
-                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags.join(", ") : "ungrouped";
-                const factsState = String(triage.facts_state || "stale").toLowerCase();
-                const actions = server.status === "pending_approval"
-                    ? `
-	                        <div class="triage-actions">
-	                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${triage.can_approve_all ? "" : "disabled"}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
-	                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${triage.can_approve_security ? "" : "disabled"} title="Approve only standard security updates">Std sec (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
-	                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
-	                            ${triage.can_approve_full ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
-	                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
+                const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
+                const canApproveAll = !!triage.can_approve_all;
+                const canApproveSecurity = !!triage.can_approve_security;
+	                const riskLevel = String(triage.risk_level || getRiskLevel(server)).toLowerCase();
+	                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags.join(", ") : "ungrouped";
+	                const factsState = String(triage.facts_state || "unknown").toLowerCase();
+	                const canUpdate = canRunUpdateAction(server);
+	                const canRefreshFacts = canRefreshFactsAction(server);
+	                const rowSelected = selectedServerName === server.name;
+	                const driftReason = pendingApprovalDriftReason(server);
+	                const driftNotice = driftReason
+	                    ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
+	                    : "";
+	                const actions = server.status === "pending_approval"
+	                    ? `
+		                        <div class="triage-actions">
+		                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
+		                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Std sec (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
+		                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
+		                            ${triage.can_approve_full ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
+		                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
                             <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
-                        </div>
+	                        </div>
                     `
-                    : `
-                        <div class="triage-actions">
-                            <button type="button" data-action="update-server" data-name="${safeDataName}" ${triage.can_run_checks ? "" : "disabled"}>Update</button>
-                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" title="Refresh host facts">Facts</button>
-                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                        </div>
-                    `;
+	                    : driftReason
+	                        ? `
+	                            <div class="triage-actions triage-actions-note">
+	                                ${driftNotice}
+	                                ${hasPendingUpdates(server) ? `<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
+	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+	                            </div>
+		                    `
+	                    : `
+	                        <div class="triage-actions">
+	                            <button type="button" data-action="update-server" data-name="${safeDataName}" ${canUpdate ? "" : "disabled"} title="${canUpdate ? "Run update checks" : "Host cannot run update checks right now"}">Update</button>
+	                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Facts</button>
+	                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+	                        </div>
+		                    `;
                 return `
-                    <tr data-name="${safeDataName}" class="${selectedServerName === server.name ? "row-selected" : ""}">
-                        <td><button type="button" class="select-host" data-select-host="${safeDataName}">${safeName || "Unnamed host"}</button></td>
+                    <tr data-name="${safeDataName}" class="${rowSelected ? "row-selected" : ""}" aria-selected="${rowSelected ? "true" : "false"}">
+                        <td><button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? "true" : "false"}">${safeName || "Unnamed host"}</button></td>
                         <td>${escapeHtml(tags)}</td>
                         <td>${Number(triage.pending_packages || 0)}</td>
                         <td>${Number(triage.security_updates || 0)}</td>
@@ -763,7 +928,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td>${actions}</td>
                     </tr>
                 `;
-            }).join("");
+            });
+            if (servers.length > limit) {
+                const label = expanded ? "Show fewer triage hosts" : `Show all ${servers.length} triage hosts`;
+                rows.push(`<tr class="triage-more-row"><td colspan="9"><button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(label)}</button></td></tr>`);
+            }
+            body.innerHTML = rows.join("");
         }
 
         function renderScheduledRuns() {
@@ -799,7 +969,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
             const hiddenCount = scheduled.length - visibleScheduled.length;
             if (scheduled.length > limit) {
-                const moreText = expanded ? "Show fewer scheduled runs" : `+${hiddenCount} more scheduled`;
+	                const moreText = expanded ? "Show fewer scheduled runs" : `Show all ${scheduled.length} scheduled runs`;
                 rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
             }
             el.innerHTML = rows.join("");
@@ -850,27 +1020,27 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 limit: 1,
                 expandable: true,
                 compactDetail: true,
-                action: "open-drawer",
-                actionLabel: "Logs",
-                lessLabel: "Show fewer reboot hosts",
-                moreLabel: hidden => `+${hidden} more reboot host${hidden === 1 ? "" : "s"}`
-            });
-            renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", {
-                limit: 1,
+	                action: "open-drawer",
+	                actionLabel: "Logs",
+	                lessLabel: "Show fewer reboot hosts",
+	                moreLabel: (_hidden, total) => `Show all ${total} reboot host${total === 1 ? "" : "s"}`
+	            });
+	            renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", {
+	                limit: 1,
                 expandable: true,
                 compactDetail: true,
                 action: "open-drawer",
-                actionLabel: "Review",
-                actionTab: "pending",
-                lessLabel: "Show fewer risk hosts",
-                moreLabel: hidden => `+${hidden} more risk host${hidden === 1 ? "" : "s"}`
-            });
+	                actionLabel: "Review",
+	                actionTab: "pending",
+	                lessLabel: "Show fewer risk hosts",
+	                moreLabel: (_hidden, total) => `Show all ${total} risk host${total === 1 ? "" : "s"}`
+	            });
             renderCommandHistoryPanel();
         }
 
-        function renderCommandHistoryPanel() {
-            const el = document.getElementById('command-history-panel');
-            if (!el) return;
+	        function renderCommandHistoryPanel() {
+	            const el = document.getElementById('command-history-panel');
+	            if (!el) return;
             const intelligence = getServerIntelligence(selectedServerName);
             const history = Array.isArray(intelligence?.command_history) ? intelligence.command_history : [];
             setText("command-history-count", String(history.length));
@@ -897,13 +1067,47 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
             const hiddenCount = history.length - visibleHistory.length;
             if (history.length > limit) {
-                const moreText = expanded ? "Show fewer commands" : `+${hiddenCount} more command${hiddenCount === 1 ? "" : "s"}`;
+	                const moreText = expanded ? "Show fewer commands" : `Show all ${history.length} command${history.length === 1 ? "" : "s"}`;
                 rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
             }
-            el.innerHTML = rows.join("");
-        }
+	            el.innerHTML = rows.join("");
+	        }
 
-        function renderSummaryBadges() {
+	        function renderPriorityAttention(failedServers, rebootHosts) {
+	            const strip = document.getElementById('priority-attention-strip');
+	            if (!strip) return;
+	            const hasPriority = failedServers.length > 0 || rebootHosts.length > 0;
+	            strip.classList.toggle('hidden', !hasPriority);
+	            setText("priority-failures-count", String(failedServers.length));
+	            setText("priority-reboot-count", String(rebootHosts.length));
+	            if (!hasPriority) {
+	                const failuresPanel = document.getElementById("priority-failures-panel");
+	                const rebootPanel = document.getElementById("priority-reboot-panel");
+	                if (failuresPanel) failuresPanel.innerHTML = "";
+	                if (rebootPanel) rebootPanel.innerHTML = "";
+	                return;
+	            }
+	            renderMiniServerList("priority-failures-panel", failedServers, "No failures.", {
+	                limit: 1,
+	                expandable: true,
+	                detail: failureMiniDetail,
+	                action: "open-drawer",
+	                actionLabel: "Logs",
+	                lessLabel: "Show fewer failures",
+	                moreLabel: (_hidden, total) => `Show all ${total} failure${total === 1 ? "" : "s"}`
+	            });
+	            renderMiniServerList("priority-reboot-panel", rebootHosts, "No reboot required.", {
+	                limit: 1,
+	                expandable: true,
+	                compactDetail: true,
+	                action: "open-drawer",
+	                actionLabel: "Logs",
+	                lessLabel: "Show fewer reboot hosts",
+	                moreLabel: (_hidden, total) => `Show all ${total} reboot host${total === 1 ? "" : "s"}`
+	            });
+	        }
+
+	        function renderSummaryBadges() {
             const policyEl = document.getElementById('policy-summary-label');
             if (policyEl) {
                 const count = Array.isArray(policySummary) ? policySummary.length : null;
@@ -939,15 +1143,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const timeline = getServerTimeline(server);
             const triage = getServerApprovalTriage(server);
             const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-            const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
+            const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
+            const canApproveAll = !!triage.can_approve_all;
+            const canApproveSecurity = !!triage.can_approve_security;
             const health = intelligence?.health || {};
             const nextRun = intelligence?.next_run || {};
             const noRun = intelligence?.no_run || {};
             const lastUpdate = intelligence?.last_update;
             const lastFailed = intelligence?.last_failed_update;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
-            const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
-            const canRunUpdate = !!triage.can_run_checks && server.status !== "pending_approval";
+	            const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
+		            const canRunUpdate = canRunUpdateAction(server);
+		            const canRunAutoremove = canRunAutoremoveAction(server);
+		            const canRefreshFacts = canRefreshFactsAction(server);
+		            const canRunSudoers = canRunSudoersAction(server);
+		            const driftReason = pendingApprovalDriftReason(server);
             const factsMoreOpen = expandedHostFactsServers.has(server.name);
             const packageSummaryParts = [
                 `${Number(triage.pending_packages ?? pendingCount)} pending`,
@@ -970,31 +1180,32 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timeline.current_label || "Idle")}</span>
                 </div>
+                ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}">Approve</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only standard security updates">Std security</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Std security (${approvalCounts.security ?? 0})</button>` : ""}
                     ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
-                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
+	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                     ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
                 </div>
                 <div class="inspector-tools">
                     <span class="mini-label">Tools</span>
-                    <div class="inspector-actions inspector-actions-secondary">
-                        <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}">Autoremove</button>
-                        <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}">Facts</button>
-                        <button type="button" class="inline-btn" data-action="enable-apt" data-name="${safeDataName}" title="Enable passwordless apt">Enable apt</button>
-                        <button type="button" class="inline-btn" data-action="disable-apt" data-name="${safeDataName}" title="Disable passwordless apt">Disable apt</button>
-                    </div>
-                </div>
+		                    <div class="inspector-actions inspector-actions-secondary">
+		                        <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}" ${canRunAutoremove ? "" : "disabled"} title="${canRunAutoremove ? "Run apt autoremove" : "Host cannot run autoremove right now"}">Autoremove</button>
+		                        <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Facts</button>
+	                        <button type="button" class="inline-btn" data-action="enable-apt" data-name="${safeDataName}" ${canRunSudoers ? "" : "disabled"} title="${canRunSudoers ? "Enable passwordless apt" : "Host cannot change passwordless apt while another action is active"}">Enable apt</button>
+	                        <button type="button" class="inline-btn" data-action="disable-apt" data-name="${safeDataName}" ${canRunSudoers ? "" : "disabled"} title="${canRunSudoers ? "Disable passwordless apt" : "Host cannot change passwordless apt while another action is active"}">Disable apt</button>
+	                    </div>
+	                </div>
                 <dl class="host-facts host-facts-primary">
                     <div><dt>Packages</dt><dd>${escapeHtml(packageSummary)}</dd></div>
                     <div><dt>OS</dt><dd>${escapeHtml(health.os_pretty_name || "Facts not collected")}</dd></div>
                     <div><dt>Reboot</dt><dd>${escapeHtml(rebootText)}</dd></div>
                     <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskCapacity(health.disk_free_kb, health.disk_total_kb)}`)}</dd></div>
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>
-                    <div><dt>Facts</dt><dd>${escapeHtml(triage.facts_state || "stale")} · ${escapeHtml(factsAge)}</dd></div>
+                    <div><dt>Facts</dt><dd>${escapeHtml(triage.facts_state || "unknown")} · ${escapeHtml(factsAge)}</dd></div>
                 </dl>
                 <details class="inspector-more facts-more" data-name="${safeDataName}" ${factsMoreOpen ? "open" : ""}>
                     <summary>More host facts</summary>
@@ -1016,23 +1227,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
             `;
         }
 
-        function renderDashboardPanels() {
-            const activeServers = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
-            const failedServers = allServers.filter(server => isFailedServer(server) || getServerTimeline(server).state === "error");
-            setText("active-operations-count", String(activeServers.length));
-            setText("failed-hosts-count", String(failedServers.length));
-            renderMiniServerList("active-operations", activeServers, "No active runs.", {
-                limit: 1,
-                expandable: true,
-                lessLabel: "Show fewer running operations",
-                moreLabel: hidden => `+${hidden} more running`
-            });
-            renderMiniServerList("failed-hosts-panel", failedServers, "No failures.", {
-                limit: 1,
-                expandable: true,
-                lessLabel: "Show fewer failures",
-                moreLabel: hidden => `+${hidden} more failure${hidden === 1 ? "" : "s"}`
-            });
+	        function renderDashboardPanels() {
+	            const activeServers = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
+	            const failedServers = allServers
+	                .filter(server => isFailedServer(server) || getServerTimeline(server).state === "error")
+	                .sort(compareFailurePriority);
+	            const rebootHosts = allServers
+	                .filter(server => getServerIntelligence(server.name)?.health?.reboot_required === true)
+	                .sort(compareRiskPriority);
+	            setText("active-operations-count", String(activeServers.length));
+	            setText("failed-hosts-count", String(failedServers.length));
+	            renderPriorityAttention(failedServers, rebootHosts);
+	            renderMiniServerList("active-operations", activeServers, "No active runs.", {
+	                limit: 1,
+	                expandable: true,
+	                lessLabel: "Show fewer running operations",
+	                moreLabel: (_hidden, total) => `Show all ${total} running`
+	            });
+	            renderMiniServerList("failed-hosts-panel", failedServers, "No failures.", {
+	                limit: 1,
+	                expandable: true,
+	                detail: failureMiniDetail,
+	                lessLabel: "Show fewer failures",
+	                moreLabel: (_hidden, total) => `Show all ${total} failure${total === 1 ? "" : "s"}`
+	            });
             renderScheduledRuns();
             renderApprovalTriage();
             renderFleetFilters();
@@ -1098,12 +1316,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 dashboardByServer = new Map();
                 setDashboardExtraError("dashboard", err);
             }
-            renderDashboardMetrics();
-            renderDashboardPanels();
-            if (allServers.length > 0) {
-                renderTable();
-            }
-        }
+	            renderDashboardMetrics();
+	            renderDashboardPanels();
+	            if (allServers.length > 0) {
+	                renderTable({ refreshPanels: false });
+	            }
+	        }
 
         async function fetchGlobalKeyStatus() {
             try {
@@ -1186,6 +1404,32 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         }
 
+	        function updateRefreshAllFactsState() {
+	            const button = document.getElementById('refresh-all-facts');
+	            if (!button) return;
+	            const visibleSelectedServers = getVisibleSelectedServers();
+	            const visibleCount = visibleSelectedServers.length;
+	            const refreshableCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
+	            const selectedCount = selectedServers.size;
+	            const enabled = !refreshAllFactsInFlight && !bulkActionInFlightLabel && refreshableCount > 0;
+	            button.disabled = !enabled;
+	            button.textContent = refreshAllFactsInFlight ? "Refreshing..." : "Refresh facts";
+	            button.classList.toggle("refreshing", refreshAllFactsInFlight);
+	            button.setAttribute('aria-label', refreshAllFactsInFlight ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
+	            button.setAttribute('aria-describedby', 'bulk-action-hint');
+	            button.title = refreshAllFactsInFlight
+	                ? `Refreshing facts for ${pluralize(refreshableCount, "visible selected host")}`
+	                : bulkActionInFlightLabel
+	                ? `Bulk ${bulkActionInFlightLabel} is running`
+	                : enabled
+	                ? `Refresh facts for ${pluralize(refreshableCount, "visible selected host")}`
+	                : selectedCount === 0
+	                ? "Select visible hosts first"
+	                : visibleCount === 0
+	                ? "No selected host is visible in the current filter"
+	                : "No visible selected host can refresh facts right now";
+	        }
+
         function saveWindowScroll() {
             return { x: window.scrollX, y: window.scrollY };
         }
@@ -1199,13 +1443,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return actionInteractionDepth > 0 || actionInteractionReleaseTimer !== null;
         }
 
-        function renderServerState() {
-            const pageScroll = saveWindowScroll();
-            renderDashboardMetrics();
-            renderTable();
-            renderDrawer();
-            requestAnimationFrame(() => restoreWindowScroll(pageScroll));
-        }
+	        function renderServerState() {
+	            const pageScroll = saveWindowScroll();
+	            renderDashboardMetrics();
+	            renderTable();
+	            renderDrawer();
+	            requestAnimationFrame(() => restoreWindowScroll(pageScroll));
+	        }
 
         function flushDeferredServerRender() {
             if (!deferredServerRender || isActionInteractionActive()) return;
@@ -1260,6 +1504,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 '#bulk-approve',
                 '#bulk-cancel',
                 '#bulk-autoremove',
+                '#refresh-all-facts',
                 '#drawer-approve-all',
                 '#drawer-approve-security',
                 '#drawer-approve-security-kept-back',
@@ -1462,6 +1707,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     return;
                 }
                 allServers = parsedServers;
+                pruneSelectionsForLoadedServers();
                 lastFetchError = null;
                 lastSuccessfulSyncAt = new Date();
                 renderServerStateWhenSafe(forceRender);
@@ -1473,6 +1719,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     queuedForceRender = false;
                     fetchServers(nextRender);
                 }
+            }
+        }
+
+        function pruneSelectionsForLoadedServers() {
+            if (selectedServers.size === 0) return;
+            const loadedNames = new Set(allServers.map(server => server.name).filter(Boolean));
+            let changed = false;
+            selectedServers.forEach(name => {
+                if (!loadedNames.has(name)) {
+                    selectedServers.delete(name);
+                    changed = true;
+                }
+            });
+            if (changed) {
+                updateRefreshAllFactsState();
             }
         }
 
@@ -1497,10 +1758,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
                     if (!tags.includes(fleetTagFilter)) return false;
                 }
-                if (fleetQuickFilter === "pending_approval" && server.status !== "pending_approval") return false;
+                if (fleetQuickFilter === "pending_approval" && !isPendingApprovalHost(server)) return false;
                 if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !isRunningTimelineState(getServerTimeline(server).state)) return false;
-                if (fleetQuickFilter === "stale_facts" && getServerApprovalTriage(server).facts_state !== "stale") return false;
-                if (fleetQuickFilter === "high_risk" && getServerApprovalTriage(server).cve_count <= 0 && getRiskLevel(server) !== "critical") return false;
+                if (fleetQuickFilter === "stale_facts" && !isFactsStateStale(server)) return false;
+                if (fleetQuickFilter === "high_risk" && !hasCVEExposure(server)) return false;
                 if (authFilter === "password" && !server.has_password) return false;
                 if (authFilter === "key" && !hasEffectiveKey(server)) return false;
                 if (!search) return true;
@@ -1560,12 +1821,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (!saved || typeof saved !== "object") return;
                 restoreTextInputValue("search", saved.search, "");
                 restoreSelectValue("status-filter", saved.statusFilter, "");
-                restoreSelectValue("auth-filter", saved.authFilter, "");
-                restoreSelectValue("group-by", saved.groupBy, "");
-                restorePageSizeValue(saved.pageSize);
-                selectedServerName = typeof saved.selectedServerName === "string" ? saved.selectedServerName : "";
-            } catch (_) {
-                // Ignore invalid saved dashboard state.
+	                restoreSelectValue("auth-filter", saved.authFilter, "");
+	                restoreSelectValue("group-by", saved.groupBy, "");
+	                restorePageSizeValue(saved.pageSize);
+	                fleetQuickFilter = typeof saved.fleetQuickFilter === "string" ? saved.fleetQuickFilter : "";
+	                fleetTagFilter = typeof saved.fleetTagFilter === "string" ? saved.fleetTagFilter : "";
+	                selectedServerName = typeof saved.selectedServerName === "string" ? saved.selectedServerName : "";
+	            } catch (_) {
+	                // Ignore invalid saved dashboard state.
             }
         }
 
@@ -1598,14 +1861,186 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     search: document.getElementById('search')?.value || "",
                     statusFilter: document.getElementById('status-filter')?.value || "",
                     authFilter: document.getElementById('auth-filter')?.value || "",
-                    groupBy: document.getElementById('group-by')?.value || "",
-                    pageSize: document.getElementById('page-size')?.value || "25",
-                    selectedServerName
-                }));
-            } catch (_) {
-                // Ignore storage failures.
-            }
+	                    groupBy: document.getElementById('group-by')?.value || "",
+	                    pageSize: document.getElementById('page-size')?.value || "25",
+	                    fleetQuickFilter,
+	                    fleetTagFilter,
+	                    selectedServerName
+	                }));
+	            } catch (_) {
+	                // Ignore storage failures.
+	            }
+	        }
+
+	        function applyFleetQuickFilter(key) {
+	            fleetQuickFilter = key || "";
+	            page = 1;
+	            saveDashboardFilters();
+	            renderTable({ refreshPanels: false });
+	        }
+
+	        function getVisibleSelectedServers() {
+	            const visibleSelected = new Set(
+	                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
+	                    .map(cb => cb.dataset.name)
+	                    .filter(Boolean)
+	            );
+	            return allServers.filter(server => visibleSelected.has(server.name));
+	        }
+
+	        function isServerActionBusy(server) {
+	            return !!server && (isSingleHostActionInFlight(server.name) || activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
+	        }
+
+	        function singleHostActionKey(name, actionLabel) {
+	            return `${String(name || "")}\u0000${String(actionLabel || "action")}`;
+	        }
+
+	        function isSingleHostActionInFlight(name) {
+	            const prefix = `${String(name || "")}\u0000`;
+	            return Array.from(singleHostActionsInFlight).some(key => key.startsWith(prefix));
+	        }
+
+	        function renderSingleHostActionState() {
+	            renderTable({ refreshPanels: false });
+	            renderApprovalTriage();
+	            renderSelectedHostPanel();
+	            renderDrawer();
+	            updateBulkActionState();
+	        }
+
+	        async function runSingleHostAction(name, actionLabel, work) {
+	            if (!name || isSingleHostActionInFlight(name)) return false;
+	            const key = singleHostActionKey(name, actionLabel);
+	            singleHostActionsInFlight.add(key);
+	            renderSingleHostActionState();
+	            try {
+	                return await work();
+	            } finally {
+	                singleHostActionsInFlight.delete(key);
+	                renderSingleHostActionState();
+	            }
+	        }
+
+	        function canRunUpdateAction(server) {
+	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
+	            return !!getServerApprovalTriage(server).can_run_checks;
+	        }
+
+	        function canRunAutoremoveAction(server) {
+	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
+	            return !!getServerApprovalTriage(server).can_run_checks;
+	        }
+
+	        function canRunSudoersAction(server) {
+	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
+	            return !!getServerApprovalTriage(server).can_run_checks;
+	        }
+
+	        function canRefreshFactsAction(server) {
+	            if (!server || isServerActionBusy(server)) return false;
+	            return getServerApprovalTriage(server).can_refresh_facts !== false;
+	        }
+
+        function updateSelectPageState() {
+            const selectAll = document.getElementById('select-all');
+            if (!selectAll) return;
+            const rowCheckboxes = Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select'));
+            const selectedOnPage = rowCheckboxes.filter(cb => cb.checked).length;
+            const allSelected = rowCheckboxes.length > 0 && selectedOnPage === rowCheckboxes.length;
+            const partiallySelected = selectedOnPage > 0 && selectedOnPage < rowCheckboxes.length;
+            selectAll.checked = allSelected;
+            selectAll.indeterminate = partiallySelected;
+            selectAll.setAttribute('aria-checked', partiallySelected ? "mixed" : allSelected ? "true" : "false");
+            selectAll.dataset.selectionState = partiallySelected ? "mixed" : allSelected ? "checked" : "unchecked";
         }
+
+        function scheduleSelectPageStateUpdate() {
+            updateSelectPageState();
+            window.setTimeout(updateSelectPageState, 0);
+        }
+
+	        function canRunBulkUpdate(server) {
+	            return canRunUpdateAction(server);
+	        }
+
+	        function canRunBulkAutoremove(server) {
+	            return canRunAutoremoveAction(server);
+	        }
+
+	        function canRefreshBulkFacts(server) {
+	            return canRefreshFactsAction(server);
+	        }
+
+	        function canRunBulkApprove(server) {
+	            return !!getServerApprovalTriage(server).can_approve_all;
+	        }
+
+	        function canRunBulkCancel(server) {
+	            return !!getServerApprovalTriage(server).can_cancel;
+	        }
+
+        function canRunBulkAction(actionPath, server) {
+            if (actionPath === "update") return canRunBulkUpdate(server);
+            if (actionPath === "approve") return canRunBulkApprove(server);
+            if (actionPath === "cancel") return canRunBulkCancel(server);
+            if (actionPath === "autoremove") return canRunBulkAutoremove(server);
+            return true;
+        }
+
+        function setBulkButtonState(id, enabled, enabledTitle, disabledTitle) {
+            const button = document.getElementById(id);
+            if (!button) return;
+            button.disabled = !enabled;
+            button.title = enabled ? enabledTitle : disabledTitle;
+            button.setAttribute('aria-describedby', 'bulk-action-hint');
+        }
+
+	        function updateBulkActionState() {
+	            const hint = document.getElementById('bulk-action-hint');
+	            const selectedNames = Array.from(selectedServers);
+	            const visibleSelectedServers = getVisibleSelectedServers();
+	            const visibleCount = visibleSelectedServers.length;
+	            const selectedCount = selectedNames.length;
+	            const hiddenCount = Math.max(0, selectedCount - visibleCount);
+	            const approveCount = visibleSelectedServers.filter(canRunBulkApprove).length;
+	            const cancelCount = visibleSelectedServers.filter(canRunBulkCancel).length;
+	            const updateCount = visibleSelectedServers.filter(canRunBulkUpdate).length;
+	            const autoremoveCount = visibleSelectedServers.filter(canRunBulkAutoremove).length;
+	            const refreshFactsCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
+
+		            if (hint) {
+		                if (bulkActionInFlightLabel) {
+		                    hint.textContent = `Bulk ${bulkActionInFlightLabel} running for visible selected hosts`;
+		                    hint.classList.remove("warning");
+		                } else if (selectedCount === 0) {
+		                    hint.textContent = "No hosts selected";
+		                    hint.classList.remove("warning");
+		                } else if (visibleCount === 0) {
+		                    hint.textContent = `${pluralize(selectedCount, "host")} selected · 0 visible in current filter`;
+	                    hint.classList.add("warning");
+	                } else {
+	                    const parts = [`${visibleCount} visible ${visibleCount === 1 ? "host" : "hosts"} selected`];
+		                    if (updateCount > 0) parts.push(`${updateCount} can update`);
+		                    if (approveCount > 0) parts.push(`${approveCount} can approve standard`);
+		                    if (refreshFactsCount > 0) parts.push(`${refreshFactsCount} can refresh facts`);
+		                    if (autoremoveCount > 0) parts.push(`${autoremoveCount} can autoremove`);
+		                    if (hiddenCount > 0) parts.push(`${hiddenCount} skipped by current filter`);
+	                    hint.textContent = parts.join(" · ");
+	                    hint.classList.toggle("warning", hiddenCount > 0);
+	                }
+	            }
+
+		            const bulkDisabledTitle = bulkActionInFlightLabel
+		                ? `Bulk ${bulkActionInFlightLabel} is already running`
+		                : null;
+		            setBulkButtonState("bulk-update", !bulkActionInFlightLabel && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
+		            setBulkButtonState("bulk-approve", !bulkActionInFlightLabel && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
+		            setBulkButtonState("bulk-cancel", !bulkActionInFlightLabel && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
+		            setBulkButtonState("bulk-autoremove", !bulkActionInFlightLabel && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
+	            updateRefreshAllFactsState();
+	            scheduleSelectPageStateUpdate();
+	        }
 
         function openDrawer(name, tab = "logs") {
             const nextTab = tab === "pending" ? "pending" : "logs";
@@ -1654,7 +2089,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderDrawer();
         }
 
-        function renderDrawer() {
+	        function renderDrawer() {
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
             const title = document.getElementById('status-drawer-title');
@@ -1688,10 +2123,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const safeStatusText = escapeHtml(server.status || "unknown");
             const isPendingApproval = server.status === "pending_approval";
             const hasPending = hasPendingUpdates(server);
+            const driftReason = pendingApprovalDriftReason(server);
             const triage = getServerApprovalTriage(server);
             const approvalCounts = getPendingApprovalCounts(server);
             const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-            const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
+            const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
             const securityApprovalLabel = approvalCounts.security === null
                 ? "Standard security (?)"
                 : `Standard security (${approvalCounts.security})`;
@@ -1701,16 +2137,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
 
             title.textContent = server.name || "Server details";
-            statusContainer.innerHTML = `<span class="status-pill status-${safeStatus}">${safeStatusText}</span>`;
-            approvalActions.classList.toggle('hidden', !isPendingApproval);
-            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
-            drawerApproveAllBtn.disabled = approvalCounts.standard <= 0;
-            drawerApproveSecurityBtn.textContent = securityApprovalLabel;
-            drawerApproveSecurityBtn.disabled = !approvalCounts.security || approvalCounts.security <= 0;
+	            statusContainer.innerHTML = `
+	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+	                ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
+	            `;
+	            approvalActions.classList.toggle('hidden', !isPendingApproval);
+	            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
+	            drawerApproveAllBtn.disabled = !triage.can_approve_all;
+	            drawerApproveSecurityBtn.textContent = securityApprovalLabel;
+	            drawerApproveSecurityBtn.disabled = !triage.can_approve_security;
             drawerApproveKeptBackSecurityBtn.textContent = `Kept-back security (${keptBackSecurityCount})`;
             drawerApproveKeptBackSecurityBtn.disabled = !canApproveKeptBackSecurity;
             drawerApproveKeptBackSecurityBtn.classList.toggle('hidden', !canApproveKeptBackSecurity);
             drawerApproveFullBtn.textContent = `Full upgrade (${approvalCounts.full})`;
+            drawerApproveFullBtn.disabled = !triage.can_approve_full;
             drawerApproveFullBtn.classList.toggle('hidden', !triage.can_approve_full);
 
             pendingTabBtn.disabled = !hasPending;
@@ -1746,16 +2186,67 @@ const LOG_BOTTOM_THRESHOLD = 20;
             drawer.setAttribute('aria-hidden', 'false');
         }
 
-        function renderTable() {
+        function hidePhaseTooltip() {
+            const tooltip = document.getElementById('phase-tooltip');
+            if (!tooltip) return;
+            if (activePhaseTooltipTarget) {
+                activePhaseTooltipTarget.removeAttribute('aria-describedby');
+            }
+            activePhaseTooltipTarget = null;
+            tooltip.classList.add('hidden');
+            tooltip.innerHTML = "";
+        }
+
+        function positionPhaseTooltip(target) {
+            const tooltip = document.getElementById('phase-tooltip');
+            if (!tooltip || !target) return;
+            const rect = target.getBoundingClientRect();
+            const tooltipRect = tooltip.getBoundingClientRect();
+            const margin = 10;
+            const left = Math.min(
+                window.innerWidth - tooltipRect.width - margin,
+                Math.max(margin, rect.left + rect.width / 2 - tooltipRect.width / 2)
+            );
+            const preferredTop = rect.top - tooltipRect.height - 8;
+            const top = preferredTop > margin ? preferredTop : rect.bottom + 8;
+            tooltip.style.left = `${Math.round(left)}px`;
+            tooltip.style.top = `${Math.round(Math.min(window.innerHeight - tooltipRect.height - margin, Math.max(margin, top)))}px`;
+        }
+
+        function showPhaseTooltip(target) {
+            const tooltip = document.getElementById('phase-tooltip');
+            if (!tooltip || !target) return;
+            const label = target.dataset.phaseLabel || "Phase";
+            const state = target.dataset.phaseState || "unknown";
+            const summary = target.dataset.phaseSummary || "No phase detail";
+            const time = target.dataset.phaseTime || "";
+            const progress = target.dataset.phaseProgress || "0";
+            tooltip.innerHTML = `
+                <strong>${escapeHtml(label)} · ${escapeHtml(state)}</strong>
+                <span>${escapeHtml(summary)}</span>
+                <span>${escapeHtml([`${progress}%`, time].filter(Boolean).join(" · "))}</span>
+            `;
+            tooltip.classList.remove('hidden');
+            activePhaseTooltipTarget = target;
+            target.setAttribute('aria-describedby', 'phase-tooltip');
+            positionPhaseTooltip(target);
+        }
+
+        function renderTable(options = {}) {
+            hidePhaseTooltip();
             const tbody = document.querySelector('#servers-table tbody');
             tbody.innerHTML = '';
             let servers = applyFilters(allServers);
             servers = sortServers(servers);
             const totalFiltered = servers.length;
+            const previousSelectedServerName = selectedServerName;
             if (servers.length > 0 && !servers.some(server => server.name === selectedServerName)) {
                 selectedServerName = servers[0].name;
             } else if (servers.length === 0) {
                 selectedServerName = "";
+            }
+            if (selectedServerName !== previousSelectedServerName) {
+                saveDashboardFilters();
             }
             const paged = paginate(servers);
             setText(
@@ -1783,24 +2274,37 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     if (hoveredName === server.name) {
                         row.classList.add('row-hover');
                     }
-                    const isBusy = activeStatuses.has(server.status);
+	                    const isBusy = isServerActionBusy(server);
                     const safeNameHtml = escapeHtml(server.name);
                     const safeStatusText = escapeHtml(statusLabel(server.status));
                     const safeStatus = safeStatusClass(server.status);
                     const safeDataName = escapeHtml(server.name);
                     const intelligence = getServerIntelligence(server.name);
-                    const timeline = getServerTimeline(server);
-                    const triage = getServerApprovalTriage(server);
-                    const lastUpdate = intelligence?.last_update;
-                    const nextRun = intelligence?.next_run;
-                    const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
-                    const nextRunLabel = nextRun?.state === "scheduled"
-                        ? (nextRun.scheduled_for_display || nextRun.scheduled_for_utc || "Scheduled")
-                        : "None";
-                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
-                    const approvalCounts = getPendingApprovalCounts(server);
-                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-                    const canApproveKeptBackSecurity = server.status === "pending_approval" && keptBackSecurityCount > 0 && approvalCounts.keptBackSecurityPlanAvailable;
+	                    const timeline = getServerTimeline(server);
+	                    const triage = getServerApprovalTriage(server);
+	                    const lastUpdate = intelligence?.last_update;
+	                    const nextRun = intelligence?.next_run;
+	                    const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
+	                    const nextRunLabel = nextRun?.state === "scheduled"
+	                        ? (nextRun.scheduled_for_display || nextRun.scheduled_for_utc || "Scheduled")
+	                        : "None";
+	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
+	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
+	                    const approvalCounts = getPendingApprovalCounts(server);
+	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
+	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
+	                    const canApproveAll = !!triage.can_approve_all;
+	                    const canApproveSecurity = !!triage.can_approve_security;
+	                    const canUpdate = canRunUpdateAction(server);
+	                    const failureReason = getServerFailureReason(server);
+	                    const driftReason = pendingApprovalDriftReason(server);
+	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
+	                    const failureReasonHtml = failureReason && !failureReasonIsDuplicate
+	                        ? `<span class="failure-reason" title="${escapeHtml(failureReason)}">${escapeHtml(failureReason)}</span>`
+	                        : "";
+	                    const driftReasonHtml = driftReason
+	                        ? `<span class="pending-drift-row" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
+	                        : "";
                     const securityApprovalLabel = approvalCounts.security === null
                         ? "Std sec (?)"
                         : `Std sec (${approvalCounts.security})`;
@@ -1811,12 +2315,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
                         : "";
                     const actionButtons = server.status === 'pending_approval'
-                        ? `
-                            <div class="actions-grid timeline-actions">
-                                <button type="button" data-action="approve-all" data-name="${safeDataName}" title="Approve standard updates">Approve (${approvalCounts.standard})</button>
-                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" title="Approve only standard security updates">${securityApprovalLabel}</button>
-                                ${keptBackSecurityButton}
-                                ${fullApprovalButton}
+	                        ? `
+	                            <div class="actions-grid timeline-actions">
+	                                <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>
+	                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>${securityApprovalLabel}</button>
+	                                ${keptBackSecurityButton}
+	                                ${fullApprovalButton}
                                 <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                             </div>
                           `
@@ -1826,14 +2330,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
                                     <button type="button" class="btn-ghost action-span" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                                 </div>
                               `
-                        : `
-                            <div class="actions-grid timeline-actions">
-                                <button type="button" data-action="update-server" data-name="${safeDataName}">Update</button>
-                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                            </div>
-                          `;
+	                        : driftReason
+	                            ? `
+	                                <div class="actions-grid timeline-actions timeline-actions-note">
+	                                    <span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">Runtime not pending</span>
+	                                    ${hasPendingUpdates(server) ? `<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
+	                                    <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+	                                </div>
+	                              `
+	                        : `
+	                            <div class="actions-grid timeline-actions">
+	                                <button type="button" data-action="update-server" data-name="${safeDataName}" ${canUpdate ? "" : "disabled"} title="${canUpdate ? "Run update checks" : "Host cannot run update checks right now"}">Update</button>
+	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+	                            </div>
+	                          `;
                     row.innerHTML = `
-                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" ${selectedServers.has(server.name) ? "checked" : ""}></td>
+	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedServers.has(server.name) ? "checked" : ""}></td>
                         <td class="name-cell" title="${safeNameHtml}">
                             <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button>
                             <span class="server-subline">${escapeHtml((server.tags || []).join(", ") || "ungrouped")}</span>
@@ -1848,11 +2360,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td class="phase-col">${timelinePhaseCell(server, "upgrade")}</td>
                         <td class="phase-col">${timelinePhaseCell(server, "postchecks")}</td>
                         <td class="phase-col">${timelinePhaseCell(server, "done_error")}</td>
-                        <td class="timeline-summary-col">
-                            <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
-                            <span>${escapeHtml(timeline.summary || timelineWindow || "No activity")}</span>
-                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
-                        </td>
+	                        <td class="timeline-summary-col">
+	                            <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
+	                            <span>${escapeHtml(timelineSummary)}</span>
+	                            ${failureReasonHtml}
+	                            ${driftReasonHtml}
+	                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+	                        </td>
                         <td class="actions-col">${actionButtons}</td>
                     `;
                     tbody.appendChild(row);
@@ -1860,29 +2374,36 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
             applyHoverClass();
             tbody.querySelectorAll('.row-select').forEach(cb => {
-                cb.addEventListener('change', (e) => {
-                    const name = e.target.dataset.name;
-                    if (e.target.checked) {
-                        selectedServers.add(name);
-                    } else {
-                        selectedServers.delete(name);
-                    }
-                });
-            });
-            document.getElementById('select-all').checked = paged.length > 0 && paged.every(s => selectedServers.has(s.name));
-            updateSortIndicators();
-            renderDashboardPanels();
-        }
+	                cb.addEventListener('change', (e) => {
+	                    const name = e.target.dataset.name;
+	                    if (e.target.checked) {
+	                        selectedServers.add(name);
+	                    } else {
+	                        selectedServers.delete(name);
+	                    }
+	                    updateBulkActionState();
+	                });
+	            });
+	            updateBulkActionState();
+	            updateSortIndicators();
+	            if (options.refreshPanels === false) {
+	                renderFleetFilters();
+	                renderSelectedHostPanel();
+	            } else {
+	                renderDashboardPanels();
+	            }
+	        }
 
         function getServerByName(name) {
             return allServers.find(server => server.name === name);
         }
 
-        function selectServer(name) {
-            selectedServerName = name || "";
-            saveDashboardFilters();
-            renderTable();
-        }
+	        function selectServer(name) {
+	            selectedServerName = name || "";
+	            saveDashboardFilters();
+	            renderTable({ refreshPanels: false });
+	            renderApprovalTriage();
+	        }
 
         async function copyLogs(name = drawerServerName) {
             const server = getServerByName(name);
@@ -1991,28 +2512,69 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 selectServer(row.dataset.name || "");
             }
         });
-        tbodyHover.addEventListener('mouseover', (e) => {
-            const row = e.target.closest('tr[data-name]');
-            if (!row) return;
-            hoveredName = row.dataset.name || null;
-            applyHoverClass();
-        });
-        tbodyHover.addEventListener('mouseleave', () => {
-            hoveredName = null;
-            applyHoverClass();
-        });
+	        tbodyHover.addEventListener('mouseover', (e) => {
+	            const phaseDot = e.target.closest('.timeline-dot');
+	            if (phaseDot) {
+	                showPhaseTooltip(phaseDot);
+	            }
+	            const row = e.target.closest('tr[data-name]');
+	            if (!row) return;
+	            hoveredName = row.dataset.name || null;
+	            applyHoverClass();
+	        });
+	        tbodyHover.addEventListener('mouseout', (e) => {
+	            const phaseDot = e.target.closest('.timeline-dot');
+	            if (phaseDot && !phaseDot.contains(e.relatedTarget)) {
+	                hidePhaseTooltip();
+	            }
+	        });
+	        tbodyHover.addEventListener('focusin', (e) => {
+	            const phaseDot = e.target.closest('.timeline-dot');
+	            if (phaseDot) {
+	                showPhaseTooltip(phaseDot);
+	            }
+	        });
+	        tbodyHover.addEventListener('focusout', (e) => {
+	            const phaseDot = e.target.closest('.timeline-dot');
+	            if (phaseDot && !phaseDot.contains(e.relatedTarget)) {
+	                hidePhaseTooltip();
+	            }
+	        });
+	        tbodyHover.addEventListener('mouseleave', () => {
+	            hoveredName = null;
+	            applyHoverClass();
+	            hidePhaseTooltip();
+	        });
+	        window.addEventListener('scroll', hidePhaseTooltip, true);
+	        window.addEventListener('resize', () => {
+	            if (activePhaseTooltipTarget) {
+	                positionPhaseTooltip(activePhaseTooltipTarget);
+	            }
+	        });
 
         const triageTable = document.getElementById('approval-triage-table');
-        if (triageTable) {
-            triageTable.addEventListener('click', (e) => {
-                const button = e.target.closest('button[data-action]');
-                if (button) {
-                    handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
-                    return;
-                }
-                const selectHostButton = e.target.closest('button[data-select-host]');
-                if (selectHostButton) {
-                    selectServer(selectHostButton.dataset.selectHost || "");
+	        if (triageTable) {
+	            triageTable.addEventListener('click', (e) => {
+	                const button = e.target.closest('button[data-action]');
+	                if (button) {
+	                    handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
+	                    return;
+	                }
+	                const miniListButton = e.target.closest('button[data-toggle-mini-list]');
+	                if (miniListButton) {
+	                    const listID = miniListButton.dataset.toggleMiniList || "";
+	                    if (!listID) return;
+	                    if (expandedMiniLists.has(listID)) {
+	                        expandedMiniLists.delete(listID);
+	                    } else {
+	                        expandedMiniLists.add(listID);
+	                    }
+	                    renderApprovalTriage();
+	                    return;
+	                }
+	                const selectHostButton = e.target.closest('button[data-select-host]');
+	                if (selectHostButton) {
+	                    selectServer(selectHostButton.dataset.selectHost || "");
                     return;
                 }
                 const row = e.target.closest('tr[data-name]');
@@ -2025,21 +2587,29 @@ const LOG_BOTTOM_THRESHOLD = 20;
         const fleetRail = document.querySelector('.fleet-rail');
         if (fleetRail) {
             fleetRail.addEventListener('click', (e) => {
-                const filterButton = e.target.closest('button[data-fleet-filter]');
-                if (filterButton) {
-                    fleetQuickFilter = filterButton.dataset.fleetFilter || "";
-                    page = 1;
-                    renderTable();
-                    return;
-                }
-                const tagButton = e.target.closest('button[data-fleet-tag]');
-                if (tagButton) {
-                    fleetTagFilter = tagButton.dataset.fleetTag || "";
-                    page = 1;
-                    renderTable();
-                }
-            });
-        }
+	                const filterButton = e.target.closest('button[data-fleet-filter]');
+	                if (filterButton) {
+	                    applyFleetQuickFilter(filterButton.dataset.fleetFilter || "");
+	                    return;
+	                }
+	                const tagButton = e.target.closest('button[data-fleet-tag]');
+	                if (tagButton) {
+	                    fleetTagFilter = tagButton.dataset.fleetTag || "";
+	                    page = 1;
+	                    saveDashboardFilters();
+	                    renderTable({ refreshPanels: false });
+	                }
+	            });
+	        }
+
+	        const metricStrip = document.querySelector('.metric-strip');
+	        if (metricStrip) {
+	            metricStrip.addEventListener('click', (e) => {
+	                const button = e.target.closest('button[data-metric-filter]');
+	                if (!button) return;
+	                applyFleetQuickFilter(button.dataset.metricFilter || "");
+	            });
+	        }
 
         const applySortFromHeader = (th) => {
             if (!th) return;
@@ -2054,7 +2624,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 sortDir = "asc";
             }
             updateSortIndicators();
-            renderTable();
+            renderTable({ refreshPanels: false });
         };
 
         document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
@@ -2070,37 +2640,39 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         });
 
-        document.getElementById('search').addEventListener('input', () => { page = 1; saveDashboardFilters(); renderTable(); });
-        document.getElementById('status-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable(); });
-        document.getElementById('auth-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable(); });
-        document.getElementById('group-by').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable(); });
-        document.getElementById('page-size').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable(); });
+        document.getElementById('search').addEventListener('input', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('status-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('auth-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('group-by').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('page-size').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
 
         document.getElementById('prev-page').addEventListener('click', () => {
             page = Math.max(1, page - 1);
-            renderTable();
+            renderTable({ refreshPanels: false });
         });
         document.getElementById('next-page').addEventListener('click', () => {
             page += 1;
-            renderTable();
+            renderTable({ refreshPanels: false });
         });
 
         document.getElementById('select-all').addEventListener('change', (e) => {
             const checked = e.target.checked;
             const filtered = sortServers(applyFilters(allServers));
             const paged = paginate(filtered);
-            paged.forEach(server => {
-                if (checked) {
-                    selectedServers.add(server.name);
-                } else {
-                    selectedServers.delete(server.name);
-                }
-            });
-            renderTable();
-        });
+	            paged.forEach(server => {
+	                if (checked) {
+	                    selectedServers.add(server.name);
+	                } else {
+	                    selectedServers.delete(server.name);
+	                }
+	            });
+	            renderTable({ refreshPanels: false });
+	            updateBulkActionState();
+	        });
 
-        async function runBulkAction(actionPath, actionLabel) {
-            const visibleSelected = new Set(
+	        async function runBulkAction(actionPath, actionLabel) {
+	            if (bulkActionInFlightLabel) return;
+	            const visibleSelected = new Set(
                 Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
                     .map(cb => cb.dataset.name)
                     .filter(Boolean)
@@ -2113,51 +2685,73 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 }
                 return;
             }
-            const hiddenCount = Math.max(0, selectedNames.length - names.length);
-
-            const jobs = names.map(async (name) => {
-                const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST' });
-                if (!response.ok) {
-                    const payload = await response.json().catch(() => ({}));
-                    const detail = typeof payload.error === 'string' && payload.error.trim()
-                        ? payload.error.trim()
-                        : `${response.status} ${response.statusText}`.trim();
-                    throw new Error(detail || 'Request failed');
-                }
-            });
-
-            const results = await Promise.allSettled(jobs);
-            const failures = [];
-            results.forEach((result, index) => {
-                if (result.status === 'rejected') {
-                    failures.push(`${names[index]}: ${result.reason?.message || 'Request failed'}`);
-                }
-            });
-
-            if (failures.length > 0) {
-                console.error(`Bulk ${actionLabel} failures:`, failures);
-                alert(`Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`);
-            } else if (hiddenCount > 0) {
-                alert(`Bulk ${actionLabel} completed for visible selected hosts; ${hiddenCount} hidden selected host(s) were skipped.`);
+            const eligibleNames = names.filter(name => canRunBulkAction(actionPath, getServerByName(name)));
+            if (eligibleNames.length === 0) {
+                alert(`No visible selected hosts can run bulk ${actionLabel}.`);
+                return;
             }
+	            const hiddenCount = Math.max(0, selectedNames.length - names.length);
+	            const ineligibleCount = Math.max(0, names.length - eligibleNames.length);
 
-            await fetchServers(true);
-        }
+	            const hostActionKeys = eligibleNames.map(name => singleHostActionKey(name, `bulk ${actionLabel}`));
+	            bulkActionInFlightLabel = actionLabel;
+	            hostActionKeys.forEach(key => singleHostActionsInFlight.add(key));
+	            renderSingleHostActionState();
+	            try {
+	                const jobs = eligibleNames.map(async (name) => {
+	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST' });
+	                    if (!response.ok) {
+	                        const payload = await response.json().catch(() => ({}));
+	                        const detail = typeof payload.error === 'string' && payload.error.trim()
+	                            ? payload.error.trim()
+	                            : `${response.status} ${response.statusText}`.trim();
+	                        throw new Error(detail || 'Request failed');
+	                    }
+	                });
+
+	                const results = await Promise.allSettled(jobs);
+	                const failures = [];
+	                results.forEach((result, index) => {
+	                    if (result.status === 'rejected') {
+	                        failures.push(`${eligibleNames[index]}: ${result.reason?.message || 'Request failed'}`);
+	                    }
+	                });
+
+	                if (failures.length > 0) {
+	                    console.error(`Bulk ${actionLabel} failures:`, failures);
+	                    alert(`Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`);
+	                } else if (hiddenCount > 0 || ineligibleCount > 0) {
+	                    const skipped = [];
+	                    if (hiddenCount > 0) skipped.push(`${hiddenCount} hidden selected host(s)`);
+	                    if (ineligibleCount > 0) skipped.push(`${ineligibleCount} ineligible visible host(s)`);
+	                    alert(`Bulk ${actionLabel} completed; ${skipped.join(" and ")} were skipped.`);
+	                }
+
+	                await fetchServers(true);
+	            } finally {
+	                hostActionKeys.forEach(key => singleHostActionsInFlight.delete(key));
+	                bulkActionInFlightLabel = "";
+	                renderSingleHostActionState();
+	            }
+	        }
 
         document.getElementById('bulk-update').addEventListener('click', async () => {
             await runBulkAction('update', 'update');
         });
-        document.getElementById('bulk-approve').addEventListener('click', async () => {
-            if (!window.confirm('Bulk approve all pending updates for the visible selected hosts?')) {
-                return;
-            }
-            await runBulkAction('approve', 'approve');
-        });
+	        document.getElementById('bulk-approve').addEventListener('click', async () => {
+	            if (!window.confirm('Bulk approve standard updates for the visible selected hosts? Kept-back and full-upgrade-only packages are not included.')) {
+	                return;
+	            }
+	            await runBulkAction('approve', 'approve standard updates');
+	        });
         document.getElementById('bulk-cancel').addEventListener('click', async () => {
             await runBulkAction('cancel', 'cancel');
         });
         document.getElementById('bulk-autoremove').addEventListener('click', async () => {
             await runBulkAction('autoremove', 'apt autoremove');
+        });
+        document.getElementById('refresh-all-facts').addEventListener('click', async () => {
+            await refreshSelectedHostFacts();
         });
 
         async function postServerAction(url, fallbackMessage, options = {}) {
@@ -2174,49 +2768,65 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        async function updateServer(name) {
-            if (await postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')) {
-                fetchServers(true);
-            }
-        }
+	        async function updateServer(name) {
+	            await runSingleHostAction(name, "update", async () => {
+	                if (await postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function runAutoremove(name) {
-            if (await postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')) {
-                fetchServers(true);
-            }
-        }
+	        async function runAutoremove(name) {
+	            await runSingleHostAction(name, "autoremove", async () => {
+	                if (await postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function enablePasswordlessApt(name) {
-            let password;
-            try {
-                password = await promptPassword(`Enter sudo password for ${name}`);
-            } catch {
-                return;
-            }
-            if (!password) return;
-            if (await postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password })
-            })) {
-                fetchServers(true);
-            }
-        }
+	        async function enablePasswordlessApt(name) {
+	            if (!canRunSudoersAction(getServerByName(name))) {
+	                alert("Host cannot change passwordless apt while another action is active.");
+	                return;
+	            }
+	            await runSingleHostAction(name, "enable apt", async () => {
+	                let password;
+	                try {
+	                    password = await promptPassword(`Enter sudo password for ${name}`);
+	                } catch {
+	                    return;
+	                }
+	                if (!password) return;
+	                if (await postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
+	                    headers: { 'Content-Type': 'application/json' },
+	                    body: JSON.stringify({ password })
+	                })) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function disablePasswordlessApt(name) {
-            let password;
-            try {
-                password = await promptPassword(`Enter sudo password to disable for ${name}`);
-            } catch {
-                return;
-            }
-            if (!password) return;
-            if (await postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password })
-            })) {
-                fetchServers(true);
-            }
-        }
+	        async function disablePasswordlessApt(name) {
+	            if (!canRunSudoersAction(getServerByName(name))) {
+	                alert("Host cannot change passwordless apt while another action is active.");
+	                return;
+	            }
+	            await runSingleHostAction(name, "disable apt", async () => {
+	                let password;
+	                try {
+	                    password = await promptPassword(`Enter sudo password to disable for ${name}`);
+	                } catch {
+	                    return;
+	                }
+	                if (!password) return;
+	                if (await postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
+	                    headers: { 'Content-Type': 'application/json' },
+	                    body: JSON.stringify({ password })
+	                })) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
         function passwordModalFocusableElements(backdrop) {
             if (!backdrop) return [];
@@ -2455,10 +3065,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 endActionInteraction();
             }
         }, true);
-        document.addEventListener('keydown', (event) => {
-            if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
-            if (isServerActionControl(event.target)) {
-                beginActionInteraction();
+	        document.addEventListener('keydown', (event) => {
+	            if (event.key === "Escape") {
+	                hidePhaseTooltip();
+	            }
+	            if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
+	            if (isServerActionControl(event.target)) {
+	                beginActionInteraction();
             }
         }, true);
         document.addEventListener('keyup', (event) => {
@@ -2474,97 +3087,203 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         });
 
-        async function approveAllUpdates(name) {
-            if (await postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.')) {
-                fetchServers(true);
-            }
-        }
+	        async function approveAllUpdates(name) {
+	            await runSingleHostAction(name, "approve", async () => {
+	                const server = getServerByName(name);
+	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
+	                    window.alert("No standard updates are eligible for approval.");
+	                    return;
+	                }
+	                if (await postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.')) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function approveSecurityUpdates(name) {
-            if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
-                fetchServers(true);
-            }
-        }
+	        async function approveSecurityUpdates(name) {
+	            await runSingleHostAction(name, "approve security", async () => {
+	                const server = getServerByName(name);
+	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
+	                    window.alert("No standard security updates are eligible for approval.");
+	                    return;
+	                }
+	                if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function approveKeptBackSecurityUpdates(name) {
-            const server = getServerByName(name);
-            const counts = getPendingApprovalCounts(server);
-            if (!counts.keptBackSecurityPlanAvailable) {
-                window.alert("Run a fresh package scan before approving kept-back security updates.");
-                return;
-            }
-            const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
-            const packages = pendingUpdates
-                .filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade))
-                .map(update => update?.install_package || update?.package)
-                .filter(Boolean);
-            const removed = counts.keptBackSecurityRemovedPackages;
-            const newPackages = counts.keptBackSecurityNewPackages;
-            const impact = [];
-            if (packages.length) impact.push(`Packages: ${packages.join(", ")}`);
-            if (newPackages.length) impact.push(`May install dependencies: ${newPackages.join(", ")}`);
-            if (removed.length) impact.push(`May remove packages: ${removed.join(", ")}`);
-            const confirmText = [
-                `Run kept-back security update on ${name}?`,
-                "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
-                impact.join("\n")
-            ].filter(Boolean).join("\n\n");
-            if (!window.confirm(confirmText)) return;
-            const body = removed.length ? { confirm_removals: true } : {};
-            if (await postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            })) {
-                fetchServers(true);
-            }
-        }
+	        async function approveKeptBackSecurityUpdates(name) {
+	            await runSingleHostAction(name, "approve kept-back security", async () => {
+	                const server = getServerByName(name);
+	                const counts = getPendingApprovalCounts(server);
+	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
+	                if (!triage.can_approve_kept_back_security) {
+	                    if (!counts.keptBackSecurityPlanAvailable) {
+	                        window.alert("Run a fresh package scan before approving kept-back security updates.");
+	                        return;
+	                    }
+	                    window.alert("No kept-back security updates are eligible for approval.");
+	                    return;
+	                }
+	                if (!counts.keptBackSecurityPlanAvailable) {
+	                    window.alert("Run a fresh package scan before approving kept-back security updates.");
+	                    return;
+	                }
+	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
+	                const packages = pendingUpdates
+	                    .filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade))
+	                    .map(update => update?.install_package || update?.package)
+	                    .filter(Boolean);
+	                const removed = counts.keptBackSecurityRemovedPackages;
+	                const newPackages = counts.keptBackSecurityNewPackages;
+	                const impact = [];
+	                if (packages.length) impact.push(`Packages: ${packages.join(", ")}`);
+	                if (newPackages.length) impact.push(`May install dependencies: ${newPackages.join(", ")}`);
+	                if (removed.length) impact.push(`May remove packages: ${removed.join(", ")}`);
+	                const confirmText = [
+	                    `Run kept-back security update on ${name}?`,
+	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
+	                    impact.join("\n")
+	                ].filter(Boolean).join("\n\n");
+	                if (!window.confirm(confirmText)) return;
+	                const body = removed.length ? { confirm_removals: true } : {};
+	                if (await postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
+	                    headers: { 'Content-Type': 'application/json' },
+	                    body: JSON.stringify(body)
+	                })) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function approveFullUpgrade(name) {
-            const server = getServerByName(name);
-            const counts = getPendingApprovalCounts(server);
-            if (!counts.fullPlanAvailable) {
-                window.alert("Run a fresh package scan before approving full-upgrade.");
-                return;
-            }
-            const removed = counts.removedPackages;
-            const newPackages = counts.newPackages;
-            const impact = [];
-            if (newPackages.length) impact.push(`New packages: ${newPackages.join(", ")}`);
-            if (removed.length) impact.push(`Removed packages: ${removed.join(", ")}`);
-            const confirmText = [
-                `Run full-upgrade on ${name}?`,
-                impact.join("\n")
-            ].filter(Boolean).join("\n\n");
-            if (!window.confirm(confirmText)) return;
-            const body = removed.length ? { confirm_removals: true } : {};
-            if (await postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            })) {
-                fetchServers(true);
-            }
-        }
+	        async function approveFullUpgrade(name) {
+	            await runSingleHostAction(name, "approve full upgrade", async () => {
+	                const server = getServerByName(name);
+	                const counts = getPendingApprovalCounts(server);
+	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
+	                if (!triage.can_approve_full) {
+	                    if (!counts.fullPlanAvailable) {
+	                        window.alert("Run a fresh package scan before approving full-upgrade.");
+	                        return;
+	                    }
+	                    window.alert("No full-upgrade packages are eligible for approval.");
+	                    return;
+	                }
+	                if (!counts.fullPlanAvailable) {
+	                    window.alert("Run a fresh package scan before approving full-upgrade.");
+	                    return;
+	                }
+	                const removed = counts.removedPackages;
+	                const newPackages = counts.newPackages;
+	                const impact = [];
+	                if (newPackages.length) impact.push(`New packages: ${newPackages.join(", ")}`);
+	                if (removed.length) impact.push(`Removed packages: ${removed.join(", ")}`);
+	                const confirmText = [
+	                    `Run full-upgrade on ${name}?`,
+	                    impact.join("\n")
+	                ].filter(Boolean).join("\n\n");
+	                if (!window.confirm(confirmText)) return;
+	                const body = removed.length ? { confirm_removals: true } : {};
+	                if (await postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
+	                    headers: { 'Content-Type': 'application/json' },
+	                    body: JSON.stringify(body)
+	                })) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function cancelUpgrade(name) {
-            if (await postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')) {
-                fetchServers(true);
-            }
-        }
+	        async function cancelUpgrade(name) {
+	            await runSingleHostAction(name, "cancel", async () => {
+	                if (await postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')) {
+	                    await fetchServers(true);
+	                }
+	            });
+	        }
 
-        async function refreshHostFacts(name) {
-            try {
-                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
-                if (!response.ok) {
-                    const payload = await response.json().catch(() => ({}));
-                    alert(payload.error || "Failed to refresh host facts");
-                    return;
+	        async function refreshHostFacts(name) {
+	            await runSingleHostAction(name, "refresh facts", async () => {
+	                try {
+	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
+	                    if (!response.ok) {
+	                        const payload = await response.json().catch(() => ({}));
+	                        alert(payload.error || "Failed to refresh host facts");
+	                        return;
+	                    }
+	                    await fetchDashboardSummary();
+	                    await fetchServers(true);
+	                } catch (err) {
+	                    alert(err?.message || "Failed to refresh host facts");
+	                    return;
+	                }
+	            });
+	        }
+
+        async function refreshSelectedHostFacts() {
+            if (refreshAllFactsInFlight) return;
+	            const visibleSelected = new Set(
+	                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
+	                    .map(cb => cb.dataset.name)
+	                    .filter(Boolean)
+	            );
+	            const selectedNames = Array.from(selectedServers);
+	            const names = selectedNames.filter(name => visibleSelected.has(name));
+	            if (names.length === 0) {
+	                if (selectedNames.length > 0) {
+	                    alert("No visible selected hosts for facts refresh.");
+	                }
+	                return;
+	            }
+	            const refreshableNames = names.filter(name => canRefreshBulkFacts(getServerByName(name)));
+	            if (refreshableNames.length === 0) {
+	                alert("No visible selected hosts can refresh facts right now.");
+	                return;
+	            }
+	            const hiddenCount = Math.max(0, selectedNames.length - names.length);
+	            const ineligibleCount = Math.max(0, names.length - refreshableNames.length);
+	            const hostActionKeys = refreshableNames.map(name => singleHostActionKey(name, "refresh facts"));
+	            refreshAllFactsInFlight = true;
+	            hostActionKeys.forEach(key => singleHostActionsInFlight.add(key));
+	            renderSingleHostActionState();
+	            updateRefreshAllFactsState();
+	            const failures = [];
+	            let cursor = 0;
+	            const workerCount = Math.min(4, refreshableNames.length);
+	            const runWorker = async () => {
+	                while (cursor < refreshableNames.length) {
+	                    const name = refreshableNames[cursor];
+	                    cursor += 1;
+	                    try {
+	                        const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
+	                        if (!response.ok) {
+	                            const payload = await response.json().catch(() => ({}));
+	                            failures.push(`${name}: ${payload.error || response.statusText || response.status}`);
+	                        }
+                    } catch (err) {
+                        failures.push(`${name}: ${err?.message || "Failed to refresh host facts"}`);
+                    }
                 }
-                await fetchDashboardSummary();
-            } catch (err) {
-                alert(err?.message || "Failed to refresh host facts");
-                return;
-            }
-        }
+            };
+	            try {
+	                await Promise.all(Array.from({ length: workerCount }, runWorker));
+	                await fetchDashboardSummary();
+	                await fetchServers(true);
+	                if (failures.length > 0) {
+	                    alert(`Facts refresh completed with ${failures.length} failure(s): ${failures.join(", ")}`);
+	                } else if (hiddenCount > 0 || ineligibleCount > 0) {
+	                    const skipped = [];
+	                    if (hiddenCount > 0) skipped.push(`${hiddenCount} hidden selected host(s)`);
+	                    if (ineligibleCount > 0) skipped.push(`${ineligibleCount} active or unavailable visible host(s)`);
+	                    alert(`Facts refresh completed; ${skipped.join(" and ")} were skipped.`);
+	                }
+	            } finally {
+	                hostActionKeys.forEach(key => singleHostActionsInFlight.delete(key));
+	                refreshAllFactsInFlight = false;
+	                renderSingleHostActionState();
+	                updateRefreshAllFactsState();
+	            }
+	        }
 
         document.getElementById('selected-host-panel').addEventListener('click', (e) => {
             const button = e.target.closest('button[data-action]');
@@ -2584,7 +3303,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }, true);
 
-        document.querySelectorAll('.operations-grid, .context-ops-grid').forEach((panel) => {
+	        document.querySelectorAll('.operations-grid, .context-ops-grid, .priority-attention-strip').forEach((panel) => {
             panel.addEventListener('click', (e) => {
                 const actionButton = e.target.closest('button[data-action]');
                 if (actionButton) {

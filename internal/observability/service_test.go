@@ -223,6 +223,9 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 	if !got.ApprovalTriage.CanApproveAll || !got.ApprovalTriage.CanApproveSecurity || !got.ApprovalTriage.CanCancel {
 		t.Fatalf("approval actions = %+v, want approval controls enabled", got.ApprovalTriage)
 	}
+	if got.ApprovalTriage.CanRefreshFacts || got.ApprovalTriage.CanRunChecks {
+		t.Fatalf("approval transient actions = %+v, want locked while waiting for approval", got.ApprovalTriage)
+	}
 	if got.ApprovalTriage.FactsState != "fresh" || got.ApprovalTriage.RiskOrder != 4 {
 		t.Fatalf("approval freshness/risk = %+v, want fresh critical ordering", got.ApprovalTriage)
 	}
@@ -252,13 +255,17 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 				{Name: "srv-active"},
 				{Name: "srv-done"},
 				{Name: "srv-failed"},
+				{Name: "srv-facts-refresh"},
 				{Name: "srv-stale-terminal-active"},
+				{Name: "srv-sudoers"},
 			}
 			return snapshot, map[string]*servers.ServerStatus{
 				"srv-active":                {Name: "srv-active", Status: "updating"},
 				"srv-done":                  {Name: "srv-done", Status: "done"},
 				"srv-failed":                {Name: "srv-failed", Status: "error"},
+				"srv-facts-refresh":         {Name: "srv-facts-refresh", Status: "facts_refresh"},
 				"srv-stale-terminal-active": {Name: "srv-stale-terminal-active", Status: "updating"},
+				"srv-sudoers":               {Name: "srv-sudoers", Status: "sudoers"},
 			}
 		},
 		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
@@ -266,7 +273,9 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 				"srv-active":                {ServerName: "srv-active", CollectedAt: now.Add(-49 * time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-done":                  {ServerName: "srv-done", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-failed":                {ServerName: "srv-failed", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				"srv-facts-refresh":         {ServerName: "srv-facts-refresh", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-stale-terminal-active": {ServerName: "srv-stale-terminal-active", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				"srv-sudoers":               {ServerName: "srv-sudoers", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 			}, nil
 		},
 		ListPolicies:        func() ([]policies.Policy, error) { return nil, nil },
@@ -293,8 +302,20 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 	if got := byName["srv-active"].ApprovalTriage.FactsState; got != "stale" {
 		t.Fatalf("srv-active facts state = %q, want stale", got)
 	}
+	if byName["srv-active"].ApprovalTriage.CanRefreshFacts {
+		t.Fatalf("srv-active CanRefreshFacts = true, want false while action is active")
+	}
+	if !byName["srv-done"].ApprovalTriage.CanRefreshFacts {
+		t.Fatalf("srv-done CanRefreshFacts = false, want true after terminal state")
+	}
 	if got := byName["srv-stale-terminal-active"].Timeline; got.CurrentPhase != "prechecks" || got.State != "active" {
 		t.Fatalf("srv-stale-terminal-active timeline = %+v, want live updating state instead of stale failed job", got)
+	}
+	if got := byName["srv-facts-refresh"].Timeline; got.CurrentPhase != "prechecks" || got.State != "active" {
+		t.Fatalf("srv-facts-refresh timeline = %+v, want active facts refresh", got)
+	}
+	if got := byName["srv-sudoers"].Timeline; got.CurrentPhase != "prechecks" || got.State != "active" {
+		t.Fatalf("srv-sudoers timeline = %+v, want active sudoers action", got)
 	}
 	if got := byName["srv-failed"].Timeline; got.CurrentPhase != "done_error" || got.State != "error" {
 		t.Fatalf("srv-failed timeline = %+v, want terminal error", got)
@@ -302,7 +323,7 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 	if got := byName["srv-done"].Timeline; got.CurrentPhase != "done_error" || got.State != "done" {
 		t.Fatalf("srv-done timeline = %+v, want terminal done", got)
 	}
-	if summary.Fleet["in_progress"] != 2 || summary.Fleet["prechecks_running"] != 2 || summary.Fleet["done"] != 1 || summary.Fleet["stale_facts"] != 1 {
+	if summary.Fleet["in_progress"] != 4 || summary.Fleet["prechecks_running"] != 4 || summary.Fleet["done"] != 1 || summary.Fleet["stale_facts"] != 1 {
 		t.Fatalf("fleet counts = %+v, want active/done/stale facts counts", summary.Fleet)
 	}
 }

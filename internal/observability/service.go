@@ -739,6 +739,15 @@ func activeTimelineState(state string) bool {
 	}
 }
 
+func statusBlocksTransientAction(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh":
+		return true
+	default:
+		return false
+	}
+}
+
 func runningTimelineState(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "active", "queued":
@@ -781,6 +790,8 @@ func timelinePhaseFromServerStatus(status string) (string, string) {
 	case "pending_approval":
 		return "pending_approval", "waiting"
 	case "updating":
+		return "prechecks", "active"
+	case "sudoers", "facts_refresh":
 		return "prechecks", "active"
 	case "upgrading", "autoremove":
 		return "upgrade", "active"
@@ -1086,6 +1097,7 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 			}
 		}
 	}
+	canRunTransientAction := !activeTimelineState(timeline.State) && !statusBlocksTransientAction(statusValue)
 	return DashboardApprovalTriageInfo{
 		Eligible:                   eligible,
 		PendingPackages:            risk.PendingPackages,
@@ -1108,8 +1120,8 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 		CanApproveKeptBackSecurity: canApproveKeptBackSecurity,
 		CanApproveFull:             canApproveFull,
 		CanCancel:                  canActOnApproval,
-		CanRefreshFacts:            true,
-		CanRunChecks:               !activeTimelineState(timeline.State),
+		CanRefreshFacts:            canRunTransientAction,
+		CanRunChecks:               canRunTransientAction,
 	}
 }
 

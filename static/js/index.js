@@ -397,8 +397,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 can_approve_kept_back_security: server?.status === "pending_approval" && (approvalCounts.keptBackSecurity || 0) > 0 && approvalCounts.keptBackSecurityPlanAvailable,
                 can_approve_full: server?.status === "pending_approval" && approvalCounts.fullPlanAvailable && (approvalCounts.keptBack > 0 || approvalCounts.newPackages.length > 0 || approvalCounts.removedPackages.length > 0),
                 can_cancel: server?.status === "pending_approval",
-	                can_refresh_facts: !server || (!statusBlocksTransientAction(server.status) && !isRunningTimelineState(getServerTimeline(server).state)),
-	                can_run_checks: !server || (!statusBlocksTransientAction(server.status) && !isRunningTimelineState(getServerTimeline(server).state))
+	                can_refresh_facts: canRunTransientAction(server),
+	                can_run_checks: canRunTransientAction(server)
 	            };
 	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
 	                return triage;
@@ -421,6 +421,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function hasCVEExposure(server) {
 	            return Number(getServerApprovalTriage(server).cve_count || 0) > 0;
+	        }
+
+	        function canRunTransientAction(server) {
+	            return !!server && !isSingleHostActionInFlight(server.name) && !statusBlocksTransientAction(server.status);
 	        }
 
         function timelinePhaseMap(server) {
@@ -904,6 +908,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        ? `
 	                            <div class="triage-actions triage-actions-note">
 	                                ${driftNotice}
+	                                ${canUpdate ? `<button type="button" data-action="update-server" data-name="${safeDataName}" title="Run fresh update checks">Update</button>` : ""}
 	                                ${hasPendingUpdates(server) ? `<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
 	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 	                            </div>
@@ -1259,8 +1264,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderIntelligenceLists();
             renderSummaryBadges();
             renderSelectedHostPanel();
-            renderSyncState();
-        }
+	            renderSyncState();
+	        }
+
+	        function renderTableDependentPanels() {
+	            renderFleetFilters();
+	            renderApprovalTriage();
+	            renderSelectedHostPanel();
+	            renderCommandHistoryPanel();
+	        }
 
         async function fetchRecentActivity() {
             try {
@@ -1888,9 +1900,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            return allServers.filter(server => visibleSelected.has(server.name));
 	        }
 
-	        function isServerActionBusy(server) {
-	            return !!server && (isSingleHostActionInFlight(server.name) || activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
-	        }
+		        function isServerActionBusy(server) {
+		            return !!server && (isSingleHostActionInFlight(server.name) || statusBlocksTransientAction(server.status));
+		        }
 
 	        function singleHostActionKey(name, actionLabel) {
 	            return `${String(name || "")}\u0000${String(actionLabel || "action")}`;
@@ -1922,25 +1934,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            }
 	        }
 
-	        function canRunUpdateAction(server) {
-	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
-	            return !!getServerApprovalTriage(server).can_run_checks;
-	        }
+		        function canRunUpdateAction(server) {
+		            return canRunTransientAction(server);
+		        }
 
-	        function canRunAutoremoveAction(server) {
-	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
-	            return !!getServerApprovalTriage(server).can_run_checks;
-	        }
+		        function canRunAutoremoveAction(server) {
+		            return canRunTransientAction(server);
+		        }
 
-	        function canRunSudoersAction(server) {
-	            if (!server || server.status === "pending_approval" || isServerActionBusy(server)) return false;
-	            return !!getServerApprovalTriage(server).can_run_checks;
-	        }
+		        function canRunSudoersAction(server) {
+		            return canRunTransientAction(server);
+		        }
 
-	        function canRefreshFactsAction(server) {
-	            if (!server || isServerActionBusy(server)) return false;
-	            return getServerApprovalTriage(server).can_refresh_facts !== false;
-	        }
+		        function canRefreshFactsAction(server) {
+		            return canRunTransientAction(server);
+		        }
 
         function updateSelectPageState() {
             const selectAll = document.getElementById('select-all');
@@ -2330,13 +2338,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                                     <button type="button" class="btn-ghost action-span" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                                 </div>
                               `
-	                        : driftReason
-	                            ? `
-	                                <div class="actions-grid timeline-actions timeline-actions-note">
-	                                    <span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">Runtime not pending</span>
-	                                    ${hasPendingUpdates(server) ? `<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
-	                                    <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-	                                </div>
+		                        : driftReason
+		                            ? `
+		                                <div class="actions-grid timeline-actions timeline-actions-note">
+		                                    <span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">Runtime not pending</span>
+		                                    ${canUpdate ? `<button type="button" data-action="update-server" data-name="${safeDataName}" title="Run fresh update checks">Update</button>` : ""}
+		                                    ${hasPendingUpdates(server) ? `<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
+		                                    <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+		                                </div>
 	                              `
 	                        : `
 	                            <div class="actions-grid timeline-actions">
@@ -2384,14 +2393,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    updateBulkActionState();
 	                });
 	            });
-	            updateBulkActionState();
-	            updateSortIndicators();
-	            if (options.refreshPanels === false) {
-	                renderFleetFilters();
-	                renderSelectedHostPanel();
-	            } else {
-	                renderDashboardPanels();
-	            }
+		            updateBulkActionState();
+		            updateSortIndicators();
+		            if (options.refreshPanels === false) {
+		                renderTableDependentPanels();
+		            } else {
+		                renderDashboardPanels();
+		            }
 	        }
 
         function getServerByName(name) {
@@ -2399,11 +2407,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function selectServer(name) {
-	            selectedServerName = name || "";
-	            saveDashboardFilters();
-	            renderTable({ refreshPanels: false });
-	            renderApprovalTriage();
-	        }
+		            selectedServerName = name || "";
+		            saveDashboardFilters();
+		            renderTable({ refreshPanels: false });
+		        }
 
         async function copyLogs(name = drawerServerName) {
             const server = getServerByName(name);

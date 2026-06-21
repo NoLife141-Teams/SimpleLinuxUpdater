@@ -4,6 +4,8 @@
 
 Run this checklist before creating a release tag. This is the authoritative disposable-host smoke path: use a disposable app database, disposable `known_hosts`, and a disposable Debian/Ubuntu SSH target. Do not use existing saved inventory entries unless the release owner explicitly confirms they are safe to mutate, and never commit target credentials or smoke artifacts.
 
+For a detailed Codex/Computer Use execution runbook that covers both deterministic UI states and a live disposable-host pass, use [Computer Use Release Checklist](computer-use-release-checklist.md).
+
 ## Preconditions
 
 - Fresh build from the release commit.

@@ -6,6 +6,20 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.2.8] - 2026-06-20
+
+### Added
+
+- Add kept-back update approval modes so operators can distinguish standard security updates, kept-back security updates, and full upgrade approval paths.
+- Add a Computer Use release-smoke checklist for deterministic UI coverage and live disposable-host release validation.
+
+### Changed
+
+- Upgrade the status dashboard and observability flow with a more operator-focused UI, improved filtering, and clearer runtime state.
+- Upgrade the Go toolchain to 1.26.4 and refresh compatible Go dependency baselines.
+- Upgrade the Docker runtime base image from Alpine 3.23 to Alpine 3.24.
+- Reduce GitHub Actions artifact retention to limit storage growth.
+
 ## [v0.2.7] - 2026-06-01
 
 ### Added

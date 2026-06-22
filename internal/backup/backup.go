@@ -20,6 +20,7 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -120,6 +121,16 @@ type RestoreResult struct {
 	GlobalKeyPresent    bool
 	KnownHostsRestored  bool
 	SessionsInvalidated bool
+}
+
+type VerifyResult struct {
+	Manifest           Manifest `json:"manifest"`
+	FileNames          []string `json:"file_names"`
+	ManifestFileCount  int      `json:"manifest_file_count"`
+	TotalBytes         int64    `json:"total_bytes"`
+	KnownHostsIncluded bool     `json:"known_hosts_included"`
+	DatabaseValid      bool     `json:"database_valid"`
+	ConfigValid        bool     `json:"config_valid"`
 }
 
 type RestoreOptions struct {
@@ -379,6 +390,45 @@ func (s *Service) RestoreArchiveWithOptions(ctx context.Context, encrypted []byt
 		GlobalKeyPresent:    globalKeyPresent,
 		KnownHostsRestored:  knownHostsRestored,
 		SessionsInvalidated: true,
+	}, nil
+}
+
+func (s *Service) VerifyArchive(ctx context.Context, encrypted []byte, passphrase string) (VerifyResult, error) {
+	passphrase = strings.TrimSpace(passphrase)
+	if err := ValidatePassphrase(passphrase); err != nil {
+		return VerifyResult{}, err
+	}
+	plain, err := DecryptPayload(encrypted, passphrase)
+	if err != nil {
+		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
+	}
+	files, manifest, err := ExtractTarGz(plain)
+	if err != nil {
+		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+	}
+	backupKey, err := s.ValidateConfigData(files["config.json"])
+	if err != nil {
+		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+	}
+	if err := s.ValidateDatabaseData(ctx, files["servers.db"], backupKey); err != nil {
+		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+	}
+	fileNames := make([]string, 0, len(manifest.Files))
+	var totalBytes int64
+	for name, meta := range manifest.Files {
+		fileNames = append(fileNames, name)
+		totalBytes += meta.Size
+	}
+	sort.Strings(fileNames)
+	_, knownHostsIncluded := manifest.Files["known_hosts"]
+	return VerifyResult{
+		Manifest:           manifest,
+		FileNames:          fileNames,
+		ManifestFileCount:  len(manifest.Files),
+		TotalBytes:         totalBytes,
+		KnownHostsIncluded: knownHostsIncluded,
+		DatabaseValid:      true,
+		ConfigValid:        true,
 	}, nil
 }
 

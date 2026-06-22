@@ -802,6 +802,42 @@ async function restoreBackup() {
     }
 }
 
+async function verifyBackup() {
+    const fileInput = document.getElementById("backup-restore-file");
+    const restorePassInput = document.getElementById("backup-restore-passphrase");
+    try {
+        const pass = restorePassInput?.value || "";
+        const file = fileInput?.files?.[0];
+        if (!file) {
+            alert("Choose a backup file first.");
+            return;
+        }
+        if (pass.length < 12) {
+            alert("Passphrase must be at least 12 characters.");
+            return;
+        }
+        const form = new FormData();
+        form.append("file", file);
+        form.append("passphrase", pass);
+        const res = await fetch("/api/backup/verify", {
+            method: "POST",
+            body: form
+        });
+        if (!res.ok) {
+            alert(await parseErrorResponse(res, "Failed to verify backup."));
+            return;
+        }
+        const payload = await res.json().catch(() => ({}));
+        const files = Number(payload.manifest_files || 0);
+        const knownHosts = payload.known_hosts_included ? "includes known_hosts" : "no known_hosts";
+        const created = payload.created_at ? ` Created ${payload.created_at}.` : "";
+        document.getElementById("backup-status").textContent = `Backup verified: ${files} manifest file(s), ${knownHosts}.${created}`;
+    } catch (err) {
+        console.error("Failed to verify backup:", err);
+        alert("Failed to verify backup.");
+    }
+}
+
 function weekdayOrder(token) {
     return weekdayOptions.findIndex((item) => item.value === token);
 }
@@ -1974,6 +2010,7 @@ document.getElementById("metrics-token-rotate").addEventListener("click", () => 
 document.getElementById("metrics-token-disable").addEventListener("click", disableMetricsToken);
 document.getElementById("metrics-token-copy").addEventListener("click", copyMetricsToken);
 document.getElementById("backup-export-btn").addEventListener("click", exportBackup);
+document.getElementById("backup-verify-btn").addEventListener("click", verifyBackup);
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);
 document.getElementById("app-timezone-save").addEventListener("click", saveAppTimezoneSettings);
 document.getElementById("app-timezone-input").addEventListener("input", () => setAppTimezoneFeedback("", ""));

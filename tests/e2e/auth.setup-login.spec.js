@@ -246,6 +246,15 @@ test.describe.serial('setup and login flows', () => {
       state.restoreCount = (state.restoreCount || 0) + 1;
       return fulfillJson(route, { restored: true, sessions_invalidated: false });
     });
+    await page.route('**/api/backup/verify', async route => {
+      state.verifyCount = (state.verifyCount || 0) + 1;
+      return fulfillJson(route, {
+        valid: true,
+        manifest_files: 3,
+        known_hosts_included: false,
+        created_at: '2026-05-17T06:00:00Z',
+      });
+    });
     await page.route('**/api/update-policies/settings', route => fulfillJson(route, {
       timezone: 'America/Toronto',
       resolved_timezone: 'America/Toronto',
@@ -635,6 +644,9 @@ test.describe.serial('setup and login flows', () => {
       buffer: Buffer.from('fake-backup'),
     });
     await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
+    await page.locator('#backup-verify-btn').click();
+    await expect.poll(() => state.verifyCount || 0).toBe(1);
+    await expect(page.locator('#backup-status')).toContainText('Backup verified: 3 manifest file(s)');
     await acceptTypedConfirm(page, page.locator('#backup-restore-btn'), 'RESTORE');
     await expect.poll(() => state.restoreCount || 0).toBe(1);
 

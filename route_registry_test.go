@@ -39,6 +39,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPut, "/api/app-settings/timezone"},
 		{http.MethodPost, "/api/backup/export"},
 		{http.MethodPost, "/api/backup/restore"},
+		{http.MethodPost, "/api/backup/verify"},
 		{http.MethodGet, "/api/update-policies"},
 		{http.MethodPost, "/api/update-policies"},
 		{http.MethodPost, "/api/update-policies/preview"},

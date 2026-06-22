@@ -684,6 +684,62 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	}
 	loadServers()
 
+	var verifyBody bytes.Buffer
+	verifyWriter := multipart.NewWriter(&verifyBody)
+	verifyPart, err := verifyWriter.CreateFormFile("file", "test"+backupFileExtension)
+	if err != nil {
+		t.Fatalf("CreateFormFile(verify) unexpected error: %v", err)
+	}
+	if _, err := verifyPart.Write(backupBlob); err != nil {
+		t.Fatalf("verify part.Write() unexpected error: %v", err)
+	}
+	if err := verifyWriter.WriteField("passphrase", "very-strong-passphrase"); err != nil {
+		t.Fatalf("verify WriteField(passphrase) unexpected error: %v", err)
+	}
+	if err := verifyWriter.Close(); err != nil {
+		t.Fatalf("verify writer.Close() unexpected error: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/backup/verify", &verifyBody)
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", verifyWriter.FormDataContentType())
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("backup verify status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var verifyResp struct {
+		Valid              bool     `json:"valid"`
+		ManifestFiles      int      `json:"manifest_files"`
+		FileNames          []string `json:"file_names"`
+		KnownHostsIncluded bool     `json:"known_hosts_included"`
+		DatabaseValid      bool     `json:"database_valid"`
+		ConfigValid        bool     `json:"config_valid"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &verifyResp); err != nil {
+		t.Fatalf("unmarshal verify response: %v", err)
+	}
+	if !verifyResp.Valid || !verifyResp.DatabaseValid || !verifyResp.ConfigValid || verifyResp.ManifestFiles != 2 || verifyResp.KnownHostsIncluded {
+		t.Fatalf("verify response = %+v, want valid archive with manifest files", verifyResp)
+	}
+	var afterVerifyCount int
+	if err := getDB().QueryRow("SELECT COUNT(1) FROM servers WHERE name = ?", "after-export").Scan(&afterVerifyCount); err != nil {
+		t.Fatalf("query after-export count after verify unexpected error: %v", err)
+	}
+	if afterVerifyCount != 1 {
+		t.Fatalf("after-export count after verify = %d, want 1", afterVerifyCount)
+	}
+	var jobsAfterVerify int
+	if err := getDB().QueryRow("SELECT COUNT(1) FROM jobs").Scan(&jobsAfterVerify); err != nil {
+		t.Fatalf("query jobs count after verify unexpected error: %v", err)
+	}
+	if jobsAfterVerify != 1 {
+		t.Fatalf("jobs count after verify = %d, want 1 export job only", jobsAfterVerify)
+	}
+	if state := currentMaintenanceState(); state.Active {
+		t.Fatalf("maintenance state after verify = %+v, want inactive", state)
+	}
+
 	var restoreBody bytes.Buffer
 	writer := multipart.NewWriter(&restoreBody)
 	part, err := writer.CreateFormFile("file", "test"+backupFileExtension)
@@ -790,6 +846,7 @@ func TestBackupRoutesRequireAuthentication(t *testing.T) {
 		{name: "status", method: http.MethodGet, path: "/api/backup/status", body: nil},
 		{name: "export", method: http.MethodPost, path: "/api/backup/export", body: bytes.NewBufferString(`{"passphrase":"very-strong-passphrase"}`)},
 		{name: "restore", method: http.MethodPost, path: "/api/backup/restore", body: bytes.NewBufferString("")},
+		{name: "verify", method: http.MethodPost, path: "/api/backup/verify", body: bytes.NewBufferString("")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var bodyReader io.Reader

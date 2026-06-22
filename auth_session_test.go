@@ -1231,10 +1231,6 @@ func TestAuthGateAllowsStaticAssetsUnauthenticated(t *testing.T) {
 }
 
 func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "auth-admin.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 
@@ -1288,10 +1284,6 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 }
 
 func TestAuthPasswordChangeSuccessesDoNotConsumeFailureLimit(t *testing.T) {
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "auth-admin-success-rate-limit.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 
@@ -1332,10 +1324,6 @@ func TestAuthPasswordChangeSuccessesDoNotConsumeFailureLimit(t *testing.T) {
 }
 
 func TestAuthPasswordChangeRateLimited(t *testing.T) {
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "auth-admin-rate-limit.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 

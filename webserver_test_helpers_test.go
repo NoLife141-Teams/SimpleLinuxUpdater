@@ -165,3 +165,27 @@ func (app *testApp) authenticate(t *testing.T) *http.Cookie {
 	}
 	return testSessionCookieFromRecorder(t, setupRec)
 }
+
+func setupAuthenticatedHandler(t *testing.T, dbFile string) (http.Handler, *http.Cookie) {
+	t.Helper()
+	state := globalServerState()
+	mu.Lock()
+	seedServers := cloneServers(servers)
+	seedStatusMap := cloneStatusMap(statusMap)
+	mu.Unlock()
+	app := newTestAppWithDeps(t, dbFile, AppDeps{
+		ServerState:            state,
+		ServerInventoryService: newServerInventoryServiceWithState(state),
+		PolicyService: NewPolicyService(PolicyServiceDeps{
+			SnapshotServers:       snapshotServers,
+			CurrentStatusSnapshot: currentStatusSnapshot,
+		}),
+	})
+	if len(seedServers) > 0 || len(seedStatusMap) > 0 {
+		mu.Lock()
+		servers = seedServers
+		statusMap = seedStatusMap
+		mu.Unlock()
+	}
+	return app.Handler, app.authenticate(t)
+}

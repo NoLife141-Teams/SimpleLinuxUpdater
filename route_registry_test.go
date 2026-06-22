@@ -2,10 +2,7 @@ package main
 
 import (
 	"net/http"
-	"path/filepath"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 type routeInventoryEntry struct {
@@ -84,20 +81,10 @@ func criticalRouteInventory() []routeInventoryEntry {
 }
 
 func TestRegisterRoutesInventory(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
-	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "route-registry.db"))
-
-	router, err := setupRouter()
-	if err != nil {
-		t.Fatalf("setupRouter() unexpected error: %v", err)
-	}
+	app := newTestApp(t, testAppOptions{})
 
 	registered := make(map[string]bool)
-	for _, route := range router.Routes() {
+	for _, route := range app.Router.Routes() {
 		registered[route.Method+" "+route.Path] = true
 	}
 

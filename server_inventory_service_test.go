@@ -257,12 +257,6 @@ func TestServerInventoryServiceKnownHostsLifecycle(t *testing.T) {
 }
 
 func TestHostKeyRoutesUseInventoryServiceWireShape(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
-	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "hostkey-routes.db")
 	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHosts)

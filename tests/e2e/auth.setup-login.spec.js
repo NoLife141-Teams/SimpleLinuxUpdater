@@ -32,7 +32,7 @@ test.describe.serial('setup and login flows', () => {
 
     if (!status.authenticated) {
       const endpoint = status.setup_required ? '/api/auth/setup' : '/api/auth/login';
-      const candidates = [password];
+      const candidates = [password, changedPassword];
       let result = { ok: false, status: 0, payload: {} };
       for (const candidatePassword of candidates) {
         result = await page.evaluate(async ({ endpoint, username, password }) => {
@@ -235,6 +235,39 @@ test.describe.serial('setup and login flows', () => {
     await page.route('**/api/auth/password', async route => {
       state.passwordPayload = await route.request().postDataJSON();
       return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/notifications/settings', async route => {
+      if (route.request().method() === 'PUT') {
+        state.notificationPayload = await route.request().postDataJSON();
+        return fulfillJson(route, {
+          enabled: state.notificationPayload.enabled,
+          webhook_url: state.notificationPayload.webhook_url,
+          event_types: state.notificationPayload.event_types,
+          supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
+          last_delivery: null,
+        });
+      }
+      return fulfillJson(route, {
+        enabled: false,
+        webhook_url: '',
+        event_types: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
+        supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
+        last_delivery: null,
+      });
+    });
+    await page.route('**/api/notifications/test', async route => {
+      state.notificationTestCount = (state.notificationTestCount || 0) + 1;
+      return fulfillJson(route, {
+        last_delivery: {
+          event_type: 'notification.test',
+          action: 'notification.test',
+          target_name: 'webhook',
+          success: true,
+          attempts: 1,
+          status_code: 202,
+          delivered_at: '2026-05-17T12:00:00Z',
+        },
+      });
     });
     await page.route('**/api/metrics/token', route => fulfillJson(route, { enabled: true, token: 'test-token' }));
     await page.route('**/api/backup/status', route => fulfillJson(route, {
@@ -589,6 +622,20 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#job-detail-copy-logs')).toBeVisible();
     await expect(page.locator('#job-detail-report')).toHaveAttribute('href', '/api/reports/jobs/job-report-1');
     await page.locator('#job-detail-close').click();
+
+    await page.locator('#notification-enabled').check();
+    await page.locator('#notification-webhook-url').fill('https://hooks.example.test/simplelinuxupdater');
+    await page.locator('#notification-event-schedule-skipped').uncheck();
+    await page.locator('#notification-save').click();
+    await expect.poll(() => state.notificationPayload).toMatchObject({
+      enabled: true,
+      webhook_url: 'https://hooks.example.test/simplelinuxupdater',
+      event_types: ['update.complete', 'schedule.run.failed', 'backup.restore'],
+    });
+    await expect(page.locator('#notification-status')).toContainText('Notification settings saved');
+    await page.locator('#notification-test').click();
+    await expect.poll(() => state.notificationTestCount || 0).toBe(1);
+    await expect(page.locator('#notification-last-delivery')).toContainText('notification.test');
 
     await page.locator('#policy-name').fill('Weekend prod');
     await page.locator('#policy-target-tag').fill('');

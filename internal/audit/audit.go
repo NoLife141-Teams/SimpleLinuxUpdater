@@ -21,6 +21,8 @@ type DBProvider func() *sql.DB
 
 type Notifier func(string)
 
+type RecordCallback func(Event)
+
 type TimezoneProvider func() (*time.Location, string)
 
 type DisplayFormatter func(raw string, loc *time.Location, timezoneName string) (string, string)
@@ -215,6 +217,7 @@ type ServiceOptions struct {
 	DB            DBProvider
 	Repository    Repository
 	Notify        Notifier
+	OnRecord      RecordCallback
 	Timezone      TimezoneProvider
 	FormatDisplay DisplayFormatter
 	PruneAllowed  func() bool
@@ -225,6 +228,7 @@ type ServiceOptions struct {
 type Service struct {
 	repo          Repository
 	notify        Notifier
+	onRecord      RecordCallback
 	timezone      TimezoneProvider
 	formatDisplay DisplayFormatter
 	pruneAllowed  func() bool
@@ -251,6 +255,7 @@ func NewService(opts ServiceOptions) *Service {
 	return &Service{
 		repo:          opts.Repository,
 		notify:        opts.Notify,
+		onRecord:      opts.OnRecord,
 		timezone:      opts.Timezone,
 		formatDisplay: opts.FormatDisplay,
 		pruneAllowed:  opts.PruneAllowed,
@@ -287,6 +292,9 @@ func (s *Service) Record(actor, clientIP, action, targetType, targetName, status
 	}
 	if s.notify != nil {
 		s.notify(action)
+	}
+	if s.onRecord != nil {
+		s.onRecord(evt)
 	}
 	return nil
 }

@@ -2435,6 +2435,15 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	})
 	r.GET("/api/app-settings/timezone", handleAppTimezoneStatus)
 	r.PUT("/api/app-settings/timezone", handleAppTimezoneUpdate)
+	r.GET("/api/notifications/settings", func(c *gin.Context) {
+		handleNotificationSettingsStatus(c, deps.NotificationService)
+	})
+	r.PUT("/api/notifications/settings", func(c *gin.Context) {
+		handleNotificationSettingsUpdate(c, deps.NotificationService)
+	})
+	r.POST("/api/notifications/test", func(c *gin.Context) {
+		handleNotificationTest(c, deps.NotificationService)
+	})
 	r.POST("/api/backup/export", func(c *gin.Context) {
 		handleBackupExportWithDeps(c, deps)
 	})

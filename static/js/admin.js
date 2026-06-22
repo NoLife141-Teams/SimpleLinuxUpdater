@@ -474,6 +474,111 @@ function setAppTimezoneFeedback(successMessage, errorMessage) {
     if (error) error.textContent = errorMessage || "";
 }
 
+function setNotificationFeedback(successMessage, errorMessage) {
+    const success = document.getElementById("notification-status");
+    const error = document.getElementById("notification-error");
+    if (success) success.textContent = successMessage || "";
+    if (error) error.textContent = errorMessage || "";
+}
+
+function selectedNotificationEvents() {
+    return Array.from(document.querySelectorAll("[data-notification-event]"))
+        .filter((input) => input.checked)
+        .map((input) => input.dataset.notificationEvent)
+        .filter(Boolean);
+}
+
+function renderNotificationLastDelivery(status) {
+    const node = document.getElementById("notification-last-delivery");
+    if (!node) return;
+    if (!status || !status.delivered_at) {
+        node.textContent = "Last delivery: none.";
+        return;
+    }
+    const outcome = status.success ? "success" : "failed";
+    const target = status.target_name ? ` for ${status.target_name}` : "";
+    const code = status.status_code ? ` HTTP ${status.status_code}.` : "";
+    const err = status.error ? ` ${status.error}` : "";
+    node.textContent = `Last delivery: ${outcome} ${status.event_type || status.action || "notification"}${target} at ${status.delivered_at} after ${Number(status.attempts || 0)} attempt(s).${code}${err}`;
+}
+
+function applyNotificationSettings(payload) {
+    const enabled = document.getElementById("notification-enabled");
+    const webhookURL = document.getElementById("notification-webhook-url");
+    const eventTypes = Array.isArray(payload?.event_types) ? payload.event_types : [];
+    if (enabled) enabled.checked = Boolean(payload?.enabled);
+    if (webhookURL && document.activeElement !== webhookURL) webhookURL.value = payload?.webhook_url || "";
+    document.querySelectorAll("[data-notification-event]").forEach((input) => {
+        input.checked = eventTypes.includes(input.dataset.notificationEvent);
+    });
+    renderNotificationLastDelivery(payload?.last_delivery);
+}
+
+async function fetchNotificationSettings() {
+    try {
+        const res = await fetch("/api/notifications/settings", { cache: "no-store" });
+        if (!res.ok) {
+            setNotificationFeedback("", await parseErrorResponse(res, "Failed to load notification settings."));
+            return;
+        }
+        applyNotificationSettings(await res.json().catch(() => ({})));
+    } catch (err) {
+        console.error("Failed to load notification settings:", err);
+        setNotificationFeedback("", "Failed to load notification settings.");
+    }
+}
+
+async function saveNotificationSettings() {
+    const button = document.getElementById("notification-save");
+    try {
+        setNotificationFeedback("", "");
+        if (button) button.disabled = true;
+        const payload = {
+            enabled: Boolean(document.getElementById("notification-enabled")?.checked),
+            webhook_url: document.getElementById("notification-webhook-url")?.value?.trim() || "",
+            event_types: selectedNotificationEvents()
+        };
+        const res = await fetch("/api/notifications/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            setNotificationFeedback("", await parseErrorResponse(res, "Failed to save notification settings."));
+            return;
+        }
+        applyNotificationSettings(await res.json().catch(() => ({})));
+        setNotificationFeedback("Notification settings saved.", "");
+    } catch (err) {
+        console.error("Failed to save notification settings:", err);
+        setNotificationFeedback("", "Failed to save notification settings.");
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function sendNotificationTest() {
+    const button = document.getElementById("notification-test");
+    try {
+        setNotificationFeedback("", "");
+        if (button) button.disabled = true;
+        const res = await fetch("/api/notifications/test", { method: "POST" });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            renderNotificationLastDelivery(payload.last_delivery);
+            setNotificationFeedback("", await parseErrorResponse(res, "Notification test failed."));
+            return;
+        }
+        renderNotificationLastDelivery(payload.last_delivery);
+        setNotificationFeedback("Notification test delivered.", "");
+    } catch (err) {
+        console.error("Failed to send notification test:", err);
+        setNotificationFeedback("", "Notification test failed.");
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
 async function fetchAppTimezoneSettings(force = false) {
     const timezonePayload = window.ensureAppTimezoneLoaded
         ? await window.ensureAppTimezoneLoaded(force)
@@ -2014,6 +2119,9 @@ document.getElementById("backup-verify-btn").addEventListener("click", verifyBac
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);
 document.getElementById("app-timezone-save").addEventListener("click", saveAppTimezoneSettings);
 document.getElementById("app-timezone-input").addEventListener("input", () => setAppTimezoneFeedback("", ""));
+document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
+document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
+document.getElementById("notification-webhook-url").addEventListener("input", () => setNotificationFeedback("", ""));
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
@@ -2050,5 +2158,6 @@ resetPolicyForm();
 fetchMetricsTokenStatus();
 fetchAuthSessionStatus();
 fetchBackupStatus();
+fetchNotificationSettings();
 refreshScheduledUpdateViews();
 updateFileLabel(document.getElementById("backup-restore-file"), "Choose backup file");

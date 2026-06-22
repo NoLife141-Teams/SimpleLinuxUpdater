@@ -63,6 +63,38 @@
         <section class="workspace fade-in section-spaced">
             <div class="workspace-head">
                 <div>
+                    <div class="eyebrow">Reliability hooks</div>
+                    <h2>Notification Hooks</h2>
+                </div>
+                <p class="muted workspace-note">Send best-effort webhook notifications for selected update, schedule, and backup events.</p>
+            </div>
+            <div class="admin-grid">
+                <div class="admin-block">
+                    <h3>Webhook</h3>
+                    <label class="checkbox-inline"><input type="checkbox" id="notification-enabled"> Enable webhook delivery</label>
+                    <label for="notification-webhook-url" class="form-label">Webhook URL</label>
+                    <input type="url" id="notification-webhook-url" placeholder="https://hooks.example.internal/simplelinuxupdater">
+                    <div class="policy-actions">
+                        <button class="primary-action" type="button" id="notification-save">Save Notifications</button>
+                        <button class="btn-ghost" type="button" id="notification-test">Send Test</button>
+                    </div>
+                    <div id="notification-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
+                    <div id="notification-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
+                </div>
+                <div class="admin-block">
+                    <h3>Events</h3>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-update-complete" data-notification-event="update.complete"><label for="notification-event-update-complete">Completed updates</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-failed" data-notification-event="schedule.run.failed"><label for="notification-event-schedule-failed">Failed scheduled runs</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-skipped" data-notification-event="schedule.run.skipped"><label for="notification-event-schedule-skipped">Skipped scheduled runs</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-restore" data-notification-event="backup.restore"><label for="notification-event-backup-restore">Backup restores</label></div>
+                    <p class="muted" id="notification-last-delivery">Last delivery: none.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="workspace fade-in section-spaced">
+            <div class="workspace-head">
+                <div>
                     <div class="eyebrow">Account security</div>
                     <h2>Admin Password &amp; Sessions</h2>
                 </div>

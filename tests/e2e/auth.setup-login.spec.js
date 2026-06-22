@@ -4,10 +4,11 @@ test.describe.serial('setup and login flows', () => {
   const username = 'admin';
   const password = 'StrongPass1234';
   const changedPassword = 'NewStrongPass123';
+  let knownWorkingPassword = password;
 
   async function signIn(page) {
     await page.locator('#username').fill(username);
-    await page.locator('#password').fill(password);
+    await page.locator('#password').fill(knownWorkingPassword);
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page).toHaveURL('http://127.0.0.1:8080/');
     await expect(page.locator('#logout-btn')).toBeVisible();
@@ -32,19 +33,38 @@ test.describe.serial('setup and login flows', () => {
 
     if (!status.authenticated) {
       const endpoint = status.setup_required ? '/api/auth/setup' : '/api/auth/login';
-      const candidates = [password, changedPassword];
+      const candidates = [...new Set([knownWorkingPassword, password, changedPassword])];
       let result = { ok: false, status: 0, payload: {} };
-      for (const candidatePassword of candidates) {
-        result = await page.evaluate(async ({ endpoint, username, password }) => {
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-          });
-          const payload = await response.json().catch(() => ({}));
-          return { ok: response.ok, status: response.status, payload };
-        }, { endpoint, username, password: candidatePassword });
-        if (result.ok) break;
+      if (status.setup_required) {
+        for (const candidatePassword of candidates) {
+          result = await page.evaluate(async ({ endpoint, username, password }) => {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username, password }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            return { ok: response.ok, status: response.status, payload };
+          }, { endpoint, username, password: candidatePassword });
+          if (result.ok) {
+            knownWorkingPassword = candidatePassword;
+            break;
+          }
+        }
+      } else {
+        for (const candidatePassword of candidates) {
+          await page.goto('/login');
+          await page.locator('#username').fill(username);
+          await page.locator('#password').fill(candidatePassword);
+          await page.getByRole('button', { name: 'Sign in' }).click();
+          await page.waitForURL('http://127.0.0.1:8080/', { timeout: 2500 }).catch(() => {});
+          if (page.url() === 'http://127.0.0.1:8080/') {
+            knownWorkingPassword = candidatePassword;
+            result = { ok: true, status: 200, payload: {} };
+            break;
+          }
+          result = { ok: false, status: 401, payload: {} };
+        }
       }
 
       expect(result, `${endpoint} should create an authenticated test session`).toMatchObject({ ok: true });
@@ -177,11 +197,76 @@ test.describe.serial('setup and login flows', () => {
     };
   }
 
+  function makeHealthTrends(servers) {
+    const trendServers = servers.map((server, index) => {
+      const pendingUpdates = Array.isArray(server.pending_updates) ? server.pending_updates : [];
+      const securityUpdates = pendingUpdates.filter(update => update.security).length;
+      const packageCount = pendingUpdates.length;
+      const latestDiskFree = 8192 - (index * 1024);
+      return {
+        name: server.name,
+        samples: 2,
+        latest: {
+          captured_at: '2026-05-28T12:00:00Z',
+          captured_at_display: 'May 28, 2026 12:00',
+          source: 'audit',
+          package_count: packageCount,
+          security_count: securityUpdates,
+          last_update_status: server.status === 'error' ? 'failure' : 'success',
+          disk_status: server.facts_state === 'stale' ? 'unknown' : 'ok',
+          disk_free_kb: latestDiskFree,
+          disk_total_kb: 16384,
+          apt_status: 'ok',
+          reboot_required: false,
+          os_pretty_name: 'Ubuntu',
+        },
+        first: {
+          captured_at: '2026-05-27T12:00:00Z',
+          package_count: packageCount + 1,
+          security_count: securityUpdates + 1,
+          disk_status: 'ok',
+          disk_free_kb: latestDiskFree + 512,
+          disk_total_kb: 16384,
+          apt_status: 'ok',
+        },
+        package_delta: -1,
+        security_delta: -1,
+        disk_free_delta_kb: -512,
+        update_failures: server.status === 'error' ? 1 : 0,
+        scan_failures: 0,
+        apt_problem_samples: 0,
+        disk_problem_samples: server.facts_state === 'stale' ? 1 : 0,
+        reboot_seen: false,
+        points: [],
+      };
+    });
+    return {
+      window: '7d',
+      from: '2026-05-21T12:00:00Z',
+      from_display: 'May 21, 2026 12:00',
+      to: '2026-05-28T12:00:00Z',
+      to_display: 'May 28, 2026 12:00',
+      generated_at: '2026-05-28T12:00:00Z',
+      retention_days: 90,
+      fleet: {
+        servers_with_samples: trendServers.length,
+        samples: trendServers.reduce((sum, server) => sum + server.samples, 0),
+        update_failures: trendServers.reduce((sum, server) => sum + server.update_failures, 0),
+        scan_failures: 0,
+        apt_problem_samples: 0,
+        disk_problem_samples: trendServers.reduce((sum, server) => sum + server.disk_problem_samples, 0),
+        reboot_seen: 0,
+      },
+      servers: trendServers,
+    };
+  }
+
   async function stubDashboardApi(page, getServers) {
     await page.route('**/api/servers', route => fulfillJson(route, getServers()));
     await page.route('**/api/keys/global', route => fulfillJson(route, { has_key: false }));
     await page.route('**/api/audit-events*', route => fulfillJson(route, { items: [] }));
     await page.route('**/api/observability/summary*', route => fulfillJson(route, { totals: { updates_total: 0, success_rate_pct: 0 } }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, makeHealthTrends(getServers())));
     await page.route('**/api/update-policies', route => fulfillJson(route, []));
     await page.route('**/api/dashboard/summary*', route => fulfillJson(route, makeDashboardSummary(getServers())));
   }
@@ -559,6 +644,17 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#selected-host-panel').getByRole('button', { name: 'Update' })).toHaveCount(0);
     await expect(page.locator('#approval-triage-table tbody')).toContainText('demo-host');
     await expect(page.locator('#scheduled-runs')).toContainText('Nightly security');
+
+    await page.goto('/observability');
+    await expect(page.getByRole('heading', { name: 'Trend summary' })).toBeVisible();
+    await expect(page.locator('#health-trends-body')).toContainText('demo-host');
+    await expect(page.locator('#health-trends-body')).toContainText('runner-host');
+    await expect(page.locator('#trend-hosts')).toHaveText('2');
+    await page.locator('#health-trend-server').selectOption('demo-host');
+    await expect(page.locator('#health-trends-body')).toContainText('demo-host');
+
+    await page.goto('/');
+    await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
 
     await page.locator('#select-all').check();
     await page.locator('#bulk-approve-security').click();

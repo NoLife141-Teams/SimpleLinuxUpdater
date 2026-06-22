@@ -3,8 +3,15 @@ package updates
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	HealthSnapshotRetentionSettingKey  = "health_snapshot_retention_days"
+	DefaultHealthSnapshotRetentionDays = 90
 )
 
 type ServerFactsRepository interface {
@@ -35,6 +42,10 @@ func (r SQLiteServerFactsRepository) now() time.Time {
 
 func EnsureServerFactsSchema(db *sql.DB) error {
 	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS server_facts (
 			server_name TEXT PRIMARY KEY,
 			collected_at TEXT NOT NULL,
@@ -58,7 +69,83 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "server_facts", "disk_total_kb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	return nil
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS server_health_snapshots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			server_name TEXT NOT NULL,
+			captured_at TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'unknown',
+			package_count INTEGER NOT NULL DEFAULT 0,
+			security_count INTEGER NOT NULL DEFAULT 0,
+			last_scan_status TEXT NOT NULL DEFAULT '',
+			last_update_status TEXT NOT NULL DEFAULT '',
+			disk_status TEXT NOT NULL DEFAULT 'unknown',
+			disk_free_kb INTEGER NOT NULL DEFAULT 0,
+			disk_total_kb INTEGER NOT NULL DEFAULT 0,
+			apt_status TEXT NOT NULL DEFAULT 'unknown',
+			reboot_required INTEGER,
+			os_pretty_name TEXT NOT NULL DEFAULT '',
+			raw_json TEXT NOT NULL DEFAULT '{}'
+		)
+	`); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_server_health_snapshots_server_time ON server_health_snapshots (server_name, captured_at DESC)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_server_health_snapshots_captured_at ON server_health_snapshots (captured_at DESC)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(
+		"INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
+		HealthSnapshotRetentionSettingKey,
+		strconv.Itoa(DefaultHealthSnapshotRetentionDays),
+	); err != nil {
+		return err
+	}
+	return pruneHealthSnapshotsWithDB(db, time.Now().UTC())
+}
+
+func (r SQLiteServerFactsRepository) HealthSnapshotRetentionDays() (int, error) {
+	db := r.dbConn()
+	if db == nil {
+		return 0, errors.New("database is not initialized")
+	}
+	return healthSnapshotRetentionDays(db)
+}
+
+func healthSnapshotRetentionDays(db *sql.DB) (int, error) {
+	var raw string
+	err := db.QueryRow("SELECT value FROM settings WHERE key = ?", HealthSnapshotRetentionSettingKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DefaultHealthSnapshotRetentionDays, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || days <= 0 {
+		return DefaultHealthSnapshotRetentionDays, nil
+	}
+	return days, nil
+}
+
+func pruneHealthSnapshotsWithDB(db *sql.DB, now time.Time) error {
+	retentionDays, err := healthSnapshotRetentionDays(db)
+	if err != nil {
+		return err
+	}
+	cutoff := now.UTC().AddDate(0, 0, -retentionDays).Format(time.RFC3339)
+	_, err = db.Exec("DELETE FROM server_health_snapshots WHERE captured_at < ?", cutoff)
+	return err
+}
+
+func (r SQLiteServerFactsRepository) PruneHealthSnapshots() error {
+	db := r.dbConn()
+	if db == nil {
+		return errors.New("database is not initialized")
+	}
+	return pruneHealthSnapshotsWithDB(db, r.now())
 }
 
 func ensureColumn(db *sql.DB, table, name, definition string) error {
@@ -144,7 +231,10 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 		rebootValue,
 		record.RawJSON,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.SaveHealthSnapshot(HealthSnapshotFromFacts(record, "facts"))
 }
 
 func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, error) {
@@ -195,13 +285,151 @@ func (r SQLiteServerFactsRepository) RenameServerTx(tx *sql.Tx, oldName, newName
 	if strings.TrimSpace(oldName) == "" || strings.TrimSpace(newName) == "" || oldName == newName {
 		return nil
 	}
-	_, err := tx.Exec("UPDATE server_facts SET server_name = ? WHERE server_name = ?", newName, oldName)
+	if _, err := tx.Exec("UPDATE server_facts SET server_name = ? WHERE server_name = ?", newName, oldName); err != nil {
+		return err
+	}
+	_, err := tx.Exec("UPDATE server_health_snapshots SET server_name = ? WHERE server_name = ?", newName, oldName)
 	return err
 }
 
 func (r SQLiteServerFactsRepository) DeleteServerTx(tx *sql.Tx, name string) error {
-	_, err := tx.Exec("DELETE FROM server_facts WHERE server_name = ?", name)
+	if _, err := tx.Exec("DELETE FROM server_facts WHERE server_name = ?", name); err != nil {
+		return err
+	}
+	_, err := tx.Exec("DELETE FROM server_health_snapshots WHERE server_name = ?", name)
 	return err
+}
+
+func HealthSnapshotFromFacts(record ServerFactsRecord, source string) HealthSnapshotRecord {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "facts"
+	}
+	return HealthSnapshotRecord{
+		ServerName:     record.ServerName,
+		CapturedAt:     record.CollectedAt,
+		Source:         source,
+		DiskStatus:     record.DiskStatus,
+		DiskFreeKB:     record.DiskFreeKB,
+		DiskTotalKB:    record.DiskTotalKB,
+		AptStatus:      record.AptStatus,
+		RebootRequired: record.RebootRequired,
+		OSPrettyName:   record.OSPrettyName,
+		RawJSON:        record.RawJSON,
+	}
+}
+
+func (r SQLiteServerFactsRepository) SaveHealthSnapshot(record HealthSnapshotRecord) error {
+	db := r.dbConn()
+	if db == nil {
+		return errors.New("database is not initialized")
+	}
+	record.ServerName = strings.TrimSpace(record.ServerName)
+	if record.ServerName == "" {
+		return errors.New("server name is required")
+	}
+	if strings.TrimSpace(record.CapturedAt) == "" {
+		record.CapturedAt = r.now().UTC().Format(time.RFC3339)
+	}
+	if strings.TrimSpace(record.Source) == "" {
+		record.Source = "unknown"
+	}
+	if strings.TrimSpace(record.DiskStatus) == "" {
+		record.DiskStatus = "unknown"
+	}
+	if strings.TrimSpace(record.AptStatus) == "" {
+		record.AptStatus = "unknown"
+	}
+	if strings.TrimSpace(record.RawJSON) == "" {
+		record.RawJSON = "{}"
+	}
+	if record.PackageCount < 0 || record.SecurityCount < 0 {
+		return fmt.Errorf("snapshot package counts must be non-negative")
+	}
+	var rebootValue any
+	if record.RebootRequired != nil {
+		rebootValue = boolToInt(*record.RebootRequired)
+	}
+	_, err := db.Exec(`
+		INSERT INTO server_health_snapshots (
+			server_name, captured_at, source, package_count, security_count,
+			last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
+			apt_status, reboot_required, os_pretty_name, raw_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		record.ServerName,
+		record.CapturedAt,
+		record.Source,
+		record.PackageCount,
+		record.SecurityCount,
+		record.LastScanStatus,
+		record.LastUpdateStatus,
+		record.DiskStatus,
+		record.DiskFreeKB,
+		record.DiskTotalKB,
+		record.AptStatus,
+		rebootValue,
+		record.OSPrettyName,
+		record.RawJSON,
+	)
+	if err != nil {
+		return err
+	}
+	return r.PruneHealthSnapshots()
+}
+
+func (r SQLiteServerFactsRepository) ListHealthSnapshots(from, to, serverName string) ([]HealthSnapshotRecord, error) {
+	db := r.dbConn()
+	if db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	query := `
+		SELECT id, server_name, captured_at, source, package_count, security_count,
+		       last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
+		       apt_status, reboot_required, os_pretty_name, raw_json
+		  FROM server_health_snapshots
+		 WHERE captured_at >= ? AND captured_at <= ?`
+	args := []any{from, to}
+	if strings.TrimSpace(serverName) != "" {
+		query += " AND server_name = ?"
+		args = append(args, strings.TrimSpace(serverName))
+	}
+	query += " ORDER BY server_name ASC, captured_at ASC, id ASC"
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []HealthSnapshotRecord
+	for rows.Next() {
+		var record HealthSnapshotRecord
+		var reboot sql.NullInt64
+		if err := rows.Scan(
+			&record.ID,
+			&record.ServerName,
+			&record.CapturedAt,
+			&record.Source,
+			&record.PackageCount,
+			&record.SecurityCount,
+			&record.LastScanStatus,
+			&record.LastUpdateStatus,
+			&record.DiskStatus,
+			&record.DiskFreeKB,
+			&record.DiskTotalKB,
+			&record.AptStatus,
+			&reboot,
+			&record.OSPrettyName,
+			&record.RawJSON,
+		); err != nil {
+			return nil, err
+		}
+		if reboot.Valid {
+			required := reboot.Int64 != 0
+			record.RebootRequired = &required
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 func boolToInt(v bool) int {

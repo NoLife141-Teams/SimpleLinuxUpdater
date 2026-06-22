@@ -179,6 +179,51 @@ type DashboardSummaryResponse struct {
 	Servers     []DashboardServerSummary `json:"servers"`
 }
 
+type HealthTrendPoint struct {
+	CapturedAt        string `json:"captured_at"`
+	CapturedAtDisplay string `json:"captured_at_display,omitempty"`
+	Source            string `json:"source"`
+	PackageCount      int    `json:"package_count"`
+	SecurityCount     int    `json:"security_count"`
+	LastScanStatus    string `json:"last_scan_status,omitempty"`
+	LastUpdateStatus  string `json:"last_update_status,omitempty"`
+	DiskStatus        string `json:"disk_status"`
+	DiskFreeKB        int64  `json:"disk_free_kb"`
+	DiskTotalKB       int64  `json:"disk_total_kb"`
+	AptStatus         string `json:"apt_status"`
+	RebootRequired    *bool  `json:"reboot_required"`
+	OSPrettyName      string `json:"os_pretty_name,omitempty"`
+}
+
+type HealthTrendServerSummary struct {
+	Name               string             `json:"name"`
+	Samples            int                `json:"samples"`
+	Latest             *HealthTrendPoint  `json:"latest,omitempty"`
+	First              *HealthTrendPoint  `json:"first,omitempty"`
+	PackageDelta       int                `json:"package_delta"`
+	SecurityDelta      int                `json:"security_delta"`
+	DiskFreeDeltaKB    int64              `json:"disk_free_delta_kb"`
+	UpdateFailures     int                `json:"update_failures"`
+	ScanFailures       int                `json:"scan_failures"`
+	AptProblemSamples  int                `json:"apt_problem_samples"`
+	DiskProblemSamples int                `json:"disk_problem_samples"`
+	RebootSeen         bool               `json:"reboot_seen"`
+	Points             []HealthTrendPoint `json:"points"`
+}
+
+type HealthTrendResponse struct {
+	Window        string                     `json:"window"`
+	From          string                     `json:"from"`
+	FromDisplay   string                     `json:"from_display,omitempty"`
+	To            string                     `json:"to"`
+	ToDisplay     string                     `json:"to_display,omitempty"`
+	GeneratedAt   string                     `json:"generated_at"`
+	RetentionDays int                        `json:"retention_days"`
+	ServerFilter  string                     `json:"server_filter,omitempty"`
+	Fleet         map[string]any             `json:"fleet"`
+	Servers       []HealthTrendServerSummary `json:"servers"`
+}
+
 type ServiceDeps struct {
 	DB                          func() *sql.DB
 	DBPath                      func() string
@@ -187,6 +232,8 @@ type ServiceDeps struct {
 	FormatTimestamp             func(string, *time.Location, string) (string, string)
 	ServerSnapshot              func() ([]servers.Server, map[string]*servers.ServerStatus)
 	LoadServerFacts             func() (map[string]updates.ServerFactsRecord, error)
+	ListHealthSnapshots         func(from, to, serverName string) ([]updates.HealthSnapshotRecord, error)
+	HealthSnapshotRetentionDays func() (int, error)
 	ListPolicies                func() ([]policies.Policy, error)
 	LoadOverrides               func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts         func() ([]policies.BlackoutWindow, error)

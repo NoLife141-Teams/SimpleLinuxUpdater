@@ -95,6 +95,14 @@ func insertDashboardJob(t *testing.T, db *sql.DB, id, serverName, status, phase,
 	}
 }
 
+func insertHealthSnapshot(t *testing.T, db *sql.DB, record updates.HealthSnapshotRecord) {
+	t.Helper()
+	repo := updates.SQLiteServerFactsRepository{DB: func() *sql.DB { return db }}
+	if err := repo.SaveHealthSnapshot(record); err != nil {
+		t.Fatalf("SaveHealthSnapshot() error = %v", err)
+	}
+}
+
 func testService(db *sql.DB, path string) *Service {
 	nowLoc := time.UTC
 	return NewService(ServiceDeps{
@@ -325,6 +333,132 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 	}
 	if summary.Fleet["in_progress"] != 4 || summary.Fleet["prechecks_running"] != 4 || summary.Fleet["done"] != 1 || summary.Fleet["stale_facts"] != 1 {
 		t.Fatalf("fleet counts = %+v, want active/done/stale facts counts", summary.Fleet)
+	}
+}
+
+func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
+	db, path := newTestDB(t, "health-trends.db")
+	if err := updates.EnsureServerFactsSchema(db); err != nil {
+		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	rebootRequired := true
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName:       "srv-a",
+		CapturedAt:       now.Add(-6 * 24 * time.Hour).Format(time.RFC3339),
+		Source:           "facts",
+		PackageCount:     5,
+		SecurityCount:    2,
+		DiskStatus:       "ok",
+		DiskFreeKB:       4096,
+		DiskTotalKB:      8192,
+		AptStatus:        "ok",
+		LastUpdateStatus: "success",
+		OSPrettyName:     "Ubuntu",
+	})
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName:       "srv-a",
+		CapturedAt:       now.Add(-time.Hour).Format(time.RFC3339),
+		Source:           "audit",
+		PackageCount:     2,
+		SecurityCount:    1,
+		DiskStatus:       "critical",
+		DiskFreeKB:       1024,
+		DiskTotalKB:      8192,
+		AptStatus:        "critical",
+		LastUpdateStatus: "failure",
+		RebootRequired:   &rebootRequired,
+		OSPrettyName:     "Ubuntu",
+	})
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName:     "srv-b",
+		CapturedAt:     now.Add(-2 * time.Hour).Format(time.RFC3339),
+		Source:         "audit",
+		PackageCount:   3,
+		SecurityCount:  3,
+		DiskStatus:     "ok",
+		AptStatus:      "ok",
+		LastScanStatus: "failure",
+	})
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName:   "deleted",
+		CapturedAt:   now.Add(-time.Hour).Format(time.RFC3339),
+		Source:       "audit",
+		PackageCount: 99,
+		DiskStatus:   "critical",
+		AptStatus:    "critical",
+	})
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName:   "srv-a",
+		CapturedAt:   now.Add(-40 * 24 * time.Hour).Format(time.RFC3339),
+		Source:       "audit",
+		PackageCount: 99,
+	})
+
+	repo := updates.SQLiteServerFactsRepository{DB: func() *sql.DB { return db }}
+	service := NewService(ServiceDeps{
+		DB:     func() *sql.DB { return db },
+		DBPath: func() string { return path },
+		CurrentTimezone: func() (*time.Location, string) {
+			return time.UTC, "UTC"
+		},
+		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
+			return "display:" + raw, "UTC"
+		},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-a"}, {Name: "srv-b"}}, nil
+		},
+		ListHealthSnapshots:         repo.ListHealthSnapshots,
+		HealthSnapshotRetentionDays: repo.HealthSnapshotRetentionDays,
+	})
+
+	trends, err := service.BuildHealthTrends("7d", "", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends() error = %v", err)
+	}
+	if trends.RetentionDays != updates.DefaultHealthSnapshotRetentionDays || !strings.HasPrefix(trends.FromDisplay, "display:") {
+		t.Fatalf("retention/display = %d/%q, want default retention and display", trends.RetentionDays, trends.FromDisplay)
+	}
+	if len(trends.Servers) != 2 {
+		t.Fatalf("server trends count = %d, want 2: %+v", len(trends.Servers), trends.Servers)
+	}
+	byName := map[string]HealthTrendServerSummary{}
+	for _, item := range trends.Servers {
+		byName[item.Name] = item
+	}
+	srvA := byName["srv-a"]
+	if srvA.Samples != 2 || srvA.PackageDelta != -3 || srvA.SecurityDelta != -1 || srvA.DiskFreeDeltaKB != -3072 {
+		t.Fatalf("srv-a trend = %+v, want sample deltas", srvA)
+	}
+	if srvA.UpdateFailures != 1 || srvA.AptProblemSamples != 1 || srvA.DiskProblemSamples != 1 || !srvA.RebootSeen {
+		t.Fatalf("srv-a problem counts = %+v, want update/health/reboot signals", srvA)
+	}
+	if srvA.Latest == nil || srvA.Latest.CapturedAt != now.Add(-time.Hour).Format(time.RFC3339) {
+		t.Fatalf("srv-a latest = %+v, want newest point", srvA.Latest)
+	}
+	if byName["srv-b"].ScanFailures != 1 {
+		t.Fatalf("srv-b scan failures = %+v, want 1", byName["srv-b"])
+	}
+	if trends.Fleet["servers_with_samples"] != 2 || trends.Fleet["samples"] != 3 || trends.Fleet["update_failures"] != 1 || trends.Fleet["scan_failures"] != 1 || trends.Fleet["reboot_seen"] != 1 {
+		t.Fatalf("fleet = %+v, want aggregate health trend counts", trends.Fleet)
+	}
+
+	filtered, err := service.BuildHealthTrends("30d", "srv-a", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends(filtered) error = %v", err)
+	}
+	if len(filtered.Servers) != 1 || filtered.Servers[0].Name != "srv-a" {
+		t.Fatalf("filtered servers = %+v, want only srv-a", filtered.Servers)
+	}
+	missing, err := service.BuildHealthTrends("7d", "deleted", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends(deleted) error = %v", err)
+	}
+	if len(missing.Servers) != 0 || missing.Fleet["samples"] != 0 {
+		t.Fatalf("deleted server trends = %+v fleet=%+v, want empty", missing.Servers, missing.Fleet)
+	}
+	if _, _, err := ParseHealthTrendWindow("24h"); !errors.Is(err, ErrInvalidWindow) {
+		t.Fatalf("ParseHealthTrendWindow(24h) error = %v, want ErrInvalidWindow", err)
 	}
 }
 

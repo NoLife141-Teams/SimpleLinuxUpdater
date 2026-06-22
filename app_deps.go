@@ -193,7 +193,7 @@ func (deps AppDeps) withDefaults() AppDeps {
 			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
 		}
 	}
-	factsRepo := updatespkg.SQLiteServerFactsRepository{DB: deps.DB}
+	factsRepo := updatespkg.SQLiteServerFactsRepository{DB: deps.DB, Now: deps.Now}
 	if deps.PolicyService == nil {
 		deps.PolicyService = NewPolicyService(PolicyServiceDeps{
 			ListPolicies:             deps.PolicyRepository.ListPolicies,
@@ -255,11 +255,13 @@ func (deps AppDeps) withDefaults() AppDeps {
 				defer deps.ServerState.Unlock()
 				return serverpkg.CloneServers(deps.ServerState.Servers()), serverpkg.CloneStatusMap(deps.ServerState.StatusMap())
 			},
-			LoadServerFacts:     factsRepo.LoadAll,
-			ListPolicies:        policyDeps.ListPolicies,
-			LoadOverrides:       policyDeps.LoadOverrides,
-			LoadGlobalBlackouts: policyDeps.LoadGlobalBlackouts,
-			ListPolicyRuns:      deps.PolicyRepository.ListRuns,
+			LoadServerFacts:             factsRepo.LoadAll,
+			ListHealthSnapshots:         factsRepo.ListHealthSnapshots,
+			HealthSnapshotRetentionDays: factsRepo.HealthSnapshotRetentionDays,
+			ListPolicies:                policyDeps.ListPolicies,
+			LoadOverrides:               policyDeps.LoadOverrides,
+			LoadGlobalBlackouts:         policyDeps.LoadGlobalBlackouts,
+			ListPolicyRuns:              deps.PolicyRepository.ListRuns,
 			PolicyMatchesServer: func(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
 				return deps.PolicyService.PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides})
 			},

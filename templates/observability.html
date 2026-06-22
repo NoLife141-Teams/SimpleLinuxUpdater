@@ -82,6 +82,65 @@
                 </div>
             </section>
 
+            <section class="workspace fade-in" aria-label="Host health trends">
+                <div class="workspace-head">
+                    <div>
+                        <div class="eyebrow">Host health</div>
+                        <h2>Trend summary</h2>
+                    </div>
+                    <div class="controls compact-controls">
+                        <label for="health-trend-server">Host</label>
+                        <select id="health-trend-server">
+                            <option value="">All hosts</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="metric-strip kpi-grid health-trend-kpis" aria-label="Host health trend KPIs">
+                    <article class="metric-item kpi">
+                        <span>Hosts sampled</span>
+                        <strong id="trend-hosts" class="kpi-value">0</strong>
+                        <small id="trend-samples">0 samples</small>
+                    </article>
+                    <article class="metric-item kpi">
+                        <span>Health problems</span>
+                        <strong id="trend-health-problems" class="kpi-value bad">0</strong>
+                        <small>APT or disk samples</small>
+                    </article>
+                    <article class="metric-item kpi">
+                        <span>Failures</span>
+                        <strong id="trend-failures" class="kpi-value bad">0</strong>
+                        <small>Update or scan failures</small>
+                    </article>
+                </div>
+                <article class="table-shell health-trend-table">
+                    <div class="table-shell-head">
+                        <div class="table-shell-title">
+                            <span class="table-shell-label">Host health trend</span>
+                            <span class="table-shell-subtle" id="trend-range-label">No trend samples loaded.</span>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Host</th>
+                                    <th>Latest</th>
+                                    <th>Packages</th>
+                                    <th>Security</th>
+                                    <th>Disk free</th>
+                                    <th>APT</th>
+                                    <th>Disk</th>
+                                    <th>Signals</th>
+                                </tr>
+                            </thead>
+                            <tbody id="health-trends-body">
+                                <tr><td colspan="8" class="muted">No host health trend data in selected window.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
             <section class="observability-grid fade-in">
                 <article class="table-shell">
                     <div class="table-shell-head">

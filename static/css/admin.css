@@ -142,7 +142,114 @@
 }
 
 #scheduled-runs-table {
-    min-width: 920px;
+    min-width: 1040px;
+}
+
+.job-detail-backdrop {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0;
+}
+
+.job-detail-modal {
+    width: min(860px, 100%);
+    height: 100%;
+    max-height: 100vh;
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.job-detail-grid,
+.job-detail-panels {
+    display: grid;
+    gap: 10px;
+}
+
+.job-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 12px 0;
+}
+
+.job-detail-panels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 10px;
+}
+
+.job-detail-grid > div,
+.job-detail-section {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.job-detail-grid dt {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.job-detail-grid dd {
+    margin: 4px 0 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+.job-phase-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.job-phase-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.025);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.job-phase-step::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+}
+
+.job-phase-step.is-complete {
+    color: var(--text);
+}
+
+.job-phase-step.is-complete::before {
+    background: var(--success);
+}
+
+.job-phase-step.is-current {
+    color: var(--accent-text);
+    border-color: var(--accent);
+}
+
+.job-phase-step.is-current::before {
+    background: var(--accent);
+}
+
+.job-detail-section pre {
+    max-height: 260px;
+    overflow: auto;
+    margin: 10px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.job-log-block pre {
+    max-height: 360px;
 }
 
 .table-title-row {
@@ -166,7 +273,9 @@
     .policy-form,
     .section-grid,
     .preview-head,
-    .preview-grid {
+    .preview-grid,
+    .job-detail-grid,
+    .job-detail-panels {
         grid-template-columns: 1fr;
     }
 }

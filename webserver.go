@@ -2485,6 +2485,9 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/reports/jobs/:id", func(c *gin.Context) {
 		handleJobReportWithDeps(c, deps)
 	})
+	r.GET("/api/jobs/:id", func(c *gin.Context) {
+		handleJobDetailWithDeps(c, deps)
+	})
 	r.GET("/api/observability/summary", func(c *gin.Context) {
 		handleObservabilitySummaryWithService(c, deps.ObservabilityService, deps.Now)
 	})

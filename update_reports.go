@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -61,4 +62,26 @@ func handleJobReportWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	writeMarkdownDownload(c, markdownReportFilename("job", job.ID), deps.AuditService.BuildJobMarkdownReport(job))
+}
+
+func handleJobDetailWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	jm := deps.CurrentJobManager()
+	if jm == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
+		return
+	}
+	job, err := jm.GetJob(c.Param("id"))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load job"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"job":        job,
+		"report_url": fmt.Sprintf("/api/reports/jobs/%s", url.PathEscape(job.ID)),
+	})
 }

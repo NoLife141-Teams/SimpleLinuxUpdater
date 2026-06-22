@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -64,5 +65,23 @@ func TestMarkdownReportEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(jobRec.Body.String(), "# Update Job Report "+job.ID) || !strings.Contains(jobRec.Body.String(), "Upgrade completed.") {
 		t.Fatalf("job report body missing expected content:\n%s", jobRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID, nil)
+	detailReq.AddCookie(sessionCookie)
+	detailRec := httptest.NewRecorder()
+	handler.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("job detail status = %d, want %d (body=%s)", detailRec.Code, http.StatusOK, detailRec.Body.String())
+	}
+	var detail struct {
+		Job       JobRecord `json:"job"`
+		ReportURL string    `json:"report_url"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal job detail: %v", err)
+	}
+	if detail.Job.ID != job.ID || detail.Job.LogsText != "Upgrade completed." || detail.ReportURL != "/api/reports/jobs/"+job.ID {
+		t.Fatalf("job detail = %+v, want persisted job and report url", detail)
 	}
 }

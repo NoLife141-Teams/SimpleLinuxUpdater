@@ -184,6 +184,17 @@
                         <input type="text" id="audit-target-filter" placeholder="Target name">
                         <label class="sr-only" for="audit-action-filter">Audit action</label>
                         <input type="text" id="audit-action-filter" placeholder="Action (e.g. server.create)">
+                        <label class="sr-only" for="audit-action-preset">Action preset</label>
+                        <select id="audit-action-preset" aria-label="Action preset">
+                            <option value="">Action presets</option>
+                            <option value="server.create">Server created</option>
+                            <option value="server.update">Server updated</option>
+                            <option value="server.delete">Server deleted</option>
+                            <option value="update.complete">Update completed</option>
+                            <option value="update.approve">Update approved</option>
+                            <option value="backup.restore">Backup restored</option>
+                            <option value="auth.password.change">Password changed</option>
+                        </select>
                         <label class="sr-only" for="audit-status-filter">Audit status</label>
                         <select id="audit-status-filter" aria-label="Audit status">
                             <option value="">All statuses</option>
@@ -192,6 +203,10 @@
                             <option value="started">Started</option>
                             <option value="ignored">Ignored</option>
                         </select>
+                        <label class="sr-only" for="audit-from-filter">Audit from</label>
+                        <input type="datetime-local" id="audit-from-filter" aria-label="Audit from">
+                        <label class="sr-only" for="audit-to-filter">Audit to</label>
+                        <input type="datetime-local" id="audit-to-filter" aria-label="Audit to">
                         <button class="btn-ghost inline-btn" id="audit-refresh" type="button">Refresh</button>
                         <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
                     </div>
@@ -218,6 +233,7 @@
                                     <th>Target</th>
                                     <th>Status</th>
                                     <th>Message</th>
+                                    <th>Details</th>
                                     <th>Report</th>
                                 </tr>
                             </thead>
@@ -305,6 +321,34 @@
             <div class="modal-actions">
                 <button class="btn-ghost inline-btn" id="hostkey-modal-cancel" type="button">Cancel</button>
                 <button class="primary-action inline-btn" id="hostkey-modal-trust" type="button">Trust Key</button>
+            </div>
+        </div>
+    </div>
+    <div class="modal-backdrop audit-drawer-backdrop" id="audit-detail-modal">
+        <div class="modal audit-detail-modal" role="dialog" aria-modal="true" aria-labelledby="audit-detail-title">
+            <div class="workspace-head">
+                <div>
+                    <div class="eyebrow">Audit event</div>
+                    <h3 id="audit-detail-title">Audit Details</h3>
+                </div>
+                <a class="inline-btn btn-ghost" id="audit-detail-report" href="#">Report</a>
+            </div>
+            <dl class="audit-detail-grid">
+                <div><dt>Actor</dt><dd id="audit-detail-actor"></dd></div>
+                <div><dt>Status</dt><dd id="audit-detail-status"></dd></div>
+                <div><dt>Action</dt><dd id="audit-detail-action"></dd></div>
+                <div><dt>Target</dt><dd id="audit-detail-target"></dd></div>
+                <div><dt>Time</dt><dd id="audit-detail-time"></dd></div>
+                <div><dt>Client IP</dt><dd id="audit-detail-client-ip"></dd></div>
+                <div><dt>Request ID</dt><dd id="audit-detail-request-id"></dd></div>
+                <div class="full-width"><dt>Message</dt><dd id="audit-detail-message"></dd></div>
+            </dl>
+            <div class="audit-metadata-block">
+                <div class="table-shell-label">Metadata</div>
+                <pre id="audit-detail-meta"></pre>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-ghost inline-btn" id="audit-detail-close" type="button">Close</button>
             </div>
         </div>
     </div>

@@ -331,21 +331,28 @@ test.describe.serial('setup and login flows', () => {
       state.auditPruneCount = (state.auditPruneCount || 0) + 1;
       return fulfillJson(route, { deleted: 3 });
     });
-    await page.route('**/api/audit-events*', route => fulfillJson(route, {
-      items: [{
-        id: 55,
-        created_at: '2026-05-17T12:00:00Z',
-        actor: 'admin',
-        action: 'server.delete',
-        target_type: 'server',
-        target_name: 'demo-host',
-        status: 'success',
-        message: 'Deleted server',
-      }],
-      total: 1,
-      page: 1,
-      page_size: 20,
-    }));
+    await page.route('**/api/audit-events*', route => {
+      state.auditListUrls = [...(state.auditListUrls || []), route.request().url()];
+      return fulfillJson(route, {
+        items: [{
+          id: 55,
+          created_at: '2026-05-17T12:00:00Z',
+          created_at_display: '2026-05-17 08:00:00 America/Toronto',
+          actor: 'admin',
+          action: 'server.delete',
+          target_type: 'server',
+          target_name: 'demo-host',
+          status: 'success',
+          message: 'Deleted server',
+          meta_json: '{"scope":"security","count":2}',
+          request_id: 'req-55',
+          client_ip: '127.0.0.1',
+        }],
+        total: 1,
+        page: 1,
+        page_size: 20,
+      });
+    });
     await page.route('**/api/update-policies', route => fulfillJson(route, {
       items: state.policies || [{
         id: 9,
@@ -636,6 +643,17 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/manage');
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
+    await page.locator('#audit-table button[data-audit-detail="55"]').click();
+    await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
+    await expect(page.locator('#audit-detail-modal')).toContainText('"scope": "security"');
+    await expect(page.locator('#audit-detail-modal')).toContainText('req-55');
+    await expect(page.locator('#audit-detail-report')).toHaveAttribute('href', '/api/reports/audit/55');
+    await page.locator('#audit-detail-close').click();
+
+    await page.locator('#audit-action-preset').selectOption('server.delete');
+    await page.locator('#audit-from-filter').fill('2026-05-17T08:00');
+    await page.locator('#audit-to-filter').fill('2026-05-17T13:00');
+    await expect.poll(() => (state.auditListUrls || []).some(url => url.includes('action=server.delete') && url.includes('from=') && url.includes('to='))).toBe(true);
 
     await page.evaluate(() => {
       window.alert = () => {};

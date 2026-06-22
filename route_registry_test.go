@@ -52,6 +52,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodGet, "/api/audit-events"},
 		{http.MethodGet, "/api/reports/audit/:id"},
 		{http.MethodGet, "/api/reports/jobs/:id"},
+		{http.MethodGet, "/api/jobs/:id"},
 		{http.MethodGet, "/api/observability/summary"},
 		{http.MethodGet, "/api/dashboard/summary"},
 		{http.MethodPost, "/api/audit-events/prune"},

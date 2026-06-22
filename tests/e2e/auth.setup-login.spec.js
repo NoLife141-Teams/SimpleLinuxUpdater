@@ -263,6 +263,28 @@ test.describe.serial('setup and login flows', () => {
         scheduled_for_utc: '2026-05-17T06:00:00Z',
       }],
     }));
+    await page.route('**/api/jobs/job-report-1', route => fulfillJson(route, {
+      report_url: '/api/reports/jobs/job-report-1',
+      job: {
+        id: 'job-report-1',
+        kind: 'update',
+        parent_job_id: '',
+        server_name: 'srv-web-01',
+        actor: 'admin',
+        client_ip: '127.0.0.1',
+        status: 'succeeded',
+        phase: 'complete',
+        summary: 'completed',
+        logs_text: 'apt update\nupgrade completed',
+        error_class: '',
+        retry_policy_json: '{"max_attempts":3,"backoff_seconds":30}',
+        meta_json: '{"packages":2}',
+        created_at: '2026-05-17T06:00:00Z',
+        updated_at: '2026-05-17T06:05:00Z',
+        started_at: '2026-05-17T06:00:05Z',
+        finished_at: '2026-05-17T06:05:00Z',
+      },
+    }));
     await page.route('**/api/update-policies/preview', async route => {
       state.policyPreviewPayload = await route.request().postDataJSON();
       return fulfillJson(route, {
@@ -541,6 +563,14 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('Nightly security');
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('include web');
     await expect(page.locator('#scheduled-runs-table a[href="/api/reports/jobs/job-report-1"]')).toBeVisible();
+    await page.locator('#scheduled-runs-table button[data-action="job-detail"][data-job-id="job-report-1"]').click();
+    await expect(page.locator('#job-detail-modal')).toContainText('Job job-report-1');
+    await expect(page.locator('#job-detail-modal')).toContainText('Complete');
+    await expect(page.locator('#job-detail-modal')).toContainText('"max_attempts": 3');
+    await expect(page.locator('#job-detail-modal')).toContainText('upgrade completed');
+    await expect(page.locator('#job-detail-copy-logs')).toBeVisible();
+    await expect(page.locator('#job-detail-report')).toHaveAttribute('href', '/api/reports/jobs/job-report-1');
+    await page.locator('#job-detail-close').click();
 
     await page.locator('#policy-name').fill('Weekend prod');
     await page.locator('#policy-target-tag').fill('');

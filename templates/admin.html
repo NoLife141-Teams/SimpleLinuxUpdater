@@ -336,7 +336,7 @@
                             <th>Status</th>
                             <th>Summary</th>
                             <th>Job</th>
-                            <th>Report</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -392,6 +392,58 @@
             </div>
         </section>
         </main>
+    </div>
+
+    <div class="modal-backdrop job-detail-backdrop" id="job-detail-modal">
+        <div class="modal job-detail-modal" role="dialog" aria-modal="true" aria-labelledby="job-detail-title">
+            <div class="workspace-head">
+                <div>
+                    <div class="eyebrow">Update run</div>
+                    <h3 id="job-detail-title">Job Details</h3>
+                </div>
+                <div class="table-actions">
+                    <button class="inline-btn btn-ghost" id="job-detail-copy-summary" type="button">Copy Summary</button>
+                    <a class="inline-btn btn-ghost" id="job-detail-report" href="#">Report</a>
+                </div>
+            </div>
+            <dl class="job-detail-grid">
+                <div><dt>Status</dt><dd id="job-detail-status"></dd></div>
+                <div><dt>Phase</dt><dd id="job-detail-phase"></dd></div>
+                <div><dt>Kind</dt><dd id="job-detail-kind"></dd></div>
+                <div><dt>Server</dt><dd id="job-detail-server"></dd></div>
+                <div><dt>Actor</dt><dd id="job-detail-actor"></dd></div>
+                <div><dt>Client IP</dt><dd id="job-detail-client-ip"></dd></div>
+                <div><dt>Created</dt><dd id="job-detail-created"></dd></div>
+                <div><dt>Updated</dt><dd id="job-detail-updated"></dd></div>
+                <div><dt>Started</dt><dd id="job-detail-started"></dd></div>
+                <div><dt>Finished</dt><dd id="job-detail-finished"></dd></div>
+                <div class="full-width"><dt>Summary</dt><dd id="job-detail-summary"></dd></div>
+            </dl>
+            <div class="job-detail-section">
+                <div class="table-shell-label">Phase timeline</div>
+                <div class="job-phase-list" id="job-detail-phases"></div>
+            </div>
+            <div class="job-detail-panels">
+                <div class="job-detail-section">
+                    <div class="table-shell-label">Retry Policy</div>
+                    <pre id="job-detail-retry"></pre>
+                </div>
+                <div class="job-detail-section">
+                    <div class="table-shell-label">Metadata</div>
+                    <pre id="job-detail-meta"></pre>
+                </div>
+            </div>
+            <div class="job-detail-section job-log-block">
+                <div class="workspace-head">
+                    <div class="table-shell-label">Logs</div>
+                    <button class="inline-btn btn-ghost" id="job-detail-copy-logs" type="button">Copy Logs</button>
+                </div>
+                <pre id="job-detail-logs"></pre>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-ghost inline-btn" id="job-detail-close" type="button">Close</button>
+            </div>
+        </div>
     </div>
 
     <script src="/static/auth.js"></script>

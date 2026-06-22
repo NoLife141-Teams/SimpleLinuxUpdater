@@ -1,6 +1,7 @@
 const scheduledPoliciesState = {
     items: [],
     runs: [],
+    currentJob: null,
     editableTimezone: "",
     timezone: "UTC"
 };
@@ -1380,6 +1381,132 @@ function safeRunStatusClassToken(status) {
     }
 }
 
+const jobPhaseOrder = [
+    "dial",
+    "prechecks",
+    "apt_update",
+    "approval_wait",
+    "apt_upgrade",
+    "autoremove",
+    "apply",
+    "postchecks",
+    "snapshot",
+    "encrypt",
+    "decrypt",
+    "lookup",
+    "complete"
+];
+
+function formatJobPhaseLabel(phase) {
+    return String(phase || "unknown")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatJobTimestamp(value) {
+    if (!String(value || "").trim()) return "-";
+    const formatted = window.formatAppTimestamp
+        ? window.formatAppTimestamp(value, { includeUTC: true })
+        : { primary: value, secondary: "", title: value };
+    return formatted.secondary ? `${formatted.primary} (${formatted.secondary})` : formatted.primary;
+}
+
+function prettyJobJSON(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "{}";
+    try {
+        return JSON.stringify(JSON.parse(text), null, 2);
+    } catch (_) {
+        return text;
+    }
+}
+
+function renderJobPhaseTimeline(job) {
+    const container = document.getElementById("job-detail-phases");
+    if (!container) return;
+    const currentPhase = String(job?.phase || "").trim();
+    const phases = jobPhaseOrder.includes(currentPhase) ? jobPhaseOrder : [...jobPhaseOrder, currentPhase].filter(Boolean);
+    const currentIndex = phases.indexOf(currentPhase);
+    container.innerHTML = "";
+    phases.forEach((phase, index) => {
+        const item = document.createElement("span");
+        item.className = "job-phase-step";
+        if (currentIndex >= 0 && index < currentIndex) item.classList.add("is-complete");
+        if (phase === currentPhase) item.classList.add("is-current");
+        item.textContent = formatJobPhaseLabel(phase);
+        container.appendChild(item);
+    });
+}
+
+function renderJobDetail(job, reportURL) {
+    scheduledPoliciesState.currentJob = job || null;
+    document.getElementById("job-detail-title").textContent = `Job ${job.id || ""}`;
+    document.getElementById("job-detail-status").innerHTML = `<span class="status-chip status-${safeRunStatusClassToken(job.status)}">${escapeHtml(job.status || "unknown")}</span>`;
+    document.getElementById("job-detail-phase").textContent = formatJobPhaseLabel(job.phase);
+    document.getElementById("job-detail-kind").textContent = job.kind || "-";
+    document.getElementById("job-detail-server").textContent = job.server_name || "-";
+    document.getElementById("job-detail-actor").textContent = job.actor || "-";
+    document.getElementById("job-detail-client-ip").textContent = job.client_ip || "-";
+    document.getElementById("job-detail-created").textContent = formatJobTimestamp(job.created_at);
+    document.getElementById("job-detail-updated").textContent = formatJobTimestamp(job.updated_at);
+    document.getElementById("job-detail-started").textContent = formatJobTimestamp(job.started_at);
+    document.getElementById("job-detail-finished").textContent = formatJobTimestamp(job.finished_at);
+    document.getElementById("job-detail-summary").textContent = job.summary || "-";
+    document.getElementById("job-detail-retry").textContent = prettyJobJSON(job.retry_policy_json);
+    document.getElementById("job-detail-meta").textContent = prettyJobJSON(job.meta_json);
+    document.getElementById("job-detail-logs").textContent = job.logs_text || "";
+    document.getElementById("job-detail-report").href = reportURL || `/api/reports/jobs/${encodeURIComponent(job.id || "")}`;
+    renderJobPhaseTimeline(job);
+}
+
+function closeJobDetailModal() {
+    const modal = document.getElementById("job-detail-modal");
+    if (!modal) return;
+    modal.classList.remove("active");
+    scheduledPoliciesState.currentJob = null;
+}
+
+async function openJobDetail(jobID) {
+    const cleanID = String(jobID || "").trim();
+    if (!cleanID) return;
+    try {
+        const res = await fetch(`/api/jobs/${encodeURIComponent(cleanID)}`);
+        if (!res.ok) {
+            alert(await parseErrorResponse(res, "Failed to load job details."));
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!data.job) {
+            alert("Job details were not returned.");
+            return;
+        }
+        renderJobDetail(data.job, data.report_url);
+        document.getElementById("job-detail-modal").classList.add("active");
+        document.getElementById("job-detail-close").focus({ preventScroll: true });
+    } catch (err) {
+        console.error("Failed to load job details:", err);
+        alert("Failed to load job details.");
+    }
+}
+
+async function copyJobDetailText(kind) {
+    const job = scheduledPoliciesState.currentJob;
+    if (!job) return;
+    const text = kind === "logs"
+        ? (job.logs_text || "")
+        : `Job ${job.id}\nStatus: ${job.status || "unknown"}\nPhase: ${job.phase || "unknown"}\nSummary: ${job.summary || ""}`;
+    if (!String(text || "").trim()) {
+        alert("Nothing to copy.");
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(text);
+        alert(kind === "logs" ? "Job logs copied." : "Job summary copied.");
+    } catch (_) {
+        alert("Failed to copy. Select the text and copy it manually.");
+    }
+}
+
 function resetPolicyForm() {
     document.getElementById("policy-id").value = "";
     document.getElementById("policy-name").value = "";
@@ -1499,10 +1626,23 @@ function renderScheduledRuns(items) {
             <td><span class="status-chip status-${statusToken}">${escapeHtml(run.status || "unknown")}</span></td>
             <td>${escapeHtml(run.summary || run.reason || "")}</td>
             <td>${jobValue}</td>
-            <td>${run.job_id ? `<a class="inline-btn btn-ghost" href="/api/reports/jobs/${encodeURIComponent(run.job_id)}">Report</a>` : '<span class="subtle">-</span>'}</td>
+            <td>
+                ${run.job_id ? `
+                    <div class="table-actions">
+                        <button class="inline-btn btn-ghost" type="button" data-action="job-detail" data-job-id="${escapeHtml(String(run.job_id))}">Details</button>
+                        <a class="inline-btn btn-ghost" href="/api/reports/jobs/${encodeURIComponent(run.job_id)}">Report</a>
+                    </div>
+                ` : '<span class="subtle">-</span>'}
+            </td>
         `;
         tbody.appendChild(row);
     });
+}
+
+function handleScheduledRunsTableClick(event) {
+    const detailButton = event.target.closest("[data-action='job-detail']");
+    if (!detailButton) return;
+    openJobDetail(detailButton.dataset.jobId);
 }
 
 async function fetchScheduledPolicies() {
@@ -1843,6 +1983,7 @@ document.getElementById("update-policy-form").addEventListener("submit", saveSch
 document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
 document.querySelector("#scheduled-policy-table tbody").addEventListener("click", handleScheduledPolicyTableClick);
+document.querySelector("#scheduled-runs-table tbody").addEventListener("click", handleScheduledRunsTableClick);
 document.getElementById("policy-blackout-add").addEventListener("click", () => addBlackoutRow("policy"));
 document.getElementById("global-blackout-add").addEventListener("click", () => addBlackoutRow("global"));
 document.getElementById("policy-blackouts-json-apply").addEventListener("click", () => applyBlackoutJson("policy", "Policy no-run windows"));
@@ -1851,6 +1992,20 @@ document.getElementById("policy-blackout-rows").addEventListener("click", handle
 document.getElementById("global-blackout-rows").addEventListener("click", handleBlackoutEditorClick);
 document.getElementById("policy-blackout-rows").addEventListener("input", handleBlackoutEditorInput);
 document.getElementById("global-blackout-rows").addEventListener("input", handleBlackoutEditorInput);
+document.getElementById("job-detail-close").addEventListener("click", closeJobDetailModal);
+document.getElementById("job-detail-copy-summary").addEventListener("click", () => copyJobDetailText("summary"));
+document.getElementById("job-detail-copy-logs").addEventListener("click", () => copyJobDetailText("logs"));
+document.getElementById("job-detail-modal").addEventListener("click", (event) => {
+    if (event.target && event.target.id === "job-detail-modal") {
+        closeJobDetailModal();
+    }
+});
+document.addEventListener("keydown", (event) => {
+    const modal = document.getElementById("job-detail-modal");
+    if (event.key === "Escape" && modal && modal.classList.contains("active")) {
+        closeJobDetailModal();
+    }
+});
 
 bindPolicyFormInteractions();
 populateTimezonePicker();

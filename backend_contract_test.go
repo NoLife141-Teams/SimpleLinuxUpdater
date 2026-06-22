@@ -94,6 +94,7 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodPost, "/api/audit-events/prune"},
 			{http.MethodGet, "/api/reports/audit/:id"},
 			{http.MethodGet, "/api/reports/jobs/:id"},
+			{http.MethodGet, "/api/jobs/:id"},
 			{http.MethodGet, "/api/observability/summary"},
 			{http.MethodGet, "/api/dashboard/summary"},
 		},
@@ -314,6 +315,19 @@ func TestBackendContractReportsAndPolicies(t *testing.T) {
 		}
 		if !strings.Contains(reportRec.Body.String(), "# Update Job Report "+job.ID) || !strings.Contains(reportRec.Body.String(), "Contract logs") {
 			t.Fatalf("job report body missing expected content:\n%s", reportRec.Body.String())
+		}
+
+		detailRec := performContractRequest(app.Handler, http.MethodGet, "/api/jobs/"+job.ID, nil, sessionCookie, false)
+		if detailRec.Code != http.StatusOK {
+			t.Fatalf("GET /api/jobs/:id status = %d, want %d", detailRec.Code, http.StatusOK)
+		}
+		detail := decodeContractJSON(t, detailRec)
+		jobDetail, ok := detail["job"].(map[string]any)
+		if !ok {
+			t.Fatalf("job detail missing job object: %+v", detail)
+		}
+		if jobDetail["id"] != job.ID || jobDetail["summary"] != "Contract job" || detail["report_url"] != "/api/reports/jobs/"+job.ID {
+			t.Fatalf("job detail response = %+v, want id/summary/report_url", detail)
 		}
 	})
 

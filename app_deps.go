@@ -26,6 +26,7 @@ type AppDeps struct {
 	AuthService            *AuthService
 	BackupService          *BackupService
 	BackupBarrier          *BackupBarrier
+	NotificationService    *NotificationService
 	ServerState            *serverpkg.State
 	ServerInventoryService *ServerInventoryService
 	PolicyService          *PolicyService
@@ -99,11 +100,16 @@ func (deps AppDeps) withDefaults() AppDeps {
 			}
 		}
 	}
+	if deps.NotificationService == nil {
+		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
+			DB: deps.DB,
+		})
+	}
 	if deps.AuthService == nil {
 		deps.AuthService = NewAuthService(deps.DB)
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = NewAuditService(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone)
+		deps.AuditService = NewAuditServiceWithNotifications(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService)
 	}
 	if deps.BackupBarrier == nil {
 		deps.BackupBarrier = backupRestoreMu

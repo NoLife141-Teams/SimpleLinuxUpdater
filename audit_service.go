@@ -6,6 +6,7 @@ import (
 	"time"
 
 	auditpkg "debian-updater/internal/audit"
+	notificationpkg "debian-updater/internal/notifications"
 )
 
 type AuditEvent = auditpkg.Event
@@ -21,6 +22,10 @@ type auditNotifier func(string)
 type auditTimezoneProvider func() (*time.Location, string)
 
 func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider) *AuditService {
+	return NewAuditServiceWithNotifications(db, notify, timezone, nil)
+}
+
+func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService) *AuditService {
 	if db == nil {
 		db = getDB
 	}
@@ -31,9 +36,26 @@ func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTim
 	if notify != nil {
 		notifier = func(reason string) { notify(reason) }
 	}
+	var onRecord auditpkg.RecordCallback
+	if notifications != nil {
+		onRecord = func(evt auditpkg.Event) {
+			notifications.NotifyAuditEvent(notificationpkg.AuditEvent{
+				CreatedAt:  evt.CreatedAt,
+				Actor:      evt.Actor,
+				Action:     evt.Action,
+				TargetType: evt.TargetType,
+				TargetName: evt.TargetName,
+				Status:     evt.Status,
+				Message:    evt.Message,
+				MetaJSON:   evt.MetaJSON,
+				ClientIP:   evt.ClientIP,
+			})
+		}
+	}
 	return auditpkg.NewService(auditpkg.ServiceOptions{
 		DB:            func() *sql.DB { return db() },
 		Notify:        notifier,
+		OnRecord:      onRecord,
 		Timezone:      func() (*time.Location, string) { return timezone() },
 		FormatDisplay: formatTimestampForAppDisplayWithTimezone,
 		PruneGuard:    auditPruneGuard,

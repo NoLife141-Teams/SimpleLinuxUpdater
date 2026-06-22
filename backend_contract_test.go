@@ -79,6 +79,9 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodGet, "/api/dashboard/events"},
 			{http.MethodGet, "/api/app-settings/timezone"},
 			{http.MethodPut, "/api/app-settings/timezone"},
+			{http.MethodGet, "/api/notifications/settings"},
+			{http.MethodPut, "/api/notifications/settings"},
+			{http.MethodPost, "/api/notifications/test"},
 		},
 		"policy_audit_observability": {
 			{http.MethodGet, "/api/update-policies"},

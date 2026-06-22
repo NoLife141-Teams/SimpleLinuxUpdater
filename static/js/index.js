@@ -20,6 +20,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        let activePhaseTooltipTarget = null;
 	        let refreshAllFactsInFlight = false;
 	        let bulkActionInFlightLabel = "";
+	        let bulkReviewResolve = null;
 	        let singleHostActionsInFlight = new Set();
 	        let fetchInFlight = false;
         let fetchQueued = false;
@@ -1984,6 +1985,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            return !!getServerApprovalTriage(server).can_approve_all;
 	        }
 
+	        function canRunBulkApproveSecurity(server) {
+	            return !!getServerApprovalTriage(server).can_approve_security;
+	        }
+
+	        function canRunBulkApproveKeptBackSecurity(server) {
+	            return !!getServerApprovalTriage(server).can_approve_kept_back_security;
+	        }
+
 	        function canRunBulkCancel(server) {
 	            return !!getServerApprovalTriage(server).can_cancel;
 	        }
@@ -1991,6 +2000,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function canRunBulkAction(actionPath, server) {
             if (actionPath === "update") return canRunBulkUpdate(server);
             if (actionPath === "approve") return canRunBulkApprove(server);
+            if (actionPath === "approve-security") return canRunBulkApproveSecurity(server);
+            if (actionPath === "approve-security-kept-back") return canRunBulkApproveKeptBackSecurity(server);
             if (actionPath === "cancel") return canRunBulkCancel(server);
             if (actionPath === "autoremove") return canRunBulkAutoremove(server);
             return true;
@@ -2012,6 +2023,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            const selectedCount = selectedNames.length;
 	            const hiddenCount = Math.max(0, selectedCount - visibleCount);
 	            const approveCount = visibleSelectedServers.filter(canRunBulkApprove).length;
+	            const approveSecurityCount = visibleSelectedServers.filter(canRunBulkApproveSecurity).length;
+	            const approveKeptSecurityCount = visibleSelectedServers.filter(canRunBulkApproveKeptBackSecurity).length;
 	            const cancelCount = visibleSelectedServers.filter(canRunBulkCancel).length;
 	            const updateCount = visibleSelectedServers.filter(canRunBulkUpdate).length;
 	            const autoremoveCount = visibleSelectedServers.filter(canRunBulkAutoremove).length;
@@ -2031,6 +2044,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const parts = [`${visibleCount} visible ${visibleCount === 1 ? "host" : "hosts"} selected`];
 		                    if (updateCount > 0) parts.push(`${updateCount} can update`);
 		                    if (approveCount > 0) parts.push(`${approveCount} can approve standard`);
+		                    if (approveSecurityCount > 0) parts.push(`${approveSecurityCount} can approve security`);
+		                    if (approveKeptSecurityCount > 0) parts.push(`${approveKeptSecurityCount} can approve kept security`);
 		                    if (refreshFactsCount > 0) parts.push(`${refreshFactsCount} can refresh facts`);
 		                    if (autoremoveCount > 0) parts.push(`${autoremoveCount} can autoremove`);
 		                    if (hiddenCount > 0) parts.push(`${hiddenCount} skipped by current filter`);
@@ -2044,6 +2059,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		                : null;
 		            setBulkButtonState("bulk-update", !bulkActionInFlightLabel && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
 		            setBulkButtonState("bulk-approve", !bulkActionInFlightLabel && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
+		            setBulkButtonState("bulk-approve-security", !bulkActionInFlightLabel && approveSecurityCount > 0, `Approve standard security updates on ${pluralize(approveSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard security updates eligible for approval"));
+		            setBulkButtonState("bulk-approve-kept-security", !bulkActionInFlightLabel && approveKeptSecurityCount > 0, `Approve kept-back security updates on ${pluralize(approveKeptSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has kept-back security updates eligible for approval"));
 		            setBulkButtonState("bulk-cancel", !bulkActionInFlightLabel && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
 		            setBulkButtonState("bulk-autoremove", !bulkActionInFlightLabel && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
 	            updateRefreshAllFactsState();
@@ -2677,36 +2694,152 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            updateBulkActionState();
 	        });
 
-	        async function runBulkAction(actionPath, actionLabel) {
-	            if (bulkActionInFlightLabel) return;
-	            const visibleSelected = new Set(
+        function bulkActionWarning(actionPath) {
+            if (actionPath === "approve") {
+                return "Kept-back and full-upgrade-only packages are not included.";
+            }
+            if (actionPath === "approve-security") {
+                return "Only standard security updates are included.";
+            }
+            if (actionPath === "approve-security-kept-back") {
+                return "Kept-back security approvals use targeted apt install; package removals are confirmed from the previewed plan.";
+            }
+            if (actionPath === "cancel") {
+                return "This cancels approval for each eligible host.";
+            }
+            return "";
+        }
+
+        function bulkIneligibleReason(actionPath, server) {
+            if (!server) return "Host is no longer loaded";
+            if (actionPath === "update") return "Cannot start update checks now";
+            if (actionPath === "approve") return "No standard updates eligible";
+            if (actionPath === "approve-security") return "No standard security updates eligible";
+            if (actionPath === "approve-security-kept-back") {
+                const counts = getPendingApprovalCounts(server);
+                return counts.keptBackSecurityPlanAvailable ? "No kept-back security updates eligible" : "Needs a fresh package scan";
+            }
+            if (actionPath === "cancel") return "Not waiting for approval";
+            if (actionPath === "autoremove") return "Cannot run autoremove now";
+            return "Not eligible";
+        }
+
+        function buildBulkActionPlan(actionPath, actionLabel) {
+            const visibleSelected = new Set(
                 Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
                     .map(cb => cb.dataset.name)
                     .filter(Boolean)
             );
             const selectedNames = Array.from(selectedServers);
-            const names = selectedNames.filter(name => visibleSelected.has(name));
-            if (names.length === 0) {
-                if (selectedNames.length > 0) {
+            const visibleNames = selectedNames.filter(name => visibleSelected.has(name));
+            const hiddenNames = selectedNames.filter(name => !visibleSelected.has(name));
+            const eligibleNames = [];
+            const ineligible = [];
+            visibleNames.forEach(name => {
+                const server = getServerByName(name);
+                if (canRunBulkAction(actionPath, server)) {
+                    eligibleNames.push(name);
+                } else {
+                    ineligible.push({ name, reason: bulkIneligibleReason(actionPath, server) });
+                }
+            });
+            return {
+                actionPath,
+                actionLabel,
+                selectedNames,
+                visibleNames,
+                hiddenNames,
+                eligibleNames,
+                ineligible,
+                warning: bulkActionWarning(actionPath)
+            };
+        }
+
+        function fillBulkReviewList(id, items, emptyText) {
+            const list = document.getElementById(id);
+            if (!list) return;
+            list.innerHTML = "";
+            if (!items.length) {
+                const item = document.createElement("li");
+                item.textContent = emptyText;
+                item.className = "muted";
+                list.appendChild(item);
+                return;
+            }
+            items.forEach(value => {
+                const item = document.createElement("li");
+                item.textContent = value;
+                list.appendChild(item);
+            });
+        }
+
+        function closeBulkReviewModal(result) {
+            const modal = document.getElementById("bulk-review-modal");
+            modal.classList.remove("active");
+            if (bulkReviewResolve) {
+                const resolve = bulkReviewResolve;
+                bulkReviewResolve = null;
+                resolve(!!result);
+            }
+        }
+
+        function requestBulkActionReview(plan) {
+            const modal = document.getElementById("bulk-review-modal");
+            document.getElementById("bulk-review-title").textContent = `Review bulk ${plan.actionLabel}`;
+            document.getElementById("bulk-review-summary").textContent = `${pluralize(plan.eligibleNames.length, "eligible visible host")} will run. ${pluralize(plan.hiddenNames.length + plan.ineligible.length, "host")} will be skipped.`;
+            document.getElementById("bulk-review-eligible-label").textContent = `Eligible hosts (${plan.eligibleNames.length})`;
+            document.getElementById("bulk-review-skipped-label").textContent = `Skipped hosts (${plan.hiddenNames.length + plan.ineligible.length})`;
+            fillBulkReviewList("bulk-review-eligible", plan.eligibleNames, "No eligible hosts.");
+            const skipped = [
+                ...plan.hiddenNames.map(name => `${name}: hidden by current filters or page`),
+                ...plan.ineligible.map(item => `${item.name}: ${item.reason}`)
+            ];
+            fillBulkReviewList("bulk-review-skipped", skipped, "No skipped hosts.");
+            document.getElementById("bulk-review-warning").textContent = plan.warning || "";
+            document.getElementById("bulk-review-confirm").disabled = plan.eligibleNames.length === 0;
+            modal.classList.add("active");
+            document.getElementById("bulk-review-confirm").focus({ preventScroll: true });
+            return new Promise(resolve => {
+                bulkReviewResolve = resolve;
+            });
+        }
+
+        function bulkActionRequestOptions(actionPath, name) {
+            if (actionPath !== "approve-security-kept-back") {
+                return {};
+            }
+            const counts = getPendingApprovalCounts(getServerByName(name));
+            const body = counts.keptBackSecurityRemovedPackages.length > 0 ? { confirm_removals: true } : {};
+            return {
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            };
+        }
+
+	        async function runBulkAction(actionPath, actionLabel) {
+	            if (bulkActionInFlightLabel) return;
+            const plan = buildBulkActionPlan(actionPath, actionLabel);
+            if (plan.visibleNames.length === 0) {
+                if (plan.selectedNames.length > 0) {
                     alert(`No visible selected hosts for bulk ${actionLabel}.`);
                 }
                 return;
             }
-            const eligibleNames = names.filter(name => canRunBulkAction(actionPath, getServerByName(name)));
-            if (eligibleNames.length === 0) {
+            if (plan.eligibleNames.length === 0) {
                 alert(`No visible selected hosts can run bulk ${actionLabel}.`);
                 return;
             }
-	            const hiddenCount = Math.max(0, selectedNames.length - names.length);
-	            const ineligibleCount = Math.max(0, names.length - eligibleNames.length);
+            if (!(await requestBulkActionReview(plan))) {
+                return;
+            }
 
-	            const hostActionKeys = eligibleNames.map(name => singleHostActionKey(name, `bulk ${actionLabel}`));
+	            const hostActionKeys = plan.eligibleNames.map(name => singleHostActionKey(name, `bulk ${actionLabel}`));
 	            bulkActionInFlightLabel = actionLabel;
 	            hostActionKeys.forEach(key => singleHostActionsInFlight.add(key));
 	            renderSingleHostActionState();
 	            try {
-	                const jobs = eligibleNames.map(async (name) => {
-	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST' });
+	                const jobs = plan.eligibleNames.map(async (name) => {
+	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST', ...bulkActionRequestOptions(actionPath, name) });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
 	                        const detail = typeof payload.error === 'string' && payload.error.trim()
@@ -2720,17 +2853,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const failures = [];
 	                results.forEach((result, index) => {
 	                    if (result.status === 'rejected') {
-	                        failures.push(`${eligibleNames[index]}: ${result.reason?.message || 'Request failed'}`);
+	                        failures.push(`${plan.eligibleNames[index]}: ${result.reason?.message || 'Request failed'}`);
 	                    }
 	                });
 
 	                if (failures.length > 0) {
 	                    console.error(`Bulk ${actionLabel} failures:`, failures);
 	                    alert(`Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`);
-	                } else if (hiddenCount > 0 || ineligibleCount > 0) {
+	                } else if (plan.hiddenNames.length > 0 || plan.ineligible.length > 0) {
 	                    const skipped = [];
-	                    if (hiddenCount > 0) skipped.push(`${hiddenCount} hidden selected host(s)`);
-	                    if (ineligibleCount > 0) skipped.push(`${ineligibleCount} ineligible visible host(s)`);
+	                    if (plan.hiddenNames.length > 0) skipped.push(`${plan.hiddenNames.length} hidden selected host(s)`);
+	                    if (plan.ineligible.length > 0) skipped.push(`${plan.ineligible.length} ineligible visible host(s)`);
 	                    alert(`Bulk ${actionLabel} completed; ${skipped.join(" and ")} were skipped.`);
 	                }
 
@@ -2746,16 +2879,26 @@ const LOG_BOTTOM_THRESHOLD = 20;
             await runBulkAction('update', 'update');
         });
 	        document.getElementById('bulk-approve').addEventListener('click', async () => {
-	            if (!window.confirm('Bulk approve standard updates for the visible selected hosts? Kept-back and full-upgrade-only packages are not included.')) {
-	                return;
-	            }
 	            await runBulkAction('approve', 'approve standard updates');
 	        });
+        document.getElementById('bulk-approve-security').addEventListener('click', async () => {
+            await runBulkAction('approve-security', 'approve security updates');
+        });
+        document.getElementById('bulk-approve-kept-security').addEventListener('click', async () => {
+            await runBulkAction('approve-security-kept-back', 'approve kept-back security updates');
+        });
         document.getElementById('bulk-cancel').addEventListener('click', async () => {
             await runBulkAction('cancel', 'cancel');
         });
         document.getElementById('bulk-autoremove').addEventListener('click', async () => {
             await runBulkAction('autoremove', 'apt autoremove');
+        });
+        document.getElementById('bulk-review-cancel').addEventListener('click', () => closeBulkReviewModal(false));
+        document.getElementById('bulk-review-confirm').addEventListener('click', () => closeBulkReviewModal(true));
+        document.getElementById('bulk-review-modal').addEventListener('click', (e) => {
+            if (e.target && e.target.id === 'bulk-review-modal') {
+                closeBulkReviewModal(false);
+            }
         });
         document.getElementById('refresh-all-facts').addEventListener('click', async () => {
             await refreshSelectedHostFacts();
@@ -2872,6 +3015,34 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (!event.shiftKey && document.activeElement === last) {
                 event.preventDefault();
                 first.focus();
+                return true;
+            }
+            return false;
+        }
+
+        function trapBulkReviewModalFocus(event) {
+            const backdrop = document.getElementById('bulk-review-modal');
+            if (!backdrop || !backdrop.classList.contains('active')) return false;
+            const focusable = passwordModalFocusableElements(backdrop);
+            if (!focusable.length) {
+                event.preventDefault();
+                return true;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (!backdrop.contains(document.activeElement)) {
+                event.preventDefault();
+                first.focus({ preventScroll: true });
+                return true;
+            }
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus({ preventScroll: true });
+                return true;
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus({ preventScroll: true });
                 return true;
             }
             return false;
@@ -3007,6 +3178,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     e.preventDefault();
                     e.stopImmediatePropagation();
                     document.getElementById('password-modal-cancel').click();
+                    return;
+                }
+            }
+            const bulkReviewBackdrop = document.getElementById('bulk-review-modal');
+            if (bulkReviewBackdrop && bulkReviewBackdrop.classList.contains('active')) {
+                if (e.key === 'Tab') {
+                    if (trapBulkReviewModalFocus(e)) {
+                        e.stopImmediatePropagation();
+                    }
+                    return;
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    closeBulkReviewModal(false);
                     return;
                 }
             }

@@ -1352,6 +1352,26 @@ func handleObservabilitySummaryWithService(c *gin.Context, service *Observabilit
 	c.JSON(http.StatusOK, summary)
 }
 
+func handleHealthTrendsWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	if service == nil {
+		service = defaultObservabilityService()
+	}
+	trends, err := service.BuildHealthTrends(c.Query("window"), c.Query("server"), now())
+	if err != nil {
+		if errors.Is(err, errInvalidWindow) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window; allowed values: 7d, 30d"})
+			return
+		}
+		log.Printf("handleHealthTrends: failed to build trends for window=%q server=%q: %v", c.Query("window"), c.Query("server"), err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build health trends"})
+		return
+	}
+	c.JSON(http.StatusOK, trends)
+}
+
 func saveServerFacts(record serverFactsRecord) error {
 	record.ServerName = strings.TrimSpace(record.ServerName)
 	if record.ServerName == "" {
@@ -2505,6 +2525,9 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	})
 	r.GET("/api/observability/summary", func(c *gin.Context) {
 		handleObservabilitySummaryWithService(c, deps.ObservabilityService, deps.Now)
+	})
+	r.GET("/api/observability/health-trends", func(c *gin.Context) {
+		handleHealthTrendsWithService(c, deps.ObservabilityService, deps.Now)
 	})
 	r.GET("/api/dashboard/summary", func(c *gin.Context) {
 		handleDashboardSummaryWithService(c, deps.ObservabilityService, deps.Now)

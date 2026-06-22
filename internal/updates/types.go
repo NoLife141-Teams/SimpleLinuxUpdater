@@ -120,6 +120,24 @@ type ServerFactsRecord struct {
 	RawJSON        string `json:"raw_json,omitempty"`
 }
 
+type HealthSnapshotRecord struct {
+	ID               int64  `json:"id,omitempty"`
+	ServerName       string `json:"server_name"`
+	CapturedAt       string `json:"captured_at"`
+	Source           string `json:"source"`
+	PackageCount     int    `json:"package_count"`
+	SecurityCount    int    `json:"security_count"`
+	LastScanStatus   string `json:"last_scan_status"`
+	LastUpdateStatus string `json:"last_update_status"`
+	DiskStatus       string `json:"disk_status"`
+	DiskFreeKB       int64  `json:"disk_free_kb"`
+	DiskTotalKB      int64  `json:"disk_total_kb"`
+	AptStatus        string `json:"apt_status"`
+	RebootRequired   *bool  `json:"reboot_required"`
+	OSPrettyName     string `json:"os_pretty_name"`
+	RawJSON          string `json:"raw_json,omitempty"`
+}
+
 type ScheduledJobBehavior struct {
 	ApprovalTimeout  time.Duration
 	AutoApproveScope string

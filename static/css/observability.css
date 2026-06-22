@@ -17,6 +17,22 @@
     margin: 12px 0 0;
 }
 
+.compact-controls {
+    justify-content: flex-end;
+}
+
+.health-trend-kpis {
+    margin-bottom: 14px;
+}
+
+.health-trend-table {
+    margin-top: 0;
+}
+
+.health-trend-table table {
+    min-width: 900px;
+}
+
 .kpi-value.accent,
 .ok {
     color: var(--accent-text);
@@ -33,5 +49,10 @@
 @media (max-width: 980px) {
     .observability-grid {
         grid-template-columns: 1fr;
+    }
+
+    .compact-controls {
+        justify-content: flex-start;
+        width: 100%;
     }
 }

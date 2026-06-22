@@ -62,6 +62,16 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			return map[string]updates.ServerFactsRecord{}, nil
 		}
 	}
+	if d.ListHealthSnapshots == nil {
+		d.ListHealthSnapshots = func(string, string, string) ([]updates.HealthSnapshotRecord, error) {
+			return []updates.HealthSnapshotRecord{}, nil
+		}
+	}
+	if d.HealthSnapshotRetentionDays == nil {
+		d.HealthSnapshotRetentionDays = func() (int, error) {
+			return updates.DefaultHealthSnapshotRetentionDays, nil
+		}
+	}
 	if d.ListPolicies == nil {
 		d.ListPolicies = func() ([]policies.Policy, error) { return []policies.Policy{}, nil }
 	}
@@ -130,6 +140,21 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 		d.Logf = func(string, ...any) {}
 	}
 	return d
+}
+
+func ParseHealthTrendWindow(raw string) (string, time.Duration, error) {
+	window := strings.TrimSpace(strings.ToLower(raw))
+	if window == "" {
+		window = "7d"
+	}
+	switch window {
+	case "7d":
+		return window, 7 * 24 * time.Hour, nil
+	case "30d":
+		return window, 30 * 24 * time.Hour, nil
+	default:
+		return "", 0, fmt.Errorf("%w: %q", ErrInvalidWindow, raw)
+	}
 }
 
 func ParseWindow(raw string) (string, time.Duration, error) {
@@ -1383,5 +1408,169 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	response.Fleet["high_risk_cve"] = fleetHighRiskCVE
 	response.Fleet["hosts_needing_reboot"] = fleetReboot
 	response.Fleet["stale_facts"] = fleetStaleFacts
+	return response, nil
+}
+
+func healthTrendPointFromSnapshot(record updates.HealthSnapshotRecord, deps ServiceDeps, loc *time.Location, timezoneName string) HealthTrendPoint {
+	display, _ := deps.FormatTimestamp(record.CapturedAt, loc, timezoneName)
+	return HealthTrendPoint{
+		CapturedAt:        record.CapturedAt,
+		CapturedAtDisplay: display,
+		Source:            record.Source,
+		PackageCount:      record.PackageCount,
+		SecurityCount:     record.SecurityCount,
+		LastScanStatus:    record.LastScanStatus,
+		LastUpdateStatus:  record.LastUpdateStatus,
+		DiskStatus:        record.DiskStatus,
+		DiskFreeKB:        record.DiskFreeKB,
+		DiskTotalKB:       record.DiskTotalKB,
+		AptStatus:         record.AptStatus,
+		RebootRequired:    record.RebootRequired,
+		OSPrettyName:      record.OSPrettyName,
+	}
+}
+
+func trendStatusProblem(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "ok", "success", "none", "unknown":
+		return false
+	default:
+		return true
+	}
+}
+
+func trendFailure(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failure", "failed", "error", "cancelled", "interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func trimTrendPoints(points []HealthTrendPoint, limit int) []HealthTrendPoint {
+	if limit <= 0 || len(points) <= limit {
+		return points
+	}
+	return append([]HealthTrendPoint(nil), points[len(points)-limit:]...)
+}
+
+func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Time) (HealthTrendResponse, error) {
+	deps := s.EnsureDeps()
+	window, span, err := ParseHealthTrendWindow(rawWindow)
+	if err != nil {
+		return HealthTrendResponse{}, err
+	}
+	to := now.UTC()
+	from := to.Add(-span)
+	loc, timezoneName := deps.CurrentTimezone()
+	fromRaw := from.Format(time.RFC3339)
+	toRaw := to.Format(time.RFC3339)
+	retentionDays, err := deps.HealthSnapshotRetentionDays()
+	if err != nil {
+		return HealthTrendResponse{}, err
+	}
+	response := HealthTrendResponse{
+		Window:        window,
+		From:          fromRaw,
+		To:            toRaw,
+		GeneratedAt:   toRaw,
+		RetentionDays: retentionDays,
+		ServerFilter:  strings.TrimSpace(serverFilter),
+		Fleet:         map[string]any{},
+		Servers:       []HealthTrendServerSummary{},
+	}
+	response.FromDisplay, _ = deps.FormatTimestamp(response.From, loc, timezoneName)
+	response.ToDisplay, _ = deps.FormatTimestamp(response.To, loc, timezoneName)
+
+	serversSnapshot, _ := deps.ServerSnapshot()
+	activeServers := map[string]struct{}{}
+	for _, server := range serversSnapshot {
+		activeServers[server.Name] = struct{}{}
+	}
+	filter := strings.TrimSpace(serverFilter)
+	if filter != "" {
+		if _, ok := activeServers[filter]; !ok {
+			response.Fleet["servers_with_samples"] = 0
+			response.Fleet["samples"] = 0
+			response.Fleet["update_failures"] = 0
+			response.Fleet["scan_failures"] = 0
+			response.Fleet["apt_problem_samples"] = 0
+			response.Fleet["disk_problem_samples"] = 0
+			response.Fleet["reboot_seen"] = 0
+			return response, nil
+		}
+	}
+
+	snapshots, err := deps.ListHealthSnapshots(fromRaw, toRaw, filter)
+	if err != nil {
+		return HealthTrendResponse{}, err
+	}
+	byServer := map[string][]HealthTrendPoint{}
+	for _, snapshot := range snapshots {
+		if _, ok := activeServers[snapshot.ServerName]; !ok {
+			continue
+		}
+		point := healthTrendPointFromSnapshot(snapshot, deps, loc, timezoneName)
+		byServer[snapshot.ServerName] = append(byServer[snapshot.ServerName], point)
+	}
+
+	fleetSamples := 0
+	fleetUpdateFailures := 0
+	fleetScanFailures := 0
+	fleetAptProblems := 0
+	fleetDiskProblems := 0
+	fleetRebootSeen := 0
+	for serverName, points := range byServer {
+		if len(points) == 0 {
+			continue
+		}
+		summary := HealthTrendServerSummary{
+			Name:    serverName,
+			Samples: len(points),
+			Points:  trimTrendPoints(points, 30),
+		}
+		first := points[0]
+		latest := points[len(points)-1]
+		summary.First = &first
+		summary.Latest = &latest
+		summary.PackageDelta = latest.PackageCount - first.PackageCount
+		summary.SecurityDelta = latest.SecurityCount - first.SecurityCount
+		summary.DiskFreeDeltaKB = latest.DiskFreeKB - first.DiskFreeKB
+		for _, point := range points {
+			if trendFailure(point.LastUpdateStatus) {
+				summary.UpdateFailures++
+			}
+			if trendFailure(point.LastScanStatus) {
+				summary.ScanFailures++
+			}
+			if trendStatusProblem(point.AptStatus) {
+				summary.AptProblemSamples++
+			}
+			if trendStatusProblem(point.DiskStatus) {
+				summary.DiskProblemSamples++
+			}
+			if point.RebootRequired != nil && *point.RebootRequired {
+				summary.RebootSeen = true
+			}
+		}
+		fleetSamples += summary.Samples
+		fleetUpdateFailures += summary.UpdateFailures
+		fleetScanFailures += summary.ScanFailures
+		fleetAptProblems += summary.AptProblemSamples
+		fleetDiskProblems += summary.DiskProblemSamples
+		if summary.RebootSeen {
+			fleetRebootSeen++
+		}
+		response.Servers = append(response.Servers, summary)
+	}
+	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
+	response.Fleet["servers_with_samples"] = len(response.Servers)
+	response.Fleet["samples"] = fleetSamples
+	response.Fleet["update_failures"] = fleetUpdateFailures
+	response.Fleet["scan_failures"] = fleetScanFailures
+	response.Fleet["apt_problem_samples"] = fleetAptProblems
+	response.Fleet["disk_problem_samples"] = fleetDiskProblems
+	response.Fleet["reboot_seen"] = fleetRebootSeen
 	return response, nil
 }

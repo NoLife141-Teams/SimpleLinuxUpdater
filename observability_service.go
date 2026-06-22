@@ -15,6 +15,7 @@ type observabilitySummaryResponse = observabilitypkg.SummaryResponse
 type dashboardHealthInfo = observabilitypkg.DashboardHealthInfo
 type dashboardServerSummary = observabilitypkg.DashboardServerSummary
 type dashboardSummaryResponse = observabilitypkg.DashboardSummaryResponse
+type healthTrendResponse = observabilitypkg.HealthTrendResponse
 
 type ObservabilityServiceDeps = observabilitypkg.ServiceDeps
 type ObservabilityService = observabilitypkg.Service

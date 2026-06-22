@@ -101,6 +101,7 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodGet, "/api/reports/jobs/:id"},
 			{http.MethodGet, "/api/jobs/:id"},
 			{http.MethodGet, "/api/observability/summary"},
+			{http.MethodGet, "/api/observability/health-trends"},
 			{http.MethodGet, "/api/dashboard/summary"},
 		},
 		"servers_actions_hostkeys": {

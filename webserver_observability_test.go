@@ -265,6 +265,63 @@ func TestHandleObservabilitySummaryValidWindow(t *testing.T) {
 	}
 }
 
+func TestHandleHealthTrendsValidatesWindowAndUsesAuditSnapshots(t *testing.T) {
+	now := time.Now().UTC()
+	app := newTestApp(t, testAppOptions{
+		Deps: AppDeps{
+			Now: func() time.Time { return now },
+		},
+	})
+	sessionCookie := app.authenticate(t)
+	server := Server{Name: "srv-trend", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	app.Deps.ServerState.Lock()
+	app.Deps.ServerState.SetServers([]Server{server})
+	app.Deps.ServerState.SetStatusMap(map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	})
+	app.Deps.ServerState.Unlock()
+
+	if err := app.Deps.AuditService.Record("tester", "", updateCompleteAction, "server", server.Name, "failure", "failed", map[string]any{
+		"approved_package_count": 2,
+		"precheck_results": []updatePrecheckResult{
+			{Name: "disk_space", Passed: false, Details: "disk low", Output: "4096 512"},
+			{Name: "apt_health", Passed: true, Details: "apt ok"},
+		},
+	}); err != nil {
+		t.Fatalf("Record(update.complete) error = %v", err)
+	}
+
+	invalidRec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=24h", nil, sessionCookie, false)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid health trends status = %d, want %d", invalidRec.Code, http.StatusBadRequest)
+	}
+
+	rec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=7d&server=srv-trend", nil, sessionCookie, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health trends status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload healthTrendResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; body=%s", err, rec.Body.String())
+	}
+	if payload.Window != "7d" || payload.RetentionDays != 90 || payload.ServerFilter != server.Name {
+		t.Fatalf("payload window/retention/filter = %q/%d/%q", payload.Window, payload.RetentionDays, payload.ServerFilter)
+	}
+	if len(payload.Servers) != 1 {
+		t.Fatalf("server trend count = %d, want 1: %+v", len(payload.Servers), payload.Servers)
+	}
+	got := payload.Servers[0]
+	if got.Name != server.Name || got.Samples != 1 || got.UpdateFailures != 1 || got.DiskProblemSamples != 1 {
+		t.Fatalf("server trend = %+v, want one failed disk snapshot", got)
+	}
+	if got.Latest == nil || got.Latest.PackageCount != 2 || got.Latest.DiskStatus != "critical" || got.Latest.AptStatus != "ok" {
+		t.Fatalf("latest trend point = %+v, want audit-derived package and health fields", got.Latest)
+	}
+	if got.Latest.SecurityCount != 0 {
+		t.Fatalf("latest security count = %d, want 0 for non-security approval metadata", got.Latest.SecurityCount)
+	}
+}
+
 func TestHandleMetricsIncludesExpectedSeries(t *testing.T) {
 	preserveDBState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "metrics.db"))

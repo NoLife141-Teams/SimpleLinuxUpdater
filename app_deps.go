@@ -89,6 +89,9 @@ func (deps AppDeps) withDefaults() AppDeps {
 	if deps.AppTimezoneResolvedName == nil {
 		deps.AppTimezoneResolvedName = currentAppTimezoneResolvedName
 	}
+	if deps.Now == nil {
+		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
 	if deps.DashboardEventBroker == nil {
 		deps.DashboardEventBroker = events.NewBroker()
 	}
@@ -199,6 +202,7 @@ func (deps AppDeps) withDefaults() AppDeps {
 			AuditWithActor:           recordAudit,
 			CurrentLocation:          deps.CurrentAppLocation,
 			CurrentMaintenanceActive: deps.CurrentMaintenanceActive,
+			Now:                      deps.Now,
 			TryBackupRestoreReadLock: deps.BackupBarrier.TryRLock,
 			UnlockBackupRestoreRead:  deps.BackupBarrier.RUnlock,
 			SnapshotServers: func() []Server {
@@ -310,9 +314,6 @@ func (deps AppDeps) withDefaults() AppDeps {
 	}
 	if deps.InitializeMaintenanceState == nil {
 		deps.InitializeMaintenanceState = initializeMaintenanceState
-	}
-	if deps.Now == nil {
-		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if deps.BackupService == nil {
 		runtimeDeps := deps

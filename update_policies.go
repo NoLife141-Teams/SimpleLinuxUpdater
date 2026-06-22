@@ -76,6 +76,8 @@ type UpdatePolicyRun = policypkg.Run
 type UpdatePolicySettingsResponse = policypkg.SettingsResponse
 type UpdatePolicyPreviewServer = policypkg.PreviewServer
 type UpdatePolicyPreviewResponse = policypkg.PreviewResponse
+type UpdatePolicyCalendarResponse = policypkg.CalendarResponse
+type UpdatePolicyCalendarPolicy = policypkg.CalendarPolicy
 type updatePolicyRunUpdate = policypkg.RunUpdate
 
 func defaultPolicyRepository() *policypkg.SQLiteRepository {
@@ -910,6 +912,45 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"items":             runs,
+		"timezone":          deps.AppTimezoneDisplayName(),
+		"resolved_timezone": deps.AppTimezoneResolvedName(),
+	})
+}
+
+func handleUpdatePolicyCalendarWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	rawDays := strings.TrimSpace(c.DefaultQuery("days", "14"))
+	days, err := strconv.Atoi(rawDays)
+	if err != nil || days <= 0 || days > 31 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "days must be an integer between 1 and 31"})
+		return
+	}
+	var policyID int64
+	if rawPolicyID := strings.TrimSpace(c.Query("policy_id")); rawPolicyID != "" {
+		policyID, err = strconv.ParseInt(rawPolicyID, 10, 64)
+		if err != nil || policyID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "policy_id must be a positive integer"})
+			return
+		}
+	}
+	calendar, err := deps.PolicyService.Calendar(policypkg.CalendarOptions{
+		Days:     days,
+		PolicyID: policyID,
+	})
+	if err != nil {
+		if errors.Is(err, policypkg.ErrPolicyNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "policy not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load update policy calendar"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"days":              calendar.Days,
+		"start_date":        calendar.StartDate,
+		"end_date":          calendar.EndDate,
+		"generated_at":      calendar.GeneratedAt,
+		"policies":          calendar.Policies,
 		"timezone":          deps.AppTimezoneDisplayName(),
 		"resolved_timezone": deps.AppTimezoneResolvedName(),
 	})

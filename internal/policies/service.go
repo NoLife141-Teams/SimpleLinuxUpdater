@@ -13,6 +13,8 @@ import (
 	"debian-updater/internal/servers"
 )
 
+var ErrPolicyNotFound = errors.New("policy not found")
+
 type ServiceDeps struct {
 	ListPolicies             func() ([]Policy, error)
 	LoadOverrides            func() (map[int64]map[string]bool, error)
@@ -328,6 +330,113 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 	return response, nil
 }
 
+func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
+	deps := s.EnsureDeps()
+	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil {
+		return CalendarResponse{}, errors.New("policy service dependencies are incomplete")
+	}
+	days := options.Days
+	if days <= 0 {
+		days = 14
+	}
+	loc := deps.CurrentLocation()
+	if loc == nil {
+		loc = time.Local
+	}
+	now := deps.Now()
+	start := options.Start
+	if start.IsZero() {
+		start = now
+	}
+	start = start.In(loc)
+	startDate := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, loc)
+	endDate := startDate.AddDate(0, 0, days-1)
+
+	policies, err := deps.ListPolicies()
+	if err != nil {
+		return CalendarResponse{}, err
+	}
+	overrides, err := deps.LoadOverrides()
+	if err != nil {
+		return CalendarResponse{}, err
+	}
+	globalBlackouts, err := deps.LoadGlobalBlackouts()
+	if err != nil {
+		return CalendarResponse{}, err
+	}
+	serversSnapshot := []servers.Server{}
+	if deps.SnapshotServers != nil {
+		serversSnapshot = deps.SnapshotServers()
+	}
+
+	response := CalendarResponse{
+		Days:        days,
+		StartDate:   startDate.Format("2006-01-02"),
+		EndDate:     endDate.Format("2006-01-02"),
+		GeneratedAt: now.UTC().Format(deps.TimestampLayout),
+		Policies:    []CalendarPolicy{},
+	}
+	foundPolicy := options.PolicyID <= 0
+	for _, policy := range policies {
+		if options.PolicyID > 0 && policy.ID != options.PolicyID {
+			continue
+		}
+		foundPolicy = true
+		matchedServers := matchedServerNamesForPolicy(s, policy, serversSnapshot, overrides)
+		calendarPolicy := CalendarPolicy{
+			ID:             policy.ID,
+			Name:           policy.Name,
+			Enabled:        policy.Enabled,
+			CadenceKind:    policy.CadenceKind,
+			TimeLocal:      policy.TimeLocal,
+			Weekdays:       append([]string(nil), policy.Weekdays...),
+			MatchedServers: matchedServers,
+			Days:           make([]CalendarDay, 0, days),
+		}
+		for offset := 0; offset < days; offset++ {
+			dayStart := startDate.AddDate(0, 0, offset)
+			slotLocal := policySlotForDay(policy, dayStart)
+			day := CalendarDay{
+				Date:           dayStart.Format("2006-01-02"),
+				Weekday:        weekdayToken(dayStart),
+				TimezoneOffset: timezoneOffset(dayStart),
+				AllowedSlots:   []CalendarSlot{},
+				BlockedWindows: []CalendarBlockedWindow{},
+			}
+			if policy.Enabled && s.PolicyDueAt(policy, slotLocal) {
+				blockedByGlobal := s.BlackoutApplies(slotLocal, globalBlackouts)
+				blockedByPolicy := s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)
+				if !blockedByGlobal && !blockedByPolicy {
+					day.AllowedSlots = append(day.AllowedSlots, CalendarSlot{
+						TimeLocal:       policy.TimeLocal,
+						ScheduledForUTC: CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation),
+						TimezoneOffset:  timezoneOffset(slotLocal),
+						ExecutionMode:   policy.ExecutionMode,
+						PackageScope:    policy.PackageScope,
+						UpgradeMode:     policy.UpgradeMode,
+						MatchedServers:  append([]string(nil), matchedServers...),
+					})
+				} else {
+					if blockedByGlobal {
+						day.BlockedReasons = append(day.BlockedReasons, "global_blackout")
+					}
+					if blockedByPolicy {
+						day.BlockedReasons = append(day.BlockedReasons, "policy_blackout")
+					}
+				}
+			}
+			day.BlockedWindows = append(day.BlockedWindows, calendarWindowsForDay(s, dayStart, slotLocal, globalBlackouts, "global")...)
+			day.BlockedWindows = append(day.BlockedWindows, calendarWindowsForDay(s, dayStart, slotLocal, policy.PolicyBlackouts, "policy")...)
+			calendarPolicy.Days = append(calendarPolicy.Days, day)
+		}
+		response.Policies = append(response.Policies, calendarPolicy)
+	}
+	if !foundPolicy {
+		return CalendarResponse{}, ErrPolicyNotFound
+	}
+	return response, nil
+}
+
 func (s *Service) PolicyDueAt(policy Policy, slotLocal time.Time) bool {
 	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
 	if err != nil {
@@ -344,6 +453,90 @@ func (s *Service) PolicyDueAt(policy Policy, slotLocal time.Time) bool {
 	default:
 		return false
 	}
+}
+
+func matchedServerNamesForPolicy(s *Service, policy Policy, serversSnapshot []servers.Server, overrides map[int64]map[string]bool) []string {
+	matched := make([]string, 0)
+	for _, server := range serversSnapshot {
+		if s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
+			matched = append(matched, server.Name)
+		}
+	}
+	sort.Strings(matched)
+	return matched
+}
+
+func policySlotForDay(policy Policy, dayStart time.Time) time.Time {
+	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
+	if err != nil {
+		minutes = 0
+	}
+	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location())
+}
+
+func weekdayToken(t time.Time) string {
+	token, _ := NormalizeWeekdayToken(t.Weekday().String())
+	return token
+}
+
+func timezoneOffset(t time.Time) string {
+	_, offset := t.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	hours := offset / 3600
+	minutes := (offset % 3600) / 60
+	return fmt.Sprintf("%s%02d:%02d", sign, hours, minutes)
+}
+
+func calendarWindowsForDay(s *Service, dayStart time.Time, slotLocal time.Time, windows []BlackoutWindow, source string) []CalendarBlockedWindow {
+	if len(windows) == 0 {
+		return []CalendarBlockedWindow{}
+	}
+	out := make([]CalendarBlockedWindow, 0, len(windows))
+	for _, window := range windows {
+		if !blackoutWindowTouchesDate(window, dayStart) {
+			continue
+		}
+		out = append(out, CalendarBlockedWindow{
+			Source:        source,
+			Weekdays:      append([]string(nil), window.Weekdays...),
+			StartTime:     window.StartTime,
+			EndTime:       window.EndTime,
+			Overnight:     blackoutWindowOvernight(window),
+			AppliesToSlot: s.BlackoutApplies(slotLocal, []BlackoutWindow{window}),
+		})
+	}
+	return out
+}
+
+func blackoutWindowTouchesDate(window BlackoutWindow, dayStart time.Time) bool {
+	startMinutes, startErr := ParseTimeLocalMinutes(window.StartTime)
+	endMinutes, endErr := ParseTimeLocalMinutes(window.EndTime)
+	if startErr != nil || endErr != nil || startMinutes == endMinutes {
+		return false
+	}
+	currentWeekday := weekdayToken(dayStart)
+	for _, weekday := range window.Weekdays {
+		if startMinutes < endMinutes {
+			if weekday == currentWeekday {
+				return true
+			}
+			continue
+		}
+		if weekday == currentWeekday || NextWeekdayToken(weekday) == currentWeekday {
+			return true
+		}
+	}
+	return false
+}
+
+func blackoutWindowOvernight(window BlackoutWindow) bool {
+	startMinutes, startErr := ParseTimeLocalMinutes(window.StartTime)
+	endMinutes, endErr := ParseTimeLocalMinutes(window.EndTime)
+	return startErr == nil && endErr == nil && startMinutes > endMinutes
 }
 
 func policyPreviewExclusionReason(policy Policy, server servers.Server, overrides map[int64]map[string]bool) string {

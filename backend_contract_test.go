@@ -88,6 +88,7 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodPost, "/api/update-policies"},
 			{http.MethodPost, "/api/update-policies/preview"},
 			{http.MethodGet, "/api/update-policies/runs"},
+			{http.MethodGet, "/api/update-policies/calendar"},
 			{http.MethodGet, "/api/update-policies/settings"},
 			{http.MethodPut, "/api/update-policies/settings"},
 			{http.MethodGet, "/api/update-policies/:id/overrides"},
@@ -368,6 +369,21 @@ func TestBackendContractReportsAndPolicies(t *testing.T) {
 			if _, ok := settings[key]; !ok {
 				t.Fatalf("policy settings missing key %q in %+v", key, settings)
 			}
+		}
+
+		calendarRec := performContractRequest(app.Handler, http.MethodGet, "/api/update-policies/calendar?days=14", nil, sessionCookie, false)
+		if calendarRec.Code != http.StatusOK {
+			t.Fatalf("GET /api/update-policies/calendar status = %d, want %d", calendarRec.Code, http.StatusOK)
+		}
+		calendar := decodeContractJSON(t, calendarRec)
+		for _, key := range []string{"days", "start_date", "end_date", "generated_at", "policies", "timezone", "resolved_timezone"} {
+			if _, ok := calendar[key]; !ok {
+				t.Fatalf("policy calendar missing key %q in %+v", key, calendar)
+			}
+		}
+		badCalendarRec := performContractRequest(app.Handler, http.MethodGet, "/api/update-policies/calendar?days=abc", nil, sessionCookie, false)
+		if badCalendarRec.Code != http.StatusBadRequest {
+			t.Fatalf("GET /api/update-policies/calendar invalid days status = %d, want %d", badCalendarRec.Code, http.StatusBadRequest)
 		}
 
 		runsRec := performContractRequest(app.Handler, http.MethodGet, "/api/update-policies/runs?limit=10", nil, sessionCookie, false)

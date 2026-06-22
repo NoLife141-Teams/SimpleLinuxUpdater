@@ -1,6 +1,7 @@
 const scheduledPoliciesState = {
     items: [],
     runs: [],
+    calendar: null,
     currentJob: null,
     editableTimezone: "",
     timezone: "UTC"
@@ -1734,6 +1735,109 @@ function renderScheduledPolicies() {
     });
 }
 
+function renderMaintenanceCalendarFilter() {
+    const select = document.getElementById("maintenance-calendar-policy");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">All policies</option>';
+    scheduledPoliciesState.items.forEach((policy) => {
+        const option = document.createElement("option");
+        option.value = String(policy.id || "");
+        option.textContent = policy.name || `Policy ${policy.id}`;
+        select.appendChild(option);
+    });
+    if (current && Array.from(select.options).some((option) => option.value === current)) {
+        select.value = current;
+    }
+}
+
+function formatCalendarDate(day) {
+    const date = String(day?.date || "");
+    const weekday = formatWeekdayLabel(day?.weekday || "");
+    return [weekday, date].filter(Boolean).join(" ");
+}
+
+function renderCalendarSlot(slot) {
+    const serverCount = Array.isArray(slot?.matched_servers) ? slot.matched_servers.length : 0;
+    const details = [
+        slot?.timezone_offset || "",
+        humanizeExecutionMode(slot?.execution_mode),
+        humanizePackageScope(slot?.package_scope),
+        pluralize(serverCount, "server", "servers")
+    ].filter(Boolean).join(" · ");
+    return `
+        <span class="calendar-chip calendar-chip-allowed" title="${escapeHtml(details)}">
+            ${escapeHtml(`Allowed ${slot?.time_local || "--:--"} ${slot?.timezone_offset || ""}`)}
+        </span>
+    `;
+}
+
+function renderCalendarBlockedWindow(window) {
+    const source = window?.source === "policy" ? "policy" : "global";
+    const overnight = window?.overnight ? " overnight" : "";
+    const applies = window?.applies_to_slot ? " applies to slot" : "";
+    const days = formatWeekdayList(window?.weekdays || []);
+    const title = `${source} ${days}${overnight}${applies}`;
+    return `
+        <span class="calendar-chip calendar-chip-blocked${window?.applies_to_slot ? " is-active" : ""}" title="${escapeHtml(title)}">
+            ${escapeHtml(`${source} ${window?.start_time || "--:--"}-${window?.end_time || "--:--"}${overnight}`)}
+        </span>
+    `;
+}
+
+function renderMaintenanceCalendar(calendar) {
+    const container = document.getElementById("maintenance-calendar-list");
+    const status = document.getElementById("maintenance-calendar-status");
+    if (!container) return;
+    const policies = Array.isArray(calendar?.policies) ? calendar.policies : [];
+    scheduledPoliciesState.calendar = calendar || null;
+    if (status) {
+        const range = calendar?.start_date && calendar?.end_date ? `${calendar.start_date} to ${calendar.end_date}` : "";
+        const tz = calendar?.timezone || scheduledPoliciesState.timezone || "UTC";
+        status.textContent = range ? `${range} · ${tz}` : `Calendar timezone: ${tz}`;
+    }
+    if (!policies.length) {
+        container.innerHTML = '<div class="empty-editor-state subtle">No scheduled policies to show.</div>';
+        return;
+    }
+    container.innerHTML = policies.map((policy) => {
+        const days = Array.isArray(policy.days) ? policy.days : [];
+        const matchedCount = Array.isArray(policy.matched_servers) ? policy.matched_servers.length : 0;
+        return `
+            <div class="calendar-policy">
+                <div class="calendar-policy-head">
+                    <div>
+                        <strong>${escapeHtml(policy.name || "")}</strong>
+                        <div class="table-secondary">${escapeHtml(`${formatCadence(policy)} · ${pluralize(matchedCount, "matched server", "matched servers")}`)}</div>
+                    </div>
+                    <span class="pill ${policy.enabled ? "" : "pill-muted"}">${policy.enabled ? "Enabled" : "Disabled"}</span>
+                </div>
+                <div class="calendar-day-grid">
+                    ${days.map((day) => {
+                        const slots = Array.isArray(day.allowed_slots) ? day.allowed_slots : [];
+                        const windows = Array.isArray(day.blocked_windows) ? day.blocked_windows : [];
+                        const reasons = Array.isArray(day.blocked_reasons) ? day.blocked_reasons : [];
+                        return `
+                            <div class="calendar-day">
+                                <div class="calendar-day-head">
+                                    <span>${escapeHtml(formatCalendarDate(day))}</span>
+                                    <span class="table-secondary">${escapeHtml(day.timezone_offset || "")}</span>
+                                </div>
+                                <div class="calendar-chip-row">
+                                    ${slots.length ? slots.map(renderCalendarSlot).join("") : ""}
+                                    ${windows.length ? windows.map(renderCalendarBlockedWindow).join("") : ""}
+                                    ${!slots.length && !windows.length ? '<span class="subtle">No scheduled slot or no-run window</span>' : ""}
+                                </div>
+                                ${reasons.length ? `<div class="table-secondary">${escapeHtml(`Blocked: ${reasons.join(", ")}`)}</div>` : ""}
+                            </div>
+                        `;
+                    }).join("")}
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
 function renderScheduledRuns(items) {
     const tbody = document.querySelector("#scheduled-runs-table tbody");
     if (!tbody) return;
@@ -1797,6 +1901,7 @@ async function fetchScheduledPolicies() {
         applyScheduledTimezone(data);
     }
     renderScheduledPolicies();
+    renderMaintenanceCalendarFilter();
 }
 
 async function fetchScheduledSettings() {
@@ -1822,14 +1927,41 @@ async function fetchScheduledRuns() {
     renderScheduledRuns(data.items || []);
 }
 
+async function fetchMaintenanceCalendar() {
+    const policyID = String(document.getElementById("maintenance-calendar-policy")?.value || "").trim();
+    const params = new URLSearchParams({ days: "14" });
+    if (policyID) params.set("policy_id", policyID);
+    const res = await fetch(`/api/update-policies/calendar?${params.toString()}`);
+    if (!res.ok) {
+        throw new Error(await parseErrorResponse(res, "Failed to load maintenance window calendar."));
+    }
+    const data = await res.json().catch(() => ({}));
+    if (data.timezone) {
+        applyScheduledTimezone(data);
+    }
+    renderMaintenanceCalendar(data);
+}
+
+async function reloadMaintenanceCalendar() {
+    const status = document.getElementById("maintenance-calendar-status");
+    try {
+        if (status) status.textContent = "Loading calendar...";
+        await fetchMaintenanceCalendar();
+    } catch (err) {
+        console.error("Failed to load maintenance window calendar:", err);
+        if (status) status.textContent = err.message || "Failed to load maintenance window calendar.";
+    }
+}
+
 async function refreshScheduledUpdateViews() {
     try {
+        await fetchAppTimezoneSettings(true);
         await Promise.all([
-            fetchAppTimezoneSettings(true),
             fetchScheduledPolicies(),
             fetchScheduledSettings(),
             fetchScheduledRuns()
         ]);
+        await fetchMaintenanceCalendar();
     } catch (err) {
         console.error("Failed to refresh scheduled update views:", err);
         setPolicyFeedback("", err.message || "Failed to load scheduled update views.");
@@ -2127,6 +2259,8 @@ document.getElementById("auth-sessions-clear").addEventListener("click", clearAu
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
 document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
+document.getElementById("maintenance-calendar-refresh").addEventListener("click", reloadMaintenanceCalendar);
+document.getElementById("maintenance-calendar-policy").addEventListener("change", reloadMaintenanceCalendar);
 document.querySelector("#scheduled-policy-table tbody").addEventListener("click", handleScheduledPolicyTableClick);
 document.querySelector("#scheduled-runs-table tbody").addEventListener("click", handleScheduledRunsTableClick);
 document.getElementById("policy-blackout-add").addEventListener("click", () => addBlackoutRow("policy"));

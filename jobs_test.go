@@ -1,14 +1,9 @@
 package main
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestJobRuntimeStatusSyncFromRecord(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "job-runtime-sync.db"))
+	newIsolatedTestApp(t)
 
 	server := Server{Name: "srv-runtime-sync", Host: "example.org", Port: 22, User: "root"}
 	mu.Lock()

@@ -175,12 +175,6 @@ func TestReadUploadedKeyDataLimit(t *testing.T) {
 }
 
 func TestGlobalKeyUploadRejectsOversizedRequestBody(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
-	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "global-key-large-upload.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 

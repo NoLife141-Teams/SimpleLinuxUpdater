@@ -10,10 +10,6 @@ import (
 )
 
 func TestMarkdownReportEndpoints(t *testing.T) {
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "reports.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 

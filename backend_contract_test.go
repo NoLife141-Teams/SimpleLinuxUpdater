@@ -75,6 +75,7 @@ func TestBackendContractRouteGroups(t *testing.T) {
 			{http.MethodGet, "/api/backup/status"},
 			{http.MethodPost, "/api/backup/export"},
 			{http.MethodPost, "/api/backup/restore"},
+			{http.MethodPost, "/api/backup/verify"},
 			{http.MethodGet, "/api/dashboard/events"},
 			{http.MethodGet, "/api/app-settings/timezone"},
 			{http.MethodPut, "/api/app-settings/timezone"},

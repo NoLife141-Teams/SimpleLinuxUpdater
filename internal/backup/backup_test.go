@@ -194,6 +194,64 @@ func TestRestoreArchiveBeforeApplyRunsAfterArchiveExtraction(t *testing.T) {
 	}
 }
 
+func TestVerifyArchiveValidatesWithoutApplying(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "verify.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE servers (name TEXT PRIMARY KEY, pass_enc TEXT NOT NULL, key_enc TEXT NOT NULL);
+		CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO servers(name, pass_enc, key_enc) VALUES('srv-a', '', '');
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed verify database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close verify database: %v", err)
+	}
+	dbData, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read verify database: %v", err)
+	}
+	tarGz, err := BuildTarGz(map[string][]byte{
+		"servers.db":  dbData,
+		"config.json": []byte(`{"encryption_key":"test-key"}`),
+		"known_hosts": []byte("host ssh-ed25519 AAAATEST"),
+	})
+	if err != nil {
+		t.Fatalf("BuildTarGz() error = %v", err)
+	}
+	encrypted, err := EncryptPayload(tarGz, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload() error = %v", err)
+	}
+	applied := false
+	service := NewService(ServiceDeps{
+		DecodeEncryptionKey: func(string) ([]byte, error) { return []byte("backup-key"), nil },
+		DecryptSecretWithKey: func(string, []byte) (string, error) {
+			return "", nil
+		},
+		EnsureSchema: func(*sql.DB) error { return nil },
+		ReloadRuntimeState: func() error {
+			applied = true
+			return nil
+		},
+		Logf: func(string, ...any) {},
+	})
+	result, err := service.VerifyArchive(context.Background(), encrypted, testPassphrase)
+	if err != nil {
+		t.Fatalf("VerifyArchive() error = %v", err)
+	}
+	if !result.DatabaseValid || !result.ConfigValid || !result.KnownHostsIncluded || result.ManifestFileCount != 3 {
+		t.Fatalf("VerifyArchive() result = %+v, want valid archive with known_hosts", result)
+	}
+	if applied {
+		t.Fatalf("VerifyArchive() invoked apply/runtime mutation hook")
+	}
+}
+
 func TestValidateDatabaseDataRejectsMissingServersTableBeforeMigration(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "missing-servers.db")
 	db, err := sql.Open("sqlite", dbPath)

@@ -423,6 +423,76 @@ func handleBackupRestoreWithDeps(c *gin.Context, deps AppDeps) {
 	handleBackupRestoreWithServiceAndRuntime(c, deps.BackupService, deps.CurrentJobManager, deps.CurrentSessionManager)
 }
 
+func handleBackupVerifyWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	handleBackupVerifyWithService(c, deps.BackupService)
+}
+
+func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
+	if service == nil {
+		service = defaultBackupService()
+	}
+	if c.Request != nil && c.Writer != nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
+	}
+	passphrase := strings.TrimSpace(c.PostForm("passphrase"))
+	if err := validateBackupPassphrase(passphrase); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		audit(c, "backup.verify", "backup", "state", "failure", "Missing backup file", nil)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "backup file is required"})
+		return
+	}
+	blob, err := readUploadedBackupFile(file)
+	if err != nil {
+		audit(c, "backup.verify", "backup", "state", "failure", "Invalid backup file", nil)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	verifyCtx := context.Background()
+	if c.Request != nil {
+		verifyCtx = c.Request.Context()
+	}
+	result, err := service.VerifyArchive(verifyCtx, blob, passphrase)
+	if err != nil {
+		var restoreErr *internalbackup.RestoreError
+		stage := internalbackup.RestoreStageArchive
+		if errors.As(err, &restoreErr) {
+			stage = restoreErr.Stage
+		}
+		switch stage {
+		case internalbackup.RestoreStageDecrypt:
+			audit(c, "backup.verify", "backup", "state", "failure", "Failed to decrypt backup", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to decrypt backup"})
+		default:
+			audit(c, "backup.verify", "backup", "state", "failure", "Invalid backup payload", map[string]any{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup payload"})
+		}
+		return
+	}
+	audit(c, "backup.verify", "backup", "state", "success", "Backup verified", map[string]any{
+		"manifest_files":       result.ManifestFileCount,
+		"known_hosts_included": result.KnownHostsIncluded,
+		"total_bytes":          result.TotalBytes,
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"message":              "backup verified",
+		"valid":                true,
+		"format":               result.Manifest.Format,
+		"version":              result.Manifest.Version,
+		"created_at":           result.Manifest.CreatedAt,
+		"manifest_files":       result.ManifestFileCount,
+		"file_names":           result.FileNames,
+		"total_bytes":          result.TotalBytes,
+		"known_hosts_included": result.KnownHostsIncluded,
+		"database_valid":       result.DatabaseValid,
+		"config_valid":         result.ConfigValid,
+	})
+}
+
 func handleBackupRestoreWithServiceAndRuntime(c *gin.Context, service *BackupService, currentJobs func() *JobManager, currentSession func() *scs.SessionManager) {
 	actor := actorFromContext(c)
 	clientIP := clientIPFromContext(c)

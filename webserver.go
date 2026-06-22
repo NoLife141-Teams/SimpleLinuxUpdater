@@ -2441,6 +2441,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/backup/restore", func(c *gin.Context) {
 		handleBackupRestoreWithDeps(c, deps)
 	})
+	r.POST("/api/backup/verify", func(c *gin.Context) {
+		handleBackupVerifyWithDeps(c, deps)
+	})
 }
 
 func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {

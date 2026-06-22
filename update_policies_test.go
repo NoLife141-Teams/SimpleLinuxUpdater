@@ -182,6 +182,36 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 		t.Fatalf("settings update status = %d, want %d (body=%s)", settingsRec.Code, http.StatusOK, settingsRec.Body.String())
 	}
 
+	calendarRec := httptest.NewRecorder()
+	calendarReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/calendar?days=14&policy_id="+strconvFormatInt(created.ID), nil)
+	calendarReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(calendarRec, calendarReq)
+	if calendarRec.Code != http.StatusOK {
+		t.Fatalf("calendar status = %d, want %d (body=%s)", calendarRec.Code, http.StatusOK, calendarRec.Body.String())
+	}
+	var calendarResp struct {
+		Days             int                          `json:"days"`
+		Policies         []UpdatePolicyCalendarPolicy `json:"policies"`
+		Timezone         string                       `json:"timezone"`
+		ResolvedTimezone string                       `json:"resolved_timezone"`
+	}
+	if err := json.Unmarshal(calendarRec.Body.Bytes(), &calendarResp); err != nil {
+		t.Fatalf("unmarshal calendar response: %v", err)
+	}
+	if calendarResp.Days != 14 || len(calendarResp.Policies) != 1 || calendarResp.Policies[0].ID != created.ID {
+		t.Fatalf("calendar response = %+v, want filtered policy over 14 days", calendarResp)
+	}
+	if strings.TrimSpace(calendarResp.Timezone) == "" {
+		t.Fatalf("calendar timezone missing from response")
+	}
+	badCalendarRec := httptest.NewRecorder()
+	badCalendarReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/calendar?policy_id=999999", nil)
+	badCalendarReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(badCalendarRec, badCalendarReq)
+	if badCalendarRec.Code != http.StatusNotFound {
+		t.Fatalf("unknown policy calendar status = %d, want %d", badCalendarRec.Code, http.StatusNotFound)
+	}
+
 	overrideBody := bytes.NewBufferString(`{"disabled":true}`)
 	overrideRec := httptest.NewRecorder()
 	overrideReq := httptest.NewRequest(http.MethodPut, "/api/update-policies/"+strconvFormatInt(created.ID)+"/overrides/"+server.Name, overrideBody)

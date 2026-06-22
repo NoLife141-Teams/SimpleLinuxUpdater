@@ -330,6 +330,22 @@
             <div class="table-shell section-spaced">
                 <div class="table-shell-head">
                     <div class="table-shell-title">
+                        <span class="table-shell-label">Maintenance Window Calendar</span>
+                        <span class="table-shell-subtle">Next 14 days of allowed slots and no-run windows.</span>
+                    </div>
+                    <div class="table-actions">
+                        <select id="maintenance-calendar-policy" aria-label="Calendar policy filter">
+                            <option value="">All policies</option>
+                        </select>
+                        <button class="btn-ghost inline-btn" type="button" id="maintenance-calendar-refresh">Refresh</button>
+                    </div>
+                </div>
+                <div id="maintenance-calendar-status" class="muted" role="status" aria-live="polite" aria-atomic="true">Loading calendar...</div>
+                <div id="maintenance-calendar-list" class="calendar-list" aria-live="polite"></div>
+            </div>
+            <div class="table-shell section-spaced">
+                <div class="table-shell-head">
+                    <div class="table-shell-title">
                         <span class="table-shell-label">Policy table</span>
                         <span class="table-shell-subtle">Saved recurring update policies.</span>
                     </div>

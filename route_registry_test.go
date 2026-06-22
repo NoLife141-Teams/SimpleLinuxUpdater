@@ -44,6 +44,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPost, "/api/update-policies"},
 		{http.MethodPost, "/api/update-policies/preview"},
 		{http.MethodGet, "/api/update-policies/runs"},
+		{http.MethodGet, "/api/update-policies/calendar"},
 		{http.MethodGet, "/api/update-policies/settings"},
 		{http.MethodPut, "/api/update-policies/settings"},
 		{http.MethodGet, "/api/update-policies/:id/overrides"},

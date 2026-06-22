@@ -2469,6 +2469,9 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/update-policies/runs", func(c *gin.Context) {
 		handleUpdatePolicyRunsWithDeps(c, deps)
 	})
+	r.GET("/api/update-policies/calendar", func(c *gin.Context) {
+		handleUpdatePolicyCalendarWithDeps(c, deps)
+	})
 	r.GET("/api/update-policies/settings", func(c *gin.Context) {
 		handleUpdatePolicySettingsStatusWithDeps(c, deps)
 	})

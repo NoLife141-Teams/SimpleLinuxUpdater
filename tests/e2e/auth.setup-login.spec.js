@@ -305,6 +305,45 @@ test.describe.serial('setup and login flows', () => {
         scheduled_for_utc: '2026-05-17T06:00:00Z',
       }],
     }));
+    await page.route('**/api/update-policies/calendar?*', route => fulfillJson(route, {
+      days: 14,
+      start_date: '2026-05-17',
+      end_date: '2026-05-30',
+      generated_at: '2026-05-17T12:00:00Z',
+      timezone: 'America/Toronto',
+      resolved_timezone: 'America/Toronto',
+      policies: [{
+        id: 12,
+        name: 'Nightly security',
+        enabled: true,
+        cadence_kind: 'daily',
+        time_local: '02:00',
+        weekdays: [],
+        matched_servers: ['srv-web-01'],
+        days: [{
+          date: '2026-05-17',
+          weekday: 'sun',
+          timezone_offset: '-04:00',
+          allowed_slots: [{
+            time_local: '02:00',
+            scheduled_for_utc: '2026-05-17T06:00:00Z',
+            timezone_offset: '-04:00',
+            execution_mode: 'approval_required',
+            package_scope: 'security',
+            upgrade_mode: 'standard',
+            matched_servers: ['srv-web-01'],
+          }],
+          blocked_windows: [{
+            source: 'global',
+            weekdays: ['sat'],
+            start_time: '23:00',
+            end_time: '03:00',
+            overnight: true,
+            applies_to_slot: false,
+          }],
+        }],
+      }],
+    }));
     await page.route('**/api/jobs/job-report-1', route => fulfillJson(route, {
       report_url: '/api/reports/jobs/job-report-1',
       job: {
@@ -613,6 +652,9 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin');
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('Nightly security');
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('include web');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Nightly security');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Allowed 02:00');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('global 23:00-03:00 overnight');
     await expect(page.locator('#scheduled-runs-table a[href="/api/reports/jobs/job-report-1"]')).toBeVisible();
     await page.locator('#scheduled-runs-table button[data-action="job-detail"][data-job-id="job-report-1"]').click();
     await expect(page.locator('#job-detail-modal')).toContainText('Job job-report-1');

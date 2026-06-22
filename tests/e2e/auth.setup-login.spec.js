@@ -479,11 +479,20 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#approval-triage-table tbody')).toContainText('demo-host');
     await expect(page.locator('#scheduled-runs')).toContainText('Nightly security');
 
+    await page.locator('#select-all').check();
+    await page.locator('#bulk-approve-security').click();
+    await expect(page.locator('#bulk-review-modal')).toBeVisible();
+    await expect(page.locator('#bulk-review-modal')).toContainText('demo-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('runner-host: No standard security updates eligible');
+    await expect.poll(() => state.approveSecurity || 0).toBe(0);
+    await page.locator('#bulk-review-confirm').click();
+    await expect.poll(() => state.approveSecurity || 0).toBe(1);
+
     await page.locator('#approval-triage-table button[data-action="approve-all"][data-name="demo-host"]').click();
     await page.locator('#approval-triage-table button[data-action="approve-security"][data-name="demo-host"]').click();
     await page.locator('#approval-triage-table button[data-action="cancel-upgrade"][data-name="demo-host"]').click();
     await expect.poll(() => state.approveAll || 0).toBe(1);
-    await expect.poll(() => state.approveSecurity || 0).toBe(1);
+    await expect.poll(() => state.approveSecurity || 0).toBe(2);
     await expect.poll(() => state.cancel || 0).toBe(1);
 
     await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="pending"]').click();

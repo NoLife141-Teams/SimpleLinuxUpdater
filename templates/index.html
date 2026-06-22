@@ -168,6 +168,8 @@
 	                            <label class="select-page"><input type="checkbox" id="select-all" aria-label="Select all visible hosts on this page"> Select page</label>
 	                            <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
 	                            <button class="inline-btn" type="button" id="bulk-approve">Approve standard</button>
+	                            <button class="inline-btn btn-security" type="button" id="bulk-approve-security">Approve security</button>
+	                            <button class="inline-btn btn-security" type="button" id="bulk-approve-kept-security">Approve kept security</button>
 	                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
 	                            <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
 	                            <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
@@ -434,6 +436,27 @@
                 <button class="primary-action inline-btn" type="submit" id="password-modal-submit">Submit</button>
             </div>
         </form>
+    </div>
+    <div class="modal-backdrop" id="bulk-review-modal">
+        <div class="modal bulk-review-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-review-title" aria-describedby="bulk-review-summary">
+            <h3 id="bulk-review-title">Review Bulk Action</h3>
+            <p class="muted" id="bulk-review-summary"></p>
+            <div class="bulk-review-grid">
+                <div class="bulk-review-panel">
+                    <div class="table-shell-label" id="bulk-review-eligible-label">Eligible hosts</div>
+                    <ul id="bulk-review-eligible"></ul>
+                </div>
+                <div class="bulk-review-panel">
+                    <div class="table-shell-label" id="bulk-review-skipped-label">Skipped hosts</div>
+                    <ul id="bulk-review-skipped"></ul>
+                </div>
+            </div>
+            <p class="bulk-review-warning" id="bulk-review-warning"></p>
+            <div class="modal-actions">
+                <button class="btn-ghost inline-btn" type="button" id="bulk-review-cancel">Cancel</button>
+                <button class="primary-action inline-btn" type="button" id="bulk-review-confirm">Run Bulk Action</button>
+            </div>
+        </div>
     </div>
 
     <script src="/static/auth.js"></script>

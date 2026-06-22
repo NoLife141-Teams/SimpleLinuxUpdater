@@ -43,6 +43,66 @@
     line-height: 1.5;
 }
 
+.policy-preview {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.preview-head,
+.preview-grid {
+    display: grid;
+    gap: 12px;
+}
+
+.preview-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+}
+
+.preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preview-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    min-height: 28px;
+}
+
+.preview-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.035);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.preview-chip-muted {
+    color: var(--muted);
+}
+
+.preview-warnings {
+    display: grid;
+    gap: 6px;
+}
+
+.preview-warning {
+    color: var(--warning);
+    font-size: 12px;
+    font-weight: 700;
+}
+
 .compact-section {
     display: grid;
     gap: 10px;
@@ -104,7 +164,9 @@
     .app-time-grid,
     .admin-grid,
     .policy-form,
-    .section-grid {
+    .section-grid,
+    .preview-head,
+    .preview-grid {
         grid-template-columns: 1fr;
     }
 }

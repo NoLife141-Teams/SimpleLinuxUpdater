@@ -278,6 +278,105 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	}
 }
 
+func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-preview-api.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+
+	serversSnapshot := []Server{
+		{Name: "srv-web", Host: "web.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod", "web"}},
+		{Name: "srv-db", Host: "db.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod", "db"}},
+		{Name: "srv-hold", Host: "hold.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod", "hold"}},
+		{Name: "srv-dev", Host: "dev.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"dev"}},
+	}
+	mu.Lock()
+	servers = serversSnapshot
+	statusMap = map[string]*ServerStatus{}
+	for _, server := range serversSnapshot {
+		statusMap[server.Name] = &ServerStatus{Name: server.Name, Status: "idle", Tags: server.Tags, Upgradable: []string{}}
+	}
+	mu.Unlock()
+
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	createBody := bytes.NewBufferString(`{
+		"name":"Preview policy",
+		"enabled":true,
+		"target_tag":"prod",
+		"package_scope":"security",
+		"execution_mode":"scan_only",
+		"cadence_kind":"daily",
+		"time_local":"02:15",
+		"weekdays":[]
+	}`)
+	createRec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/update-policies", createBody)
+	createReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(createReq)
+	createReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d (body=%s)", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+	var created UpdatePolicy
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created policy: %v", err)
+	}
+
+	overrideBody := bytes.NewBufferString(`{"disabled":true}`)
+	overrideRec := httptest.NewRecorder()
+	overrideReq := httptest.NewRequest(http.MethodPut, "/api/update-policies/"+strconvFormatInt(created.ID)+"/overrides/srv-db", overrideBody)
+	overrideReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(overrideReq)
+	overrideReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(overrideRec, overrideReq)
+	if overrideRec.Code != http.StatusOK {
+		t.Fatalf("override update status = %d, want %d (body=%s)", overrideRec.Code, http.StatusOK, overrideRec.Body.String())
+	}
+
+	previewBody := bytes.NewBufferString(`{
+		"id":` + strconvFormatInt(created.ID) + `,
+		"name":"Preview policy",
+		"enabled":true,
+		"target_tag":"prod",
+		"exclude_tags":["hold"],
+		"target_servers":["srv-missing"],
+		"package_scope":"security",
+		"execution_mode":"scan_only",
+		"cadence_kind":"daily",
+		"time_local":"02:15",
+		"weekdays":[]
+	}`)
+	previewRec := httptest.NewRecorder()
+	previewReq := httptest.NewRequest(http.MethodPost, "/api/update-policies/preview", previewBody)
+	previewReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(previewReq)
+	previewReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want %d (body=%s)", previewRec.Code, http.StatusOK, previewRec.Body.String())
+	}
+	var preview UpdatePolicyPreviewResponse
+	if err := json.Unmarshal(previewRec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("unmarshal preview response: %v", err)
+	}
+	if got := updatePolicyPreviewNames(preview.MatchedServers); len(got) != 1 || got[0] != "srv-web" {
+		t.Fatalf("matched = %+v, want [srv-web]", got)
+	}
+	if got := updatePolicyPreviewNames(preview.DisabledByOverride); len(got) != 1 || got[0] != "srv-db" {
+		t.Fatalf("disabled_by_override = %+v, want [srv-db]", got)
+	}
+	reasons := map[string]string{}
+	for _, item := range preview.ExcludedServers {
+		reasons[item.Name] = item.Reason
+	}
+	if reasons["srv-hold"] != "excluded_tag" || reasons["srv-dev"] != "no_target_match" {
+		t.Fatalf("excluded reasons = %+v, want hold excluded_tag and dev no_target_match", reasons)
+	}
+	if !strings.Contains(strings.Join(preview.Warnings, "\n"), "srv-missing") {
+		t.Fatalf("warnings = %+v, want missing explicit server warning", preview.Warnings)
+	}
+}
+
 func TestUpdatePolicyExplicitTargetsFollowServerRename(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-rename-targets.db")
 	prepareUpdatePolicyTestState(t, dbFile)
@@ -352,6 +451,14 @@ func TestUpdatePolicyExplicitTargetsFollowServerRename(t *testing.T) {
 	if got := listResp.Items[0].MatchedServers; len(got) != 1 || got[0] != "srv-explicit-new" {
 		t.Fatalf("matched servers after rename = %+v, want [srv-explicit-new]", got)
 	}
+}
+
+func updatePolicyPreviewNames(items []UpdatePolicyPreviewServer) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.Name)
+	}
+	return out
 }
 
 func TestPolicyMatchesServerAdvancedTargets(t *testing.T) {

@@ -1,6 +1,7 @@
 package policies
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,57 @@ func TestServiceMatchesServersWithTargetsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestServicePreviewPolicyClassifiesMatchesExclusionsOverridesAndWarnings(t *testing.T) {
+	deps := testServiceDeps()
+	deps.SnapshotServers = func() []servers.Server {
+		return []servers.Server{
+			{Name: "srv-web", Tags: []string{"prod", "web"}},
+			{Name: "srv-db", Tags: []string{"prod", "db"}},
+			{Name: "srv-hold", Tags: []string{"prod", "hold"}},
+			{Name: "srv-dev", Tags: []string{"dev"}},
+			{Name: "srv-explicit", Tags: []string{"batch"}},
+		}
+	}
+	deps.LoadOverrides = func() (map[int64]map[string]bool, error) {
+		return map[int64]map[string]bool{42: {"srv-db": true}}, nil
+	}
+	service := NewService(deps)
+
+	preview, err := service.PreviewPolicy(Policy{
+		ID:            42,
+		Name:          "Preview",
+		Enabled:       false,
+		TargetTag:     "prod",
+		IncludeTags:   []string{"web"},
+		ExcludeTags:   []string{"hold"},
+		TargetServers: []string{"srv-explicit", "srv-missing"},
+		PackageScope:  PackageScopeSecurity,
+		ExecutionMode: ExecutionScanOnly,
+		CadenceKind:   CadenceDaily,
+		TimeLocal:     "02:00",
+	})
+	if err != nil {
+		t.Fatalf("PreviewPolicy() error = %v", err)
+	}
+	if got := previewServerNames(preview.MatchedServers); len(got) != 2 || got[0] != "srv-explicit" || got[1] != "srv-web" {
+		t.Fatalf("matched = %+v, want [srv-explicit srv-web]", got)
+	}
+	if got := previewServerNames(preview.DisabledByOverride); len(got) != 1 || got[0] != "srv-db" {
+		t.Fatalf("disabled_by_override = %+v, want [srv-db]", got)
+	}
+	reasons := map[string]string{}
+	for _, item := range preview.ExcludedServers {
+		reasons[item.Name] = item.Reason
+	}
+	if reasons["srv-hold"] != "excluded_tag" || reasons["srv-dev"] != "no_target_match" {
+		t.Fatalf("excluded reasons = %+v, want hold tag and dev no match", reasons)
+	}
+	joinedWarnings := strings.Join(preview.Warnings, "\n")
+	if !strings.Contains(joinedWarnings, "Policy is disabled") || !strings.Contains(joinedWarnings, "srv-missing") {
+		t.Fatalf("warnings = %+v, want disabled and missing explicit server warnings", preview.Warnings)
+	}
+}
+
 func TestServiceDueAndBlackoutWindowsUseLocalTime(t *testing.T) {
 	service := NewService(testServiceDeps())
 	loc := time.FixedZone("App", -5*60*60)
@@ -125,6 +177,14 @@ func TestServiceDueAndBlackoutWindowsUseLocalTime(t *testing.T) {
 	if !service.BlackoutApplies(tuesdayEarly, overnight) {
 		t.Fatalf("BlackoutApplies(Tuesday 01:30) = false, want overnight carryover")
 	}
+}
+
+func previewServerNames(items []PreviewServer) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.Name)
+	}
+	return out
 }
 
 func TestServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlackout(t *testing.T) {

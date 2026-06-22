@@ -69,6 +69,19 @@ type Policy struct {
 	MatchedServers         []string         `json:"matched_servers,omitempty"`
 }
 
+type PreviewServer struct {
+	Name   string   `json:"name"`
+	Tags   []string `json:"tags,omitempty"`
+	Reason string   `json:"reason,omitempty"`
+}
+
+type PreviewResponse struct {
+	MatchedServers     []PreviewServer `json:"matched_servers"`
+	ExcludedServers    []PreviewServer `json:"excluded_servers"`
+	DisabledByOverride []PreviewServer `json:"disabled_by_override"`
+	Warnings           []string        `json:"warnings"`
+}
+
 type Override struct {
 	PolicyID    int64  `json:"policy_id"`
 	ServerName  string `json:"server_name"`

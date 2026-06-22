@@ -139,6 +139,26 @@
                                     <input type="checkbox" id="policy-enabled" checked>
                                     <label for="policy-enabled">Policy enabled</label>
                                 </div>
+                                <div class="field-span policy-preview" id="policy-preview" aria-live="polite">
+                                    <div class="preview-head">
+                                        <div>
+                                            <div class="hero-panel-label">Target Preview</div>
+                                            <strong id="policy-preview-summary">Add a target to preview matching servers.</strong>
+                                        </div>
+                                        <span class="pill pill-muted" id="policy-preview-count">0 matched</span>
+                                    </div>
+                                    <div class="preview-grid">
+                                        <div>
+                                            <span class="table-shell-label">Matched</span>
+                                            <div id="policy-preview-matched" class="preview-list subtle">None</div>
+                                        </div>
+                                        <div>
+                                            <span class="table-shell-label">Skipped</span>
+                                            <div id="policy-preview-skipped" class="preview-list subtle">None</div>
+                                        </div>
+                                    </div>
+                                    <div id="policy-preview-warnings" class="preview-warnings"></div>
+                                </div>
                             </div>
                         </div>
                         <div class="field-span form-section">

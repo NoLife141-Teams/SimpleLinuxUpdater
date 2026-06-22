@@ -74,6 +74,8 @@ type UpdatePolicy = policypkg.Policy
 type UpdatePolicyOverride = policypkg.Override
 type UpdatePolicyRun = policypkg.Run
 type UpdatePolicySettingsResponse = policypkg.SettingsResponse
+type UpdatePolicyPreviewServer = policypkg.PreviewServer
+type UpdatePolicyPreviewResponse = policypkg.PreviewResponse
 type updatePolicyRunUpdate = policypkg.RunUpdate
 
 func defaultPolicyRepository() *policypkg.SQLiteRepository {
@@ -813,6 +815,25 @@ func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 		"time_local":     created.TimeLocal,
 	})
 	c.JSON(http.StatusCreated, created)
+}
+
+func handleUpdatePolicyPreviewWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	var policy UpdatePolicy
+	if err := c.ShouldBindJSON(&policy); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := deps.PolicyService.NormalizePolicy(&policy); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	preview, err := deps.PolicyService.PreviewPolicy(policy)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to preview update policy"})
+		return
+	}
+	c.JSON(http.StatusOK, preview)
 }
 
 func handleUpdatePolicyUpdateWithDeps(c *gin.Context, deps AppDeps) {

@@ -82,6 +82,7 @@ func TestBackendContractRouteGroups(t *testing.T) {
 		"policy_audit_observability": {
 			{http.MethodGet, "/api/update-policies"},
 			{http.MethodPost, "/api/update-policies"},
+			{http.MethodPost, "/api/update-policies/preview"},
 			{http.MethodGet, "/api/update-policies/runs"},
 			{http.MethodGet, "/api/update-policies/settings"},
 			{http.MethodPut, "/api/update-policies/settings"},

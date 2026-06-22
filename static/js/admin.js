@@ -356,6 +356,9 @@ const policyFormState = {
     weekdays: []
 };
 
+let policyPreviewTimer = 0;
+let policyPreviewRequestSeq = 0;
+
 function browserSupportedTimezones() {
     try {
         if (typeof Intl === "undefined" || typeof Intl.supportedValuesOf !== "function") {
@@ -1131,6 +1134,7 @@ function setPolicyWeekdays(weekdays) {
         button.setAttribute("aria-pressed", isActive ? "true" : "false");
     });
     updatePolicySummary();
+    schedulePolicyPreview();
 }
 
 function togglePolicyWeekday(day) {
@@ -1206,6 +1210,95 @@ function updatePolicySummary() {
         <div class="summary-title">${escapeHtml(name)}</div>
 		<div class="summary-body">${escapeHtml(`${scheduleText} (${timezone}), ${executionText}, ${scopeText}, ${upgradeModeText}${timeoutText}, ${targetText}. ${noRunText}.`)}</div>
 	`;
+}
+
+function policyPreviewReasonLabel(reason) {
+    switch (String(reason || "")) {
+        case "excluded_tag":
+            return "excluded tag";
+        case "disabled_by_override":
+            return "override disabled";
+        case "no_target_match":
+            return "no target match";
+        default:
+            return "skipped";
+    }
+}
+
+function renderPolicyPreviewList(items, emptyText, includeReason = false) {
+    if (!Array.isArray(items) || !items.length) {
+        return `<span class="subtle">${escapeHtml(emptyText)}</span>`;
+    }
+    return items.map((item) => {
+        const name = escapeHtml(item?.name || "");
+        const reason = includeReason && item?.reason ? ` · ${policyPreviewReasonLabel(item.reason)}` : "";
+        const title = Array.isArray(item?.tags) && item.tags.length ? ` title="${escapeHtml(`Tags: ${item.tags.join(", ")}`)}"` : "";
+        return `<span class="preview-chip${includeReason ? " preview-chip-muted" : ""}"${title}>${name}${escapeHtml(reason)}</span>`;
+    }).join("");
+}
+
+function renderPolicyPreview(preview) {
+    const matched = Array.isArray(preview?.matched_servers) ? preview.matched_servers : [];
+    const excluded = Array.isArray(preview?.excluded_servers) ? preview.excluded_servers : [];
+    const disabled = Array.isArray(preview?.disabled_by_override) ? preview.disabled_by_override : [];
+    const warnings = Array.isArray(preview?.warnings) ? preview.warnings : [];
+    const skipped = [...disabled.map((item) => ({ ...item, reason: "disabled_by_override" })), ...excluded];
+    document.getElementById("policy-preview-summary").textContent = matched.length
+        ? `${pluralize(matched.length, "server", "servers")} would match this policy.`
+        : "No current server would match this policy.";
+    document.getElementById("policy-preview-count").textContent = `${matched.length} matched`;
+    document.getElementById("policy-preview-matched").innerHTML = renderPolicyPreviewList(matched, "None");
+    document.getElementById("policy-preview-skipped").innerHTML = renderPolicyPreviewList(skipped, "None", true);
+    document.getElementById("policy-preview-warnings").innerHTML = warnings
+        .map((warning) => `<div class="preview-warning">${escapeHtml(warning)}</div>`)
+        .join("");
+}
+
+function setPolicyPreviewMessage(message, countText = "0 matched") {
+    document.getElementById("policy-preview-summary").textContent = message;
+    document.getElementById("policy-preview-count").textContent = countText;
+    document.getElementById("policy-preview-matched").innerHTML = '<span class="subtle">None</span>';
+    document.getElementById("policy-preview-skipped").innerHTML = '<span class="subtle">None</span>';
+    document.getElementById("policy-preview-warnings").innerHTML = "";
+}
+
+async function refreshPolicyPreview() {
+    const seq = ++policyPreviewRequestSeq;
+    let payload;
+    try {
+        payload = collectPolicyPayload({ silent: true });
+    } catch (err) {
+        setPolicyPreviewMessage(err.message || "Complete policy fields to preview matching servers.");
+        return;
+    }
+    const id = document.getElementById("policy-id").value.trim();
+    if (id) {
+        payload.id = Number(id);
+    }
+    setPolicyPreviewMessage("Refreshing target preview...", "...");
+    try {
+        const res = await fetch("/api/update-policies/preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            throw new Error(await parseErrorResponse(res, "Failed to preview scheduled policy."));
+        }
+        const data = await res.json().catch(() => ({}));
+        if (seq === policyPreviewRequestSeq) {
+            renderPolicyPreview(data);
+        }
+    } catch (err) {
+        if (seq === policyPreviewRequestSeq) {
+            setPolicyPreviewMessage(err.message || "Failed to preview scheduled policy.");
+        }
+    }
+}
+
+function schedulePolicyPreview() {
+    clearTimeout(policyPreviewTimer);
+    policyPreviewTimer = window.setTimeout(refreshPolicyPreview, 250);
 }
 
 function formatCadence(policy) {
@@ -1310,6 +1403,7 @@ function resetPolicyForm() {
     setBlackoutJsonStatus("policy", "");
     refreshPolicyFormVisibility();
     updatePolicySummary();
+    schedulePolicyPreview();
 }
 
 function applyPolicyToForm(policy) {
@@ -1335,6 +1429,7 @@ function applyPolicyToForm(policy) {
     document.getElementById("policy-save-btn").textContent = "Update Policy";
     refreshPolicyFormVisibility();
     updatePolicySummary();
+    schedulePolicyPreview();
 }
 
 function renderScheduledPolicies() {
@@ -1460,9 +1555,12 @@ async function refreshScheduledUpdateViews() {
     }
 }
 
-function collectPolicyPayload() {
-    clearPolicyFieldErrors();
-    setPolicyFeedback("", "");
+function collectPolicyPayload(options = {}) {
+    const silent = !!options.silent;
+    if (!silent) {
+        clearPolicyFieldErrors();
+        setPolicyFeedback("", "");
+    }
     const name = document.getElementById("policy-name").value.trim();
     const targetTag = document.getElementById("policy-target-tag").value.trim();
     const includeTags = parseCommaList(document.getElementById("policy-include-tags").value);
@@ -1477,15 +1575,15 @@ function collectPolicyPayload() {
     const approvalTimeoutValue = Number(document.getElementById("policy-approval-timeout").value || 0);
     let firstInvalidId = "";
     if (!name) {
-        setPolicyFieldInvalid("policy-name", true);
+        if (!silent) setPolicyFieldInvalid("policy-name", true);
         firstInvalidId = firstInvalidId || "policy-name";
     }
     if (!targetTag && !includeTags.length && !targetServers.length) {
-        setPolicyFieldInvalid("policy-target-tag", true);
+        if (!silent) setPolicyFieldInvalid("policy-target-tag", true);
         firstInvalidId = firstInvalidId || "policy-target-tag";
     }
     if (firstInvalidId) {
-        document.getElementById(firstInvalidId)?.focus();
+        if (!silent) document.getElementById(firstInvalidId)?.focus();
         throw new Error("Policy name and at least one target tag, included tag, or explicit server are required.");
     }
     if (cadenceKind === "weekly" && !weekdays.length) {
@@ -1691,8 +1789,9 @@ function bindPolicyFormInteractions() {
 		"policy-time-local",
 		"policy-execution-mode",
 		"policy-package-scope",
-		"policy-upgrade-mode",
+        "policy-upgrade-mode",
 		"policy-cadence-kind",
+        "policy-enabled",
         "policy-approval-timeout"
     ];
     summaryFields.forEach((fieldId) => {
@@ -1701,12 +1800,14 @@ function bindPolicyFormInteractions() {
             if (fieldId === "policy-target-tag") setPolicyFieldInvalid("policy-target-tag", false);
             refreshPolicyFormVisibility();
             updatePolicySummary();
+            schedulePolicyPreview();
         });
         document.getElementById(fieldId)?.addEventListener("change", () => {
             if (fieldId === "policy-name") setPolicyFieldInvalid("policy-name", false);
             if (fieldId === "policy-target-tag") setPolicyFieldInvalid("policy-target-tag", false);
             refreshPolicyFormVisibility();
             updatePolicySummary();
+            schedulePolicyPreview();
         });
     });
 

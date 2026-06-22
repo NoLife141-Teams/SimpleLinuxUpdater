@@ -263,6 +263,20 @@ test.describe.serial('setup and login flows', () => {
         scheduled_for_utc: '2026-05-17T06:00:00Z',
       }],
     }));
+    await page.route('**/api/update-policies/preview', async route => {
+      state.policyPreviewPayload = await route.request().postDataJSON();
+      return fulfillJson(route, {
+        matched_servers: [
+          { name: 'srv-web-01', tags: ['prod', 'web'] },
+          { name: 'srv-web-02', tags: ['prod'] },
+        ],
+        excluded_servers: [
+          { name: 'srv-db-01', tags: ['prod', 'db'], reason: 'excluded_tag' },
+        ],
+        disabled_by_override: [],
+        warnings: ['Explicit server "srv-missing" is not in the current inventory.'],
+      });
+    });
     await page.route('**/api/update-policies', async route => {
       if (route.request().method() === 'POST') {
         state.policyPayload = await route.request().postDataJSON();
@@ -530,8 +544,18 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#policy-execution-mode').selectOption('approval_required');
     await page.locator('#policy-approval-timeout').fill('90');
     await page.locator('#policy-package-scope').selectOption('security');
+    await expect(page.locator('#policy-preview')).toContainText('2 matched');
+    await expect(page.locator('#policy-preview')).toContainText('srv-web-02');
+    await expect(page.locator('#policy-preview')).toContainText('srv-db-01');
     await page.locator('#policy-save-btn').click();
 
+    await expect.poll(() => state.policyPreviewPayload).toMatchObject({
+      name: 'Weekend prod',
+      target_tag: '',
+      include_tags: ['prod', 'web'],
+      exclude_tags: ['hold', 'db'],
+      target_servers: ['srv-web-01', 'srv-web-02'],
+    });
     await expect.poll(() => state.policyPayload).toMatchObject({
       name: 'Weekend prod',
       target_tag: '',

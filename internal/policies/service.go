@@ -271,6 +271,63 @@ func (s *Service) EnrichPoliciesWithMatches(policies []Policy) []Policy {
 	return policies
 }
 
+func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
+	if err := s.NormalizePolicy(&policy); err != nil {
+		return PreviewResponse{}, err
+	}
+	deps := s.EnsureDeps()
+	serversSnapshot := []servers.Server{}
+	if deps.SnapshotServers != nil {
+		serversSnapshot = deps.SnapshotServers()
+	}
+	overrides := map[int64]map[string]bool{}
+	if deps.LoadOverrides != nil {
+		loaded, err := deps.LoadOverrides()
+		if err != nil {
+			return PreviewResponse{}, err
+		}
+		overrides = loaded
+	}
+
+	response := PreviewResponse{
+		MatchedServers:     []PreviewServer{},
+		ExcludedServers:    []PreviewServer{},
+		DisabledByOverride: []PreviewServer{},
+		Warnings:           []string{},
+	}
+	if !policy.Enabled {
+		response.Warnings = append(response.Warnings, "Policy is disabled; matched servers will not run until it is enabled.")
+	}
+
+	foundServers := make(map[string]struct{}, len(serversSnapshot))
+	for _, server := range serversSnapshot {
+		foundServers[strings.ToLower(strings.TrimSpace(server.Name))] = struct{}{}
+		reason := policyPreviewExclusionReason(policy, server, overrides)
+		item := policyPreviewServer(server, reason)
+		switch reason {
+		case "":
+			response.MatchedServers = append(response.MatchedServers, item)
+		case "disabled_by_override":
+			response.DisabledByOverride = append(response.DisabledByOverride, item)
+		default:
+			response.ExcludedServers = append(response.ExcludedServers, item)
+		}
+	}
+	sortPreviewServers(response.MatchedServers)
+	sortPreviewServers(response.ExcludedServers)
+	sortPreviewServers(response.DisabledByOverride)
+
+	for _, name := range policy.TargetServers {
+		if _, ok := foundServers[strings.ToLower(strings.TrimSpace(name))]; !ok {
+			response.Warnings = append(response.Warnings, fmt.Sprintf("Explicit server %q is not in the current inventory.", name))
+		}
+	}
+	if len(response.MatchedServers) == 0 {
+		response.Warnings = append(response.Warnings, "No current server would be targeted by this policy.")
+	}
+	return response, nil
+}
+
 func (s *Service) PolicyDueAt(policy Policy, slotLocal time.Time) bool {
 	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
 	if err != nil {
@@ -287,6 +344,44 @@ func (s *Service) PolicyDueAt(policy Policy, slotLocal time.Time) bool {
 	default:
 		return false
 	}
+}
+
+func policyPreviewExclusionReason(policy Policy, server servers.Server, overrides map[int64]map[string]bool) string {
+	if len(policy.ExcludeTags) > 0 && ServerHasAnyTag(server, policy.ExcludeTags) {
+		return "excluded_tag"
+	}
+	if !policyTargetsServer(policy, server) {
+		return "no_target_match"
+	}
+	if perPolicy := overrides[policy.ID]; perPolicy != nil && perPolicy[server.Name] {
+		return "disabled_by_override"
+	}
+	return ""
+}
+
+func policyTargetsServer(policy Policy, server servers.Server) bool {
+	if StringListContainsFold(policy.TargetServers, server.Name) {
+		return true
+	}
+	if strings.TrimSpace(policy.TargetTag) != "" && ServerHasTag(server, policy.TargetTag) {
+		return true
+	}
+	return len(policy.IncludeTags) > 0 && ServerHasAnyTag(server, policy.IncludeTags)
+}
+
+func policyPreviewServer(server servers.Server, reason string) PreviewServer {
+	tags := NormalizeStringList(server.Tags)
+	return PreviewServer{
+		Name:   server.Name,
+		Tags:   tags,
+		Reason: reason,
+	}
+}
+
+func sortPreviewServers(items []PreviewServer) {
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
 }
 
 func (s *Service) BlackoutApplies(slotLocal time.Time, windows []BlackoutWindow) bool {

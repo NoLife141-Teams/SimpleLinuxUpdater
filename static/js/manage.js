@@ -599,9 +599,31 @@ function resetFileInputLabel(input) {
         });
         document.getElementById('audit-action-filter').addEventListener('input', async () => {
             auditPage = 1;
+            document.getElementById('audit-action-preset').value = "";
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-action-preset').addEventListener('change', async () => {
+            document.getElementById('audit-action-filter').value = document.getElementById('audit-action-preset').value;
+            auditPage = 1;
             await fetchAuditEvents();
         });
         document.getElementById('audit-status-filter').addEventListener('change', async () => {
+            auditPage = 1;
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-from-filter').addEventListener('change', async () => {
+            auditPage = 1;
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-from-filter').addEventListener('input', async () => {
+            auditPage = 1;
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-to-filter').addEventListener('change', async () => {
+            auditPage = 1;
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-to-filter').addEventListener('input', async () => {
             auditPage = 1;
             await fetchAuditEvents();
         });
@@ -616,6 +638,11 @@ function resetFileInputLabel(input) {
                 return;
             }
             await fetchAuditEvents();
+        });
+        document.querySelector('#audit-table tbody').addEventListener('click', (e) => {
+            const button = e.target.closest('button[data-audit-detail]');
+            if (!button) return;
+            openAuditDetailDrawer(auditEventByID(button.dataset.auditDetail));
         });
 
         function renderAuth(server) {
@@ -658,13 +685,65 @@ function resetFileInputLabel(input) {
             }
         }
 
+        function auditDateTimeToRFC3339(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return '';
+            const parsed = new Date(raw);
+            if (Number.isNaN(parsed.getTime())) return '';
+            return parsed.toISOString();
+        }
+
+        function prettyAuditMetadata(raw) {
+            const text = String(raw || '').trim();
+            if (!text) return '{}';
+            try {
+                return JSON.stringify(JSON.parse(text), null, 2);
+            } catch (_) {
+                return text;
+            }
+        }
+
+        function auditEventByID(id) {
+            return auditEvents.find(evt => String(evt.id) === String(id));
+        }
+
+        function openAuditDetailDrawer(evt) {
+            if (!evt) return;
+            const modal = document.getElementById('audit-detail-modal');
+            const status = escapeHtml(evt.status || 'unknown');
+            const statusClass = `status-${safeStatusClassToken(evt.status)}`;
+            const createdAt = window.formatAppTimestamp
+                ? window.formatAppTimestamp(evt.created_at, { titleUTC: true, preformattedPrimary: evt.created_at_display })
+                : { primary: evt.created_at || '', title: evt.created_at || '' };
+            document.getElementById('audit-detail-title').textContent = `Audit #${evt.id}`;
+            document.getElementById('audit-detail-actor').textContent = evt.actor || '-';
+            document.getElementById('audit-detail-status').innerHTML = `<span class="status-badge ${statusClass}">${status}</span>`;
+            document.getElementById('audit-detail-action').textContent = evt.action || '-';
+            document.getElementById('audit-detail-target').textContent = `${evt.target_type || '-'}: ${evt.target_name || '-'}`;
+            document.getElementById('audit-detail-time').textContent = createdAt.primary || evt.created_at || '-';
+            document.getElementById('audit-detail-client-ip').textContent = evt.client_ip || '-';
+            document.getElementById('audit-detail-request-id').textContent = evt.request_id || '-';
+            document.getElementById('audit-detail-message').textContent = evt.message || '-';
+            document.getElementById('audit-detail-meta').textContent = prettyAuditMetadata(evt.meta_json);
+            const report = document.getElementById('audit-detail-report');
+            report.href = `/api/reports/audit/${encodeURIComponent(evt.id)}`;
+            modal.classList.add('active');
+            activateModalFocus(modal, document.getElementById('audit-detail-close'));
+        }
+
+        function closeAuditDetailDrawer() {
+            const modal = document.getElementById('audit-detail-modal');
+            modal.classList.remove('active');
+            releaseModalFocus(modal);
+        }
+
         function renderAuditTable() {
             const tbody = document.querySelector('#audit-table tbody');
             if (!tbody) return;
             tbody.innerHTML = '';
             if (!auditEvents.length) {
                 const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="7" class="subtle">No activity yet.</td>';
+                row.innerHTML = '<td colspan="8" class="subtle">No activity yet.</td>';
                 tbody.appendChild(row);
             } else {
                 auditEvents.forEach(evt => {
@@ -681,6 +760,7 @@ function resetFileInputLabel(input) {
                         <td>${escapeHtml(evt.target_type || '')}: ${escapeHtml(evt.target_name || '')}</td>
                         <td><span class="status-badge ${statusClass}">${status}</span></td>
                         <td>${escapeHtml(evt.message || '')}</td>
+                        <td><button class="inline-btn btn-ghost" type="button" data-audit-detail="${escapeHtml(String(evt.id))}">Details</button></td>
                         <td><a class="inline-btn btn-ghost" href="/api/reports/audit/${encodeURIComponent(evt.id)}">Report</a></td>
                     `;
                     tbody.appendChild(row);
@@ -707,6 +787,10 @@ function resetFileInputLabel(input) {
                 if (targetName) params.set('target_name', targetName);
                 if (action) params.set('action', action);
                 if (status) params.set('status', status);
+                const from = auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value);
+                const to = auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value);
+                if (from) params.set('from', from);
+                if (to) params.set('to', to);
                 const res = await fetch(`/api/audit-events?${params.toString()}`);
                 if (!res.ok) {
                     throw new Error(await parseErrorResponse(res, 'Failed to load audit events.'));
@@ -1206,6 +1290,12 @@ function resetFileInputLabel(input) {
             });
             document.getElementById('hostkey-modal-cancel').addEventListener('click', () => closeHostKeyModal(false));
         document.getElementById('hostkey-modal-trust').addEventListener('click', () => closeHostKeyModal(true));
+        document.getElementById('audit-detail-close').addEventListener('click', closeAuditDetailDrawer);
+        document.getElementById('audit-detail-modal').addEventListener('click', (e) => {
+            if (e.target && e.target.id === 'audit-detail-modal') {
+                closeAuditDetailDrawer();
+            }
+        });
         document.getElementById('hostkey-modal').addEventListener('click', (e) => {
             if (e.target && e.target.id === 'hostkey-modal') {
                 closeHostKeyModal(false);
@@ -1219,6 +1309,11 @@ function resetFileInputLabel(input) {
                 const hostKeyModal = document.getElementById('hostkey-modal');
                 if (hostKeyModal && hostKeyModal.classList.contains('active')) {
                     closeHostKeyModal(false);
+                    return;
+                }
+                const auditDetailModal = document.getElementById('audit-detail-modal');
+                if (auditDetailModal && auditDetailModal.classList.contains('active')) {
+                    closeAuditDetailDrawer();
                     return;
                 }
                 const editModal = document.getElementById('edit-modal');

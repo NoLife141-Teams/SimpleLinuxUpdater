@@ -112,7 +112,7 @@ func (deps AppDeps) withDefaults() AppDeps {
 		deps.AuthService = NewAuthService(deps.DB)
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = NewAuditServiceWithNotifications(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService)
+		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService, deps.Now)
 	}
 	if deps.BackupBarrier == nil {
 		deps.BackupBarrier = backupRestoreMu

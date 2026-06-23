@@ -6,6 +6,28 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.2.9] - 2026-06-22
+
+### Added
+
+- Add scheduled policy target previews so operators can confirm matched, excluded, and override-disabled hosts before saving policy changes.
+- Add audit-event and update-job detail modals with copy actions and direct Markdown report links.
+- Add safe bulk-action review before update, approval, cancel, autoremove, and facts-refresh operations.
+- Add non-mutating backup verification so encrypted `.slubkp` files can be checked before restore.
+- Add notification webhook hooks with event-type selection, test delivery, and redacted delivery status.
+- Add maintenance-window calendar previews for global and policy no-run windows, allowed slots, overnight windows, and policy filtering.
+- Add host health trend snapshots in Observability with 7-day and 30-day windows plus host filtering.
+
+### Changed
+
+- Expand the Computer Use release-smoke checklist to cover the new notification, policy preview, calendar, backup verify, detail modal, bulk review, and health-trend surfaces.
+- Centralize authenticated test fixture setup for cleaner backend and UI coverage.
+
+### Fixed
+
+- Fix hidden file input overflow on narrow viewports.
+- Make audit-service clock injection deterministic so audit-derived health trend snapshots stay inside release race-test windows.
+
 ## [v0.2.8] - 2026-06-20
 
 ### Added

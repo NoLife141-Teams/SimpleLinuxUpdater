@@ -6,6 +6,18 @@ Use this runbook when a Codex agent is asked to run a full release smoke with Co
 
 The authoritative release gate remains [Release Smoke Checklist](release-smoke.md). This file is the detailed Computer Use procedure for executing that gate.
 
+## Recent Feature Coverage
+
+This runbook now covers the newer release-smoke surfaces that must be exercised before tagging:
+
+- Notification hooks in Admin, including settings save, event-type selection, redacted webhook payload expectations, and test delivery status.
+- Policy dry-run preview in Admin, including matched, excluded, override-disabled, and warning states.
+- Maintenance window calendar in Admin, including allowed slots, global/policy no-run windows, overnight windows, timezone display, and optional policy filtering.
+- Job detail and audit detail modals, including copy actions and Markdown report links.
+- Backup integrity verification through `/api/backup/verify` before any restore attempt.
+- Safe bulk-action review modal on the Status dashboard before bulk update, approve, cancel, autoremove, or facts refresh actions.
+- Host health trend snapshots in Observability through `/api/observability/health-trends`, including 7-day/30-day windows and optional host filtering.
+
 ## Safety Rules
 
 - Use only disposable app databases, disposable `known_hosts` files, and a release-owned disposable Debian/Ubuntu SSH target for live SSH/update steps.
@@ -107,6 +119,10 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Sorting changes row order where sortable columns are available.
 - [ ] Selecting one row updates the selected host panel.
 - [ ] Select-all on the page updates selected count and bulk actions.
+- [ ] Bulk update, approve standard, approve standard security, approve kept-back security, cancel, autoremove, and refresh facts open the safe review modal before executing.
+- [ ] Bulk review modal lists selected hosts, eligible actions, blocked hosts, warning text, and confirm/cancel controls.
+- [ ] Cancelling the bulk review performs no action.
+- [ ] Confirming a safe disposable bulk action executes only the hosts shown as eligible.
 - [ ] Maintenance timeline, approval queue, active operations, failures, reboot/risk exposure, audit trail, and command history panels render useful state.
 - [ ] Mini-panel buttons open the intended host, drawer, or filtered view.
 
@@ -138,6 +154,8 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Delete succeeds only for the disposable UI-only server.
 - [ ] Activity history filters by actor, target, action, status, and date range.
 - [ ] Audit pagination stays coherent.
+- [ ] Audit detail modal opens from an audit row and shows action, target, actor, client IP, request ID, message, sanitized metadata, and formatted time.
+- [ ] Audit detail copy action works when browser permissions allow it.
 - [ ] Audit report links open or download Markdown from `/api/reports/audit/:id`.
 - [ ] Audit prune requires typed confirmation and is skipped unless using disposable demo data.
 
@@ -151,12 +169,26 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Password change form renders current, new, and confirmation fields; do not submit a successful password change with Computer Use.
 - [ ] Scheduled policy form accepts target tag, include tags, exclude tags, explicit servers, package scope, execution mode, cadence, weekdays, time, approval timeout, and no-run windows.
 - [ ] Policy summary reflects targeting fields.
+- [ ] Policy dry-run preview refreshes before save and shows matched hosts, excluded hosts, override-disabled hosts, and warnings.
+- [ ] Preview reflects include tags, exclude tags, explicit target servers, package scope, execution mode, and disabled state.
 - [ ] Create a disabled scan-only policy against disposable/demo hosts.
 - [ ] Edit policy fields and verify saved values reload.
 - [ ] Valid blackout JSON applies; invalid JSON shows a clear error.
+- [ ] Maintenance Window Calendar panel loads after policy settings.
+- [ ] Calendar policy filter shows all policies and a single-policy option where policies exist.
+- [ ] Calendar entries show matched servers, allowed scheduled slots, global no-run windows, policy no-run windows, active blocked slots, overnight labels, and app timezone offset.
+- [ ] Calendar refresh preserves usable state and reports actionable errors.
 - [ ] Policy delete requires typing the policy name and runs only for the disposable policy.
 - [ ] Scheduled runs table renders status, summary, target, and report link where present.
+- [ ] Job detail modal opens from a scheduled run row and shows status, phase, retry metadata, logs, timestamps, and report URL.
+- [ ] Job detail copy logs action works when browser permissions allow it.
 - [ ] Job report links open or download Markdown from `/api/reports/jobs/:id`.
+- [ ] Notification Hooks panel loads current settings.
+- [ ] Invalid webhook URL is rejected without navigation.
+- [ ] Enable notification hooks with a disposable HTTPS webhook URL and selected event types.
+- [ ] Save persists enabled state, URL, selected event types, and last delivery status.
+- [ ] Test notification sends only to the disposable webhook target or stubbed test endpoint.
+- [ ] Last delivery status renders event type, status code/result, and timestamp without secrets.
 
 ### Backup, Metrics, Observability
 
@@ -164,6 +196,8 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Backup export with missing or mismatched passphrase is blocked.
 - [ ] Backup export with a temporary passphrase downloads an encrypted `.slubkp` file.
 - [ ] Backup restore requires file, passphrase, and typed `RESTORE`; do not restore in the demo runtime unless intentionally testing a throwaway backup.
+- [ ] Backup verify accepts a selected `.slubkp` file and passphrase, validates manifest/decryptability, and does not mutate the current app state.
+- [ ] Backup verify failure shows a clear non-mutating error for wrong passphrase or invalid file.
 - [ ] Metrics token status loads.
 - [ ] Generate/rotate token shows the token once.
 - [ ] Copy token works when browser permissions allow it.
@@ -173,6 +207,11 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] After disabling, `/metrics` is blocked again.
 - [ ] Observability opens and loads KPIs/tables.
 - [ ] `24h`, `7d`, and `30d` windows update consistently.
+- [ ] Host health trend panel loads sampled-host count, sample count, health problem count, and failure count.
+- [ ] Health trend table shows host, latest sample time, package/security deltas, disk free delta, APT status, disk status, and signals.
+- [ ] Host trend filter narrows the table to one host and can return to all hosts.
+- [ ] Health trend uses `7d` or `30d` data; when the update metrics window is `24h`, the trend panel falls back to the `7d` health window.
+- [ ] Empty health trend state is clear when there are no snapshots for the selected host/window.
 - [ ] Refresh does not duplicate or stale the UI.
 
 ## Live Disposable-Host Pass Checklist
@@ -213,11 +252,14 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Create a disabled scan-only policy first and verify it does not run.
 - [ ] Edit the policy to target only the disposable host using explicit `target_servers`.
 - [ ] Confirm matched servers lists only the disposable target.
+- [ ] Policy dry-run preview lists only the disposable target as matched and explains any excluded hosts.
+- [ ] Calendar preview for the disposable policy shows the next allowed slot and any active no-run window before the scheduler tick.
 - [ ] Set policy time to the next minute in the app timezone.
 - [ ] Use scan-only execution mode unless release owner explicitly approves scheduled update execution.
 - [ ] Leave app running until scheduler tick passes.
 - [ ] Scheduled run row appears with clear status and report link.
 - [ ] Job report opens/downloads from `/api/reports/jobs/:id`.
+- [ ] Scheduled scan/update completion creates or updates host health trend samples for the disposable target.
 
 ### Reports, Backup, Metrics, Observability
 
@@ -225,8 +267,11 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Audit report opens/downloads from `/api/reports/audit/:id`.
 - [ ] Job report opens/downloads from `/api/reports/jobs/:id`.
 - [ ] Observability `24h`, `7d`, and `30d` windows show the live run.
+- [ ] Observability host health trends show the disposable target in `7d` and `30d` windows after facts refresh or update completion.
+- [ ] Host health trend host filter shows only the disposable target when selected.
 - [ ] Dashboard summary panels do not show stale active jobs after completion.
 - [ ] Export backup with a temporary passphrase and include `known_hosts`.
+- [ ] Verify exported backup with the same passphrase before attempting any restore.
 - [ ] `.slubkp` file downloads.
 - [ ] Optional restore is performed only in the separate restore-validation runtime.
 - [ ] Metrics token generate/authorized scrape/disable flow passes without recording the token.
@@ -240,10 +285,15 @@ Run these from the release commit and record pass/fail output. If a tool is not 
 - [ ] `staticcheck ./...`
 - [ ] `govulncheck ./...`
 - [ ] `actionlint`
+- [ ] `go test -count=1 -run 'TestBackendContractRouteGroups|TestBackendContractReportsAndPolicies|TestRegisterRoutesInventory' ./`
+- [ ] `go test -count=1 ./internal/notifications ./internal/policies ./internal/observability ./internal/updates`
 - [ ] `go test -race -count=1 ./...`
+- [ ] `go test -covermode=atomic -coverprofile=coverage.out ./...`
+- [ ] `go tool cover -func=coverage.out | tail -n 1`
 - [ ] `go build -o webserver .`
 - [ ] `npm audit --audit-level=moderate`
 - [ ] `npm run test:e2e`
+- [ ] Remove generated `coverage.out` before committing release-prep changes, unless the release owner explicitly asks to keep it.
 - [ ] Release-commit CI is green for `test (unit)`, `test (race)`, `test (cover)`, `ui-e2e`, `quality`, and `npm-audit`.
 
 ## Smoke Result Template
@@ -282,7 +332,10 @@ Copy this result into the release PR or release notes. Do not include secrets.
 - Admin:
 - Backup/restore:
 - Metrics:
-- Observability/audit/reports:
+- Observability/audit/reports/health trends:
+- Notifications:
+- Policy preview/calendar:
+- Bulk action review:
 - Automated final gate:
 - CI gate:
 

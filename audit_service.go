@@ -31,6 +31,10 @@ func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTim
 }
 
 func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService) *AuditService {
+	return newAuditServiceWithNotificationsAndClock(db, notify, timezone, notifications, nil)
+}
+
+func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time) *AuditService {
 	if db == nil {
 		db = getDB
 	}
@@ -57,14 +61,18 @@ func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, 
 			})
 		}
 	}
-	return auditpkg.NewService(auditpkg.ServiceOptions{
+	opts := auditpkg.ServiceOptions{
 		DB:            func() *sql.DB { return db() },
 		Notify:        notifier,
 		OnRecord:      onRecord,
 		Timezone:      func() (*time.Location, string) { return timezone() },
 		FormatDisplay: formatTimestampForAppDisplayWithTimezone,
 		PruneGuard:    auditPruneGuard,
-	})
+	}
+	if now != nil {
+		opts.Now = now
+	}
+	return auditpkg.NewService(opts)
 }
 
 func auditMetaInt(meta map[string]any, keys ...string) int {

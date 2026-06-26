@@ -1583,7 +1583,7 @@ pre {
 }
 
 .bulk-review-modal {
-    width: min(720px, calc(100vw - 32px));
+    width: min(960px, calc(100vw - 32px));
 }
 
 .bulk-review-grid {
@@ -1601,13 +1601,48 @@ pre {
     background: rgba(255, 255, 255, 0.025);
 }
 
-.bulk-review-panel ul {
-    display: grid;
-    gap: 6px;
-    margin: 10px 0 0;
-    padding-left: 18px;
+.bulk-review-table {
+    width: 100%;
+    min-width: 0;
+    margin-top: 10px;
+    border-collapse: collapse;
+    table-layout: fixed;
     color: var(--text);
     font-size: 13px;
+}
+
+.bulk-review-table th,
+.bulk-review-table td {
+    padding: 8px 6px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.bulk-review-table th {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.bulk-review-table th:first-child,
+.bulk-review-table td:first-child {
+    width: 30%;
+}
+
+.bulk-review-table th:nth-child(2),
+.bulk-review-table td:nth-child(2) {
+    width: 28%;
+}
+
+.bulk-review-row-ready td:last-child {
+    color: var(--success);
+}
+
+.bulk-review-row-skipped td:last-child {
+    color: var(--warning);
 }
 
 .bulk-review-warning {

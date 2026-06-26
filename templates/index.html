@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=file-input-fix-20260622b">
-    <link rel="stylesheet" href="/static/css/index.css?v=status-review-fixes-20260620g">
+    <link rel="stylesheet" href="/static/css/index.css?v=safe-bulk-review-20260625a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -444,11 +444,29 @@
             <div class="bulk-review-grid">
                 <div class="bulk-review-panel">
                     <div class="table-shell-label" id="bulk-review-eligible-label">Eligible hosts</div>
-                    <ul id="bulk-review-eligible"></ul>
+                    <table class="bulk-review-table">
+                        <thead>
+                            <tr>
+                                <th>Host</th>
+                                <th>Auth</th>
+                                <th>Readiness</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bulk-review-eligible"></tbody>
+                    </table>
                 </div>
                 <div class="bulk-review-panel">
                     <div class="table-shell-label" id="bulk-review-skipped-label">Skipped hosts</div>
-                    <ul id="bulk-review-skipped"></ul>
+                    <table class="bulk-review-table">
+                        <thead>
+                            <tr>
+                                <th>Host</th>
+                                <th>Auth</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bulk-review-skipped"></tbody>
+                    </table>
                 </div>
             </div>
             <p class="bulk-review-warning" id="bulk-review-warning"></p>
@@ -462,6 +480,6 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/index.js?v=status-review-fixes-20260620g"></script>
+    <script src="/static/js/index.js?v=safe-bulk-review-20260625a"></script>
 </body>
 </html>

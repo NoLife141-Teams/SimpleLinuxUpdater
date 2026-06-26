@@ -5,6 +5,11 @@ test.describe.serial('setup and login flows', () => {
   const password = 'StrongPass1234';
   const changedPassword = 'NewStrongPass123';
   let knownWorkingPassword = password;
+  let authCookies = [];
+
+  async function rememberAuthCookies(page) {
+    authCookies = await page.context().cookies('http://127.0.0.1:8080');
+  }
 
   async function signIn(page) {
     await page.locator('#username').fill(username);
@@ -12,6 +17,7 @@ test.describe.serial('setup and login flows', () => {
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(page).toHaveURL('http://127.0.0.1:8080/');
     await expect(page.locator('#logout-btn')).toBeVisible();
+    await rememberAuthCookies(page);
   }
 
   async function ensureSignedIn(page) {
@@ -24,6 +30,9 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function ensureAuthenticatedSession(page) {
+    if (authCookies.length > 0) {
+      await page.context().addCookies(authCookies);
+    }
     await page.goto('/login');
 
     const status = await page.evaluate(async () => {
@@ -72,6 +81,7 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/');
     await expect(page.locator('#logout-btn')).toBeVisible();
+    await rememberAuthCookies(page);
   }
 
   async function fulfillJson(route, payload) {
@@ -141,6 +151,10 @@ test.describe.serial('setup and login flows', () => {
       const pendingUpdates = Array.isArray(server.pending_updates) ? server.pending_updates : [];
       const cves = pendingUpdates.flatMap(update => update.cves || []);
       const securityUpdates = pendingUpdates.filter(update => update.security).length;
+      const plan = server.upgrade_plan || {};
+      const standardSecurity = Number.isFinite(Number(plan.standard_security_count)) ? Number(plan.standard_security_count) : securityUpdates;
+      const totalSecurity = Number.isFinite(Number(plan.total_security_count)) ? Number(plan.total_security_count) : securityUpdates;
+      const keptBackSecurity = Math.max(0, totalSecurity - standardSecurity);
       const riskLevel = cves.length > 0 ? 'critical' : (securityUpdates > 0 ? 'elevated' : 'normal');
       return {
         name: server.name,
@@ -172,8 +186,13 @@ test.describe.serial('setup and login flows', () => {
           risk_order: cves.length > 0 ? 4 : (securityUpdates > 0 ? 3 : 2),
           facts_state: server.facts_state || 'fresh',
           last_check_display: 'May 28, 2026 12:00',
+          standard_packages: Number(plan.standard_package_count || pendingUpdates.length),
+          kept_back_packages: Number(plan.kept_back_package_count || 0),
+          standard_security_updates: standardSecurity,
+          kept_back_security_updates: keptBackSecurity,
           can_approve_all: server.status === 'pending_approval',
-          can_approve_security: server.status === 'pending_approval' && securityUpdates > 0,
+          can_approve_security: server.status === 'pending_approval' && standardSecurity > 0,
+          can_approve_kept_back_security: server.status === 'pending_approval' && keptBackSecurity > 0 && !!plan.kept_back_security_plan_available,
           can_cancel: server.status === 'pending_approval',
           can_refresh_facts: true,
           can_run_checks: !['updating', 'upgrading'].includes(server.status),
@@ -584,6 +603,7 @@ test.describe.serial('setup and login flows', () => {
     await page.getByRole('button', { name: 'Create account' }).click();
     await expect(page).toHaveURL('http://127.0.0.1:8080/');
     await expect(page.locator('#logout-btn')).toBeVisible();
+    await rememberAuthCookies(page);
   });
 
   test('invalid login shows error, valid login succeeds', async ({ page }) => {
@@ -603,9 +623,10 @@ test.describe.serial('setup and login flows', () => {
 
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
     let servers = [
-      makeServer('demo-host', 'pending_approval', makePendingUpdates(80), { tags: ['prod'] }),
+      makeServer('demo-host', 'pending_approval', makePendingUpdates(80), { tags: ['prod'], has_key: true }),
       makeServer('runner-host', 'updating', [], {
         tags: ['web'],
+        has_password: true,
         next_run: {
           state: 'scheduled',
           policy_name: 'Nightly security',
@@ -660,9 +681,24 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#bulk-approve-security').click();
     await expect(page.locator('#bulk-review-modal')).toBeVisible();
     await expect(page.locator('#bulk-review-modal')).toContainText('demo-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('runner-host: No standard security updates eligible');
+    await expect(page.locator('#bulk-review-modal')).toContainText('Server key');
+    await expect(page.locator('#bulk-review-modal')).toContainText('standard security update');
+    await expect(page.locator('#bulk-review-modal')).toContainText('runner-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('Password');
+    await expect(page.locator('#bulk-review-modal')).toContainText('Not waiting for approval');
     await expect.poll(() => state.approveSecurity || 0).toBe(0);
     await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill('WRONG');
+    await expect(page.locator('#typed-confirm-submit')).toBeDisabled();
+    await page.locator('#typed-confirm-cancel').click();
+    await expect.poll(() => state.approveSecurity || 0).toBe(0);
+    await page.locator('#bulk-approve-security').click();
+    await expect(page.locator('#bulk-review-modal')).toBeVisible();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill('BULK APPROVE SECURITY');
+    await page.locator('#typed-confirm-submit').click();
     await expect.poll(() => state.approveSecurity || 0).toBe(1);
 
     await page.locator('#approval-triage-table button[data-action="approve-all"][data-name="demo-host"]').click();
@@ -688,6 +724,150 @@ test.describe.serial('setup and login flows', () => {
     await page.evaluate(() => window.fetchServers());
 
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
+  });
+
+  test('bulk action review gates typed confirmations, partial failures, and safe non-typed actions', async ({ page }) => {
+    const servers = [
+      makeServer('idle-host', 'idle', [], { has_key: true }),
+      makeServer('ok-sec-host', 'pending_approval', makePendingUpdates(3), {
+        has_password: true,
+        upgrade_plan: {
+          standard_package_count: 2,
+          kept_back_package_count: 1,
+          standard_security_count: 1,
+          total_security_count: 2,
+          kept_back_security_plan_available: true,
+          kept_back_security_removed_packages: ['old-sec-lib'],
+        },
+      }),
+      makeServer('fail-sec-host', 'pending_approval', makePendingUpdates(3), { has_password: true }),
+      makeServer('no-sec-host', 'pending_approval', [], { has_password: true }),
+    ];
+    const state = { dialogs: [] };
+    page.on('dialog', async dialog => {
+      state.dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    await stubDashboardApi(page, () => servers);
+    await page.route('**/api/update/idle-host', route => {
+      state.updateIdle = (state.updateIdle || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/approve/ok-sec-host', route => {
+      state.approveStandard = (state.approveStandard || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/approve-security-kept-back/ok-sec-host', route => {
+      state.approveKept = (state.approveKept || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/approve-security/ok-sec-host', route => {
+      state.approveSecurityOk = (state.approveSecurityOk || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/approve-security/fail-sec-host', route => {
+      state.approveSecurityFail = (state.approveSecurityFail || 0) + 1;
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'backend down' }),
+      });
+    });
+    await page.route('**/api/approve-security/no-sec-host', route => {
+      state.approveSecuritySkipped = (state.approveSecuritySkipped || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/cancel/ok-sec-host', route => {
+      state.cancelOk = (state.cancelOk || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/autoremove/idle-host', route => {
+      state.autoremoveIdle = (state.autoremoveIdle || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+    await page.route('**/api/servers/idle-host/facts/refresh', route => {
+      state.refreshIdle = (state.refreshIdle || 0) + 1;
+      return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+
+    await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').check();
+    await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
+    await page.locator('#auth-filter').selectOption('key');
+    await page.locator('#bulk-update').click();
+    await expect(page.locator('#bulk-review-modal')).toContainText('ok-sec-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('Hidden by current filter or page');
+    await page.locator('#bulk-review-cancel').click();
+    await expect.poll(() => state.updateIdle || 0).toBe(0);
+    await page.locator('#auth-filter').selectOption('');
+    await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').uncheck();
+
+    await page.locator('#bulk-update').click();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill('BULK UPDATE');
+    await page.locator('#typed-confirm-submit').click();
+    await expect.poll(() => state.updateIdle || 0).toBe(1);
+
+    await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').uncheck();
+    await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
+    await page.locator('#bulk-approve').click();
+    await expect(page.locator('#bulk-review-modal')).toBeVisible();
+    await page.locator('#bulk-review-cancel').click();
+    await expect(page.locator('#bulk-review-modal')).not.toBeVisible();
+    await expect.poll(() => state.approveStandard || 0).toBe(0);
+    await page.locator('#bulk-approve').click();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill('WRONG');
+    await expect(page.locator('#typed-confirm-submit')).toBeDisabled();
+    await page.locator('#typed-confirm-cancel').click();
+    await expect.poll(() => state.approveStandard || 0).toBe(0);
+
+    await page.locator('#bulk-approve-kept-security').click();
+    await expect(page.locator('#bulk-review-modal')).toContainText('Package removals will be confirmed');
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
+    await page.locator('#typed-confirm-input').fill('BULK APPROVE KEPT SECURITY');
+    await page.locator('#typed-confirm-submit').click();
+    await expect.poll(() => state.approveKept || 0).toBe(1);
+
+    await page.locator('#servers-table tbody tr[data-name="fail-sec-host"] .row-select').check();
+    await page.locator('#servers-table tbody tr[data-name="no-sec-host"] .row-select').check();
+    await page.locator('#bulk-approve-security').click();
+    await expect(page.locator('#bulk-review-modal')).toContainText('ok-sec-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('fail-sec-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('no-sec-host');
+    await expect(page.locator('#bulk-review-modal')).toContainText('No standard security updates eligible');
+    await page.locator('#bulk-review-confirm').click();
+    await page.locator('#typed-confirm-input').fill('BULK APPROVE SECURITY');
+    await page.locator('#typed-confirm-submit').click();
+    await expect.poll(() => state.approveSecurityOk || 0).toBe(1);
+    await expect.poll(() => state.approveSecurityFail || 0).toBe(1);
+    await expect.poll(() => state.approveSecuritySkipped || 0).toBe(0);
+    await expect.poll(() => state.dialogs.some(message => message.includes('fail-sec-host: backend down'))).toBe(true);
+    expect(state.dialogs.some(message => message.includes('no-sec-host: backend down'))).toBe(false);
+
+    await page.locator('#servers-table tbody tr[data-name="fail-sec-host"] .row-select').uncheck();
+    await page.locator('#servers-table tbody tr[data-name="no-sec-host"] .row-select').uncheck();
+    await page.locator('#bulk-cancel').click();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
+    await expect.poll(() => state.cancelOk || 0).toBe(1);
+
+    await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').uncheck();
+    await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').check();
+    await page.locator('#bulk-autoremove').click();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
+    await expect.poll(() => state.autoremoveIdle || 0).toBe(1);
+
+    await page.locator('#refresh-all-facts').click();
+    await expect(page.locator('#bulk-review-modal')).toBeVisible();
+    await page.locator('#bulk-review-confirm').click();
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
+    await expect.poll(() => state.refreshIdle || 0).toBe(1);
   });
 
   test('auto refresh defers table replacement while an update action is being clicked', async ({ page }) => {

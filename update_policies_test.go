@@ -16,6 +16,11 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func newUpdatePolicyTestApp(t *testing.T, dbFile string) *testApp {
+	t.Helper()
+	return newTestApp(t, testAppOptions{DBPath: dbFile})
+}
+
 func prepareUpdatePolicyTestState(t *testing.T, dbFile string) {
 	t.Helper()
 	preserveDBState(t)
@@ -31,19 +36,50 @@ func prepareUpdatePolicyTestState(t *testing.T, dbFile string) {
 	}
 }
 
+func seedUpdatePolicyTestInventory(t *testing.T, app *testApp, seededServers []Server, seededStatusMap map[string]*ServerStatus) {
+	t.Helper()
+	if app == nil || app.Deps.ServerState == nil {
+		t.Fatalf("test app server state is not initialized")
+	}
+	if seededStatusMap == nil {
+		seededStatusMap = make(map[string]*ServerStatus, len(seededServers))
+		for _, server := range seededServers {
+			seededStatusMap[server.Name] = &ServerStatus{
+				Name:   server.Name,
+				Host:   server.Host,
+				Port:   server.Port,
+				User:   server.User,
+				Status: "idle",
+				Tags:   server.Tags,
+			}
+		}
+	}
+	app.Deps.ServerState.Lock()
+	app.Deps.ServerState.SetServers(cloneServers(seededServers))
+	app.Deps.ServerState.SetStatusMap(cloneStatusMap(seededStatusMap))
+	app.Deps.ServerState.Unlock()
+	if app.Deps.ServerInventoryService != nil {
+		if err := app.Deps.ServerInventoryService.SaveWithTxHook(nil); err != nil {
+			t.Fatalf("save seeded test inventory: %v", err)
+		}
+	}
+}
+
+func authenticateUpdatePolicyTestApp(t *testing.T, app *testApp) (http.Handler, *http.Cookie) {
+	t.Helper()
+	return app.Handler, app.authenticate(t)
+}
+
 func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-api.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	server := Server{Name: "srv-policy-api", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	mu.Lock()
-	servers = []Server{server}
-	statusMap = map[string]*ServerStatus{
+	seedUpdatePolicyTestInventory(t, app, []Server{server}, map[string]*ServerStatus{
 		server.Name: {Name: server.Name, Status: "idle", Tags: []string{"prod"}, Upgradable: []string{}},
-	}
-	mu.Unlock()
+	})
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	invalidBody := bytes.NewBufferString(`{
 		"name":"Weekly invalid",
@@ -310,7 +346,7 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 
 func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-preview-api.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	serversSnapshot := []Server{
 		{Name: "srv-web", Host: "web.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod", "web"}},
@@ -318,15 +354,13 @@ func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 		{Name: "srv-hold", Host: "hold.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod", "hold"}},
 		{Name: "srv-dev", Host: "dev.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"dev"}},
 	}
-	mu.Lock()
-	servers = serversSnapshot
-	statusMap = map[string]*ServerStatus{}
+	seededStatusMap := map[string]*ServerStatus{}
 	for _, server := range serversSnapshot {
-		statusMap[server.Name] = &ServerStatus{Name: server.Name, Status: "idle", Tags: server.Tags, Upgradable: []string{}}
+		seededStatusMap[server.Name] = &ServerStatus{Name: server.Name, Status: "idle", Tags: server.Tags, Upgradable: []string{}}
 	}
-	mu.Unlock()
+	seedUpdatePolicyTestInventory(t, app, serversSnapshot, seededStatusMap)
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	createBody := bytes.NewBufferString(`{
 		"name":"Preview policy",
@@ -409,17 +443,14 @@ func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 
 func TestUpdatePolicyExplicitTargetsFollowServerRename(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-rename-targets.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	server := Server{Name: "srv-explicit-old", Host: "explicit.example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"batch"}}
-	mu.Lock()
-	servers = []Server{server}
-	statusMap = map[string]*ServerStatus{
+	seedUpdatePolicyTestInventory(t, app, []Server{server}, map[string]*ServerStatus{
 		server.Name: {Name: server.Name, Status: "idle", Tags: []string{"batch"}, Upgradable: []string{}},
-	}
-	mu.Unlock()
+	})
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	createBody := bytes.NewBufferString(`{
 		"name":"Explicit rename policy",
@@ -520,7 +551,7 @@ func TestPolicyMatchesServerAdvancedTargets(t *testing.T) {
 
 func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-runs-limit.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 	base := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < maxUpdatePolicyRunsLimit+5; i++ {
 		_, inserted, err := createUpdatePolicyRun(UpdatePolicyRun{
@@ -539,7 +570,7 @@ func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
 			t.Fatalf("createUpdatePolicyRun(%d) = inserted %t err %v", i, inserted, err)
 		}
 	}
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	invalidRec := httptest.NewRecorder()
 	invalidReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?limit=abc", nil)
@@ -569,9 +600,9 @@ func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
 
 func TestAppTimezoneAPIAndScheduledSettingsMirror(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	getRec := httptest.NewRecorder()
 	getReq := httptest.NewRequest(http.MethodGet, "/api/app-settings/timezone", nil)
@@ -648,9 +679,9 @@ func TestAppTimezoneAPIAndScheduledSettingsMirror(t *testing.T) {
 
 func TestAppTimezoneAPIBlankSaveKeepsUnsetDefault(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api-blank.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	putRec := httptest.NewRecorder()
 	putReq := httptest.NewRequest(http.MethodPut, "/api/app-settings/timezone", bytes.NewBufferString(`{"timezone":""}`))
@@ -684,13 +715,13 @@ func TestAppTimezoneAPIBlankSaveKeepsUnsetDefault(t *testing.T) {
 
 func TestAppTimezoneAPIMissingTimezoneFieldIsRejected(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api-missing.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	if _, err := saveAppTimezone("America/Toronto"); err != nil {
 		t.Fatalf("saveAppTimezone(America/Toronto) unexpected error: %v", err)
 	}
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	putRec := httptest.NewRecorder()
 	putReq := httptest.NewRequest(http.MethodPut, "/api/app-settings/timezone", bytes.NewBufferString(`{}`))
@@ -809,13 +840,13 @@ func TestSaveAppTimezoneLocalAcceptsDetectedOffsetTimezone(t *testing.T) {
 
 func TestAppTimezoneAPIEditableTimezoneKeepsConfiguredOffset(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api-offset.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	if err := upsertSettingValue(appTimezoneSetting, "+02:00"); err != nil {
 		t.Fatalf("upsertSettingValue(+02:00) unexpected error: %v", err)
 	}
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 
 	getRec := httptest.NewRecorder()
 	getReq := httptest.NewRequest(http.MethodGet, "/api/app-settings/timezone", nil)
@@ -1187,15 +1218,12 @@ func TestSetUpdatePolicyOverrideFalseRemovesPersistedOptOut(t *testing.T) {
 
 func TestUpdatePolicyOverrideRejectsUnknownServer(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-override-unknown-server.db")
-	prepareUpdatePolicyTestState(t, dbFile)
+	app := newUpdatePolicyTestApp(t, dbFile)
 
 	server := Server{Name: "srv-known", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	mu.Lock()
-	servers = []Server{server}
-	statusMap = map[string]*ServerStatus{
+	seedUpdatePolicyTestInventory(t, app, []Server{server}, map[string]*ServerStatus{
 		server.Name: {Name: server.Name, Status: "idle", Tags: []string{"prod"}, Upgradable: []string{}},
-	}
-	mu.Unlock()
+	})
 
 	policy, err := createUpdatePolicy(UpdatePolicy{
 		Name:          "Known server only",
@@ -1210,7 +1238,7 @@ func TestUpdatePolicyOverrideRejectsUnknownServer(t *testing.T) {
 		t.Fatalf("createUpdatePolicy() unexpected error: %v", err)
 	}
 
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/update-policies/"+strconvFormatInt(policy.ID)+"/overrides/srv-missing", bytes.NewBufferString(`{"disabled":true}`))
 	req.AddCookie(sessionCookie)

@@ -19,26 +19,29 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestAPIServersReturnsEmptyArrayOnFreshInstall(t *testing.T) {
-	preserveDBState(t)
+func newActionAPITestApp(t *testing.T, dbFile string) (*testApp, *http.Cookie) {
+	t.Helper()
 	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
-	dbFile := filepath.Join(t.TempDir(), "empty-servers.db")
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
-
 	func() {
 		mu.Lock()
 		defer mu.Unlock()
 		servers = nil
 		statusMap = map[string]*ServerStatus{}
 	}()
+	app := newTestAppWithDeps(t, dbFile, AppDeps{
+		ServerState: globalServerState(),
+	})
+	return app, app.authenticate(t)
+}
+
+func TestAPIServersReturnsEmptyArrayOnFreshInstall(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "empty-servers.db")
+	app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
 	req.AddCookie(sessionCookie)
-	handler.ServeHTTP(rec, req)
+	app.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/servers status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -49,18 +52,13 @@ func TestAPIServersReturnsEmptyArrayOnFreshInstall(t *testing.T) {
 
 func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 	t.Run("starts from idle", func(t *testing.T) {
-		preserveDBState(t)
-		preserveServerState(t)
-		preserveSessionState(t)
-		preserveRateLimiterState(t)
-		preserveMetricsTokenState(t)
 		dbFile := filepath.Join(t.TempDir(), "actions-start-update.db")
 		knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
 		if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
 			t.Fatalf("write known_hosts: %v", err)
 		}
 		t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
-		handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+		app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 		server := Server{Name: "srv-update-route", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 		func() {
@@ -87,7 +85,7 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/update/"+server.Name, nil)
 		req.AddCookie(sessionCookie)
 		markSameOriginAuthRequest(req)
-		handler.ServeHTTP(rec, req)
+		app.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("update start status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
 		}
@@ -116,13 +114,8 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 	})
 
 	t.Run("returns conflict when busy", func(t *testing.T) {
-		preserveDBState(t)
-		preserveServerState(t)
-		preserveSessionState(t)
-		preserveRateLimiterState(t)
-		preserveMetricsTokenState(t)
 		dbFile := filepath.Join(t.TempDir(), "actions-update-conflict.db")
-		handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+		app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 		server := Server{Name: "srv-update-conflict", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 		func() {
@@ -138,7 +131,7 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/update/"+server.Name, nil)
 		req.AddCookie(sessionCookie)
 		markSameOriginAuthRequest(req)
-		handler.ServeHTTP(rec, req)
+		app.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("update start conflict status = %d, want %d (body=%s)", rec.Code, http.StatusConflict, rec.Body.String())
 		}
@@ -146,13 +139,8 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 }
 
 func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "server-mutation-active.db")
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 	server := Server{Name: "srv-active-mutation", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	func() {
@@ -173,7 +161,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	updateReq.AddCookie(sessionCookie)
 	updateReq.Header.Set("Content-Type", "application/json")
 	markSameOriginAuthRequest(updateReq)
-	handler.ServeHTTP(updateRec, updateReq)
+	app.Handler.ServeHTTP(updateRec, updateReq)
 	if updateRec.Code != http.StatusConflict {
 		t.Fatalf("active server update status = %d, want %d (body=%s)", updateRec.Code, http.StatusConflict, updateRec.Body.String())
 	}
@@ -182,7 +170,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name, nil)
 	deleteReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(deleteReq)
-	handler.ServeHTTP(deleteRec, deleteReq)
+	app.Handler.ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusConflict {
 		t.Fatalf("active server delete status = %d, want %d (body=%s)", deleteRec.Code, http.StatusConflict, deleteRec.Body.String())
 	}
@@ -191,7 +179,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	passwordReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name+"/password", nil)
 	passwordReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(passwordReq)
-	handler.ServeHTTP(passwordRec, passwordReq)
+	app.Handler.ServeHTTP(passwordRec, passwordReq)
 	if passwordRec.Code != http.StatusConflict {
 		t.Fatalf("active server password clear status = %d, want %d (body=%s)", passwordRec.Code, http.StatusConflict, passwordRec.Body.String())
 	}
@@ -213,7 +201,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	keyUploadReq.AddCookie(sessionCookie)
 	keyUploadReq.Header.Set("Content-Type", keyWriter.FormDataContentType())
 	markSameOriginAuthRequest(keyUploadReq)
-	handler.ServeHTTP(keyUploadRec, keyUploadReq)
+	app.Handler.ServeHTTP(keyUploadRec, keyUploadReq)
 	if keyUploadRec.Code != http.StatusConflict {
 		t.Fatalf("active server key upload status = %d, want %d (body=%s)", keyUploadRec.Code, http.StatusConflict, keyUploadRec.Body.String())
 	}
@@ -222,7 +210,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	keyClearReq := httptest.NewRequest(http.MethodDelete, "/api/servers/"+server.Name+"/key", nil)
 	keyClearReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(keyClearReq)
-	handler.ServeHTTP(keyClearRec, keyClearReq)
+	app.Handler.ServeHTTP(keyClearRec, keyClearReq)
 	if keyClearRec.Code != http.StatusConflict {
 		t.Fatalf("active server key clear status = %d, want %d (body=%s)", keyClearRec.Code, http.StatusConflict, keyClearRec.Body.String())
 	}
@@ -231,7 +219,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	factsReq := httptest.NewRequest(http.MethodPost, "/api/servers/"+server.Name+"/facts/refresh", nil)
 	factsReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(factsReq)
-	handler.ServeHTTP(factsRec, factsReq)
+	app.Handler.ServeHTTP(factsRec, factsReq)
 	if factsRec.Code != http.StatusConflict {
 		t.Fatalf("active server facts refresh status = %d, want %d (body=%s)", factsRec.Code, http.StatusConflict, factsRec.Body.String())
 	}
@@ -240,7 +228,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	globalKeyUploadReq := httptest.NewRequest(http.MethodPost, "/api/keys/global", nil)
 	globalKeyUploadReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(globalKeyUploadReq)
-	handler.ServeHTTP(globalKeyUploadRec, globalKeyUploadReq)
+	app.Handler.ServeHTTP(globalKeyUploadRec, globalKeyUploadReq)
 	if globalKeyUploadRec.Code != http.StatusConflict {
 		t.Fatalf("active server global key upload status = %d, want %d (body=%s)", globalKeyUploadRec.Code, http.StatusConflict, globalKeyUploadRec.Body.String())
 	}
@@ -249,7 +237,7 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 	globalKeyClearReq := httptest.NewRequest(http.MethodDelete, "/api/keys/global", nil)
 	globalKeyClearReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(globalKeyClearReq)
-	handler.ServeHTTP(globalKeyClearRec, globalKeyClearReq)
+	app.Handler.ServeHTTP(globalKeyClearRec, globalKeyClearReq)
 	if globalKeyClearRec.Code != http.StatusConflict {
 		t.Fatalf("active server global key clear status = %d, want %d (body=%s)", globalKeyClearRec.Code, http.StatusConflict, globalKeyClearRec.Body.String())
 	}
@@ -265,18 +253,13 @@ func TestServerMutationRoutesRejectActiveServerActions(t *testing.T) {
 }
 
 func TestFactsRefreshBlocksConcurrentServerActions(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "facts-refresh-busy.db")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
 	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
 		t.Fatalf("write known_hosts: %v", err)
 	}
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 	server := Server{Name: "srv-facts-busy", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	func() {
@@ -315,7 +298,7 @@ func TestFactsRefreshBlocksConcurrentServerActions(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/servers/"+server.Name+"/facts/refresh", nil)
 		req.AddCookie(sessionCookie)
 		markSameOriginAuthRequest(req)
-		handler.ServeHTTP(rec, req)
+		app.Handler.ServeHTTP(rec, req)
 		factsDone <- rec.Code
 	}()
 
@@ -329,7 +312,7 @@ func TestFactsRefreshBlocksConcurrentServerActions(t *testing.T) {
 	updateReq := httptest.NewRequest(http.MethodPost, "/api/update/"+server.Name, nil)
 	updateReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(updateReq)
-	handler.ServeHTTP(updateRec, updateReq)
+	app.Handler.ServeHTTP(updateRec, updateReq)
 	if updateRec.Code != http.StatusConflict {
 		t.Fatalf("update during facts refresh status = %d, want %d (body=%s)", updateRec.Code, http.StatusConflict, updateRec.Body.String())
 	}
@@ -373,13 +356,8 @@ func TestStartJobRunnerMarksPanicFailedWithoutCrashing(t *testing.T) {
 }
 
 func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
-	preserveDBState(t)
-	preserveServerState(t)
-	preserveSessionState(t)
-	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "actions-approve-cancel.db")
-	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	app, sessionCookie := newActionAPITestApp(t, dbFile)
 
 	server := Server{Name: "srv-approval-route", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	pending := []PendingUpdate{{Package: "openssl", Security: true}}
@@ -415,7 +393,7 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/approve/"+server.Name, nil)
 	approveReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(approveReq)
-	handler.ServeHTTP(approveRec, approveReq)
+	app.Handler.ServeHTTP(approveRec, approveReq)
 	if approveRec.Code != http.StatusOK {
 		t.Fatalf("approve status = %d, want %d (body=%s)", approveRec.Code, http.StatusOK, approveRec.Body.String())
 	}
@@ -433,7 +411,7 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	approveAgainReq := httptest.NewRequest(http.MethodPost, "/api/approve/"+server.Name, nil)
 	approveAgainReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(approveAgainReq)
-	handler.ServeHTTP(approveAgainRec, approveAgainReq)
+	app.Handler.ServeHTTP(approveAgainRec, approveAgainReq)
 	if approveAgainRec.Code != http.StatusConflict {
 		t.Fatalf("approve conflict status = %d, want %d (body=%s)", approveAgainRec.Code, http.StatusConflict, approveAgainRec.Body.String())
 	}
@@ -468,7 +446,7 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	cancelReq := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
 	cancelReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(cancelReq)
-	handler.ServeHTTP(cancelRec, cancelReq)
+	app.Handler.ServeHTTP(cancelRec, cancelReq)
 	if cancelRec.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, want %d (body=%s)", cancelRec.Code, http.StatusOK, cancelRec.Body.String())
 	}
@@ -489,7 +467,7 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	cancelAgainReq := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
 	cancelAgainReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(cancelAgainReq)
-	handler.ServeHTTP(cancelAgainRec, cancelAgainReq)
+	app.Handler.ServeHTTP(cancelAgainRec, cancelAgainReq)
 	if cancelAgainRec.Code != http.StatusConflict {
 		t.Fatalf("cancel conflict status = %d, want %d (body=%s)", cancelAgainRec.Code, http.StatusConflict, cancelAgainRec.Body.String())
 	}

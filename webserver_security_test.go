@@ -646,22 +646,6 @@ func TestGetGlobalKeyDoesNotDeadlockWhenEncryptionKeyIsCold(t *testing.T) {
 	}
 }
 
-func TestSummarizeUnitNames(t *testing.T) {
-	units := []string{"a.service", "b.service", "c.service"}
-	if got := summarizeUnitNames(units, 0); got != "a.service, b.service, c.service" {
-		t.Fatalf("summarizeUnitNames(max=0) = %q", got)
-	}
-	if got := summarizeUnitNames(units, 3); got != "a.service, b.service, c.service" {
-		t.Fatalf("summarizeUnitNames(max=3) = %q", got)
-	}
-	if got := summarizeUnitNames(units, 2); got != "a.service, b.service (+1 more)" {
-		t.Fatalf("summarizeUnitNames(max=2) = %q", got)
-	}
-	if got := summarizeUnitNames(nil, 2); got != "" {
-		t.Fatalf("summarizeUnitNames(nil) = %q, want empty", got)
-	}
-}
-
 func TestKnownHostsPathsDefaultUsesDataDir(t *testing.T) {
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", "")
 	tmpDir := t.TempDir()

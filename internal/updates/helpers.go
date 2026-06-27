@@ -167,6 +167,43 @@ func RunWithRetry(policy RetryPolicy, opName string, fn func() error, onRetry fu
 	return RunWithRetryWithSleep(policy, opName, fn, onRetry, time.Sleep, logf)
 }
 
+func ParseFailedSystemdUnits(output string) []string {
+	lines := strings.Split(output, "\n")
+	units := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		unit := strings.TrimSpace(fields[0])
+		if unit == "" {
+			continue
+		}
+		if _, exists := seen[unit]; exists {
+			continue
+		}
+		seen[unit] = struct{}{}
+		units = append(units, unit)
+	}
+	return units
+}
+
+func SummarizeUnitNames(units []string, maxShown int) string {
+	if len(units) == 0 {
+		return ""
+	}
+	if maxShown <= 0 || maxShown >= len(units) {
+		return strings.Join(units, ", ")
+	}
+	remaining := len(units) - maxShown
+	return fmt.Sprintf("%s (+%d more)", strings.Join(units[:maxShown], ", "), remaining)
+}
+
 func ParseUpgradableEntries(stdout string) ([]servers.PendingUpdate, []string, error) {
 	lines := strings.Split(stdout, "\n")
 	pendingUpdates := make([]servers.PendingUpdate, 0)

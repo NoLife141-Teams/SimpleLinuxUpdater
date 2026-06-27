@@ -31,6 +31,34 @@ func TestParseUpgradableEntriesAndPackageSelection(t *testing.T) {
 	}
 }
 
+func TestFailedSystemdUnitHelpers(t *testing.T) {
+	output := strings.Join([]string{
+		"ssh.service loaded failed failed OpenBSD Secure Shell server",
+		"",
+		"postfix@-.service loaded failed failed Postfix Mail Transport Agent",
+		"ssh.service loaded failed failed duplicate",
+	}, "\n")
+	units := ParseFailedSystemdUnits(output)
+	wantUnits := []string{"ssh.service", "postfix@-.service"}
+	if !reflect.DeepEqual(units, wantUnits) {
+		t.Fatalf("ParseFailedSystemdUnits() = %#v, want %#v", units, wantUnits)
+	}
+
+	allUnits := []string{"a.service", "b.service", "c.service"}
+	if got := SummarizeUnitNames(allUnits, 0); got != "a.service, b.service, c.service" {
+		t.Fatalf("SummarizeUnitNames(max=0) = %q", got)
+	}
+	if got := SummarizeUnitNames(allUnits, 3); got != "a.service, b.service, c.service" {
+		t.Fatalf("SummarizeUnitNames(max=3) = %q", got)
+	}
+	if got := SummarizeUnitNames(allUnits, 2); got != "a.service, b.service (+1 more)" {
+		t.Fatalf("SummarizeUnitNames(max=2) = %q", got)
+	}
+	if got := SummarizeUnitNames(nil, 2); got != "" {
+		t.Fatalf("SummarizeUnitNames(nil) = %q, want empty", got)
+	}
+}
+
 func TestParseUpgradableEntriesAptSummaryBlock(t *testing.T) {
 	stdout := strings.Join([]string{
 		"Reading package lists... Done",

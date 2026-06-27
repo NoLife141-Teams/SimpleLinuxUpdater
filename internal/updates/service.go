@@ -60,12 +60,7 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 		d.IsPostcheckFailureBlocking = func(string, PostUpdateCheckConfig) bool { return true }
 	}
 	if d.SummarizeUnitNames == nil {
-		d.SummarizeUnitNames = func(units []string, maxShown int) string {
-			if maxShown > 0 && maxShown < len(units) {
-				return fmt.Sprintf("%s (+%d more)", strings.Join(units[:maxShown], ", "), len(units)-maxShown)
-			}
-			return strings.Join(units, ", ")
-		}
+		d.SummarizeUnitNames = SummarizeUnitNames
 	}
 	if d.Logf == nil {
 		d.Logf = func(string, ...any) {}

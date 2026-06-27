@@ -109,7 +109,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.IsPostcheckFailureBlocking = isPostcheckFailureBlocking
 	}
 	if d.SummarizeUnitNames == nil {
-		d.SummarizeUnitNames = summarizeUnitNames
+		d.SummarizeUnitNames = updatespkg.SummarizeUnitNames
 	}
 	if d.Logf == nil {
 		d.Logf = log.Printf

@@ -1089,8 +1089,6 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 	keptBackPackages := 0
 	standardSecurityUpdates := risk.SecurityUpdates
 	keptBackSecurityUpdates := 0
-	canApproveFull := false
-	canApproveKeptBackSecurity := false
 	if status != nil {
 		plan := status.UpgradePlan
 		if plan.StandardPackageCount > 0 || plan.KeptBackPackageCount > 0 || plan.FullUpgradePackageCount > 0 {
@@ -1101,8 +1099,6 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 			if keptBackSecurityUpdates < 0 {
 				keptBackSecurityUpdates = 0
 			}
-			canApproveKeptBackSecurity = canActOnApproval && keptBackSecurityUpdates > 0 && plan.KeptBackSecurityPlanAvailable
-			canApproveFull = canActOnApproval && plan.FullUpgradePlanAvailable && (plan.KeptBackPackageCount > 0 || len(plan.FullUpgradeNewPackages) > 0 || len(plan.FullUpgradeRemovedPackages) > 0)
 		} else if canActOnApproval {
 			for _, update := range status.PendingUpdates {
 				if update.RequiresFull || update.KeptBack {
@@ -1123,6 +1119,7 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 		}
 	}
 	canRunTransientAction := !activeTimelineState(timeline.State) && !statusBlocksTransientAction(statusValue)
+	availability := updates.ApprovalAvailability(status)
 	return DashboardApprovalTriageInfo{
 		Eligible:                   eligible,
 		PendingPackages:            risk.PendingPackages,
@@ -1140,10 +1137,10 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 		FactsCollectedAtDisplay:    formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
 		LastCheckAt:                lastCheckAt,
 		LastCheckDisplay:           formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
-		CanApproveAll:              canActOnApproval && standardPackages > 0,
-		CanApproveSecurity:         canActOnApproval && standardSecurityUpdates > 0,
-		CanApproveKeptBackSecurity: canApproveKeptBackSecurity,
-		CanApproveFull:             canApproveFull,
+		CanApproveAll:              availability.CanApproveAll,
+		CanApproveSecurity:         availability.CanApproveSecurity,
+		CanApproveKeptBackSecurity: availability.CanApproveKeptBackSecurity,
+		CanApproveFull:             availability.CanApproveFull,
 		CanCancel:                  canActOnApproval,
 		CanRefreshFacts:            canRunTransientAction,
 		CanRunChecks:               canRunTransientAction,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	serverpkg "debian-updater/internal/servers"
+	updatespkg "debian-updater/internal/updates"
 )
 
 type serverActionLifecycle struct {
@@ -40,13 +41,8 @@ type serverActionStartSpec struct {
 
 type serverActionApprovalSpec struct {
 	scope             string
-	jobSummary        string
-	successMessage    string
 	rollbackLogPrefix string
 	notFoundMeta      map[string]any
-	precheck          func(*ServerStatus, serverActionApprovalOptions) *serverActionLifecycleResult
-	approvalOptions   func(serverActionApprovalOptions) serverpkg.ApprovalOptions
-	successAuditMeta  func(*ServerStatus) map[string]any
 }
 
 type serverActionApprovalOptions struct {
@@ -202,116 +198,32 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 
 func (l *serverActionLifecycle) ApproveAll(name string) serverActionLifecycleResult {
 	return l.approve(name, serverActionApprovalOptions{}, serverActionApprovalSpec{
-		scope:             "all",
-		jobSummary:        "All pending updates approved",
-		successMessage:    "All pending updates approved",
+		scope:             updatespkg.ApprovalScopeAll,
 		rollbackLogPrefix: "update approve",
-		successAuditMeta: func(*ServerStatus) map[string]any {
-			return map[string]any{"scope": "all"}
-		},
 	})
 }
 
 func (l *serverActionLifecycle) ApproveSecurity(name string) serverActionLifecycleResult {
 	return l.approve(name, serverActionApprovalOptions{}, serverActionApprovalSpec{
-		scope:             "security",
-		jobSummary:        "Security updates approved",
-		successMessage:    "Security updates approved",
+		scope:             updatespkg.ApprovalScopeSecurity,
 		rollbackLogPrefix: "security approve",
-		notFoundMeta:      map[string]any{"scope": "security"},
-		successAuditMeta: func(*ServerStatus) map[string]any {
-			return map[string]any{"scope": "security"}
-		},
+		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeSecurity},
 	})
 }
 
 func (l *serverActionLifecycle) ApproveKeptBackSecurity(name string, confirmRemovals bool) serverActionLifecycleResult {
 	return l.approve(name, serverActionApprovalOptions{confirmRemovals: confirmRemovals}, serverActionApprovalSpec{
-		scope:             "security_kept_back",
-		jobSummary:        "Kept-back security updates approved",
-		successMessage:    "Kept-back security updates approved",
+		scope:             updatespkg.ApprovalScopeSecurityKeptBack,
 		rollbackLogPrefix: "kept-back security approve",
-		notFoundMeta:      map[string]any{"scope": "security_kept_back"},
-		precheck: func(status *ServerStatus, opts serverActionApprovalOptions) *serverActionLifecycleResult {
-			packages := keptBackSecurityPackagesFromPendingUpdates(status.PendingUpdates)
-			if len(packages) == 0 {
-				l.recordAuditWithMeta("update.approve", status.Name, "ignored", "No kept-back security updates pending", map[string]any{"scope": "security_kept_back"})
-				result := jsonResult(http.StatusConflict, "No kept-back security updates pending")
-				return &result
-			}
-			if !status.UpgradePlan.KeptBackSecurityPlanAvailable {
-				l.recordAuditWithMeta("update.approve", status.Name, "blocked", "Kept-back security upgrade requires a fresh targeted simulation", map[string]any{"scope": "security_kept_back"})
-				result := jsonResult(http.StatusConflict, "Kept-back security upgrade requires a fresh package scan")
-				return &result
-			}
-			if len(status.UpgradePlan.KeptBackSecurityRemovedPackages) > 0 && !opts.confirmRemovals {
-				l.recordAuditWithMeta("update.approve", status.Name, "blocked", "Kept-back security upgrade requires package removal confirmation", map[string]any{
-					"scope":            "security_kept_back",
-					"removed_packages": status.UpgradePlan.KeptBackSecurityRemovedPackages,
-				})
-				result := serverActionLifecycleResult{
-					statusCode: http.StatusConflict,
-					body: map[string]any{
-						"error":            "Kept-back security upgrade may remove packages; confirmation required",
-						"removed_packages": status.UpgradePlan.KeptBackSecurityRemovedPackages,
-					},
-				}
-				return &result
-			}
-			return nil
-		},
-		approvalOptions: func(opts serverActionApprovalOptions) serverpkg.ApprovalOptions {
-			return serverpkg.ApprovalOptions{ConfirmRemovals: opts.confirmRemovals}
-		},
-		successAuditMeta: func(status *ServerStatus) map[string]any {
-			return map[string]any{
-				"scope":             "security_kept_back",
-				"approved_packages": keptBackSecurityPackagesFromPendingUpdates(status.PendingUpdates),
-				"new_packages":      status.UpgradePlan.KeptBackSecurityNewPackages,
-				"removed_packages":  status.UpgradePlan.KeptBackSecurityRemovedPackages,
-			}
-		},
+		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeSecurityKeptBack},
 	})
 }
 
 func (l *serverActionLifecycle) ApproveFullUpgrade(name string, confirmRemovals bool) serverActionLifecycleResult {
 	return l.approve(name, serverActionApprovalOptions{confirmRemovals: confirmRemovals}, serverActionApprovalSpec{
-		scope:             "full_upgrade",
-		jobSummary:        "Full upgrade approved",
-		successMessage:    "Full upgrade approved",
+		scope:             updatespkg.ApprovalScopeFullUpgrade,
 		rollbackLogPrefix: "full approve",
-		notFoundMeta:      map[string]any{"scope": "full_upgrade"},
-		precheck: func(status *ServerStatus, opts serverActionApprovalOptions) *serverActionLifecycleResult {
-			if !status.UpgradePlan.FullUpgradePlanAvailable {
-				l.recordAuditWithMeta("update.approve", status.Name, "blocked", "Full upgrade requires a fresh full-upgrade simulation", map[string]any{"scope": "full_upgrade"})
-				result := jsonResult(http.StatusConflict, "Full upgrade requires a fresh package scan")
-				return &result
-			}
-			if len(status.UpgradePlan.FullUpgradeRemovedPackages) > 0 && !opts.confirmRemovals {
-				l.recordAuditWithMeta("update.approve", status.Name, "blocked", "Full upgrade requires package removal confirmation", map[string]any{
-					"scope":            "full_upgrade",
-					"removed_packages": status.UpgradePlan.FullUpgradeRemovedPackages,
-				})
-				result := serverActionLifecycleResult{
-					statusCode: http.StatusConflict,
-					body: map[string]any{
-						"error":            "Full upgrade would remove packages; confirmation required",
-						"removed_packages": status.UpgradePlan.FullUpgradeRemovedPackages,
-					},
-				}
-				return &result
-			}
-			return nil
-		},
-		approvalOptions: func(opts serverActionApprovalOptions) serverpkg.ApprovalOptions {
-			return serverpkg.ApprovalOptions{ConfirmRemovals: opts.confirmRemovals}
-		},
-		successAuditMeta: func(status *ServerStatus) map[string]any {
-			return map[string]any{
-				"scope":            "full_upgrade",
-				"removed_packages": status.UpgradePlan.FullUpgradeRemovedPackages,
-			}
-		},
+		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeFullUpgrade},
 	})
 }
 
@@ -325,10 +237,19 @@ func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOp
 		l.recordAuditWithMeta("update.approve", name, "ignored", "Server not pending approval", map[string]any{"scope": spec.scope})
 		return jsonResult(http.StatusConflict, "Server not pending approval")
 	}
-	if spec.precheck != nil {
-		if result := spec.precheck(preApproveStatus, opts); result != nil {
-			return *result
+	approval := updatespkg.EvaluateManualApproval(preApproveStatus, spec.scope, updatespkg.ApprovalScopeOptions{ConfirmRemovals: opts.confirmRemovals})
+	if !approval.Allowed {
+		l.recordAuditWithMeta("update.approve", name, approval.AuditStatus, approval.AuditMessage, approval.AuditMeta)
+		if len(approval.RemovedPackages) > 0 {
+			return serverActionLifecycleResult{
+				statusCode: http.StatusConflict,
+				body: map[string]any{
+					"error":            approval.BodyMessage,
+					"removed_packages": approval.RemovedPackages,
+				},
+			}
 		}
+		return jsonResult(http.StatusConflict, approval.BodyMessage)
 	}
 
 	jm := l.currentJobManager()
@@ -347,16 +268,13 @@ func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOp
 	if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
 		Status:   &status,
 		Phase:    &phase,
-		Summary:  &spec.jobSummary,
+		Summary:  &approval.JobSummary,
 		LogsText: &logs,
 	}); err != nil {
 		l.recordAuditWithMeta("update.approve", name, "failure", "Failed to persist approval", map[string]any{"scope": spec.scope, "error": err.Error()})
 		return jsonResult(http.StatusInternalServerError, "Failed to persist approval")
 	}
-	approvalOptions := serverpkg.ApprovalOptions{}
-	if spec.approvalOptions != nil {
-		approvalOptions = spec.approvalOptions(opts)
-	}
+	approvalOptions := serverpkg.ApprovalOptions{ConfirmRemovals: approval.StateOptions.ConfirmRemovals}
 	exists, approved := l.updateService.ApprovePendingUpdateWithOptions(name, spec.scope, approvalOptions)
 	if !exists || !approved {
 		rollbackStatus := jobStatusWaitingApproval
@@ -373,14 +291,10 @@ func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOp
 		l.recordAuditWithMeta("update.approve", name, "ignored", "Server not pending approval", map[string]any{"scope": spec.scope})
 		return jsonResult(http.StatusConflict, "Server not pending approval")
 	}
-	meta := map[string]any{"scope": spec.scope}
-	if spec.successAuditMeta != nil {
-		meta = spec.successAuditMeta(preApproveStatus)
-	}
-	l.recordAuditWithMeta("update.approve", name, "success", spec.successMessage, meta)
+	l.recordAuditWithMeta("update.approve", name, approval.AuditStatus, approval.AuditMessage, approval.AuditMeta)
 	return serverActionLifecycleResult{
 		statusCode: http.StatusOK,
-		body:       map[string]any{"message": spec.successMessage},
+		body:       map[string]any{"message": approval.SuccessMessage},
 	}
 }
 

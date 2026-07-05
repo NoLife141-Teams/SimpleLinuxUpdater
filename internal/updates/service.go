@@ -606,21 +606,13 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				status.UpgradePlan = servers.CloneUpgradePlan(upgradePlan)
 				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(upgradable, "\n")
 			})
-			autoApproveScope := NormalizeApprovalScope(behavior.AutoApproveScope)
-			if behavior.AutoApproveScope == "" {
-				autoApproveScope = ""
+			autoApproval := EvaluateAutoApproval(behavior.AutoApproveScope, pendingUpdates, upgradePlan)
+			if !autoApproval.Allowed && autoApproval.RunnerCommandLog != "" {
+				r.appendStatusLog(autoApproval.RunnerCommandLog)
 			}
-			if autoApproveScope == "security_kept_back" {
-				autoApproveScope = ""
-				r.appendStatusLog("\nKept-back security updates require manual approval after targeted simulation.")
-			}
-			if autoApproveScope == "full_upgrade" && !upgradePlan.FullUpgradePlanAvailable {
-				autoApproveScope = ""
-				r.appendStatusLog("\nScheduled full-upgrade requires a successful full-upgrade simulation before it can run.")
-			}
-			if autoApproveScope == "full_upgrade" && len(upgradePlan.FullUpgradeRemovedPackages) > 0 {
-				autoApproveScope = ""
-				r.appendStatusLog("\nScheduled full-upgrade requires manual confirmation because package removals were detected.")
+			autoApproveScope := ""
+			if autoApproval.Allowed {
+				autoApproveScope = autoApproval.Scope
 			}
 			if autoApproveScope == "" {
 				s.StartPendingCVEEnrichment(r.server, r.config, pendingUpdates, r.jobID, r.actor, r.clientIP)
@@ -637,16 +629,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 						status.ApprovalScope = r.approvalScope
 						status.ApprovalConfirmRemovals = false
 						status.Status = "approved"
-						switch r.approvalScope {
-						case "security":
-							r.approvedPackages = SecurityPackagesFromPendingUpdates(status.PendingUpdates)
-						case "security_kept_back":
-							r.approvedPackages = KeptBackSecurityPackagesFromPendingUpdates(status.PendingUpdates)
-						case "full_upgrade":
-							r.approvedPackages = FullUpgradePackagesFromPendingUpdates(status.PendingUpdates)
-						default:
-							r.approvedPackages = PackageNamesFromPendingUpdates(status.PendingUpdates)
-						}
+						r.approvedPackages = append([]string(nil), autoApproval.SelectedPackages...)
 						autoApproved = true
 					}
 					deps.ServerState.Unlock()
@@ -669,16 +652,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 							if status.Status == "approved" {
 								r.approvalScope = NormalizeApprovalScope(status.ApprovalScope)
 								r.approvalConfirmRemovals = status.ApprovalConfirmRemovals
-								switch r.approvalScope {
-								case "security":
-									r.approvedPackages = SecurityPackagesFromPendingUpdates(status.PendingUpdates)
-								case "security_kept_back":
-									r.approvedPackages = KeptBackSecurityPackagesFromPendingUpdates(status.PendingUpdates)
-								case "full_upgrade":
-									r.approvedPackages = FullUpgradePackagesFromPendingUpdates(status.PendingUpdates)
-								default:
-									r.approvedPackages = PackageNamesFromPendingUpdates(status.PendingUpdates)
-								}
+								r.approvedPackages = PackagesForApprovalScope(r.approvalScope, status.PendingUpdates)
 								approved = true
 							} else if status.Status == "cancelled" {
 								cancelledByUser = true
@@ -728,7 +702,11 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				}
 			}
 
-			if (r.approvalScope == "security" || r.approvalScope == "security_kept_back") && len(r.approvedPackages) == 0 {
+			approvalRun := InterpretApprovedScope(r.approvalScope, pendingUpdates, r.upgradePlan, ApprovalScopeOptions{ConfirmRemovals: r.approvalConfirmRemovals})
+			r.approvalScope = approvalRun.Scope
+			r.approvedPackages = append([]string(nil), approvalRun.SelectedPackages...)
+
+			if approvalRun.SkipUpgrade {
 				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
@@ -737,11 +715,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					status.Upgradable = nil
 					status.PendingUpdates = nil
 					status.UpgradePlan = servers.UpgradePlan{}
-					if r.approvalScope == "security_kept_back" {
-						status.Logs += "\nApproval received: kept-back security upgrade.\nNo kept-back security upgrades detected in pending package set; skipped upgrade."
-					} else {
-						status.Logs += "\nApproval received: security-only upgrade.\nNo security upgrades detected in pending package set; skipped upgrade."
-					}
+					status.Logs += approvalRun.RunnerApprovalLog
 				})
 				return
 			}
@@ -754,68 +728,16 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				status.Upgradable = nil
 				status.PendingUpdates = nil
 				status.UpgradePlan = servers.UpgradePlan{}
-				switch r.approvalScope {
-				case "security":
-					status.Logs += fmt.Sprintf("\nApproval received: security-only upgrade (%d package(s)).", len(r.approvedPackages))
-				case "security_kept_back":
-					status.Logs += fmt.Sprintf("\nApproval received: kept-back security upgrade (%d package(s)).", len(r.approvedPackages))
-				case "full_upgrade":
-					status.Logs += fmt.Sprintf("\nApproval received: full upgrade (%d package(s), %d new, %d remove).", len(r.approvedPackages), len(r.upgradePlan.FullUpgradeNewPackages), len(r.upgradePlan.FullUpgradeRemovedPackages))
-				default:
-					status.Logs += "\nApproval received: all pending upgrades."
-				}
+				status.Logs += approvalRun.RunnerApprovalLog
 			})
 
-			if r.approvalScope == "full_upgrade" {
-				if !r.upgradePlan.FullUpgradePlanAvailable {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: full upgrade requires a successful full-upgrade simulation")
-					return
-				}
-				if len(r.upgradePlan.FullUpgradeRemovedPackages) > 0 && !r.approvalConfirmRemovals {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: full upgrade would remove packages but removal confirmation was not recorded")
-					return
-				}
+			if !approvalRun.Allowed {
+				r.lastErrClass = "permanent"
+				r.setErrorLogs(r.currentLogs() + approvalRun.RunnerErrorLog)
+				return
 			}
-			if r.approvalScope == "security_kept_back" {
-				if !r.upgradePlan.KeptBackSecurityPlanAvailable {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: kept-back security upgrade requires a fresh targeted simulation")
-					return
-				}
-				if len(r.upgradePlan.KeptBackSecurityRemovedPackages) > 0 && !r.approvalConfirmRemovals {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: kept-back security upgrade would remove packages but removal confirmation was not recorded")
-					return
-				}
-			}
-
-			upgradeCmd := AptUpgradeCmd
-			if r.approvalScope == "full_upgrade" {
-				upgradeCmd = AptFullUpgradeCmd
-				r.appendStatusLog("\nRunning apt full-upgrade...")
-			} else if r.approvalScope == "security_kept_back" {
-				selectedCmd := BuildSelectedInstallCmd(r.approvedPackages)
-				if selectedCmd == "" {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: could not build kept-back security apt command from approved package set")
-					return
-				}
-				upgradeCmd = selectedCmd
-				r.appendStatusLog("\nRunning kept-back security apt install...")
-			} else if r.approvalScope == "security" {
-				selectedCmd := BuildSelectedUpgradeCmd(r.approvedPackages)
-				if selectedCmd == "" {
-					r.lastErrClass = "permanent"
-					r.setErrorLogs(r.currentLogs() + "\nError: could not build security-only apt command from approved package set")
-					return
-				}
-				upgradeCmd = selectedCmd
-				r.appendStatusLog("\nRunning security-only apt upgrade...")
-			} else {
-				r.appendStatusLog("\nRunning apt upgrade...")
-			}
+			upgradeCmd := approvalRun.Command
+			r.appendStatusLog(approvalRun.RunnerCommandLog)
 			err = deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,

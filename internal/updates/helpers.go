@@ -724,14 +724,6 @@ func SortPendingUpdates(updates []servers.PendingUpdate) {
 	})
 }
 
-func NormalizeApprovalScope(scope string) string {
-	normalized := strings.ToLower(strings.TrimSpace(scope))
-	if normalized == "security" || normalized == "security_kept_back" || normalized == "full_upgrade" {
-		return normalized
-	}
-	return "all"
-}
-
 func SecurityPackagesFromPendingUpdates(updates []servers.PendingUpdate) []string {
 	return packageNamesFromPendingUpdates(updates, true)
 }

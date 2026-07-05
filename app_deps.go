@@ -54,16 +54,20 @@ type AppDeps struct {
 	SetupRateLimiter          *AuthRateLimiter
 	MetricsRateLimiter        *AuthRateLimiter
 
-	TrustedProxies             func() []string
-	InitializeMaintenanceState func() error
-	CurrentMaintenanceActive   func() bool
-	Now                        func() time.Time
-	NotifyDashboardEvent       func(string)
-	DashboardEventBroker       *events.Broker
-	CurrentAppTimezone         func() (*time.Location, string)
-	CurrentAppLocation         func() *time.Location
-	AppTimezoneDisplayName     func() string
-	AppTimezoneResolvedName    func() string
+	TrustedProxies                  func() []string
+	InitializeMaintenanceState      func() error
+	CurrentMaintenanceActive        func() bool
+	Now                             func() time.Time
+	JobTimestampNow                 func() string
+	LoadRetryPolicy                 func() RetryPolicy
+	StartJobRunner                  func(string, func())
+	StartScheduledRunReconciliation func(int64, string)
+	NotifyDashboardEvent            func(string)
+	DashboardEventBroker            *events.Broker
+	CurrentAppTimezone              func() (*time.Location, string)
+	CurrentAppLocation              func() *time.Location
+	AppTimezoneDisplayName          func() string
+	AppTimezoneResolvedName         func() string
 }
 
 func NewDefaultAppDeps() AppDeps {
@@ -91,6 +95,12 @@ func (deps AppDeps) withDefaults() AppDeps {
 	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if deps.JobTimestampNow == nil {
+		deps.JobTimestampNow = jobTimestampNow
+	}
+	if deps.LoadRetryPolicy == nil {
+		deps.LoadRetryPolicy = loadRetryPolicyFromEnv
 	}
 	if deps.DashboardEventBroker == nil {
 		deps.DashboardEventBroker = events.NewBroker()
@@ -188,6 +198,16 @@ func (deps AppDeps) withDefaults() AppDeps {
 			return currentMaintenanceState().Active
 		}
 	}
+	if deps.StartJobRunner == nil {
+		deps.StartJobRunner = func(jobID string, run func()) {
+			startJobRunnerWithManager(deps.CurrentJobManager, jobID, run)
+		}
+	}
+	if deps.StartScheduledRunReconciliation == nil {
+		deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
+			newScheduledRunLifecycle(deps).watchUpdatePolicyRunForJob(runID, jobID)
+		}
+	}
 	recordAudit := func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) {
 		if err := deps.AuditService.Record(actor, clientIP, action, targetType, targetName, status, message, meta); err != nil {
 			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
@@ -214,7 +234,7 @@ func (deps AppDeps) withDefaults() AppDeps {
 			CreateRun:           deps.PolicyRepository.CreateRun,
 			MarkInterruptedRuns: deps.PolicyRepository.MarkInterruptedRuns,
 			ExecuteRun: func(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-				executeScheduledPolicyRunWithDeps(deps, run, policy, server)
+				newScheduledRunLifecycle(deps).Execute(run, policy, server)
 			},
 		})
 	}
@@ -235,11 +255,11 @@ func (deps AppDeps) withDefaults() AppDeps {
 			AuditWithActor:  recordAudit,
 			SaveServerFacts: factsRepo.Save,
 			UpdateScheduledDiscoveryMeta: func(jobID string, upgradable []string, pending []PendingUpdate, plan UpgradePlan) {
-				updateScheduledJobDiscoveryMetaWithManager(deps.CurrentJobManager, jobID, upgradable, pending, plan)
+				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, upgradable, pending, plan)
 			},
 			UpdatePolicyRun: deps.PolicyRepository.UpdateRun,
 			LoadScheduledJobBehavior: func(jobID string) scheduledJobBehavior {
-				return loadScheduledJobBehaviorWithManager(deps.CurrentJobManager, jobID)
+				return newScheduledRunLifecycle(deps).loadScheduledJobBehavior(jobID)
 			},
 		})
 	}

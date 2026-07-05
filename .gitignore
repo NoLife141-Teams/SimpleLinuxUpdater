@@ -24,6 +24,7 @@ known_hosts
 debian-updater
 telemetry-id
 webserver
+docs/next-features-backlog.md
 
 # e2e artifacts
 node_modules/

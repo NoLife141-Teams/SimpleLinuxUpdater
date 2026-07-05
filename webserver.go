@@ -2508,13 +2508,8 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	inventoryService := deps.ServerInventoryService
-	updateService := deps.UpdateService
 	serverState := func() *serverpkg.State {
 		return deps.ServerState
-	}
-	actionJobManager := deps.CurrentJobManager
-	if updateService != nil {
-		actionJobManager = updateServiceEnsureDeps(updateService).CurrentJobManager
 	}
 
 	r.GET("/api/servers", func(c *gin.Context) {
@@ -2903,377 +2898,63 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.POST("/api/update/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		actor := actorFromContext(c)
-		ip := clientIPFromContext(c)
-		retryPolicy := loadRetryPolicyFromEnv()
-		retryMeta := map[string]any{
-			"max_attempts":        retryPolicy.MaxAttempts,
-			"base_delay_ms":       int(retryPolicy.BaseDelay / time.Millisecond),
-			"max_delay_ms":        int(retryPolicy.MaxDelay / time.Millisecond),
-			"jitter_pct":          retryPolicy.JitterPct,
-			"total_attempts_used": 0,
-			"retry_exhausted":     false,
-		}
-		preStartStatus := serverState().CurrentStatusSnapshot(name)
-		server, err := serverState().BeginAction(name, "updating")
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				audit(c, "update.start", "server", name, "failure", "Server not found", retryMeta)
-				c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-				return
-			}
-			if errors.Is(err, errActionInProgress) {
-				audit(c, "update.start", "server", name, "failure", "Action already in progress", retryMeta)
-				c.JSON(http.StatusConflict, gin.H{"error": "Update already in progress"})
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "update.start", "server", name, "failure", "Failed to start update", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start update"})
-			return
-		}
-		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindUpdate, name, actor, ip, retryPolicy)
-		if err != nil {
-			serverState().RestoreStatusSnapshot(name, preStartStatus)
-			if errors.Is(err, errMaintenanceModeActive) {
-				writeMaintenanceBlockedResponse(c)
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "update.start", "server", name, "failure", "Failed to create job", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create update job"})
-			return
-		}
-		startJobRunnerWithManager(actionJobManager, job.ID, func() {
-			updateService.RunUpdateJob(UpdateRunRequest{
-				Server:   server,
-				Actor:    actor,
-				ClientIP: ip,
-				Policy:   retryPolicy,
-				JobID:    job.ID,
-			})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		audit(c, "update.start", "server", name, "started", "Update started", retryMeta)
-		c.JSON(http.StatusOK, gin.H{"message": "Update started", "job_id": job.ID})
+		writeServerActionLifecycleResult(c, lifecycle.StartUpdate(c.Param("name"), actorFromContext(c), clientIPFromContext(c)))
 	})
 
 	r.POST("/api/autoremove/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		actor := actorFromContext(c)
-		ip := clientIPFromContext(c)
-		retryPolicy := loadRetryPolicyFromEnv()
-		retryMeta := map[string]any{
-			"max_attempts":        retryPolicy.MaxAttempts,
-			"base_delay_ms":       int(retryPolicy.BaseDelay / time.Millisecond),
-			"max_delay_ms":        int(retryPolicy.MaxDelay / time.Millisecond),
-			"jitter_pct":          retryPolicy.JitterPct,
-			"total_attempts_used": 0,
-			"retry_exhausted":     false,
-		}
-		preStartStatus := serverState().CurrentStatusSnapshot(name)
-		server, err := serverState().BeginAction(name, "autoremove")
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				audit(c, "autoremove.start", "server", name, "failure", "Server not found", retryMeta)
-				c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-				return
-			}
-			if errors.Is(err, errActionInProgress) {
-				audit(c, "autoremove.start", "server", name, "failure", "Action already in progress", retryMeta)
-				c.JSON(http.StatusConflict, gin.H{"error": "Update already in progress"})
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "autoremove.start", "server", name, "failure", "Failed to start autoremove", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start autoremove"})
-			return
-		}
-		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindAutoremove, name, actor, ip, retryPolicy)
-		if err != nil {
-			serverState().RestoreStatusSnapshot(name, preStartStatus)
-			if errors.Is(err, errMaintenanceModeActive) {
-				writeMaintenanceBlockedResponse(c)
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "autoremove.start", "server", name, "failure", "Failed to create job", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create autoremove job"})
-			return
-		}
-		startJobRunnerWithManager(actionJobManager, job.ID, func() {
-			updateService.RunAutoremoveJob(AutoremoveRunRequest{
-				Server:   server,
-				Actor:    actor,
-				ClientIP: ip,
-				Policy:   retryPolicy,
-				JobID:    job.ID,
-			})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		audit(c, "autoremove.start", "server", name, "started", "Autoremove started", retryMeta)
-		c.JSON(http.StatusOK, gin.H{"message": "Autoremove started", "job_id": job.ID})
+		writeServerActionLifecycleResult(c, lifecycle.StartAutoremove(c.Param("name"), actorFromContext(c), clientIPFromContext(c)))
 	})
 
 	r.POST("/api/sudoers/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		actor := actorFromContext(c)
-		ip := clientIPFromContext(c)
-		retryPolicy := loadRetryPolicyFromEnv()
-		retryMeta := map[string]any{
-			"max_attempts":        retryPolicy.MaxAttempts,
-			"base_delay_ms":       int(retryPolicy.BaseDelay / time.Millisecond),
-			"max_delay_ms":        int(retryPolicy.MaxDelay / time.Millisecond),
-			"jitter_pct":          retryPolicy.JitterPct,
-			"total_attempts_used": 0,
-			"retry_exhausted":     false,
-		}
 		var req struct {
 			Password string `json:"password"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			audit(c, "sudoers.enable.start", "server", name, "failure", "Invalid request payload", retryMeta)
+			audit(c, "sudoers.enable.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if strings.TrimSpace(req.Password) == "" {
-			audit(c, "sudoers.enable.start", "server", name, "failure", "Missing sudo password", retryMeta)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing sudo password"})
-			return
-		}
-		preStartStatus := serverState().CurrentStatusSnapshot(name)
-		server, err := serverState().BeginAction(name, "sudoers")
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				audit(c, "sudoers.enable.start", "server", name, "failure", "Server not found", retryMeta)
-				c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-				return
-			}
-			if errors.Is(err, errActionInProgress) {
-				audit(c, "sudoers.enable.start", "server", name, "failure", "Action already in progress", retryMeta)
-				c.JSON(http.StatusConflict, gin.H{"error": "Update already in progress"})
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "sudoers.enable.start", "server", name, "failure", "Failed to start sudoers setup", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start sudoers setup"})
-			return
-		}
-		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindSudoersEnable, name, actor, ip, retryPolicy)
-		if err != nil {
-			serverState().RestoreStatusSnapshot(name, preStartStatus)
-			if errors.Is(err, errMaintenanceModeActive) {
-				writeMaintenanceBlockedResponse(c)
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "sudoers.enable.start", "server", name, "failure", "Failed to create job", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create sudoers job"})
-			return
-		}
-		startJobRunnerWithManager(actionJobManager, job.ID, func() {
-			updateService.RunSudoersBootstrapJob(SudoersRunRequest{
-				Server:       server,
-				SudoPassword: req.Password,
-				Actor:        actor,
-				ClientIP:     ip,
-				Policy:       retryPolicy,
-				JobID:        job.ID,
-			})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		audit(c, "sudoers.enable.start", "server", name, "started", "Sudoers setup started", retryMeta)
-		c.JSON(http.StatusOK, gin.H{"message": "Sudoers setup started", "job_id": job.ID})
+		writeServerActionLifecycleResult(c, lifecycle.StartSudoersEnable(name, actorFromContext(c), clientIPFromContext(c), req.Password))
 	})
 
 	r.POST("/api/sudoers/disable/:name", func(c *gin.Context) {
 		name := c.Param("name")
-		actor := actorFromContext(c)
-		ip := clientIPFromContext(c)
-		retryPolicy := loadRetryPolicyFromEnv()
-		retryMeta := map[string]any{
-			"max_attempts":        retryPolicy.MaxAttempts,
-			"base_delay_ms":       int(retryPolicy.BaseDelay / time.Millisecond),
-			"max_delay_ms":        int(retryPolicy.MaxDelay / time.Millisecond),
-			"jitter_pct":          retryPolicy.JitterPct,
-			"total_attempts_used": 0,
-			"retry_exhausted":     false,
-		}
 		var req struct {
 			Password string `json:"password"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			audit(c, "sudoers.disable.start", "server", name, "failure", "Invalid request payload", retryMeta)
+			audit(c, "sudoers.disable.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if strings.TrimSpace(req.Password) == "" {
-			audit(c, "sudoers.disable.start", "server", name, "failure", "Missing sudo password", retryMeta)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing sudo password"})
-			return
-		}
-		preStartStatus := serverState().CurrentStatusSnapshot(name)
-		server, err := serverState().BeginAction(name, "sudoers")
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				audit(c, "sudoers.disable.start", "server", name, "failure", "Server not found", retryMeta)
-				c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-				return
-			}
-			if errors.Is(err, errActionInProgress) {
-				audit(c, "sudoers.disable.start", "server", name, "failure", "Action already in progress", retryMeta)
-				c.JSON(http.StatusConflict, gin.H{"error": "Update already in progress"})
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "sudoers.disable.start", "server", name, "failure", "Failed to start sudoers disable", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start sudoers disable"})
-			return
-		}
-		job, err := createServerActionJobWithStateAndManager(actionJobManager(), serverState(), jobKindSudoersDisable, name, actor, ip, retryPolicy)
-		if err != nil {
-			serverState().RestoreStatusSnapshot(name, preStartStatus)
-			if errors.Is(err, errMaintenanceModeActive) {
-				writeMaintenanceBlockedResponse(c)
-				return
-			}
-			retryMeta["error"] = err.Error()
-			audit(c, "sudoers.disable.start", "server", name, "failure", "Failed to create job", retryMeta)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create sudoers disable job"})
-			return
-		}
-		startJobRunnerWithManager(actionJobManager, job.ID, func() {
-			updateService.RunSudoersDisableJob(SudoersRunRequest{
-				Server:       server,
-				SudoPassword: req.Password,
-				Actor:        actor,
-				ClientIP:     ip,
-				Policy:       retryPolicy,
-				JobID:        job.ID,
-			})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		audit(c, "sudoers.disable.start", "server", name, "started", "Sudoers disable started", retryMeta)
-		c.JSON(http.StatusOK, gin.H{"message": "Sudoers disable started", "job_id": job.ID})
+		writeServerActionLifecycleResult(c, lifecycle.StartSudoersDisable(name, actorFromContext(c), clientIPFromContext(c), req.Password))
 	})
 
 	r.POST("/api/approve/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		preApproveStatus := serverState().CurrentStatusSnapshot(name)
-		if preApproveStatus == nil {
-			audit(c, "update.approve", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		if preApproveStatus.Status != "pending_approval" {
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "all"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-
-		jm := actionJobManager()
-		if jm == nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "all", "error": "job manager unavailable"})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-		if err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "all", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "All pending updates approved"
-		logs := preApproveStatus.Logs
-		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-			Status:   &status,
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		}); err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "all", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		exists, approved := updateService.ApprovePendingUpdate(name, "all")
-		if !exists || !approved {
-			rollbackStatus := jobStatusWaitingApproval
-			rollbackPhase := jobPhaseApprovalWait
-			rollbackSummary := "Waiting for approval"
-			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-				Status:   &rollbackStatus,
-				Phase:    &rollbackPhase,
-				Summary:  &rollbackSummary,
-				LogsText: &logs,
-			}); rollbackErr != nil {
-				log.Printf("update approve rollback failed for job %q: %v", job.ID, rollbackErr)
-			}
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "all"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		audit(c, "update.approve", "server", name, "success", "All pending updates approved", map[string]any{"scope": "all"})
-		c.JSON(http.StatusOK, gin.H{"message": "All pending updates approved"})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
+		})
+		writeServerActionLifecycleResult(c, lifecycle.ApproveAll(c.Param("name")))
 	})
 
 	r.POST("/api/approve-security/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		preApproveStatus := serverState().CurrentStatusSnapshot(name)
-		if preApproveStatus == nil {
-			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "security"})
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		if preApproveStatus.Status != "pending_approval" {
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-
-		jm := actionJobManager()
-		if jm == nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security", "error": "job manager unavailable"})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-		if err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "Security updates approved"
-		logs := preApproveStatus.Logs
-		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-			Status:   &status,
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		}); err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		exists, approved := updateService.ApprovePendingUpdate(name, "security")
-		if !exists || !approved {
-			rollbackStatus := jobStatusWaitingApproval
-			rollbackPhase := jobPhaseApprovalWait
-			rollbackSummary := "Waiting for approval"
-			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-				Status:   &rollbackStatus,
-				Phase:    &rollbackPhase,
-				Summary:  &rollbackSummary,
-				LogsText: &logs,
-			}); rollbackErr != nil {
-				log.Printf("security approve rollback failed for job %q: %v", job.ID, rollbackErr)
-			}
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		audit(c, "update.approve", "server", name, "success", "Security updates approved", map[string]any{"scope": "security"})
-		c.JSON(http.StatusOK, gin.H{"message": "Security updates approved"})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
+		})
+		writeServerActionLifecycleResult(c, lifecycle.ApproveSecurity(c.Param("name")))
 	})
 
 	r.POST("/api/approve-security-kept-back/:name", func(c *gin.Context) {
@@ -3287,92 +2968,10 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 				return
 			}
 		}
-		preApproveStatus := serverState().CurrentStatusSnapshot(name)
-		if preApproveStatus == nil {
-			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "security_kept_back"})
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		if preApproveStatus.Status != "pending_approval" {
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security_kept_back"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		packages := keptBackSecurityPackagesFromPendingUpdates(preApproveStatus.PendingUpdates)
-		if len(packages) == 0 {
-			audit(c, "update.approve", "server", name, "ignored", "No kept-back security updates pending", map[string]any{"scope": "security_kept_back"})
-			c.JSON(http.StatusConflict, gin.H{"error": "No kept-back security updates pending"})
-			return
-		}
-		if !preApproveStatus.UpgradePlan.KeptBackSecurityPlanAvailable {
-			audit(c, "update.approve", "server", name, "blocked", "Kept-back security upgrade requires a fresh targeted simulation", map[string]any{"scope": "security_kept_back"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Kept-back security upgrade requires a fresh package scan"})
-			return
-		}
-		if len(preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages) > 0 && !req.ConfirmRemovals {
-			audit(c, "update.approve", "server", name, "blocked", "Kept-back security upgrade requires package removal confirmation", map[string]any{
-				"scope":            "security_kept_back",
-				"removed_packages": preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
-			})
-			c.JSON(http.StatusConflict, gin.H{
-				"error":            "Kept-back security upgrade may remove packages; confirmation required",
-				"removed_packages": preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
-			})
-			return
-		}
-
-		jm := actionJobManager()
-		if jm == nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": "job manager unavailable"})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-		if err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "Kept-back security updates approved"
-		logs := preApproveStatus.Logs
-		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-			Status:   &status,
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		}); err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "security_kept_back", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		exists, approved := updateService.ApprovePendingUpdateWithOptions(name, "security_kept_back", serverpkg.ApprovalOptions{
-			ConfirmRemovals: req.ConfirmRemovals,
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		if !exists || !approved {
-			rollbackStatus := jobStatusWaitingApproval
-			rollbackPhase := jobPhaseApprovalWait
-			rollbackSummary := "Waiting for approval"
-			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-				Status:   &rollbackStatus,
-				Phase:    &rollbackPhase,
-				Summary:  &rollbackSummary,
-				LogsText: &logs,
-			}); rollbackErr != nil {
-				log.Printf("kept-back security approve rollback failed for job %q: %v", job.ID, rollbackErr)
-			}
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "security_kept_back"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		audit(c, "update.approve", "server", name, "success", "Kept-back security updates approved", map[string]any{
-			"scope":             "security_kept_back",
-			"approved_packages": packages,
-			"new_packages":      preApproveStatus.UpgradePlan.KeptBackSecurityNewPackages,
-			"removed_packages":  preApproveStatus.UpgradePlan.KeptBackSecurityRemovedPackages,
-		})
-		c.JSON(http.StatusOK, gin.H{"message": "Kept-back security updates approved"})
+		writeServerActionLifecycleResult(c, lifecycle.ApproveKeptBackSecurity(name, req.ConfirmRemovals))
 	})
 
 	r.POST("/api/approve-full/:name", func(c *gin.Context) {
@@ -3386,149 +2985,27 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 				return
 			}
 		}
-		preApproveStatus := serverState().CurrentStatusSnapshot(name)
-		if preApproveStatus == nil {
-			audit(c, "update.approve", "server", name, "failure", "Server not found", map[string]any{"scope": "full_upgrade"})
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		if preApproveStatus.Status != "pending_approval" {
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "full_upgrade"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		if !preApproveStatus.UpgradePlan.FullUpgradePlanAvailable {
-			audit(c, "update.approve", "server", name, "blocked", "Full upgrade requires a fresh full-upgrade simulation", map[string]any{"scope": "full_upgrade"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Full upgrade requires a fresh package scan"})
-			return
-		}
-		if len(preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages) > 0 && !req.ConfirmRemovals {
-			audit(c, "update.approve", "server", name, "blocked", "Full upgrade requires package removal confirmation", map[string]any{
-				"scope":            "full_upgrade",
-				"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
-			})
-			c.JSON(http.StatusConflict, gin.H{
-				"error":            "Full upgrade would remove packages; confirmation required",
-				"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
-			})
-			return
-		}
-
-		jm := actionJobManager()
-		if jm == nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": "job manager unavailable"})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-		if err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "Full upgrade approved"
-		logs := preApproveStatus.Logs
-		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-			Status:   &status,
-			Phase:    &phase,
-			Summary:  &summary,
-			LogsText: &logs,
-		}); err != nil {
-			audit(c, "update.approve", "server", name, "failure", "Failed to persist approval", map[string]any{"scope": "full_upgrade", "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist approval"})
-			return
-		}
-		exists, approved := updateService.ApprovePendingUpdateWithOptions(name, "full_upgrade", serverpkg.ApprovalOptions{
-			ConfirmRemovals: req.ConfirmRemovals,
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		if !exists || !approved {
-			rollbackStatus := jobStatusWaitingApproval
-			rollbackPhase := jobPhaseApprovalWait
-			rollbackSummary := "Waiting for approval"
-			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-				Status:   &rollbackStatus,
-				Phase:    &rollbackPhase,
-				Summary:  &rollbackSummary,
-				LogsText: &logs,
-			}); rollbackErr != nil {
-				log.Printf("full approve rollback failed for job %q: %v", job.ID, rollbackErr)
-			}
-			audit(c, "update.approve", "server", name, "ignored", "Server not pending approval", map[string]any{"scope": "full_upgrade"})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		audit(c, "update.approve", "server", name, "success", "Full upgrade approved", map[string]any{
-			"scope":            "full_upgrade",
-			"removed_packages": preApproveStatus.UpgradePlan.FullUpgradeRemovedPackages,
-		})
-		c.JSON(http.StatusOK, gin.H{"message": "Full upgrade approved"})
+		writeServerActionLifecycleResult(c, lifecycle.ApproveFullUpgrade(name, req.ConfirmRemovals))
 	})
 
 	r.POST("/api/cancel/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		preCancelStatus := serverState().CurrentStatusSnapshot(name)
-		if preCancelStatus == nil {
-			audit(c, "update.cancel", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		}
-		if preCancelStatus.Status != "pending_approval" {
-			audit(c, "update.cancel", "server", name, "ignored", "Server not pending approval", nil)
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		logsBeforeCancel := preCancelStatus.Logs
-
-		jm := actionJobManager()
-		if jm == nil {
-			audit(c, "update.cancel", "server", name, "failure", "Failed to persist cancelled update", map[string]any{"error": "job manager unavailable"})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist cancelled update"})
-			return
-		}
-		job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-		if err != nil {
-			audit(c, "update.cancel", "server", name, "failure", "Failed to persist cancelled update", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist cancelled update"})
-			return
-		}
-		status := jobStatusCancelled
-		phase := jobPhaseComplete
-		summary := "Update cancelled"
-		finishedAt := jobTimestampNow()
-		if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-			Status:     &status,
-			Phase:      &phase,
-			Summary:    &summary,
-			LogsText:   &logsBeforeCancel,
-			FinishedAt: &finishedAt,
-		}); err != nil {
-			audit(c, "update.cancel", "server", name, "failure", "Failed to persist cancelled update", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist cancelled update"})
-			return
-		}
-		exists, cancelled := updateService.CancelPendingUpdate(name)
-		if !exists || !cancelled {
-			rollbackStatus := jobStatusWaitingApproval
-			rollbackPhase := jobPhaseApprovalWait
-			rollbackSummary := "Waiting for approval"
-			if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-				Status:   &rollbackStatus,
-				Phase:    &rollbackPhase,
-				Summary:  &rollbackSummary,
-				LogsText: &logsBeforeCancel,
-			}); rollbackErr != nil {
-				log.Printf("cancel rollback failed for job %q: %v", job.ID, rollbackErr)
-			}
-			audit(c, "update.cancel", "server", name, "ignored", "Server not pending approval", nil)
-			c.JSON(http.StatusConflict, gin.H{"error": "Server not pending approval"})
-			return
-		}
-		audit(c, "update.cancel", "server", name, "success", "Upgrade cancelled", nil)
-		c.JSON(http.StatusOK, gin.H{"message": "Upgrade cancelled"})
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
+		})
+		writeServerActionLifecycleResult(c, lifecycle.Cancel(c.Param("name")))
 	})
 
+}
+
+func writeServerActionLifecycleResult(c *gin.Context, result serverActionLifecycleResult) {
+	if result.maintenanceBlocked {
+		writeMaintenanceBlockedResponse(c)
+		return
+	}
+	c.JSON(result.statusCode, gin.H(result.body))
 }
 
 func main() {

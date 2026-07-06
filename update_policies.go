@@ -309,10 +309,6 @@ func handleScheduledRunRequest(req policypkg.ScheduledRunRequest) policypkg.Sche
 	return newScheduledRunLifecycle(globalRuntimeAppDeps()).HandleScheduledRun(req)
 }
 
-func executeScheduledPolicyRun(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	newScheduledRunLifecycle(globalRuntimeAppDeps()).Execute(run, policy, server)
-}
-
 func globalRuntimeAppDeps() AppDeps {
 	state := globalServerState()
 	return AppDeps{

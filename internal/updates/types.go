@@ -162,6 +162,7 @@ type ScheduledJobMeta struct {
 	ApprovalTimeoutMinutes int                    `json:"approval_timeout_minutes,omitempty"`
 	AutoApproveScope       string                 `json:"auto_approve_scope,omitempty"`
 	Discovery              *ScheduledJobDiscovery `json:"discovery,omitempty"`
+	Error                  string                 `json:"error,omitempty"`
 }
 
 type SSHOperationWithRetryFunc func(servers.Server, *ssh.ClientConfig, *SSHConnection, RetryPolicy, string, string, *int, func() error) error

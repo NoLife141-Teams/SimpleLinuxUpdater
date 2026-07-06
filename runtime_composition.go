@@ -170,7 +170,6 @@ func (c *runtimeComposition) Compose() AppDeps {
 			ListPolicies:             deps.PolicyRepository.ListPolicies,
 			LoadOverrides:            deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts:      deps.PolicyRepository.LoadGlobalBlackouts,
-			AuditWithActor:           recordAudit,
 			CurrentLocation:          deps.CurrentAppLocation,
 			CurrentMaintenanceActive: deps.CurrentMaintenanceActive,
 			Now:                      deps.Now,
@@ -179,13 +178,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			SnapshotServers: func() []Server {
 				return deps.ServerState.CloneServers()
 			},
-			CurrentStatusSnapshot: func(name string) *ServerStatus {
-				return deps.ServerState.CurrentStatusSnapshot(name)
-			},
-			CreateRun:           deps.PolicyRepository.CreateRun,
 			MarkInterruptedRuns: deps.PolicyRepository.MarkInterruptedRuns,
-			ExecuteRun: func(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-				newScheduledRunLifecycle(deps).Execute(run, policy, server)
+			HandleScheduledRun: func(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
+				return newScheduledRunLifecycle(deps).HandleScheduledRun(req)
 			},
 		})
 	}

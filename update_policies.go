@@ -305,6 +305,10 @@ func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingU
 	newScheduledRunLifecycle(globalRuntimeAppDeps()).updateScheduledJobDiscoveryMeta(jobID, upgradable, pendingUpdates, plan)
 }
 
+func handleScheduledRunRequest(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
+	return newScheduledRunLifecycle(globalRuntimeAppDeps()).HandleScheduledRun(req)
+}
+
 func executeScheduledPolicyRun(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
 	newScheduledRunLifecycle(globalRuntimeAppDeps()).Execute(run, policy, server)
 }

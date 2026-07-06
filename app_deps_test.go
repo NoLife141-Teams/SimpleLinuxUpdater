@@ -578,8 +578,8 @@ func TestAppDepsDefaultPolicyServiceUsesAppScopedServerState(t *testing.T) {
 	if len(snapshot) != 1 || snapshot[0].Name != "scoped-policy-server" {
 		t.Fatalf("policy server snapshot = %+v, want app-scoped server", snapshot)
 	}
-	if status := policyDeps.CurrentStatusSnapshot("scoped-policy-server"); status == nil || status.Status != "idle" {
-		t.Fatalf("policy status snapshot = %+v, want app-scoped idle status", status)
+	if policyDeps.HandleScheduledRun == nil {
+		t.Fatalf("policy scheduled run callback = nil, want app-scoped callback")
 	}
 }
 

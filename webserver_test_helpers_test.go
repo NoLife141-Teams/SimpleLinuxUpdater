@@ -177,8 +177,7 @@ func setupAuthenticatedHandler(t *testing.T, dbFile string) (http.Handler, *http
 		ServerState:            state,
 		ServerInventoryService: newServerInventoryServiceWithState(state),
 		PolicyService: NewPolicyService(PolicyServiceDeps{
-			SnapshotServers:       snapshotServers,
-			CurrentStatusSnapshot: currentStatusSnapshot,
+			SnapshotServers: snapshotServers,
 		}),
 	})
 	if len(seedServers) > 0 || len(seedStatusMap) > 0 {

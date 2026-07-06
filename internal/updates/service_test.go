@@ -1,8 +1,10 @@
 package updates
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
+	_ "modernc.org/sqlite"
 )
 
 type fakeSession struct{}
@@ -446,9 +449,32 @@ func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {
 	}
 }
 
-func TestRunScheduledScanJobRecordsCVEResultAndAudit(t *testing.T) {
+func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	var auditActions []string
-	var runUpdate policies.RunUpdate
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	jobID := "scheduled-scan-job"
+	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		Now:   func() time.Time { return time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC) },
+		NewID: func() string { return jobID },
+	})
+	policy := policies.Policy{ID: 7, Name: "daily", ExecutionMode: policies.ExecutionScanOnly, PackageScope: policies.PackageScopeSecurity}
+	scheduledForUTC := "2026-05-18T12:00:00.000000000Z"
+	if _, err := jm.CreateJob(jobs.CreateParams{
+		Kind:       jobs.KindScheduledScan,
+		ServerName: "srv",
+		Actor:      "system",
+		Status:     jobs.StatusQueued,
+		MetaJSON:   jobs.MarshalJSON(BuildScheduledJobMeta(policy, scheduledForUTC)),
+	}); err != nil {
+		t.Fatalf("create scheduled scan job: %v", err)
+	}
 	deps := ServiceDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
@@ -461,7 +487,7 @@ func TestRunScheduledScanJobRecordsCVEResultAndAudit(t *testing.T) {
 		RunSSHCommandWithTimeout: func(SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
 			return "", "", nil
 		},
-		CurrentJobManager: func() *jobs.Manager { return nil },
+		CurrentJobManager: func() *jobs.Manager { return jm },
 		AuditWithActor: func(_, _, action, _, _, _, _ string, _ map[string]any) {
 			auditActions = append(auditActions, action)
 		},
@@ -489,29 +515,38 @@ func TestRunScheduledScanJobRecordsCVEResultAndAudit(t *testing.T) {
 			return []string{"CVE-2026-0001"}, nil
 		},
 		UpdatePolicyRun: func(_ int64, update policies.RunUpdate) error {
-			runUpdate = update
+			t.Fatalf("UpdatePolicyRun called from scheduled scan worker: %+v", update)
 			return nil
 		},
 	}
 
 	NewService(deps).RunScheduledScanJob(ScheduledScanRunRequest{
 		RunID:           42,
-		ScheduledForUTC: "2026-05-18T12:00:00.000000000Z",
+		JobID:           jobID,
+		ScheduledForUTC: scheduledForUTC,
 		Server:          servers.Server{Name: "srv", Host: "127.0.0.1", Port: 22, User: "root"},
-		Policy:          policies.Policy{ID: 7, Name: "daily", ExecutionMode: policies.ExecutionScanOnly, PackageScope: policies.PackageScopeSecurity},
+		Policy:          policy,
 		RetryPolicy:     RetryPolicy{MaxAttempts: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
 	})
 
-	if runUpdate.Status == nil || *runUpdate.Status != policies.RunSucceeded {
-		t.Fatalf("policy run status = %v, want succeeded", runUpdate.Status)
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("GetJob(%q): %v", jobID, err)
 	}
-	if runUpdate.ResultJSON == nil || !reflect.DeepEqual(auditActions, []string{"schedule.run.completed"}) {
-		t.Fatalf("resultJSON=%v auditActions=%v, want result and completed audit", runUpdate.ResultJSON, auditActions)
+	if job.Status != jobs.StatusSucceeded {
+		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusSucceeded)
 	}
-	var discovery ScheduledJobDiscovery
-	if err := json.Unmarshal([]byte(*runUpdate.ResultJSON), &discovery); err != nil {
-		t.Fatalf("result JSON unmarshal error = %v", err)
+	if len(auditActions) != 0 {
+		t.Fatalf("auditActions=%v, want scheduled scan worker to leave audit to reconciliation", auditActions)
 	}
+	var meta ScheduledJobMeta
+	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {
+		t.Fatalf("job meta JSON unmarshal error = %v", err)
+	}
+	if meta.Discovery == nil {
+		t.Fatalf("job meta discovery = nil, want scan discovery")
+	}
+	discovery := *meta.Discovery
 	if discovery.PendingPackageCount != 2 || discovery.SecurityPackageCount != 2 {
 		t.Fatalf("discovery counts = pending %d security %d, want total pending/security including kept-back package", discovery.PendingPackageCount, discovery.SecurityPackageCount)
 	}

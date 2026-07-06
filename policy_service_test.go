@@ -20,22 +20,14 @@ func testPolicyServiceDeps() PolicyServiceDeps {
 		SnapshotServers: func() []Server {
 			return nil
 		},
-		CurrentStatusSnapshot: func(string) *ServerStatus {
-			return nil
+		HandleScheduledRun: func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
+			return PolicyScheduledRunResult{Handled: true, Inserted: true}
 		},
-		CreateRun: func(run UpdatePolicyRun) (UpdatePolicyRun, bool, error) {
-			return run, true, nil
-		},
-		ExecuteRun:     func(UpdatePolicyRun, UpdatePolicy, Server) {},
-		AuditWithActor: func(string, string, string, string, string, string, string, map[string]any) {},
 		CurrentLocation: func() *time.Location {
 			return time.UTC
 		},
 		CurrentMaintenanceActive: func() bool {
 			return false
-		},
-		JobTimestampNow: func() string {
-			return "2026-01-02T03:04:05Z"
 		},
 		MarkInterruptedRuns: func() error {
 			return nil
@@ -154,7 +146,7 @@ func TestPolicyServiceDueAndBlackoutWindowsUseLocalTime(t *testing.T) {
 	}
 }
 
-func TestPolicyServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlackout(t *testing.T) {
+func TestPolicyServiceProcessDueSendsCandidatesAndPolicySideSkipsToScheduledRunCallback(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	policies := []UpdatePolicy{
 		{
@@ -232,15 +224,8 @@ func TestPolicyServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlac
 		{Name: "srv-blackout"},
 		{Name: "srv-disabled"},
 	}
-	statusByServer := map[string]*ServerStatus{
-		"srv-win":      {Name: "srv-win", Status: "idle"},
-		"srv-busy":     {Name: "srv-busy", Status: "updating"},
-		"srv-blackout": {Name: "srv-blackout", Status: "idle"},
-		"srv-disabled": {Name: "srv-disabled", Status: "idle"},
-	}
 
-	var created []UpdatePolicyRun
-	var executed []UpdatePolicyRun
+	var handled []PolicyScheduledRunRequest
 	deps := testPolicyServiceDeps()
 	deps.ListPolicies = func() ([]UpdatePolicy, error) {
 		return append([]UpdatePolicy(nil), policies...), nil
@@ -248,42 +233,36 @@ func TestPolicyServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlac
 	deps.SnapshotServers = func() []Server {
 		return append([]Server(nil), servers...)
 	}
-	deps.CurrentStatusSnapshot = func(name string) *ServerStatus {
-		return statusByServer[name]
-	}
-	deps.CreateRun = func(run UpdatePolicyRun) (UpdatePolicyRun, bool, error) {
-		run.ID = int64(len(created) + 1)
-		created = append(created, run)
-		return run, true, nil
-	}
-	deps.ExecuteRun = func(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-		executed = append(executed, run)
+	deps.HandleScheduledRun = func(req PolicyScheduledRunRequest) PolicyScheduledRunResult {
+		handled = append(handled, req)
+		return PolicyScheduledRunResult{Handled: true, Inserted: true}
 	}
 
 	if err := NewPolicyService(deps).ProcessDueSlot(PolicyScheduleRequest{Now: slot}); err != nil {
 		t.Fatalf("ProcessDueSlot() unexpected error: %v", err)
 	}
 
-	if len(executed) != 1 || executed[0].PolicyID != 1 || executed[0].ServerName != "srv-win" {
-		t.Fatalf("executed = %+v, want only winner on srv-win", executed)
+	outcomes := map[string]string{}
+	for _, req := range handled {
+		outcomes[req.Server.Name+":"+req.Policy.Name] = req.Outcome
 	}
-	reasons := map[string]string{}
-	for _, run := range created {
-		reasons[run.ServerName+":"+run.PolicyName] = run.Reason
-	}
-	wantReasons := map[string]string{
+	wantOutcomes := map[string]string{
+		"srv-win:winner":        "",
 		"srv-win:superseded":    updatePolicyRunReasonSuperseded,
-		"srv-busy:busy":         updatePolicyRunReasonBusy,
-		"srv-missing:missing":   updatePolicyRunReasonMissing,
+		"srv-busy:busy":         "",
+		"srv-missing:missing":   "",
 		"srv-blackout:blackout": updatePolicyRunReasonBlackout,
 	}
-	for key, want := range wantReasons {
-		if reasons[key] != want {
-			t.Fatalf("reason[%s] = %q, want %q; all runs=%+v", key, reasons[key], want, created)
+	if len(outcomes) != len(wantOutcomes) {
+		t.Fatalf("outcomes = %+v, want exactly %+v", outcomes, wantOutcomes)
+	}
+	for key, want := range wantOutcomes {
+		if outcomes[key] != want {
+			t.Fatalf("outcome[%s] = %q, want %q; all requests=%+v", key, outcomes[key], want, handled)
 		}
 	}
-	if _, exists := reasons["srv-disabled:disabled"]; exists {
-		t.Fatalf("disabled policy created a run: %+v", created)
+	if _, exists := outcomes["srv-disabled:disabled"]; exists {
+		t.Fatalf("disabled policy created a run request: %+v", handled)
 	}
 }
 
@@ -294,7 +273,7 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	var lockAvailable bool
-	var created []UpdatePolicyRun
+	var handled []PolicyScheduledRunRequest
 	deps := testPolicyServiceDeps()
 	deps.TryBackupRestoreReadLock = func() bool {
 		return lockAvailable
@@ -315,12 +294,9 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	deps.SnapshotServers = func() []Server {
 		return []Server{{Name: "srv"}}
 	}
-	deps.CurrentStatusSnapshot = func(string) *ServerStatus {
-		return &ServerStatus{Name: "srv", Status: "idle"}
-	}
-	deps.CreateRun = func(run UpdatePolicyRun) (UpdatePolicyRun, bool, error) {
-		created = append(created, run)
-		return run, true, nil
+	deps.HandleScheduledRun = func(req PolicyScheduledRunRequest) PolicyScheduledRunResult {
+		handled = append(handled, req)
+		return PolicyScheduledRunResult{Handled: true, Inserted: true}
 	}
 
 	service = NewPolicyService(deps)
@@ -338,8 +314,8 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	if got := service.PendingMissedTicks(); len(got) != 0 {
 		t.Fatalf("missed ticks after replay = %v, want none", got)
 	}
-	if len(created) != 1 || created[0].Reason != updatePolicyRunReasonMaintenance {
-		t.Fatalf("created replay runs = %+v, want one maintenance skip", created)
+	if len(handled) != 1 || handled[0].Outcome != updatePolicyRunReasonMaintenance {
+		t.Fatalf("handled replay requests = %+v, want one maintenance skip", handled)
 	}
 }
 
@@ -361,24 +337,22 @@ func TestPolicyServicePartialBackupRestoreLockOverridesAreNonLocking(t *testing.
 	baseDeps.SnapshotServers = func() []Server {
 		return []Server{{Name: "srv"}}
 	}
-	baseDeps.CurrentStatusSnapshot = func(string) *ServerStatus {
-		return &ServerStatus{Name: "srv", Status: "idle"}
-	}
 
 	t.Run("try only", func(t *testing.T) {
 		deps := baseDeps
 		deps.TryBackupRestoreReadLock = func() bool { return true }
 		deps.UnlockBackupRestoreRead = nil
-		executed := 0
-		deps.ExecuteRun = func(UpdatePolicyRun, UpdatePolicy, Server) {
-			executed++
+		handled := 0
+		deps.HandleScheduledRun = func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
+			handled++
+			return PolicyScheduledRunResult{Handled: true, Inserted: true}
 		}
 
 		if err := NewPolicyService(deps).ProcessDue(slot); err != nil {
 			t.Fatalf("ProcessDue() unexpected error: %v", err)
 		}
-		if executed != 1 {
-			t.Fatalf("executed = %d, want 1", executed)
+		if handled != 1 {
+			t.Fatalf("handled = %d, want 1", handled)
 		}
 	})
 
@@ -388,16 +362,17 @@ func TestPolicyServicePartialBackupRestoreLockOverridesAreNonLocking(t *testing.
 		deps.UnlockBackupRestoreRead = func() {
 			t.Fatalf("unlock-only override should not be called")
 		}
-		executed := 0
-		deps.ExecuteRun = func(UpdatePolicyRun, UpdatePolicy, Server) {
-			executed++
+		handled := 0
+		deps.HandleScheduledRun = func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
+			handled++
+			return PolicyScheduledRunResult{Handled: true, Inserted: true}
 		}
 
 		if err := NewPolicyService(deps).ProcessDue(slot); err != nil {
 			t.Fatalf("ProcessDue() unexpected error: %v", err)
 		}
-		if executed != 1 {
-			t.Fatalf("executed = %d, want 1", executed)
+		if handled != 1 {
+			t.Fatalf("handled = %d, want 1", handled)
 		}
 	})
 }

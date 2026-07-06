@@ -1,8 +1,11 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -228,9 +231,34 @@ func TestUpdateServiceAutoremoveUsesCommandHookAndAuditsSuccess(t *testing.T) {
 }
 
 func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
-	var runUpdate updatePolicyRunUpdate
-	var auditStatus string
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := ensureJobSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	jm := newJobManager(db)
+	policy := UpdatePolicy{
+		ID:            7,
+		Name:          "nightly",
+		ExecutionMode: updatePolicyExecutionScanOnly,
+		PackageScope:  updatePolicyPackageScopeSecurity,
+	}
+	scheduledForUTC := "2026-01-02T03:04:00Z"
+	job, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindScheduledScan,
+		ServerName: "srv-scan",
+		Actor:      "system",
+		Status:     jobStatusQueued,
+		MetaJSON:   marshalJobJSON(buildScheduledJobMeta(policy, scheduledForUTC)),
+	})
+	if err != nil {
+		t.Fatalf("create scheduled scan job: %v", err)
+	}
 	deps := testUpdateServiceDeps(t)
+	deps.CurrentJobManager = func() *JobManager { return jm }
 	deps.RunSSHCommandWithTimeout = func(_ sshConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
 		if cmd != aptUpdateCmd {
 			t.Fatalf("command = %q, want apt update command", cmd)
@@ -253,36 +281,36 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 		return []string{"CVE-2026-0001"}, nil
 	}
 	deps.UpdatePolicyRun = func(_ int64, update updatePolicyRunUpdate) error {
-		runUpdate = update
+		t.Fatalf("UpdatePolicyRun called from scheduled scan worker: %+v", update)
 		return nil
 	}
-	deps.AuditWithActor = func(_, _, action, _, _, status, _ string, _ map[string]any) {
-		if action == "schedule.run.completed" {
-			auditStatus = status
+	deps.AuditWithActor = func(_, _, action, _, _, _, _ string, _ map[string]any) {
+		if strings.HasPrefix(action, "schedule.run.") {
+			t.Fatalf("scheduled scan worker emitted %q; reconciliation should own scheduled run audit", action)
 		}
 	}
 
 	NewUpdateService(deps).RunScheduledScanJob(ScheduledScanRunRequest{
-		JobID:           "job-1",
+		JobID:           job.ID,
 		RunID:           42,
-		ScheduledForUTC: "2026-01-02T03:04:00Z",
+		ScheduledForUTC: scheduledForUTC,
 		Server:          Server{Name: "srv-scan", Host: "127.0.0.1", Port: 22, User: "root"},
-		Policy: UpdatePolicy{
-			ID:            7,
-			Name:          "nightly",
-			ExecutionMode: updatePolicyExecutionScanOnly,
-			PackageScope:  updatePolicyPackageScopeSecurity,
-		},
-		RetryPolicy: loadRetryPolicyFromEnv(),
+		Policy:          policy,
+		RetryPolicy:     loadRetryPolicyFromEnv(),
 	})
 
-	if runUpdate.Status == nil || *runUpdate.Status != updatePolicyRunSucceeded {
-		t.Fatalf("run status = %v, want %q", runUpdate.Status, updatePolicyRunSucceeded)
+	job, err = jm.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob(%q): %v", job.ID, err)
 	}
-	if runUpdate.ResultJSON == nil || !strings.Contains(*runUpdate.ResultJSON, "CVE-2026-0001") {
-		t.Fatalf("result JSON = %v, want CVE result", runUpdate.ResultJSON)
+	if job.Status != jobStatusSucceeded {
+		t.Fatalf("job status = %q, want %q", job.Status, jobStatusSucceeded)
 	}
-	if auditStatus != "success" {
-		t.Fatalf("audit status = %q, want success", auditStatus)
+	var meta scheduledJobMeta
+	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {
+		t.Fatalf("job meta JSON unmarshal error = %v", err)
+	}
+	if meta.Discovery == nil || len(meta.Discovery.PendingUpdates) != 1 || !strings.Contains(strings.Join(meta.Discovery.PendingUpdates[0].CVEs, ","), "CVE-2026-0001") {
+		t.Fatalf("job discovery = %+v, want CVE result", meta.Discovery)
 	}
 }

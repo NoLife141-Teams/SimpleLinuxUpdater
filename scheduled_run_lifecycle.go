@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	policypkg "debian-updater/internal/policies"
 	updatespkg "debian-updater/internal/updates"
 )
 
@@ -16,6 +17,41 @@ type scheduledRunLifecycle struct {
 
 func newScheduledRunLifecycle(deps AppDeps) *scheduledRunLifecycle {
 	return &scheduledRunLifecycle{deps: deps.withDefaults()}
+}
+
+func (l *scheduledRunLifecycle) HandleScheduledRun(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
+	if l == nil {
+		l = newScheduledRunLifecycle(AppDeps{})
+	}
+	if strings.TrimSpace(req.Outcome) != "" {
+		return l.recordSkippedCandidate(req.Policy, req.Server, req.ScheduledForUTC, req.Outcome)
+	}
+	run, inserted, err := l.deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+		PolicyID:        req.Policy.ID,
+		PolicyName:      req.Policy.Name,
+		ServerName:      req.Server.Name,
+		ScheduledForUTC: req.ScheduledForUTC,
+		ExecutionMode:   req.Policy.ExecutionMode,
+		PackageScope:    req.Policy.PackageScope,
+		UpgradeMode:     req.Policy.UpgradeMode,
+		Status:          updatePolicyRunQueued,
+		Summary:         "Scheduled run queued",
+		ResultJSON:      "{}",
+	})
+	if err != nil {
+		return policypkg.ScheduledRunResult{Handled: false, Err: err}
+	}
+	result := policypkg.ScheduledRunResult{
+		Handled:  true,
+		Inserted: inserted,
+		RunID:    run.ID,
+		Status:   run.Status,
+	}
+	if !inserted {
+		return result
+	}
+	l.Execute(run, req.Policy, req.Server)
+	return result
 }
 
 func (l *scheduledRunLifecycle) Execute(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
@@ -44,6 +80,58 @@ func (l *scheduledRunLifecycle) Execute(run UpdatePolicyRun, policy UpdatePolicy
 
 func (l *scheduledRunLifecycle) buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
 	return updatespkg.BuildScheduledJobMeta(policy, scheduledForUTC)
+}
+
+func (l *scheduledRunLifecycle) recordSkippedCandidate(policy UpdatePolicy, server Server, scheduledForUTC, reason string) policypkg.ScheduledRunResult {
+	summary := scheduledRunSkippedSummary(reason)
+	finishedAt := l.deps.JobTimestampNow()
+	run, inserted, err := l.deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+		PolicyID:        policy.ID,
+		PolicyName:      policy.Name,
+		ServerName:      server.Name,
+		ScheduledForUTC: scheduledForUTC,
+		ExecutionMode:   policy.ExecutionMode,
+		PackageScope:    policy.PackageScope,
+		UpgradeMode:     policy.UpgradeMode,
+		Status:          updatePolicyRunSkipped,
+		Reason:          reason,
+		Summary:         summary,
+		ResultJSON:      "{}",
+		FinishedAt:      finishedAt,
+	})
+	if err != nil {
+		return policypkg.ScheduledRunResult{Handled: false, Err: err}
+	}
+	result := policypkg.ScheduledRunResult{
+		Handled:  true,
+		Inserted: inserted,
+		RunID:    run.ID,
+		Status:   run.Status,
+	}
+	if !inserted {
+		return result
+	}
+	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "ignored", summary, map[string]any{
+		"policy_id":         policy.ID,
+		"policy_name":       policy.Name,
+		"reason":            reason,
+		"scheduled_for_utc": scheduledForUTC,
+		"run_id":            run.ID,
+	})
+	return result
+}
+
+func scheduledRunSkippedSummary(reason string) string {
+	switch reason {
+	case updatePolicyRunReasonMaintenance:
+		return "Maintenance mode active; scheduled run skipped"
+	case updatePolicyRunReasonBlackout:
+		return "Scheduled run skipped due to blackout window"
+	case updatePolicyRunReasonSuperseded:
+		return "Scheduled run superseded by higher-priority policy"
+	default:
+		return "Scheduled run skipped"
+	}
 }
 
 func (l *scheduledRunLifecycle) markMaintenanceSkipped(run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
@@ -276,6 +364,7 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 }
 
 func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job JobRecord) {
+	previous, previousErr := l.deps.PolicyRepository.GetRun(runID)
 	status := updatePolicyRunRunning
 	switch job.Status {
 	case jobStatusQueued:
@@ -299,14 +388,18 @@ func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job Jo
 		JobID:     &job.ID,
 		StartedAt: &job.StartedAt,
 	}
+	var meta scheduledJobMeta
+	hasMeta := false
 	if job.FinishedAt != "" {
 		update.FinishedAt = &job.FinishedAt
 	}
 	if strings.TrimSpace(job.MetaJSON) != "" {
-		var meta scheduledJobMeta
-		if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err == nil && meta.Discovery != nil {
-			resultJSON := marshalJobJSON(meta.Discovery)
-			update.ResultJSON = &resultJSON
+		if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err == nil {
+			hasMeta = true
+			if meta.Discovery != nil {
+				resultJSON := marshalJobJSON(meta.Discovery)
+				update.ResultJSON = &resultJSON
+			}
 		}
 	}
 	if status == updatePolicyRunFailed || status == updatePolicyRunCancelled || status == updatePolicyRunInterrupted {
@@ -314,6 +407,48 @@ func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job Jo
 		update.Reason = &reason
 	}
 	_ = l.deps.PolicyRepository.UpdateRun(runID, update)
+	if previousErr == nil && previous.Status == status && previous.FinishedAt != "" {
+		return
+	}
+	if hasMeta {
+		l.recordScheduledScanTerminalAudit(job, meta)
+	}
+}
+
+func (l *scheduledRunLifecycle) recordScheduledScanTerminalAudit(job JobRecord, meta scheduledJobMeta) {
+	if job.Kind != jobKindScheduledScan || meta.Trigger != "scheduled" {
+		return
+	}
+	summary := strings.TrimSpace(job.Summary)
+	switch job.Status {
+	case jobStatusSucceeded:
+		if summary == "" {
+			summary = "Scheduled scan completed"
+		}
+		auditMeta := map[string]any{
+			"policy_id":   meta.PolicyID,
+			"policy_name": meta.PolicyName,
+		}
+		if meta.Discovery != nil {
+			auditMeta["pending_package_count"] = meta.Discovery.PendingPackageCount
+			auditMeta["security_package_count"] = meta.Discovery.SecurityPackageCount
+		}
+		_ = l.deps.AuditService.Record("system", "", "schedule.run.completed", "server", job.ServerName, "success", summary, auditMeta)
+	case jobStatusFailed:
+		if summary == "" {
+			summary = "Scheduled scan failed"
+		}
+		auditMeta := map[string]any{
+			"policy_id":      meta.PolicyID,
+			"policy_name":    meta.PolicyName,
+			"execution_mode": meta.ExecutionMode,
+			"package_scope":  meta.PackageScope,
+		}
+		if strings.TrimSpace(meta.Error) != "" {
+			auditMeta["error"] = meta.Error
+		}
+		_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", job.ServerName, "failure", summary, auditMeta)
+	}
 }
 
 func (l *scheduledRunLifecycle) watchUpdatePolicyRunForJob(runID int64, jobID string) {

@@ -297,28 +297,12 @@ func createServerActionJobWithMetaAndState(jm *JobManager, state *serverpkg.Stat
 	})
 }
 
-func updatePolicyRunFromJobRecordWithRepository(repo policypkg.Repository, runID int64, job JobRecord) {
-	newScheduledRunLifecycle(AppDeps{PolicyRepository: repo}).updatePolicyRunFromJobRecord(runID, job)
-}
-
-func watchUpdatePolicyRunForJobWithDeps(deps AppDeps, runID int64, jobID string) {
-	newScheduledRunLifecycle(deps).watchUpdatePolicyRunForJob(runID, jobID)
-}
-
 func loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
 	return newScheduledRunLifecycle(globalRuntimeAppDeps()).loadScheduledJobBehavior(jobID)
 }
 
-func loadScheduledJobBehaviorWithManager(current func() *JobManager, jobID string) scheduledJobBehavior {
-	return newScheduledRunLifecycle(AppDeps{CurrentJobManager: current}).loadScheduledJobBehavior(jobID)
-}
-
 func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
 	newScheduledRunLifecycle(globalRuntimeAppDeps()).updateScheduledJobDiscoveryMeta(jobID, upgradable, pendingUpdates, plan)
-}
-
-func updateScheduledJobDiscoveryMetaWithManager(current func() *JobManager, jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
-	newScheduledRunLifecycle(AppDeps{CurrentJobManager: current}).updateScheduledJobDiscoveryMeta(jobID, upgradable, pendingUpdates, plan)
 }
 
 func executeScheduledPolicyRun(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
@@ -343,18 +327,6 @@ func globalRuntimeAppDeps() AppDeps {
 			return currentMaintenanceState().Active
 		},
 	}
-}
-
-func executeScheduledPolicyRunWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
-}
-
-func markScheduledPolicyRunMaintenanceSkipped(run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
-	markScheduledPolicyRunMaintenanceSkippedWithDeps(globalRuntimeAppDeps(), run, policy, server, summary)
-}
-
-func markScheduledPolicyRunMaintenanceSkippedWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
-	newScheduledRunLifecycle(deps).markMaintenanceSkipped(run, policy, server, summary)
 }
 
 func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {

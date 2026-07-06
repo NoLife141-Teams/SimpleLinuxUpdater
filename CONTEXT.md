@@ -19,3 +19,7 @@ _Avoid_: Scheduled policy execution, policy job
 **Dashboard Projection**:
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query
+
+**Runtime Composition**:
+The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
+_Avoid_: AppDeps wiring, dependency injection container

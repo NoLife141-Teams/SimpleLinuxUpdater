@@ -1155,14 +1155,8 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	}
 	to := now.UTC()
 	from := to.Add(-span)
-	response := DashboardSummaryResponse{
-		Window:      window,
-		From:        from.Format(time.RFC3339),
-		To:          to.Format(time.RFC3339),
-		GeneratedAt: to.Format(time.RFC3339),
-		Fleet:       map[string]any{},
-		Servers:     []DashboardServerSummary{},
-	}
+	fromFormatted := from.Format(time.RFC3339)
+	toFormatted := to.Format(time.RFC3339)
 
 	serversSnapshot, statusByName := deps.ServerSnapshot()
 	facts, err := deps.LoadServerFacts()
@@ -1191,23 +1185,15 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	}
 	loc, timezoneName := deps.CurrentTimezone()
 
-	type updateAgg struct {
-		lastSuccess *DashboardUpdateHistory
-		lastFailure *DashboardUpdateHistory
-		meta        map[string]any
-		metaAt      string
-		durationSum float64
-		samples     int
-	}
-	updateByServer := map[string]*updateAgg{}
+	updateByServer := map[string]*dashboardUpdateHistoryProjection{}
 	rows, err := deps.DB().Query(
 		`SELECT created_at, target_name, status, message, meta_json
 		   FROM audit_events
 		  WHERE action = ? AND target_type = 'server' AND created_at >= ? AND created_at <= ?
 		  ORDER BY created_at DESC, id DESC`,
 		deps.UpdateCompleteAction,
-		from.Format(time.RFC3339),
-		to.Format(time.RFC3339),
+		fromFormatted,
+		toFormatted,
 	)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
@@ -1220,7 +1206,7 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		}
 		agg := updateByServer[targetName]
 		if agg == nil {
-			agg = &updateAgg{}
+			agg = &dashboardUpdateHistoryProjection{}
 			updateByServer[targetName] = agg
 		}
 		meta := map[string]any{}
@@ -1270,8 +1256,8 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
 		  ORDER BY created_at DESC, id DESC
 		  LIMIT 400`,
-		from.Format(time.RFC3339),
-		to.Format(time.RFC3339),
+		fromFormatted,
+		toFormatted,
 	)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
@@ -1295,117 +1281,44 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	}
 	commandRows.Close()
 
-	fleetPendingApproval := 0
-	fleetPrechecksRunning := 0
-	fleetInProgress := 0
-	fleetDone := 0
-	fleetPendingPackages := 0
-	fleetSecurityUpdates := 0
-	fleetHighRiskCVE := 0
-	fleetReboot := 0
-	fleetStaleFacts := 0
+	projectionInput := dashboardProjectionInput{
+		window:      window,
+		from:        fromFormatted,
+		to:          toFormatted,
+		generatedAt: toFormatted,
+		servers:     make([]dashboardServerProjectionInput, 0, len(serversSnapshot)),
+	}
 	for _, server := range serversSnapshot {
 		status := statusByName[server.Name]
 		fact := facts[server.Name]
-		health := DashboardHealthInfo{
-			DiskStatus:    "unknown",
-			AptStatus:     "unknown",
-			OSPrettyName:  fact.OSPrettyName,
-			UptimeSeconds: fact.UptimeSeconds,
-			CollectedAt:   fact.CollectedAt,
-			Source:        "facts",
-		}
-		if fact.ServerName != "" {
-			health.RebootRequired = fact.RebootRequired
-			health.DiskStatus = fact.DiskStatus
-			health.DiskFreeKB = fact.DiskFreeKB
-			health.DiskTotalKB = fact.DiskTotalKB
-			health.DiskDetails = fact.DiskDetails
-			health.AptStatus = fact.AptStatus
-			health.AptDetails = fact.AptDetails
-		} else {
-			health.Source = "unknown"
-		}
 		agg := updateByServer[server.Name]
-		if agg != nil && agg.meta != nil {
-			auditResults := PrecheckResultsFromMeta(agg.meta, "precheck_results")
-			auditResults = append(auditResults, PrecheckResultsFromMeta(agg.meta, "postcheck_results")...)
-			UpdateHealthFromResults(&health, auditResults, "audit", agg.metaAt, deps)
-		}
-		if health.RebootRequired != nil && *health.RebootRequired {
-			fleetReboot++
+		if agg == nil {
+			agg = &dashboardUpdateHistoryProjection{}
 		}
 		nextRun := nextRuns[server.Name]
-		if nextRun.State == "" {
-			nextRun = defaultScheduleInfo()
-		}
-		risk := DashboardRiskFromStatus(status)
-		var jobPtr *jobs.Record
+		var latestUpdateJob *jobs.Record
 		if job, ok := latestUpdateJobs[server.Name]; ok {
 			jobCopy := job
-			jobPtr = dashboardTimelineJobForStatus(status, &jobCopy)
+			latestUpdateJob = &jobCopy
 		}
-		timeline := buildDashboardTimeline(status, jobPtr, deps, loc, timezoneName)
-		var lastUpdate *DashboardUpdateHistory
-		var lastFailedUpdate *DashboardUpdateHistory
-		durationSamples := 0
-		avgDurationMS := 0.0
-		if agg != nil {
-			lastUpdate = agg.lastSuccess
-			lastFailedUpdate = agg.lastFailure
-			durationSamples = agg.samples
-			if agg.samples > 0 {
-				avgDurationMS = agg.durationSum / float64(agg.samples)
-			}
-		}
-		triage := buildApprovalTriage(status, health, risk, timeline, lastUpdate, now, deps, loc, timezoneName)
-		if triage.FactsState == "stale" {
-			fleetStaleFacts++
-		}
-		fleetPendingPackages += triage.PendingPackages
-		fleetSecurityUpdates += triage.SecurityUpdates
-		if triage.CVECount > 0 {
-			fleetHighRiskCVE++
-		}
-		if triage.CanApproveAll || timeline.CurrentPhase == "pending_approval" {
-			fleetPendingApproval++
-		}
-		if timeline.CurrentPhase == "prechecks" || timeline.State == "queued" || timeline.State == "active" {
-			fleetPrechecksRunning++
-		}
-		if runningTimelineState(timeline.State) {
-			fleetInProgress++
-		}
-		if timeline.State == "done" {
-			fleetDone++
-		}
-		serverSummary := DashboardServerSummary{
-			Name:             server.Name,
-			LastUpdate:       lastUpdate,
-			LastFailedUpdate: lastFailedUpdate,
-			AvgDurationMS:    avgDurationMS,
-			DurationSamples:  durationSamples,
-			NextRun:          nextRun,
-			NoRun:            s.buildNoRunInfo(server, policyList, overrides, globalBlackouts, now),
-			Health:           health,
-			Risk:             risk,
-			Timeline:         timeline,
-			ApprovalTriage:   triage,
-			CommandHistory:   commandHistory[server.Name],
-		}
-		response.Servers = append(response.Servers, serverSummary)
+		projectionInput.servers = append(projectionInput.servers, dashboardServerProjectionInput{
+			server:          server,
+			status:          status,
+			fact:            fact,
+			nextRun:         nextRun,
+			noRun:           s.buildNoRunInfo(server, policyList, overrides, globalBlackouts, now),
+			latestUpdateJob: latestUpdateJob,
+			updateHistory:   *agg,
+			commandHistory:  commandHistory[server.Name],
+		})
 	}
-	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
-	response.Fleet["pending_approval"] = fleetPendingApproval
-	response.Fleet["prechecks_running"] = fleetPrechecksRunning
-	response.Fleet["in_progress"] = fleetInProgress
-	response.Fleet["done"] = fleetDone
-	response.Fleet["pending_packages"] = fleetPendingPackages
-	response.Fleet["security_updates"] = fleetSecurityUpdates
-	response.Fleet["high_risk_cve"] = fleetHighRiskCVE
-	response.Fleet["hosts_needing_reboot"] = fleetReboot
-	response.Fleet["stale_facts"] = fleetStaleFacts
-	return response, nil
+	projection := newDashboardProjection(dashboardProjectionContext{
+		now:          now,
+		deps:         deps,
+		loc:          loc,
+		timezoneName: timezoneName,
+	})
+	return projection.Project(projectionInput), nil
 }
 
 func healthTrendPointFromSnapshot(record updates.HealthSnapshotRecord, deps ServiceDeps, loc *time.Location, timezoneName string) HealthTrendPoint {

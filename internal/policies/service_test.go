@@ -22,22 +22,14 @@ func testServiceDeps() ServiceDeps {
 		SnapshotServers: func() []servers.Server {
 			return nil
 		},
-		CurrentStatusSnapshot: func(string) *servers.ServerStatus {
-			return nil
+		HandleScheduledRun: func(ScheduledRunRequest) ScheduledRunResult {
+			return ScheduledRunResult{Handled: true, Inserted: true}
 		},
-		CreateRun: func(run Run) (Run, bool, error) {
-			return run, true, nil
-		},
-		ExecuteRun:     func(Run, Policy, servers.Server) {},
-		AuditWithActor: func(string, string, string, string, string, string, string, map[string]any) {},
 		CurrentLocation: func() *time.Location {
 			return time.UTC
 		},
 		CurrentMaintenanceActive: func() bool {
 			return false
-		},
-		JobTimestampNow: func() string {
-			return "2026-01-02T03:04:05Z"
 		},
 		MarkInterruptedRuns: func() error {
 			return nil
@@ -187,7 +179,7 @@ func previewServerNames(items []PreviewServer) []string {
 	return out
 }
 
-func TestServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlackout(t *testing.T) {
+func TestServiceProcessDueSendsCandidatesAndPolicySideSkipsToScheduledRunCallback(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	policies := []Policy{
 		{ID: 1, Name: "winner", Enabled: true, TargetServers: []string{"srv-win"}, PackageScope: PackageScopeFull, ExecutionMode: ExecutionApprovalRequired, CadenceKind: CadenceDaily, TimeLocal: "03:00", CreatedAt: "2026-01-01T00:00:00Z"},
@@ -198,45 +190,36 @@ func TestServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlackout(t
 		{ID: 6, Name: "disabled", Enabled: false, TargetServers: []string{"srv-disabled"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
 	}
 	serverList := []servers.Server{{Name: "srv-win"}, {Name: "srv-busy"}, {Name: "srv-missing"}, {Name: "srv-blackout"}, {Name: "srv-disabled"}}
-	statusByServer := map[string]*servers.ServerStatus{
-		"srv-win":      {Name: "srv-win", Status: "idle"},
-		"srv-busy":     {Name: "srv-busy", Status: "updating"},
-		"srv-blackout": {Name: "srv-blackout", Status: "idle"},
-		"srv-disabled": {Name: "srv-disabled", Status: "idle"},
-	}
 
-	var created []Run
-	var executed []Run
+	var handled []ScheduledRunRequest
 	deps := testServiceDeps()
 	deps.ListPolicies = func() ([]Policy, error) { return append([]Policy(nil), policies...), nil }
 	deps.SnapshotServers = func() []servers.Server { return append([]servers.Server(nil), serverList...) }
-	deps.CurrentStatusSnapshot = func(name string) *servers.ServerStatus { return statusByServer[name] }
-	deps.CreateRun = func(run Run) (Run, bool, error) {
-		run.ID = int64(len(created) + 1)
-		created = append(created, run)
-		return run, true, nil
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		handled = append(handled, req)
+		return ScheduledRunResult{Handled: true, Inserted: true}
 	}
-	deps.ExecuteRun = func(run Run, policy Policy, server servers.Server) { executed = append(executed, run) }
 
 	if err := NewService(deps).ProcessDueSlot(ScheduleRequest{Now: slot}); err != nil {
 		t.Fatalf("ProcessDueSlot() unexpected error: %v", err)
 	}
-	if len(executed) != 1 || executed[0].PolicyID != 1 || executed[0].ServerName != "srv-win" {
-		t.Fatalf("executed = %+v, want only winner on srv-win", executed)
+	outcomes := map[string]string{}
+	for _, req := range handled {
+		outcomes[req.Server.Name+":"+req.Policy.Name] = req.Outcome
 	}
-	reasons := map[string]string{}
-	for _, run := range created {
-		reasons[run.ServerName+":"+run.PolicyName] = run.Reason
-	}
-	wantReasons := map[string]string{
+	wantOutcomes := map[string]string{
+		"srv-win:winner":        "",
 		"srv-win:superseded":    RunReasonSuperseded,
-		"srv-busy:busy":         RunReasonBusy,
-		"srv-missing:missing":   RunReasonMissing,
+		"srv-busy:busy":         "",
+		"srv-missing:missing":   "",
 		"srv-blackout:blackout": RunReasonBlackout,
 	}
-	for key, want := range wantReasons {
-		if reasons[key] != want {
-			t.Fatalf("reason[%s] = %q, want %q; all runs=%+v", key, reasons[key], want, created)
+	if len(outcomes) != len(wantOutcomes) {
+		t.Fatalf("outcomes = %+v, want exactly %+v", outcomes, wantOutcomes)
+	}
+	for key, want := range wantOutcomes {
+		if outcomes[key] != want {
+			t.Fatalf("outcome[%s] = %q, want %q; all requests=%+v", key, outcomes[key], want, handled)
 		}
 	}
 }
@@ -244,7 +227,7 @@ func TestServiceProcessDueQueuesWinnerAndSkipsSupersededBusyMissingAndBlackout(t
 func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	var lockAvailable bool
-	var created []Run
+	var handled []ScheduledRunRequest
 	deps := testServiceDeps()
 	deps.TryBackupRestoreReadLock = func() bool { return lockAvailable }
 	deps.UnlockBackupRestoreRead = func() {}
@@ -252,10 +235,9 @@ func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 		return []Policy{{ID: 7, Name: "maintenance replay", Enabled: true, TargetServers: []string{"srv"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"}}, nil
 	}
 	deps.SnapshotServers = func() []servers.Server { return []servers.Server{{Name: "srv"}} }
-	deps.CurrentStatusSnapshot = func(string) *servers.ServerStatus { return &servers.ServerStatus{Name: "srv", Status: "idle"} }
-	deps.CreateRun = func(run Run) (Run, bool, error) {
-		created = append(created, run)
-		return run, true, nil
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		handled = append(handled, req)
+		return ScheduledRunResult{Handled: true, Inserted: true}
 	}
 
 	service := NewService(deps)
@@ -273,7 +255,7 @@ func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	if got := service.PendingMissedTicks(); len(got) != 0 {
 		t.Fatalf("missed ticks after replay = %v, want none", got)
 	}
-	if len(created) != 1 || created[0].Reason != RunReasonMaintenance {
-		t.Fatalf("created replay runs = %+v, want one maintenance skip", created)
+	if len(handled) != 1 || handled[0].Outcome != RunReasonMaintenance {
+		t.Fatalf("handled replay requests = %+v, want one maintenance skip", handled)
 	}
 }

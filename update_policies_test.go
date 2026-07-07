@@ -1362,6 +1362,7 @@ func TestProcessDueUpdatePoliciesUsesConfiguredAppTimezone(t *testing.T) {
 		}
 		return false
 	}, "configured-timezone run to complete")
+	waitForUpdateRunners()
 
 	runs, err := listUpdatePolicyRuns(10)
 	if err != nil {

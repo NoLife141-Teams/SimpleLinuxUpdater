@@ -78,6 +78,70 @@ func getScheduledLifecycleRun(t *testing.T, deps AppDeps, runID int64) UpdatePol
 	return run
 }
 
+func TestScheduledRunLifecycleHandleScheduledRunDuplicateNoops(t *testing.T) {
+	server := Server{Name: "srv-duplicate", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-duplicate.db", server, "idle")
+
+	result := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+		Policy:          policy,
+		Server:          server,
+		ScheduledForUTC: run.ScheduledForUTC,
+	})
+	if !result.Handled || result.Inserted || result.RunID != run.ID || result.Status != updatePolicyRunQueued {
+		t.Fatalf("HandleScheduledRun duplicate = %+v, want handled existing queued run", result)
+	}
+	if job, _ := jm.FindLatestActiveJobByServerAndKind(server.Name, jobKindUpdate); job != nil {
+		t.Fatalf("latest active update job = %+v; want no job dispatched for duplicate run", job)
+	}
+}
+
+func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testing.T) {
+	server := Server{Name: "srv-skipped-candidate", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+	deps, policy, _, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-skipped-candidate.db", server, "idle")
+	scheduledForUTC := "2026-07-05T14:01:00Z"
+
+	result := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+		Policy:          policy,
+		Server:          server,
+		ScheduledForUTC: scheduledForUTC,
+		Outcome:         updatePolicyRunReasonBlackout,
+	})
+	if !result.Handled || !result.Inserted || result.Status != updatePolicyRunSkipped {
+		t.Fatalf("HandleScheduledRun skipped = %+v, want inserted skipped run", result)
+	}
+	run, err := deps.PolicyRepository.FindRun(policy.ID, server.Name, scheduledForUTC)
+	if err != nil {
+		t.Fatalf("FindRun(skipped) unexpected error: %v", err)
+	}
+	if run.Status != updatePolicyRunSkipped || run.Reason != updatePolicyRunReasonBlackout || run.Summary != "Scheduled run skipped due to blackout window" {
+		t.Fatalf("skipped run = %+v, want blackout skipped summary", run)
+	}
+	audits, err := deps.AuditService.List(AuditListFilter{Action: "schedule.run.skipped", TargetName: server.Name})
+	if err != nil {
+		t.Fatalf("List skipped audits unexpected error: %v", err)
+	}
+	if audits.Total != 1 || audits.Items[0].Status != "ignored" {
+		t.Fatalf("skipped audits = %+v, want one ignored audit", audits.Items)
+	}
+
+	duplicate := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+		Policy:          policy,
+		Server:          server,
+		ScheduledForUTC: scheduledForUTC,
+		Outcome:         updatePolicyRunReasonBlackout,
+	})
+	if !duplicate.Handled || duplicate.Inserted || duplicate.RunID != run.ID {
+		t.Fatalf("HandleScheduledRun duplicate skipped = %+v, want existing run no-op", duplicate)
+	}
+	audits, err = deps.AuditService.List(AuditListFilter{Action: "schedule.run.skipped", TargetName: server.Name})
+	if err != nil {
+		t.Fatalf("List skipped audits after duplicate unexpected error: %v", err)
+	}
+	if audits.Total != 1 {
+		t.Fatalf("skipped audit total after duplicate = %d, want 1", audits.Total)
+	}
+}
+
 func TestScheduledRunLifecycleMaintenanceAndBarrierSkip(t *testing.T) {
 	server := Server{Name: "srv-maintenance-barrier", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
 
@@ -295,12 +359,22 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 		QueryPackageCVEs: func(sshConnection, string) ([]string, error) {
 			return []string{"CVE-2026-1001"}, nil
 		},
-		UpdatePolicyRun: deps.PolicyRepository.UpdateRun,
+		UpdatePolicyRun: func(int64, updatePolicyRunUpdate) error {
+			t.Fatalf("UpdatePolicyRun called from scheduled scan worker; reconciliation should update run state")
+			return nil
+		},
 		AuditWithActor:  func(string, string, string, string, string, string, string, map[string]any) {},
 		JobTimestampNow: deps.JobTimestampNow,
 	})
 	deps.StartJobRunner = func(_ string, run func()) {
 		run()
+	}
+	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
+		job, err := jm.GetJob(jobID)
+		if err != nil {
+			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
+		}
+		newScheduledRunLifecycle(deps).updatePolicyRunFromJobRecord(runID, job)
 	}
 
 	newScheduledRunLifecycle(deps).Execute(run, policy, server)
@@ -366,6 +440,72 @@ func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testin
 			}
 			if tt.jobStatus == jobStatusSucceeded && !strings.Contains(current.ResultJSON, "openssl") {
 				t.Fatalf("result_json = %s, want discovery copied from job meta", current.ResultJSON)
+			}
+		})
+	}
+}
+
+func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobStatus   string
+		auditAction string
+		auditStatus string
+		errorText   string
+	}{
+		{name: "success", jobStatus: jobStatusSucceeded, auditAction: "schedule.run.completed", auditStatus: "success"},
+		{name: "failure", jobStatus: jobStatusFailed, auditAction: "schedule.run.failed", auditStatus: "failure", errorText: "dial failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := Server{Name: "srv-scan-audit-" + tt.name, Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-audit-"+tt.name+".db", server, "idle")
+			lifecycle := newScheduledRunLifecycle(deps)
+			meta := lifecycle.buildScheduledJobMeta(policy, run.ScheduledForUTC)
+			if tt.jobStatus == jobStatusSucceeded {
+				meta.Discovery = &scheduledJobDiscovery{
+					PendingPackageCount:  2,
+					SecurityPackageCount: 1,
+					Upgradable:           []string{"openssl", "curl"},
+					PendingUpdates:       []PendingUpdate{{Package: "openssl", Security: true}},
+				}
+			}
+			meta.Error = tt.errorText
+			job := JobRecord{
+				ID:         "job-scan-audit-" + tt.name,
+				Kind:       jobKindScheduledScan,
+				ServerName: server.Name,
+				Status:     tt.jobStatus,
+				Summary:    "job summary",
+				StartedAt:  "2026-07-05T14:00:02Z",
+				FinishedAt: "2026-07-05T14:00:03Z",
+				MetaJSON:   marshalJobJSON(meta),
+			}
+
+			lifecycle.updatePolicyRunFromJobRecord(run.ID, job)
+
+			audits, err := deps.AuditService.List(AuditListFilter{Action: tt.auditAction, TargetName: server.Name})
+			if err != nil {
+				t.Fatalf("List(%s) unexpected error: %v", tt.auditAction, err)
+			}
+			if audits.Total != 1 || audits.Items[0].Status != tt.auditStatus {
+				t.Fatalf("audits = %+v, want one %s audit", audits.Items, tt.auditStatus)
+			}
+			if tt.jobStatus == jobStatusSucceeded && !strings.Contains(audits.Items[0].MetaJSON, `"pending_package_count":2`) {
+				t.Fatalf("success audit meta = %s, want discovery counts", audits.Items[0].MetaJSON)
+			}
+			if tt.errorText != "" && !strings.Contains(audits.Items[0].MetaJSON, tt.errorText) {
+				t.Fatalf("failure audit meta = %s, want error text %q", audits.Items[0].MetaJSON, tt.errorText)
+			}
+
+			lifecycle.updatePolicyRunFromJobRecord(run.ID, job)
+			audits, err = deps.AuditService.List(AuditListFilter{Action: tt.auditAction, TargetName: server.Name})
+			if err != nil {
+				t.Fatalf("List(%s) after duplicate unexpected error: %v", tt.auditAction, err)
+			}
+			if audits.Total != 1 {
+				t.Fatalf("audit total after duplicate reconcile = %d, want 1", audits.Total)
 			}
 		})
 	}

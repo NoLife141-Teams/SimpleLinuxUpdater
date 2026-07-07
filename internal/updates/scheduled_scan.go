@@ -43,34 +43,21 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			jobPhase := phase
 			finishedAt := deps.JobTimestampNow()
 			errorClass := "permanent"
+			meta := BuildScheduledJobMeta(req.Policy, req.ScheduledForUTC)
+			if err != nil {
+				meta.Error = err.Error()
+			}
+			metaJSON := jobs.MarshalJSON(meta)
 			_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, jobs.Update{
 				Status:     &status,
 				Phase:      &jobPhase,
 				Summary:    &summary,
 				LogsText:   &logs,
 				ErrorClass: &errorClass,
+				MetaJSON:   &metaJSON,
 				FinishedAt: &finishedAt,
 			})
 		}
-		runStatus := policies.RunFailed
-		reason := "failed"
-		finishedAt := deps.JobTimestampNow()
-		_ = deps.UpdatePolicyRun(req.RunID, policies.RunUpdate{
-			Status:     &runStatus,
-			Reason:     &reason,
-			Summary:    &summary,
-			FinishedAt: &finishedAt,
-		})
-		meta := map[string]any{
-			"policy_id":      req.Policy.ID,
-			"policy_name":    req.Policy.Name,
-			"execution_mode": req.Policy.ExecutionMode,
-			"package_scope":  req.Policy.PackageScope,
-		}
-		if err != nil {
-			meta["error"] = err.Error()
-		}
-		deps.AuditWithActor("system", "", "schedule.run.failed", "server", req.Server.Name, "failure", summary, meta)
 	}
 
 	authMethods, err := deps.BuildAuthMethods(req.Server)
@@ -203,7 +190,6 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		PendingUpdates:       servers.ClonePendingUpdates(pendingUpdates),
 		UpgradePlan:          servers.CloneUpgradePlan(upgradePlan),
 	}
-	resultJSON := jobs.MarshalJSON(result)
 	finalSummary := "Scheduled scan completed"
 	if len(upgradable) == 0 {
 		finalSummary = "Scheduled scan completed: no pending updates"
@@ -224,18 +210,4 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			FinishedAt: &finishedAt,
 		})
 	}
-	runStatus := policies.RunSucceeded
-	finishedAt := deps.JobTimestampNow()
-	_ = deps.UpdatePolicyRun(req.RunID, policies.RunUpdate{
-		Status:     &runStatus,
-		Summary:    &finalSummary,
-		ResultJSON: &resultJSON,
-		FinishedAt: &finishedAt,
-	})
-	deps.AuditWithActor("system", "", "schedule.run.completed", "server", req.Server.Name, "success", finalSummary, map[string]any{
-		"policy_id":              req.Policy.ID,
-		"policy_name":            req.Policy.Name,
-		"pending_package_count":  result.PendingPackageCount,
-		"security_package_count": result.SecurityPackageCount,
-	})
 }

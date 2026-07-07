@@ -787,8 +787,7 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 				ServerState:            state,
 				ServerInventoryService: newServerInventoryServiceWithState(state),
 				PolicyService: NewPolicyService(PolicyServiceDeps{
-					SnapshotServers:       snapshotServers,
-					CurrentStatusSnapshot: currentStatusSnapshot,
+					SnapshotServers: snapshotServers,
 				}),
 				NewJobManager: func(*sql.DB) *JobManager {
 					return newJobManagerWithNotify(jobDB, nil)

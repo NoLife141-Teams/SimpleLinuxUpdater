@@ -20,19 +20,14 @@ type ServiceDeps struct {
 	LoadOverrides            func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts      func() ([]BlackoutWindow, error)
 	SnapshotServers          func() []servers.Server
-	CurrentStatusSnapshot    func(string) *servers.ServerStatus
-	CreateRun                func(Run) (Run, bool, error)
-	ExecuteRun               func(Run, Policy, servers.Server)
-	AuditWithActor           func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any)
+	HandleScheduledRun       func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation          func() *time.Location
 	CurrentMaintenanceActive func() bool
-	JobTimestampNow          func() string
 	MarkInterruptedRuns      func() error
 	TryBackupRestoreReadLock func() bool
 	UnlockBackupRestoreRead  func()
 	Now                      func() time.Time
 	Logf                     func(string, ...any)
-	StatusInProgress         func(string) bool
 	TimestampLayout          string
 }
 
@@ -53,6 +48,22 @@ type ScheduledCandidate struct {
 	Policy          Policy
 	Server          servers.Server
 	ScheduledForUTC string
+}
+
+type ScheduledRunRequest struct {
+	Policy          Policy
+	Server          servers.Server
+	ScheduledForUTC string
+	Outcome         string
+}
+
+type ScheduledRunResult struct {
+	Handled  bool
+	Inserted bool
+	RunID    int64
+	JobID    string
+	Status   string
+	Err      error
 }
 
 type Service struct {
@@ -84,9 +95,6 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.CurrentMaintenanceActive == nil {
 		d.CurrentMaintenanceActive = func() bool { return false }
 	}
-	if d.JobTimestampNow == nil {
-		d.JobTimestampNow = func() string { return time.Now().UTC().Format(DefaultTimestampLayout) }
-	}
 	if d.TryBackupRestoreReadLock == nil {
 		d.TryBackupRestoreReadLock = func() bool { return true }
 	}
@@ -98,9 +106,6 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	}
 	if d.Logf == nil {
 		d.Logf = log.Printf
-	}
-	if d.StatusInProgress == nil {
-		d.StatusInProgress = defaultStatusInProgress
 	}
 	if strings.TrimSpace(d.TimestampLayout) == "" {
 		d.TimestampLayout = DefaultTimestampLayout
@@ -639,48 +644,17 @@ func (s *Service) ComparePolicyCandidates(a, b ScheduledCandidate) bool {
 	return a.Policy.CreatedAt < b.Policy.CreatedAt
 }
 
-func (s *Service) CreateSkippedRun(policy Policy, serverName, scheduledForUTC, reason, summary string) {
+func (s *Service) handleScheduledRun(policy Policy, server servers.Server, scheduledForUTC, outcome string) ScheduledRunResult {
 	deps := s.EnsureDeps()
-	if deps.CreateRun == nil {
-		return
+	if deps.HandleScheduledRun == nil {
+		return ScheduledRunResult{}
 	}
-	run := Run{
-		PolicyID:        policy.ID,
-		PolicyName:      policy.Name,
-		ServerName:      serverName,
+	return deps.HandleScheduledRun(ScheduledRunRequest{
+		Policy:          policy,
+		Server:          server,
 		ScheduledForUTC: scheduledForUTC,
-		ExecutionMode:   policy.ExecutionMode,
-		PackageScope:    policy.PackageScope,
-		UpgradeMode:     policy.UpgradeMode,
-		Status:          RunSkipped,
-		Reason:          reason,
-		Summary:         summary,
-		ResultJSON:      "{}",
-		FinishedAt:      deps.JobTimestampNow(),
-	}
-	createdRun, inserted, err := deps.CreateRun(run)
-	if err != nil || !inserted {
-		return
-	}
-	if deps.AuditWithActor == nil {
-		return
-	}
-	deps.AuditWithActor(
-		"system",
-		"",
-		"schedule.run.skipped",
-		"server",
-		serverName,
-		"ignored",
-		summary,
-		map[string]any{
-			"policy_id":         policy.ID,
-			"policy_name":       policy.Name,
-			"reason":            reason,
-			"scheduled_for_utc": scheduledForUTC,
-			"run_id":            createdRun.ID,
-		},
-	)
+		Outcome:         outcome,
+	})
 }
 
 func MissedTickKey(t time.Time, layout string) string {
@@ -733,7 +707,7 @@ func (s *Service) ResetMissedTicksForTest() {
 
 func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	deps := s.EnsureDeps()
-	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.CurrentStatusSnapshot == nil || deps.CreateRun == nil || deps.ExecuteRun == nil {
+	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
 		return errors.New("policy service dependencies are incomplete")
 	}
 	policies, err := deps.ListPolicies()
@@ -755,6 +729,23 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
 	serversSnapshot := deps.SnapshotServers()
 
+	var queueErrs []error
+	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string) {
+		result := s.handleScheduledRun(policy, server, scheduledForUTC, reason)
+		if result.Err == nil {
+			return
+		}
+		queueErrs = append(queueErrs, fmt.Errorf(
+			"handle scheduled run failed: policy_id=%d policy_name=%q server=%q scheduled_for_utc=%q reason=%q: %w",
+			policy.ID,
+			policy.Name,
+			server.Name,
+			scheduledForUTC,
+			reason,
+			result.Err,
+		))
+	}
+
 	candidatesByServer := make(map[string][]ScheduledCandidate)
 	for _, policy := range policies {
 		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
@@ -765,11 +756,11 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				continue
 			}
 			if req.MaintenanceActive {
-				s.CreateSkippedRun(policy, server.Name, scheduledForUTC, RunReasonMaintenance, "Maintenance mode active; scheduled run skipped")
+				recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
 				continue
 			}
 			if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
-				s.CreateSkippedRun(policy, server.Name, scheduledForUTC, RunReasonBlackout, "Scheduled run skipped due to blackout window")
+				recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
 				continue
 			}
 			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
@@ -780,7 +771,6 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		}
 	}
 
-	var queueErrs []error
 	for serverName, candidates := range candidatesByServer {
 		if len(candidates) == 0 {
 			continue
@@ -790,48 +780,22 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		})
 		winner := candidates[0]
 		for _, skipped := range candidates[1:] {
-			s.CreateSkippedRun(skipped.Policy, serverName, skipped.ScheduledForUTC, RunReasonSuperseded, "Scheduled run superseded by higher-priority policy")
+			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded)
 		}
 
-		runtimeStatus := deps.CurrentStatusSnapshot(serverName)
-		if runtimeStatus == nil {
-			s.CreateSkippedRun(winner.Policy, serverName, winner.ScheduledForUTC, RunReasonMissing, "Scheduled run skipped because the server was missing")
-			continue
-		}
-		if deps.StatusInProgress(runtimeStatus.Status) {
-			s.CreateSkippedRun(winner.Policy, serverName, winner.ScheduledForUTC, RunReasonBusy, "Scheduled run skipped because the server is busy")
-			continue
-		}
-
-		run, inserted, err := deps.CreateRun(Run{
-			PolicyID:        winner.Policy.ID,
-			PolicyName:      winner.Policy.Name,
-			ServerName:      serverName,
-			ScheduledForUTC: winner.ScheduledForUTC,
-			ExecutionMode:   winner.Policy.ExecutionMode,
-			PackageScope:    winner.Policy.PackageScope,
-			UpgradeMode:     winner.Policy.UpgradeMode,
-			Status:          RunQueued,
-			Summary:         "Scheduled run queued",
-			ResultJSON:      "{}",
-		})
-		if err != nil {
+		result := s.handleScheduledRun(winner.Policy, winner.Server, winner.ScheduledForUTC, "")
+		if result.Err != nil {
 			queueErr := fmt.Errorf(
 				"queue scheduled run failed: policy_id=%d policy_name=%q server=%q scheduled_for_utc=%q: %w",
 				winner.Policy.ID,
 				winner.Policy.Name,
 				serverName,
 				winner.ScheduledForUTC,
-				err,
+				result.Err,
 			)
 			deps.Logf("processDueUpdatePolicies: %v", queueErr)
 			queueErrs = append(queueErrs, queueErr)
-			continue
 		}
-		if !inserted {
-			continue
-		}
-		deps.ExecuteRun(run, winner.Policy, winner.Server)
 	}
 	if len(queueErrs) > 0 {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
@@ -869,15 +833,6 @@ func weekdayMatchesLocal(weekdays []string, t time.Time) bool {
 		}
 	}
 	return false
-}
-
-func defaultStatusInProgress(status string) bool {
-	switch strings.TrimSpace(status) {
-	case "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh":
-		return true
-	default:
-		return false
-	}
 }
 
 func truncateString(s string, maxLen int) string {

@@ -13,6 +13,8 @@ type PolicyServiceDeps = policypkg.ServiceDeps
 type PolicyScheduleRequest = policypkg.ScheduleRequest
 type PolicyMatchContext = policypkg.MatchContext
 type PolicySchedulerOptions = policypkg.SchedulerOptions
+type PolicyScheduledRunRequest = policypkg.ScheduledRunRequest
+type PolicyScheduledRunResult = policypkg.ScheduledRunResult
 type PolicyService = policypkg.Service
 
 var (
@@ -44,17 +46,8 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	if deps.SnapshotServers == nil {
 		deps.SnapshotServers = snapshotServers
 	}
-	if deps.CurrentStatusSnapshot == nil {
-		deps.CurrentStatusSnapshot = currentStatusSnapshot
-	}
-	if deps.CreateRun == nil {
-		deps.CreateRun = createUpdatePolicyRun
-	}
-	if deps.ExecuteRun == nil {
-		deps.ExecuteRun = executeScheduledPolicyRun
-	}
-	if deps.AuditWithActor == nil {
-		deps.AuditWithActor = auditWithActor
+	if deps.HandleScheduledRun == nil {
+		deps.HandleScheduledRun = handleScheduledRunRequest
 	}
 	if deps.CurrentLocation == nil {
 		deps.CurrentLocation = currentAppLocation
@@ -63,9 +56,6 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 		deps.CurrentMaintenanceActive = func() bool {
 			return currentMaintenanceState().Active
 		}
-	}
-	if deps.JobTimestampNow == nil {
-		deps.JobTimestampNow = jobTimestampNow
 	}
 	if deps.MarkInterruptedRuns == nil {
 		deps.MarkInterruptedRuns = markInterruptedUpdatePolicyRuns
@@ -86,9 +76,6 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	}
 	if deps.Logf == nil {
 		deps.Logf = log.Printf
-	}
-	if deps.StatusInProgress == nil {
-		deps.StatusInProgress = statusInProgress
 	}
 	if deps.TimestampLayout == "" {
 		deps.TimestampLayout = jobTimestampLayout

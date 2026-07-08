@@ -58,35 +58,8 @@ func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) Observa
 	if deps.LoadServerFacts == nil {
 		deps.LoadServerFacts = loadServerFacts
 	}
-	if deps.ListPolicies == nil {
-		deps.ListPolicies = listUpdatePolicies
-	}
-	if deps.LoadOverrides == nil {
-		deps.LoadOverrides = loadAllUpdatePolicyOverrides
-	}
-	if deps.LoadGlobalBlackouts == nil {
-		deps.LoadGlobalBlackouts = loadGlobalUpdatePolicyBlackouts
-	}
-	if deps.ListPolicyRuns == nil {
-		deps.ListPolicyRuns = listUpdatePolicyRuns
-	}
-	if deps.PolicyMatchesServer == nil {
-		deps.PolicyMatchesServer = policyMatchesServer
-	}
-	if deps.PolicyDueAt == nil {
-		deps.PolicyDueAt = policyDueAt
-	}
-	if deps.BlackoutApplies == nil {
-		deps.BlackoutApplies = blackoutApplies
-	}
-	if deps.ComparePolicyCandidates == nil {
-		deps.ComparePolicyCandidates = defaultPolicyService().ComparePolicyCandidates
-	}
-	if deps.CanonicalScheduledForUTC == nil {
-		deps.CanonicalScheduledForUTC = canonicalScheduledForUTC
-	}
-	if deps.ParseTimeLocalMinutes == nil {
-		deps.ParseTimeLocalMinutes = parseTimeLocalMinutes
+	if deps.ProjectPolicySchedule == nil {
+		deps.ProjectPolicySchedule = defaultPolicyService().ProjectSchedule
 	}
 	if deps.ParseAppTimestamp == nil {
 		deps.ParseAppTimestamp = parseAppTimestamp

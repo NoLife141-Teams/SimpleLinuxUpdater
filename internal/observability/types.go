@@ -243,16 +243,7 @@ type ServiceDeps struct {
 	LoadServerFacts             func() (map[string]updates.ServerFactsRecord, error)
 	ListHealthSnapshots         func(from, to, serverName string) ([]updates.HealthSnapshotRecord, error)
 	HealthSnapshotRetentionDays func() (int, error)
-	ListPolicies                func() ([]policies.Policy, error)
-	LoadOverrides               func() (map[int64]map[string]bool, error)
-	LoadGlobalBlackouts         func() ([]policies.BlackoutWindow, error)
-	ListPolicyRuns              func(int) ([]policies.Run, error)
-	PolicyMatchesServer         func(policies.Policy, servers.Server, map[int64]map[string]bool) bool
-	PolicyDueAt                 func(policies.Policy, time.Time) bool
-	BlackoutApplies             func(time.Time, []policies.BlackoutWindow) bool
-	ComparePolicyCandidates     func(policies.ScheduledCandidate, policies.ScheduledCandidate) bool
-	CanonicalScheduledForUTC    func(time.Time) string
-	ParseTimeLocalMinutes       func(string) (int, error)
+	ProjectPolicySchedule       func(policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error)
 	ParseAppTimestamp           func(string) (time.Time, error)
 	HealthStatusFromResult      func(updates.PrecheckResult) string
 	DiskFreeKBFromOutput        func(string) (int64, bool)

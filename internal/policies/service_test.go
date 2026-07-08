@@ -179,6 +179,114 @@ func previewServerNames(items []PreviewServer) []string {
 	return out
 }
 
+func TestServiceProjectScheduleProjectsNextRunsAndNoRunWindows(t *testing.T) {
+	now := time.Date(2026, 1, 5, 1, 0, 0, 0, time.UTC)
+	serverList := []servers.Server{
+		{Name: "srv-win"},
+		{Name: "srv-policy-blackout"},
+		{Name: "srv-global"},
+		{Name: "srv-override"},
+	}
+	policyList := []Policy{
+		{ID: 1, Name: "winner", Enabled: true, TargetServers: []string{"srv-win"}, PackageScope: PackageScopeFull, ExecutionMode: ExecutionApprovalRequired, CadenceKind: CadenceDaily, TimeLocal: "03:00", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: 2, Name: "superseded", Enabled: true, TargetServers: []string{"srv-win"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00", CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: 3, Name: "policy blackout", Enabled: true, TargetServers: []string{"srv-policy-blackout"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00", PolicyBlackouts: []BlackoutWindow{{Weekdays: []string{"mon"}, StartTime: "00:00", EndTime: "02:00"}}},
+		{ID: 4, Name: "global target", Enabled: true, TargetServers: []string{"srv-global"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
+		{ID: 5, Name: "disabled by override", Enabled: true, TargetServers: []string{"srv-override"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
+	}
+	deps := testServiceDeps()
+	deps.ListPolicies = func() ([]Policy, error) { return append([]Policy(nil), policyList...), nil }
+	deps.LoadOverrides = func() (map[int64]map[string]bool, error) {
+		return map[int64]map[string]bool{5: {"srv-override": true}}, nil
+	}
+	deps.LoadGlobalBlackouts = func() ([]BlackoutWindow, error) {
+		return []BlackoutWindow{{Weekdays: []string{"mon"}, StartTime: "00:00", EndTime: "02:00"}}, nil
+	}
+
+	projection, err := NewService(deps).ProjectSchedule(ScheduleProjectionRequest{
+		Now:     now,
+		Servers: serverList,
+	})
+	if err != nil {
+		t.Fatalf("ProjectSchedule() error = %v", err)
+	}
+	win := projection.Servers["srv-win"]
+	if win.NextRun.PolicyName != "winner" || win.NextRun.State != ScheduleProjectionStateScheduled || win.NextRun.ScheduledForUTC != "2026-01-05T03:00:00.000000000Z" {
+		t.Fatalf("srv-win next run = %+v, want winner at 03:00", win.NextRun)
+	}
+	policyBlackout := projection.Servers["srv-policy-blackout"].NoRun
+	if !policyBlackout.Active || policyBlackout.Scope != NoRunScopeGlobal {
+		t.Fatalf("srv-policy-blackout no-run = %+v, want active global blackout while global window is active", policyBlackout)
+	}
+	global := projection.Servers["srv-global"].NoRun
+	if !global.Active || global.Scope != NoRunScopeGlobal {
+		t.Fatalf("srv-global no-run = %+v, want active global blackout", global)
+	}
+	if got := projection.Servers["srv-override"].NextRun; got.ScheduledForUTC != "" || got.PolicyName != "" {
+		t.Fatalf("srv-override next run = %+v, want disabled by override", got)
+	}
+
+	deps.LoadGlobalBlackouts = func() ([]BlackoutWindow, error) { return []BlackoutWindow{}, nil }
+	projection, err = NewService(deps).ProjectSchedule(ScheduleProjectionRequest{
+		Now:     now,
+		Servers: serverList,
+	})
+	if err != nil {
+		t.Fatalf("ProjectSchedule(policy blackout only) error = %v", err)
+	}
+	policyBlackout = projection.Servers["srv-policy-blackout"].NoRun
+	if !policyBlackout.Active || policyBlackout.Scope != NoRunScopePolicy || policyBlackout.PolicyName != "policy blackout" {
+		t.Fatalf("srv-policy-blackout no-run = %+v, want active policy blackout", policyBlackout)
+	}
+}
+
+func TestServiceProjectScheduleMergesPersistedAndProjectedRuns(t *testing.T) {
+	now := time.Date(2026, 1, 5, 1, 0, 0, 0, time.UTC)
+	serverList := []servers.Server{
+		{Name: "srv-persisted"},
+		{Name: "srv-projected"},
+		{Name: "srv-past"},
+	}
+	policyList := []Policy{
+		{ID: 1, Name: "projected-persisted", Enabled: true, TargetServers: []string{"srv-persisted"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
+		{ID: 2, Name: "projected-wins", Enabled: true, TargetServers: []string{"srv-projected"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
+		{ID: 3, Name: "past-ignored", Enabled: true, TargetServers: []string{"srv-past"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"},
+	}
+	deps := testServiceDeps()
+	deps.ListPolicies = func() ([]Policy, error) { return append([]Policy(nil), policyList...), nil }
+	deps.ListRuns = func(limit int) ([]Run, error) {
+		if limit != 42 {
+			t.Fatalf("ListRuns limit = %d, want request limit", limit)
+		}
+		return []Run{
+			{PolicyName: "persisted earlier", ServerName: "srv-persisted", ScheduledForUTC: "2026-01-05T02:30:00Z", Status: RunQueued, Summary: "Persisted run pending"},
+			{PolicyName: "persisted later", ServerName: "srv-projected", ScheduledForUTC: "2026-01-05T04:00:00Z", Status: RunQueued, Summary: "Later persisted run"},
+			{PolicyName: "past persisted", ServerName: "srv-past", ScheduledForUTC: "2026-01-05T00:30:00Z", Status: RunQueued, Summary: "Past persisted run"},
+		}, nil
+	}
+
+	projection, err := NewService(deps).ProjectSchedule(ScheduleProjectionRequest{
+		Now:      now,
+		Servers:  serverList,
+		RunLimit: 42,
+	})
+	if err != nil {
+		t.Fatalf("ProjectSchedule() error = %v", err)
+	}
+	persisted := projection.Servers["srv-persisted"].NextRun
+	if persisted.PolicyName != "persisted earlier" || persisted.ScheduledForUTC != "2026-01-05T02:30:00Z" || persisted.Status != RunQueued {
+		t.Fatalf("srv-persisted next run = %+v, want earlier persisted run", persisted)
+	}
+	projected := projection.Servers["srv-projected"].NextRun
+	if projected.PolicyName != "projected-wins" || projected.ScheduledForUTC != "2026-01-05T03:00:00.000000000Z" || projected.Status != ScheduleProjectionStateScheduled {
+		t.Fatalf("srv-projected next run = %+v, want earlier projected run", projected)
+	}
+	past := projection.Servers["srv-past"].NextRun
+	if past.PolicyName != "past-ignored" || past.ScheduledForUTC != "2026-01-05T03:00:00.000000000Z" {
+		t.Fatalf("srv-past next run = %+v, want past persisted run ignored", past)
+	}
+}
+
 func TestServiceProcessDueSendsCandidatesAndPolicySideSkipsToScheduledRunCallback(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	policies := []Policy{

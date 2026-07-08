@@ -57,6 +57,16 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.QueryPackageCVEs == nil {
 		d.QueryPackageCVEs = func(SSHConnection, string) ([]string, error) { return []string{}, nil }
 	}
+	if d.GetUpgradable == nil && d.RunSSHCommandWithTimeout != nil {
+		run := d.RunSSHCommandWithTimeout
+		d.GetUpgradable = func(conn SSHConnection, timeout time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error) {
+			result, err := DiscoverPackageUpdates(conn, timeout, run)
+			if err != nil {
+				return nil, nil, servers.UpgradePlan{}, err
+			}
+			return result.PendingUpdates, result.Upgradable, result.UpgradePlan, nil
+		}
+	}
 	if d.IsPostcheckFailureBlocking == nil {
 		d.IsPostcheckFailureBlocking = func(string, PostUpdateCheckConfig) bool { return true }
 	}

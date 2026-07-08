@@ -2136,44 +2136,11 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 }
 
 func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-	stdout, stderr, err := runSSHCommandWithTimeout(client, aptListUpgradableCmd, nil, timeout)
-	if err != nil {
-		return nil, nil, UpgradePlan{}, markRetryableFromOutput(err, stdout+"\n"+stderr)
-	}
-	standardPending, standardUpgradable, err := parseUpgradableEntries(stdout)
+	result, err := updatespkg.DiscoverPackageUpdates(client, timeout, runSSHCommandWithTimeout)
 	if err != nil {
 		return nil, nil, UpgradePlan{}, err
 	}
-
-	fullUpgradeStdout, _, fullUpgradeErr := runSSHCommandWithTimeout(client, aptFullUpgradeSimCmd, nil, timeout)
-	fullUpgradePlanAvailable := fullUpgradeErr == nil
-	metadataStdout, _, metadataErr := runSSHCommandWithTimeout(client, aptListMetadataCmd, nil, timeout)
-	if metadataErr != nil {
-		pending, upgradable, plan := updatespkg.MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeStdout, fullUpgradePlanAvailable)
-		plan = enrichKeptBackSecurityPlan(client, timeout, pending, plan)
-		return pending, upgradable, plan, nil
-	}
-	metadataPending, metadataUpgradable := updatespkg.ParseAptListMetadataEntries(metadataStdout, nil)
-	mergedPending, mergedUpgradable, plan := updatespkg.MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeStdout, fullUpgradePlanAvailable)
-	plan = enrichKeptBackSecurityPlan(client, timeout, mergedPending, plan)
-	return mergedPending, mergedUpgradable, plan, nil
-}
-
-func enrichKeptBackSecurityPlan(client sshConnection, timeout time.Duration, pending []PendingUpdate, plan UpgradePlan) UpgradePlan {
-	packages := keptBackSecurityPackagesFromPendingUpdates(pending)
-	if len(packages) == 0 {
-		return plan
-	}
-	cmd := updatespkg.BuildSelectedInstallSimulationCmd(packages)
-	if cmd == "" {
-		return plan
-	}
-	stdout, stderr, err := runSSHCommandWithTimeout(client, cmd, nil, timeout)
-	if err != nil {
-		return plan
-	}
-	updatespkg.ApplyKeptBackSecuritySimulation(&plan, stdout+"\n"+stderr)
-	return plan
+	return result.PendingUpdates, result.Upgradable, result.UpgradePlan, nil
 }
 
 func parseUpgradableEntries(stdout string) ([]PendingUpdate, []string, error) {
@@ -2186,10 +2153,6 @@ func sortPendingUpdates(updates []PendingUpdate) {
 
 func normalizeApprovalScope(scope string) string {
 	return updatespkg.NormalizeApprovalScope(scope)
-}
-
-func keptBackSecurityPackagesFromPendingUpdates(updates []PendingUpdate) []string {
-	return updatespkg.KeptBackSecurityPackagesFromPendingUpdates(updates)
 }
 
 func buildSelectedUpgradeCmd(packages []string) string {

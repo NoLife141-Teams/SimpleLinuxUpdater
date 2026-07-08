@@ -12,6 +12,7 @@ import (
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
+	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
 )
@@ -756,126 +757,38 @@ func timelinePhaseProgress(key string) int {
 }
 
 func activeTimelineState(state string) bool {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "active", "queued", "waiting":
-		return true
-	default:
-		return false
-	}
+	return runtimepkg.ActiveTimelineState(state)
 }
 
 func statusBlocksTransientAction(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh":
-		return true
-	default:
-		return false
-	}
+	return runtimepkg.BlocksTransientAction(status)
 }
 
 func runningTimelineState(state string) bool {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "active", "queued":
-		return true
-	default:
-		return false
-	}
+	return runtimepkg.RunningTimelineState(state)
 }
 
 func terminalTimelineState(state string) bool {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "done", "error":
-		return true
-	default:
-		return false
-	}
-}
-
-func timelinePhaseFromJobPhase(phase string) string {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
-	case jobs.PhaseDial, jobs.PhasePrechecks:
-		return "prechecks"
-	case jobs.PhaseAptUpdate:
-		return "apt_update"
-	case jobs.PhaseApprovalWait:
-		return "pending_approval"
-	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseApply:
-		return "upgrade"
-	case jobs.PhasePostchecks:
-		return "postchecks"
-	case jobs.PhaseComplete:
-		return "done_error"
-	default:
-		return ""
-	}
+	return runtimepkg.TerminalTimelineState(state)
 }
 
 func timelinePhaseFromServerStatus(status string) (string, string) {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "pending_approval":
-		return "pending_approval", "waiting"
-	case "updating":
-		return "prechecks", "active"
-	case "sudoers", "facts_refresh":
-		return "prechecks", "active"
-	case "upgrading", "autoremove":
-		return "upgrade", "active"
-	case "done", "success", "approved":
-		return "done_error", "done"
-	case "error", "failure", "failed", "cancelled":
-		return "done_error", "error"
-	default:
-		return "", "idle"
-	}
+	projection := runtimepkg.TimelineProjectionFromServerStatus(status)
+	return projection.CurrentPhase, projection.State
 }
 
 func timelineStateFromJob(job jobs.Record) (string, string) {
-	status := strings.ToLower(strings.TrimSpace(job.Status))
-	phase := timelinePhaseFromJobPhase(job.Phase)
-	switch status {
-	case jobs.StatusSucceeded:
-		return "done_error", "done"
-	case jobs.StatusFailed, jobs.StatusCancelled, jobs.StatusInterrupted:
-		return "done_error", "error"
-	case jobs.StatusWaitingApproval:
-		return "pending_approval", "waiting"
-	case jobs.StatusQueued:
-		if phase == "" {
-			phase = "prechecks"
-		}
-		return phase, "queued"
-	case jobs.StatusRunning:
-		if phase == "" {
-			phase = "prechecks"
-		}
-		return phase, "active"
-	default:
-		if phase != "" {
-			return phase, "active"
-		}
-		return "", "idle"
-	}
+	projection := runtimepkg.TimelineProjectionFromJob(job)
+	return projection.CurrentPhase, projection.State
 }
 
 func dashboardTimelineJobForStatus(status *servers.ServerStatus, job *jobs.Record) *jobs.Record {
-	if job == nil || strings.TrimSpace(job.ID) == "" {
-		return nil
-	}
+	statusValue := ""
 	if status == nil {
-		return job
+		return runtimepkg.DashboardTimelineJobForStatus(statusValue, job)
 	}
-	_, serverState := timelinePhaseFromServerStatus(status.Status)
-	_, jobState := timelineStateFromJob(*job)
-	if jobState == "idle" {
-		return nil
-	}
-	if activeTimelineState(serverState) && !activeTimelineState(jobState) {
-		return nil
-	}
-	if terminalTimelineState(serverState) && terminalTimelineState(jobState) && serverState != jobState {
-		return nil
-	}
-	return job
+	statusValue = status.Status
+	return runtimepkg.DashboardTimelineJobForStatus(statusValue, job)
 }
 
 func (s *Service) latestUpdateJobsByServer() (map[string]jobs.Record, error) {

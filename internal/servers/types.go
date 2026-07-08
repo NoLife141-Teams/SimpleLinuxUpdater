@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	runtimepkg "debian-updater/internal/runtime"
 )
 
 var (
@@ -149,13 +151,7 @@ func NewState(mu *sync.Mutex, servers *[]Server, statusMap *map[string]*ServerSt
 }
 
 func defaultStatusInProgress(status string) bool {
-	return status == "updating" ||
-		status == "pending_approval" ||
-		status == "approved" ||
-		status == "upgrading" ||
-		status == "autoremove" ||
-		status == "sudoers" ||
-		status == "facts_refresh"
+	return runtimepkg.StatusInProgress(status)
 }
 
 func (s *State) Lock() {

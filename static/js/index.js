@@ -375,6 +375,37 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            return reason || "Completed with errors";
 	        }
 
+	        function getServerActionContract(server, key, options = {}) {
+	            if (!server || !key) return null;
+	            const intelligence = getServerIntelligence(server?.name);
+	            const actions = intelligence?.actions;
+	            if (!actions || typeof actions !== "object" || Array.isArray(actions)) return null;
+	            const action = actions[key];
+	            if (!action || typeof action !== "object" || typeof action.enabled !== "boolean") return null;
+	            const normalized = {
+	                ...action,
+	                enabled: !!action.enabled,
+	                reason: String(action.reason || ""),
+	                readiness: String(action.readiness || ""),
+	                blocking_status: String(action.blocking_status || "")
+	            };
+	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
+	                return normalized;
+	            }
+	            return {
+	                ...normalized,
+	                enabled: false,
+	                readiness: "in_progress",
+	                reason: "Another action is already running for this host"
+	            };
+	        }
+
+	        function dashboardActionEnabled(server, key, fallback, options = {}) {
+	            const action = getServerActionContract(server, key, options);
+	            if (action) return !!action.enabled;
+	            return typeof fallback === "function" ? !!fallback() : !!fallback;
+	        }
+
 	        function getServerApprovalTriage(server, options = {}) {
 	            const intelligence = getServerIntelligence(server?.name);
 	            const approvalCounts = getPendingApprovalCounts(server);
@@ -401,11 +432,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                can_refresh_facts: canRunTransientAction(server),
 	                can_run_checks: canRunTransientAction(server)
 	            };
+	            const actionOptions = { ignoreInFlight: true };
+	            const contractTriage = {
+	                ...triage,
+	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, actionOptions),
+	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, actionOptions),
+	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, actionOptions),
+	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, actionOptions),
+	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, actionOptions),
+	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, actionOptions),
+	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, actionOptions)
+	            };
 	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
-	                return triage;
+	                return contractTriage;
 	            }
 	            return {
-	                ...triage,
+	                ...contractTriage,
 	                can_approve_all: false,
 	                can_approve_security: false,
 	                can_approve_kept_back_security: false,
@@ -1936,19 +1978,19 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
 		        function canRunUpdateAction(server) {
-		            return canRunTransientAction(server);
+		            return dashboardActionEnabled(server, "update", () => canRunTransientAction(server));
 		        }
 
 		        function canRunAutoremoveAction(server) {
-		            return canRunTransientAction(server);
+		            return dashboardActionEnabled(server, "autoremove", () => canRunTransientAction(server));
 		        }
 
 		        function canRunSudoersAction(server) {
-		            return canRunTransientAction(server);
+		            return dashboardActionEnabled(server, "enable_apt", () => canRunTransientAction(server));
 		        }
 
 		        function canRefreshFactsAction(server) {
-		            return canRunTransientAction(server);
+		            return dashboardActionEnabled(server, "refresh_facts", () => canRunTransientAction(server));
 		        }
 
         function updateSelectPageState() {

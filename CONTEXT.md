@@ -20,6 +20,10 @@ _Avoid_: Scheduled policy execution, policy job
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query
 
+**Dashboard Action Contract**:
+The Dashboard Projection-owned action eligibility vocabulary for dashboard-visible server actions, including whether each action is enabled, why it is ready or blocked, its machine-readable readiness state, blocking status, and action-specific counts.
+_Avoid_: Button state logic, frontend action rules
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

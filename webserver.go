@@ -2155,10 +2155,6 @@ func normalizeApprovalScope(scope string) string {
 	return updatespkg.NormalizeApprovalScope(scope)
 }
 
-func keptBackSecurityPackagesFromPendingUpdates(updates []PendingUpdate) []string {
-	return updatespkg.KeptBackSecurityPackagesFromPendingUpdates(updates)
-}
-
 func buildSelectedUpgradeCmd(packages []string) string {
 	return updatespkg.BuildSelectedUpgradeCmd(packages)
 }

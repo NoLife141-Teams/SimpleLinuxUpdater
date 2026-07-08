@@ -122,10 +122,6 @@ func saveGlobalUpdatePolicyBlackoutsWithRepository(repo policypkg.Repository, wi
 	return repo.SaveGlobalBlackouts(normalized)
 }
 
-func parseTimeLocalMinutes(raw string) (int, error) {
-	return policypkg.ParseTimeLocalMinutes(raw)
-}
-
 func listUpdatePolicies() ([]UpdatePolicy, error) {
 	return defaultPolicyRepository().ListPolicies()
 }
@@ -261,10 +257,6 @@ func policyDueAt(policy UpdatePolicy, slotLocal time.Time) bool {
 
 func canonicalScheduledForUTC(slotLocal time.Time) string {
 	return policypkg.CanonicalScheduledForUTC(slotLocal, jobTimestampLayout, currentAppLocation)
-}
-
-func blackoutApplies(slotLocal time.Time, windows []UpdatePolicyBlackoutWindow) bool {
-	return defaultPolicyService().BlackoutApplies(slotLocal, windows)
 }
 
 func buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {

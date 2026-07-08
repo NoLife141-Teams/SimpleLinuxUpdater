@@ -182,10 +182,6 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 				},
 			}, nil
 		},
-		ListPolicies:        func() ([]policies.Policy, error) { return nil, nil },
-		LoadOverrides:       func() (map[int64]map[string]bool, error) { return nil, nil },
-		LoadGlobalBlackouts: func() ([]policies.BlackoutWindow, error) { return nil, nil },
-		ListPolicyRuns:      func(int) ([]policies.Run, error) { return nil, nil },
 		ParseAppTimestamp: func(raw string) (time.Time, error) {
 			return time.Parse(time.RFC3339, raw)
 		},
@@ -242,6 +238,71 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 	}
 }
 
+func TestServiceBuildDashboardSummaryUsesPolicyScheduleProjection(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-schedule-projection.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	scheduledFor := now.Add(2 * time.Hour).Format(time.RFC3339)
+
+	service := NewService(ServiceDeps{
+		DB:              func() *sql.DB { return db },
+		DBPath:          func() string { return path },
+		CurrentTimezone: func() (*time.Location, string) { return time.UTC, "UTC" },
+		CurrentLocation: func() *time.Location { return time.UTC },
+		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
+			return "display:" + raw, "UTC"
+		},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-a"}}, map[string]*servers.ServerStatus{
+				"srv-a": {Name: "srv-a", Status: "online"},
+			}
+		},
+		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
+			return map[string]updates.ServerFactsRecord{}, nil
+		},
+		ProjectPolicySchedule: func(req policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error) {
+			if req.RunLimit != 500 || len(req.Servers) != 1 || req.Servers[0].Name != "srv-a" {
+				t.Fatalf("schedule projection request = %+v, want dashboard server and run limit", req)
+			}
+			return policies.ScheduleProjection{Servers: map[string]policies.ServerScheduleProjection{
+				"srv-a": {
+					NextRun: policies.ProjectedScheduleRun{
+						State:           policies.ScheduleProjectionStateScheduled,
+						PolicyName:      "nightly",
+						ScheduledForUTC: scheduledFor,
+						Status:          "scheduled",
+						Summary:         "Scheduled run pending",
+					},
+					NoRun: policies.NoRunWindow{
+						Active:     true,
+						Scope:      policies.NoRunScopePolicy,
+						Reason:     policies.RunReasonBlackout,
+						PolicyName: "nightly",
+					},
+				},
+			}}, nil
+		},
+		ParseAppTimestamp: func(raw string) (time.Time, error) {
+			return time.Parse(time.RFC3339, raw)
+		},
+		UpdateCompleteAction: "update.complete",
+	})
+
+	summary, err := service.BuildDashboardSummary("7d", now)
+	if err != nil {
+		t.Fatalf("BuildDashboardSummary() error = %v", err)
+	}
+	if len(summary.Servers) != 1 {
+		t.Fatalf("server count = %d, want 1", len(summary.Servers))
+	}
+	got := summary.Servers[0]
+	if got.NextRun.State != policies.ScheduleProjectionStateScheduled || got.NextRun.PolicyName != "nightly" || got.NextRun.ScheduledForDisplay != "display:"+scheduledFor {
+		t.Fatalf("next run = %+v, want injected policy projection", got.NextRun)
+	}
+	if !got.NoRun.Active || got.NoRun.Scope != policies.NoRunScopePolicy || got.NoRun.Summary != "nightly no-run window active" {
+		t.Fatalf("no-run = %+v, want injected policy no-run window", got.NoRun)
+	}
+}
+
 func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 	db, path := newTestDB(t, "dashboard-timeline.db")
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -286,10 +347,6 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 				"srv-sudoers":               {ServerName: "srv-sudoers", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 			}, nil
 		},
-		ListPolicies:        func() ([]policies.Policy, error) { return nil, nil },
-		LoadOverrides:       func() (map[int64]map[string]bool, error) { return nil, nil },
-		LoadGlobalBlackouts: func() ([]policies.BlackoutWindow, error) { return nil, nil },
-		ListPolicyRuns:      func(int) ([]policies.Run, error) { return nil, nil },
 		ParseAppTimestamp: func(raw string) (time.Time, error) {
 			return time.Parse(time.RFC3339, raw)
 		},

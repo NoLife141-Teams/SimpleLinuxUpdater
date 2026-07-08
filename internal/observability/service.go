@@ -73,40 +73,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			return updates.DefaultHealthSnapshotRetentionDays, nil
 		}
 	}
-	if d.ListPolicies == nil {
-		d.ListPolicies = func() ([]policies.Policy, error) { return []policies.Policy{}, nil }
-	}
-	if d.LoadOverrides == nil {
-		d.LoadOverrides = func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil }
-	}
-	if d.LoadGlobalBlackouts == nil {
-		d.LoadGlobalBlackouts = func() ([]policies.BlackoutWindow, error) { return []policies.BlackoutWindow{}, nil }
-	}
-	if d.ListPolicyRuns == nil {
-		d.ListPolicyRuns = func(int) ([]policies.Run, error) { return []policies.Run{}, nil }
-	}
 	defaultPolicy := policies.NewService(policies.ServiceDeps{})
-	if d.PolicyMatchesServer == nil {
-		d.PolicyMatchesServer = func(policy policies.Policy, server servers.Server, overrides map[int64]map[string]bool) bool {
-			return defaultPolicy.PolicyMatchesServer(policy, server, policies.MatchContext{Overrides: overrides})
-		}
-	}
-	if d.PolicyDueAt == nil {
-		d.PolicyDueAt = defaultPolicy.PolicyDueAt
-	}
-	if d.BlackoutApplies == nil {
-		d.BlackoutApplies = defaultPolicy.BlackoutApplies
-	}
-	if d.ComparePolicyCandidates == nil {
-		d.ComparePolicyCandidates = defaultPolicy.ComparePolicyCandidates
-	}
-	if d.CanonicalScheduledForUTC == nil {
-		d.CanonicalScheduledForUTC = func(slotLocal time.Time) string {
-			return policies.CanonicalScheduledForUTC(slotLocal, d.JobTimestampLayout, d.CurrentLocation)
-		}
-	}
-	if d.ParseTimeLocalMinutes == nil {
-		d.ParseTimeLocalMinutes = policies.ParseTimeLocalMinutes
+	if d.ProjectPolicySchedule == nil {
+		d.ProjectPolicySchedule = defaultPolicy.ProjectSchedule
 	}
 	if d.ParseAppTimestamp == nil {
 		d.ParseAppTimestamp = func(raw string) (time.Time, error) { return time.Parse(time.RFC3339, raw) }
@@ -557,163 +526,38 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 	return risk
 }
 
-func (s *Service) buildNoRunInfo(server servers.Server, policyList []policies.Policy, overrides map[int64]map[string]bool, globalBlackouts []policies.BlackoutWindow, now time.Time) DashboardNoRunInfo {
-	deps := s.EnsureDeps()
-	loc, timezoneName := deps.CurrentTimezone()
-	localNow := now.In(loc)
-	if deps.BlackoutApplies(localNow, globalBlackouts) {
-		return DashboardNoRunInfo{Active: true, Scope: "global", Summary: "Global no-run window active", Timezone: timezoneName}
+func dashboardScheduleInfoFromPolicy(next policies.ProjectedScheduleRun, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardScheduleInfo {
+	if strings.TrimSpace(next.State) == "" && strings.TrimSpace(next.ScheduledForUTC) == "" {
+		return defaultScheduleInfo()
 	}
-	for _, policy := range policyList {
-		if !deps.PolicyMatchesServer(policy, server, overrides) {
-			continue
-		}
-		if deps.BlackoutApplies(localNow, policy.PolicyBlackouts) {
-			return DashboardNoRunInfo{Active: true, Scope: "policy", Summary: fmt.Sprintf("%s no-run window active", policy.Name), Timezone: timezoneName}
-		}
-	}
-	return DashboardNoRunInfo{Active: false, Summary: "No no-run window active", Timezone: timezoneName}
-}
-
-type projectedPolicyRun struct {
-	policy         policies.Policy
-	scheduledLocal time.Time
-	scheduledUTC   string
-}
-
-func (s *Service) nextPolicyOccurrenceLocal(policy policies.Policy, fromLocal time.Time, globalBlackouts []policies.BlackoutWindow) (time.Time, bool) {
-	deps := s.EnsureDeps()
-	minutes, err := deps.ParseTimeLocalMinutes(policy.TimeLocal)
-	if err != nil {
-		return time.Time{}, false
-	}
-	hour := minutes / 60
-	minute := minutes % 60
-	loc := fromLocal.Location()
-	if loc == nil {
-		loc = deps.CurrentLocation()
-	}
-	startDay := time.Date(fromLocal.Year(), fromLocal.Month(), fromLocal.Day(), 0, 0, 0, 0, loc)
-	for offset := 0; offset <= 14; offset++ {
-		day := startDay.AddDate(0, 0, offset)
-		slot := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
-		if slot.Before(fromLocal) {
-			continue
-		}
-		if !deps.PolicyDueAt(policy, slot) {
-			continue
-		}
-		if deps.BlackoutApplies(slot, globalBlackouts) || deps.BlackoutApplies(slot, policy.PolicyBlackouts) {
-			continue
-		}
-		return slot, true
-	}
-	return time.Time{}, false
-}
-
-func (s *Service) projectedPolicyRunBefore(candidate, current projectedPolicyRun) bool {
-	deps := s.EnsureDeps()
-	if current.scheduledUTC == "" {
-		return true
-	}
-	candidateUTC := candidate.scheduledLocal.UTC()
-	currentUTC := current.scheduledLocal.UTC()
-	if !candidateUTC.Equal(currentUTC) {
-		return candidateUTC.Before(currentUTC)
-	}
-	return deps.ComparePolicyCandidates(
-		policies.ScheduledCandidate{Policy: candidate.policy, ScheduledForUTC: candidate.scheduledUTC},
-		policies.ScheduledCandidate{Policy: current.policy, ScheduledForUTC: current.scheduledUTC},
-	)
-}
-
-func parseScheduledUTC(raw, layout string) (time.Time, error) {
-	raw = strings.TrimSpace(raw)
-	if parsed, err := time.Parse(layout, raw); err == nil {
-		return parsed, nil
-	}
-	return time.Parse(time.RFC3339, raw)
-}
-
-func (s *Service) mergeProjectedNextRun(result map[string]DashboardScheduleInfo, serverName string, projected projectedPolicyRun, loc *time.Location, timezoneName string) {
-	deps := s.EnsureDeps()
-	if projected.scheduledUTC == "" {
-		return
-	}
-	if current, exists := result[serverName]; exists {
-		currentTime, err := parseScheduledUTC(current.ScheduledForUTC, deps.JobTimestampLayout)
-		if err == nil && !currentTime.After(projected.scheduledLocal.UTC()) {
-			return
-		}
-	}
-	display, _ := deps.FormatTimestamp(projected.scheduledUTC, loc, timezoneName)
-	result[serverName] = DashboardScheduleInfo{
-		State:               "scheduled",
-		PolicyName:          projected.policy.Name,
-		ScheduledForUTC:     projected.scheduledUTC,
+	display, _ := deps.FormatTimestamp(next.ScheduledForUTC, loc, timezoneName)
+	return DashboardScheduleInfo{
+		State:               next.State,
+		PolicyName:          next.PolicyName,
+		ScheduledForUTC:     next.ScheduledForUTC,
 		ScheduledForDisplay: display,
-		Status:              "scheduled",
-		Summary:             "Scheduled run pending",
+		Status:              next.Status,
+		Reason:              next.Reason,
+		Summary:             next.Summary,
 	}
 }
 
-func (s *Service) buildNextRunMap(now time.Time, serversSnapshot []servers.Server, policyList []policies.Policy, overrides map[int64]map[string]bool, globalBlackouts []policies.BlackoutWindow) (map[string]DashboardScheduleInfo, error) {
-	deps := s.EnsureDeps()
-	runs, err := deps.ListPolicyRuns(500)
-	if err != nil {
-		return nil, err
+func dashboardNoRunInfoFromPolicy(noRun policies.NoRunWindow, timezoneName string) DashboardNoRunInfo {
+	if !noRun.Active {
+		return DashboardNoRunInfo{Active: false, Summary: "No no-run window active", Timezone: timezoneName}
 	}
-	loc, timezoneName := deps.CurrentTimezone()
-	result := map[string]DashboardScheduleInfo{}
-	cutoff := now.UTC().Truncate(time.Minute)
-	for _, run := range runs {
-		scheduled, err := parseScheduledUTC(run.ScheduledForUTC, deps.JobTimestampLayout)
-		if err != nil || scheduled.Before(cutoff) {
-			continue
+	switch noRun.Scope {
+	case policies.NoRunScopeGlobal:
+		return DashboardNoRunInfo{Active: true, Scope: noRun.Scope, Summary: "Global no-run window active", Timezone: timezoneName}
+	case policies.NoRunScopePolicy:
+		summary := "Policy no-run window active"
+		if strings.TrimSpace(noRun.PolicyName) != "" {
+			summary = fmt.Sprintf("%s no-run window active", noRun.PolicyName)
 		}
-		current, exists := result[run.ServerName]
-		if exists {
-			currentTime, currentErr := parseScheduledUTC(current.ScheduledForUTC, deps.JobTimestampLayout)
-			if currentErr == nil && !scheduled.Before(currentTime) {
-				continue
-			}
-		}
-		display, _ := deps.FormatTimestamp(run.ScheduledForUTC, loc, timezoneName)
-		result[run.ServerName] = DashboardScheduleInfo{
-			State:               "scheduled",
-			PolicyName:          run.PolicyName,
-			ScheduledForUTC:     run.ScheduledForUTC,
-			ScheduledForDisplay: display,
-			Status:              run.Status,
-			Reason:              run.Reason,
-			Summary:             run.Summary,
-		}
+		return DashboardNoRunInfo{Active: true, Scope: noRun.Scope, Summary: summary, Timezone: timezoneName}
+	default:
+		return DashboardNoRunInfo{Active: true, Scope: noRun.Scope, Summary: "No-run window active", Timezone: timezoneName}
 	}
-	localNow := now.In(loc).Truncate(time.Minute)
-	projectedByServer := map[string]projectedPolicyRun{}
-	for _, server := range serversSnapshot {
-		for _, policy := range policyList {
-			if !deps.PolicyMatchesServer(policy, server, overrides) {
-				continue
-			}
-			slotLocal, ok := s.nextPolicyOccurrenceLocal(policy, localNow, globalBlackouts)
-			if !ok {
-				continue
-			}
-			projected := projectedPolicyRun{
-				policy:         policy,
-				scheduledLocal: slotLocal,
-				scheduledUTC:   deps.CanonicalScheduledForUTC(slotLocal),
-			}
-			if s.projectedPolicyRunBefore(projected, projectedByServer[server.Name]) {
-				projectedByServer[server.Name] = projected
-			}
-		}
-	}
-	for serverName, projected := range projectedByServer {
-		s.mergeProjectedNextRun(result, serverName, projected, loc, timezoneName)
-	}
-	return result, nil
 }
 
 func defaultScheduleInfo() DashboardScheduleInfo {
@@ -1240,19 +1084,11 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
-	policyList, err := deps.ListPolicies()
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	overrides, err := deps.LoadOverrides()
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	globalBlackouts, err := deps.LoadGlobalBlackouts()
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	nextRuns, err := s.buildNextRunMap(now, serversSnapshot, policyList, overrides, globalBlackouts)
+	scheduleProjection, err := deps.ProjectPolicySchedule(policies.ScheduleProjectionRequest{
+		Now:      now,
+		Servers:  serversSnapshot,
+		RunLimit: 500,
+	})
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
@@ -1372,7 +1208,9 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		if agg == nil {
 			agg = &dashboardUpdateHistoryProjection{}
 		}
-		nextRun := nextRuns[server.Name]
+		schedule := scheduleProjection.Servers[server.Name]
+		nextRun := dashboardScheduleInfoFromPolicy(schedule.NextRun, deps, loc, timezoneName)
+		noRun := dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName)
 		var latestUpdateJob *jobs.Record
 		if job, ok := latestUpdateJobs[server.Name]; ok {
 			jobCopy := job
@@ -1383,7 +1221,7 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 			status:          status,
 			fact:            fact,
 			nextRun:         nextRun,
-			noRun:           s.buildNoRunInfo(server, policyList, overrides, globalBlackouts, now),
+			noRun:           noRun,
 			latestUpdateJob: latestUpdateJob,
 			updateHistory:   *agg,
 			commandHistory:  commandHistory[server.Name],

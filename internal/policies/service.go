@@ -19,6 +19,7 @@ type ServiceDeps struct {
 	ListPolicies             func() ([]Policy, error)
 	LoadOverrides            func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts      func() ([]BlackoutWindow, error)
+	ListRuns                 func(int) ([]Run, error)
 	SnapshotServers          func() []servers.Server
 	HandleScheduledRun       func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation          func() *time.Location

@@ -1,6 +1,10 @@
 package policies
 
-import "time"
+import (
+	"time"
+
+	"debian-updater/internal/servers"
+)
 
 const (
 	ExecutionScanOnly         = "scan_only"
@@ -112,6 +116,37 @@ type Run struct {
 	UpdatedAt           string `json:"updated_at"`
 	StartedAt           string `json:"started_at"`
 	FinishedAt          string `json:"finished_at"`
+}
+
+type ScheduleProjectionRequest struct {
+	Now      time.Time
+	Servers  []servers.Server
+	RunLimit int
+}
+
+type ScheduleProjection struct {
+	Servers map[string]ServerScheduleProjection
+}
+
+type ServerScheduleProjection struct {
+	NextRun ProjectedScheduleRun
+	NoRun   NoRunWindow
+}
+
+type ProjectedScheduleRun struct {
+	State           string
+	PolicyName      string
+	ScheduledForUTC string
+	Status          string
+	Reason          string
+	Summary         string
+}
+
+type NoRunWindow struct {
+	Active     bool
+	Scope      string
+	Reason     string
+	PolicyName string
 }
 
 type SettingsResponse struct {

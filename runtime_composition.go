@@ -170,6 +170,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			ListPolicies:             deps.PolicyRepository.ListPolicies,
 			LoadOverrides:            deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts:      deps.PolicyRepository.LoadGlobalBlackouts,
+			ListRuns:                 deps.PolicyRepository.ListRuns,
 			CurrentLocation:          deps.CurrentAppLocation,
 			CurrentMaintenanceActive: deps.CurrentMaintenanceActive,
 			Now:                      deps.Now,
@@ -210,7 +211,14 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.ObservabilityService == nil {
-		policyDeps := deps.PolicyService.EnsureDeps()
+		policyScheduleDeps := deps.PolicyService.EnsureDeps()
+		policyScheduleDeps.ListRuns = deps.PolicyRepository.ListRuns
+		policyScheduleDeps.CurrentLocation = deps.CurrentAppLocation
+		policyScheduleDeps.Now = deps.Now
+		policyScheduleDeps.SnapshotServers = func() []Server {
+			return deps.ServerState.CloneServers()
+		}
+		policyScheduleService := policypkg.NewService(policyScheduleDeps)
 		deps.ObservabilityService = NewObservabilityService(ObservabilityServiceDeps{
 			DB:              deps.DB,
 			DBPath:          deps.DBPath,
@@ -224,16 +232,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			LoadServerFacts:             factsRepo.LoadAll,
 			ListHealthSnapshots:         factsRepo.ListHealthSnapshots,
 			HealthSnapshotRetentionDays: factsRepo.HealthSnapshotRetentionDays,
-			ListPolicies:                policyDeps.ListPolicies,
-			LoadOverrides:               policyDeps.LoadOverrides,
-			LoadGlobalBlackouts:         policyDeps.LoadGlobalBlackouts,
-			ListPolicyRuns:              deps.PolicyRepository.ListRuns,
-			PolicyMatchesServer: func(policy UpdatePolicy, server Server, overrides map[int64]map[string]bool) bool {
-				return deps.PolicyService.PolicyMatchesServer(policy, server, PolicyMatchContext{Overrides: overrides})
-			},
-			PolicyDueAt:             deps.PolicyService.PolicyDueAt,
-			BlackoutApplies:         deps.PolicyService.BlackoutApplies,
-			ComparePolicyCandidates: deps.PolicyService.ComparePolicyCandidates,
+			ProjectPolicySchedule:       policyScheduleService.ProjectSchedule,
 		})
 	}
 	if deps.NewSessionManager == nil {

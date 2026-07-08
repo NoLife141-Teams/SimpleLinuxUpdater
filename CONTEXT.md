@@ -16,6 +16,10 @@ _Avoid_: Approval intent, upgrade mode
 One scheduler-created attempt to apply a scheduled update policy to one server for one scheduled time, including skipped, queued, running, waiting-approval, succeeded, failed, cancelled, and interrupted outcomes.
 _Avoid_: Scheduled policy execution, policy job
 
+**Policy Schedule Projection**:
+The read-only interpretation of scheduled policy matching, cadence, no-run windows, candidate priority, and future scheduled-run state into per-server schedule facts consumed by Dashboard Projection and calendar-facing views.
+_Avoid_: Dashboard schedule helper, next-run calculation
+
 **Dashboard Projection**:
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query

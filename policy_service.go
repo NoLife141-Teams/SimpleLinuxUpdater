@@ -11,6 +11,8 @@ import (
 
 type PolicyServiceDeps = policypkg.ServiceDeps
 type PolicyScheduleRequest = policypkg.ScheduleRequest
+type PolicyScheduleProjectionRequest = policypkg.ScheduleProjectionRequest
+type PolicyScheduleProjection = policypkg.ScheduleProjection
 type PolicyMatchContext = policypkg.MatchContext
 type PolicySchedulerOptions = policypkg.SchedulerOptions
 type PolicyScheduledRunRequest = policypkg.ScheduledRunRequest
@@ -42,6 +44,9 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	}
 	if deps.LoadGlobalBlackouts == nil {
 		deps.LoadGlobalBlackouts = loadGlobalUpdatePolicyBlackouts
+	}
+	if deps.ListRuns == nil {
+		deps.ListRuns = listUpdatePolicyRuns
 	}
 	if deps.SnapshotServers == nil {
 		deps.SnapshotServers = snapshotServers

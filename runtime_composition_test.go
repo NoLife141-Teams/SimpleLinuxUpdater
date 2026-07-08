@@ -172,15 +172,109 @@ func TestRuntimeCompositionSharesStateAndPolicyRepositoryAcrossServices(t *testi
 	if err != nil {
 		t.Fatalf("policy service list policies: %v", err)
 	}
-	observabilityList, err := deps.ObservabilityService.EnsureDeps().ListPolicies()
+	observabilityProjection, err := deps.ObservabilityService.EnsureDeps().ProjectPolicySchedule(PolicyScheduleProjectionRequest{
+		Now:     time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		Servers: []Server{{Name: "runtime-shared"}},
+	})
 	if err != nil {
-		t.Fatalf("observability list policies: %v", err)
+		t.Fatalf("observability project policy schedule: %v", err)
 	}
 	if len(policyList) != 1 || policyList[0].Name != "shared policy" {
 		t.Fatalf("policy service policies = %+v, want shared policy", policyList)
 	}
-	if len(observabilityList) != 1 || observabilityList[0].Name != "shared policy" {
-		t.Fatalf("observability policies = %+v, want shared policy", observabilityList)
+	projected := observabilityProjection.Servers["runtime-shared"].NextRun
+	if projected.State != "scheduled" || projected.PolicyName != "shared policy" {
+		t.Fatalf("observability schedule projection = %+v, want shared scheduled policy", projected)
+	}
+}
+
+func TestRuntimeCompositionPolicyScheduleProjectionUsesAppScopedRuns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app-scoped-runs.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := ensureSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	now := time.Date(2026, 7, 5, 1, 0, 0, 0, time.UTC)
+	appRunUTC := "2026-07-05T02:00:00.000000000Z"
+	injectedRunUTC := "2026-07-05T01:30:00.000000000Z"
+	server := Server{Name: "runtime-runs", Host: "192.0.2.81", Port: 22, User: "root"}
+
+	state := newServerState()
+	state.Lock()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	})
+	state.Unlock()
+
+	injectedPolicy := UpdatePolicy{
+		ID:            99,
+		Name:          "injected policy",
+		Enabled:       true,
+		TargetServers: []string{server.Name},
+		PackageScope:  updatePolicyPackageScopeSecurity,
+		ExecutionMode: updatePolicyExecutionScanOnly,
+		CadenceKind:   updatePolicyCadenceDaily,
+		TimeLocal:     "03:00",
+	}
+	injectedService := NewPolicyService(PolicyServiceDeps{
+		ListPolicies: func() ([]UpdatePolicy, error) {
+			return []UpdatePolicy{injectedPolicy}, nil
+		},
+		LoadOverrides: func() (map[int64]map[string]bool, error) {
+			return map[int64]map[string]bool{}, nil
+		},
+		LoadGlobalBlackouts: func() ([]UpdatePolicyBlackoutWindow, error) {
+			return []UpdatePolicyBlackoutWindow{}, nil
+		},
+		ListRuns: func(int) ([]UpdatePolicyRun, error) {
+			return []UpdatePolicyRun{{
+				PolicyID:        injectedPolicy.ID,
+				PolicyName:      "injected service run",
+				ServerName:      server.Name,
+				ScheduledForUTC: injectedRunUTC,
+				Status:          updatePolicyRunQueued,
+			}}, nil
+		},
+		CurrentLocation: func() *time.Location { return time.UTC },
+		Now:             func() time.Time { return now },
+	})
+
+	deps := newRuntimeComposition(AppDeps{
+		DB:            func() *sql.DB { return db },
+		DBPath:        func() string { return dbPath },
+		ServerState:   state,
+		PolicyService: injectedService,
+	}).Compose()
+	if _, _, err := deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+		PolicyID:        7,
+		PolicyName:      "app-scoped queued run",
+		ServerName:      server.Name,
+		ScheduledForUTC: appRunUTC,
+		ExecutionMode:   updatePolicyExecutionScanOnly,
+		PackageScope:    updatePolicyPackageScopeSecurity,
+		UpgradeMode:     updatePolicyUpgradeModeStandard,
+		Status:          updatePolicyRunQueued,
+		Summary:         "App-scoped queued run",
+	}); err != nil {
+		t.Fatalf("create app-scoped run: %v", err)
+	}
+
+	projection, err := deps.ObservabilityService.EnsureDeps().ProjectPolicySchedule(PolicyScheduleProjectionRequest{
+		Now:     now,
+		Servers: []Server{server},
+	})
+	if err != nil {
+		t.Fatalf("project policy schedule: %v", err)
+	}
+	nextRun := projection.Servers[server.Name].NextRun
+	if nextRun.PolicyName != "app-scoped queued run" || nextRun.ScheduledForUTC != appRunUTC {
+		t.Fatalf("next run = %+v, want app-scoped repository run at %s", nextRun, appRunUTC)
 	}
 }
 

@@ -24,6 +24,10 @@ _Avoid_: Dashboard API response, observability query
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping
 
+**Package Discovery and Upgrade Plan**:
+The read-only discovery of pending Debian/Ubuntu package updates after package metadata refresh, including standard upgrade simulation, full-upgrade simulation, apt metadata enrichment, kept-back security simulation, and the derived package/update plan consumed by Approval Scope, Scheduled Run, and Dashboard Projection.
+_Avoid_: Apt helper parsing, upgradable list helper
+
 **Runtime Composition**:
 The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container

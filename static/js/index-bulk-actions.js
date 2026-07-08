@@ -1,4 +1,21 @@
 // Dashboard bulk action and review modal helpers. Loaded before index.js.
+        function bulkDashboardActionKey(actionPath) {
+            if (actionPath === "update") return "update";
+            if (actionPath === "approve") return "approve_all";
+            if (actionPath === "approve-security") return "approve_security";
+            if (actionPath === "approve-security-kept-back") return "approve_security_kept_back";
+            if (actionPath === "cancel") return "cancel";
+            if (actionPath === "autoremove") return "autoremove";
+            if (actionPath === "facts-refresh") return "refresh_facts";
+            return "";
+        }
+
+        function getBulkDashboardAction(actionPath, server, options = {}) {
+            const key = bulkDashboardActionKey(actionPath);
+            if (!key || typeof getServerActionContract !== "function") return null;
+            return getServerActionContract(server, key, options);
+        }
+
 	        function canRunBulkUpdate(server) {
 	            return canRunUpdateAction(server);
 	        }
@@ -28,6 +45,8 @@
 	        }
 
         function canRunBulkAction(actionPath, server) {
+            const action = getBulkDashboardAction(actionPath, server);
+            if (action) return !!action.enabled;
             if (actionPath === "update") return canRunBulkUpdate(server);
             if (actionPath === "approve") return canRunBulkApprove(server);
             if (actionPath === "approve-security") return canRunBulkApproveSecurity(server);
@@ -122,10 +141,12 @@
             return "";
         }
 
-        function bulkReadyReason(actionPath, server) {
-            const counts = getPendingApprovalCounts(server);
-            if (actionPath === "update") return "Ready to start update checks.";
-            if (actionPath === "approve") return `${pluralize(counts.standard, "standard update")} ready for approval.`;
+	        function bulkReadyReason(actionPath, server) {
+            const action = getBulkDashboardAction(actionPath, server);
+            if (action && action.reason) return action.reason;
+	            const counts = getPendingApprovalCounts(server);
+	            if (actionPath === "update") return "Ready to start update checks.";
+	            if (actionPath === "approve") return `${pluralize(counts.standard, "standard update")} ready for approval.`;
             if (actionPath === "approve-security") return `${pluralize(counts.security || 0, "standard security update")} ready for approval.`;
             if (actionPath === "approve-security-kept-back") {
                 const removalNote = counts.keptBackSecurityRemovedPackages.length > 0
@@ -141,6 +162,8 @@
 
         function bulkIneligibleReason(actionPath, server) {
             if (!server) return "Host is no longer loaded";
+            const action = getBulkDashboardAction(actionPath, server);
+            if (action && action.reason) return action.reason;
             if (isSingleHostActionInFlight(server.name)) return "Another action is already running for this host";
             const counts = getPendingApprovalCounts(server);
             if (actionPath === "update") {

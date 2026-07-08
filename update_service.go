@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	runtimepkg "debian-updater/internal/runtime"
 	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
@@ -207,57 +208,15 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
 	if jm == nil || strings.TrimSpace(r.jobID) == "" {
 		return
 	}
-	update := JobUpdate{LogsText: &snapshot.Logs}
-	switch snapshot.Status {
-	case "pending_approval":
-		status := jobStatusWaitingApproval
-		phase := jobPhaseApprovalWait
-		summary := "Waiting for approval"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	case "done":
-		status := jobStatusSucceeded
-		phase := jobPhaseComplete
-		summary := "Completed successfully"
-		finishedAt := jobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "error":
-		status := jobStatusFailed
-		phase := jobPhaseComplete
-		summary := "Completed with errors"
-		finishedAt := jobTimestampNow()
-		errorClass := strings.TrimSpace(r.lastErrClass)
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-		if errorClass != "" {
-			update.ErrorClass = &errorClass
-		}
-	case "cancelled":
-		status := jobStatusCancelled
-		phase := jobPhaseComplete
-		summary := "Cancelled"
-		finishedAt := jobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "approved":
-		status := jobStatusRunning
-		phase := jobPhaseAptUpgrade
-		summary := "Approval received"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	default:
-		status := jobStatusRunning
-		update.Status = &status
+	timestamp := ""
+	if runtimepkg.ServerStatusFinishesJob(snapshot.Status) {
+		timestamp = jobTimestampNow()
 	}
+	update := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
+		Logs:           snapshot.Logs,
+		LastErrorClass: r.lastErrClass,
+		Timestamp:      timestamp,
+	})
 	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
 		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
 	}

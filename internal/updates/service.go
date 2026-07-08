@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"debian-updater/internal/jobs"
+	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
@@ -183,62 +184,16 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
 	if jm == nil || strings.TrimSpace(r.jobID) == "" {
 		return
 	}
-	update := jobs.Update{LogsText: &snapshot.Logs}
-
-	switch snapshot.Status {
-	case "pending_approval":
-		status := jobs.StatusWaitingApproval
-		phase := jobs.PhaseApprovalWait
-		summary := "Waiting for approval"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	case "done":
-		status := jobs.StatusSucceeded
-		phase := jobs.PhaseComplete
-		summary := "Completed successfully"
-		finishedAt := r.deps().JobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "error":
-		status := jobs.StatusFailed
-		phase := jobs.PhaseComplete
-		summary := "Completed with errors"
-		finishedAt := r.deps().JobTimestampNow()
-		errorClass := strings.TrimSpace(r.lastErrClass)
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-		if errorClass != "" {
-			update.ErrorClass = &errorClass
-		}
-	case "cancelled":
-		status := jobs.StatusCancelled
-		phase := jobs.PhaseComplete
-		summary := "Cancelled"
-		finishedAt := r.deps().JobTimestampNow()
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-		update.FinishedAt = &finishedAt
-	case "approved":
-		status := jobs.StatusRunning
-		phase := jobs.PhaseAptUpgrade
-		summary := "Approval received"
-		update.Status = &status
-		update.Phase = &phase
-		update.Summary = &summary
-	default:
-		status := jobs.StatusRunning
-		update.Status = &status
-		if strings.TrimSpace(r.jobPhase) != "" {
-			phase := r.jobPhase
-			update.Phase = &phase
-		}
+	timestamp := ""
+	if runtimepkg.ServerStatusFinishesJob(snapshot.Status) {
+		timestamp = r.deps().JobTimestampNow()
 	}
+	update := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
+		Logs:           snapshot.Logs,
+		LastErrorClass: r.lastErrClass,
+		CurrentPhase:   r.jobPhase,
+		Timestamp:      timestamp,
+	})
 
 	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
 		r.deps().Logf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)

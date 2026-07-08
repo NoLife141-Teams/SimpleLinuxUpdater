@@ -34,6 +34,7 @@ import (
 	authpkg "debian-updater/internal/auth"
 	"debian-updater/internal/events"
 	observabilitypkg "debian-updater/internal/observability"
+	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
@@ -1958,13 +1959,7 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 }
 
 func statusInProgress(status string) bool {
-	return status == "updating" ||
-		status == "pending_approval" ||
-		status == "approved" ||
-		status == "upgrading" ||
-		status == "autoremove" ||
-		status == "sudoers" ||
-		status == "facts_refresh"
+	return runtimepkg.StatusInProgress(status)
 }
 
 func findServerByNameLocked(name string) (Server, bool) {

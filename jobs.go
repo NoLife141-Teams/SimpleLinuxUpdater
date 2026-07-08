@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internaljobs "debian-updater/internal/jobs"
+	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 )
 
@@ -129,41 +130,7 @@ func jobTimestampNow() string {
 }
 
 func runtimeStatusFromJob(record JobRecord) string {
-	switch record.Kind {
-	case jobKindUpdate, jobKindAutoremove, jobKindSudoersEnable, jobKindSudoersDisable:
-	default:
-		return ""
-	}
-
-	switch record.Status {
-	case jobStatusWaitingApproval:
-		return "pending_approval"
-	case jobStatusSucceeded:
-		return "done"
-	case jobStatusFailed:
-		return "error"
-	case jobStatusCancelled:
-		return "cancelled"
-	case jobStatusInterrupted:
-		return "idle"
-	}
-	switch record.Kind {
-	case jobKindUpdate:
-		switch record.Phase {
-		case jobPhaseApprovalWait:
-			return "pending_approval"
-		case jobPhaseAptUpgrade, jobPhasePostchecks, jobPhaseComplete:
-			return "upgrading"
-		default:
-			return "updating"
-		}
-	case jobKindAutoremove:
-		return "autoremove"
-	case jobKindSudoersEnable, jobKindSudoersDisable:
-		return "sudoers"
-	default:
-		return ""
-	}
+	return runtimepkg.RuntimeStatusFromJob(record)
 }
 
 func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {

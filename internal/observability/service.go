@@ -772,10 +772,6 @@ func terminalTimelineState(state string) bool {
 	return runtimepkg.TerminalTimelineState(state)
 }
 
-func timelinePhaseFromJobPhase(phase string) string {
-	return runtimepkg.TimelinePhaseFromJobPhase(phase)
-}
-
 func timelinePhaseFromServerStatus(status string) (string, string) {
 	projection := runtimepkg.TimelineProjectionFromServerStatus(status)
 	return projection.CurrentPhase, projection.State

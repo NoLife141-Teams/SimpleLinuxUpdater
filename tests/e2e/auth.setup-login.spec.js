@@ -712,6 +712,7 @@ test.describe.serial('setup and login flows', () => {
     const pendingPanel = page.locator('#drawer-panel-pending');
     await expect(pendingPanel).toHaveClass(/active/);
     await expect(pendingPanel.locator('tbody tr')).toHaveCount(80);
+    await expect.poll(() => pendingPanel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
 
     await pendingPanel.evaluate(el => { el.scrollTop = 520; });
     const beforeRefresh = await pendingPanel.evaluate(el => el.scrollTop);

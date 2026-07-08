@@ -38,6 +38,15 @@ func testDashboardProjection(now time.Time) dashboardProjection {
 	})
 }
 
+func requireDashboardAction(t *testing.T, server DashboardServerSummary, key string) DashboardActionInfo {
+	t.Helper()
+	action, ok := server.Actions[key]
+	if !ok {
+		t.Fatalf("%s action %q missing from %+v", server.Name, key, server.Actions)
+	}
+	return action
+}
+
 func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	staleJob := jobs.Record{
@@ -66,6 +75,10 @@ func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.
 	got := summary.Servers[0].Timeline
 	if got.CurrentPhase != "prechecks" || got.State != "active" || got.ProgressPct != 32 {
 		t.Fatalf("timeline = %+v, want runtime prechecks active instead of stale terminal job", got)
+	}
+	action := requireDashboardAction(t, summary.Servers[0], dashboardActionUpdate)
+	if action.Enabled || action.Readiness != dashboardActionReadinessInProgress || action.BlockingStatus != "updating" {
+		t.Fatalf("update action = %+v, want in-progress block from runtime status", action)
 	}
 }
 
@@ -153,9 +166,12 @@ func TestDashboardProjectionMissingFactsDefaultsRemainDashboardSafe(t *testing.T
 	if got.ApprovalTriage.FactsState != "stale" || !got.ApprovalTriage.CanRefreshFacts || !got.ApprovalTriage.CanRunChecks {
 		t.Fatalf("approval triage = %+v, want stale facts with transient actions available", got.ApprovalTriage)
 	}
+	if action := requireDashboardAction(t, got, dashboardActionRefreshFacts); !action.Enabled || action.Readiness != dashboardActionReadinessReady {
+		t.Fatalf("refresh facts action = %+v, want stale facts refreshable", action)
+	}
 }
 
-func TestDashboardProjectionApprovalTriageDelegatesAvailabilityAndOwnsTransientGating(t *testing.T) {
+func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransientGating(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	summary := testDashboardProjection(now).Project(dashboardProjectionInput{
@@ -190,6 +206,17 @@ func TestDashboardProjectionApprovalTriageDelegatesAvailabilityAndOwnsTransientG
 				},
 				fact: updates.ServerFactsRecord{ServerName: "srv-pending", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 			},
+			{
+				server: servers.Server{Name: "srv-needs-scan"},
+				status: &servers.ServerStatus{
+					Name:   "srv-needs-scan",
+					Status: "pending_approval",
+					PendingUpdates: []servers.PendingUpdate{
+						{Package: "kernel", Security: true, KeptBack: true},
+					},
+				},
+				fact: updates.ServerFactsRecord{ServerName: "srv-needs-scan", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+			},
 		},
 	})
 
@@ -201,12 +228,52 @@ func TestDashboardProjectionApprovalTriageDelegatesAvailabilityAndOwnsTransientG
 	if !doneRisk.Eligible || doneRisk.CanApproveAll || doneRisk.CanApproveSecurity || !doneRisk.CanRefreshFacts || !doneRisk.CanRunChecks {
 		t.Fatalf("done-risk triage = %+v, want eligible risk with approval unavailable and transient actions available", doneRisk)
 	}
-	pending := byName["srv-pending"].ApprovalTriage
+	doneRiskUpdate := requireDashboardAction(t, byName["srv-done-risk"], dashboardActionUpdate)
+	doneRiskApprove := requireDashboardAction(t, byName["srv-done-risk"], dashboardActionApproveAll)
+	if !doneRiskUpdate.Enabled || doneRiskApprove.Enabled || doneRiskApprove.Readiness != dashboardActionReadinessUnavailable {
+		t.Fatalf("done-risk actions update=%+v approve=%+v, want update ready and approval unavailable", doneRiskUpdate, doneRiskApprove)
+	}
+	pendingServer := byName["srv-pending"]
+	pending := pendingServer.ApprovalTriage
 	if !pending.CanApproveAll || !pending.CanApproveSecurity || !pending.CanApproveKeptBackSecurity || !pending.CanApproveFull {
 		t.Fatalf("pending approval availability = %+v, want delegated approval scope actions enabled", pending)
 	}
 	if pending.CanRefreshFacts || pending.CanRunChecks {
 		t.Fatalf("pending approval transient actions = %+v, want locked while waiting for approval", pending)
+	}
+	actionKeys := []string{
+		dashboardActionUpdate,
+		dashboardActionApproveAll,
+		dashboardActionApproveSecurity,
+		dashboardActionApproveSecurityKeptBack,
+		dashboardActionApproveFull,
+		dashboardActionCancel,
+		dashboardActionAutoremove,
+		dashboardActionRefreshFacts,
+		dashboardActionEnableApt,
+		dashboardActionDisableApt,
+	}
+	for _, key := range actionKeys {
+		requireDashboardAction(t, pendingServer, key)
+	}
+	if action := requireDashboardAction(t, pendingServer, dashboardActionApproveAll); !action.Enabled || action.Counts["updates"] != 1 {
+		t.Fatalf("approve all action = %+v, want one standard update enabled", action)
+	}
+	if action := requireDashboardAction(t, pendingServer, dashboardActionApproveSecurityKeptBack); !action.Enabled || action.Counts["kept_back_security_updates"] != 1 {
+		t.Fatalf("kept-back security action = %+v, want one kept-back security update enabled", action)
+	}
+	if action := requireDashboardAction(t, pendingServer, dashboardActionCancel); !action.Enabled || action.Readiness != dashboardActionReadinessReady {
+		t.Fatalf("cancel action = %+v, want pending approval cancellable", action)
+	}
+	if action := requireDashboardAction(t, pendingServer, dashboardActionRefreshFacts); action.Enabled || action.Readiness != dashboardActionReadinessInProgress || action.BlockingStatus != "pending_approval" {
+		t.Fatalf("refresh facts action = %+v, want pending approval to block transient actions", action)
+	}
+	needsScan := requireDashboardAction(t, byName["srv-needs-scan"], dashboardActionApproveSecurityKeptBack)
+	if needsScan.Enabled || needsScan.Readiness != dashboardActionReadinessBlocked || needsScan.Reason != "Needs a fresh package scan" {
+		t.Fatalf("needs-scan kept-back security action = %+v, want blocked fresh-scan reason", needsScan)
+	}
+	if byName["srv-needs-scan"].ApprovalTriage.CanApproveKeptBackSecurity {
+		t.Fatalf("needs-scan compatibility triage = %+v, want kept-back security approval disabled", byName["srv-needs-scan"].ApprovalTriage)
 	}
 }
 

@@ -982,6 +982,170 @@ func factsFreshnessState(health DashboardHealthInfo, now time.Time, deps Service
 	return "fresh"
 }
 
+const (
+	dashboardActionUpdate                  = "update"
+	dashboardActionApproveAll              = "approve_all"
+	dashboardActionApproveSecurity         = "approve_security"
+	dashboardActionApproveSecurityKeptBack = "approve_security_kept_back"
+	dashboardActionApproveFull             = "approve_full"
+	dashboardActionCancel                  = "cancel"
+	dashboardActionAutoremove              = "autoremove"
+	dashboardActionRefreshFacts            = "refresh_facts"
+	dashboardActionEnableApt               = "enable_apt"
+	dashboardActionDisableApt              = "disable_apt"
+
+	dashboardActionReadinessReady       = "ready"
+	dashboardActionReadinessBlocked     = "blocked"
+	dashboardActionReadinessUnavailable = "unavailable"
+	dashboardActionReadinessInProgress  = "in_progress"
+)
+
+func buildDashboardActions(serverName string, status *servers.ServerStatus, timeline DashboardTimelineInfo, triage DashboardApprovalTriageInfo) map[string]DashboardActionInfo {
+	statusValue := ""
+	plan := servers.UpgradePlan{}
+	if status != nil {
+		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
+		plan = status.UpgradePlan
+	}
+	fullUpgradeCount := plan.FullUpgradePackageCount
+	if fullUpgradeCount <= 0 {
+		fullUpgradeCount = triage.PendingPackages
+	}
+	fullUpgradeCandidates := triage.KeptBackPackages + len(plan.FullUpgradeNewPackages) + len(plan.FullUpgradeRemovedPackages)
+	if fullUpgradeCount > fullUpgradeCandidates {
+		fullUpgradeCandidates = fullUpgradeCount
+	}
+	actions := map[string]DashboardActionInfo{
+		dashboardActionUpdate:                  dashboardTransientAction(serverName, statusValue, timeline, "Ready to start update checks.", "update checks"),
+		dashboardActionApproveAll:              dashboardApprovalAction(statusValue, triage.CanApproveAll, triage.StandardPackages, map[string]int{"updates": triage.StandardPackages}, "standard updates", "No standard updates eligible"),
+		dashboardActionApproveSecurity:         dashboardApprovalAction(statusValue, triage.CanApproveSecurity, triage.StandardSecurityUpdates, map[string]int{"security_updates": triage.StandardSecurityUpdates}, "standard security updates", "No standard security updates eligible"),
+		dashboardActionApproveSecurityKeptBack: dashboardKeptBackSecurityApprovalAction(statusValue, triage.CanApproveKeptBackSecurity, triage.KeptBackSecurityUpdates, plan),
+		dashboardActionApproveFull:             dashboardFullApprovalAction(statusValue, triage.CanApproveFull, fullUpgradeCandidates, fullUpgradeCount, triage.KeptBackPackages, plan),
+		dashboardActionCancel:                  dashboardCancelAction(statusValue),
+		dashboardActionAutoremove:              dashboardTransientAction(serverName, statusValue, timeline, "Ready to run apt autoremove.", "autoremove"),
+		dashboardActionRefreshFacts:            dashboardTransientAction(serverName, statusValue, timeline, "Ready to refresh host facts.", "facts refresh"),
+		dashboardActionEnableApt:               dashboardTransientAction(serverName, statusValue, timeline, "Ready to enable passwordless apt.", "passwordless apt change"),
+		dashboardActionDisableApt:              dashboardTransientAction(serverName, statusValue, timeline, "Ready to disable passwordless apt.", "passwordless apt change"),
+	}
+	return actions
+}
+
+func dashboardTransientAction(serverName, statusValue string, timeline DashboardTimelineInfo, readyReason, actionLabel string) DashboardActionInfo {
+	if strings.TrimSpace(serverName) == "" {
+		return dashboardUnavailableAction("Server identity is unavailable", "")
+	}
+	if statusBlocksTransientAction(statusValue) {
+		return dashboardBlockedAction(dashboardActionReadinessInProgress, fmt.Sprintf("Current status %s blocks %s", statusLabelText(statusValue), actionLabel), statusValue)
+	}
+	if activeTimelineState(timeline.State) {
+		blockingStatus := strings.TrimSpace(timeline.State)
+		return dashboardBlockedAction(dashboardActionReadinessInProgress, fmt.Sprintf("Timeline state %s blocks %s", statusLabelText(blockingStatus), actionLabel), blockingStatus)
+	}
+	return dashboardReadyAction(readyReason, nil)
+}
+
+func dashboardApprovalAction(statusValue string, enabled bool, count int, counts map[string]int, label, noUpdatesReason string) DashboardActionInfo {
+	if enabled {
+		return dashboardReadyAction(fmt.Sprintf("%d %s ready for approval.", count, label), counts)
+	}
+	if statusValue != runtimepkg.StatusPendingApproval {
+		return dashboardUnavailableAction("Not waiting for approval", statusValue)
+	}
+	if count <= 0 {
+		return dashboardUnavailableAction(noUpdatesReason, statusValue)
+	}
+	return dashboardBlockedAction(dashboardActionReadinessBlocked, fmt.Sprintf("Cannot approve %s now", label), statusValue)
+}
+
+func dashboardKeptBackSecurityApprovalAction(statusValue string, enabled bool, count int, plan servers.UpgradePlan) DashboardActionInfo {
+	counts := map[string]int{"kept_back_security_updates": count}
+	if enabled {
+		return dashboardReadyAction(fmt.Sprintf("%d kept-back security updates ready for targeted approval.", count), counts)
+	}
+	if statusValue != runtimepkg.StatusPendingApproval {
+		return dashboardUnavailableAction("Not waiting for approval", statusValue)
+	}
+	if count <= 0 {
+		return dashboardUnavailableAction("No kept-back security updates eligible", statusValue)
+	}
+	if !plan.KeptBackSecurityPlanAvailable {
+		return dashboardBlockedAction(dashboardActionReadinessBlocked, "Needs a fresh package scan", statusValue)
+	}
+	return dashboardBlockedAction(dashboardActionReadinessBlocked, "Cannot approve kept-back security updates now", statusValue)
+}
+
+func dashboardFullApprovalAction(statusValue string, enabled bool, candidateCount, fullUpgradeCount, keptBackCount int, plan servers.UpgradePlan) DashboardActionInfo {
+	counts := map[string]int{
+		"updates":            fullUpgradeCount,
+		"kept_back_packages": keptBackCount,
+		"new_packages":       len(plan.FullUpgradeNewPackages),
+		"removed_packages":   len(plan.FullUpgradeRemovedPackages),
+	}
+	if enabled {
+		return dashboardReadyAction(fmt.Sprintf("%d full-upgrade changes ready for approval.", candidateCount), counts)
+	}
+	if statusValue != runtimepkg.StatusPendingApproval {
+		return dashboardUnavailableAction("Not waiting for approval", statusValue)
+	}
+	if candidateCount <= 0 {
+		return dashboardUnavailableAction("No full-upgrade changes eligible", statusValue)
+	}
+	if !plan.FullUpgradePlanAvailable {
+		return dashboardBlockedAction(dashboardActionReadinessBlocked, "Needs a fresh package scan", statusValue)
+	}
+	return dashboardBlockedAction(dashboardActionReadinessBlocked, "Cannot approve full upgrade now", statusValue)
+}
+
+func dashboardCancelAction(statusValue string) DashboardActionInfo {
+	if statusValue == runtimepkg.StatusPendingApproval {
+		return dashboardReadyAction("Ready to cancel pending approval.", nil)
+	}
+	return dashboardUnavailableAction("Not waiting for approval", statusValue)
+}
+
+func dashboardReadyAction(reason string, counts map[string]int) DashboardActionInfo {
+	return DashboardActionInfo{
+		Enabled:   true,
+		Reason:    reason,
+		Readiness: dashboardActionReadinessReady,
+		Counts:    counts,
+	}
+}
+
+func dashboardUnavailableAction(reason, blockingStatus string) DashboardActionInfo {
+	return DashboardActionInfo{
+		Enabled:        false,
+		Reason:         reason,
+		Readiness:      dashboardActionReadinessUnavailable,
+		BlockingStatus: strings.TrimSpace(blockingStatus),
+	}
+}
+
+func dashboardBlockedAction(readiness, reason, blockingStatus string) DashboardActionInfo {
+	return DashboardActionInfo{
+		Enabled:        false,
+		Reason:         reason,
+		Readiness:      readiness,
+		BlockingStatus: strings.TrimSpace(blockingStatus),
+	}
+}
+
+func mirrorApprovalTriageActions(triage DashboardApprovalTriageInfo, actions map[string]DashboardActionInfo) DashboardApprovalTriageInfo {
+	triage.CanApproveAll = dashboardActionEnabled(actions, dashboardActionApproveAll)
+	triage.CanApproveSecurity = dashboardActionEnabled(actions, dashboardActionApproveSecurity)
+	triage.CanApproveKeptBackSecurity = dashboardActionEnabled(actions, dashboardActionApproveSecurityKeptBack)
+	triage.CanApproveFull = dashboardActionEnabled(actions, dashboardActionApproveFull)
+	triage.CanCancel = dashboardActionEnabled(actions, dashboardActionCancel)
+	triage.CanRefreshFacts = dashboardActionEnabled(actions, dashboardActionRefreshFacts)
+	triage.CanRunChecks = dashboardActionEnabled(actions, dashboardActionUpdate)
+	return triage
+}
+
+func dashboardActionEnabled(actions map[string]DashboardActionInfo, key string) bool {
+	action, ok := actions[key]
+	return ok && action.Enabled
+}
+
 func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, lastUpdate *DashboardUpdateHistory, now time.Time, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardApprovalTriageInfo {
 	deps = deps.withDefaults()
 	statusValue := ""

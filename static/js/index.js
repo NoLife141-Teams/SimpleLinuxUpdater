@@ -1,8 +1,6 @@
 const LOG_BOTTOM_THRESHOLD = 20;
-        let sortKey = "name";
-        let sortDir = "asc";
+        const statusInteraction = window.statusPageInteraction;
         let allServers = [];
-        let selectedServerName = "";
         let lastSuccessfulSyncAt = null;
         let lastFetchError = null;
         let recentActivity = [];
@@ -12,25 +10,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let dashboardByServer = new Map();
         let globalKeyAvailable = false;
         let dashboardExtraErrors = new Map();
-        let page = 1;
-        let selectedServers = new Set();
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
 	        let activePhaseTooltipTarget = null;
-	        let refreshAllFactsInFlight = false;
-	        let bulkActionInFlightLabel = "";
 	        let bulkReviewResolve = null;
-	        let singleHostActionsInFlight = new Set();
-	        let fetchInFlight = false;
-        let fetchQueued = false;
-        let queuedForceRender = false;
-        let fleetQuickFilter = "";
-        let fleetTagFilter = "";
-        let drawerOpen = false;
-        let drawerServerName = "";
-        let drawerTab = "logs";
-        let drawerLogFollow = true;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -38,9 +22,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let passwordModalPreviousFocus = null;
         let drawerPreviousFocus = null;
         let suppressSortClickUntil = 0;
-        let actionInteractionDepth = 0;
         let actionInteractionReleaseTimer = null;
-        let deferredServerRender = false;
         let dashboardEventSource = null;
         let dashboardEventReconnectTimer = null;
         let dashboardEventReconnectDelay = 1000;
@@ -77,6 +59,42 @@ const LOG_BOTTOM_THRESHOLD = 20;
         const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
         const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
         const transientActionBlockingStatuses = new Set(["updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
+
+        function getStatusView() {
+            return statusInteraction.getView();
+        }
+
+        function dispatchStatusInteraction(event) {
+            const effects = statusInteraction.dispatch(event);
+            const tasks = [];
+            effects.forEach(effect => {
+                if (effect.type === "persistFilters") {
+                    persistDashboardFilters(effect.value);
+                } else if (effect.type === "fetchSnapshot") {
+                    tasks.push(executeStatusSnapshotFetch(effect));
+                } else if (effect.type === "render" && effect.scope === "serverState") {
+                    renderServerState();
+                } else if (effect.type === "renderSyncState") {
+                    renderSyncState();
+                } else if (effect.type === "cancelInteractionRelease") {
+                    if (actionInteractionReleaseTimer !== null) {
+                        clearTimeout(actionInteractionReleaseTimer);
+                        actionInteractionReleaseTimer = null;
+                    }
+                } else if (effect.type === "scheduleInteractionRelease") {
+                    if (actionInteractionReleaseTimer !== null) clearTimeout(actionInteractionReleaseTimer);
+                    actionInteractionReleaseTimer = setTimeout(() => {
+                        actionInteractionReleaseTimer = null;
+                        dispatchStatusInteraction({ type: "interactionReleased" });
+                    }, effect.delayMs);
+                } else if (effect.type === "actionRejected") {
+                    window.alert(effect.reason || "Action is no longer available");
+                } else if (effect.type === "announceResult" && effect.message) {
+                    window.alert(effect.message);
+                }
+            });
+            return Promise.all(tasks);
+        }
 
         function isRunningTimelineState(state) {
             return ["active", "queued"].includes(String(state || "").toLowerCase());
@@ -377,27 +395,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function getServerActionContract(server, key, options = {}) {
 	            if (!server || !key) return null;
-	            const intelligence = getServerIntelligence(server?.name);
-	            const actions = intelligence?.actions;
-	            if (!actions || typeof actions !== "object" || Array.isArray(actions)) return null;
-	            const action = actions[key];
-	            if (!action || typeof action !== "object" || typeof action.enabled !== "boolean") return null;
-	            const normalized = {
-	                ...action,
-	                enabled: !!action.enabled,
-	                reason: String(action.reason || ""),
-	                readiness: String(action.readiness || ""),
-	                blocking_status: String(action.blocking_status || "")
-	            };
-	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
-	                return normalized;
-	            }
-	            return {
-	                ...normalized,
-	                enabled: false,
-	                readiness: "in_progress",
-	                reason: "Another action is already running for this host"
-	            };
+	            return statusInteraction.getAction(server.name, key, options);
 	        }
 
 	        function dashboardActionEnabled(server, key, fallback, options = {}) {
@@ -432,30 +430,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                can_refresh_facts: canRunTransientAction(server),
 	                can_run_checks: canRunTransientAction(server)
 	            };
-	            const actionOptions = { ignoreInFlight: true };
 	            const contractTriage = {
 	                ...triage,
-	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, actionOptions),
-	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, actionOptions),
-	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, actionOptions),
-	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, actionOptions),
-	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, actionOptions),
-	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, actionOptions),
-	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, actionOptions)
+	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, options),
+	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, options),
+	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, options),
+	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, options),
+	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, options),
+	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, options),
+	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, options)
 	            };
-	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
-	                return contractTriage;
-	            }
-	            return {
-	                ...contractTriage,
-	                can_approve_all: false,
-	                can_approve_security: false,
-	                can_approve_kept_back_security: false,
-	                can_approve_full: false,
-	                can_cancel: false,
-	                can_refresh_facts: false,
-	                can_run_checks: false
-	            };
+	            return contractTriage;
 	        }
 
 	        function isFactsStateStale(server) {
@@ -467,7 +452,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
 	        function canRunTransientAction(server) {
-	            return !!server && !isSingleHostActionInFlight(server.name) && !statusBlocksTransientAction(server.status);
+	            return !!server && !statusBlocksTransientAction(server.status);
 	        }
 
         function timelinePhaseMap(server) {
@@ -571,9 +556,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function updateMetricFilterState() {
+            const quickFilter = getStatusView().filters.quick;
             document.querySelectorAll('[data-metric-filter]').forEach(button => {
                 const key = button.dataset.metricFilter || "";
-                const active = fleetQuickFilter === key;
+                const active = quickFilter === key;
                 const label = quickFilterActionLabel(key);
                 button.classList.toggle('active', active);
                 button.closest('.metric-item')?.classList.toggle('active', active);
@@ -850,7 +836,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderFleetFilters() {
-            setText("fleet-filter-summary", `${pluralize(applyFilters(allServers).length, "host")} visible`);
+            const view = getStatusView();
+            setText("fleet-filter-summary", `${pluralize(view.visibleServers.length, "host")} visible`);
             const statusEl = document.getElementById('fleet-status-filters');
             if (statusEl) {
                 const activeCount = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length;
@@ -864,7 +851,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     { key: "high_risk", label: "High risk", count: highRiskCount }
                 ];
                 statusEl.innerHTML = filters.map(item => `
-                    <button type="button" class="filter-pill${fleetQuickFilter === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
+                    <button type="button" class="filter-pill${view.filters.quick === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
                         <span>${escapeHtml(item.label)}</span>
                         <strong>${item.count}</strong>
                     </button>
@@ -885,9 +872,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
 	            tagEl.innerHTML = [
-	                `<button type="button" class="filter-pill${fleetTagFilter === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
+	                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
 	                ...entries.slice(0, 8).map(([tag, count]) => `
-	                    <button type="button" class="filter-pill${fleetTagFilter === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
+	                    <button type="button" class="filter-pill${view.filters.tag === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
 	                        <span>${escapeHtml(tag)}</span>
 	                        <strong>${count}</strong>
 	                    </button>
@@ -901,7 +888,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const listID = "approval-triage";
             const limit = 12;
             const expanded = expandedMiniLists.has(listID);
-            const servers = applyFilters(allServers)
+            const primaryServerName = getStatusView().primaryServerName;
+            const servers = getStatusView().visibleServers
                 .filter(server => getServerApprovalTriage(server).eligible || isPendingApprovalHost(server))
                 .sort((a, b) => {
                     const aTriage = getServerApprovalTriage(a);
@@ -931,7 +919,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const factsState = String(triage.facts_state || "unknown").toLowerCase();
 	                const canUpdate = canRunUpdateAction(server);
 	                const canRefreshFacts = canRefreshFactsAction(server);
-	                const rowSelected = selectedServerName === server.name;
+	                const rowSelected = getStatusView().primaryServerName === server.name;
 	                const driftReason = pendingApprovalDriftReason(server);
 	                const driftNotice = driftReason
 	                    ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
@@ -1089,7 +1077,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function renderCommandHistoryPanel() {
 	            const el = document.getElementById('command-history-panel');
 	            if (!el) return;
-            const intelligence = getServerIntelligence(selectedServerName);
+	            const primaryServerName = getStatusView().primaryServerName;
+	            const intelligence = getServerIntelligence(primaryServerName);
             const history = Array.isArray(intelligence?.command_history) ? intelligence.command_history : [];
             setText("command-history-count", String(history.length));
             if (history.length === 0) {
@@ -1108,7 +1097,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <span class="status-pill status-${statusClass}">${escapeHtml(status || "unknown")}</span>
                         <div>
                             <strong>${escapeHtml(item.action || "command")}</strong>
-                            <span>${escapeHtml(item.message || selectedServerName || "server")} · ${escapeHtml(item.created_at_display || formatRelativeTimestamp(item.created_at))}</span>
+	                            <span>${escapeHtml(item.message || primaryServerName || "server")} · ${escapeHtml(item.created_at_display || formatRelativeTimestamp(item.created_at))}</span>
                         </div>
                     </div>
                 `;
@@ -1174,7 +1163,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const title = document.getElementById('selected-host-title');
             const subtitle = document.getElementById('selected-host-subtitle');
             if (!panel || !title || !subtitle) return;
-            const server = getServerByName(selectedServerName);
+            const server = getServerByName(getStatusView().primaryServerName);
             if (!server) {
                 title.textContent = "No host selected";
                 subtitle.textContent = "Select a table row to inspect host details.";
@@ -1358,24 +1347,40 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderSummaryBadges();
         }
 
-        async function fetchDashboardSummary() {
+        function requestStatusRefresh(streams, priority = "deferable", reason = "refresh") {
+            return dispatchStatusInteraction({ type: "refreshRequested", streams, priority, reason });
+        }
+
+        function fetchDashboardSummary(forceRender = false, reason = "dashboard") {
+            return requestStatusRefresh(["dashboard"], forceRender ? "immediate" : "deferable", reason);
+        }
+
+        function executeStatusSnapshotFetch(effect) {
+            if (effect.stream === "servers") return executeServersSnapshotFetch(effect);
+            if (effect.stream === "dashboard") return executeDashboardSnapshotFetch(effect);
+            return Promise.resolve();
+        }
+
+        async function executeDashboardSnapshotFetch(effect) {
             try {
                 const response = await fetch('/api/dashboard/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                dashboardSummary = await response.json();
-                const items = Array.isArray(dashboardSummary?.servers) ? dashboardSummary.servers : [];
-                dashboardByServer = new Map(items.map(item => [item.name, item]));
+                const nextDashboardSummary = await response.json();
                 setDashboardExtraError("dashboard", null);
+                await dispatchStatusInteraction({
+                    type: "dashboardSnapshotReceived",
+                    requestId: effect.requestId,
+                    snapshot: nextDashboardSummary
+                });
             } catch (err) {
-                dashboardSummary = null;
-                dashboardByServer = new Map();
                 setDashboardExtraError("dashboard", err);
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "dashboard",
+                    requestId: effect.requestId,
+                    error: err?.message || String(err)
+                });
             }
-	            renderDashboardMetrics();
-	            renderDashboardPanels();
-	            if (allServers.length > 0) {
-	                renderTable({ refreshPanels: false });
-	            }
 	        }
 
         async function fetchGlobalKeyStatus() {
@@ -1386,6 +1391,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const nextGlobalKeyAvailable = !!data?.has_key;
                 if (nextGlobalKeyAvailable !== globalKeyAvailable) {
                     globalKeyAvailable = nextGlobalKeyAvailable;
+                    dispatchStatusInteraction({ type: "globalKeyAvailabilityChanged", available: globalKeyAvailable });
                     renderDashboardMetrics();
                     if (allServers.length > 0) {
                         renderTable();
@@ -1400,12 +1406,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        function fetchDashboardExtras() {
+        function fetchDashboardExtras(reason = "extras", includeDashboard = true) {
             fetchGlobalKeyStatus();
             fetchRecentActivity();
             fetchObservabilitySummary();
             fetchPolicySummary();
-            fetchDashboardSummary();
+            if (includeDashboard) fetchDashboardSummary(false, reason);
         }
 
         function configurePolling(serverMs, extrasMs) {
@@ -1415,8 +1421,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (dashboardExtrasIntervalID !== null) {
                 clearInterval(dashboardExtrasIntervalID);
             }
-            serverPollIntervalID = setInterval(fetchServers, serverMs);
-            dashboardExtrasIntervalID = setInterval(fetchDashboardExtras, extrasMs);
+            serverPollIntervalID = setInterval(() => fetchServers(false, "poll"), serverMs);
+            dashboardExtrasIntervalID = setInterval(() => fetchDashboardExtras("poll"), extrasMs);
         }
 
         function scheduleDashboardEventReconnect() {
@@ -1445,8 +1451,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 renderSyncState();
             });
             source.addEventListener('dashboard', () => {
-                fetchServers(true);
-                fetchDashboardExtras();
+                requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
+                fetchDashboardExtras("sse", false);
             });
             source.addEventListener('error', () => {
                 if (dashboardEventSource === source) {
@@ -1462,20 +1468,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function updateRefreshAllFactsState() {
 	            const button = document.getElementById('refresh-all-facts');
 	            if (!button) return;
-	            const visibleSelectedServers = getVisibleSelectedServers();
-	            const visibleCount = visibleSelectedServers.length;
-	            const refreshableCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
-	            const selectedCount = selectedServers.size;
-	            const enabled = !refreshAllFactsInFlight && !bulkActionInFlightLabel && refreshableCount > 0;
+	            const view = getStatusView();
+	            const plan = statusInteraction.planBulkAction("refresh_facts", { actionLabel: "refresh facts", preview: true });
+	            const visibleCount = plan.visibleNames.length;
+	            const refreshableCount = plan.eligibleNames.length;
+	            const selectedCount = plan.selectedNames.length;
+	            const bulk = view.actions.bulk;
+	            const refreshing = bulk?.actionKey === "refresh_facts";
+	            const enabled = !bulk && refreshableCount > 0;
 	            button.disabled = !enabled;
-	            button.textContent = refreshAllFactsInFlight ? "Refreshing..." : "Refresh facts";
-	            button.classList.toggle("refreshing", refreshAllFactsInFlight);
-	            button.setAttribute('aria-label', refreshAllFactsInFlight ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
+	            button.textContent = refreshing ? "Refreshing..." : "Refresh facts";
+	            button.classList.toggle("refreshing", refreshing);
+	            button.setAttribute('aria-label', refreshing ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
 	            button.setAttribute('aria-describedby', 'bulk-action-hint');
-	            button.title = refreshAllFactsInFlight
+	            button.title = refreshing
 	                ? `Refreshing facts for ${pluralize(refreshableCount, "visible selected host")}`
-	                : bulkActionInFlightLabel
-	                ? `Bulk ${bulkActionInFlightLabel} is running`
+	                : bulk
+	                ? `Bulk ${bulk.actionLabel} is running`
 	                : enabled
 	                ? `Refresh facts for ${pluralize(refreshableCount, "visible selected host")}`
 	                : selectedCount === 0
@@ -1494,62 +1503,27 @@ const LOG_BOTTOM_THRESHOLD = 20;
             window.scrollTo(pos.x, pos.y);
         }
 
-        function isActionInteractionActive() {
-            return actionInteractionDepth > 0 || actionInteractionReleaseTimer !== null;
-        }
-
 	        function renderServerState() {
+	            const view = getStatusView();
+	            allServers = view.servers;
+	            dashboardSummary = view.dashboardSnapshot;
+	            dashboardByServer = new Map(view.dashboardServers.map(item => [item.name, item]));
 	            const pageScroll = saveWindowScroll();
 	            renderDashboardMetrics();
 	            renderTable();
 	            renderDrawer();
 	            requestAnimationFrame(() => restoreWindowScroll(pageScroll));
 	        }
-
-        function flushDeferredServerRender() {
-            if (!deferredServerRender || isActionInteractionActive()) return;
-            deferredServerRender = false;
-            renderServerState();
-        }
-
-        function renderServerStateWhenSafe(forceRender = false) {
-            if (!forceRender && isActionInteractionActive()) {
-                deferredServerRender = true;
-                return;
-            }
-            deferredServerRender = false;
-            renderServerState();
-        }
-
         function beginActionInteraction() {
-            actionInteractionDepth += 1;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-                actionInteractionReleaseTimer = null;
-            }
+            dispatchStatusInteraction({ type: "interactionStarted" });
         }
 
         function endActionInteraction() {
-            if (actionInteractionDepth > 0) {
-                actionInteractionDepth -= 1;
-            }
-            if (actionInteractionDepth > 0) return;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-            }
-            actionInteractionReleaseTimer = setTimeout(() => {
-                actionInteractionReleaseTimer = null;
-                flushDeferredServerRender();
-            }, actionInteractionDeferMs);
+            dispatchStatusInteraction({ type: "interactionEnded", delayMs: actionInteractionDeferMs });
         }
 
         function resetActionInteraction() {
-            actionInteractionDepth = 0;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-                actionInteractionReleaseTimer = null;
-            }
-            flushDeferredServerRender();
+            dispatchStatusInteraction({ type: "interactionReset" });
         }
 
         function isServerActionControl(target) {
@@ -1557,6 +1531,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 'button[data-action]',
                 '#bulk-update',
                 '#bulk-approve',
+                '#bulk-approve-security',
+                '#bulk-approve-kept-security',
                 '#bulk-cancel',
                 '#bulk-autoremove',
                 '#refresh-all-facts',
@@ -1602,12 +1578,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function updateSortIndicators() {
+            const sort = getStatusView().sort;
             document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
-                if (th.dataset.sortKey === sortKey) {
-                    th.dataset.sortDir = sortDir;
-                    th.setAttribute('aria-sort', sortDir === "asc" ? "ascending" : "descending");
+                if (th.dataset.sortKey === sort.key) {
+                    th.dataset.sortDir = sort.dir;
+                    th.setAttribute('aria-sort', sort.dir === "asc" ? "ascending" : "descending");
                     const indicator = th.querySelector('.sort-indicator');
-                    if (indicator) indicator.textContent = sortDir === "asc" ? "▲" : "▼";
+                    if (indicator) indicator.textContent = sort.dir === "asc" ? "▲" : "▼";
                 } else {
                     delete th.dataset.sortDir;
                     th.setAttribute('aria-sort', 'none');
@@ -1737,243 +1714,90 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         }
 
-        async function fetchServers(forceRender = false) {
-            if (fetchInFlight) {
-                fetchQueued = true;
-                queuedForceRender = queuedForceRender || forceRender;
-                return;
-            }
-            fetchInFlight = true;
+        function fetchServers(forceRender = false, reason = "servers") {
+            return requestStatusRefresh(["servers"], forceRender ? "immediate" : "deferable", reason);
+        }
+
+        async function executeServersSnapshotFetch(effect) {
             try {
-                let parsedServers;
-                try {
-                    const response = await fetch('/api/servers');
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch servers: HTTP ${response.status}`);
-                    }
-                    parsedServers = await response.json();
-                    if (!Array.isArray(parsedServers)) {
-                        throw new Error('Invalid servers payload: expected an array');
-                    }
-                } catch (err) {
-                    console.error('Unable to refresh servers list:', err);
-                    lastFetchError = err;
-                    renderSyncState();
-                    return;
+                const response = await fetch('/api/servers');
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch servers: HTTP ${response.status}`);
                 }
-                allServers = parsedServers;
-                pruneSelectionsForLoadedServers();
+                const parsedServers = await response.json();
+                if (!Array.isArray(parsedServers)) {
+                    throw new Error('Invalid servers payload: expected an array');
+                }
                 lastFetchError = null;
                 lastSuccessfulSyncAt = new Date();
-                renderServerStateWhenSafe(forceRender);
-            } finally {
-                fetchInFlight = false;
-                if (fetchQueued) {
-                    fetchQueued = false;
-                    const nextRender = queuedForceRender;
-                    queuedForceRender = false;
-                    fetchServers(nextRender);
-                }
-            }
-        }
-
-        function pruneSelectionsForLoadedServers() {
-            if (selectedServers.size === 0) return;
-            const loadedNames = new Set(allServers.map(server => server.name).filter(Boolean));
-            let changed = false;
-            selectedServers.forEach(name => {
-                if (!loadedNames.has(name)) {
-                    selectedServers.delete(name);
-                    changed = true;
-                }
-            });
-            if (changed) {
-                updateRefreshAllFactsState();
-            }
-        }
-
-        function sortServers(servers) {
-            const dir = sortDir === "asc" ? 1 : -1;
-            return servers.slice().sort((a, b) => {
-                const aVal = (a[sortKey] || "").toString().toLowerCase();
-                const bVal = (b[sortKey] || "").toString().toLowerCase();
-                if (aVal < bVal) return -1 * dir;
-                if (aVal > bVal) return 1 * dir;
-                return 0;
-            });
-        }
-
-        function applyFilters(servers) {
-            const search = document.getElementById('search').value.trim().toLowerCase();
-            const statusFilter = document.getElementById('status-filter').value;
-            const authFilter = document.getElementById('auth-filter').value;
-            return servers.filter(server => {
-                if (statusFilter && server.status !== statusFilter) return false;
-                if (fleetTagFilter) {
-                    const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
-                    if (!tags.includes(fleetTagFilter)) return false;
-                }
-                if (fleetQuickFilter === "pending_approval" && !isPendingApprovalHost(server)) return false;
-                if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !isRunningTimelineState(getServerTimeline(server).state)) return false;
-                if (fleetQuickFilter === "stale_facts" && !isFactsStateStale(server)) return false;
-                if (fleetQuickFilter === "high_risk" && !hasCVEExposure(server)) return false;
-                if (authFilter === "password" && !server.has_password) return false;
-                if (authFilter === "key" && !hasEffectiveKey(server)) return false;
-                if (!search) return true;
-                const haystack = [
-                    server.name,
-                    server.host,
-                    server.port ? server.port.toString() : "",
-                    server.user,
-                    (server.tags || []).join(" ")
-                ].join(" ").toLowerCase();
-                return haystack.includes(search);
-            });
-        }
-
-        function paginate(servers) {
-            const size = parseInt(document.getElementById('page-size').value, 10);
-            const totalPages = Math.max(1, Math.ceil(servers.length / size));
-            page = Math.min(page, totalPages);
-            const start = (page - 1) * size;
-            const end = start + size;
-            const pageInfo = document.getElementById('page-info');
-            const pagination = document.querySelector('.pagination');
-            pageInfo.textContent = `Page ${page} of ${totalPages} (${pluralize(servers.length, "host")})`;
-            pagination?.classList.toggle('single-page', totalPages <= 1);
-            document.getElementById('prev-page').disabled = page <= 1;
-            document.getElementById('next-page').disabled = page >= totalPages;
-            return servers.slice(start, end);
-        }
-
-        function groupServers(servers) {
-            const groupBy = document.getElementById('group-by').value;
-            if (!groupBy) return [{ key: "", items: servers }];
-            const groups = new Map();
-            if (groupBy === "status") {
-                servers.forEach(server => {
-                    const key = server.status || "unknown";
-                    if (!groups.has(key)) groups.set(key, []);
-                    groups.get(key).push(server);
+                await dispatchStatusInteraction({
+                    type: "serversSnapshotReceived",
+                    requestId: effect.requestId,
+                    servers: parsedServers
                 });
-            } else if (groupBy === "tag") {
-                servers.forEach(server => {
-                    const tags = server.tags && server.tags.length ? server.tags : ["untagged"];
-                    tags.forEach(tag => {
-                        if (!groups.has(tag)) groups.set(tag, []);
-                        groups.get(tag).push(server);
-                    });
+            } catch (err) {
+                console.error('Unable to refresh servers list:', err);
+                lastFetchError = err;
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "servers",
+                    requestId: effect.requestId,
+                    error: err?.message || String(err)
                 });
             }
-            return Array.from(groups.entries()).map(([key, items]) => ({ key, items }));
         }
 
         function loadDashboardFilters() {
+            let saved = {};
             try {
                 const raw = localStorage.getItem(dashboardFilterStorageKey);
-                if (!raw) return;
-                const saved = JSON.parse(raw);
-                if (!saved || typeof saved !== "object") return;
-                restoreTextInputValue("search", saved.search, "");
-                restoreSelectValue("status-filter", saved.statusFilter, "");
-	                restoreSelectValue("auth-filter", saved.authFilter, "");
-	                restoreSelectValue("group-by", saved.groupBy, "");
-	                restorePageSizeValue(saved.pageSize);
-	                fleetQuickFilter = typeof saved.fleetQuickFilter === "string" ? saved.fleetQuickFilter : "";
-	                fleetTagFilter = typeof saved.fleetTagFilter === "string" ? saved.fleetTagFilter : "";
-	                selectedServerName = typeof saved.selectedServerName === "string" ? saved.selectedServerName : "";
+                if (raw) saved = JSON.parse(raw);
 	            } catch (_) {
 	                // Ignore invalid saved dashboard state.
             }
+            dispatchStatusInteraction({ type: "navigationRestored", value: saved });
+            const view = getStatusView();
+            document.getElementById("search").value = view.filters.search;
+            document.getElementById("status-filter").value = view.filters.status;
+            document.getElementById("auth-filter").value = view.filters.auth;
+            document.getElementById("group-by").value = view.filters.groupBy;
+            document.getElementById("page-size").value = String(view.pageSize);
         }
 
-        function restoreTextInputValue(id, value, fallback) {
-            const el = document.getElementById(id);
-            if (!el || el.tagName !== "INPUT") return;
-            el.value = typeof value === "string" && value.length <= 200 ? value : fallback;
-        }
-
-        function restoreSelectValue(id, value, fallback) {
-            const el = document.getElementById(id);
-            if (!el || el.tagName !== "SELECT") return;
-            const optionValues = Array.from(el.options).map(option => option.value);
-            const normalized = value === undefined || value === null ? fallback : String(value);
-            el.value = optionValues.includes(normalized) ? normalized : fallback;
-        }
-
-        function restorePageSizeValue(value) {
-            const el = document.getElementById("page-size");
-            if (!el || el.tagName !== "SELECT") return;
-            const fallback = Array.from(el.options).some(option => option.value === "25") ? "25" : (el.options[0]?.value || "");
-            const parsed = parseInt(value, 10);
-            const normalized = Number.isFinite(parsed) && parsed > 0 ? String(parsed) : fallback;
-            restoreSelectValue("page-size", normalized, fallback);
-        }
-
-        function saveDashboardFilters() {
+        function persistDashboardFilters(value) {
             try {
-                localStorage.setItem(dashboardFilterStorageKey, JSON.stringify({
-                    search: document.getElementById('search')?.value || "",
-                    statusFilter: document.getElementById('status-filter')?.value || "",
-                    authFilter: document.getElementById('auth-filter')?.value || "",
-	                    groupBy: document.getElementById('group-by')?.value || "",
-	                    pageSize: document.getElementById('page-size')?.value || "25",
-	                    fleetQuickFilter,
-	                    fleetTagFilter,
-	                    selectedServerName
-	                }));
+                localStorage.setItem(dashboardFilterStorageKey, JSON.stringify(value));
 	            } catch (_) {
 	                // Ignore storage failures.
 	            }
 	        }
 
 	        function applyFleetQuickFilter(key) {
-	            fleetQuickFilter = key || "";
-	            page = 1;
-	            saveDashboardFilters();
+	            dispatchStatusInteraction({ type: "filtersChanged", patch: { quick: key || "" } });
 	            renderTable({ refreshPanels: false });
-	        }
-
-	        function getVisibleSelectedServers() {
-	            const visibleSelected = new Set(
-	                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
-	                    .map(cb => cb.dataset.name)
-	                    .filter(Boolean)
-	            );
-	            return allServers.filter(server => visibleSelected.has(server.name));
 	        }
 
 		        function isServerActionBusy(server) {
-		            return !!server && (isSingleHostActionInFlight(server.name) || statusBlocksTransientAction(server.status));
-		        }
-
-	        function singleHostActionKey(name, actionLabel) {
-	            return `${String(name || "")}\u0000${String(actionLabel || "action")}`;
+		            return !!server && (getStatusView().actions.inFlightServerNames.includes(server.name) || statusBlocksTransientAction(server.status));
 	        }
 
-	        function isSingleHostActionInFlight(name) {
-	            const prefix = `${String(name || "")}\u0000`;
-	            return Array.from(singleHostActionsInFlight).some(key => key.startsWith(prefix));
-	        }
-
-	        function renderSingleHostActionState() {
-	            renderTable({ refreshPanels: false });
-	            renderApprovalTriage();
-	            renderSelectedHostPanel();
-	            renderDrawer();
-	            updateBulkActionState();
-	        }
-
-	        async function runSingleHostAction(name, actionLabel, work) {
-	            if (!name || isSingleHostActionInFlight(name)) return false;
-	            const key = singleHostActionKey(name, actionLabel);
-	            singleHostActionsInFlight.add(key);
-	            renderSingleHostActionState();
+	        async function runSingleHostAction(name, actionKey, actionLabel, work, refreshStreams = ["servers"]) {
+	            const plan = statusInteraction.planAction(name, actionKey, { actionLabel });
+	            if (!plan.enabled) return false;
+	            await dispatchStatusInteraction({ type: "actionStarted", plan });
+	            const started = getStatusView().actions.inFlight.some(action => action.operationId === plan.id);
+	            if (!started) return false;
 	            try {
-	                return await work();
-	            } finally {
-	                singleHostActionsInFlight.delete(key);
-	                renderSingleHostActionState();
+	                const result = await work(plan);
+	                await dispatchStatusInteraction({
+	                    type: result === false ? "actionFailed" : "actionCompleted",
+	                    operationId: plan.id,
+	                    refreshStreams: result === false ? [] : refreshStreams
+	                });
+	                return result !== false;
+	            } catch (error) {
+	                await dispatchStatusInteraction({ type: "actionFailed", operationId: plan.id, refreshStreams: [] });
+	                throw error;
 	            }
 	        }
 
@@ -2013,23 +1837,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 
         function openDrawer(name, tab = "logs") {
-            const nextTab = tab === "pending" ? "pending" : "logs";
-            if (drawerServerName !== name) {
-                drawerLogFollow = true;
+            const previousDrawer = getStatusView().drawer;
+            if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;
                 drawerPendingScrollTop = 0;
             }
-            if (!drawerOpen) {
+            if (!previousDrawer.open) {
                 drawerPreviousFocus = document.activeElement;
             }
-            drawerOpen = true;
-            drawerServerName = name;
-            drawerTab = nextTab;
+            dispatchStatusInteraction({ type: "drawerOpened", name, tab });
             document.body.classList.add('drawer-open');
             renderDrawer();
             window.setTimeout(() => {
                 const drawer = document.getElementById('status-drawer');
-                if (!drawerOpen || !drawer) return;
+                if (!getStatusView().drawer.open || !drawer) return;
                 const focusable = drawerFocusableElements(drawer);
                 const target = focusable[0] || drawer;
                 if (target && typeof target.focus === 'function') {
@@ -2039,7 +1860,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function closeDrawer() {
-            drawerOpen = false;
+            dispatchStatusInteraction({ type: "drawerClosed" });
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
             drawer.classList.remove('open');
@@ -2055,11 +1876,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function setDrawerTab(tab) {
             if (tab !== "logs" && tab !== "pending") return;
-            drawerTab = tab;
+            dispatchStatusInteraction({ type: "drawerTabChanged", tab });
             renderDrawer();
         }
 
 	        function renderDrawer() {
+            const drawerState = getStatusView().drawer;
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
             const title = document.getElementById('status-drawer-title');
@@ -2076,14 +1898,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const drawerApproveKeptBackSecurityBtn = document.getElementById('drawer-approve-security-kept-back');
             const drawerApproveFullBtn = document.getElementById('drawer-approve-full');
 
-            if (!drawerOpen) {
+            if (!drawerState.open) {
                 drawer.classList.remove('open');
                 backdrop.classList.remove('open');
                 drawer.setAttribute('aria-hidden', 'true');
                 return;
             }
 
-            const server = getServerByName(drawerServerName);
+            const server = getServerByName(drawerState.serverName);
             if (!server) {
                 closeDrawer();
                 return;
@@ -2101,8 +1923,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const securityApprovalLabel = approvalCounts.security === null
                 ? "Standard security (?)"
                 : `Standard security (${approvalCounts.security})`;
-            if (drawerTab === "pending" && !hasPending) {
-                drawerTab = "logs";
+            if (drawerState.tab === "pending" && !hasPending) {
                 drawerPendingScrollTop = 0;
             }
 
@@ -2124,23 +1945,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
             drawerApproveFullBtn.classList.toggle('hidden', !triage.can_approve_full);
 
             pendingTabBtn.disabled = !hasPending;
-            pendingTabBtn.classList.toggle('active', drawerTab === "pending");
-            logsTabBtn.classList.toggle('active', drawerTab === "logs");
+            pendingTabBtn.classList.toggle('active', drawerState.tab === "pending");
+            logsTabBtn.classList.toggle('active', drawerState.tab === "logs");
 
-            logsPanel.classList.toggle('active', drawerTab === "logs");
-            pendingPanel.classList.toggle('active', drawerTab === "pending");
+            logsPanel.classList.toggle('active', drawerState.tab === "logs");
+            pendingPanel.classList.toggle('active', drawerState.tab === "pending");
 
-            if (drawerTab === "logs") {
+            if (drawerState.tab === "logs") {
                 logsEl.innerHTML = formatLogsHtml(server.logs || "");
-                if (drawerLogFollow) {
+                if (drawerState.logFollow) {
                     logsEl.scrollTop = logsEl.scrollHeight;
                 } else {
                     logsEl.scrollTop = drawerLogScrollTop;
                 }
-                logsHint.textContent = drawerLogFollow ? "Live auto-scroll" : "Auto-scroll paused";
+                logsHint.textContent = drawerState.logFollow ? "Live auto-scroll" : "Auto-scroll paused";
             }
 
-            if (drawerTab === "pending") {
+            if (drawerState.tab === "pending") {
                 const pendingScrollTop = drawerPendingScrollTop;
                 pendingPanel.innerHTML = renderPendingUpdatesHtml(server, true);
                 requestAnimationFrame(() => {
@@ -2206,27 +2027,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
             hidePhaseTooltip();
             const tbody = document.querySelector('#servers-table tbody');
             tbody.innerHTML = '';
-            let servers = applyFilters(allServers);
-            servers = sortServers(servers);
-            const totalFiltered = servers.length;
-            const previousSelectedServerName = selectedServerName;
-            if (servers.length > 0 && !servers.some(server => server.name === selectedServerName)) {
-                selectedServerName = servers[0].name;
-            } else if (servers.length === 0) {
-                selectedServerName = "";
-            }
-            if (selectedServerName !== previousSelectedServerName) {
-                saveDashboardFilters();
-            }
-            const paged = paginate(servers);
+            const view = getStatusView();
+            const totalFiltered = view.visibleServers.length;
+            const selectedNames = new Set(view.selectedNames);
+            document.getElementById('page-info').textContent = `Page ${view.page} of ${view.totalPages} (${pluralize(totalFiltered, "host")})`;
+            document.querySelector('.pagination')?.classList.toggle('single-page', view.totalPages <= 1);
+            document.getElementById('prev-page').disabled = view.page <= 1;
+            document.getElementById('next-page').disabled = view.page >= view.totalPages;
             setText(
                 "table-summary",
                 allServers.length === 0
                     ? "Waiting for status data"
                     : `${pluralize(totalFiltered, "host")} visible · ${pluralize(allServers.length, "host")} loaded`
             );
-            const groups = groupServers(paged);
-            groups.forEach(group => {
+            view.groups.forEach(group => {
                 if (group.key) {
                     const groupRow = document.createElement('tr');
                     groupRow.className = 'group-row';
@@ -2236,7 +2050,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 group.items.forEach(server => {
                     const row = document.createElement('tr');
                     row.dataset.name = server.name;
-                    const rowSelected = selectedServerName === server.name;
+                    const rowSelected = view.primaryServerName === server.name;
                     row.setAttribute("aria-selected", rowSelected ? "true" : "false");
                     if (rowSelected) {
                         row.classList.add('row-selected');
@@ -2316,7 +2130,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                            </div>
 	                          `;
                     row.innerHTML = `
-	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedServers.has(server.name) ? "checked" : ""}></td>
+	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedNames.has(server.name) ? "checked" : ""}></td>
                         <td class="name-cell" title="${safeNameHtml}">
                             <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button>
                             <span class="server-subline">${escapeHtml((server.tags || []).join(", ") || "ungrouped")}</span>
@@ -2347,11 +2161,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             tbody.querySelectorAll('.row-select').forEach(cb => {
 	                cb.addEventListener('change', (e) => {
 	                    const name = e.target.dataset.name;
-	                    if (e.target.checked) {
-	                        selectedServers.add(name);
-	                    } else {
-	                        selectedServers.delete(name);
-	                    }
+	                    dispatchStatusInteraction({ type: "selectionChanged", name, selected: e.target.checked });
 	                    updateBulkActionState();
 	                });
 	            });
@@ -2369,12 +2179,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function selectServer(name) {
-		            selectedServerName = name || "";
-		            saveDashboardFilters();
+		            dispatchStatusInteraction({ type: "primaryServerSelected", name: name || "" });
 		            renderTable({ refreshPanels: false });
 		        }
 
-        async function copyLogs(name = drawerServerName) {
+        async function copyLogs(name = "") {
+            name = name || getStatusView().drawer.serverName;
             const server = getServerByName(name);
             const logs = String(server?.logs || "");
             try {
@@ -2389,7 +2199,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        function downloadLogs(name = drawerServerName) {
+        function downloadLogs(name = "") {
+            name = name || getStatusView().drawer.serverName;
             const server = getServerByName(name);
             const logs = String(server?.logs || "");
             const blob = new Blob([logs], { type: 'text/plain;charset=utf-8' });
@@ -2563,9 +2374,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                }
 	                const tagButton = e.target.closest('button[data-fleet-tag]');
 	                if (tagButton) {
-	                    fleetTagFilter = tagButton.dataset.fleetTag || "";
-	                    page = 1;
-	                    saveDashboardFilters();
+	                    dispatchStatusInteraction({ type: "filtersChanged", patch: { tag: tagButton.dataset.fleetTag || "" } });
 	                    renderTable({ refreshPanels: false });
 	                }
 	            });
@@ -2586,12 +2395,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
             const key = th.dataset.sortKey;
-            if (sortKey === key) {
-                sortDir = sortDir === "asc" ? "desc" : "asc";
-            } else {
-                sortKey = key;
-                sortDir = "asc";
-            }
+            dispatchStatusInteraction({ type: "sortChanged", key });
             updateSortIndicators();
             renderTable({ refreshPanels: false });
         };
@@ -2609,32 +2413,38 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         });
 
-        document.getElementById('search').addEventListener('input', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('status-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('auth-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('group-by').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('page-size').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('search').addEventListener('input', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { search: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('status-filter').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { status: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('auth-filter').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { auth: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('group-by').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { groupBy: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('page-size').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { pageSize: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
 
         document.getElementById('prev-page').addEventListener('click', () => {
-            page = Math.max(1, page - 1);
+            dispatchStatusInteraction({ type: "pageChanged", delta: -1 });
             renderTable({ refreshPanels: false });
         });
         document.getElementById('next-page').addEventListener('click', () => {
-            page += 1;
+            dispatchStatusInteraction({ type: "pageChanged", delta: 1 });
             renderTable({ refreshPanels: false });
         });
 
         document.getElementById('select-all').addEventListener('change', (e) => {
-            const checked = e.target.checked;
-            const filtered = sortServers(applyFilters(allServers));
-            const paged = paginate(filtered);
-	            paged.forEach(server => {
-	                if (checked) {
-	                    selectedServers.add(server.name);
-	                } else {
-	                    selectedServers.delete(server.name);
-	                }
-	            });
+	            dispatchStatusInteraction({ type: "pageSelectionChanged", selected: e.target.checked });
 	            renderTable({ refreshPanels: false });
 	            updateBulkActionState();
 	        });
@@ -2655,19 +2465,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        async function updateServer(name) {
-	            await runSingleHostAction(name, "update", async () => {
-	                if (await postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "update", "update", () => (
+	                postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')
+	            ));
 	        }
 
 	        async function runAutoremove(name) {
-	            await runSingleHostAction(name, "autoremove", async () => {
-	                if (await postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "autoremove", "autoremove", () => (
+	                postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')
+	            ));
 	        }
 
 	        async function enablePasswordlessApt(name) {
@@ -2675,20 +2481,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                alert("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
-	            await runSingleHostAction(name, "enable apt", async () => {
+	            await runSingleHostAction(name, "enable_apt", "enable apt", async () => {
 	                let password;
 	                try {
 	                    password = await promptPassword(`Enter sudo password for ${name}`);
 	                } catch {
-	                    return;
+	                    return false;
 	                }
-	                if (!password) return;
-	                if (await postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
+	                if (!password) return false;
+	                return postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify({ password })
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
@@ -2697,20 +2501,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                alert("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
-	            await runSingleHostAction(name, "disable apt", async () => {
+	            await runSingleHostAction(name, "disable_apt", "disable apt", async () => {
 	                let password;
 	                try {
 	                    password = await promptPassword(`Enter sudo password to disable for ${name}`);
 	                } catch {
-	                    return;
+	                    return false;
 	                }
-	                if (!password) return;
-	                if (await postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
+	                if (!password) return false;
+	                return postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify({ password })
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
@@ -2772,7 +2574,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function trapDrawerFocus(event) {
-            if (!drawerOpen) return false;
+            if (!getStatusView().drawer.open) return false;
             const drawer = document.getElementById('status-drawer');
             if (!drawer || drawer.getAttribute('aria-hidden') === 'true') return false;
             const focusable = drawerFocusableElements(drawer);
@@ -2909,7 +2711,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 e.stopImmediatePropagation();
                 return;
             }
-            if (e.key === 'Escape' && drawerOpen) {
+            if (e.key === 'Escape' && getStatusView().drawer.open) {
                 e.preventDefault();
                 closeDrawer();
             }
@@ -2922,32 +2724,37 @@ const LOG_BOTTOM_THRESHOLD = 20;
         document.getElementById('drawer-copy-logs').addEventListener('click', () => copyLogs());
         document.getElementById('drawer-download-logs').addEventListener('click', () => downloadLogs());
         document.getElementById('drawer-approve-all').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveAllUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveAllUpdates(name);
         });
         document.getElementById('drawer-approve-security').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveSecurityUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveSecurityUpdates(name);
         });
         document.getElementById('drawer-approve-security-kept-back').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveKeptBackSecurityUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveKeptBackSecurityUpdates(name);
         });
         document.getElementById('drawer-approve-full').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveFullUpgrade(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveFullUpgrade(name);
         });
 
         const drawerLogsElement = document.getElementById('drawer-logs');
         drawerLogsElement.addEventListener('scroll', () => {
             drawerLogScrollTop = drawerLogsElement.scrollTop;
-            drawerLogFollow = isNearBottom(drawerLogsElement);
-            document.getElementById('drawer-logs-hint').textContent = drawerLogFollow ? "Live auto-scroll" : "Auto-scroll paused";
+            const logFollow = isNearBottom(drawerLogsElement);
+            dispatchStatusInteraction({ type: "drawerLogFollowChanged", value: logFollow });
+            document.getElementById('drawer-logs-hint').textContent = logFollow ? "Live auto-scroll" : "Auto-scroll paused";
         });
 
         const drawerPendingElement = document.getElementById('drawer-panel-pending');
         drawerPendingElement.addEventListener('scroll', () => {
-            if (drawerTab === "pending") {
+            if (getStatusView().drawer.tab === "pending") {
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
@@ -2958,12 +2765,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }, true);
         document.addEventListener('pointerup', () => {
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);
         document.addEventListener('pointercancel', () => {
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);
@@ -2978,7 +2785,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }, true);
         document.addEventListener('keyup', (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);
@@ -2990,47 +2797,43 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
 
 	        async function approveAllUpdates(name) {
-	            await runSingleHostAction(name, "approve", async () => {
+	            await runSingleHostAction(name, "approve_all", "approve", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
 	                    window.alert("No standard updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
-	                if (await postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.')) {
-	                    await fetchServers(true);
-	                }
+	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.');
 	            });
 	        }
 
 	        async function approveSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve security", async () => {
+	            await runSingleHostAction(name, "approve_security", "approve security", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
 	                    window.alert("No standard security updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
-	                if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
-	                    await fetchServers(true);
-	                }
+	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.');
 	            });
 	        }
 
 	        async function approveKeptBackSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve kept-back security", async () => {
+	            await runSingleHostAction(name, "approve_security_kept_back", "approve kept-back security", async () => {
 	                const server = getServerByName(name);
 	                const counts = getPendingApprovalCounts(server);
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_kept_back_security) {
 	                    if (!counts.keptBackSecurityPlanAvailable) {
 	                        window.alert("Run a fresh package scan before approving kept-back security updates.");
-	                        return;
+	                        return false;
 	                    }
 	                    window.alert("No kept-back security updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
 	                if (!counts.keptBackSecurityPlanAvailable) {
 	                    window.alert("Run a fresh package scan before approving kept-back security updates.");
-	                    return;
+	                    return false;
 	                }
 	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
 	                const packages = pendingUpdates
@@ -3048,33 +2851,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return;
+	                if (!window.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
-	                if (await postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
+	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify(body)
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
 	        async function approveFullUpgrade(name) {
-	            await runSingleHostAction(name, "approve full upgrade", async () => {
+	            await runSingleHostAction(name, "approve_full", "approve full upgrade", async () => {
 	                const server = getServerByName(name);
 	                const counts = getPendingApprovalCounts(server);
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_full) {
 	                    if (!counts.fullPlanAvailable) {
 	                        window.alert("Run a fresh package scan before approving full-upgrade.");
-	                        return;
+	                        return false;
 	                    }
 	                    window.alert("No full-upgrade packages are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
 	                if (!counts.fullPlanAvailable) {
 	                    window.alert("Run a fresh package scan before approving full-upgrade.");
-	                    return;
+	                    return false;
 	                }
 	                const removed = counts.removedPackages;
 	                const newPackages = counts.newPackages;
@@ -3085,41 +2886,36 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    `Run full-upgrade on ${name}?`,
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return;
+	                if (!window.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
-	                if (await postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
+	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify(body)
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
 	        async function cancelUpgrade(name) {
-	            await runSingleHostAction(name, "cancel", async () => {
-	                if (await postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "cancel", "cancel", () => (
+	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')
+	            ));
 	        }
 
 	        async function refreshHostFacts(name) {
-	            await runSingleHostAction(name, "refresh facts", async () => {
+	            await runSingleHostAction(name, "refresh_facts", "refresh facts", async () => {
 	                try {
 	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
 	                        alert(payload.error || "Failed to refresh host facts");
-	                        return;
+	                        return false;
 	                    }
-	                    await fetchDashboardSummary();
-	                    await fetchServers(true);
+	                    return true;
 	                } catch (err) {
 	                    alert(err?.message || "Failed to refresh host facts");
-	                    return;
+	                    return false;
 	                }
-	            });
+	            }, ["servers", "dashboard"]);
 	        }
 
 
@@ -3132,7 +2928,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         document.getElementById('selected-host-panel').addEventListener('toggle', (e) => {
             const details = e.target;
             if (!details?.matches?.('details.facts-more')) return;
-            const hostName = details.dataset.name || selectedServerName;
+            const hostName = details.dataset.name || getStatusView().primaryServerName;
             if (!hostName) return;
             if (details.open) {
                 expandedHostFactsServers.add(hostName);

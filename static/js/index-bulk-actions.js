@@ -10,53 +10,6 @@
             return "";
         }
 
-        function getBulkDashboardAction(actionPath, server, options = {}) {
-            const key = bulkDashboardActionKey(actionPath);
-            if (!key || typeof getServerActionContract !== "function") return null;
-            return getServerActionContract(server, key, options);
-        }
-
-	        function canRunBulkUpdate(server) {
-	            return canRunUpdateAction(server);
-	        }
-
-	        function canRunBulkAutoremove(server) {
-	            return canRunAutoremoveAction(server);
-	        }
-
-	        function canRefreshBulkFacts(server) {
-	            return canRefreshFactsAction(server);
-	        }
-
-	        function canRunBulkApprove(server) {
-	            return !!getServerApprovalTriage(server).can_approve_all;
-	        }
-
-	        function canRunBulkApproveSecurity(server) {
-	            return !!getServerApprovalTriage(server).can_approve_security;
-	        }
-
-	        function canRunBulkApproveKeptBackSecurity(server) {
-	            return !!getServerApprovalTriage(server).can_approve_kept_back_security;
-	        }
-
-	        function canRunBulkCancel(server) {
-	            return !!getServerApprovalTriage(server).can_cancel;
-	        }
-
-        function canRunBulkAction(actionPath, server) {
-            const action = getBulkDashboardAction(actionPath, server);
-            if (action) return !!action.enabled;
-            if (actionPath === "update") return canRunBulkUpdate(server);
-            if (actionPath === "approve") return canRunBulkApprove(server);
-            if (actionPath === "approve-security") return canRunBulkApproveSecurity(server);
-            if (actionPath === "approve-security-kept-back") return canRunBulkApproveKeptBackSecurity(server);
-            if (actionPath === "cancel") return canRunBulkCancel(server);
-            if (actionPath === "autoremove") return canRunBulkAutoremove(server);
-            if (actionPath === "facts-refresh") return canRefreshBulkFacts(server);
-            return true;
-        }
-
         function setBulkButtonState(id, enabled, enabledTitle, disabledTitle) {
             const button = document.getElementById(id);
             if (!button) return;
@@ -67,22 +20,30 @@
 
 	        function updateBulkActionState() {
 	            const hint = document.getElementById('bulk-action-hint');
-	            const selectedNames = Array.from(selectedServers);
-	            const visibleSelectedServers = getVisibleSelectedServers();
-	            const visibleCount = visibleSelectedServers.length;
-	            const selectedCount = selectedNames.length;
-	            const hiddenCount = Math.max(0, selectedCount - visibleCount);
-	            const approveCount = visibleSelectedServers.filter(canRunBulkApprove).length;
-	            const approveSecurityCount = visibleSelectedServers.filter(canRunBulkApproveSecurity).length;
-	            const approveKeptSecurityCount = visibleSelectedServers.filter(canRunBulkApproveKeptBackSecurity).length;
-	            const cancelCount = visibleSelectedServers.filter(canRunBulkCancel).length;
-	            const updateCount = visibleSelectedServers.filter(canRunBulkUpdate).length;
-	            const autoremoveCount = visibleSelectedServers.filter(canRunBulkAutoremove).length;
-	            const refreshFactsCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
+	            const view = getStatusView();
+	            const previewPlan = actionKey => statusInteraction.planBulkAction(actionKey, { preview: true });
+	            const updatePlan = previewPlan("update");
+	            const approvePlan = previewPlan("approve_all");
+	            const approveSecurityPlan = previewPlan("approve_security");
+	            const approveKeptSecurityPlan = previewPlan("approve_security_kept_back");
+	            const cancelPlan = previewPlan("cancel");
+	            const autoremovePlan = previewPlan("autoremove");
+	            const refreshFactsPlan = previewPlan("refresh_facts");
+	            const selectedCount = view.selectedNames.length;
+	            const visibleCount = view.visibleSelectedNames.length;
+	            const hiddenCount = view.hiddenSelectedNames.length;
+	            const updateCount = updatePlan.eligibleNames.length;
+	            const approveCount = approvePlan.eligibleNames.length;
+	            const approveSecurityCount = approveSecurityPlan.eligibleNames.length;
+	            const approveKeptSecurityCount = approveKeptSecurityPlan.eligibleNames.length;
+	            const cancelCount = cancelPlan.eligibleNames.length;
+	            const autoremoveCount = autoremovePlan.eligibleNames.length;
+	            const refreshFactsCount = refreshFactsPlan.eligibleNames.length;
+	            const bulk = view.actions.bulk;
 
 		            if (hint) {
-		                if (bulkActionInFlightLabel) {
-		                    hint.textContent = `Bulk ${bulkActionInFlightLabel} running for visible selected hosts`;
+		                if (bulk) {
+		                    hint.textContent = `Bulk ${bulk.actionLabel} running for visible selected hosts`;
 		                    hint.classList.remove("warning");
 		                } else if (selectedCount === 0) {
 		                    hint.textContent = "No hosts selected";
@@ -104,15 +65,15 @@
 	                }
 	            }
 
-		            const bulkDisabledTitle = bulkActionInFlightLabel
-		                ? `Bulk ${bulkActionInFlightLabel} is already running`
+		            const bulkDisabledTitle = bulk
+		                ? `Bulk ${bulk.actionLabel} is already running`
 		                : null;
-		            setBulkButtonState("bulk-update", !bulkActionInFlightLabel && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
-		            setBulkButtonState("bulk-approve", !bulkActionInFlightLabel && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
-		            setBulkButtonState("bulk-approve-security", !bulkActionInFlightLabel && approveSecurityCount > 0, `Approve standard security updates on ${pluralize(approveSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard security updates eligible for approval"));
-		            setBulkButtonState("bulk-approve-kept-security", !bulkActionInFlightLabel && approveKeptSecurityCount > 0, `Approve kept-back security updates on ${pluralize(approveKeptSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has kept-back security updates eligible for approval"));
-		            setBulkButtonState("bulk-cancel", !bulkActionInFlightLabel && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
-		            setBulkButtonState("bulk-autoremove", !bulkActionInFlightLabel && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
+		            setBulkButtonState("bulk-update", !bulk && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
+		            setBulkButtonState("bulk-approve", !bulk && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
+		            setBulkButtonState("bulk-approve-security", !bulk && approveSecurityCount > 0, `Approve standard security updates on ${pluralize(approveSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard security updates eligible for approval"));
+		            setBulkButtonState("bulk-approve-kept-security", !bulk && approveKeptSecurityCount > 0, `Approve kept-back security updates on ${pluralize(approveKeptSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has kept-back security updates eligible for approval"));
+		            setBulkButtonState("bulk-cancel", !bulk && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
+		            setBulkButtonState("bulk-autoremove", !bulk && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
 	            updateRefreshAllFactsState();
 	            scheduleSelectPageStateUpdate();
 	        }
@@ -141,111 +102,12 @@
             return "";
         }
 
-	        function bulkReadyReason(actionPath, server) {
-            const action = getBulkDashboardAction(actionPath, server);
-            if (action && action.reason) return action.reason;
-	            const counts = getPendingApprovalCounts(server);
-	            if (actionPath === "update") return "Ready to start update checks.";
-	            if (actionPath === "approve") return `${pluralize(counts.standard, "standard update")} ready for approval.`;
-            if (actionPath === "approve-security") return `${pluralize(counts.security || 0, "standard security update")} ready for approval.`;
-            if (actionPath === "approve-security-kept-back") {
-                const removalNote = counts.keptBackSecurityRemovedPackages.length > 0
-                    ? " Package removals will be confirmed from the previewed plan."
-                    : "";
-                return `${pluralize(counts.keptBackSecurity || 0, "kept-back security update")} ready for targeted approval.${removalNote}`;
-            }
-            if (actionPath === "cancel") return "Ready to cancel pending approval.";
-            if (actionPath === "autoremove") return "Ready to run apt autoremove.";
-            if (actionPath === "facts-refresh") return "Ready to refresh host facts.";
-            return "Ready.";
-        }
-
-        function bulkIneligibleReason(actionPath, server) {
-            if (!server) return "Host is no longer loaded";
-            const action = getBulkDashboardAction(actionPath, server);
-            if (action && action.reason) return action.reason;
-            if (isSingleHostActionInFlight(server.name)) return "Another action is already running for this host";
-            const counts = getPendingApprovalCounts(server);
-            if (actionPath === "update") {
-                if (statusBlocksTransientAction(server.status)) return `Current status ${statusLabel(server.status)} blocks update checks`;
-                return "Cannot start update checks now";
-            }
-            if (actionPath === "approve") {
-                if (server.status !== "pending_approval") return "Not waiting for approval";
-                if (counts.standard <= 0) return "No standard updates eligible";
-                return "No standard updates eligible";
-            }
-            if (actionPath === "approve-security") {
-                if (server.status !== "pending_approval") return "Not waiting for approval";
-                if ((counts.security || 0) <= 0) return "No standard security updates eligible";
-                return "No standard security updates eligible";
-            }
-            if (actionPath === "approve-security-kept-back") {
-                if (server.status !== "pending_approval") return "Not waiting for approval";
-                return counts.keptBackSecurityPlanAvailable ? "No kept-back security updates eligible" : "Needs a fresh package scan";
-            }
-            if (actionPath === "cancel") {
-                if (server.status !== "pending_approval") return "Not waiting for approval";
-                return "Cannot cancel approval now";
-            }
-            if (actionPath === "autoremove") {
-                if (statusBlocksTransientAction(server.status)) return `Current status ${statusLabel(server.status)} blocks autoremove`;
-                return "Cannot run autoremove now";
-            }
-            if (actionPath === "facts-refresh") {
-                if (statusBlocksTransientAction(server.status)) return `Current status ${statusLabel(server.status)} blocks facts refresh`;
-                return "Cannot refresh facts now";
-            }
-            return "Not eligible";
-        }
-
         function buildBulkActionPlan(actionPath, actionLabel) {
-            const visibleSelected = new Set(
-                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
-                    .map(cb => cb.dataset.name)
-                    .filter(Boolean)
-            );
-            const selectedNames = Array.from(selectedServers);
-            const visibleNames = selectedNames.filter(name => visibleSelected.has(name));
-            const hiddenNames = selectedNames.filter(name => !visibleSelected.has(name));
-            const eligibleNames = [];
-            const eligibleHosts = [];
-            const ineligible = [];
-            visibleNames.forEach(name => {
-                const server = getServerByName(name);
-                if (canRunBulkAction(actionPath, server)) {
-                    eligibleNames.push(name);
-                    eligibleHosts.push({
-                        name,
-                        auth: getAuthLabel(server),
-                        readiness: bulkReadyReason(actionPath, server)
-                    });
-                } else {
-                    ineligible.push({
-                        name,
-                        auth: server ? getAuthLabel(server) : "Unknown",
-                        reason: bulkIneligibleReason(actionPath, server)
-                    });
-                }
-            });
-            const hiddenHosts = hiddenNames.map(name => {
-                const server = getServerByName(name);
-                return {
-                    name,
-                    auth: server ? getAuthLabel(server) : "Unknown",
-                    reason: "Hidden by current filter or page"
-                };
-            });
+            const actionKey = bulkDashboardActionKey(actionPath);
+            const plan = statusInteraction.planBulkAction(actionKey, { actionLabel });
             return {
+                ...plan,
                 actionPath,
-                actionLabel,
-                selectedNames,
-                visibleNames,
-                hiddenNames,
-                eligibleNames,
-                eligibleHosts,
-                ineligible,
-                skippedHosts: [...hiddenHosts, ...ineligible],
                 confirmationText: bulkActionConfirmationText(actionPath),
                 warning: bulkActionWarning(actionPath)
             };
@@ -323,7 +185,7 @@
         }
 
 	        async function runBulkAction(actionPath, actionLabel) {
-	            if (bulkActionInFlightLabel) return;
+            if (getStatusView().actions.bulk) return;
             const plan = buildBulkActionPlan(actionPath, actionLabel);
             if (plan.visibleNames.length === 0) {
                 if (plan.selectedNames.length > 0) {
@@ -342,10 +204,8 @@
                 return;
             }
 
-	            const hostActionKeys = plan.eligibleNames.map(name => singleHostActionKey(name, `bulk ${actionLabel}`));
-	            bulkActionInFlightLabel = actionLabel;
-	            hostActionKeys.forEach(key => singleHostActionsInFlight.add(key));
-	            renderSingleHostActionState();
+	            await dispatchStatusInteraction({ type: "actionStarted", plan });
+	            if (!getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
 	            try {
 	                const jobs = plan.eligibleNames.map(async (name) => {
 	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST', ...bulkActionRequestOptions(actionPath, name) });
@@ -366,21 +226,29 @@
 	                    }
 	                });
 
+	                let message = "";
 	                if (failures.length > 0) {
 	                    console.error(`Bulk ${actionLabel} failures:`, failures);
-	                    alert(`Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`);
+	                    message = `Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(', ')}`;
 	                } else if (plan.hiddenNames.length > 0 || plan.ineligible.length > 0) {
 	                    const skipped = [];
 	                    if (plan.hiddenNames.length > 0) skipped.push(`${plan.hiddenNames.length} hidden selected host(s)`);
 	                    if (plan.ineligible.length > 0) skipped.push(`${plan.ineligible.length} ineligible visible host(s)`);
-	                    alert(`Bulk ${actionLabel} completed; ${skipped.join(" and ")} were skipped.`);
+	                    message = `Bulk ${actionLabel} completed; ${skipped.join(" and ")} were skipped.`;
 	                }
-
-	                await fetchServers(true);
-	            } finally {
-	                hostActionKeys.forEach(key => singleHostActionsInFlight.delete(key));
-	                bulkActionInFlightLabel = "";
-	                renderSingleHostActionState();
+	                await dispatchStatusInteraction({
+	                    type: failures.length > 0 ? "actionFailed" : "actionCompleted",
+	                    operationId: plan.id,
+	                    refreshStreams: ["servers"],
+	                    message
+	                });
+	            } catch (error) {
+	                await dispatchStatusInteraction({
+	                    type: "actionFailed",
+	                    operationId: plan.id,
+	                    refreshStreams: ["servers"],
+	                    message: `Bulk ${actionLabel} failed: ${error?.message || "Request failed"}`
+	                });
 	            }
 	        }
 
@@ -442,7 +310,7 @@
         }
 
         async function refreshSelectedHostFacts() {
-            if (refreshAllFactsInFlight) return;
+            if (getStatusView().actions.bulk) return;
             const plan = buildBulkActionPlan("facts-refresh", "refresh facts");
 	            if (plan.visibleNames.length === 0) {
 	                if (plan.selectedNames.length > 0) {
@@ -457,11 +325,8 @@
             if (!(await requestBulkActionReview(plan))) {
                 return;
             }
-	            const hostActionKeys = plan.eligibleNames.map(name => singleHostActionKey(name, "refresh facts"));
-	            refreshAllFactsInFlight = true;
-	            hostActionKeys.forEach(key => singleHostActionsInFlight.add(key));
-	            renderSingleHostActionState();
-	            updateRefreshAllFactsState();
+	            await dispatchStatusInteraction({ type: "actionStarted", plan });
+	            if (!getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
 	            const failures = [];
 	            let cursor = 0;
 	            const workerCount = Math.min(4, plan.eligibleNames.length);
@@ -482,20 +347,27 @@
             };
 	            try {
 	                await Promise.all(Array.from({ length: workerCount }, runWorker));
-	                await fetchDashboardSummary();
-	                await fetchServers(true);
+	                let message = "";
 	                if (failures.length > 0) {
-	                    alert(`Facts refresh completed with ${failures.length} failure(s): ${failures.join(", ")}`);
+	                    message = `Facts refresh completed with ${failures.length} failure(s): ${failures.join(", ")}`;
 	                } else if (plan.hiddenNames.length > 0 || plan.ineligible.length > 0) {
 	                    const skipped = [];
 	                    if (plan.hiddenNames.length > 0) skipped.push(`${plan.hiddenNames.length} hidden selected host(s)`);
 	                    if (plan.ineligible.length > 0) skipped.push(`${plan.ineligible.length} active or unavailable visible host(s)`);
-	                    alert(`Facts refresh completed; ${skipped.join(" and ")} were skipped.`);
+	                    message = `Facts refresh completed; ${skipped.join(" and ")} were skipped.`;
 	                }
-	            } finally {
-	                hostActionKeys.forEach(key => singleHostActionsInFlight.delete(key));
-	                refreshAllFactsInFlight = false;
-	                renderSingleHostActionState();
-	                updateRefreshAllFactsState();
+	                await dispatchStatusInteraction({
+	                    type: failures.length > 0 ? "actionFailed" : "actionCompleted",
+	                    operationId: plan.id,
+	                    refreshStreams: ["servers", "dashboard"],
+	                    message
+	                });
+	            } catch (error) {
+	                await dispatchStatusInteraction({
+	                    type: "actionFailed",
+	                    operationId: plan.id,
+	                    refreshStreams: ["servers", "dashboard"],
+	                    message: `Facts refresh failed: ${error?.message || "Request failed"}`
+	                });
 	            }
 	        }

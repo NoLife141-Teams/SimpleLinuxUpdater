@@ -4,6 +4,7 @@
   "description": "Playwright tests for SimpleLinuxUpdater auth flows",
   "private": true,
   "scripts": {
+    "test:unit": "node --test tests/unit/*.test.js",
     "test:e2e": "node ./node_modules/@playwright/test/cli.js test"
   },
   "devDependencies": {

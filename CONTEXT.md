@@ -32,6 +32,10 @@ _Avoid_: Dashboard API response, observability query
 The Dashboard Projection-owned action eligibility vocabulary for dashboard-visible server actions, including whether each action is enabled, why it is ready or blocked, its machine-readable readiness state, blocking status, and action-specific counts.
 _Avoid_: Button state logic, frontend action rules
 
+**Status Page Interaction**:
+The application-level state and decision boundary for status-page snapshots, navigation, synchronization, selection, drawer state, and single or bulk action planning; browser adapters retain transport, persistence, DOM, focus, scrolling, and confirmation effects.
+_Avoid_: Status page globals, dashboard UI state
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

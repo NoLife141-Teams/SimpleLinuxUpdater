@@ -42,10 +42,28 @@ const (
 )
 
 var (
-	ErrSetupAlreadyCompleted = errors.New("setup already completed")
-	ErrSetupRequired         = errors.New("setup required")
-	ErrPasswordMismatch      = errors.New("password confirmation does not match")
+	ErrSetupAlreadyCompleted  = errors.New("setup already completed")
+	ErrSetupRequired          = errors.New("setup required")
+	ErrPasswordMismatch       = errors.New("password confirmation does not match")
+	ErrCurrentPasswordInvalid = errors.New("current password is invalid")
 )
+
+type ValidationError struct {
+	message string
+}
+
+func NewValidationError(message string) error {
+	return ValidationError{message: message}
+}
+
+func (e ValidationError) Error() string {
+	return e.message
+}
+
+func IsValidationError(err error) bool {
+	var validationErr ValidationError
+	return errors.As(err, &validationErr)
+}
 
 type CredentialsRequest struct {
 	Username string `json:"username"`
@@ -279,7 +297,7 @@ func (r *SQLiteRepository) ClearSessions() (int64, error) {
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	return rows, nil
 }
@@ -385,7 +403,7 @@ func (s *Service) ChangePassword(currentPassword, newPassword, confirmPassword s
 		return err
 	}
 	if !ok {
-		return errors.New("current password is invalid")
+		return ErrCurrentPasswordInvalid
 	}
 	if err := s.ValidatePasswordPolicy(newPassword); err != nil {
 		return err
@@ -409,10 +427,10 @@ func (s *Service) ClearSessions() (int64, error) {
 func ValidatePasswordPolicy(password string) error {
 	passwordLen := utf8.RuneCountInString(password)
 	if passwordLen < MinPasswordLen {
-		return fmt.Errorf("password must be at least %d characters long", MinPasswordLen)
+		return NewValidationError(fmt.Sprintf("password must be at least %d characters long", MinPasswordLen))
 	}
 	if passwordLen > MaxPasswordLen {
-		return fmt.Errorf("password must be %d characters or less", MaxPasswordLen)
+		return NewValidationError(fmt.Sprintf("password must be %d characters or less", MaxPasswordLen))
 	}
 	hasLetter := false
 	hasDigit := false
@@ -425,7 +443,7 @@ func ValidatePasswordPolicy(password string) error {
 		}
 	}
 	if !hasLetter || !hasDigit {
-		return errors.New("password must include at least one letter and one digit")
+		return NewValidationError("password must include at least one letter and one digit")
 	}
 	return nil
 }
@@ -433,13 +451,13 @@ func ValidatePasswordPolicy(password string) error {
 func ValidateUsername(username string) error {
 	trimmed := strings.TrimSpace(username)
 	if trimmed == "" {
-		return errors.New("username is required")
+		return NewValidationError("username is required")
 	}
 	if len(trimmed) > 64 {
-		return errors.New("username must be 64 characters or less")
+		return NewValidationError("username must be 64 characters or less")
 	}
 	if !isValidUsername(trimmed) {
-		return errors.New("username contains unsupported characters")
+		return NewValidationError("username contains unsupported characters")
 	}
 	return nil
 }

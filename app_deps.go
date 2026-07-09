@@ -21,6 +21,7 @@ type AppDeps struct {
 
 	AuditService           *AuditService
 	AuthService            *AuthService
+	AuthSessionCommands    *authSessionCommands
 	BackupService          *BackupService
 	BackupBarrier          *BackupBarrier
 	NotificationService    *NotificationService

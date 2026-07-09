@@ -86,6 +86,7 @@ const authRuntimeDepsContextKey = "auth_runtime_deps"
 type authRuntimeDeps struct {
 	service                   *AuthService
 	auditService              *AuditService
+	commands                  *authSessionCommands
 	serverState               *serverpkg.State
 	sessionManager            func() *scs.SessionManager
 	loginRateLimiter          *AuthRateLimiter
@@ -98,6 +99,7 @@ func authRuntimeMiddleware(deps AppDeps) gin.HandlerFunc {
 	runtime := authRuntimeDeps{
 		service:                   deps.AuthService,
 		auditService:              deps.AuditService,
+		commands:                  deps.AuthSessionCommands,
 		serverState:               deps.ServerState,
 		sessionManager:            deps.CurrentSessionManager,
 		loginRateLimiter:          deps.LoginRateLimiter,
@@ -108,6 +110,26 @@ func authRuntimeMiddleware(deps AppDeps) gin.HandlerFunc {
 		c.Set(authRuntimeDepsContextKey, runtime)
 		c.Next()
 	}
+}
+
+func authCommandsForContext(c *gin.Context) *authSessionCommands {
+	if runtime, ok := authRuntimeFromContext(c); ok && runtime.commands != nil {
+		return runtime.commands
+	}
+	return newAuthSessionCommandsWithDeps(authSessionCommandDeps{
+		Account:        authServiceForContext(c),
+		PasswordPolicy: passwordChangeRateLimiterForContext(c),
+		Session: scsAuthSessionLifecycle{current: func() *scs.SessionManager {
+			return sessionManagerForContext(c)
+		}},
+		RecordAudit: func(record authSessionCommandAuditRecord) error {
+			if service := auditServiceForContext(c); service != nil {
+				return service.Record(record.Actor, record.ClientIP, record.Action, record.TargetType, record.TargetName, record.Status, record.Message, record.Meta)
+			}
+			auditWithActor(record.Actor, record.ClientIP, record.Action, record.TargetType, record.TargetName, record.Status, record.Message, record.Meta)
+			return nil
+		},
+	})
 }
 
 func authRuntimeFromContext(c *gin.Context) (authRuntimeDeps, bool) {
@@ -257,28 +279,12 @@ func validatePasswordPolicy(password string) error {
 	return defaultAuthService().ValidatePasswordPolicy(password)
 }
 
-func validateAuthUsername(username string) error {
-	return defaultAuthService().ValidateUsername(username)
-}
-
 func createInitialUser(username, password string) error {
 	return defaultAuthService().CreateInitialUser(username, password)
 }
 
-func createInitialUserForContext(c *gin.Context, username, password string) error {
-	return authServiceForContext(c).CreateInitialUser(username, password)
-}
-
 func authenticateUser(username, password string) (bool, error) {
 	return defaultAuthService().Authenticate(username, password)
-}
-
-func authenticateUserForContext(c *gin.Context, username, password string) (bool, error) {
-	return authServiceForContext(c).Authenticate(username, password)
-}
-
-func changeSingleUserPasswordForContext(c *gin.Context, currentPassword, newPassword, confirmPassword string) error {
-	return authServiceForContext(c).ChangePassword(currentPassword, newPassword, confirmPassword)
 }
 
 func countStoredSessions() (int, error) {
@@ -287,10 +293,6 @@ func countStoredSessions() (int, error) {
 
 func countStoredSessionsForContext(c *gin.Context) (int, error) {
 	return authServiceForContext(c).CountSessions()
-}
-
-func clearStoredSessionsForContext(c *gin.Context) (int64, error) {
-	return authServiceForContext(c).ClearSessions()
 }
 
 func sessionUsername(c *gin.Context) string {
@@ -553,7 +555,8 @@ func handleAuthSessionsStatus(c *gin.Context) {
 }
 
 func handleAuthPasswordChange(c *gin.Context) {
-	key := fmt.Sprintf("%s:%s:password-change", rateLimitClientIP(c), sessionUsername(c))
+	actor := sessionUsername(c)
+	key := authPasswordChangeRateKey(rateLimitClientIP(c), actor)
 	recordPasswordChangeFailure := func() {
 		if limiter := passwordChangeRateLimiterForContext(c); limiter != nil {
 			limiter.RecordFailure(key)
@@ -579,32 +582,47 @@ func handleAuthPasswordChange(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "current_password and new_password are required"})
 		return
 	}
-	if err := changeSingleUserPasswordForContext(c, req.CurrentPassword, req.NewPassword, req.ConfirmPassword); err != nil {
-		recordPasswordChangeFailure()
-		status := http.StatusBadRequest
-		message := err.Error()
-		if errors.Is(err, errSetupRequired) {
-			status = http.StatusConflict
-			message = "setup required"
-		}
-		audit(c, "auth.password.change", "auth_user", sessionUsername(c), "failure", "Password change failed", map[string]any{"error": message})
-		c.JSON(status, gin.H{"error": message})
+	outcome := authCommandsForContext(c).ChangePassword(c.Request.Context(), authPasswordCommand{
+		Actor:           actor,
+		ClientIP:        clientIPFromContext(c),
+		CurrentPassword: req.CurrentPassword,
+		NewPassword:     req.NewPassword,
+		ConfirmPassword: req.ConfirmPassword,
+	})
+	switch outcome.Kind {
+	case authPasswordSucceeded:
+	case authPasswordRateLimited:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": outcome.PublicError})
+		return
+	case authPasswordSetupRequired:
+		c.JSON(http.StatusConflict, gin.H{"error": outcome.PublicError})
+		return
+	case authPasswordInvalid, authPasswordCurrentRejected:
+		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})
+		return
+	case authPasswordWriteFailed:
+		log.Printf("handleAuthPasswordChange: password write failed for actor=%q: %v", actor, outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})
+		return
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
 		return
 	}
-	audit(c, "auth.password.change", "auth_user", sessionUsername(c), "success", "Password changed", nil)
 	c.JSON(http.StatusOK, gin.H{"message": "password changed"})
 }
 
 func handleAuthSessionsClear(c *gin.Context) {
 	actor := sessionUsername(c)
-	deleted, err := clearStoredSessionsForContext(c)
-	if err != nil {
-		audit(c, "auth.sessions.clear", "auth_user", actor, "failure", "Failed to clear sessions", map[string]any{"error": err.Error()})
+	outcome := authCommandsForContext(c).ClearSessions(c.Request.Context(), authClearSessionsCommand{
+		Actor:    actor,
+		ClientIP: clientIPFromContext(c),
+	})
+	if outcome.Kind != authClearSessionsSucceeded {
+		log.Printf("handleAuthSessionsClear: failed for actor=%q kind=%s: %v", actor, outcome.Kind, outcome.Err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear sessions"})
 		return
 	}
-	audit(c, "auth.sessions.clear", "auth_user", actor, "success", "All sessions cleared", map[string]any{"deleted_sessions": deleted})
-	c.JSON(http.StatusOK, gin.H{"message": "sessions cleared", "deleted_sessions": deleted})
+	c.JSON(http.StatusOK, gin.H{"message": "sessions cleared", "deleted_sessions": outcome.DeletedSessions})
 }
 
 func handleAuthSetup(c *gin.Context) {
@@ -626,7 +644,6 @@ func handleAuthSetup(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "setup already completed"})
 		return
 	}
-
 	limitAuthRequestBody(c)
 	req, formPost, err := bindAuthCredentialsRequest(c, true)
 	if err != nil {
@@ -645,39 +662,35 @@ func handleAuthSetup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
-	username := strings.TrimSpace(req.Username)
-	password := req.Password
-	if err := validateAuthUsername(username); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	outcome := authCommandsForContext(c).Setup(c.Request.Context(), authSetupCommand{
+		Username: req.Username,
+		Password: req.Password,
+		ClientIP: clientIPFromContext(c),
+	})
+	switch outcome.Kind {
+	case authSetupInvalid:
+		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})
 		return
-	}
-	if err := validatePasswordPolicy(password); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case authSetupAlreadyCompleted:
+		c.JSON(http.StatusConflict, gin.H{"error": "setup already completed"})
 		return
-	}
-	if err := createInitialUserForContext(c, username, password); err != nil {
-		switch {
-		case errors.Is(err, errSetupAlreadyCompleted):
-			c.JSON(http.StatusConflict, gin.H{"error": "setup already completed"})
-		default:
-			log.Printf("handleAuthSetup: failed to create initial user for username=%q: %v", username, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
-		}
+	case authSetupStateFailed:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate setup state"})
 		return
-	}
-
-	sm := sessionManagerForContext(c)
-	if sm == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "session manager not initialized"})
+	case authSetupAccountWriteFailed:
+		log.Printf("handleAuthSetup: failed to create initial user for username=%q: %v", strings.TrimSpace(req.Username), outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 		return
-	}
-	if err := sm.RenewToken(c.Request.Context()); err != nil {
+	case authSetupAccountCreatedSessionFailed:
+		log.Printf("handleAuthSetup: initial user created but session initialization failed for username=%q: %v", outcome.Username, outcome.Err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize session"})
 		return
+	case authSetupSucceeded:
+		c.Set("actor", outcome.Username)
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+		return
 	}
-	sm.Put(c.Request.Context(), authSessionUserKey, username)
-	c.Set("actor", username)
-	audit(c, "auth.setup", "auth_user", username, "success", "Initial admin user created", nil)
 	if formPost {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
@@ -715,31 +728,35 @@ func handleAuthLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
-	username := strings.TrimSpace(req.Username)
-	ok, authErr := authenticateUserForContext(c, username, req.Password)
-	if authErr != nil && !errors.Is(authErr, errSetupRequired) {
-		log.Printf("handleAuthLogin: authentication failed for username=%q: %v", username, authErr)
+	outcome := authCommandsForContext(c).Login(c.Request.Context(), authLoginCommand{
+		Username: req.Username,
+		Password: req.Password,
+		ClientIP: clientIPFromContext(c),
+	})
+	switch outcome.Kind {
+	case authLoginSucceeded:
+		c.Set("actor", outcome.Username)
+	case authLoginSetupRequired:
+		c.JSON(http.StatusConflict, gin.H{"error": "setup required", "setup_required": true})
+		return
+	case authLoginSetupStateFailed:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to evaluate setup state"})
+		return
+	case authLoginInvalidCredentials:
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	case authLoginAuthenticationFailed:
+		log.Printf("handleAuthLogin: authentication failed for username=%q: %v", strings.TrimSpace(req.Username), outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "authentication failed"})
+		return
+	case authLoginSessionFailed:
+		log.Printf("handleAuthLogin: session initialization failed for username=%q: %v", outcome.Username, outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to renew session"})
+		return
+	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "authentication failed"})
 		return
 	}
-	if !ok {
-		audit(c, "auth.login", "auth_user", username, "failure", "Invalid credentials", nil)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
-	}
-
-	sm := sessionManagerForContext(c)
-	if sm == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "session manager not initialized"})
-		return
-	}
-	if err := sm.RenewToken(c.Request.Context()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to renew session"})
-		return
-	}
-	sm.Put(c.Request.Context(), authSessionUserKey, username)
-	c.Set("actor", username)
-	audit(c, "auth.login", "auth_user", username, "success", "User logged in", nil)
 	if formPost {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
@@ -753,15 +770,14 @@ func handleAuthLogout(c *gin.Context) {
 		return
 	}
 	actor := sessionUsername(c)
-	sm := sessionManagerForContext(c)
-	if sm == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "session manager not initialized"})
-		return
-	}
-	if err := sm.Destroy(c.Request.Context()); err != nil {
+	outcome := authCommandsForContext(c).Logout(c.Request.Context(), authLogoutCommand{
+		Actor:    actor,
+		ClientIP: clientIPFromContext(c),
+	})
+	if outcome.Kind != authLogoutSucceeded {
+		log.Printf("handleAuthLogout: session destruction failed for actor=%q: %v", actor, outcome.Err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to logout"})
 		return
 	}
-	audit(c, "auth.logout", "auth_user", actor, "success", "User logged out", nil)
 	c.JSON(http.StatusOK, gin.H{"message": "logout successful"})
 }

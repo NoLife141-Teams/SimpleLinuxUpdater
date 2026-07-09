@@ -44,6 +44,10 @@ _Avoid_: Apt helper parsing, upgradable list helper
 The lifecycle of an operator-initiated backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, audit recording, restored-runtime handoff, session invalidation, and final operation outcome.
 _Avoid_: Backup route flow, restore handler logic
 
+**Auth Session Command**:
+An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing.
+_Avoid_: Auth route flow, session handler logic
+
 **Runtime Composition**:
 The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container

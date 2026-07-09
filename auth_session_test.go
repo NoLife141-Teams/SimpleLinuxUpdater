@@ -1273,6 +1273,9 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 	if clearRec.Code != http.StatusOK {
 		t.Fatalf("session clear status = %d, want %d (body=%s)", clearRec.Code, http.StatusOK, clearRec.Body.String())
 	}
+	if !strings.Contains(clearRec.Body.String(), `"deleted_sessions":1`) {
+		t.Fatalf("session clear body = %s, want deleted_sessions=1", clearRec.Body.String())
+	}
 
 	count, err := countStoredSessions()
 	if err != nil {
@@ -1280,6 +1283,40 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("session count after clear = %d, want 0", count)
+	}
+}
+
+func TestAuthSessionsClearDoesNotRecommitCurrentSessionWithIdleTimeout(t *testing.T) {
+	t.Setenv(sessionIdleTimeoutHoursEnv, "1")
+	dbFile := filepath.Join(t.TempDir(), "auth-clear-idle-timeout.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	clearReq := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions", nil)
+	clearReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(clearReq)
+	clearRec := httptest.NewRecorder()
+	handler.ServeHTTP(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("session clear status = %d, want %d (body=%s)", clearRec.Code, http.StatusOK, clearRec.Body.String())
+	}
+
+	count, err := countStoredSessions()
+	if err != nil {
+		t.Fatalf("countStoredSessions() error = %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("session count after clear with idle timeout = %d, want 0", count)
+	}
+
+	expired := false
+	for _, cookie := range clearRec.Result().Cookies() {
+		if cookie.Name == sessionManager.Cookie.Name && cookie.MaxAge < 0 {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		t.Fatalf("session clear response did not expire the current session cookie")
 	}
 }
 

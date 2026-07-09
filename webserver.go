@@ -2135,14 +2135,6 @@ func runAutoremoveJobWithActor(server Server, actor, clientIP string, policy Ret
 	})
 }
 
-func getUpgradable(client sshConnection, timeout time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-	result, err := updatespkg.DiscoverPackageUpdates(client, timeout, runSSHCommandWithTimeout)
-	if err != nil {
-		return nil, nil, UpgradePlan{}, err
-	}
-	return result.PendingUpdates, result.Upgradable, result.UpgradePlan, nil
-}
-
 func parseUpgradableEntries(stdout string) ([]PendingUpdate, []string, error) {
 	return updatespkg.ParseUpgradableEntries(stdout)
 }

@@ -201,8 +201,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 			AuditWithActor:  recordAudit,
 			SaveServerFacts: factsRepo.Save,
-			UpdateScheduledDiscoveryMeta: func(jobID string, upgradable []string, pending []PendingUpdate, plan UpgradePlan) {
-				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, upgradable, pending, plan)
+			UpdateScheduledDiscoveryMeta: func(jobID string, discovery PackageDiscoveryOutcome) {
+				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, discovery)
 			},
 			UpdatePolicyRun: deps.PolicyRepository.UpdateRun,
 			LoadScheduledJobBehavior: func(jobID string) scheduledJobBehavior {

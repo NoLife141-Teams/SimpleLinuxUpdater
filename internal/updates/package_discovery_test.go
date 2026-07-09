@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"debian-updater/internal/servers"
 )
 
 type packageDiscoveryCommandResponse struct {
@@ -56,12 +58,75 @@ func TestDiscoverPackageUpdatesRunsDiscoveryCommandsInOrder(t *testing.T) {
 	if len(result.PendingUpdates) != 2 || len(result.Upgradable) != 2 {
 		t.Fatalf("result counts = pending %d upgradable %d, want 2/2", len(result.PendingUpdates), len(result.Upgradable))
 	}
+	if result.PendingPackageCount != 2 || result.SecurityPackageCount != 1 {
+		t.Fatalf("derived counts = pending %d security %d, want 2/1", result.PendingPackageCount, result.SecurityPackageCount)
+	}
+	if result.Empty() {
+		t.Fatal("result.Empty() = true, want packages available")
+	}
 	if result.PendingUpdates[0].Package != "openssl" || result.PendingUpdates[0].Source != "stable-security" || !result.PendingUpdates[0].Security {
 		t.Fatalf("first pending update = %+v, want security metadata for openssl", result.PendingUpdates[0])
+	}
+	if result.PendingUpdates[0].CVEState != "pending" || result.PendingUpdates[1].CVEState != "pending" {
+		t.Fatalf("CVE states = %q/%q, want pending/pending", result.PendingUpdates[0].CVEState, result.PendingUpdates[1].CVEState)
 	}
 	wantCommands := []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptListMetadataCmd}
 	if !reflect.DeepEqual(runner.commands, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", runner.commands, wantCommands)
+	}
+	if (PackageDiscoveryOutcome{Upgradable: []string{"openssl"}}).Empty() {
+		t.Fatal("PackageDiscoveryOutcome.Empty() ignored available package selectors")
+	}
+}
+
+func TestDiscoverPackageUpdatesReturnsSuccessfulEmptyOutcome(t *testing.T) {
+	runner := &packageDiscoveryCommandRunner{}
+
+	outcome, err := DiscoverPackageUpdates(fakeConnection{}, time.Second, runner.run)
+	if err != nil {
+		t.Fatalf("DiscoverPackageUpdates() error = %v", err)
+	}
+	if !outcome.Empty() {
+		t.Fatalf("outcome = %+v, want successful empty discovery", outcome)
+	}
+	if outcome.PendingPackageCount != 0 || outcome.SecurityPackageCount != 0 {
+		t.Fatalf("counts = pending %d security %d, want 0/0", outcome.PendingPackageCount, outcome.SecurityPackageCount)
+	}
+	wantCommands := []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptListMetadataCmd}
+	if !reflect.DeepEqual(runner.commands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, wantCommands)
+	}
+}
+
+func TestPackageDiscoveryOutcomeCloneOwnsNestedSlices(t *testing.T) {
+	original := PackageDiscoveryOutcome{
+		PendingPackageCount:  1,
+		SecurityPackageCount: 1,
+		Upgradable:           []string{"openssl"},
+		PendingUpdates: []servers.PendingUpdate{{
+			Package:  "openssl",
+			Security: true,
+			CVEs:     []string{"CVE-2026-0001"},
+		}},
+		UpgradePlan: servers.UpgradePlan{
+			FullUpgradeNewPackages: []string{"linux-image"},
+		},
+	}
+
+	cloned := original.Clone()
+	cloned.Upgradable[0] = "bash"
+	cloned.PendingUpdates[0].Package = "bash"
+	cloned.PendingUpdates[0].CVEs[0] = "CVE-2026-9999"
+	cloned.UpgradePlan.FullUpgradeNewPackages[0] = "mutated"
+
+	if original.Upgradable[0] != "openssl" || original.PendingUpdates[0].Package != "openssl" {
+		t.Fatalf("original package slices mutated: %+v", original)
+	}
+	if original.PendingUpdates[0].CVEs[0] != "CVE-2026-0001" {
+		t.Fatalf("original CVEs mutated: %+v", original.PendingUpdates[0].CVEs)
+	}
+	if original.UpgradePlan.FullUpgradeNewPackages[0] != "linux-image" {
+		t.Fatalf("original upgrade plan mutated: %+v", original.UpgradePlan)
 	}
 }
 
@@ -203,7 +268,7 @@ func TestDiscoverPackageUpdatesRejectsMissingCommandRunner(t *testing.T) {
 	}
 }
 
-func TestServiceDepsDefaultGetUpgradableUsesPackageDiscovery(t *testing.T) {
+func TestServiceDepsDefaultDiscoverPackagesUsesPackageDiscovery(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -219,20 +284,20 @@ func TestServiceDepsDefaultGetUpgradableUsesPackageDiscovery(t *testing.T) {
 	}
 
 	deps := ServiceDeps{RunSSHCommandWithTimeout: runner.run}.withDefaults()
-	if deps.GetUpgradable == nil {
-		t.Fatal("GetUpgradable default = nil, want package discovery wrapper")
+	if deps.DiscoverPackages == nil {
+		t.Fatal("DiscoverPackages default = nil, want package discovery module")
 	}
-	pending, upgradable, plan, err := deps.GetUpgradable(fakeConnection{}, time.Second)
+	outcome, err := deps.DiscoverPackages(fakeConnection{}, time.Second)
 	if err != nil {
-		t.Fatalf("GetUpgradable() error = %v", err)
+		t.Fatalf("DiscoverPackages() error = %v", err)
 	}
-	if got := PackageNamesFromPendingUpdates(pending); !reflect.DeepEqual(got, []string{"openssl"}) {
+	if got := PackageNamesFromPendingUpdates(outcome.PendingUpdates); !reflect.DeepEqual(got, []string{"openssl"}) {
 		t.Fatalf("PackageNamesFromPendingUpdates() = %#v, want openssl", got)
 	}
-	if !reflect.DeepEqual(upgradable, []string{"openssl"}) {
-		t.Fatalf("upgradable = %#v, want openssl", upgradable)
+	if !reflect.DeepEqual(outcome.Upgradable, []string{"openssl"}) {
+		t.Fatalf("upgradable = %#v, want openssl", outcome.Upgradable)
 	}
-	if !plan.FullUpgradePlanAvailable {
-		t.Fatalf("upgrade plan = %+v, want full-upgrade plan available", plan)
+	if !outcome.UpgradePlan.FullUpgradePlanAvailable {
+		t.Fatalf("upgrade plan = %+v, want full-upgrade plan available", outcome.UpgradePlan)
 	}
 }

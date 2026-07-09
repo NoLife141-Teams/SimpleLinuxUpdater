@@ -512,7 +512,7 @@ func (l *scheduledRunLifecycle) loadScheduledJobBehavior(jobID string) scheduled
 	return behavior
 }
 
-func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
+func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, discovery PackageDiscoveryOutcome) {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return
@@ -532,19 +532,8 @@ func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, up
 	if meta.Trigger != "scheduled" {
 		return
 	}
-	securityCount := 0
-	for _, update := range pendingUpdates {
-		if update.Security {
-			securityCount++
-		}
-	}
-	meta.Discovery = &scheduledJobDiscovery{
-		PendingPackageCount:  len(upgradable),
-		SecurityPackageCount: securityCount,
-		Upgradable:           append([]string(nil), upgradable...),
-		PendingUpdates:       clonePendingUpdates(pendingUpdates),
-		UpgradePlan:          plan,
-	}
+	cloned := discovery.Clone()
+	meta.Discovery = &cloned
 	metaJSON := marshalJobJSON(meta)
 	if err := jm.UpdateJobWithoutRuntimeSync(jobID, JobUpdate{MetaJSON: &metaJSON}); err != nil {
 		log.Printf("failed to persist scheduled discovery meta for job %q: %v", jobID, err)

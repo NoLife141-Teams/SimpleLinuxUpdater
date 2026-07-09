@@ -3,6 +3,7 @@ package updates
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"reflect"
@@ -200,10 +201,10 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 				ListFailedSystemdUnits: func(SSHConnection) ([]string, string, error) {
 					return nil, "", nil
 				},
-				GetUpgradable: func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error) {
-					return servers.ClonePendingUpdates(tc.pending), append([]string(nil), tc.upgradable...), servers.CloneUpgradePlan(tc.plan), nil
+				DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+					return newPackageDiscoveryOutcome(tc.pending, tc.upgradable, tc.plan), nil
 				},
-				UpdateScheduledDiscoveryMeta: func(string, []string, []servers.PendingUpdate, servers.UpgradePlan) {},
+				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
 				CollectServerFacts: func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord {
 					return ServerFactsRecord{}
 				},
@@ -396,10 +397,10 @@ func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {
 				ListFailedSystemdUnits: func(SSHConnection) ([]string, string, error) {
 					return nil, "", nil
 				},
-				GetUpgradable: func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error) {
-					return servers.ClonePendingUpdates(tc.pending), []string{"linux-image-amd64"}, servers.CloneUpgradePlan(tc.plan), nil
+				DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+					return newPackageDiscoveryOutcome(tc.pending, []string{"linux-image-amd64"}, tc.plan), nil
 				},
-				UpdateScheduledDiscoveryMeta: func(string, []string, []servers.PendingUpdate, servers.UpgradePlan) {},
+				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
 				CollectServerFacts: func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord {
 					return ServerFactsRecord{}
 				},
@@ -494,7 +495,7 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 		RunUpdatePrechecks: func(SSHConnection) PrecheckSummary {
 			return PrecheckSummary{AllPassed: true}
 		},
-		GetUpgradable: func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error) {
+		DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
 			pending := []servers.PendingUpdate{
 				{Package: "openssl", Security: true, Raw: "Inst openssl"},
 				{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
@@ -509,9 +510,12 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 				FullUpgradeNewPackages:     []string{"linux-image-6.1.0-39-amd64"},
 				FullUpgradeRemovedPackages: nil,
 			}
-			return pending, upgradable, plan, nil
+			return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
 		},
-		QueryPackageCVEs: func(SSHConnection, string) ([]string, error) {
+		QueryPackageCVEs: func(_ SSHConnection, pkg string) ([]string, error) {
+			if pkg == "linux-image-amd64" {
+				return nil, errors.New("changelog unavailable")
+			}
 			return []string{"CVE-2026-0001"}, nil
 		},
 		UpdatePolicyRun: func(_ int64, update policies.RunUpdate) error {
@@ -555,5 +559,15 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	}
 	if got := SecurityPackagesFromPendingUpdates(discovery.PendingUpdates); !reflect.DeepEqual(got, []string{"openssl"}) {
 		t.Fatalf("SecurityPackagesFromPendingUpdates() = %#v, want kept-back package excluded from standard security action", got)
+	}
+	states := make(map[string]servers.PendingUpdate, len(discovery.PendingUpdates))
+	for _, update := range discovery.PendingUpdates {
+		states[update.Package] = update
+	}
+	if got := states["openssl"]; got.CVEState != "ready" || !reflect.DeepEqual(got.CVEs, []string{"CVE-2026-0001"}) {
+		t.Fatalf("openssl CVE result = %+v, want ready CVE data", got)
+	}
+	if got := states["linux-image-amd64"]; got.CVEState != "unavailable" || len(got.CVEs) != 0 {
+		t.Fatalf("linux-image CVE result = %+v, want warning-only unavailable state", got)
 	}
 }

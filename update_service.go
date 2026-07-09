@@ -17,6 +17,7 @@ type UpdateRunRequest = updatespkg.UpdateRunRequest
 type AutoremoveRunRequest = updatespkg.AutoremoveRunRequest
 type SudoersRunRequest = updatespkg.SudoersRunRequest
 type ScheduledScanRunRequest = updatespkg.ScheduledScanRunRequest
+type PackageDiscoveryOutcome = updatespkg.PackageDiscoveryOutcome
 type scheduledJobBehavior = updatespkg.ScheduledJobBehavior
 type scheduledJobDiscovery = updatespkg.ScheduledJobDiscovery
 type scheduledJobMeta = updatespkg.ScheduledJobMeta
@@ -93,9 +94,6 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	}
 	if d.SaveServerFacts == nil {
 		d.SaveServerFacts = saveServerFacts
-	}
-	if d.GetUpgradable == nil {
-		d.GetUpgradable = getUpgradable
 	}
 	if d.QueryPackageCVEs == nil {
 		d.QueryPackageCVEs = queryPackageCVEs

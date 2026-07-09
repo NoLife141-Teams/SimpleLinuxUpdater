@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	updatespkg "debian-updater/internal/updates"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1143,7 +1145,13 @@ func TestUpdateScheduledJobDiscoveryMetaCountsKeptBackSecurity(t *testing.T) {
 		KeptBackSecurityPlanAvailable: true,
 		KeptBackSecurityPackageCount:  1,
 	}
-	updateScheduledJobDiscoveryMeta(job.ID, []string{"openssl", "linux-image-amd64"}, pending, plan)
+	updateScheduledJobDiscoveryMeta(job.ID, updatespkg.PackageDiscoveryOutcome{
+		PendingPackageCount:  2,
+		SecurityPackageCount: 2,
+		Upgradable:           []string{"openssl", "linux-image-amd64"},
+		PendingUpdates:       pending,
+		UpgradePlan:          plan,
+	})
 
 	persistedJob, err := currentJobManager().GetJob(job.ID)
 	if err != nil {

@@ -232,7 +232,7 @@
             servers: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
             dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
         };
-        let interaction = { depth: 0, releasePending: false, deferredRender: false };
+        let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
         let bulkAction = null;
@@ -265,6 +265,7 @@
 
         function matchesFilters(server) {
             const status = String(server.status || "").toLowerCase();
+            const search = filters.search.trim().toLowerCase();
             const dashboardServer = dashboardServerFor(server);
             if (filters.status && status !== filters.status) return false;
             if (filters.tag) {
@@ -281,17 +282,22 @@
                 if (factsState !== "stale") return false;
             }
             if (filters.quick === "high_risk") {
-                const cveCount = Number(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.cve_count || 0);
+                const dashboardCVECount = dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.cve_count;
+                const fallbackCVECount = (Array.isArray(server.pending_updates) ? server.pending_updates : [])
+                    .reduce((sum, update) => sum + (Array.isArray(update && update.cves) ? update.cves.length : 0), 0);
+                const cveCount = dashboardCVECount === undefined || dashboardCVECount === null
+                    ? fallbackCVECount
+                    : Number(dashboardCVECount);
                 if (cveCount <= 0) return false;
             }
             if (filters.auth === "password" && !server.has_password) return false;
             if (filters.auth === "key" && !server.has_key && !globalKeyAvailable) return false;
-            if (!filters.search) return true;
+            if (!search) return true;
             const haystack = [server.name, server.host, server.port, server.user, ...(Array.isArray(server.tags) ? server.tags : [])]
                 .filter(value => value !== undefined && value !== null)
                 .join(" ")
                 .toLowerCase();
-            return haystack.includes(filters.search.toLowerCase());
+            return haystack.includes(search);
         }
 
         function sortedVisibleServers() {
@@ -447,6 +453,16 @@
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
                 return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
             } else if (event.type === "interactionStarted") {
+                if (interaction.depth === 0 && (!interaction.releasePending || !interaction.deferredRender)) {
+                    const projection = projectView();
+                    interaction.actionContext = {
+                        serversByName: new Map(Array.from(serversByName.entries()).map(([name, server]) => [name, cloneValue(server)])),
+                        dashboardByName: new Map(Array.from(dashboardByName.entries()).map(([name, server]) => [name, cloneValue(server)])),
+                        selectedNames: cloneValue(projection.selectedNames),
+                        visibleSelectedNames: cloneValue(projection.visibleSelectedNames),
+                        hiddenSelectedNames: cloneValue(projection.hiddenSelectedNames)
+                    };
+                }
                 interaction.depth += 1;
                 const effects = [];
                 if (interaction.releasePending) {
@@ -461,12 +477,14 @@
                 return [{ type: "scheduleInteractionRelease", delayMs: Number(event.delayMs || 350) }];
             } else if (event.type === "interactionReleased") {
                 interaction.releasePending = false;
+                interaction.actionContext = null;
                 if (!interaction.deferredRender || interaction.depth > 0) return [];
                 interaction.deferredRender = false;
                 return [{ type: "render", scope: "serverState", priority: "deferable" }];
             } else if (event.type === "interactionReset") {
                 interaction.depth = 0;
                 interaction.releasePending = false;
+                interaction.actionContext = null;
                 const effects = [{ type: "cancelInteractionRelease" }];
                 if (interaction.deferredRender) {
                     interaction.deferredRender = false;
@@ -475,7 +493,7 @@
                 return effects;
             } else if (event.type === "actionStarted") {
                 const plan = event.plan && typeof event.plan === "object" ? event.plan : {};
-                const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => serversByName.has(name)) : [];
+                const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => !!actionServer(name)) : [];
                 if (!plan.id || !plan.actionKey || names.length === 0 || (plan.kind === "bulk" && bulkAction)) {
                     return [{ type: "actionRejected", operationId: String(plan.id || ""), reason: "Action plan is no longer available" }];
                 }
@@ -487,7 +505,7 @@
                     return [{
                         type: "actionRejected",
                         operationId: plan.id,
-                        reason: defaultActionReason(plan.actionKey, serversByName.get(unavailable), getAction(unavailable, plan.actionKey))
+                        reason: defaultActionReason(plan.actionKey, actionServer(unavailable), getAction(unavailable, plan.actionKey))
                     }];
                 }
                 names.forEach(name => inFlightActions.set(name, {
@@ -594,10 +612,26 @@
             return server ? cloneValue(server) : null;
         }
 
+        function actionServer(name) {
+            const normalizedName = String(name || "");
+            if (interaction.actionContext && interaction.actionContext.serversByName.has(normalizedName)) {
+                return interaction.actionContext.serversByName.get(normalizedName);
+            }
+            return serversByName.get(normalizedName) || null;
+        }
+
+        function actionDashboardServer(name) {
+            const normalizedName = String(name || "");
+            if (interaction.actionContext && interaction.actionContext.dashboardByName.has(normalizedName)) {
+                return interaction.actionContext.dashboardByName.get(normalizedName);
+            }
+            return dashboardByName.get(normalizedName) || null;
+        }
+
         function getAction(name, key, options = {}) {
             const normalizedName = String(name || "");
-            const server = serversByName.get(normalizedName) || null;
-            const dashboardServer = dashboardByName.get(normalizedName) || null;
+            const server = actionServer(normalizedName);
+            const dashboardServer = actionDashboardServer(normalizedName);
             const canonical = normalizeCanonicalAction(dashboardServer && dashboardServer.actions && dashboardServer.actions[key]);
             const action = canonical || legacyAction(server, dashboardServer, key);
             if (!action) return null;
@@ -620,7 +654,7 @@
 
         function planAction(name, actionKey, options = {}) {
             const normalizedName = String(name || "");
-            const server = serversByName.get(normalizedName) || null;
+            const server = actionServer(normalizedName);
             const action = getAction(normalizedName, actionKey) || {
                 enabled: false,
                 reason: "Action is unavailable",
@@ -644,11 +678,14 @@
 
         function planBulkAction(actionKey, options = {}) {
             const projection = projectView();
+            const selectedNames = interaction.actionContext ? interaction.actionContext.selectedNames : projection.selectedNames;
+            const visibleSelectedNames = interaction.actionContext ? interaction.actionContext.visibleSelectedNames : projection.visibleSelectedNames;
+            const hiddenSelectedNames = interaction.actionContext ? interaction.actionContext.hiddenSelectedNames : projection.hiddenSelectedNames;
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
-            projection.visibleSelectedNames.forEach(name => {
-                const server = serversByName.get(name) || null;
+            visibleSelectedNames.forEach(name => {
+                const server = actionServer(name);
                 const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
                 const reason = defaultActionReason(actionKey, server, action);
                 if (action.enabled) {
@@ -658,25 +695,25 @@
                     ineligible.push({ name, auth: authLabel(server, globalKeyAvailable), reason });
                 }
             });
-            const hiddenHosts = projection.hiddenSelectedNames.map(name => ({
+            const hiddenHosts = hiddenSelectedNames.map(name => ({
                 name,
-                auth: authLabel(serversByName.get(name), globalKeyAvailable),
+                auth: authLabel(actionServer(name), globalKeyAvailable),
                 reason: "Hidden by current filter or page"
             }));
             return {
-                id: nextPlanId("bulk"),
+                id: options.preview ? "" : nextPlanId("bulk"),
                 kind: "bulk",
                 actionKey: String(actionKey || ""),
                 actionLabel: String(options.actionLabel || actionKey || "action"),
-                selectedNames: cloneValue(projection.selectedNames),
-                visibleNames: cloneValue(projection.visibleSelectedNames),
-                hiddenNames: cloneValue(projection.hiddenSelectedNames),
+                selectedNames: cloneValue(selectedNames),
+                visibleNames: cloneValue(visibleSelectedNames),
+                hiddenNames: cloneValue(hiddenSelectedNames),
                 eligibleNames,
                 serverNames: cloneValue(eligibleNames),
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: pendingApprovalCounts(serversByName.get(name)) }]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: pendingApprovalCounts(actionServer(name)) }]))
             };
         }
 

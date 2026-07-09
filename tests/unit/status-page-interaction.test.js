@@ -118,6 +118,23 @@ test("navigation projection keeps filtered selections and groups the visible pag
     assert.equal(view.primaryServerName, "beta");
 });
 
+test("search projection preserves the existing trimmed matching behavior", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    store.dispatch({ type: "filtersChanged", patch: { search: "  alpha  " } });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha"]);
+});
+
+test("high-risk filtering falls back to server CVE data before dashboard intake", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "pending_approval", pending_updates: [{ cves: ["CVE-1"] }] }]
+    });
+    store.dispatch({ type: "filtersChanged", patch: { quick: "high_risk" } });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha"]);
+});
+
 test("server removal prunes selection and closes an invalid drawer", () => {
     const store = createStore();
     store.dispatch({
@@ -223,6 +240,36 @@ test("deferable snapshots render after interaction release while immediate snaps
         servers: [{ name: "alpha", status: "done" }]
     });
     assert.equal(immediate.some(effect => effect.type === "render" && effect.priority === "immediate"), true);
+});
+
+test("an action press keeps its logical target while a deferable snapshot is accepted", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    store.dispatch({ type: "interactionStarted" });
+    store.dispatch({ type: "refreshRequested", stream: "servers", priority: "deferable" });
+    store.dispatch({ type: "serversSnapshotReceived", requestId: 1, servers: [{ name: "renamed", status: "idle" }] });
+    store.dispatch({ type: "interactionEnded" });
+
+    const plan = store.planAction("alpha", "update", { actionLabel: "update" });
+    assert.equal(plan.enabled, true);
+    store.dispatch({ type: "actionStarted", plan });
+    assert.equal(store.getView().actions.inFlight.some(action => action.operationId === plan.id), true);
+    assert.deepEqual(store.getView().servers.map(server => server.name), ["renamed"]);
+});
+
+test("a new action press refreshes its context when no render is deferred", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "idle" }, { name: "beta", status: "idle" }]
+    });
+    store.dispatch({ type: "selectionChanged", name: "alpha", selected: true });
+    store.dispatch({ type: "interactionStarted" });
+    store.dispatch({ type: "interactionEnded" });
+
+    store.dispatch({ type: "selectionChanged", name: "beta", selected: true });
+    store.dispatch({ type: "interactionStarted" });
+    assert.deepEqual(store.planBulkAction("update").visibleNames, ["alpha", "beta"]);
 });
 
 test("single action plans contain canonical facts without transport details", () => {

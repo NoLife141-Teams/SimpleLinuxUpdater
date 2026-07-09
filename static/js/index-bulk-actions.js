@@ -21,13 +21,14 @@
 	        function updateBulkActionState() {
 	            const hint = document.getElementById('bulk-action-hint');
 	            const view = getStatusView();
-	            const updatePlan = statusInteraction.planBulkAction("update");
-	            const approvePlan = statusInteraction.planBulkAction("approve_all");
-	            const approveSecurityPlan = statusInteraction.planBulkAction("approve_security");
-	            const approveKeptSecurityPlan = statusInteraction.planBulkAction("approve_security_kept_back");
-	            const cancelPlan = statusInteraction.planBulkAction("cancel");
-	            const autoremovePlan = statusInteraction.planBulkAction("autoremove");
-	            const refreshFactsPlan = statusInteraction.planBulkAction("refresh_facts");
+	            const previewPlan = actionKey => statusInteraction.planBulkAction(actionKey, { preview: true });
+	            const updatePlan = previewPlan("update");
+	            const approvePlan = previewPlan("approve_all");
+	            const approveSecurityPlan = previewPlan("approve_security");
+	            const approveKeptSecurityPlan = previewPlan("approve_security_kept_back");
+	            const cancelPlan = previewPlan("cancel");
+	            const autoremovePlan = previewPlan("autoremove");
+	            const refreshFactsPlan = previewPlan("refresh_facts");
 	            const selectedCount = view.selectedNames.length;
 	            const visibleCount = view.visibleSelectedNames.length;
 	            const hiddenCount = view.hiddenSelectedNames.length;

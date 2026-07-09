@@ -1469,7 +1469,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            const button = document.getElementById('refresh-all-facts');
 	            if (!button) return;
 	            const view = getStatusView();
-	            const plan = statusInteraction.planBulkAction("refresh_facts", { actionLabel: "refresh facts" });
+	            const plan = statusInteraction.planBulkAction("refresh_facts", { actionLabel: "refresh facts", preview: true });
 	            const visibleCount = plan.visibleNames.length;
 	            const refreshableCount = plan.eligibleNames.length;
 	            const selectedCount = plan.selectedNames.length;
@@ -1531,6 +1531,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 'button[data-action]',
                 '#bulk-update',
                 '#bulk-approve',
+                '#bulk-approve-security',
+                '#bulk-approve-kept-security',
                 '#bulk-cancel',
                 '#bulk-autoremove',
                 '#refresh-all-facts',

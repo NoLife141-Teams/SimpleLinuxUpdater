@@ -9,6 +9,20 @@ This file provides guidance for agentic coding agents working on this codebase.
 - **Database**: SQLite (modernc.org/sqlite)
 - **SSH**: golang.org/x/crypto/ssh
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `NoLife141-Teams/SimpleLinuxUpdater`; external PRs are not a triage request surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-label triage vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo: read root `CONTEXT.md`, `docs/adr/` when present, and `docs/archive/` for historical architecture context. See `docs/agents/domain.md`.
+
 ## Build Commands
 
 ```bash

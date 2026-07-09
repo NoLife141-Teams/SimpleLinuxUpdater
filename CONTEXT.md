@@ -8,6 +8,10 @@ SimpleLinuxUpdater manages Debian and Ubuntu host maintenance from a local web a
 The lifecycle of an operator-initiated server action from request validation through runtime-state transition, job persistence, runner dispatch, approval or cancel transition, audit recording, rollback, and final response mapping.
 _Avoid_: Update route flow, action handler logic
 
+**Server Inventory Command**:
+The operator-facing command vocabulary for creating, changing, deleting, and trust-managing server inventory entries, including command outcome, audit facts, and operator-facing messages.
+_Avoid_: Server route logic, inventory HTTP handler
+
 **Approval Scope**:
 The operator's chosen package set for a pending update, including whether it targets all standard upgrades, standard security upgrades, kept-back security upgrades, or a full upgrade, and whether package removals have been confirmed.
 _Avoid_: Approval intent, upgrade mode

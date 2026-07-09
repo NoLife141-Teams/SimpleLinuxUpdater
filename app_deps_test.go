@@ -791,6 +791,7 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 	}
 
 	if one.AuthService == two.AuthService ||
+		one.AuthSessionCommands == two.AuthSessionCommands ||
 		one.AuditService == two.AuditService ||
 		one.BackupService == two.BackupService ||
 		one.BackupBarrier == two.BackupBarrier ||

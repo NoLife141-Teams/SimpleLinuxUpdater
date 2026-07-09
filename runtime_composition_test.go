@@ -20,6 +20,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.DBPath == nil ||
 		deps.AuditService == nil ||
 		deps.AuthService == nil ||
+		deps.AuthSessionCommands == nil ||
 		deps.BackupService == nil ||
 		deps.BackupBarrier == nil ||
 		deps.NotificationService == nil ||

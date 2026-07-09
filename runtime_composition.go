@@ -276,6 +276,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.MetricsRateLimiter == nil {
 		deps.MetricsRateLimiter = metricsRateLimiter
 	}
+	if deps.AuthSessionCommands == nil {
+		deps.AuthSessionCommands = newAuthSessionCommandsWithDeps(authSessionCommandDepsFromAppDeps(deps))
+	}
 	if deps.TrustedProxies == nil {
 		deps.TrustedProxies = trustedProxiesFromEnv
 	}

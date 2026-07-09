@@ -2463,9 +2463,82 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	})
 }
 
+func writeServerInventoryCommandResult(c *gin.Context, result serverpkg.CommandResult, successStatus int, successBody any) {
+	if result.Audit.Action != "" {
+		audit(c, result.Audit.Action, result.Audit.TargetType, result.Audit.TargetName, result.Audit.Status, result.Audit.Message, result.Audit.Meta)
+	}
+	if result.Succeeded() {
+		if successBody == nil {
+			successBody = gin.H{"message": result.Message}
+		}
+		c.JSON(successStatus, successBody)
+		return
+	}
+	c.JSON(serverInventoryCommandHTTPStatus(result), gin.H{"error": result.Error})
+}
+
+func serverInventoryCommandHTTPStatus(result serverpkg.CommandResult) int {
+	switch result.Outcome {
+	case serverpkg.CommandOutcomeInvalid:
+		return http.StatusBadRequest
+	case serverpkg.CommandOutcomeConflict:
+		return http.StatusConflict
+	case serverpkg.CommandOutcomeNotFound:
+		return http.StatusNotFound
+	case serverpkg.CommandOutcomeRemoteError:
+		return http.StatusBadGateway
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func serverInventoryHostKeyScanBody(result serverpkg.CommandResult) gin.H {
+	if result.HostKeyScan == nil {
+		return gin.H{}
+	}
+	scan := result.HostKeyScan
+	return gin.H{
+		"host":               scan.Host,
+		"port":               scan.Port,
+		"algorithm":          scan.Algorithm,
+		"fingerprint_sha256": scan.FingerprintSHA256,
+		"known_hosts_line":   scan.KnownHostsLine,
+		"already_trusted":    scan.AlreadyTrusted,
+	}
+}
+
+func serverInventoryHostKeyTrustBody(result serverpkg.CommandResult) gin.H {
+	if result.HostKeyTrust == nil {
+		return gin.H{}
+	}
+	trust := result.HostKeyTrust
+	return gin.H{
+		"message":            trust.Message,
+		"host":               trust.Host,
+		"port":               trust.Port,
+		"fingerprint_sha256": trust.FingerprintSHA256,
+		"known_hosts_line":   trust.KnownHostsLine,
+		"already_trusted":    trust.AlreadyTrusted,
+	}
+}
+
+func serverInventoryHostKeyClearBody(result serverpkg.CommandResult) gin.H {
+	if result.HostKeyClear == nil {
+		return gin.H{}
+	}
+	clear := result.HostKeyClear
+	return gin.H{
+		"message":         clear.Message,
+		"host":            clear.Host,
+		"port":            clear.Port,
+		"removed_entries": clear.RemovedEntries,
+	}
+}
+
 func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	inventoryService := deps.ServerInventoryService
+	inventoryCommands := serverpkg.NewCommandService(inventoryService)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState
 	}
@@ -2483,34 +2556,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		created, err := inventoryService.Create(newServer)
-		switch {
-		case err == nil:
-			audit(c, "server.create", "server", created.Name, "success", "Server created", map[string]any{"host": created.Host, "port": created.Port, "tags_count": len(created.Tags)})
-			c.JSON(http.StatusCreated, created)
-		case errors.Is(err, errServerRequiredFields):
-			newServer.Name = strings.TrimSpace(newServer.Name)
-			audit(c, "server.create", "server", newServer.Name, "failure", "Missing required fields", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "name, host, and user are required"})
-		case errors.Is(err, errInvalidSSHUsername):
-			newServer.Name = strings.TrimSpace(newServer.Name)
-			newServer.User = strings.TrimSpace(newServer.User)
-			audit(c, "server.create", "server", newServer.Name, "failure", "Invalid SSH username", map[string]any{"user": newServer.User})
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user; allowed characters are letters, digits, '.', '-', '_'"})
-		case errors.Is(err, errServerNameExists):
-			newServer.Name = strings.TrimSpace(newServer.Name)
-			audit(c, "server.create", "server", newServer.Name, "failure", "Server name already exists", nil)
-			c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
-		case errors.Is(err, errServerHostExists):
-			newServer.Name = strings.TrimSpace(newServer.Name)
-			newServer.Host = strings.TrimSpace(newServer.Host)
-			audit(c, "server.create", "server", newServer.Name, "failure", "Server host already exists", map[string]any{"host": newServer.Host})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server host already exists"})
-		default:
-			newServer.Name = strings.TrimSpace(newServer.Name)
-			audit(c, "server.create", "server", newServer.Name, "failure", "Failed to persist server", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-		}
+		result := inventoryCommands.CreateServer(newServer)
+		writeServerInventoryCommandResult(c, result, http.StatusCreated, result.Server)
 	})
 
 	r.PUT("/api/servers/:name", func(c *gin.Context) {
@@ -2522,92 +2569,31 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		updated, err := inventoryService.Update(name, updatedServer)
-		switch {
-		case err == nil:
-			audit(c, "server.update", "server", updated.Name, "success", "Server updated", map[string]any{"from": name, "host": updated.Host, "port": updated.Port, "tags_count": len(updated.Tags)})
-			c.JSON(http.StatusOK, updated)
-		case errors.Is(err, errServerRequiredFields):
-			audit(c, "server.update", "server", name, "failure", "Missing required fields", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "name, host, and user are required"})
-		case errors.Is(err, errInvalidSSHUsername):
-			updatedServer.User = strings.TrimSpace(updatedServer.User)
-			audit(c, "server.update", "server", name, "failure", "Invalid SSH username", map[string]any{"user": updatedServer.User})
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user; allowed characters are letters, digits, '.', '-', '_'"})
-		case errors.Is(err, errActionInProgress):
-			audit(c, "server.update", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before editing this server"})
-		case errors.Is(err, errServerNameExists):
-			audit(c, "server.update", "server", name, "failure", "Server name already exists", nil)
-			c.JSON(http.StatusConflict, gin.H{"error": "Server name already exists"})
-		case errors.Is(err, errServerHostExists):
-			updatedServer.Host = strings.TrimSpace(updatedServer.Host)
-			audit(c, "server.update", "server", name, "failure", "Server host already exists", map[string]any{"host": updatedServer.Host})
-			c.JSON(http.StatusConflict, gin.H{"error": "Server host already exists"})
-		case errors.Is(err, errServerNotFound):
-			audit(c, "server.update", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		default:
-			audit(c, "server.update", "server", name, "failure", "Failed to persist server", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-		}
+		result := inventoryCommands.UpdateServer(name, updatedServer)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, result.Server)
 	})
 
 	r.DELETE("/api/servers/:name", func(c *gin.Context) {
 		serverState()
 		name := c.Param("name")
-		err := inventoryService.Delete(name)
-		switch {
-		case err == nil:
-			audit(c, "server.delete", "server", name, "success", "Server deleted", nil)
-			c.JSON(http.StatusOK, gin.H{"message": "Server deleted"})
-		case errors.Is(err, errActionInProgress):
-			audit(c, "server.delete", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before deleting this server"})
-		case errors.Is(err, errServerNotFound):
-			audit(c, "server.delete", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		default:
-			audit(c, "server.delete", "server", name, "failure", "Failed to persist deletion", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-		}
+		result := inventoryCommands.DeleteServer(name)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, nil)
 	})
 
 	r.DELETE("/api/servers/:name/password", func(c *gin.Context) {
 		serverState()
 		name := c.Param("name")
-		err := inventoryService.ClearPassword(name)
-		switch {
-		case err == nil:
-			audit(c, "server.password.clear", "server", name, "success", "Password cleared", nil)
-			c.JSON(http.StatusOK, gin.H{"message": "Password cleared"})
-		case errors.Is(err, errActionInProgress):
-			audit(c, "server.password.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server password"})
-		case errors.Is(err, errServerNotFound):
-			audit(c, "server.password.clear", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		default:
-			audit(c, "server.password.clear", "server", name, "failure", "Failed to persist password clear", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save servers: %v", err)})
-		}
+		result := inventoryCommands.ClearPassword(name)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, nil)
 	})
 
 	r.POST("/api/servers/:name/key", func(c *gin.Context) {
 		serverState()
 		name := c.Param("name")
 		limitUploadedKeyRequest(c)
-		if err := inventoryService.CheckMutationAllowed(name); errors.Is(err, errServerNotFound) {
-			audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-			return
-		} else if errors.Is(err, errActionInProgress) {
-			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
-			return
-		} else if err != nil {
-			audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		preflight := inventoryCommands.CheckServerKeyUpload(name)
+		if !preflight.Succeeded() {
+			writeServerInventoryCommandResult(c, preflight, http.StatusOK, nil)
 			return
 		}
 		file, err := c.FormFile("key")
@@ -2636,41 +2622,15 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read key"})
 			return
 		}
-		err = inventoryService.SetKey(name, key)
-		switch {
-		case err == nil:
-			audit(c, "server.key.upload", "server", name, "success", "SSH key uploaded", nil)
-			c.JSON(http.StatusOK, gin.H{"message": "Key uploaded"})
-		case errors.Is(err, errActionInProgress):
-			audit(c, "server.key.upload", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before updating this server key"})
-		case errors.Is(err, errServerNotFound):
-			audit(c, "server.key.upload", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		default:
-			audit(c, "server.key.upload", "server", name, "failure", "Failed to save key", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		result := inventoryCommands.SetServerKey(name, key)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, nil)
 	})
 
 	r.DELETE("/api/servers/:name/key", func(c *gin.Context) {
 		serverState()
 		name := c.Param("name")
-		err := inventoryService.ClearKey(name)
-		switch {
-		case err == nil:
-			audit(c, "server.key.clear", "server", name, "success", "SSH key cleared", nil)
-			c.JSON(http.StatusOK, gin.H{"message": "Key cleared"})
-		case errors.Is(err, errActionInProgress):
-			audit(c, "server.key.clear", "server", name, "failure", "Server action already in progress", map[string]any{"status": serverInventoryActionStatus(err)})
-			c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before clearing this server key"})
-		case errors.Is(err, errServerNotFound):
-			audit(c, "server.key.clear", "server", name, "failure", "Server not found", nil)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		default:
-			audit(c, "server.key.clear", "server", name, "failure", "Failed to clear key", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		result := inventoryCommands.ClearServerKey(name)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, nil)
 	})
 
 	r.POST("/api/keys/global", func(c *gin.Context) {
@@ -2753,28 +2713,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		host := strings.TrimSpace(req.Host)
-		if host == "" {
-			audit(c, "hostkey.scan", "hostkey", "-", "failure", "Host is required", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "host is required"})
-			return
-		}
-		port := normalizePort(req.Port)
-		result, err := inventoryService.ScanHostKey(host, port)
-		if err != nil {
-			audit(c, "hostkey.scan", "hostkey", host, "failure", "Host key scan failed", map[string]any{"port": port, "error": err.Error()})
-			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to scan host key: %v", err)})
-			return
-		}
-		audit(c, "hostkey.scan", "hostkey", host, "success", "Host key scanned", map[string]any{"port": port, "algorithm": result.Algorithm, "already_trusted": result.AlreadyTrusted})
-		c.JSON(http.StatusOK, gin.H{
-			"host":               result.Host,
-			"port":               result.Port,
-			"algorithm":          result.Algorithm,
-			"fingerprint_sha256": result.FingerprintSHA256,
-			"known_hosts_line":   result.KnownHostsLine,
-			"already_trusted":    result.AlreadyTrusted,
-		})
+		result := inventoryCommands.ScanHostKey(req.Host, req.Port)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, serverInventoryHostKeyScanBody(result))
 	})
 
 	r.POST("/api/hostkeys/trust", func(c *gin.Context) {
@@ -2788,39 +2728,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		host := strings.TrimSpace(req.Host)
-		if host == "" {
-			audit(c, "hostkey.trust", "hostkey", "-", "failure", "Host is required", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "host is required"})
-			return
-		}
-		expectedFingerprint := strings.TrimSpace(req.FingerprintSHA256)
-		if expectedFingerprint == "" {
-			audit(c, "hostkey.trust", "hostkey", host, "failure", "Fingerprint is required", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "fingerprint_sha256 is required"})
-			return
-		}
-		port := normalizePort(req.Port)
-		result, err := inventoryService.TrustHostKey(host, port, expectedFingerprint)
-		if err != nil {
-			if errors.Is(err, errFingerprintMismatch) {
-				audit(c, "hostkey.trust", "hostkey", host, "failure", "Host key fingerprint mismatch", map[string]any{"port": port})
-				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-				return
-			}
-			audit(c, "hostkey.trust", "hostkey", host, "failure", "Failed to trust host key", map[string]any{"port": port, "error": err.Error()})
-			c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to trust host key: %v", err)})
-			return
-		}
-		audit(c, "hostkey.trust", "hostkey", host, "success", result.Message, map[string]any{"port": port, "fingerprint_sha256": result.FingerprintSHA256, "already_trusted": result.AlreadyTrusted})
-		c.JSON(http.StatusOK, gin.H{
-			"message":            result.Message,
-			"host":               result.Host,
-			"port":               result.Port,
-			"fingerprint_sha256": result.FingerprintSHA256,
-			"known_hosts_line":   result.KnownHostsLine,
-			"already_trusted":    result.AlreadyTrusted,
-		})
+		result := inventoryCommands.TrustHostKey(req.Host, req.Port, req.FingerprintSHA256)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, serverInventoryHostKeyTrustBody(result))
 	})
 
 	r.POST("/api/hostkeys/clear", func(c *gin.Context) {
@@ -2833,26 +2742,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		host := strings.TrimSpace(req.Host)
-		if host == "" {
-			audit(c, "hostkey.clear", "hostkey", "-", "failure", "Host is required", nil)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "host is required"})
-			return
-		}
-		port := normalizePort(req.Port)
-		result, err := inventoryService.ClearKnownHost(host, port)
-		if err != nil {
-			audit(c, "hostkey.clear", "hostkey", host, "failure", "Failed to clear host key entry", map[string]any{"port": port, "error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to clear host key: %v", err)})
-			return
-		}
-		audit(c, "hostkey.clear", "hostkey", host, "success", result.Message, map[string]any{"port": port, "removed_entries": result.RemovedEntries})
-		c.JSON(http.StatusOK, gin.H{
-			"message":         result.Message,
-			"host":            result.Host,
-			"port":            result.Port,
-			"removed_entries": result.RemovedEntries,
-		})
+		result := inventoryCommands.ClearKnownHost(req.Host, req.Port)
+		writeServerInventoryCommandResult(c, result, http.StatusOK, serverInventoryHostKeyClearBody(result))
 	})
 
 	r.POST("/api/update/:name", func(c *gin.Context) {

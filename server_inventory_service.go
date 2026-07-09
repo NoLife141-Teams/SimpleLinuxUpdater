@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"errors"
 	"os"
 	"sync"
 
@@ -16,16 +15,13 @@ type ServerStatus = serverpkg.ServerStatus
 type PendingUpdate = serverpkg.PendingUpdate
 type UpgradePlan = serverpkg.UpgradePlan
 type ServerInventoryService = serverpkg.Service
-type serverInventoryActionError = serverpkg.ActionError
 
 var (
-	errServerRequiredFields = serverpkg.ErrRequiredFields
-	errInvalidSSHUsername   = serverpkg.ErrInvalidSSHUsername
-	errServerNameExists     = serverpkg.ErrNameExists
-	errServerHostExists     = serverpkg.ErrHostExists
-	errServerNotFound       = serverpkg.ErrNotFound
-	errActionInProgress     = serverpkg.ErrActionInProgress
-	errFingerprintMismatch  = serverpkg.ErrFingerprintMismatch
+	errInvalidSSHUsername  = serverpkg.ErrInvalidSSHUsername
+	errServerNameExists    = serverpkg.ErrNameExists
+	errServerHostExists    = serverpkg.ErrHostExists
+	errActionInProgress    = serverpkg.ErrActionInProgress
+	errFingerprintMismatch = serverpkg.ErrFingerprintMismatch
 )
 
 func newServerState() *serverpkg.State {
@@ -125,14 +121,6 @@ func serverInventoryTxHook(txHook saveServersTxHook) serverpkg.TxHook {
 	return func(tx *sql.Tx) error {
 		return txHook(tx)
 	}
-}
-
-func serverInventoryActionStatus(err error) string {
-	var actionErr serverInventoryActionError
-	if errors.As(err, &actionErr) {
-		return actionErr.Status
-	}
-	return ""
 }
 
 func parseTags(raw string) []string {

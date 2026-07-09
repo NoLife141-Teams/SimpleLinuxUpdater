@@ -69,13 +69,13 @@ func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 		SaveServerFacts: func(serverFactsRecord) error {
 			return nil
 		},
-		GetUpgradable: func(sshConnection, time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-			return nil, nil, UpgradePlan{}, nil
+		DiscoverPackages: func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+			return PackageDiscoveryOutcome{}, nil
 		},
 		QueryPackageCVEs: func(sshConnection, string) ([]string, error) {
 			return nil, nil
 		},
-		UpdateScheduledDiscoveryMeta: func(string, []string, []PendingUpdate, UpgradePlan) {},
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
 		UpdatePolicyRun: func(int64, updatePolicyRunUpdate) error {
 			return nil
 		},
@@ -265,14 +265,21 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 		}
 		return "apt updated", "", nil
 	}
-	deps.GetUpgradable = func(sshConnection, time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-		return []PendingUpdate{{
-			Package:          "openssl",
-			CurrentVersion:   "1.0",
-			CandidateVersion: "1.1",
-			Security:         true,
-			Raw:              "openssl/now 1.1",
-		}}, []string{"openssl/now 1.1"}, UpgradePlan{StandardPackageCount: 1, StandardSecurityCount: 1, TotalSecurityCount: 1, FullUpgradePackageCount: 1}, nil
+	deps.DiscoverPackages = func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+		return PackageDiscoveryOutcome{
+			PendingPackageCount:  1,
+			SecurityPackageCount: 1,
+			PendingUpdates: []PendingUpdate{{
+				Package:          "openssl",
+				CurrentVersion:   "1.0",
+				CandidateVersion: "1.1",
+				Security:         true,
+				CVEState:         "pending",
+				Raw:              "openssl/now 1.1",
+			}},
+			Upgradable:  []string{"openssl/now 1.1"},
+			UpgradePlan: UpgradePlan{StandardPackageCount: 1, StandardSecurityCount: 1, TotalSecurityCount: 1, FullUpgradePackageCount: 1},
+		}, nil
 	}
 	deps.QueryPackageCVEs = func(_ sshConnection, pkg string) ([]string, error) {
 		if pkg != "openssl" {

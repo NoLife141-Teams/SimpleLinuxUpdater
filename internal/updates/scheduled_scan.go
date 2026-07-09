@@ -6,7 +6,6 @@ import (
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
-	"debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -140,9 +139,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 
-	var pendingUpdates []servers.PendingUpdate
-	var upgradable []string
-	var upgradePlan servers.UpgradePlan
+	var discovery PackageDiscoveryOutcome
 	err = deps.RunSSHOperationWithRetry(
 		req.Server,
 		config,
@@ -152,9 +149,11 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
 		new(int),
 		func() error {
-			var listErr error
-			pendingUpdates, upgradable, upgradePlan, listErr = deps.GetUpgradable(client, deps.LoadCommandTimeout())
-			return listErr
+			outcome, discoverErr := deps.DiscoverPackages(client, deps.LoadCommandTimeout())
+			if discoverErr == nil {
+				discovery = outcome
+			}
+			return discoverErr
 		},
 	)
 	if err != nil {
@@ -162,36 +161,23 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 
-	pendingUpdates = PreparePendingUpdatesForCVE(pendingUpdates)
-	for i := range pendingUpdates {
-		if pendingUpdates[i].CVEState != "pending" {
+	for i := range discovery.PendingUpdates {
+		if discovery.PendingUpdates[i].CVEState != "pending" {
 			continue
 		}
-		cves, lookupErr := deps.QueryPackageCVEs(client, pendingUpdates[i].Package)
+		cves, lookupErr := deps.QueryPackageCVEs(client, discovery.PendingUpdates[i].Package)
 		if lookupErr != nil {
-			pendingUpdates[i].CVEState = "unavailable"
-			pendingUpdates[i].CVEs = []string{}
+			discovery.PendingUpdates[i].CVEState = "unavailable"
+			discovery.PendingUpdates[i].CVEs = []string{}
 			continue
 		}
-		pendingUpdates[i].CVEState = "ready"
-		pendingUpdates[i].CVEs = append([]string(nil), cves...)
+		discovery.PendingUpdates[i].CVEState = "ready"
+		discovery.PendingUpdates[i].CVEs = append([]string(nil), cves...)
 	}
-	SortPendingUpdates(pendingUpdates)
-	totalSecurityCount := 0
-	for _, update := range pendingUpdates {
-		if update.Security {
-			totalSecurityCount++
-		}
-	}
-	result := ScheduledJobDiscovery{
-		PendingPackageCount:  len(upgradable),
-		SecurityPackageCount: totalSecurityCount,
-		Upgradable:           append([]string(nil), upgradable...),
-		PendingUpdates:       servers.ClonePendingUpdates(pendingUpdates),
-		UpgradePlan:          servers.CloneUpgradePlan(upgradePlan),
-	}
+	SortPendingUpdates(discovery.PendingUpdates)
+	result := discovery.Clone()
 	finalSummary := "Scheduled scan completed"
-	if len(upgradable) == 0 {
+	if discovery.Empty() {
 		finalSummary = "Scheduled scan completed: no pending updates"
 	}
 	if jm != nil {

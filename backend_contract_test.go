@@ -404,8 +404,8 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 	preserveServerState(t)
 	updateDeps := testUpdateServiceDeps(t)
 	updateDeps.CurrentJobManager = currentJobManager
-	updateDeps.GetUpgradable = func(sshConnection, time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-		return nil, nil, UpgradePlan{}, nil
+	updateDeps.DiscoverPackages = func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+		return PackageDiscoveryOutcome{}, nil
 	}
 	updateDeps.RunSSHCommandWithTimeout = func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
 		return "", "", nil

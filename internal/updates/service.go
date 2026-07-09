@@ -57,14 +57,10 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.QueryPackageCVEs == nil {
 		d.QueryPackageCVEs = func(SSHConnection, string) ([]string, error) { return []string{}, nil }
 	}
-	if d.GetUpgradable == nil && d.RunSSHCommandWithTimeout != nil {
+	if d.DiscoverPackages == nil && d.RunSSHCommandWithTimeout != nil {
 		run := d.RunSSHCommandWithTimeout
-		d.GetUpgradable = func(conn SSHConnection, timeout time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error) {
-			result, err := DiscoverPackageUpdates(conn, timeout, run)
-			if err != nil {
-				return nil, nil, servers.UpgradePlan{}, err
-			}
-			return result.PendingUpdates, result.Upgradable, result.UpgradePlan, nil
+		d.DiscoverPackages = func(conn SSHConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
+			return DiscoverPackageUpdates(conn, timeout, run)
 		}
 	}
 	if d.IsPostcheckFailureBlocking == nil {
@@ -519,9 +515,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			var upgradable []string
-			var pendingUpdates []servers.PendingUpdate
-			var upgradePlan servers.UpgradePlan
+			var discovery PackageDiscoveryOutcome
 			err = deps.RunSSHOperationWithRetry(
 				r.server,
 				r.config,
@@ -531,11 +525,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
 				&r.listUpgradableAttempts,
 				func() error {
-					pending, items, plan, listErr := deps.GetUpgradable(r.client, r.commandTimeout)
+					outcome, listErr := deps.DiscoverPackages(r.client, r.commandTimeout)
 					if listErr == nil {
-						upgradable = items
-						pendingUpdates = pending
-						upgradePlan = plan
+						discovery = outcome
 					}
 					return listErr
 				},
@@ -546,7 +538,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			if len(upgradable) == 0 {
+			if discovery.Empty() {
 				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
@@ -559,19 +551,18 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			r.upgradePlan = upgradePlan
-			pendingUpdates = PreparePendingUpdatesForCVE(pendingUpdates)
-			deps.UpdateScheduledDiscoveryMeta(r.jobID, upgradable, pendingUpdates, upgradePlan)
+			r.upgradePlan = discovery.UpgradePlan
+			deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
 			_ = r.withStatus(func(status *servers.ServerStatus) {
 				status.Status = "pending_approval"
 				status.ApprovalScope = ""
 				status.ApprovalConfirmRemovals = false
-				status.Upgradable = upgradable
-				status.PendingUpdates = servers.ClonePendingUpdates(pendingUpdates)
-				status.UpgradePlan = servers.CloneUpgradePlan(upgradePlan)
-				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(upgradable, "\n")
+				status.Upgradable = append([]string(nil), discovery.Upgradable...)
+				status.PendingUpdates = servers.ClonePendingUpdates(discovery.PendingUpdates)
+				status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
+				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(discovery.Upgradable, "\n")
 			})
-			autoApproval := EvaluateAutoApproval(behavior.AutoApproveScope, pendingUpdates, upgradePlan)
+			autoApproval := EvaluateAutoApproval(behavior.AutoApproveScope, discovery.PendingUpdates, discovery.UpgradePlan)
 			if !autoApproval.Allowed && autoApproval.RunnerCommandLog != "" {
 				r.appendStatusLog(autoApproval.RunnerCommandLog)
 			}
@@ -580,7 +571,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				autoApproveScope = autoApproval.Scope
 			}
 			if autoApproveScope == "" {
-				s.StartPendingCVEEnrichment(r.server, r.config, pendingUpdates, r.jobID, r.actor, r.clientIP)
+				s.StartPendingCVEEnrichment(r.server, r.config, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
 			}
 
 			if autoApproveScope != "" {
@@ -667,7 +658,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				}
 			}
 
-			approvalRun := InterpretApprovedScope(r.approvalScope, pendingUpdates, r.upgradePlan, ApprovalScopeOptions{ConfirmRemovals: r.approvalConfirmRemovals})
+			approvalRun := InterpretApprovedScope(r.approvalScope, discovery.PendingUpdates, r.upgradePlan, ApprovalScopeOptions{ConfirmRemovals: r.approvalConfirmRemovals})
 			r.approvalScope = approvalRun.Scope
 			r.approvedPackages = append([]string(nil), approvalRun.SelectedPackages...)
 

@@ -293,8 +293,8 @@ func loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
 	return newScheduledRunLifecycle(globalRuntimeAppDeps()).loadScheduledJobBehavior(jobID)
 }
 
-func updateScheduledJobDiscoveryMeta(jobID string, upgradable []string, pendingUpdates []PendingUpdate, plan UpgradePlan) {
-	newScheduledRunLifecycle(globalRuntimeAppDeps()).updateScheduledJobDiscoveryMeta(jobID, upgradable, pendingUpdates, plan)
+func updateScheduledJobDiscoveryMeta(jobID string, discovery PackageDiscoveryOutcome) {
+	newScheduledRunLifecycle(globalRuntimeAppDeps()).updateScheduledJobDiscoveryMeta(jobID, discovery)
 }
 
 func handleScheduledRunRequest(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {

@@ -40,6 +40,10 @@ func makeDialSSHValidator(expected Server, calls *int32, first sshConnection, su
 	}
 }
 
+func discoverPackagesForTest(conn sshConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
+	return updatespkg.DiscoverPackageUpdates(conn, timeout, runSSHCommandWithTimeout)
+}
+
 func TestParseUpgradableEntriesStructured(t *testing.T) {
 	stdout := "Inst openssl [3.0.0-1] (3.0.1-1 Debian-Security:12/stable-security [amd64])\n" +
 		"Inst bash [5.2-1] (5.2-2 Debian:12 [amd64])\n"
@@ -63,7 +67,7 @@ func TestParseUpgradableEntriesStructured(t *testing.T) {
 	}
 }
 
-func TestGetUpgradableEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
+func TestPackageDiscoveryEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"Building dependency tree... Done",
@@ -84,10 +88,11 @@ func TestGetUpgradableEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
 		},
 	}
 
-	pending, upgradable, _, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending, upgradable := outcome.PendingUpdates, outcome.Upgradable
 	if len(pending) != 2 || len(upgradable) != 2 {
 		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 2/2", len(pending), len(upgradable))
 	}
@@ -102,7 +107,7 @@ func TestGetUpgradableEnrichesSummaryFallbackWithAptListMetadata(t *testing.T) {
 	}
 }
 
-func TestGetUpgradablePreservesArchQualifiedSummaryPackageWhenEnriched(t *testing.T) {
+func TestPackageDiscoveryPreservesArchQualifiedSummaryPackageWhenEnriched(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -123,10 +128,11 @@ func TestGetUpgradablePreservesArchQualifiedSummaryPackageWhenEnriched(t *testin
 		},
 	}
 
-	pending, _, _, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending := outcome.PendingUpdates
 	if pending[0].Package != "openssl:i386" || pending[0].CandidateVersion != "3.0.18-1~deb12u2" || pending[0].Source != "stable-security" || !pending[0].Security {
 		t.Fatalf("first pending update = %+v, want security metadata with original arch-qualified package", pending[0])
 	}
@@ -135,7 +141,7 @@ func TestGetUpgradablePreservesArchQualifiedSummaryPackageWhenEnriched(t *testin
 	}
 }
 
-func TestGetUpgradableKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T) {
+func TestPackageDiscoveryKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"Building dependency tree... Done",
@@ -155,10 +161,11 @@ func TestGetUpgradableKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T)
 		},
 	}
 
-	pending, upgradable, _, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending, upgradable := outcome.PendingUpdates, outcome.Upgradable
 	if len(pending) != 2 || len(upgradable) != 2 {
 		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 2/2", len(pending), len(upgradable))
 	}
@@ -176,7 +183,7 @@ func TestGetUpgradableKeepsSummaryFallbackWhenAptMetadataIsPartial(t *testing.T)
 	}
 }
 
-func TestGetUpgradableFallsBackWhenAptMetadataCommandFails(t *testing.T) {
+func TestPackageDiscoveryFallsBackWhenAptMetadataCommandFails(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -191,10 +198,11 @@ func TestGetUpgradableFallsBackWhenAptMetadataCommandFails(t *testing.T) {
 		},
 	}
 
-	pending, upgradable, _, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending, upgradable := outcome.PendingUpdates, outcome.Upgradable
 	if got := updatespkg.PackageNamesFromPendingUpdates(pending); !reflect.DeepEqual(got, []string{"bash", "openssl"}) {
 		t.Fatalf("PackageNamesFromPendingUpdates() = %#v, want summary fallback packages", got)
 	}
@@ -206,7 +214,7 @@ func TestGetUpgradableFallsBackWhenAptMetadataCommandFails(t *testing.T) {
 	}
 }
 
-func TestGetUpgradableRequestsMetadataEvenWhenSummaryPackageLooksSecurityTagged(t *testing.T) {
+func TestPackageDiscoveryRequestsMetadataEvenWhenSummaryPackageLooksSecurityTagged(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -226,22 +234,30 @@ func TestGetUpgradableRequestsMetadataEvenWhenSummaryPackageLooksSecurityTagged(
 		},
 	}
 
-	pending, _, _, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending := outcome.PendingUpdates
 	if len(pending) != 2 {
 		t.Fatalf("len(pending)=%d, want 2", len(pending))
 	}
-	if pending[0].Package != "jammy-security" || pending[0].Source != "stable" || pending[0].CandidateVersion != "1.2" {
-		t.Fatalf("pending[0] = %+v, want metadata-enriched jammy-security package", pending[0])
+	var enriched *PendingUpdate
+	for i := range pending {
+		if pending[i].Package == "jammy-security" {
+			enriched = &pending[i]
+			break
+		}
+	}
+	if enriched == nil || enriched.Source != "stable" || enriched.CandidateVersion != "1.2" {
+		t.Fatalf("jammy-security = %+v, want metadata-enriched package", enriched)
 	}
 	if !reflect.DeepEqual(conn.commands, []string{aptListUpgradableCmd, aptFullUpgradeSimCmd, aptListMetadataCmd}) {
 		t.Fatalf("commands = %#v, want apt simulation then apt-list metadata", conn.commands)
 	}
 }
 
-func TestGetUpgradableMarksKernelMetapackageKeptBack(t *testing.T) {
+func TestPackageDiscoveryMarksKernelMetapackageKeptBack(t *testing.T) {
 	standardStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -281,10 +297,11 @@ func TestGetUpgradableMarksKernelMetapackageKeptBack(t *testing.T) {
 		},
 	}
 
-	pending, upgradable, plan, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending, upgradable, plan := outcome.PendingUpdates, outcome.Upgradable, outcome.UpgradePlan
 	if len(pending) != 4 || len(upgradable) != 4 {
 		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 4/4", len(pending), len(upgradable))
 	}
@@ -318,7 +335,7 @@ func TestGetUpgradableMarksKernelMetapackageKeptBack(t *testing.T) {
 	}
 }
 
-func TestGetUpgradableMarksFullUpgradePlanUnavailableWhenSimulationFails(t *testing.T) {
+func TestPackageDiscoveryMarksFullUpgradePlanUnavailableWhenSimulationFails(t *testing.T) {
 	standardStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -337,10 +354,11 @@ func TestGetUpgradableMarksFullUpgradePlanUnavailableWhenSimulationFails(t *test
 		},
 	}
 
-	pending, upgradable, plan, err := getUpgradable(conn, time.Second)
+	outcome, err := discoverPackagesForTest(conn, time.Second)
 	if err != nil {
-		t.Fatalf("getUpgradable() error = %v", err)
+		t.Fatalf("discoverPackagesForTest() error = %v", err)
 	}
+	pending, upgradable, plan := outcome.PendingUpdates, outcome.Upgradable, outcome.UpgradePlan
 	if len(pending) != 1 || len(upgradable) != 1 {
 		t.Fatalf("len(pending)=%d len(upgradable)=%d, want 1/1", len(pending), len(upgradable))
 	}

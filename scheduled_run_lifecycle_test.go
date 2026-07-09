@@ -353,8 +353,14 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 		RunUpdatePrechecks: func(sshConnection) updatespkg.PrecheckSummary {
 			return updatespkg.PrecheckSummary{AllPassed: true}
 		},
-		GetUpgradable: func(sshConnection, time.Duration) ([]PendingUpdate, []string, UpgradePlan, error) {
-			return pending, upgradable, UpgradePlan{StandardSecurityCount: 1, TotalSecurityCount: 1}, nil
+		DiscoverPackages: func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
+			return PackageDiscoveryOutcome{
+				PendingPackageCount:  len(upgradable),
+				SecurityPackageCount: 1,
+				PendingUpdates:       clonePendingUpdates(pending),
+				Upgradable:           append([]string(nil), upgradable...),
+				UpgradePlan:          UpgradePlan{StandardSecurityCount: 1, TotalSecurityCount: 1},
+			}, nil
 		},
 		QueryPackageCVEs: func(sshConnection, string) ([]string, error) {
 			return []string{"CVE-2026-1001"}, nil

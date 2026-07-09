@@ -143,13 +143,7 @@ type ScheduledJobBehavior struct {
 	AutoApproveScope string
 }
 
-type ScheduledJobDiscovery struct {
-	PendingPackageCount  int                     `json:"pending_package_count"`
-	SecurityPackageCount int                     `json:"security_package_count"`
-	Upgradable           []string                `json:"upgradable"`
-	PendingUpdates       []servers.PendingUpdate `json:"pending_updates"`
-	UpgradePlan          servers.UpgradePlan     `json:"upgrade_plan"`
-}
+type ScheduledJobDiscovery = PackageDiscoveryOutcome
 
 type ScheduledJobMeta struct {
 	Trigger                string                 `json:"trigger,omitempty"`
@@ -188,9 +182,9 @@ type ServiceDeps struct {
 	ListFailedSystemdUnits       func(SSHConnection) ([]string, string, error)
 	CollectServerFacts           func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord
 	SaveServerFacts              func(ServerFactsRecord) error
-	GetUpgradable                func(SSHConnection, time.Duration) ([]servers.PendingUpdate, []string, servers.UpgradePlan, error)
+	DiscoverPackages             PackageDiscoverer
 	QueryPackageCVEs             func(SSHConnection, string) ([]string, error)
-	UpdateScheduledDiscoveryMeta func(string, []string, []servers.PendingUpdate, servers.UpgradePlan)
+	UpdateScheduledDiscoveryMeta func(string, PackageDiscoveryOutcome)
 	UpdatePolicyRun              func(int64, policies.RunUpdate) error
 	IsPostcheckFailureBlocking   func(string, PostUpdateCheckConfig) bool
 	SummarizeUnitNames           func([]string, int) string

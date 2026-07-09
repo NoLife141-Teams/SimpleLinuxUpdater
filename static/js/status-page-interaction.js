@@ -36,6 +36,7 @@
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
     const allowedPageSizes = new Set([25, 50, 100]);
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
+    const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
 
     function cloneValue(value) {
         if (Array.isArray(value)) {
@@ -88,6 +89,10 @@
         return allowedPageSizes.has(parsed) ? parsed : 25;
     }
 
+    function normalizedRefreshPriority(value) {
+        return value === "immediate" ? "immediate" : "deferable";
+    }
+
     function legacyAction(server, dashboardServer, key) {
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
@@ -113,6 +118,7 @@
     function createStore() {
         let servers = [];
         let serversByName = new Map();
+        let dashboardSnapshot = {};
         let dashboardServers = [];
         let dashboardByName = new Map();
         let globalKeyAvailable = false;
@@ -130,6 +136,11 @@
         let primaryServerName = "";
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        let streams = {
+            servers: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
+        };
+        let interaction = { depth: 0, releasePending: false, deferredRender: false };
 
         function replaceServers(items) {
             servers = normalizeNamedItems(items);
@@ -137,6 +148,7 @@
         }
 
         function replaceDashboard(snapshot) {
+            dashboardSnapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? cloneValue(snapshot) : {};
             const items = normalizeNamedItems(snapshot && snapshot.servers);
             dashboardServers = items;
             dashboardByName = new Map(items.map(server => [server.name, server]));
@@ -197,6 +209,7 @@
         }
 
         function reconcileNavigation() {
+            const previousPrimaryServerName = primaryServerName;
             const loadedNames = new Set(servers.map(server => server.name));
             selectedServerNames = new Set(Array.from(selectedServerNames).filter(name => loadedNames.has(name)));
             const visible = sortedVisibleServers();
@@ -210,6 +223,7 @@
             } else if (drawer.open && drawer.tab === "pending" && !hasPendingUpdates(serversByName.get(drawer.serverName))) {
                 drawer = { ...drawer, tab: "logs" };
             }
+            return previousPrimaryServerName !== primaryServerName;
         }
 
         function persistenceValue() {
@@ -225,10 +239,68 @@
             };
         }
 
+        function renderEffects(options = {}) {
+            const priority = normalizedRefreshPriority(options.priority);
+            if (options.scope === "serverState" && priority !== "immediate" && (interaction.depth > 0 || interaction.releasePending)) {
+                interaction.deferredRender = true;
+                return [];
+            }
+            return [{ type: "render", scope: options.scope || "navigation", priority }];
+        }
+
         function stateEffects(options = {}) {
             const effects = [];
             if (options.persist) effects.push({ type: "persistFilters", value: persistenceValue() });
-            if (options.render !== false) effects.push({ type: "render", priority: options.priority || "deferable" });
+            if (options.render !== false) effects.push(...renderEffects(options));
+            return effects;
+        }
+
+        function startRefresh(streamName, priority, reason) {
+            const stream = streams[streamName];
+            if (!stream) return [];
+            const normalizedPriority = normalizedRefreshPriority(priority);
+            if (stream.inFlight) {
+                if (!stream.queued || refreshPriority[normalizedPriority] > refreshPriority[stream.queued.priority]) {
+                    stream.queued = { priority: normalizedPriority, reason: String(reason || "refresh") };
+                }
+                return [];
+            }
+            const request = {
+                requestId: stream.nextRequestId,
+                priority: normalizedPriority,
+                reason: String(reason || "refresh")
+            };
+            stream.nextRequestId += 1;
+            stream.inFlight = request;
+            stream.lastError = "";
+            return [
+                { type: "fetchSnapshot", stream: streamName, ...request },
+                { type: "renderSyncState" }
+            ];
+        }
+
+        function finishRefresh(streamName, requestId) {
+            const stream = streams[streamName];
+            if (!stream || !stream.inFlight || stream.inFlight.requestId !== requestId) return [];
+            stream.lastAcceptedRequestId = Math.max(stream.lastAcceptedRequestId, requestId);
+            stream.inFlight = null;
+            if (!stream.queued) return [];
+            const queued = stream.queued;
+            stream.queued = null;
+            return startRefresh(streamName, queued.priority, queued.reason);
+        }
+
+        function failRefresh(streamName, requestId, error) {
+            const stream = streams[streamName];
+            if (!stream || !stream.inFlight || stream.inFlight.requestId !== requestId) return [];
+            stream.lastError = String(error || "Refresh failed");
+            stream.inFlight = null;
+            const effects = [{ type: "renderSyncState" }];
+            if (stream.queued) {
+                const queued = stream.queued;
+                stream.queued = null;
+                effects.push(...startRefresh(streamName, queued.priority, queued.reason));
+            }
             return effects;
         }
 
@@ -251,13 +323,61 @@
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
             if (event.type === "serversSnapshotReceived") {
+                const requestId = Number(event.requestId || 0);
+                const stream = streams.servers;
+                if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
+                const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
                 replaceServers(event.servers);
-                reconcileNavigation();
-                return stateEffects({ persist: true });
+                const persistenceChanged = reconcileNavigation();
+                return [
+                    ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
+                    { type: "renderSyncState" },
+                    ...(requestId ? finishRefresh("servers", requestId) : [])
+                ];
             } else if (event.type === "dashboardSnapshotReceived") {
+                const requestId = Number(event.requestId || 0);
+                const stream = streams.dashboard;
+                if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
+                const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
                 replaceDashboard(event.snapshot);
-                reconcileNavigation();
-                return stateEffects({ persist: true });
+                const persistenceChanged = reconcileNavigation();
+                return [
+                    ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
+                    { type: "renderSyncState" },
+                    ...(requestId ? finishRefresh("dashboard", requestId) : [])
+                ];
+            } else if (event.type === "snapshotFailed") {
+                return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
+            } else if (event.type === "refreshRequested") {
+                const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
+                return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
+            } else if (event.type === "interactionStarted") {
+                interaction.depth += 1;
+                const effects = [];
+                if (interaction.releasePending) {
+                    interaction.releasePending = false;
+                    effects.push({ type: "cancelInteractionRelease" });
+                }
+                return effects;
+            } else if (event.type === "interactionEnded") {
+                interaction.depth = Math.max(0, interaction.depth - 1);
+                if (interaction.depth > 0 || interaction.releasePending) return [];
+                interaction.releasePending = true;
+                return [{ type: "scheduleInteractionRelease", delayMs: Number(event.delayMs || 350) }];
+            } else if (event.type === "interactionReleased") {
+                interaction.releasePending = false;
+                if (!interaction.deferredRender || interaction.depth > 0) return [];
+                interaction.deferredRender = false;
+                return [{ type: "render", scope: "serverState", priority: "deferable" }];
+            } else if (event.type === "interactionReset") {
+                interaction.depth = 0;
+                interaction.releasePending = false;
+                const effects = [{ type: "cancelInteractionRelease" }];
+                if (interaction.deferredRender) {
+                    interaction.deferredRender = false;
+                    effects.push({ type: "render", scope: "serverState", priority: "deferable" });
+                }
+                return effects;
             } else if (event.type === "navigationRestored") {
                 restoreNavigation(event.value);
                 return stateEffects({ render: false });
@@ -384,6 +504,7 @@
                 : [{ key: "", items: cloneValue(pageServers) }];
             return {
                 servers: cloneValue(servers),
+                dashboardSnapshot: cloneValue(dashboardSnapshot),
                 dashboardServers: cloneValue(dashboardServers),
                 filters: cloneValue(filters),
                 sort: cloneValue(sort),
@@ -399,6 +520,13 @@
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
                 drawer: cloneValue(drawer),
+                sync: {
+                    streams: cloneValue(streams),
+                    interactionDepth: interaction.depth,
+                    interactionReleasePending: interaction.releasePending,
+                    interactionActive: interaction.depth > 0 || interaction.releasePending,
+                    deferredRender: interaction.deferredRender
+                },
                 persistence: persistenceValue()
             };
         }

@@ -18,9 +18,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        let bulkActionInFlightLabel = "";
 	        let bulkReviewResolve = null;
 	        let singleHostActionsInFlight = new Set();
-	        let fetchInFlight = false;
-        let fetchQueued = false;
-        let queuedForceRender = false;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -28,9 +25,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let passwordModalPreviousFocus = null;
         let drawerPreviousFocus = null;
         let suppressSortClickUntil = 0;
-        let actionInteractionDepth = 0;
         let actionInteractionReleaseTimer = null;
-        let deferredServerRender = false;
         let dashboardEventSource = null;
         let dashboardEventReconnectTimer = null;
         let dashboardEventReconnectDelay = 1000;
@@ -74,12 +69,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function dispatchStatusInteraction(event) {
             const effects = statusInteraction.dispatch(event);
+            const tasks = [];
             effects.forEach(effect => {
                 if (effect.type === "persistFilters") {
                     persistDashboardFilters(effect.value);
+                } else if (effect.type === "fetchSnapshot") {
+                    tasks.push(executeStatusSnapshotFetch(effect));
+                } else if (effect.type === "render" && effect.scope === "serverState") {
+                    renderServerState();
+                } else if (effect.type === "renderSyncState") {
+                    renderSyncState();
+                } else if (effect.type === "cancelInteractionRelease") {
+                    if (actionInteractionReleaseTimer !== null) {
+                        clearTimeout(actionInteractionReleaseTimer);
+                        actionInteractionReleaseTimer = null;
+                    }
+                } else if (effect.type === "scheduleInteractionRelease") {
+                    if (actionInteractionReleaseTimer !== null) clearTimeout(actionInteractionReleaseTimer);
+                    actionInteractionReleaseTimer = setTimeout(() => {
+                        actionInteractionReleaseTimer = null;
+                        dispatchStatusInteraction({ type: "interactionReleased" });
+                    }, effect.delayMs);
                 }
             });
-            return getStatusView();
+            return Promise.all(tasks);
         }
 
         function isRunningTimelineState(state) {
@@ -1356,25 +1369,40 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderSummaryBadges();
         }
 
-        async function fetchDashboardSummary() {
+        function requestStatusRefresh(streams, priority = "deferable", reason = "refresh") {
+            return dispatchStatusInteraction({ type: "refreshRequested", streams, priority, reason });
+        }
+
+        function fetchDashboardSummary(forceRender = false, reason = "dashboard") {
+            return requestStatusRefresh(["dashboard"], forceRender ? "immediate" : "deferable", reason);
+        }
+
+        function executeStatusSnapshotFetch(effect) {
+            if (effect.stream === "servers") return executeServersSnapshotFetch(effect);
+            if (effect.stream === "dashboard") return executeDashboardSnapshotFetch(effect);
+            return Promise.resolve();
+        }
+
+        async function executeDashboardSnapshotFetch(effect) {
             try {
                 const response = await fetch('/api/dashboard/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                dashboardSummary = await response.json();
-	            dispatchStatusInteraction({ type: "dashboardSnapshotReceived", snapshot: dashboardSummary });
-                const items = Array.isArray(dashboardSummary?.servers) ? dashboardSummary.servers : [];
-                dashboardByServer = new Map(items.map(item => [item.name, item]));
+                const nextDashboardSummary = await response.json();
                 setDashboardExtraError("dashboard", null);
+                await dispatchStatusInteraction({
+                    type: "dashboardSnapshotReceived",
+                    requestId: effect.requestId,
+                    snapshot: nextDashboardSummary
+                });
             } catch (err) {
-                dashboardSummary = null;
-                dashboardByServer = new Map();
                 setDashboardExtraError("dashboard", err);
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "dashboard",
+                    requestId: effect.requestId,
+                    error: err?.message || String(err)
+                });
             }
-	            renderDashboardMetrics();
-	            renderDashboardPanels();
-	            if (allServers.length > 0) {
-	                renderTable({ refreshPanels: false });
-	            }
 	        }
 
         async function fetchGlobalKeyStatus() {
@@ -1400,12 +1428,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        function fetchDashboardExtras() {
+        function fetchDashboardExtras(reason = "extras", includeDashboard = true) {
             fetchGlobalKeyStatus();
             fetchRecentActivity();
             fetchObservabilitySummary();
             fetchPolicySummary();
-            fetchDashboardSummary();
+            if (includeDashboard) fetchDashboardSummary(false, reason);
         }
 
         function configurePolling(serverMs, extrasMs) {
@@ -1415,8 +1443,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (dashboardExtrasIntervalID !== null) {
                 clearInterval(dashboardExtrasIntervalID);
             }
-            serverPollIntervalID = setInterval(fetchServers, serverMs);
-            dashboardExtrasIntervalID = setInterval(fetchDashboardExtras, extrasMs);
+            serverPollIntervalID = setInterval(() => fetchServers(false, "poll"), serverMs);
+            dashboardExtrasIntervalID = setInterval(() => fetchDashboardExtras("poll"), extrasMs);
         }
 
         function scheduleDashboardEventReconnect() {
@@ -1445,8 +1473,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 renderSyncState();
             });
             source.addEventListener('dashboard', () => {
-                fetchServers(true);
-                fetchDashboardExtras();
+                requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
+                fetchDashboardExtras("sse", false);
             });
             source.addEventListener('error', () => {
                 if (dashboardEventSource === source) {
@@ -1494,62 +1522,27 @@ const LOG_BOTTOM_THRESHOLD = 20;
             window.scrollTo(pos.x, pos.y);
         }
 
-        function isActionInteractionActive() {
-            return actionInteractionDepth > 0 || actionInteractionReleaseTimer !== null;
-        }
-
 	        function renderServerState() {
+	            const view = getStatusView();
+	            allServers = view.servers;
+	            dashboardSummary = view.dashboardSnapshot;
+	            dashboardByServer = new Map(view.dashboardServers.map(item => [item.name, item]));
 	            const pageScroll = saveWindowScroll();
 	            renderDashboardMetrics();
 	            renderTable();
 	            renderDrawer();
 	            requestAnimationFrame(() => restoreWindowScroll(pageScroll));
 	        }
-
-        function flushDeferredServerRender() {
-            if (!deferredServerRender || isActionInteractionActive()) return;
-            deferredServerRender = false;
-            renderServerState();
-        }
-
-        function renderServerStateWhenSafe(forceRender = false) {
-            if (!forceRender && isActionInteractionActive()) {
-                deferredServerRender = true;
-                return;
-            }
-            deferredServerRender = false;
-            renderServerState();
-        }
-
         function beginActionInteraction() {
-            actionInteractionDepth += 1;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-                actionInteractionReleaseTimer = null;
-            }
+            dispatchStatusInteraction({ type: "interactionStarted" });
         }
 
         function endActionInteraction() {
-            if (actionInteractionDepth > 0) {
-                actionInteractionDepth -= 1;
-            }
-            if (actionInteractionDepth > 0) return;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-            }
-            actionInteractionReleaseTimer = setTimeout(() => {
-                actionInteractionReleaseTimer = null;
-                flushDeferredServerRender();
-            }, actionInteractionDeferMs);
+            dispatchStatusInteraction({ type: "interactionEnded", delayMs: actionInteractionDeferMs });
         }
 
         function resetActionInteraction() {
-            actionInteractionDepth = 0;
-            if (actionInteractionReleaseTimer !== null) {
-                clearTimeout(actionInteractionReleaseTimer);
-                actionInteractionReleaseTimer = null;
-            }
-            flushDeferredServerRender();
+            dispatchStatusInteraction({ type: "interactionReset" });
         }
 
         function isServerActionControl(target) {
@@ -1738,43 +1731,36 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         }
 
-        async function fetchServers(forceRender = false) {
-            if (fetchInFlight) {
-                fetchQueued = true;
-                queuedForceRender = queuedForceRender || forceRender;
-                return;
-            }
-            fetchInFlight = true;
+        function fetchServers(forceRender = false, reason = "servers") {
+            return requestStatusRefresh(["servers"], forceRender ? "immediate" : "deferable", reason);
+        }
+
+        async function executeServersSnapshotFetch(effect) {
             try {
-                let parsedServers;
-                try {
-                    const response = await fetch('/api/servers');
-                    if (!response.ok) {
-                        throw new Error(`Failed to fetch servers: HTTP ${response.status}`);
-                    }
-                    parsedServers = await response.json();
-                    if (!Array.isArray(parsedServers)) {
-                        throw new Error('Invalid servers payload: expected an array');
-                    }
-                } catch (err) {
-                    console.error('Unable to refresh servers list:', err);
-                    lastFetchError = err;
-                    renderSyncState();
-                    return;
+                const response = await fetch('/api/servers');
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch servers: HTTP ${response.status}`);
                 }
-                dispatchStatusInteraction({ type: "serversSnapshotReceived", servers: parsedServers });
-                allServers = getStatusView().servers;
+                const parsedServers = await response.json();
+                if (!Array.isArray(parsedServers)) {
+                    throw new Error('Invalid servers payload: expected an array');
+                }
                 lastFetchError = null;
                 lastSuccessfulSyncAt = new Date();
-                renderServerStateWhenSafe(forceRender);
-            } finally {
-                fetchInFlight = false;
-                if (fetchQueued) {
-                    fetchQueued = false;
-                    const nextRender = queuedForceRender;
-                    queuedForceRender = false;
-                    fetchServers(nextRender);
-                }
+                await dispatchStatusInteraction({
+                    type: "serversSnapshotReceived",
+                    requestId: effect.requestId,
+                    servers: parsedServers
+                });
+            } catch (err) {
+                console.error('Unable to refresh servers list:', err);
+                lastFetchError = err;
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "servers",
+                    requestId: effect.requestId,
+                    error: err?.message || String(err)
+                });
             }
         }
 
@@ -2818,12 +2804,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }, true);
         document.addEventListener('pointerup', () => {
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);
         document.addEventListener('pointercancel', () => {
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);
@@ -2838,7 +2824,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }, true);
         document.addEventListener('keyup', (event) => {
             if (event.key !== "Enter" && event.key !== " ") return;
-            if (actionInteractionDepth > 0) {
+            if (getStatusView().sync.interactionDepth > 0) {
                 endActionInteraction();
             }
         }, true);

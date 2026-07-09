@@ -293,11 +293,8 @@ func (m *authSessionCommands) Setup(ctx context.Context, cmd authSetupCommand) a
 	return authSetupOutcome{Kind: authSetupSucceeded, Username: cmd.Username}
 }
 
-func (m *authSessionCommands) ChangePassword(ctx context.Context, cmd authPasswordCommand) authPasswordOutcome {
+func (m *authSessionCommands) ChangePassword(_ context.Context, cmd authPasswordCommand) authPasswordOutcome {
 	deps := m.deps.withDefaults()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	cmd.Actor = strings.TrimSpace(cmd.Actor)
 	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
 	key := authPasswordChangeRateKey(cmd.ClientIP, cmd.Actor)

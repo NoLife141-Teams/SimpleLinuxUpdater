@@ -39,9 +39,7 @@ var sessionManager *scs.SessionManager
 var sessionManagerMu sync.RWMutex
 
 var (
-	errSetupAlreadyCompleted = authpkg.ErrSetupAlreadyCompleted
-	errSetupRequired         = authpkg.ErrSetupRequired
-	errAuthPasswordMismatch  = authpkg.ErrPasswordMismatch
+	errAuthPasswordMismatch = authpkg.ErrPasswordMismatch
 )
 
 type AuthService = authpkg.Service

@@ -17,13 +17,11 @@ type UpgradePlan = serverpkg.UpgradePlan
 type ServerInventoryService = serverpkg.Service
 
 var (
-	errServerRequiredFields = serverpkg.ErrRequiredFields
-	errInvalidSSHUsername   = serverpkg.ErrInvalidSSHUsername
-	errServerNameExists     = serverpkg.ErrNameExists
-	errServerHostExists     = serverpkg.ErrHostExists
-	errServerNotFound       = serverpkg.ErrNotFound
-	errActionInProgress     = serverpkg.ErrActionInProgress
-	errFingerprintMismatch  = serverpkg.ErrFingerprintMismatch
+	errInvalidSSHUsername  = serverpkg.ErrInvalidSSHUsername
+	errServerNameExists    = serverpkg.ErrNameExists
+	errServerHostExists    = serverpkg.ErrHostExists
+	errActionInProgress    = serverpkg.ErrActionInProgress
+	errFingerprintMismatch = serverpkg.ErrFingerprintMismatch
 )
 
 func newServerState() *serverpkg.State {

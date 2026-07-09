@@ -1019,3 +1019,52 @@ func TestBackupRoutesRejectWhileServerActionsAreActive(t *testing.T) {
 		t.Fatalf("job count after rejected backup routes = %d, want 0", jobCount)
 	}
 }
+
+func TestBackupRestoreInvalidArchiveKeepsPublicFailureShape(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	sessionCookie := app.authenticate(t)
+
+	backupBlob, err := encryptBackupPayload([]byte("not-a-tar"), "very-strong-passphrase")
+	if err != nil {
+		t.Fatalf("encrypt invalid archive payload: %v", err)
+	}
+	var restoreBody bytes.Buffer
+	writer := multipart.NewWriter(&restoreBody)
+	part, err := writer.CreateFormFile("file", "invalid"+backupFileExtension)
+	if err != nil {
+		t.Fatalf("CreateFormFile() unexpected error: %v", err)
+	}
+	if _, err := part.Write(backupBlob); err != nil {
+		t.Fatalf("part.Write() unexpected error: %v", err)
+	}
+	if err := writer.WriteField("passphrase", "very-strong-passphrase"); err != nil {
+		t.Fatalf("WriteField(passphrase) unexpected error: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/restore", &restoreBody)
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	app.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("backup restore invalid archive status = %d, want %d (body=%s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"invalid backup payload"`) {
+		t.Fatalf("backup restore invalid archive body = %s, want invalid payload error", rec.Body.String())
+	}
+	jobID := strings.TrimSpace(rec.Header().Get("X-Job-ID"))
+	if jobID == "" {
+		t.Fatalf("backup restore invalid archive missing X-Job-ID header")
+	}
+	var jobStatus, jobSummary, jobClass string
+	if err := app.Deps.DB().QueryRow("SELECT status, summary, error_class FROM jobs WHERE id = ?", jobID).Scan(&jobStatus, &jobSummary, &jobClass); err != nil {
+		t.Fatalf("query restore failure job: %v", err)
+	}
+	if jobStatus != jobStatusFailed || jobSummary != "Invalid backup payload" || jobClass != "archive" {
+		t.Fatalf("restore failure job = status %q summary %q class %q, want failed/invalid payload/archive", jobStatus, jobSummary, jobClass)
+	}
+}

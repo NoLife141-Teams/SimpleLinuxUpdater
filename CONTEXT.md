@@ -40,6 +40,10 @@ _Avoid_: Status helper logic, dashboard status mapping
 The read-only discovery of pending Debian/Ubuntu package updates after package metadata refresh, including standard upgrade simulation, full-upgrade simulation, apt metadata enrichment, kept-back security simulation, and the derived package/update plan consumed by Approval Scope, Scheduled Run, and Dashboard Projection.
 _Avoid_: Apt helper parsing, upgradable list helper
 
+**Backup Operation Lifecycle**:
+The lifecycle of an operator-initiated backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, audit recording, restored-runtime handoff, session invalidation, and final operation outcome.
+_Avoid_: Backup route flow, restore handler logic
+
 **Runtime Composition**:
 The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container

@@ -377,18 +377,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function getServerActionContract(server, key, options = {}) {
 	            if (!server || !key) return null;
-	            const intelligence = getServerIntelligence(server?.name);
-	            const actions = intelligence?.actions;
-	            if (!actions || typeof actions !== "object" || Array.isArray(actions)) return null;
-	            const action = actions[key];
-	            if (!action || typeof action !== "object" || typeof action.enabled !== "boolean") return null;
-	            const normalized = {
-	                ...action,
-	                enabled: !!action.enabled,
-	                reason: String(action.reason || ""),
-	                readiness: String(action.readiness || ""),
-	                blocking_status: String(action.blocking_status || "")
-	            };
+	            const normalized = window.statusPageInteraction.getAction(server.name, key);
+	            if (!normalized) return null;
 	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
 	                return normalized;
 	            }
@@ -1363,6 +1353,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const response = await fetch('/api/dashboard/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 dashboardSummary = await response.json();
+	            window.statusPageInteraction.dispatch({ type: "dashboardSnapshotReceived", snapshot: dashboardSummary });
                 const items = Array.isArray(dashboardSummary?.servers) ? dashboardSummary.servers : [];
                 dashboardByServer = new Map(items.map(item => [item.name, item]));
                 setDashboardExtraError("dashboard", null);
@@ -1762,6 +1753,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     return;
                 }
                 allServers = parsedServers;
+	            window.statusPageInteraction.dispatch({ type: "serversSnapshotReceived", servers: parsedServers });
                 pruneSelectionsForLoadedServers();
                 lastFetchError = null;
                 lastSuccessfulSyncAt = new Date();

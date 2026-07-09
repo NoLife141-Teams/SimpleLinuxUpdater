@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
@@ -221,4 +223,84 @@ test("deferable snapshots render after interaction release while immediate snaps
         servers: [{ name: "alpha", status: "done" }]
     });
     assert.equal(immediate.some(effect => effect.type === "render" && effect.priority === "immediate"), true);
+});
+
+test("single action plans contain canonical facts without transport details", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: { servers: [{ name: "alpha", actions: { update: { enabled: true, reason: "Ready", readiness: "ready" } } }] }
+    });
+
+    const plan = store.planAction("alpha", "update", { actionLabel: "update" });
+    assert.equal(plan.enabled, true);
+    assert.equal(plan.actionKey, "update");
+    assert.deepEqual(plan.serverNames, ["alpha"]);
+    assert.equal("url" in plan, false);
+    assert.equal("callback" in plan, false);
+});
+
+test("an in-flight host rejects competing single and bulk action plans", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    store.dispatch({ type: "selectionChanged", name: "alpha", selected: true });
+    const first = store.planAction("alpha", "update", { actionLabel: "update" });
+    store.dispatch({ type: "actionStarted", plan: first });
+
+    assert.equal(store.planAction("alpha", "autoremove").enabled, false);
+    assert.equal(store.planBulkAction("update").eligibleNames.length, 0);
+    assert.equal(store.getView().actions.inFlightServerNames.includes("alpha"), true);
+});
+
+test("bulk plans classify visible eligible, visible ineligible, and hidden selected hosts", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "alpha", status: "idle", has_key: true },
+            { name: "beta", status: "updating", has_password: true },
+            { name: "hidden", status: "idle" }
+        ]
+    });
+    ["alpha", "beta", "hidden"].forEach(name => store.dispatch({ type: "selectionChanged", name, selected: true }));
+    store.dispatch({ type: "filtersChanged", patch: { search: "a" } });
+
+    const plan = store.planBulkAction("update", { actionLabel: "update" });
+    assert.deepEqual(plan.eligibleNames, ["alpha"]);
+    assert.deepEqual(plan.ineligible.map(item => item.name), ["beta"]);
+    assert.deepEqual(plan.hiddenNames, ["hidden"]);
+    assert.equal(plan.skippedHosts.find(item => item.name === "hidden").reason, "Hidden by current filter or page");
+});
+
+test("action completion clears in-flight state and emits refresh and announcement effects", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    const plan = store.planAction("alpha", "update", { actionLabel: "update" });
+    store.dispatch({ type: "actionStarted", plan });
+
+    const effects = store.dispatch({
+        type: "actionCompleted",
+        operationId: plan.id,
+        refreshStreams: ["servers", "dashboard"],
+        message: "Update started"
+    });
+    assert.deepEqual(store.getView().actions.inFlightServerNames, []);
+    assert.deepEqual(effects.filter(effect => effect.type === "fetchSnapshot").map(effect => effect.stream), ["servers", "dashboard"]);
+    assert.equal(effects.some(effect => effect.type === "announceResult" && effect.status === "completed"), true);
+});
+
+test("browser adapters do not restore superseded action globals or DOM-derived bulk planning", () => {
+    const root = path.resolve(__dirname, "../..");
+    const adapterSource = ["static/js/index.js", "static/js/index-bulk-actions.js"]
+        .map(file => fs.readFileSync(path.join(root, file), "utf8"))
+        .join("\n");
+    [
+        "singleHostActionsInFlight",
+        "bulkActionInFlightLabel",
+        "refreshAllFactsInFlight",
+        "singleHostActionKey",
+        "isSingleHostActionInFlight",
+        "row-select:checked"
+    ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain deleted`));
 });

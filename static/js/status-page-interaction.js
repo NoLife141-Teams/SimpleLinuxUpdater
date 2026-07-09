@@ -93,6 +93,90 @@
         return value === "immediate" ? "immediate" : "deferable";
     }
 
+    function pendingApprovalCounts(server) {
+        const pending = Array.isArray(server && server.pending_updates) ? server.pending_updates : [];
+        const plan = server && server.upgrade_plan && typeof server.upgrade_plan === "object" ? server.upgrade_plan : {};
+        const standardPlanCount = Number(plan.standard_package_count);
+        const keptBackPlanCount = Number(plan.kept_back_package_count);
+        const standardSecurityPlanCount = Number(plan.standard_security_count);
+        const totalSecurityPlanCount = Number(plan.total_security_count);
+        const standard = Number.isFinite(standardPlanCount)
+            ? Math.max(0, standardPlanCount)
+            : pending.filter(update => !update.kept_back && !update.requires_full_upgrade).length;
+        const keptBack = Number.isFinite(keptBackPlanCount)
+            ? Math.max(0, keptBackPlanCount)
+            : pending.filter(update => update.kept_back || update.requires_full_upgrade).length;
+        const pendingSecurity = pending.filter(update => !!update.security);
+        const pendingKeptSecurity = pendingSecurity.filter(update => update.kept_back || update.requires_full_upgrade).length;
+        const standardSecurity = Number.isFinite(standardSecurityPlanCount)
+            ? Math.max(0, standardSecurityPlanCount)
+            : Math.max(0, pendingSecurity.length - pendingKeptSecurity);
+        const totalSecurity = Number.isFinite(totalSecurityPlanCount)
+            ? Math.max(0, totalSecurityPlanCount)
+            : pendingSecurity.length;
+        const keptBackSecurity = Math.max(0, totalSecurity - standardSecurity);
+        return {
+            standard,
+            keptBack,
+            standardSecurity,
+            keptBackSecurity,
+            full: Number(plan.full_upgrade_package_count || standard + keptBack),
+            keptBackSecurityPlanAvailable: !!plan.kept_back_security_plan_available,
+            fullPlanAvailable: !!plan.full_upgrade_plan_available,
+            keptBackSecurityRemovedPackages: cloneValue(Array.isArray(plan.kept_back_security_removed_packages) ? plan.kept_back_security_removed_packages : []),
+            keptBackSecurityNewPackages: cloneValue(Array.isArray(plan.kept_back_security_new_packages) ? plan.kept_back_security_new_packages : []),
+            removedPackages: cloneValue(Array.isArray(plan.removed_packages) ? plan.removed_packages : []),
+            newPackages: cloneValue(Array.isArray(plan.new_packages) ? plan.new_packages : [])
+        };
+    }
+
+    function pluralized(count, singular) {
+        return `${count} ${count === 1 ? singular : `${singular}s`}`;
+    }
+
+    function defaultActionReason(key, server, action) {
+        if (action && action.reason) return action.reason;
+        if (!server) return "Host is no longer loaded";
+        const counts = pendingApprovalCounts(server);
+        const enabled = !!(action && action.enabled);
+        const status = String(server.status || "").toLowerCase();
+        if (enabled) {
+            if (key === "update") return "Ready to start update checks.";
+            if (key === "approve_all") return `${pluralized(counts.standard, "standard update")} ready for approval.`;
+            if (key === "approve_security") return `${pluralized(counts.standardSecurity, "standard security update")} ready for approval.`;
+            if (key === "approve_security_kept_back") {
+                const removalNote = counts.keptBackSecurityRemovedPackages.length > 0
+                    ? " Package removals will be confirmed from the previewed plan."
+                    : "";
+                return `${pluralized(counts.keptBackSecurity, "kept-back security update")} ready for targeted approval.${removalNote}`;
+            }
+            if (key === "approve_full") return `${pluralized(counts.full, "full-upgrade package")} ready for approval.`;
+            if (key === "cancel") return "Ready to cancel pending approval.";
+            if (key === "autoremove") return "Ready to run apt autoremove.";
+            if (key === "refresh_facts") return "Ready to refresh host facts.";
+            return "Ready.";
+        }
+        if (["approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"].includes(key) && status !== "pending_approval") {
+            return "Not waiting for approval";
+        }
+        if (key === "approve_all") return "No standard updates eligible";
+        if (key === "approve_security") return "No standard security updates eligible";
+        if (key === "approve_security_kept_back") return counts.keptBackSecurityPlanAvailable ? "No kept-back security updates eligible" : "Needs a fresh package scan";
+        if (key === "approve_full") return counts.fullPlanAvailable ? "No full-upgrade packages eligible" : "Needs a fresh package scan";
+        if (key === "cancel") return "Cannot cancel approval now";
+        if (transientBlockingStatuses.has(status)) return `Current status ${status.replace(/_/g, " ")} blocks this action`;
+        return "Action is unavailable";
+    }
+
+    function authLabel(server, globalKeyAvailable) {
+        if (server && server.has_key && server.has_password) return "Server key + password";
+        if (server && !server.has_key && globalKeyAvailable && server.has_password) return "Global SSH key + password";
+        if (server && server.has_key) return "Server key";
+        if (server && !server.has_key && globalKeyAvailable) return "Global SSH key";
+        if (server && server.has_password) return "Password";
+        return "No auth configured";
+    }
+
     function legacyAction(server, dashboardServer, key) {
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
@@ -102,6 +186,14 @@
             enabled = !!server && !transientBlockingStatuses.has(status);
         } else if (field && triage && typeof triage === "object" && typeof triage[field] === "boolean") {
             enabled = triage[field];
+        } else if (["approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"].includes(key)) {
+            const counts = pendingApprovalCounts(server);
+            const pending = String(server && server.status || "").toLowerCase() === "pending_approval";
+            if (key === "approve_all") enabled = pending && counts.standard > 0;
+            if (key === "approve_security") enabled = pending && counts.standardSecurity > 0;
+            if (key === "approve_security_kept_back") enabled = pending && counts.keptBackSecurity > 0 && counts.keptBackSecurityPlanAvailable;
+            if (key === "approve_full") enabled = pending && counts.full > 0 && counts.fullPlanAvailable;
+            if (key === "cancel") enabled = pending;
         } else {
             return null;
         }
@@ -141,6 +233,9 @@
             dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
         };
         let interaction = { depth: 0, releasePending: false, deferredRender: false };
+        let nextActionPlanId = 1;
+        let inFlightActions = new Map();
+        let bulkAction = null;
 
         function replaceServers(items) {
             servers = normalizeNamedItems(items);
@@ -378,6 +473,40 @@
                     effects.push({ type: "render", scope: "serverState", priority: "deferable" });
                 }
                 return effects;
+            } else if (event.type === "actionStarted") {
+                const plan = event.plan && typeof event.plan === "object" ? event.plan : {};
+                const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => serversByName.has(name)) : [];
+                if (!plan.id || !plan.actionKey || names.length === 0 || (plan.kind === "bulk" && bulkAction)) {
+                    return [{ type: "actionRejected", operationId: String(plan.id || ""), reason: "Action plan is no longer available" }];
+                }
+                const unavailable = names.find(name => {
+                    const action = getAction(name, plan.actionKey);
+                    return !action || !action.enabled;
+                });
+                if (unavailable) {
+                    return [{
+                        type: "actionRejected",
+                        operationId: plan.id,
+                        reason: defaultActionReason(plan.actionKey, serversByName.get(unavailable), getAction(unavailable, plan.actionKey))
+                    }];
+                }
+                names.forEach(name => inFlightActions.set(name, {
+                    operationId: plan.id,
+                    actionKey: plan.actionKey,
+                    actionLabel: plan.actionLabel,
+                    kind: plan.kind
+                }));
+                if (plan.kind === "bulk") {
+                    bulkAction = { operationId: plan.id, actionKey: plan.actionKey, actionLabel: plan.actionLabel, serverNames: cloneValue(names) };
+                }
+                return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "actionCompleted" || event.type === "actionFailed") {
+                const operationId = String(event.operationId || "");
+                Array.from(inFlightActions.entries()).forEach(([name, action]) => {
+                    if (action.operationId === operationId) inFlightActions.delete(name);
+                });
+                if (bulkAction && bulkAction.operationId === operationId) bulkAction = null;
+                return actionLifecycleEffects(event, event.type === "actionCompleted" ? "completed" : "failed");
             } else if (event.type === "navigationRestored") {
                 restoreNavigation(event.value);
                 return stateEffects({ render: false });
@@ -465,12 +594,98 @@
             return server ? cloneValue(server) : null;
         }
 
-        function getAction(name, key) {
+        function getAction(name, key, options = {}) {
             const normalizedName = String(name || "");
             const server = serversByName.get(normalizedName) || null;
             const dashboardServer = dashboardByName.get(normalizedName) || null;
             const canonical = normalizeCanonicalAction(dashboardServer && dashboardServer.actions && dashboardServer.actions[key]);
-            return cloneValue(canonical || legacyAction(server, dashboardServer, key));
+            const action = canonical || legacyAction(server, dashboardServer, key);
+            if (!action) return null;
+            if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
+                return {
+                    ...cloneValue(action),
+                    enabled: false,
+                    reason: "Another action is already running for this host",
+                    readiness: "in_progress"
+                };
+            }
+            return cloneValue(action);
+        }
+
+        function nextPlanId(kind) {
+            const id = `${kind}-${nextActionPlanId}`;
+            nextActionPlanId += 1;
+            return id;
+        }
+
+        function planAction(name, actionKey, options = {}) {
+            const normalizedName = String(name || "");
+            const server = serversByName.get(normalizedName) || null;
+            const action = getAction(normalizedName, actionKey) || {
+                enabled: false,
+                reason: "Action is unavailable",
+                readiness: "blocked",
+                blocking_status: String(server && server.status || "")
+            };
+            return {
+                id: nextPlanId("action"),
+                kind: "single",
+                actionKey: String(actionKey || ""),
+                actionLabel: String(options.actionLabel || actionKey || "action"),
+                serverName: normalizedName,
+                serverNames: normalizedName ? [normalizedName] : [],
+                enabled: !!action.enabled,
+                reason: defaultActionReason(actionKey, server, action),
+                readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
+                blockingStatus: String(action.blocking_status || ""),
+                payloadFacts: { counts: pendingApprovalCounts(server) }
+            };
+        }
+
+        function planBulkAction(actionKey, options = {}) {
+            const projection = projectView();
+            const eligibleNames = [];
+            const eligibleHosts = [];
+            const ineligible = [];
+            projection.visibleSelectedNames.forEach(name => {
+                const server = serversByName.get(name) || null;
+                const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
+                const reason = defaultActionReason(actionKey, server, action);
+                if (action.enabled) {
+                    eligibleNames.push(name);
+                    eligibleHosts.push({ name, auth: authLabel(server, globalKeyAvailable), readiness: reason });
+                } else {
+                    ineligible.push({ name, auth: authLabel(server, globalKeyAvailable), reason });
+                }
+            });
+            const hiddenHosts = projection.hiddenSelectedNames.map(name => ({
+                name,
+                auth: authLabel(serversByName.get(name), globalKeyAvailable),
+                reason: "Hidden by current filter or page"
+            }));
+            return {
+                id: nextPlanId("bulk"),
+                kind: "bulk",
+                actionKey: String(actionKey || ""),
+                actionLabel: String(options.actionLabel || actionKey || "action"),
+                selectedNames: cloneValue(projection.selectedNames),
+                visibleNames: cloneValue(projection.visibleSelectedNames),
+                hiddenNames: cloneValue(projection.hiddenSelectedNames),
+                eligibleNames,
+                serverNames: cloneValue(eligibleNames),
+                eligibleHosts,
+                ineligible,
+                skippedHosts: [...hiddenHosts, ...ineligible],
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: pendingApprovalCounts(serversByName.get(name)) }]))
+            };
+        }
+
+        function actionLifecycleEffects(event, status) {
+            const effects = [{ type: "render", scope: "serverState", priority: "immediate" }];
+            const refreshStreams = Array.isArray(event.refreshStreams) ? event.refreshStreams : ["servers"];
+            refreshStreams.forEach(stream => effects.push(...startRefresh(stream, "immediate", `action-${status}`)));
+            if (event.message) effects.push({ type: "announceResult", status, message: String(event.message) });
+            return effects;
         }
 
         function projectView() {
@@ -527,6 +742,11 @@
                     interactionActive: interaction.depth > 0 || interaction.releasePending,
                     deferredRender: interaction.deferredRender
                 },
+                actions: {
+                    inFlightServerNames: Array.from(inFlightActions.keys()),
+                    inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
+                    bulk: cloneValue(bulkAction)
+                },
                 persistence: persistenceValue()
             };
         }
@@ -548,7 +768,9 @@
             getDashboardServer,
             getPersistence,
             getServer,
-            getView
+            getView,
+            planAction,
+            planBulkAction
         });
     }
 

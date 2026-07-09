@@ -14,10 +14,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
 	        let activePhaseTooltipTarget = null;
-	        let refreshAllFactsInFlight = false;
-	        let bulkActionInFlightLabel = "";
 	        let bulkReviewResolve = null;
-	        let singleHostActionsInFlight = new Set();
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -90,6 +87,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         actionInteractionReleaseTimer = null;
                         dispatchStatusInteraction({ type: "interactionReleased" });
                     }, effect.delayMs);
+                } else if (effect.type === "actionRejected") {
+                    window.alert(effect.reason || "Action is no longer available");
+                } else if (effect.type === "announceResult" && effect.message) {
+                    window.alert(effect.message);
                 }
             });
             return Promise.all(tasks);
@@ -394,17 +395,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function getServerActionContract(server, key, options = {}) {
 	            if (!server || !key) return null;
-	            const normalized = window.statusPageInteraction.getAction(server.name, key);
-	            if (!normalized) return null;
-	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
-	                return normalized;
-	            }
-	            return {
-	                ...normalized,
-	                enabled: false,
-	                readiness: "in_progress",
-	                reason: "Another action is already running for this host"
-	            };
+	            return statusInteraction.getAction(server.name, key, options);
 	        }
 
 	        function dashboardActionEnabled(server, key, fallback, options = {}) {
@@ -439,30 +430,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                can_refresh_facts: canRunTransientAction(server),
 	                can_run_checks: canRunTransientAction(server)
 	            };
-	            const actionOptions = { ignoreInFlight: true };
 	            const contractTriage = {
 	                ...triage,
-	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, actionOptions),
-	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, actionOptions),
-	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, actionOptions),
-	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, actionOptions),
-	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, actionOptions),
-	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, actionOptions),
-	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, actionOptions)
+	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, options),
+	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, options),
+	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, options),
+	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, options),
+	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, options),
+	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, options),
+	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, options)
 	            };
-	            if (options.ignoreInFlight || !isSingleHostActionInFlight(server?.name)) {
-	                return contractTriage;
-	            }
-	            return {
-	                ...contractTriage,
-	                can_approve_all: false,
-	                can_approve_security: false,
-	                can_approve_kept_back_security: false,
-	                can_approve_full: false,
-	                can_cancel: false,
-	                can_refresh_facts: false,
-	                can_run_checks: false
-	            };
+	            return contractTriage;
 	        }
 
 	        function isFactsStateStale(server) {
@@ -474,7 +452,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
 	        function canRunTransientAction(server) {
-	            return !!server && !isSingleHostActionInFlight(server.name) && !statusBlocksTransientAction(server.status);
+	            return !!server && !statusBlocksTransientAction(server.status);
 	        }
 
         function timelinePhaseMap(server) {
@@ -1490,20 +1468,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function updateRefreshAllFactsState() {
 	            const button = document.getElementById('refresh-all-facts');
 	            if (!button) return;
-	            const visibleSelectedServers = getVisibleSelectedServers();
-	            const visibleCount = visibleSelectedServers.length;
-	            const refreshableCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
-	            const selectedCount = getStatusView().selectedNames.length;
-	            const enabled = !refreshAllFactsInFlight && !bulkActionInFlightLabel && refreshableCount > 0;
+	            const view = getStatusView();
+	            const plan = statusInteraction.planBulkAction("refresh_facts", { actionLabel: "refresh facts" });
+	            const visibleCount = plan.visibleNames.length;
+	            const refreshableCount = plan.eligibleNames.length;
+	            const selectedCount = plan.selectedNames.length;
+	            const bulk = view.actions.bulk;
+	            const refreshing = bulk?.actionKey === "refresh_facts";
+	            const enabled = !bulk && refreshableCount > 0;
 	            button.disabled = !enabled;
-	            button.textContent = refreshAllFactsInFlight ? "Refreshing..." : "Refresh facts";
-	            button.classList.toggle("refreshing", refreshAllFactsInFlight);
-	            button.setAttribute('aria-label', refreshAllFactsInFlight ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
+	            button.textContent = refreshing ? "Refreshing..." : "Refresh facts";
+	            button.classList.toggle("refreshing", refreshing);
+	            button.setAttribute('aria-label', refreshing ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
 	            button.setAttribute('aria-describedby', 'bulk-action-hint');
-	            button.title = refreshAllFactsInFlight
+	            button.title = refreshing
 	                ? `Refreshing facts for ${pluralize(refreshableCount, "visible selected host")}`
-	                : bulkActionInFlightLabel
-	                ? `Bulk ${bulkActionInFlightLabel} is running`
+	                : bulk
+	                ? `Bulk ${bulk.actionLabel} is running`
 	                : enabled
 	                ? `Refresh facts for ${pluralize(refreshableCount, "visible selected host")}`
 	                : selectedCount === 0
@@ -1794,41 +1775,27 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            renderTable({ refreshPanels: false });
 	        }
 
-	        function getVisibleSelectedServers() {
-	            return getStatusView().visibleSelectedServers;
-	        }
-
 		        function isServerActionBusy(server) {
-		            return !!server && (isSingleHostActionInFlight(server.name) || statusBlocksTransientAction(server.status));
-		        }
-
-	        function singleHostActionKey(name, actionLabel) {
-	            return `${String(name || "")}\u0000${String(actionLabel || "action")}`;
+		            return !!server && (getStatusView().actions.inFlightServerNames.includes(server.name) || statusBlocksTransientAction(server.status));
 	        }
 
-	        function isSingleHostActionInFlight(name) {
-	            const prefix = `${String(name || "")}\u0000`;
-	            return Array.from(singleHostActionsInFlight).some(key => key.startsWith(prefix));
-	        }
-
-	        function renderSingleHostActionState() {
-	            renderTable({ refreshPanels: false });
-	            renderApprovalTriage();
-	            renderSelectedHostPanel();
-	            renderDrawer();
-	            updateBulkActionState();
-	        }
-
-	        async function runSingleHostAction(name, actionLabel, work) {
-	            if (!name || isSingleHostActionInFlight(name)) return false;
-	            const key = singleHostActionKey(name, actionLabel);
-	            singleHostActionsInFlight.add(key);
-	            renderSingleHostActionState();
+	        async function runSingleHostAction(name, actionKey, actionLabel, work, refreshStreams = ["servers"]) {
+	            const plan = statusInteraction.planAction(name, actionKey, { actionLabel });
+	            if (!plan.enabled) return false;
+	            await dispatchStatusInteraction({ type: "actionStarted", plan });
+	            const started = getStatusView().actions.inFlight.some(action => action.operationId === plan.id);
+	            if (!started) return false;
 	            try {
-	                return await work();
-	            } finally {
-	                singleHostActionsInFlight.delete(key);
-	                renderSingleHostActionState();
+	                const result = await work(plan);
+	                await dispatchStatusInteraction({
+	                    type: result === false ? "actionFailed" : "actionCompleted",
+	                    operationId: plan.id,
+	                    refreshStreams: result === false ? [] : refreshStreams
+	                });
+	                return result !== false;
+	            } catch (error) {
+	                await dispatchStatusInteraction({ type: "actionFailed", operationId: plan.id, refreshStreams: [] });
+	                throw error;
 	            }
 	        }
 
@@ -2496,19 +2463,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        async function updateServer(name) {
-	            await runSingleHostAction(name, "update", async () => {
-	                if (await postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "update", "update", () => (
+	                postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')
+	            ));
 	        }
 
 	        async function runAutoremove(name) {
-	            await runSingleHostAction(name, "autoremove", async () => {
-	                if (await postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "autoremove", "autoremove", () => (
+	                postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')
+	            ));
 	        }
 
 	        async function enablePasswordlessApt(name) {
@@ -2516,20 +2479,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                alert("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
-	            await runSingleHostAction(name, "enable apt", async () => {
+	            await runSingleHostAction(name, "enable_apt", "enable apt", async () => {
 	                let password;
 	                try {
 	                    password = await promptPassword(`Enter sudo password for ${name}`);
 	                } catch {
-	                    return;
+	                    return false;
 	                }
-	                if (!password) return;
-	                if (await postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
+	                if (!password) return false;
+	                return postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify({ password })
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
@@ -2538,20 +2499,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                alert("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
-	            await runSingleHostAction(name, "disable apt", async () => {
+	            await runSingleHostAction(name, "disable_apt", "disable apt", async () => {
 	                let password;
 	                try {
 	                    password = await promptPassword(`Enter sudo password to disable for ${name}`);
 	                } catch {
-	                    return;
+	                    return false;
 	                }
-	                if (!password) return;
-	                if (await postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
+	                if (!password) return false;
+	                return postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify({ password })
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
@@ -2836,47 +2795,43 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
 
 	        async function approveAllUpdates(name) {
-	            await runSingleHostAction(name, "approve", async () => {
+	            await runSingleHostAction(name, "approve_all", "approve", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
 	                    window.alert("No standard updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
-	                if (await postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.')) {
-	                    await fetchServers(true);
-	                }
+	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.');
 	            });
 	        }
 
 	        async function approveSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve security", async () => {
+	            await runSingleHostAction(name, "approve_security", "approve security", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
 	                    window.alert("No standard security updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
-	                if (await postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.')) {
-	                    await fetchServers(true);
-	                }
+	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.');
 	            });
 	        }
 
 	        async function approveKeptBackSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve kept-back security", async () => {
+	            await runSingleHostAction(name, "approve_security_kept_back", "approve kept-back security", async () => {
 	                const server = getServerByName(name);
 	                const counts = getPendingApprovalCounts(server);
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_kept_back_security) {
 	                    if (!counts.keptBackSecurityPlanAvailable) {
 	                        window.alert("Run a fresh package scan before approving kept-back security updates.");
-	                        return;
+	                        return false;
 	                    }
 	                    window.alert("No kept-back security updates are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
 	                if (!counts.keptBackSecurityPlanAvailable) {
 	                    window.alert("Run a fresh package scan before approving kept-back security updates.");
-	                    return;
+	                    return false;
 	                }
 	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
 	                const packages = pendingUpdates
@@ -2894,33 +2849,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return;
+	                if (!window.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
-	                if (await postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
+	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify(body)
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
 	        async function approveFullUpgrade(name) {
-	            await runSingleHostAction(name, "approve full upgrade", async () => {
+	            await runSingleHostAction(name, "approve_full", "approve full upgrade", async () => {
 	                const server = getServerByName(name);
 	                const counts = getPendingApprovalCounts(server);
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_full) {
 	                    if (!counts.fullPlanAvailable) {
 	                        window.alert("Run a fresh package scan before approving full-upgrade.");
-	                        return;
+	                        return false;
 	                    }
 	                    window.alert("No full-upgrade packages are eligible for approval.");
-	                    return;
+	                    return false;
 	                }
 	                if (!counts.fullPlanAvailable) {
 	                    window.alert("Run a fresh package scan before approving full-upgrade.");
-	                    return;
+	                    return false;
 	                }
 	                const removed = counts.removedPackages;
 	                const newPackages = counts.newPackages;
@@ -2931,41 +2884,36 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    `Run full-upgrade on ${name}?`,
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return;
+	                if (!window.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
-	                if (await postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
+	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
 	                    headers: { 'Content-Type': 'application/json' },
 	                    body: JSON.stringify(body)
-	                })) {
-	                    await fetchServers(true);
-	                }
+	                });
 	            });
 	        }
 
 	        async function cancelUpgrade(name) {
-	            await runSingleHostAction(name, "cancel", async () => {
-	                if (await postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')) {
-	                    await fetchServers(true);
-	                }
-	            });
+	            await runSingleHostAction(name, "cancel", "cancel", () => (
+	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')
+	            ));
 	        }
 
 	        async function refreshHostFacts(name) {
-	            await runSingleHostAction(name, "refresh facts", async () => {
+	            await runSingleHostAction(name, "refresh_facts", "refresh facts", async () => {
 	                try {
 	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
 	                        alert(payload.error || "Failed to refresh host facts");
-	                        return;
+	                        return false;
 	                    }
-	                    await fetchDashboardSummary();
-	                    await fetchServers(true);
+	                    return true;
 	                } catch (err) {
 	                    alert(err?.message || "Failed to refresh host facts");
-	                    return;
+	                    return false;
 	                }
-	            });
+	            }, ["servers", "dashboard"]);
 	        }
 
 

@@ -67,7 +67,7 @@
 
 	        function updateBulkActionState() {
 	            const hint = document.getElementById('bulk-action-hint');
-	            const selectedNames = Array.from(selectedServers);
+	            const selectedNames = getStatusView().selectedNames;
 	            const visibleSelectedServers = getVisibleSelectedServers();
 	            const visibleCount = visibleSelectedServers.length;
 	            const selectedCount = selectedNames.length;
@@ -205,7 +205,7 @@
                     .map(cb => cb.dataset.name)
                     .filter(Boolean)
             );
-            const selectedNames = Array.from(selectedServers);
+            const selectedNames = getStatusView().selectedNames;
             const visibleNames = selectedNames.filter(name => visibleSelected.has(name));
             const hiddenNames = selectedNames.filter(name => !visibleSelected.has(name));
             const eligibleNames = [];

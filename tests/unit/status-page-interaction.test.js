@@ -64,3 +64,87 @@ test("malformed canonical actions fall back to legacy eligibility", () => {
 
     assert.equal(store.getAction("alpha", "update").enabled, true);
 });
+
+test("navigation restore validates persisted filters and emits persistence as data", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "navigationRestored",
+        value: {
+            search: "prod",
+            statusFilter: "not-a-status",
+            authFilter: "key",
+            groupBy: "tag",
+            pageSize: "50",
+            fleetQuickFilter: "high_risk",
+            fleetTagFilter: "critical",
+            selectedServerName: "alpha"
+        }
+    });
+
+    assert.deepEqual(store.getView().filters, {
+        search: "prod",
+        status: "",
+        auth: "key",
+        groupBy: "tag",
+        quick: "high_risk",
+        tag: "critical"
+    });
+    assert.equal(store.getView().pageSize, 50);
+
+    const effects = store.dispatch({ type: "filtersChanged", patch: { search: "ops" } });
+    assert.deepEqual(effects.find(effect => effect.type === "persistFilters").value.search, "ops");
+});
+
+test("navigation projection keeps filtered selections and groups the visible page", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "beta", status: "idle", tags: ["prod"], has_key: true },
+            { name: "alpha", status: "error", tags: ["dev"], has_password: true }
+        ]
+    });
+    store.dispatch({ type: "selectionChanged", name: "alpha", selected: true });
+    store.dispatch({ type: "selectionChanged", name: "beta", selected: true });
+    store.dispatch({ type: "filtersChanged", patch: { status: "idle", groupBy: "tag" } });
+
+    const view = store.getView();
+    assert.deepEqual(view.visibleServers.map(server => server.name), ["beta"]);
+    assert.deepEqual(view.visibleSelectedNames, ["beta"]);
+    assert.deepEqual(view.hiddenSelectedNames, ["alpha"]);
+    assert.deepEqual(view.groups.map(group => group.key), ["prod"]);
+    assert.equal(view.primaryServerName, "beta");
+});
+
+test("server removal prunes selection and closes an invalid drawer", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "alpha", status: "idle" },
+            { name: "beta", status: "pending_approval", pending_updates: [{ package: "curl" }] }
+        ]
+    });
+    store.dispatch({ type: "selectionChanged", name: "beta", selected: true });
+    store.dispatch({ type: "primaryServerSelected", name: "beta" });
+    store.dispatch({ type: "drawerOpened", name: "beta", tab: "pending" });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+
+    const view = store.getView();
+    assert.deepEqual(view.selectedNames, []);
+    assert.equal(view.primaryServerName, "alpha");
+    assert.equal(view.drawer.open, false);
+});
+
+test("pending drawer tab falls back to logs when pending details disappear", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "pending_approval", pending_updates: [{ package: "curl" }] }]
+    });
+    store.dispatch({ type: "drawerOpened", name: "alpha", tab: "pending" });
+    assert.equal(store.getView().drawer.tab, "pending");
+
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle", pending_updates: [] }] });
+    assert.equal(store.getView().drawer.tab, "logs");
+});

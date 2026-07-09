@@ -30,6 +30,13 @@
         refresh_facts: "can_refresh_facts"
     });
 
+    const allowedStatusFilters = new Set(["", "idle", "updating", "pending_approval", "upgrading", "autoremove", "done", "error"]);
+    const allowedAuthFilters = new Set(["", "password", "key"]);
+    const allowedGroupings = new Set(["", "status", "tag"]);
+    const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
+    const allowedPageSizes = new Set([25, 50, 100]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
+
     function cloneValue(value) {
         if (Array.isArray(value)) {
             return value.map(cloneValue);
@@ -67,6 +74,20 @@
         return normalized;
     }
 
+    function normalizedString(value, fallback, maxLength = 200) {
+        return typeof value === "string" && value.length <= maxLength ? value : fallback;
+    }
+
+    function normalizedChoice(value, choices, fallback = "") {
+        const normalized = String(value === undefined || value === null ? fallback : value);
+        return choices.has(normalized) ? normalized : fallback;
+    }
+
+    function normalizedPageSize(value) {
+        const parsed = Number.parseInt(value, 10);
+        return allowedPageSizes.has(parsed) ? parsed : 25;
+    }
+
     function legacyAction(server, dashboardServer, key) {
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
@@ -94,6 +115,21 @@
         let serversByName = new Map();
         let dashboardServers = [];
         let dashboardByName = new Map();
+        let globalKeyAvailable = false;
+        let filters = {
+            search: "",
+            status: "",
+            auth: "",
+            groupBy: "",
+            quick: "",
+            tag: ""
+        };
+        let sort = { key: "name", dir: "asc" };
+        let page = 1;
+        let pageSize = 25;
+        let primaryServerName = "";
+        let selectedServerNames = new Set();
+        let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
 
         function replaceServers(items) {
             servers = normalizeNamedItems(items);
@@ -106,12 +142,195 @@
             dashboardByName = new Map(items.map(server => [server.name, server]));
         }
 
+        function dashboardServerFor(server) {
+            return dashboardByName.get(server && server.name) || null;
+        }
+
+        function isPendingApproval(server) {
+            const dashboardServer = dashboardServerFor(server);
+            return String(server && server.status || "").toLowerCase() === "pending_approval"
+                || String(dashboardServer && dashboardServer.timeline && dashboardServer.timeline.current_phase || "").toLowerCase() === "pending_approval";
+        }
+
+        function hasPendingUpdates(server) {
+            return isPendingApproval(server) && Array.isArray(server && server.pending_updates) && server.pending_updates.length > 0;
+        }
+
+        function matchesFilters(server) {
+            const status = String(server.status || "").toLowerCase();
+            const dashboardServer = dashboardServerFor(server);
+            if (filters.status && status !== filters.status) return false;
+            if (filters.tag) {
+                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
+                if (!tags.includes(filters.tag)) return false;
+            }
+            if (filters.quick === "pending_approval" && !isPendingApproval(server)) return false;
+            if (filters.quick === "active") {
+                const timelineState = String(dashboardServer && dashboardServer.timeline && dashboardServer.timeline.state || "").toLowerCase();
+                if (!activeStatuses.has(status) && !["active", "queued"].includes(timelineState)) return false;
+            }
+            if (filters.quick === "stale_facts") {
+                const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "").toLowerCase();
+                if (factsState !== "stale") return false;
+            }
+            if (filters.quick === "high_risk") {
+                const cveCount = Number(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.cve_count || 0);
+                if (cveCount <= 0) return false;
+            }
+            if (filters.auth === "password" && !server.has_password) return false;
+            if (filters.auth === "key" && !server.has_key && !globalKeyAvailable) return false;
+            if (!filters.search) return true;
+            const haystack = [server.name, server.host, server.port, server.user, ...(Array.isArray(server.tags) ? server.tags : [])]
+                .filter(value => value !== undefined && value !== null)
+                .join(" ")
+                .toLowerCase();
+            return haystack.includes(filters.search.toLowerCase());
+        }
+
+        function sortedVisibleServers() {
+            const direction = sort.dir === "desc" ? -1 : 1;
+            return servers.filter(matchesFilters).slice().sort((left, right) => {
+                const leftValue = String(left[sort.key] || "").toLowerCase();
+                const rightValue = String(right[sort.key] || "").toLowerCase();
+                return leftValue.localeCompare(rightValue) * direction;
+            });
+        }
+
+        function reconcileNavigation() {
+            const loadedNames = new Set(servers.map(server => server.name));
+            selectedServerNames = new Set(Array.from(selectedServerNames).filter(name => loadedNames.has(name)));
+            const visible = sortedVisibleServers();
+            if (!visible.some(server => server.name === primaryServerName)) {
+                primaryServerName = visible.length > 0 ? visible[0].name : "";
+            }
+            const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+            page = Math.max(1, Math.min(page, totalPages));
+            if (drawer.open && !loadedNames.has(drawer.serverName)) {
+                drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+            } else if (drawer.open && drawer.tab === "pending" && !hasPendingUpdates(serversByName.get(drawer.serverName))) {
+                drawer = { ...drawer, tab: "logs" };
+            }
+        }
+
+        function persistenceValue() {
+            return {
+                search: filters.search,
+                statusFilter: filters.status,
+                authFilter: filters.auth,
+                groupBy: filters.groupBy,
+                pageSize: String(pageSize),
+                fleetQuickFilter: filters.quick,
+                fleetTagFilter: filters.tag,
+                selectedServerName: primaryServerName
+            };
+        }
+
+        function stateEffects(options = {}) {
+            const effects = [];
+            if (options.persist) effects.push({ type: "persistFilters", value: persistenceValue() });
+            if (options.render !== false) effects.push({ type: "render", priority: options.priority || "deferable" });
+            return effects;
+        }
+
+        function restoreNavigation(value) {
+            const saved = value && typeof value === "object" ? value : {};
+            filters = {
+                search: normalizedString(saved.search, ""),
+                status: normalizedChoice(saved.statusFilter, allowedStatusFilters),
+                auth: normalizedChoice(saved.authFilter, allowedAuthFilters),
+                groupBy: normalizedChoice(saved.groupBy, allowedGroupings),
+                quick: normalizedChoice(saved.fleetQuickFilter, allowedQuickFilters),
+                tag: normalizedString(saved.fleetTagFilter, "", 100)
+            };
+            pageSize = normalizedPageSize(saved.pageSize);
+            primaryServerName = normalizedString(saved.selectedServerName, "", 200);
+            page = 1;
+            reconcileNavigation();
+        }
+
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
             if (event.type === "serversSnapshotReceived") {
                 replaceServers(event.servers);
+                reconcileNavigation();
+                return stateEffects({ persist: true });
             } else if (event.type === "dashboardSnapshotReceived") {
                 replaceDashboard(event.snapshot);
+                reconcileNavigation();
+                return stateEffects({ persist: true });
+            } else if (event.type === "navigationRestored") {
+                restoreNavigation(event.value);
+                return stateEffects({ render: false });
+            } else if (event.type === "filtersChanged") {
+                const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
+                filters = {
+                    search: Object.hasOwn(patch, "search") ? normalizedString(patch.search, "") : filters.search,
+                    status: Object.hasOwn(patch, "status") ? normalizedChoice(patch.status, allowedStatusFilters) : filters.status,
+                    auth: Object.hasOwn(patch, "auth") ? normalizedChoice(patch.auth, allowedAuthFilters) : filters.auth,
+                    groupBy: Object.hasOwn(patch, "groupBy") ? normalizedChoice(patch.groupBy, allowedGroupings) : filters.groupBy,
+                    quick: Object.hasOwn(patch, "quick") ? normalizedChoice(patch.quick, allowedQuickFilters) : filters.quick,
+                    tag: Object.hasOwn(patch, "tag") ? normalizedString(patch.tag, "", 100) : filters.tag
+                };
+                if (Object.hasOwn(patch, "pageSize")) pageSize = normalizedPageSize(patch.pageSize);
+                page = 1;
+                reconcileNavigation();
+                return stateEffects({ persist: true });
+            } else if (event.type === "sortChanged") {
+                const key = normalizedString(event.key, "name", 50);
+                if (sort.key === key) {
+                    sort = { key, dir: sort.dir === "asc" ? "desc" : "asc" };
+                } else {
+                    sort = { key, dir: "asc" };
+                }
+                reconcileNavigation();
+                return stateEffects();
+            } else if (event.type === "pageChanged") {
+                page = Number.isFinite(Number(event.page)) ? Number(event.page) : page + Number(event.delta || 0);
+                reconcileNavigation();
+                return stateEffects();
+            } else if (event.type === "selectionChanged") {
+                const name = String(event.name || "");
+                if (serversByName.has(name)) {
+                    if (event.selected) selectedServerNames.add(name);
+                    else selectedServerNames.delete(name);
+                }
+                return stateEffects();
+            } else if (event.type === "pageSelectionChanged") {
+                const projection = projectView();
+                projection.pageServers.forEach(server => {
+                    if (event.selected) selectedServerNames.add(server.name);
+                    else selectedServerNames.delete(server.name);
+                });
+                return stateEffects();
+            } else if (event.type === "primaryServerSelected") {
+                primaryServerName = serversByName.has(String(event.name || "")) ? String(event.name) : "";
+                reconcileNavigation();
+                return stateEffects({ persist: true });
+            } else if (event.type === "drawerOpened") {
+                const name = String(event.name || "");
+                if (serversByName.has(name)) {
+                    drawer = {
+                        open: true,
+                        serverName: name,
+                        tab: event.tab === "pending" && hasPendingUpdates(serversByName.get(name)) ? "pending" : "logs",
+                        logFollow: drawer.serverName === name ? drawer.logFollow : true
+                    };
+                }
+                return stateEffects();
+            } else if (event.type === "drawerClosed") {
+                drawer = { ...drawer, open: false };
+                return stateEffects();
+            } else if (event.type === "drawerTabChanged") {
+                const tab = event.tab === "pending" && hasPendingUpdates(serversByName.get(drawer.serverName)) ? "pending" : "logs";
+                drawer = { ...drawer, tab };
+                return stateEffects();
+            } else if (event.type === "drawerLogFollowChanged") {
+                drawer = { ...drawer, logFollow: !!event.value };
+                return stateEffects({ render: false });
+            } else if (event.type === "globalKeyAvailabilityChanged") {
+                globalKeyAvailable = !!event.available;
+                reconcileNavigation();
+                return stateEffects();
             }
             return [];
         }
@@ -134,10 +353,64 @@
             return cloneValue(canonical || legacyAction(server, dashboardServer, key));
         }
 
-        function getView() {
+        function projectView() {
+            const visibleServers = sortedVisibleServers();
+            const totalPages = Math.max(1, Math.ceil(visibleServers.length / pageSize));
+            const safePage = Math.max(1, Math.min(page, totalPages));
+            const start = (safePage - 1) * pageSize;
+            const pageServers = visibleServers.slice(start, start + pageSize);
+            const pageNames = new Set(pageServers.map(server => server.name));
+            const selectedNames = Array.from(selectedServerNames);
+            const visibleSelectedNames = selectedNames.filter(name => pageNames.has(name));
+            const hiddenSelectedNames = selectedNames.filter(name => !pageNames.has(name));
+            const grouped = new Map();
+            if (filters.groupBy === "status") {
+                pageServers.forEach(server => {
+                    const key = server.status || "unknown";
+                    if (!grouped.has(key)) grouped.set(key, []);
+                    grouped.get(key).push(server);
+                });
+            } else if (filters.groupBy === "tag") {
+                pageServers.forEach(server => {
+                    const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
+                    tags.forEach(tag => {
+                        if (!grouped.has(tag)) grouped.set(tag, []);
+                        grouped.get(tag).push(server);
+                    });
+                });
+            }
+            const groups = filters.groupBy
+                ? Array.from(grouped.entries()).map(([key, items]) => ({ key, items: cloneValue(items) }))
+                : [{ key: "", items: cloneValue(pageServers) }];
             return {
                 servers: cloneValue(servers),
-                dashboardServers: cloneValue(dashboardServers)
+                dashboardServers: cloneValue(dashboardServers),
+                filters: cloneValue(filters),
+                sort: cloneValue(sort),
+                page: safePage,
+                pageSize,
+                totalPages,
+                visibleServers: cloneValue(visibleServers),
+                pageServers: cloneValue(pageServers),
+                groups,
+                primaryServerName,
+                selectedNames,
+                visibleSelectedNames,
+                hiddenSelectedNames,
+                visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
+                drawer: cloneValue(drawer),
+                persistence: persistenceValue()
+            };
+        }
+
+        function getView() {
+            reconcileNavigation();
+            return projectView();
+        }
+
+        function getPersistence() {
+            return {
+                ...persistenceValue()
             };
         }
 
@@ -145,6 +418,7 @@
             dispatch,
             getAction,
             getDashboardServer,
+            getPersistence,
             getServer,
             getView
         });

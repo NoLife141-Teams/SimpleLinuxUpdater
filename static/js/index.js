@@ -1,8 +1,6 @@
 const LOG_BOTTOM_THRESHOLD = 20;
-        let sortKey = "name";
-        let sortDir = "asc";
+        const statusInteraction = window.statusPageInteraction;
         let allServers = [];
-        let selectedServerName = "";
         let lastSuccessfulSyncAt = null;
         let lastFetchError = null;
         let recentActivity = [];
@@ -12,8 +10,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let dashboardByServer = new Map();
         let globalKeyAvailable = false;
         let dashboardExtraErrors = new Map();
-        let page = 1;
-        let selectedServers = new Set();
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
@@ -25,12 +21,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        let fetchInFlight = false;
         let fetchQueued = false;
         let queuedForceRender = false;
-        let fleetQuickFilter = "";
-        let fleetTagFilter = "";
-        let drawerOpen = false;
-        let drawerServerName = "";
-        let drawerTab = "logs";
-        let drawerLogFollow = true;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -77,6 +67,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
         const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
         const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
         const transientActionBlockingStatuses = new Set(["updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
+
+        function getStatusView() {
+            return statusInteraction.getView();
+        }
+
+        function dispatchStatusInteraction(event) {
+            const effects = statusInteraction.dispatch(event);
+            effects.forEach(effect => {
+                if (effect.type === "persistFilters") {
+                    persistDashboardFilters(effect.value);
+                }
+            });
+            return getStatusView();
+        }
 
         function isRunningTimelineState(state) {
             return ["active", "queued"].includes(String(state || "").toLowerCase());
@@ -561,9 +565,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function updateMetricFilterState() {
+            const quickFilter = getStatusView().filters.quick;
             document.querySelectorAll('[data-metric-filter]').forEach(button => {
                 const key = button.dataset.metricFilter || "";
-                const active = fleetQuickFilter === key;
+                const active = quickFilter === key;
                 const label = quickFilterActionLabel(key);
                 button.classList.toggle('active', active);
                 button.closest('.metric-item')?.classList.toggle('active', active);
@@ -840,7 +845,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderFleetFilters() {
-            setText("fleet-filter-summary", `${pluralize(applyFilters(allServers).length, "host")} visible`);
+            const view = getStatusView();
+            setText("fleet-filter-summary", `${pluralize(view.visibleServers.length, "host")} visible`);
             const statusEl = document.getElementById('fleet-status-filters');
             if (statusEl) {
                 const activeCount = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length;
@@ -854,7 +860,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     { key: "high_risk", label: "High risk", count: highRiskCount }
                 ];
                 statusEl.innerHTML = filters.map(item => `
-                    <button type="button" class="filter-pill${fleetQuickFilter === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
+                    <button type="button" class="filter-pill${view.filters.quick === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
                         <span>${escapeHtml(item.label)}</span>
                         <strong>${item.count}</strong>
                     </button>
@@ -875,9 +881,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
 	            tagEl.innerHTML = [
-	                `<button type="button" class="filter-pill${fleetTagFilter === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
+	                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
 	                ...entries.slice(0, 8).map(([tag, count]) => `
-	                    <button type="button" class="filter-pill${fleetTagFilter === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
+	                    <button type="button" class="filter-pill${view.filters.tag === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
 	                        <span>${escapeHtml(tag)}</span>
 	                        <strong>${count}</strong>
 	                    </button>
@@ -891,7 +897,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const listID = "approval-triage";
             const limit = 12;
             const expanded = expandedMiniLists.has(listID);
-            const servers = applyFilters(allServers)
+            const primaryServerName = getStatusView().primaryServerName;
+            const servers = getStatusView().visibleServers
                 .filter(server => getServerApprovalTriage(server).eligible || isPendingApprovalHost(server))
                 .sort((a, b) => {
                     const aTriage = getServerApprovalTriage(a);
@@ -921,7 +928,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const factsState = String(triage.facts_state || "unknown").toLowerCase();
 	                const canUpdate = canRunUpdateAction(server);
 	                const canRefreshFacts = canRefreshFactsAction(server);
-	                const rowSelected = selectedServerName === server.name;
+	                const rowSelected = getStatusView().primaryServerName === server.name;
 	                const driftReason = pendingApprovalDriftReason(server);
 	                const driftNotice = driftReason
 	                    ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
@@ -1079,7 +1086,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function renderCommandHistoryPanel() {
 	            const el = document.getElementById('command-history-panel');
 	            if (!el) return;
-            const intelligence = getServerIntelligence(selectedServerName);
+	            const primaryServerName = getStatusView().primaryServerName;
+	            const intelligence = getServerIntelligence(primaryServerName);
             const history = Array.isArray(intelligence?.command_history) ? intelligence.command_history : [];
             setText("command-history-count", String(history.length));
             if (history.length === 0) {
@@ -1098,7 +1106,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <span class="status-pill status-${statusClass}">${escapeHtml(status || "unknown")}</span>
                         <div>
                             <strong>${escapeHtml(item.action || "command")}</strong>
-                            <span>${escapeHtml(item.message || selectedServerName || "server")} · ${escapeHtml(item.created_at_display || formatRelativeTimestamp(item.created_at))}</span>
+	                            <span>${escapeHtml(item.message || primaryServerName || "server")} · ${escapeHtml(item.created_at_display || formatRelativeTimestamp(item.created_at))}</span>
                         </div>
                     </div>
                 `;
@@ -1164,7 +1172,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const title = document.getElementById('selected-host-title');
             const subtitle = document.getElementById('selected-host-subtitle');
             if (!panel || !title || !subtitle) return;
-            const server = getServerByName(selectedServerName);
+            const server = getServerByName(getStatusView().primaryServerName);
             if (!server) {
                 title.textContent = "No host selected";
                 subtitle.textContent = "Select a table row to inspect host details.";
@@ -1353,7 +1361,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const response = await fetch('/api/dashboard/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 dashboardSummary = await response.json();
-	            window.statusPageInteraction.dispatch({ type: "dashboardSnapshotReceived", snapshot: dashboardSummary });
+	            dispatchStatusInteraction({ type: "dashboardSnapshotReceived", snapshot: dashboardSummary });
                 const items = Array.isArray(dashboardSummary?.servers) ? dashboardSummary.servers : [];
                 dashboardByServer = new Map(items.map(item => [item.name, item]));
                 setDashboardExtraError("dashboard", null);
@@ -1377,6 +1385,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const nextGlobalKeyAvailable = !!data?.has_key;
                 if (nextGlobalKeyAvailable !== globalKeyAvailable) {
                     globalKeyAvailable = nextGlobalKeyAvailable;
+                    dispatchStatusInteraction({ type: "globalKeyAvailabilityChanged", available: globalKeyAvailable });
                     renderDashboardMetrics();
                     if (allServers.length > 0) {
                         renderTable();
@@ -1456,7 +1465,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            const visibleSelectedServers = getVisibleSelectedServers();
 	            const visibleCount = visibleSelectedServers.length;
 	            const refreshableCount = visibleSelectedServers.filter(canRefreshBulkFacts).length;
-	            const selectedCount = selectedServers.size;
+	            const selectedCount = getStatusView().selectedNames.length;
 	            const enabled = !refreshAllFactsInFlight && !bulkActionInFlightLabel && refreshableCount > 0;
 	            button.disabled = !enabled;
 	            button.textContent = refreshAllFactsInFlight ? "Refreshing..." : "Refresh facts";
@@ -1593,12 +1602,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function updateSortIndicators() {
+            const sort = getStatusView().sort;
             document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
-                if (th.dataset.sortKey === sortKey) {
-                    th.dataset.sortDir = sortDir;
-                    th.setAttribute('aria-sort', sortDir === "asc" ? "ascending" : "descending");
+                if (th.dataset.sortKey === sort.key) {
+                    th.dataset.sortDir = sort.dir;
+                    th.setAttribute('aria-sort', sort.dir === "asc" ? "ascending" : "descending");
                     const indicator = th.querySelector('.sort-indicator');
-                    if (indicator) indicator.textContent = sortDir === "asc" ? "▲" : "▼";
+                    if (indicator) indicator.textContent = sort.dir === "asc" ? "▲" : "▼";
                 } else {
                     delete th.dataset.sortDir;
                     th.setAttribute('aria-sort', 'none');
@@ -1752,9 +1762,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     renderSyncState();
                     return;
                 }
-                allServers = parsedServers;
-	            window.statusPageInteraction.dispatch({ type: "serversSnapshotReceived", servers: parsedServers });
-                pruneSelectionsForLoadedServers();
+                dispatchStatusInteraction({ type: "serversSnapshotReceived", servers: parsedServers });
+                allServers = getStatusView().servers;
                 lastFetchError = null;
                 lastSuccessfulSyncAt = new Date();
                 renderServerStateWhenSafe(forceRender);
@@ -1769,170 +1778,38 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        function pruneSelectionsForLoadedServers() {
-            if (selectedServers.size === 0) return;
-            const loadedNames = new Set(allServers.map(server => server.name).filter(Boolean));
-            let changed = false;
-            selectedServers.forEach(name => {
-                if (!loadedNames.has(name)) {
-                    selectedServers.delete(name);
-                    changed = true;
-                }
-            });
-            if (changed) {
-                updateRefreshAllFactsState();
-            }
-        }
-
-        function sortServers(servers) {
-            const dir = sortDir === "asc" ? 1 : -1;
-            return servers.slice().sort((a, b) => {
-                const aVal = (a[sortKey] || "").toString().toLowerCase();
-                const bVal = (b[sortKey] || "").toString().toLowerCase();
-                if (aVal < bVal) return -1 * dir;
-                if (aVal > bVal) return 1 * dir;
-                return 0;
-            });
-        }
-
-        function applyFilters(servers) {
-            const search = document.getElementById('search').value.trim().toLowerCase();
-            const statusFilter = document.getElementById('status-filter').value;
-            const authFilter = document.getElementById('auth-filter').value;
-            return servers.filter(server => {
-                if (statusFilter && server.status !== statusFilter) return false;
-                if (fleetTagFilter) {
-                    const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
-                    if (!tags.includes(fleetTagFilter)) return false;
-                }
-                if (fleetQuickFilter === "pending_approval" && !isPendingApprovalHost(server)) return false;
-                if (fleetQuickFilter === "active" && !activeStatuses.has(server.status) && !isRunningTimelineState(getServerTimeline(server).state)) return false;
-                if (fleetQuickFilter === "stale_facts" && !isFactsStateStale(server)) return false;
-                if (fleetQuickFilter === "high_risk" && !hasCVEExposure(server)) return false;
-                if (authFilter === "password" && !server.has_password) return false;
-                if (authFilter === "key" && !hasEffectiveKey(server)) return false;
-                if (!search) return true;
-                const haystack = [
-                    server.name,
-                    server.host,
-                    server.port ? server.port.toString() : "",
-                    server.user,
-                    (server.tags || []).join(" ")
-                ].join(" ").toLowerCase();
-                return haystack.includes(search);
-            });
-        }
-
-        function paginate(servers) {
-            const size = parseInt(document.getElementById('page-size').value, 10);
-            const totalPages = Math.max(1, Math.ceil(servers.length / size));
-            page = Math.min(page, totalPages);
-            const start = (page - 1) * size;
-            const end = start + size;
-            const pageInfo = document.getElementById('page-info');
-            const pagination = document.querySelector('.pagination');
-            pageInfo.textContent = `Page ${page} of ${totalPages} (${pluralize(servers.length, "host")})`;
-            pagination?.classList.toggle('single-page', totalPages <= 1);
-            document.getElementById('prev-page').disabled = page <= 1;
-            document.getElementById('next-page').disabled = page >= totalPages;
-            return servers.slice(start, end);
-        }
-
-        function groupServers(servers) {
-            const groupBy = document.getElementById('group-by').value;
-            if (!groupBy) return [{ key: "", items: servers }];
-            const groups = new Map();
-            if (groupBy === "status") {
-                servers.forEach(server => {
-                    const key = server.status || "unknown";
-                    if (!groups.has(key)) groups.set(key, []);
-                    groups.get(key).push(server);
-                });
-            } else if (groupBy === "tag") {
-                servers.forEach(server => {
-                    const tags = server.tags && server.tags.length ? server.tags : ["untagged"];
-                    tags.forEach(tag => {
-                        if (!groups.has(tag)) groups.set(tag, []);
-                        groups.get(tag).push(server);
-                    });
-                });
-            }
-            return Array.from(groups.entries()).map(([key, items]) => ({ key, items }));
-        }
-
         function loadDashboardFilters() {
+            let saved = {};
             try {
                 const raw = localStorage.getItem(dashboardFilterStorageKey);
-                if (!raw) return;
-                const saved = JSON.parse(raw);
-                if (!saved || typeof saved !== "object") return;
-                restoreTextInputValue("search", saved.search, "");
-                restoreSelectValue("status-filter", saved.statusFilter, "");
-	                restoreSelectValue("auth-filter", saved.authFilter, "");
-	                restoreSelectValue("group-by", saved.groupBy, "");
-	                restorePageSizeValue(saved.pageSize);
-	                fleetQuickFilter = typeof saved.fleetQuickFilter === "string" ? saved.fleetQuickFilter : "";
-	                fleetTagFilter = typeof saved.fleetTagFilter === "string" ? saved.fleetTagFilter : "";
-	                selectedServerName = typeof saved.selectedServerName === "string" ? saved.selectedServerName : "";
+                if (raw) saved = JSON.parse(raw);
 	            } catch (_) {
 	                // Ignore invalid saved dashboard state.
             }
+            dispatchStatusInteraction({ type: "navigationRestored", value: saved });
+            const view = getStatusView();
+            document.getElementById("search").value = view.filters.search;
+            document.getElementById("status-filter").value = view.filters.status;
+            document.getElementById("auth-filter").value = view.filters.auth;
+            document.getElementById("group-by").value = view.filters.groupBy;
+            document.getElementById("page-size").value = String(view.pageSize);
         }
 
-        function restoreTextInputValue(id, value, fallback) {
-            const el = document.getElementById(id);
-            if (!el || el.tagName !== "INPUT") return;
-            el.value = typeof value === "string" && value.length <= 200 ? value : fallback;
-        }
-
-        function restoreSelectValue(id, value, fallback) {
-            const el = document.getElementById(id);
-            if (!el || el.tagName !== "SELECT") return;
-            const optionValues = Array.from(el.options).map(option => option.value);
-            const normalized = value === undefined || value === null ? fallback : String(value);
-            el.value = optionValues.includes(normalized) ? normalized : fallback;
-        }
-
-        function restorePageSizeValue(value) {
-            const el = document.getElementById("page-size");
-            if (!el || el.tagName !== "SELECT") return;
-            const fallback = Array.from(el.options).some(option => option.value === "25") ? "25" : (el.options[0]?.value || "");
-            const parsed = parseInt(value, 10);
-            const normalized = Number.isFinite(parsed) && parsed > 0 ? String(parsed) : fallback;
-            restoreSelectValue("page-size", normalized, fallback);
-        }
-
-        function saveDashboardFilters() {
+        function persistDashboardFilters(value) {
             try {
-                localStorage.setItem(dashboardFilterStorageKey, JSON.stringify({
-                    search: document.getElementById('search')?.value || "",
-                    statusFilter: document.getElementById('status-filter')?.value || "",
-                    authFilter: document.getElementById('auth-filter')?.value || "",
-	                    groupBy: document.getElementById('group-by')?.value || "",
-	                    pageSize: document.getElementById('page-size')?.value || "25",
-	                    fleetQuickFilter,
-	                    fleetTagFilter,
-	                    selectedServerName
-	                }));
+                localStorage.setItem(dashboardFilterStorageKey, JSON.stringify(value));
 	            } catch (_) {
 	                // Ignore storage failures.
 	            }
 	        }
 
 	        function applyFleetQuickFilter(key) {
-	            fleetQuickFilter = key || "";
-	            page = 1;
-	            saveDashboardFilters();
+	            dispatchStatusInteraction({ type: "filtersChanged", patch: { quick: key || "" } });
 	            renderTable({ refreshPanels: false });
 	        }
 
 	        function getVisibleSelectedServers() {
-	            const visibleSelected = new Set(
-	                Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select:checked'))
-	                    .map(cb => cb.dataset.name)
-	                    .filter(Boolean)
-	            );
-	            return allServers.filter(server => visibleSelected.has(server.name));
+	            return getStatusView().visibleSelectedServers;
 	        }
 
 		        function isServerActionBusy(server) {
@@ -2005,23 +1882,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 
         function openDrawer(name, tab = "logs") {
-            const nextTab = tab === "pending" ? "pending" : "logs";
-            if (drawerServerName !== name) {
-                drawerLogFollow = true;
+            const previousDrawer = getStatusView().drawer;
+            if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;
                 drawerPendingScrollTop = 0;
             }
-            if (!drawerOpen) {
+            if (!previousDrawer.open) {
                 drawerPreviousFocus = document.activeElement;
             }
-            drawerOpen = true;
-            drawerServerName = name;
-            drawerTab = nextTab;
+            dispatchStatusInteraction({ type: "drawerOpened", name, tab });
             document.body.classList.add('drawer-open');
             renderDrawer();
             window.setTimeout(() => {
                 const drawer = document.getElementById('status-drawer');
-                if (!drawerOpen || !drawer) return;
+                if (!getStatusView().drawer.open || !drawer) return;
                 const focusable = drawerFocusableElements(drawer);
                 const target = focusable[0] || drawer;
                 if (target && typeof target.focus === 'function') {
@@ -2031,7 +1905,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function closeDrawer() {
-            drawerOpen = false;
+            dispatchStatusInteraction({ type: "drawerClosed" });
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
             drawer.classList.remove('open');
@@ -2047,11 +1921,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function setDrawerTab(tab) {
             if (tab !== "logs" && tab !== "pending") return;
-            drawerTab = tab;
+            dispatchStatusInteraction({ type: "drawerTabChanged", tab });
             renderDrawer();
         }
 
 	        function renderDrawer() {
+            const drawerState = getStatusView().drawer;
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
             const title = document.getElementById('status-drawer-title');
@@ -2068,14 +1943,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const drawerApproveKeptBackSecurityBtn = document.getElementById('drawer-approve-security-kept-back');
             const drawerApproveFullBtn = document.getElementById('drawer-approve-full');
 
-            if (!drawerOpen) {
+            if (!drawerState.open) {
                 drawer.classList.remove('open');
                 backdrop.classList.remove('open');
                 drawer.setAttribute('aria-hidden', 'true');
                 return;
             }
 
-            const server = getServerByName(drawerServerName);
+            const server = getServerByName(drawerState.serverName);
             if (!server) {
                 closeDrawer();
                 return;
@@ -2093,8 +1968,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const securityApprovalLabel = approvalCounts.security === null
                 ? "Standard security (?)"
                 : `Standard security (${approvalCounts.security})`;
-            if (drawerTab === "pending" && !hasPending) {
-                drawerTab = "logs";
+            if (drawerState.tab === "pending" && !hasPending) {
                 drawerPendingScrollTop = 0;
             }
 
@@ -2116,23 +1990,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
             drawerApproveFullBtn.classList.toggle('hidden', !triage.can_approve_full);
 
             pendingTabBtn.disabled = !hasPending;
-            pendingTabBtn.classList.toggle('active', drawerTab === "pending");
-            logsTabBtn.classList.toggle('active', drawerTab === "logs");
+            pendingTabBtn.classList.toggle('active', drawerState.tab === "pending");
+            logsTabBtn.classList.toggle('active', drawerState.tab === "logs");
 
-            logsPanel.classList.toggle('active', drawerTab === "logs");
-            pendingPanel.classList.toggle('active', drawerTab === "pending");
+            logsPanel.classList.toggle('active', drawerState.tab === "logs");
+            pendingPanel.classList.toggle('active', drawerState.tab === "pending");
 
-            if (drawerTab === "logs") {
+            if (drawerState.tab === "logs") {
                 logsEl.innerHTML = formatLogsHtml(server.logs || "");
-                if (drawerLogFollow) {
+                if (drawerState.logFollow) {
                     logsEl.scrollTop = logsEl.scrollHeight;
                 } else {
                     logsEl.scrollTop = drawerLogScrollTop;
                 }
-                logsHint.textContent = drawerLogFollow ? "Live auto-scroll" : "Auto-scroll paused";
+                logsHint.textContent = drawerState.logFollow ? "Live auto-scroll" : "Auto-scroll paused";
             }
 
-            if (drawerTab === "pending") {
+            if (drawerState.tab === "pending") {
                 const pendingScrollTop = drawerPendingScrollTop;
                 pendingPanel.innerHTML = renderPendingUpdatesHtml(server, true);
                 requestAnimationFrame(() => {
@@ -2198,27 +2072,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
             hidePhaseTooltip();
             const tbody = document.querySelector('#servers-table tbody');
             tbody.innerHTML = '';
-            let servers = applyFilters(allServers);
-            servers = sortServers(servers);
-            const totalFiltered = servers.length;
-            const previousSelectedServerName = selectedServerName;
-            if (servers.length > 0 && !servers.some(server => server.name === selectedServerName)) {
-                selectedServerName = servers[0].name;
-            } else if (servers.length === 0) {
-                selectedServerName = "";
-            }
-            if (selectedServerName !== previousSelectedServerName) {
-                saveDashboardFilters();
-            }
-            const paged = paginate(servers);
+            const view = getStatusView();
+            const totalFiltered = view.visibleServers.length;
+            const selectedNames = new Set(view.selectedNames);
+            document.getElementById('page-info').textContent = `Page ${view.page} of ${view.totalPages} (${pluralize(totalFiltered, "host")})`;
+            document.querySelector('.pagination')?.classList.toggle('single-page', view.totalPages <= 1);
+            document.getElementById('prev-page').disabled = view.page <= 1;
+            document.getElementById('next-page').disabled = view.page >= view.totalPages;
             setText(
                 "table-summary",
                 allServers.length === 0
                     ? "Waiting for status data"
                     : `${pluralize(totalFiltered, "host")} visible · ${pluralize(allServers.length, "host")} loaded`
             );
-            const groups = groupServers(paged);
-            groups.forEach(group => {
+            view.groups.forEach(group => {
                 if (group.key) {
                     const groupRow = document.createElement('tr');
                     groupRow.className = 'group-row';
@@ -2228,7 +2095,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 group.items.forEach(server => {
                     const row = document.createElement('tr');
                     row.dataset.name = server.name;
-                    const rowSelected = selectedServerName === server.name;
+                    const rowSelected = view.primaryServerName === server.name;
                     row.setAttribute("aria-selected", rowSelected ? "true" : "false");
                     if (rowSelected) {
                         row.classList.add('row-selected');
@@ -2308,7 +2175,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                            </div>
 	                          `;
                     row.innerHTML = `
-	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedServers.has(server.name) ? "checked" : ""}></td>
+	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedNames.has(server.name) ? "checked" : ""}></td>
                         <td class="name-cell" title="${safeNameHtml}">
                             <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button>
                             <span class="server-subline">${escapeHtml((server.tags || []).join(", ") || "ungrouped")}</span>
@@ -2339,11 +2206,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             tbody.querySelectorAll('.row-select').forEach(cb => {
 	                cb.addEventListener('change', (e) => {
 	                    const name = e.target.dataset.name;
-	                    if (e.target.checked) {
-	                        selectedServers.add(name);
-	                    } else {
-	                        selectedServers.delete(name);
-	                    }
+	                    dispatchStatusInteraction({ type: "selectionChanged", name, selected: e.target.checked });
 	                    updateBulkActionState();
 	                });
 	            });
@@ -2361,12 +2224,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function selectServer(name) {
-		            selectedServerName = name || "";
-		            saveDashboardFilters();
+		            dispatchStatusInteraction({ type: "primaryServerSelected", name: name || "" });
 		            renderTable({ refreshPanels: false });
 		        }
 
-        async function copyLogs(name = drawerServerName) {
+        async function copyLogs(name = "") {
+            name = name || getStatusView().drawer.serverName;
             const server = getServerByName(name);
             const logs = String(server?.logs || "");
             try {
@@ -2381,7 +2244,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        function downloadLogs(name = drawerServerName) {
+        function downloadLogs(name = "") {
+            name = name || getStatusView().drawer.serverName;
             const server = getServerByName(name);
             const logs = String(server?.logs || "");
             const blob = new Blob([logs], { type: 'text/plain;charset=utf-8' });
@@ -2555,9 +2419,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                }
 	                const tagButton = e.target.closest('button[data-fleet-tag]');
 	                if (tagButton) {
-	                    fleetTagFilter = tagButton.dataset.fleetTag || "";
-	                    page = 1;
-	                    saveDashboardFilters();
+	                    dispatchStatusInteraction({ type: "filtersChanged", patch: { tag: tagButton.dataset.fleetTag || "" } });
 	                    renderTable({ refreshPanels: false });
 	                }
 	            });
@@ -2578,12 +2440,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
             const key = th.dataset.sortKey;
-            if (sortKey === key) {
-                sortDir = sortDir === "asc" ? "desc" : "asc";
-            } else {
-                sortKey = key;
-                sortDir = "asc";
-            }
+            dispatchStatusInteraction({ type: "sortChanged", key });
             updateSortIndicators();
             renderTable({ refreshPanels: false });
         };
@@ -2601,32 +2458,38 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
         });
 
-        document.getElementById('search').addEventListener('input', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('status-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('auth-filter').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('group-by').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
-        document.getElementById('page-size').addEventListener('change', () => { page = 1; saveDashboardFilters(); renderTable({ refreshPanels: false }); });
+        document.getElementById('search').addEventListener('input', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { search: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('status-filter').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { status: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('auth-filter').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { auth: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('group-by').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { groupBy: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
+        document.getElementById('page-size').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { pageSize: event.target.value } });
+            renderTable({ refreshPanels: false });
+        });
 
         document.getElementById('prev-page').addEventListener('click', () => {
-            page = Math.max(1, page - 1);
+            dispatchStatusInteraction({ type: "pageChanged", delta: -1 });
             renderTable({ refreshPanels: false });
         });
         document.getElementById('next-page').addEventListener('click', () => {
-            page += 1;
+            dispatchStatusInteraction({ type: "pageChanged", delta: 1 });
             renderTable({ refreshPanels: false });
         });
 
         document.getElementById('select-all').addEventListener('change', (e) => {
-            const checked = e.target.checked;
-            const filtered = sortServers(applyFilters(allServers));
-            const paged = paginate(filtered);
-	            paged.forEach(server => {
-	                if (checked) {
-	                    selectedServers.add(server.name);
-	                } else {
-	                    selectedServers.delete(server.name);
-	                }
-	            });
+	            dispatchStatusInteraction({ type: "pageSelectionChanged", selected: e.target.checked });
 	            renderTable({ refreshPanels: false });
 	            updateBulkActionState();
 	        });
@@ -2764,7 +2627,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function trapDrawerFocus(event) {
-            if (!drawerOpen) return false;
+            if (!getStatusView().drawer.open) return false;
             const drawer = document.getElementById('status-drawer');
             if (!drawer || drawer.getAttribute('aria-hidden') === 'true') return false;
             const focusable = drawerFocusableElements(drawer);
@@ -2901,7 +2764,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 e.stopImmediatePropagation();
                 return;
             }
-            if (e.key === 'Escape' && drawerOpen) {
+            if (e.key === 'Escape' && getStatusView().drawer.open) {
                 e.preventDefault();
                 closeDrawer();
             }
@@ -2914,32 +2777,37 @@ const LOG_BOTTOM_THRESHOLD = 20;
         document.getElementById('drawer-copy-logs').addEventListener('click', () => copyLogs());
         document.getElementById('drawer-download-logs').addEventListener('click', () => downloadLogs());
         document.getElementById('drawer-approve-all').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveAllUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveAllUpdates(name);
         });
         document.getElementById('drawer-approve-security').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveSecurityUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveSecurityUpdates(name);
         });
         document.getElementById('drawer-approve-security-kept-back').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveKeptBackSecurityUpdates(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveKeptBackSecurityUpdates(name);
         });
         document.getElementById('drawer-approve-full').addEventListener('click', () => {
-            if (!drawerServerName) return;
-            approveFullUpgrade(drawerServerName);
+            const name = getStatusView().drawer.serverName;
+            if (!name) return;
+            approveFullUpgrade(name);
         });
 
         const drawerLogsElement = document.getElementById('drawer-logs');
         drawerLogsElement.addEventListener('scroll', () => {
             drawerLogScrollTop = drawerLogsElement.scrollTop;
-            drawerLogFollow = isNearBottom(drawerLogsElement);
-            document.getElementById('drawer-logs-hint').textContent = drawerLogFollow ? "Live auto-scroll" : "Auto-scroll paused";
+            const logFollow = isNearBottom(drawerLogsElement);
+            dispatchStatusInteraction({ type: "drawerLogFollowChanged", value: logFollow });
+            document.getElementById('drawer-logs-hint').textContent = logFollow ? "Live auto-scroll" : "Auto-scroll paused";
         });
 
         const drawerPendingElement = document.getElementById('drawer-panel-pending');
         drawerPendingElement.addEventListener('scroll', () => {
-            if (drawerTab === "pending") {
+            if (getStatusView().drawer.tab === "pending") {
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
@@ -3124,7 +2992,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         document.getElementById('selected-host-panel').addEventListener('toggle', (e) => {
             const details = e.target;
             if (!details?.matches?.('details.facts-more')) return;
-            const hostName = details.dataset.name || selectedServerName;
+            const hostName = details.dataset.name || getStatusView().primaryServerName;
             if (!hostName) return;
             if (details.open) {
                 expandedHostFactsServers.add(hostName);

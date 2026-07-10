@@ -60,6 +60,10 @@ _Avoid_: Apt helper parsing, upgradable list helper
 The lifecycle of an operator-initiated backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, audit recording, restored-runtime handoff, session invalidation, and final operation outcome.
 _Avoid_: Backup route flow, restore handler logic
 
+**Maintenance Coordination**:
+The app-wide admission and exclusivity model that allows ordinary work to proceed concurrently, grants one exclusive maintenance operation at a time, projects its public state, and preserves that state across persistence replacement and startup recovery. It is separate from Server maintenance and scheduled policy no-run windows.
+_Avoid_: Backup lock, maintenance flag, restore barrier
+
 **Auth Session Command**:
 An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing.
 _Avoid_: Auth route flow, session handler logic

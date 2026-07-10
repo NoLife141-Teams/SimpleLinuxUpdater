@@ -10,31 +10,31 @@ import (
 	"sync"
 	"time"
 
+	maintenancepkg "debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
 var ErrPolicyNotFound = errors.New("policy not found")
 
 type ServiceDeps struct {
-	ListPolicies             func() ([]Policy, error)
-	LoadOverrides            func() (map[int64]map[string]bool, error)
-	LoadGlobalBlackouts      func() ([]BlackoutWindow, error)
-	ListRuns                 func(int) ([]Run, error)
-	SnapshotServers          func() []servers.Server
-	HandleScheduledRun       func(ScheduledRunRequest) ScheduledRunResult
-	CurrentLocation          func() *time.Location
-	CurrentMaintenanceActive func() bool
-	MarkInterruptedRuns      func() error
-	TryBackupRestoreReadLock func() bool
-	UnlockBackupRestoreRead  func()
-	Now                      func() time.Time
-	Logf                     func(string, ...any)
-	TimestampLayout          string
+	ListPolicies        func() ([]Policy, error)
+	LoadOverrides       func() (map[int64]map[string]bool, error)
+	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
+	ListRuns            func(int) ([]Run, error)
+	SnapshotServers     func() []servers.Server
+	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
+	CurrentLocation     func() *time.Location
+	Maintenance         *maintenancepkg.Coordinator
+	MarkInterruptedRuns func() error
+	Now                 func() time.Time
+	Logf                func(string, ...any)
+	TimestampLayout     string
 }
 
 type ScheduleRequest struct {
 	Now               time.Time
 	MaintenanceActive bool
+	Admitted          bool
 }
 
 type MatchContext struct {
@@ -56,6 +56,7 @@ type ScheduledRunRequest struct {
 	Server          servers.Server
 	ScheduledForUTC string
 	Outcome         string
+	Admitted        bool
 }
 
 type ScheduledRunResult struct {
@@ -92,15 +93,6 @@ func (s *Service) EnsureDeps() ServiceDeps {
 func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.CurrentLocation == nil {
 		d.CurrentLocation = func() *time.Location { return time.Local }
-	}
-	if d.CurrentMaintenanceActive == nil {
-		d.CurrentMaintenanceActive = func() bool { return false }
-	}
-	if d.TryBackupRestoreReadLock == nil {
-		d.TryBackupRestoreReadLock = func() bool { return true }
-	}
-	if d.UnlockBackupRestoreRead == nil {
-		d.UnlockBackupRestoreRead = func() {}
 	}
 	if d.Now == nil {
 		d.Now = time.Now
@@ -645,7 +637,7 @@ func (s *Service) ComparePolicyCandidates(a, b ScheduledCandidate) bool {
 	return a.Policy.CreatedAt < b.Policy.CreatedAt
 }
 
-func (s *Service) handleScheduledRun(policy Policy, server servers.Server, scheduledForUTC, outcome string) ScheduledRunResult {
+func (s *Service) handleScheduledRun(policy Policy, server servers.Server, scheduledForUTC, outcome string, admitted bool) ScheduledRunResult {
 	deps := s.EnsureDeps()
 	if deps.HandleScheduledRun == nil {
 		return ScheduledRunResult{}
@@ -655,6 +647,7 @@ func (s *Service) handleScheduledRun(policy Policy, server servers.Server, sched
 		Server:          server,
 		ScheduledForUTC: scheduledForUTC,
 		Outcome:         outcome,
+		Admitted:        admitted,
 	})
 }
 
@@ -732,7 +725,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 
 	var queueErrs []error
 	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string) {
-		result := s.handleScheduledRun(policy, server, scheduledForUTC, reason)
+		result := s.handleScheduledRun(policy, server, scheduledForUTC, reason, req.Admitted)
 		if result.Err == nil {
 			return
 		}
@@ -784,7 +777,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded)
 		}
 
-		result := s.handleScheduledRun(winner.Policy, winner.Server, winner.ScheduledForUTC, "")
+		result := s.handleScheduledRun(winner.Policy, winner.Server, winner.ScheduledForUTC, "", req.Admitted)
 		if result.Err != nil {
 			queueErr := fmt.Errorf(
 				"queue scheduled run failed: policy_id=%d policy_name=%q server=%q scheduled_for_utc=%q: %w",
@@ -808,19 +801,22 @@ func (s *Service) ProcessDue(now time.Time) error {
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
-	if !deps.TryBackupRestoreReadLock() {
-		s.RememberMissedTick(now)
-		return nil
+	if deps.Maintenance != nil {
+		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
+		if !decision.Allowed {
+			s.RememberMissedTick(now)
+			return nil
+		}
+		defer lease.Close()
 	}
-	defer deps.UnlockBackupRestoreRead()
 
 	for _, missedTick := range s.PendingMissedTicks() {
-		if err := s.ProcessDueSlot(ScheduleRequest{Now: missedTick, MaintenanceActive: true}); err != nil {
+		if err := s.ProcessDueSlot(ScheduleRequest{Now: missedTick, MaintenanceActive: true, Admitted: true}); err != nil {
 			return err
 		}
 		s.ForgetMissedTick(missedTick)
 	}
-	return s.ProcessDueSlot(ScheduleRequest{Now: now, MaintenanceActive: deps.CurrentMaintenanceActive()})
+	return s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true})
 }
 
 func weekdayMatchesLocal(weekdays []string, t time.Time) bool {

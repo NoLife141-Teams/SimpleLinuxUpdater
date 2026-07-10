@@ -199,35 +199,6 @@ func TestLoadServersLeavesEmptyInventoryEmpty(t *testing.T) {
 	}
 }
 
-func TestPersistActiveMaintenanceStateForRestoreWritesCurrentDatabase(t *testing.T) {
-	preserveDBState(t)
-	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "restore-maintenance-marker.db"))
-
-	state := MaintenanceState{
-		Active:    true,
-		Kind:      jobKindBackupRestore,
-		JobID:     "restore-job",
-		StartedAt: "2026-05-04T12:00:00Z",
-		Actor:     "admin",
-		Message:   "Restore in progress",
-	}
-	setCurrentMaintenanceState(state)
-	t.Cleanup(func() {
-		setCurrentMaintenanceState(MaintenanceState{})
-	})
-
-	if err := persistActiveMaintenanceStateForRestore(); err != nil {
-		t.Fatalf("persistActiveMaintenanceStateForRestore() unexpected error: %v", err)
-	}
-	got, err := loadPersistedMaintenanceState()
-	if err != nil {
-		t.Fatalf("loadPersistedMaintenanceState() unexpected error: %v", err)
-	}
-	if !got.Active || got.JobID != state.JobID || got.Kind != state.Kind {
-		t.Fatalf("persisted maintenance state = %+v, want active job=%q kind=%q", got, state.JobID, state.Kind)
-	}
-}
-
 func TestBackupPayloadRoundTrip(t *testing.T) {
 	files := map[string][]byte{
 		"servers.db":  []byte("sqlite-snapshot"),

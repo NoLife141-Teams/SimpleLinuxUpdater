@@ -33,15 +33,9 @@ const (
 )
 
 type BackupService = internalbackup.Service
-type BackupBarrier = internalbackup.Barrier
 type backupExportRequest = internalbackup.ExportRequest
 type backupManifest = internalbackup.Manifest
 type backupManifestFile = internalbackup.ManifestFile
-
-var (
-	backupRestoreBarrier = internalbackup.NewBarrier()
-	backupRestoreMu      = backupRestoreBarrier
-)
 
 func NewBackupService() *BackupService {
 	return NewBackupServiceWithResetRuntimeCaches(resetRuntimeCaches)
@@ -107,16 +101,6 @@ func backupServiceDepsWithDefaults(deps internalbackup.ServiceDeps) internalback
 	if deps.ReloadRuntimeState == nil {
 		deps.ReloadRuntimeState = reloadRuntimeState
 	}
-	if deps.CurrentMaintenanceState == nil {
-		deps.CurrentMaintenanceState = func() internalbackup.MaintenanceState {
-			return internalbackup.MaintenanceState(currentMaintenanceState())
-		}
-	}
-	if deps.PersistMaintenanceState == nil {
-		deps.PersistMaintenanceState = func(state internalbackup.MaintenanceState) error {
-			return persistMaintenanceState(MaintenanceState(state))
-		}
-	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -177,10 +161,6 @@ func extractBackupTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes in
 	return internalbackup.ExtractTarGzWithLimits(payload, maxFileBytes, maxTotalBytes)
 }
 
-func persistActiveMaintenanceStateForRestore() error {
-	return defaultBackupService().PersistActiveMaintenanceStateForRestore()
-}
-
 func sqliteSidecarPaths(path string) []string {
 	return internalbackup.SQLiteSidecarPaths(path)
 }
@@ -207,12 +187,6 @@ func resetRuntimeCaches() {
 
 func reloadRuntimeState() error {
 	_ = getDB()
-	maintenanceActive := currentMaintenanceState().Active
-	if !maintenanceActive {
-		if err := initializeMaintenanceState(); err != nil {
-			return err
-		}
-	}
 	if err := initializeJobManager(); err != nil {
 		return err
 	}
@@ -296,6 +270,7 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 		Actor:    actorFromContext(c),
 		ClientIP: clientIPFromContext(c),
 		Request:  req,
+		Lease:    maintenanceExclusiveLeaseFromContext(c),
 	})
 	switch outcome.Kind {
 	case backupOperationSucceeded:
@@ -314,12 +289,13 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})
 	case backupOperationJobManagerUnavailable:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
-	case backupOperationMaintenanceBlocked:
-		writeMaintenanceBlockedResponse(c)
 	case backupOperationJobCreateFailed:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create backup export job"})
 	case backupOperationMaintenanceActivateFailed:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate maintenance mode"})
+	case backupOperationMaintenanceReleaseFailed:
+		c.Header("X-Job-ID", outcome.JobID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})
 	case backupOperationExportFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})
@@ -445,6 +421,7 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 		ClientIP:   clientIPFromContext(c),
 		Blob:       blob,
 		Passphrase: passphrase,
+		Lease:      maintenanceExclusiveLeaseFromContext(c),
 	})
 	switch outcome.Kind {
 	case backupOperationSucceeded:
@@ -467,12 +444,13 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 		})
 	case backupOperationJobManagerUnavailable:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
-	case backupOperationMaintenanceBlocked:
-		writeMaintenanceBlockedResponse(c)
 	case backupOperationJobCreateFailed:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create backup restore job"})
 	case backupOperationMaintenanceActivateFailed:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate maintenance mode"})
+	case backupOperationMaintenanceReleaseFailed:
+		c.Header("X-Job-ID", outcome.JobID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})
 	case backupOperationRestoreDecryptFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})

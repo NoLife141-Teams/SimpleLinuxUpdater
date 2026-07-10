@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	internalbackup "debian-updater/internal/backup"
-
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 )
@@ -104,9 +102,6 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 		opts.Deps.DB = func() *sql.DB {
 			return appDB
 		}
-	}
-	if opts.Deps.BackupBarrier == nil {
-		opts.Deps.BackupBarrier = internalbackup.NewBarrier()
 	}
 	if opts.Deps.LoginRateLimiter == nil {
 		opts.Deps.LoginRateLimiter = NewAuthRateLimiter(authRateLimitWindow, authLoginRateLimitMaxAttempts)

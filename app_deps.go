@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"debian-updater/internal/events"
+	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
 
@@ -21,7 +22,6 @@ type AppDeps struct {
 	AuthService            *AuthService
 	AuthSessionCommands    *authSessionCommands
 	BackupService          *BackupService
-	BackupBarrier          *BackupBarrier
 	NotificationService    *NotificationService
 	ServerState            *serverpkg.State
 	ServerInventoryService *ServerInventoryService
@@ -31,6 +31,7 @@ type AppDeps struct {
 	ObservabilityService   *ObservabilityService
 	MetricsTokenService    *MetricsTokenService
 	GlobalSSHCredential    *serverpkg.GlobalSSHCredential
+	MaintenanceCoordinator *maintenancepkg.Coordinator
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager
@@ -47,8 +48,6 @@ type AppDeps struct {
 	MetricsRateLimiter        *AuthRateLimiter
 
 	TrustedProxies                  func() []string
-	InitializeMaintenanceState      func() error
-	CurrentMaintenanceActive        func() bool
 	Now                             func() time.Time
 	JobTimestampNow                 func() string
 	LoadRetryPolicy                 func() RetryPolicy
@@ -105,23 +104,15 @@ func reloadAppRuntimeState(deps AppDeps) error {
 		deps.DB = getDB
 	}
 	_ = deps.DB()
-	if deps.CurrentMaintenanceActive == nil {
-		deps.CurrentMaintenanceActive = func() bool {
-			return currentMaintenanceState().Active
-		}
-	}
-	if deps.InitializeMaintenanceState == nil {
-		deps.InitializeMaintenanceState = initializeMaintenanceState
-	}
-	if !deps.CurrentMaintenanceActive() {
-		if err := deps.InitializeMaintenanceState(); err != nil {
+	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
+		if err := deps.MaintenanceCoordinator.Initialize(context.Background()); err != nil {
 			return err
 		}
 	}
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntime(db, notify, deps.ServerState, deps.CurrentMaintenanceActive)
+			return newJobManagerWithRuntime(db, notify, deps.ServerState, nil)
 		}
 	}
 	if deps.SetCurrentJobManager == nil {

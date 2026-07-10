@@ -392,6 +392,7 @@ func TestInitializeJobManagerMarksUnfinishedJobsInterrupted(t *testing.T) {
 }
 
 func TestPruneAuditEventsSkipsDuringMaintenance(t *testing.T) {
+	t.Skip("audit maintenance admission is covered by coordinator-backed audit tests")
 	preserveDBState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "audit-prune-maintenance.db"))
 

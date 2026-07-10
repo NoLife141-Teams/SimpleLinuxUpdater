@@ -10,6 +10,7 @@ import (
 	"time"
 
 	auditpkg "debian-updater/internal/audit"
+	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
 	updatespkg "debian-updater/internal/updates"
 )
@@ -34,7 +35,7 @@ func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, 
 	return newAuditServiceWithNotificationsAndClock(db, notify, timezone, notifications, nil)
 }
 
-func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time) *AuditService {
+func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time, coordinators ...*maintenancepkg.Coordinator) *AuditService {
 	if db == nil {
 		db = getDB
 	}
@@ -61,13 +62,25 @@ func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNo
 			})
 		}
 	}
+	pruneGuard := func(prune func() error) error { return prune() }
+	if len(coordinators) > 0 && coordinators[0] != nil {
+		coordinator := coordinators[0]
+		pruneGuard = func(prune func() error) error {
+			lease, decision := coordinator.TryShared(maintenancepkg.WorkAudit)
+			if !decision.Allowed {
+				return nil
+			}
+			defer lease.Close()
+			return prune()
+		}
+	}
 	opts := auditpkg.ServiceOptions{
 		DB:            func() *sql.DB { return db() },
 		Notify:        notifier,
 		OnRecord:      onRecord,
 		Timezone:      func() (*time.Location, string) { return timezone() },
 		FormatDisplay: formatTimestampForAppDisplayWithTimezone,
-		PruneGuard:    auditPruneGuard,
+		PruneGuard:    pruneGuard,
 	}
 	if now != nil {
 		opts.Now = now
@@ -212,22 +225,6 @@ func recordHealthSnapshotFromAuditEvent(db auditDBProvider, evt auditpkg.Event) 
 
 func defaultAuditService() *AuditService {
 	return NewAuditService(getDB, notifyDashboardEvent, currentAppTimezone)
-}
-
-func auditPruneGuard(prune func() error) error {
-	// Check maintenance before taking backupRestoreMu to avoid unnecessary lock
-	// contention, then re-check after backupRestoreMu.RLock() because maintenance
-	// can become active in the gap between the first currentMaintenanceState()
-	// read and acquiring backupRestoreMu.
-	if currentMaintenanceState().Active {
-		return nil
-	}
-	backupRestoreMu.RLock()
-	defer backupRestoreMu.RUnlock()
-	if currentMaintenanceState().Active {
-		return nil
-	}
-	return prune()
 }
 
 func sanitizeAuditMeta(meta map[string]any) string {

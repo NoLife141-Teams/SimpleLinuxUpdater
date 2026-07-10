@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 
 	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
@@ -140,16 +143,25 @@ func assertSecurityHeaders(t *testing.T, h http.Header, wantHSTS bool) {
 }
 
 func TestBackupRestoreBarrierMiddlewareBlocksReadsAndSerializesBackupRoutes(t *testing.T) {
+	newCoordinator := func(t *testing.T) *maintenancepkg.Coordinator {
+		t.Helper()
+		coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
+		if err := coordinator.Initialize(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return coordinator
+	}
 	t.Run("get rejects while restore lock held", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
+		coordinator := newCoordinator(t)
 		r := gin.New()
-		r.Use(backupRestoreBarrierMiddleware())
+		r.Use(maintenanceCoordinationMiddleware(coordinator))
 		r.GET("/probe", func(c *gin.Context) {
 			c.Status(http.StatusNoContent)
 		})
 
-		backupRestoreMu.Lock()
-		defer backupRestoreMu.Unlock()
+		lease, _ := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+		defer lease.Close()
 
 		done := make(chan int, 1)
 		go func() {
@@ -171,14 +183,15 @@ func TestBackupRestoreBarrierMiddlewareBlocksReadsAndSerializesBackupRoutes(t *t
 
 	t.Run("backup route rejects when another backup route holds lock", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
+		coordinator := newCoordinator(t)
 		r := gin.New()
-		r.Use(backupRestoreBarrierMiddleware())
+		r.Use(maintenanceCoordinationMiddleware(coordinator))
 		r.POST("/api/backup/restore", func(c *gin.Context) {
 			c.Status(http.StatusNoContent)
 		})
 
-		backupRestoreMu.Lock()
-		defer backupRestoreMu.Unlock()
+		lease, _ := coordinator.TryExclusive(maintenancepkg.OperationBackupExport)
+		defer lease.Close()
 
 		done := make(chan int, 1)
 		go func() {
@@ -200,13 +213,14 @@ func TestBackupRestoreBarrierMiddlewareBlocksReadsAndSerializesBackupRoutes(t *t
 
 	t.Run("backup route rejects while shared readers are active", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
+		coordinator := newCoordinator(t)
 		r := gin.New()
-		r.Use(backupRestoreBarrierMiddleware())
+		r.Use(maintenanceCoordinationMiddleware(coordinator))
 		r.POST("/api/backup/restore", func(c *gin.Context) {
 			c.Status(http.StatusNoContent)
 		})
 
-		backupRestoreMu.RLock()
+		lease, _ := coordinator.TryShared(maintenancepkg.WorkInteractive)
 		done := make(chan int, 1)
 		go func() {
 			rec := httptest.NewRecorder()
@@ -223,13 +237,14 @@ func TestBackupRestoreBarrierMiddlewareBlocksReadsAndSerializesBackupRoutes(t *t
 		case <-time.After(100 * time.Millisecond):
 			t.Fatalf("backup restore did not reject while shared lock held")
 		}
-		backupRestoreMu.RUnlock()
+		lease.Close()
 	})
 
 	t.Run("dashboard event stream does not hold shared lock", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
+		coordinator := newCoordinator(t)
 		r := gin.New()
-		r.Use(backupRestoreBarrierMiddleware())
+		r.Use(maintenanceCoordinationMiddleware(coordinator))
 
 		streamStarted := make(chan struct{})
 		releaseStream := make(chan struct{})
@@ -279,21 +294,24 @@ func TestMaintenanceModeBlocksRoutesAndAllowsStatusEndpoint(t *testing.T) {
 	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "maintenance-mode.db"))
 
-	r, err := setupRouter()
+	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
+	r, err := setupRouterWithDeps(AppDeps{MaintenanceCoordinator: coordinator})
 	if err != nil {
 		t.Fatalf("setupRouter() unexpected error: %v", err)
 	}
 	handler := sessionHandler(r)
 
-	state := MaintenanceState{
-		Active:    true,
-		Kind:      jobKindBackupRestore,
-		JobID:     "job-maintenance-test",
-		StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Actor:     "admin",
-		Message:   "Backup restore in progress.",
+	lease, decision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatalf("TryExclusive() decision = %+v", decision)
 	}
-	setCurrentMaintenanceState(state)
+	if err := lease.Activate(context.Background(), maintenancepkg.OperationFacts{
+		JobID: "job-maintenance-test", Actor: "admin", Message: "Backup restore in progress.",
+	}); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	t.Cleanup(func() { _ = lease.Close() })
+	state := coordinator.Snapshot()
 
 	maintenanceRec := httptest.NewRecorder()
 	maintenanceReq := httptest.NewRequest(http.MethodGet, "/api/maintenance", nil)

@@ -110,8 +110,6 @@ type SQLiteRepository struct {
 }
 
 type ManagerOptions struct {
-	MaintenanceActive     func() bool
-	MaintenanceError      error
 	Notify                func(string)
 	SyncRuntime           func(Record)
 	SyncInterruptedServer func([]string)
@@ -216,12 +214,6 @@ func (m *Manager) now() time.Time {
 func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
-	}
-	if m.opts.MaintenanceActive != nil && m.opts.MaintenanceActive() && params.Kind != KindBackupExport && params.Kind != KindBackupRestore {
-		if m.opts.MaintenanceError != nil {
-			return Record{}, m.opts.MaintenanceError
-		}
-		return Record{}, errors.New("maintenance mode active")
 	}
 	now := m.timestampNow()
 	if strings.TrimSpace(params.Actor) == "" {

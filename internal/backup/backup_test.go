@@ -359,22 +359,3 @@ func TestRestoreArchiveBeforeApplySkipsOnArchiveFailure(t *testing.T) {
 		t.Fatalf("BeforeApply was called before a successful decrypt/archive")
 	}
 }
-
-func TestBarrierExclusiveLockBlocksReaders(t *testing.T) {
-	barrier := NewBarrier()
-	if !barrier.TryRLock() {
-		t.Fatalf("TryRLock() = false, want true before exclusive lock")
-	}
-	barrier.RUnlock()
-	if !barrier.TryLock() {
-		t.Fatalf("TryLock() = false, want true")
-	}
-	if barrier.TryRLock() {
-		t.Fatalf("TryRLock() = true while exclusive lock is held")
-	}
-	barrier.Unlock()
-	if !barrier.TryRLock() {
-		t.Fatalf("TryRLock() = false after exclusive lock release")
-	}
-	barrier.RUnlock()
-}

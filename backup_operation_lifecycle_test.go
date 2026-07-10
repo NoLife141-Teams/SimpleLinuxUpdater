@@ -62,7 +62,6 @@ type backupLifecycleHarness struct {
 	audits      []backupOperationAuditRecord
 	activated   []string
 	deactivated int
-	persisted   []MaintenanceState
 }
 
 func newBackupLifecycleHarness(t *testing.T) *backupLifecycleHarness {
@@ -96,13 +95,6 @@ func newBackupLifecycleHarness(t *testing.T) *backupLifecycleHarness {
 		},
 		DeactivateMaintenance: func() error {
 			h.deactivated++
-			return nil
-		},
-		CurrentMaintenanceState: func() MaintenanceState {
-			return MaintenanceState{Active: true, Kind: jobKindBackupRestore, JobID: "restore-job"}
-		},
-		PersistMaintenanceState: func(state MaintenanceState) error {
-			h.persisted = append(h.persisted, state)
 			return nil
 		},
 		RecordAudit: func(record backupOperationAuditRecord) {
@@ -184,6 +176,27 @@ func TestBackupOperationLifecycleExportRejectsActiveServerActionsBeforeJob(t *te
 	}
 	if outcome.ActiveServers[0] != "srv-busy" {
 		t.Fatalf("active servers = %+v, want srv-busy", outcome.ActiveServers)
+	}
+}
+
+func TestBackupOperationLifecycleExportReportsMaintenanceReleaseFailure(t *testing.T) {
+	h := newBackupLifecycleHarness(t)
+	h.archive.exportResult = internalbackup.ExportResult{Bytes: []byte("archive")}
+	h.lifecycle.deps.DeactivateMaintenance = func() error { return errors.New("disk full") }
+
+	outcome := h.lifecycle.Export(context.Background(), backupExportCommand{
+		Actor: "admin", Request: backupExportRequest{Passphrase: "very-strong-passphrase"},
+	})
+
+	if outcome.Kind != backupOperationMaintenanceReleaseFailed || outcome.PublicError != "maintenance mode could not be cleared" {
+		t.Fatalf("Export() outcome = %+v, want maintenance release failure", outcome)
+	}
+	job, err := h.jobManager.GetJob(outcome.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != jobStatusFailed || job.ErrorClass != "maintenance_coordination" {
+		t.Fatalf("job = %+v, want failed maintenance coordination", job)
 	}
 }
 
@@ -366,9 +379,6 @@ func TestBackupOperationLifecycleRestoreSuccess(t *testing.T) {
 	}
 	if !h.archive.beforeApply {
 		t.Fatalf("restore did not invoke BeforeApply")
-	}
-	if len(h.persisted) != 1 || h.persisted[0].JobID != "restore-job" {
-		t.Fatalf("persisted maintenance states = %+v, want current restore state persisted", h.persisted)
 	}
 	if len(h.audits) != 1 || h.audits[0].Action != "backup.restore" || h.audits[0].Status != "success" || h.audits[0].Message != "Backup restored" {
 		t.Fatalf("audits = %+v, want backup restore success", h.audits)

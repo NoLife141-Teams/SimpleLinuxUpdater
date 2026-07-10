@@ -307,7 +307,6 @@ func globalRuntimeAppDeps() AppDeps {
 		DB:                     getDB,
 		DBPath:                 dbPath,
 		AuditService:           defaultAuditService(),
-		BackupBarrier:          backupRestoreMu,
 		ServerState:            state,
 		ServerInventoryService: newServerInventoryServiceWithStateAndDB(state, getDB),
 		PolicyRepository:       defaultPolicyRepository(),
@@ -315,9 +314,6 @@ func globalRuntimeAppDeps() AppDeps {
 		UpdateService:          defaultUpdateService(),
 		NotifyDashboardEvent:   notifyDashboardEvent,
 		DashboardEventBroker:   dashboardEventBroker,
-		CurrentMaintenanceActive: func() bool {
-			return currentMaintenanceState().Active
-		},
 	}
 }
 

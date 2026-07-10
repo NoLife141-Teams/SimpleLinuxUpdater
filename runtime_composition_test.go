@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
 
 	"github.com/alexedwards/scs/v2"
@@ -22,7 +21,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.AuthService == nil ||
 		deps.AuthSessionCommands == nil ||
 		deps.BackupService == nil ||
-		deps.BackupBarrier == nil ||
+		deps.MaintenanceCoordinator == nil ||
 		deps.NotificationService == nil ||
 		deps.ServerState == nil ||
 		deps.ServerInventoryService == nil ||
@@ -39,7 +38,6 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.NewSessionManager == nil ||
 		deps.SetSessionManager == nil ||
 		deps.TrustedProxies == nil ||
-		deps.InitializeMaintenanceState == nil ||
 		deps.Now == nil ||
 		deps.JobTimestampNow == nil ||
 		deps.LoadRetryPolicy == nil ||
@@ -286,10 +284,7 @@ func TestRuntimeCompositionJobAndSessionSettersStayAppScoped(t *testing.T) {
 		t.Fatalf("ensure job schema: %v", err)
 	}
 
-	deps := newRuntimeComposition(AppDeps{
-		DB:            func() *sql.DB { return jobDB },
-		BackupBarrier: internalbackup.NewBarrier(),
-	}).Compose()
+	deps := newRuntimeComposition(AppDeps{DB: func() *sql.DB { return jobDB }}).Compose()
 
 	jm := newJobManager(jobDB)
 	deps.SetCurrentJobManager(jm)

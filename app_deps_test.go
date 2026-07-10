@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	internalbackup "debian-updater/internal/backup"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/gin-gonic/gin"
@@ -34,7 +33,6 @@ func TestSetupRouterWithDepsUsesInjectedInitialization(t *testing.T) {
 
 	db := getDB()
 	jm := newJobManager(db)
-	maintenanceCalled := false
 	trustedProxiesCalled := false
 
 	router, err := setupRouterWithDeps(AppDeps{
@@ -42,10 +40,6 @@ func TestSetupRouterWithDepsUsesInjectedInitialization(t *testing.T) {
 		JobManager: jm,
 		TrustedProxies: func() []string {
 			trustedProxiesCalled = true
-			return nil
-		},
-		InitializeMaintenanceState: func() error {
-			maintenanceCalled = true
 			return nil
 		},
 	})
@@ -57,9 +51,6 @@ func TestSetupRouterWithDepsUsesInjectedInitialization(t *testing.T) {
 	}
 	if !trustedProxiesCalled {
 		t.Fatalf("trusted proxy provider was not called")
-	}
-	if !maintenanceCalled {
-		t.Fatalf("maintenance initializer was not called")
 	}
 	if got := currentJobManager(); got != jm {
 		t.Fatalf("current job manager = %p, want injected %p", got, jm)
@@ -765,7 +756,6 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 
 	one := AppDeps{
 		DB:                        dbProvider,
-		BackupBarrier:             internalbackup.NewBarrier(),
 		LoginRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authLoginRateLimitMaxAttempts),
 		PasswordChangeRateLimiter: NewAuthRateLimiter(authRateLimitWindow, authPasswordChangeMaxAttempts),
 		SetupRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authSetupRateLimitMaxAttempts),
@@ -773,7 +763,6 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 	}.withDefaults()
 	two := AppDeps{
 		DB:                        dbProvider,
-		BackupBarrier:             internalbackup.NewBarrier(),
 		LoginRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authLoginRateLimitMaxAttempts),
 		PasswordChangeRateLimiter: NewAuthRateLimiter(authRateLimitWindow, authPasswordChangeMaxAttempts),
 		SetupRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authSetupRateLimitMaxAttempts),
@@ -799,7 +788,7 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 		one.AuthSessionCommands == two.AuthSessionCommands ||
 		one.AuditService == two.AuditService ||
 		one.BackupService == two.BackupService ||
-		one.BackupBarrier == two.BackupBarrier ||
+		one.MaintenanceCoordinator == two.MaintenanceCoordinator ||
 		one.ServerState == two.ServerState ||
 		one.ServerInventoryService == two.ServerInventoryService ||
 		one.PolicyService == two.PolicyService ||
@@ -816,11 +805,8 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 	}
 }
 
-func TestAppDepsProductionDefaultsReuseLifecycleOwnedBarrierAndLimiters(t *testing.T) {
+func TestAppDepsProductionDefaultsReuseLifecycleOwnedLimiters(t *testing.T) {
 	deps := AppDeps{}.withDefaults()
-	if deps.BackupBarrier != backupRestoreMu {
-		t.Fatalf("default backup barrier = %p, want global lifecycle barrier %p", deps.BackupBarrier, backupRestoreMu)
-	}
 	if deps.LoginRateLimiter != loginRateLimiter ||
 		deps.PasswordChangeRateLimiter != passwordChangeRateLimiter ||
 		deps.SetupRateLimiter != setupRateLimiter ||
@@ -1200,10 +1186,9 @@ func TestPolicyRoutesUseInjectedPolicyServiceForList(t *testing.T) {
 		},
 	})
 	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "policy-list.db"), AppDeps{
-		PolicyService:              service,
-		AppTimezoneDisplayName:     func() string { return "Injected/TZ" },
-		AppTimezoneResolvedName:    func() string { return "Injected/TZ" },
-		InitializeMaintenanceState: func() error { return nil },
+		PolicyService:           service,
+		AppTimezoneDisplayName:  func() string { return "Injected/TZ" },
+		AppTimezoneResolvedName: func() string { return "Injected/TZ" },
 	})
 	sessionCookie := app.authenticate(t)
 

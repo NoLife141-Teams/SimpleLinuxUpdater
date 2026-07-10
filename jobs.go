@@ -74,27 +74,18 @@ func newJobManager(db *sql.DB) *JobManager {
 }
 
 func newJobManagerWithNotify(db *sql.DB, notify func(string)) *JobManager {
-	return newJobManagerWithRuntime(db, notify, globalServerState(), func() bool {
-		return currentMaintenanceState().Active
-	})
+	return newJobManagerWithRuntime(db, notify, globalServerState(), nil)
 }
 
-func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.State, maintenanceActive func() bool) *JobManager {
+func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.State, _ func() bool) *JobManager {
 	if notify == nil {
 		notify = notifyDashboardEvent
 	}
 	if state == nil {
 		state = globalServerState()
 	}
-	if maintenanceActive == nil {
-		maintenanceActive = func() bool {
-			return currentMaintenanceState().Active
-		}
-	}
 	return internaljobs.NewManager(internaljobs.NewSQLiteRepository(db), internaljobs.ManagerOptions{
-		MaintenanceActive: maintenanceActive,
-		MaintenanceError:  errMaintenanceModeActive,
-		Notify:            notify,
+		Notify: notify,
 		SyncRuntime: func(record JobRecord) {
 			syncServerStateFromJobRecord(state, record)
 		},

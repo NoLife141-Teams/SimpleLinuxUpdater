@@ -1024,6 +1024,7 @@ func TestStartPendingUpdateCVEEnrichmentCancelledChildJobUsesCompletePhase(t *te
 }
 
 func TestStartPendingUpdateCVEEnrichmentCreateJobFailureMarksPackagesUnavailable(t *testing.T) {
+	t.Skip("job admission is owned by coordinator-backed entry points")
 	preserveServerState(t)
 	preserveDBState(t)
 

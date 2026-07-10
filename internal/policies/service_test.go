@@ -6,9 +6,44 @@ import (
 	"testing"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	maintenancepkg "debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
+
+func TestProcessDueSlotCanonicalizesFallBackOverlapOnce(t *testing.T) {
+	loc, _ := time.LoadLocation("America/Toronto")
+	applicationTime := apptimepkg.New(apptimepkg.Deps{Store: apptimepkg.NewMemoryStore("America/Toronto")})
+	if err := applicationTime.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var scheduled []string
+	svc := NewService(ServiceDeps{
+		ListPolicies: func() ([]Policy, error) {
+			return []Policy{{ID: 1, Name: "overlap", Enabled: true, TargetServers: []string{"srv"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "01:30"}}, nil
+		},
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		SnapshotServers:     func() []servers.Server { return []servers.Server{{Name: "srv"}} },
+		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
+			scheduled = append(scheduled, req.ScheduledForUTC)
+			return ScheduledRunResult{Handled: true}
+		},
+		CurrentLocation: func() *time.Location { return loc },
+		ApplicationTime: applicationTime,
+	})
+	first := time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC)
+	second := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)
+	if err := svc.ProcessDueSlot(ScheduleRequest{Now: first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ProcessDueSlot(ScheduleRequest{Now: second}); err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduled) != 2 || scheduled[0] != "2026-11-01T05:30:00.000000000Z" || scheduled[1] != scheduled[0] {
+		t.Fatalf("scheduled UTC values = %v, want one canonical overlap instant", scheduled)
+	}
+}
 
 func testServiceDeps() ServiceDeps {
 	return ServiceDeps{

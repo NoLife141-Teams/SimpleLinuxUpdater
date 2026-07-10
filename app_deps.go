@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	"debian-updater/internal/events"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
@@ -32,6 +33,7 @@ type AppDeps struct {
 	MetricsTokenService    *MetricsTokenService
 	GlobalSSHCredential    *serverpkg.GlobalSSHCredential
 	MaintenanceCoordinator *maintenancepkg.Coordinator
+	ApplicationTime        *apptimepkg.Module
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager
@@ -55,10 +57,6 @@ type AppDeps struct {
 	StartScheduledRunReconciliation func(int64, string)
 	NotifyDashboardEvent            func(string)
 	DashboardEventBroker            *events.Broker
-	CurrentAppTimezone              func() (*time.Location, string)
-	CurrentAppLocation              func() *time.Location
-	AppTimezoneDisplayName          func() string
-	AppTimezoneResolvedName         func() string
 }
 
 func NewDefaultAppDeps() AppDeps {

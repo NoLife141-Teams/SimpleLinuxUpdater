@@ -64,6 +64,10 @@ _Avoid_: Backup route flow, restore handler logic
 The app-wide admission and exclusivity model that allows ordinary work to proceed concurrently, grants one exclusive maintenance operation at a time, projects its public state, and preserves that state across persistence replacement and startup recovery. It is separate from Server maintenance and scheduled policy no-run windows.
 _Avoid_: Backup lock, maintenance flag, restore barrier
 
+**Application Time Interpretation**:
+The app-wide interpretation of a configured or system-local timezone into effective local civil time, UTC instants, and operator-facing timestamps used consistently by Scheduled Run, audit, and projections.
+_Avoid_: App timezone helpers, local time callbacks, timezone formatting
+
 **Auth Session Command**:
 An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing.
 _Avoid_: Auth route flow, session handler logic

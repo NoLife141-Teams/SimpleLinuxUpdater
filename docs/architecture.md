@@ -44,6 +44,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, runtime-status sync callbacks, and dashboard notifications after successful writes.
 - `internal/maintenance.Coordinator` owns shared admission, exclusive backup leases, durable/public maintenance state, startup recovery, and restore handoff.
+- `internal/apptime.Module` owns the accepted application timezone interpretation, compatible timestamp display, and canonical local wall-clock resolution including DST gaps and overlaps.
 - `internal/backup` owns archive validation, file replacement, rollback, runtime reload, and session invalidation; it invokes the active exclusive lease at restore handoff boundaries.
 - `internal/events.Broker` owns dashboard event fan-out for SSE clients.
 - `internal/servers.State` owns the server inventory snapshot and live status map for each app instance. Process-wide globals remain only for process startup, constants, pure helpers, and low-level test seams that must be replaced at process scope.
@@ -95,7 +96,7 @@ Autoremove, sudoers enable/disable, CVE enrichment, and scheduled scans use the 
 
 ## Scheduled policies
 
-Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, and per-policy blackout windows. `PolicyService` evaluates matching, due slots in the app timezone, skip reasons, missed scheduler ticks during backup restore, and run creation before handing execution to the update service.
+Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, and per-policy blackout windows. `PolicyService` evaluates matching, due slots through Application Time Interpretation, skip reasons, missed scheduler ticks during backup restore, and run creation before handing execution to the update service. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
 
 Policy route adapters still live in `package main` and keep the existing wire format. Matching, validation, persistence, skipped-run recording, scheduler ticks, and missed-tick replay live in `internal/policies`.
 

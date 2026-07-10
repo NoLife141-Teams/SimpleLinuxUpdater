@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	apptimepkg "debian-updater/internal/apptime"
 	maintenancepkg "debian-updater/internal/maintenance"
 
 	"github.com/gin-gonic/gin"
@@ -20,7 +21,7 @@ func publicMaintenanceSnapshotPayload(state maintenancepkg.Snapshot) gin.H {
 	}
 }
 
-func writeMaintenanceBlockedSnapshotResponse(c *gin.Context, state maintenancepkg.Snapshot) {
+func writeMaintenanceBlockedSnapshotResponseWithTime(c *gin.Context, state maintenancepkg.Snapshot, applicationTime *apptimepkg.Module) {
 	if c == nil {
 		return
 	}
@@ -36,11 +37,15 @@ func writeMaintenanceBlockedSnapshotResponse(c *gin.Context, state maintenancepk
 	}
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Status(http.StatusServiceUnavailable)
-	_, _ = c.Writer.WriteString(maintenancePageHTMLFromSnapshot(state))
+	_, _ = c.Writer.WriteString(maintenancePageHTMLFromSnapshotAndTime(state, applicationTime))
 	c.Abort()
 }
 
 func maintenancePageHTMLFromSnapshot(state maintenancepkg.Snapshot) string {
+	return maintenancePageHTMLFromSnapshotAndTime(state, nil)
+}
+
+func maintenancePageHTMLFromSnapshotAndTime(state maintenancepkg.Snapshot, applicationTime *apptimepkg.Module) string {
 	message := "Maintenance is in progress. Please wait while the updater finishes a backup operation."
 	if strings.TrimSpace(state.Message) != "" {
 		message = state.Message
@@ -50,6 +55,9 @@ func maintenancePageHTMLFromSnapshot(state maintenancepkg.Snapshot) string {
 		kind = "maintenance"
 	}
 	startedAtDisplay, timezoneLabel := formatTimestampForAppDisplayWithTimezone(state.StartedAt, defaultAppLocation(), appTimezoneLocalDisplayLabel)
+	if applicationTime != nil {
+		startedAtDisplay, timezoneLabel = applicationTime.Current().Format(state.StartedAt, jobTimestampLayout)
+	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>

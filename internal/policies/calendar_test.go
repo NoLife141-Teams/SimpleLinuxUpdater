@@ -1,10 +1,12 @@
 package policies
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	"debian-updater/internal/servers"
 )
 
@@ -85,6 +87,49 @@ func TestCalendarBuildsAllowedAndBlockedWindows(t *testing.T) {
 	}
 	if len(weekly.Days[1].AllowedSlots) != 1 || weekly.Days[1].AllowedSlots[0].PackageScope != PackageScopeFull {
 		t.Fatalf("Monday weekly day = %+v, want full-update slot", weekly.Days[1])
+	}
+}
+
+func TestCalendarUsesApplicationTimeInterpretationForDSTOccurrences(t *testing.T) {
+	loc, _ := time.LoadLocation("America/Toronto")
+	applicationTime := apptimepkg.New(apptimepkg.Deps{
+		Store: apptimepkg.NewMemoryStore("America/Toronto"),
+		Detector: apptimepkg.DetectorFunc(func() (*time.Location, string, error) {
+			return loc, loc.String(), nil
+		}),
+	})
+	if err := applicationTime.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	policy := Policy{ID: 1, Name: "DST", Enabled: true, TargetServers: []string{"srv-a"}, PackageScope: PackageScopeSecurity, UpgradeMode: UpgradeModeStandard, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "02:30"}
+	svc := NewService(ServiceDeps{
+		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		SnapshotServers:     func() []servers.Server { return []servers.Server{{Name: "srv-a"}} },
+		CurrentLocation:     func() *time.Location { return loc },
+		ApplicationTime:     applicationTime,
+		Now:                 func() time.Time { return time.Date(2026, 3, 8, 0, 0, 0, 0, loc) },
+	})
+	calendar, err := svc.Calendar(CalendarOptions{Days: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := calendar.Policies[0].Days[0]
+	if len(day.AllowedSlots) != 0 || len(day.BlockedReasons) != 1 || day.BlockedReasons[0] != "nonexistent_local_time" {
+		t.Fatalf("spring-forward day = %+v, want unavailable local occurrence", day)
+	}
+
+	policy.TimeLocal = "01:30"
+	svc.deps.ListPolicies = func() ([]Policy, error) { return []Policy{policy}, nil }
+	svc.deps.Now = func() time.Time { return time.Date(2026, 11, 1, 0, 0, 0, 0, loc) }
+	calendar, err = svc.Calendar(CalendarOptions{Days: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := calendar.Policies[0].Days[0].AllowedSlots[0]
+	if slot.ScheduledForUTC != "2026-11-01T05:30:00.000000000Z" || slot.TimezoneOffset != "-04:00" {
+		t.Fatalf("fall-back slot = %+v, want earlier occurrence", slot)
 	}
 }
 

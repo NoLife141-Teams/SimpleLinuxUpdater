@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
 	maintenancepkg "debian-updater/internal/maintenance"
@@ -34,17 +35,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.DBPath == nil {
 		deps.DBPath = dbPath
 	}
-	if deps.CurrentAppTimezone == nil {
-		deps.CurrentAppTimezone = currentAppTimezone
-	}
-	if deps.CurrentAppLocation == nil {
-		deps.CurrentAppLocation = currentAppLocation
-	}
-	if deps.AppTimezoneDisplayName == nil {
-		deps.AppTimezoneDisplayName = currentAppTimezoneDisplayName
-	}
-	if deps.AppTimezoneResolvedName == nil {
-		deps.AppTimezoneResolvedName = currentAppTimezoneResolvedName
+	if deps.ApplicationTime == nil {
+		deps.ApplicationTime = apptimepkg.New(apptimepkg.Deps{Store: appTimeSQLiteStore{}, Detector: appTimeSystemDetector{}})
 	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
@@ -81,7 +73,10 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService, deps.Now, deps.MaintenanceCoordinator)
+		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
+			value := deps.ApplicationTime.Current()
+			return value.Location, value.DisplayName
+		}, deps.NotificationService, deps.Now, deps.MaintenanceCoordinator)
 	}
 	if deps.MetricsTokenService == nil {
 		deps.MetricsTokenService = NewMetricsTokenService(MetricsTokenDeps{
@@ -165,9 +160,12 @@ func (c *runtimeComposition) Compose() AppDeps {
 			LoadOverrides:       deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts: deps.PolicyRepository.LoadGlobalBlackouts,
 			ListRuns:            deps.PolicyRepository.ListRuns,
-			CurrentLocation:     deps.CurrentAppLocation,
-			Maintenance:         deps.MaintenanceCoordinator,
-			Now:                 deps.Now,
+			CurrentLocation: func() *time.Location {
+				return deps.ApplicationTime.Current().Location
+			},
+			Maintenance:     deps.MaintenanceCoordinator,
+			ApplicationTime: deps.ApplicationTime,
+			Now:             deps.Now,
 			SnapshotServers: func() []Server {
 				return deps.ServerState.CloneServers()
 			},
@@ -213,17 +211,29 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.ObservabilityService == nil {
 		policyScheduleDeps := deps.PolicyService.EnsureDeps()
 		policyScheduleDeps.ListRuns = deps.PolicyRepository.ListRuns
-		policyScheduleDeps.CurrentLocation = deps.CurrentAppLocation
+		policyScheduleDeps.CurrentLocation = func() *time.Location { return deps.ApplicationTime.Current().Location }
 		policyScheduleDeps.Now = deps.Now
 		policyScheduleDeps.SnapshotServers = func() []Server {
 			return deps.ServerState.CloneServers()
 		}
 		policyScheduleService := policypkg.NewService(policyScheduleDeps)
 		deps.ObservabilityService = NewObservabilityService(ObservabilityServiceDeps{
-			DB:              deps.DB,
-			DBPath:          deps.DBPath,
-			CurrentTimezone: deps.CurrentAppTimezone,
-			CurrentLocation: deps.CurrentAppLocation,
+			DB:     deps.DB,
+			DBPath: deps.DBPath,
+			CurrentTimezone: func() (*time.Location, string) {
+				value := deps.ApplicationTime.Current()
+				return value.Location, value.DisplayName
+			},
+			CurrentLocation: func() *time.Location { return deps.ApplicationTime.Current().Location },
+			FormatTimestamp: func(raw string, location *time.Location, displayName string) (string, string) {
+				return (apptimepkg.Interpretation{
+					Location:    location,
+					DisplayName: displayName,
+				}).Format(raw, jobTimestampLayout)
+			},
+			ParseAppTimestamp: func(raw string) (time.Time, error) {
+				return apptimepkg.ParseInstant(raw, jobTimestampLayout)
+			},
 			ServerSnapshot: func() ([]Server, map[string]*ServerStatus) {
 				deps.ServerState.Lock()
 				defer deps.ServerState.Unlock()

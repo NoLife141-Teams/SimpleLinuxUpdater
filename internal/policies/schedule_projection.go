@@ -176,12 +176,9 @@ func (s *Service) mergeProjectedScheduleRuns(result map[string]ServerSchedulePro
 
 func (s *Service) nextScheduleProjectionOccurrenceLocal(policy Policy, fromLocal time.Time, globalBlackouts []BlackoutWindow) (time.Time, bool) {
 	deps := s.EnsureDeps()
-	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
-	if err != nil {
+	if _, err := ParseTimeLocalMinutes(policy.TimeLocal); err != nil {
 		return time.Time{}, false
 	}
-	hour := minutes / 60
-	minute := minutes % 60
 	loc := fromLocal.Location()
 	if loc == nil {
 		loc = deps.CurrentLocation()
@@ -192,7 +189,10 @@ func (s *Service) nextScheduleProjectionOccurrenceLocal(policy Policy, fromLocal
 	startDay := time.Date(fromLocal.Year(), fromLocal.Month(), fromLocal.Day(), 0, 0, 0, 0, loc)
 	for offset := 0; offset <= 14; offset++ {
 		day := startDay.AddDate(0, 0, offset)
-		slot := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
+		slot, occurrenceOK := s.policySlotForDay(policy, day)
+		if !occurrenceOK {
+			continue
+		}
 		if slot.Before(fromLocal) {
 			continue
 		}

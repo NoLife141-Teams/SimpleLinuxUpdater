@@ -67,6 +67,14 @@ test("malformed canonical actions fall back to legacy eligibility", () => {
     assert.equal(store.getAction("alpha", "update").enabled, true);
 });
 
+test("accepted view exposes action facts for application-level dashboard consumption", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    store.dispatch({ type: "dashboardSnapshotReceived", snapshot: { servers: [{ name: "alpha", actions: { update: { enabled: false, reason: "Maintenance", readiness: "blocked" } } }] } });
+    assert.equal(store.getView().actionViews.alpha.update.enabled, false);
+    assert.equal(store.getView().actionViews.alpha.update.reason, "Maintenance");
+});
+
 test("navigation restore validates persisted filters and emits persistence as data", () => {
     const store = createStore();
     store.dispatch({

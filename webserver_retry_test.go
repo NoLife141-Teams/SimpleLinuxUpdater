@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	updatespkg "debian-updater/internal/updates"
 )
 
 type delayedNewSessionConn struct {
@@ -25,7 +27,7 @@ func (s *noopSession) SetStdin(io.Reader)  {}
 func (s *noopSession) SetStdout(io.Writer) {}
 func (s *noopSession) SetStderr(io.Writer) {}
 func (s *noopSession) Run(string) error    { return nil }
-func (s *noopSession) Close() error         { return nil }
+func (s *noopSession) Close() error        { return nil }
 
 func TestLoadRetryPolicyFromEnvDefaults(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "")
@@ -58,7 +60,7 @@ func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "timed out") {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout message", err)
 	}
-	if !isRetryableError(err) {
+	if !updatespkg.IsRetryableError(err) {
 		t.Fatalf("timeout error should be retryable, got: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
@@ -119,7 +121,7 @@ func TestIsRetryableError(t *testing.T) {
 		errors.New("E: Could not get lock /var/lib/dpkg/lock-frontend"),
 	}
 	for _, err := range retryable {
-		if !isRetryableError(err) {
+		if !updatespkg.IsRetryableError(err) {
 			t.Fatalf("isRetryableError(%q) = false, want true", err.Error())
 		}
 	}
@@ -130,7 +132,7 @@ func TestIsRetryableError(t *testing.T) {
 		errors.New("missing password or SSH key"),
 	}
 	for _, err := range nonRetryable {
-		if isRetryableError(err) {
+		if updatespkg.IsRetryableError(err) {
 			t.Fatalf("isRetryableError(%q) = true, want false", err.Error())
 		}
 	}
@@ -138,8 +140,8 @@ func TestIsRetryableError(t *testing.T) {
 
 func TestMarkRetryableFromOutputTagsGenericExitError(t *testing.T) {
 	err := errors.New("Process exited with status 100")
-	tagged := markRetryableFromOutput(err, "E: Could not get lock /var/lib/dpkg/lock-frontend")
-	if !isRetryableError(tagged) {
+	tagged := updatespkg.MarkRetryableFromOutput(err, "E: Could not get lock /var/lib/dpkg/lock-frontend")
+	if !updatespkg.IsRetryableError(tagged) {
 		t.Fatalf("tagged error should be retryable, got: %v", tagged)
 	}
 }
@@ -153,7 +155,7 @@ func TestRunWithRetrySucceedsAfterTransientFailure(t *testing.T) {
 	}
 	attempts := 0
 	retryCalls := 0
-	err := runWithRetryWithSleep(p, "test.op", func() error {
+	err := updatespkg.RunWithRetryWithSleep(p, "test.op", func() error {
 		attempts++
 		if attempts < 2 {
 			return errors.New("connection reset by peer")
@@ -161,7 +163,7 @@ func TestRunWithRetrySucceedsAfterTransientFailure(t *testing.T) {
 		return nil
 	}, func(_ int, _ time.Duration, _ error) {
 		retryCalls++
-	}, func(_ time.Duration) {})
+	}, func(_ time.Duration) {}, func(string, ...any) {})
 	if err != nil {
 		t.Fatalf("runWithRetryWithSleep() error = %v, want nil", err)
 	}
@@ -182,12 +184,12 @@ func TestRunWithRetryStopsOnPermanentError(t *testing.T) {
 	}
 	attempts := 0
 	retryCalls := 0
-	err := runWithRetryWithSleep(p, "test.op", func() error {
+	err := updatespkg.RunWithRetryWithSleep(p, "test.op", func() error {
 		attempts++
 		return errors.New("unable to authenticate")
 	}, func(_ int, _ time.Duration, _ error) {
 		retryCalls++
-	}, func(_ time.Duration) {})
+	}, func(_ time.Duration) {}, func(string, ...any) {})
 	if err == nil {
 		t.Fatalf("runWithRetryWithSleep() error = nil, want non-nil")
 	}
@@ -209,13 +211,13 @@ func TestRunWithRetryExhaustsAttemptsOnTransientError(t *testing.T) {
 	attempts := 0
 	retryCalls := 0
 	var waits []time.Duration
-	err := runWithRetryWithSleep(p, "test.op", func() error {
+	err := updatespkg.RunWithRetryWithSleep(p, "test.op", func() error {
 		attempts++
 		return errors.New("connection refused")
 	}, func(_ int, wait time.Duration, _ error) {
 		retryCalls++
 		waits = append(waits, wait)
-	}, func(_ time.Duration) {})
+	}, func(_ time.Duration) {}, func(string, ...any) {})
 	if err == nil {
 		t.Fatalf("runWithRetryWithSleep() error = nil, want non-nil")
 	}

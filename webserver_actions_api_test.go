@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	runtimepkg "debian-updater/internal/runtime"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1301,14 +1303,21 @@ func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
 		t.Fatalf("UpdateJobWithoutRuntimeSync(cancelled) unexpected error: %v", err)
 	}
 
-	runner := &withActorRunner{server: server, jobID: job.ID}
-	runner.syncJobFromStatus(&ServerStatus{
+	snapshot := &ServerStatus{
 		Name:           server.Name,
 		Status:         "pending_approval",
 		Logs:           "stale pending logs",
 		Upgradable:     []string{"openssl"},
 		PendingUpdates: []PendingUpdate{{Package: "openssl"}},
+	}
+	jobUpdate := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
+		Logs:         snapshot.Logs,
+		CurrentPhase: jobPhaseApprovalWait,
+		Timestamp:    jobTimestampNow(),
 	})
+	if _, err := currentJobManager().UpdateActiveJob(job.ID, jobUpdate); err != nil {
+		t.Fatalf("UpdateActiveJob(stale pending projection) unexpected error: %v", err)
+	}
 
 	var jobStatus, jobPhase, jobSummary, jobLogs string
 	if err := getDB().QueryRow("SELECT status, phase, summary, logs_text FROM jobs WHERE id = ?", job.ID).Scan(&jobStatus, &jobPhase, &jobSummary, &jobLogs); err != nil {

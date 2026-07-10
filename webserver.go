@@ -512,116 +512,6 @@ func loadPostUpdateCheckConfigFromEnv() PostUpdateCheckConfig {
 	return cfg
 }
 
-func isRetryableError(err error) bool {
-	return updatespkg.IsRetryableError(err)
-}
-
-func markRetryableFromOutput(err error, output string) error {
-	return updatespkg.MarkRetryableFromOutput(err, output)
-}
-
-func runWithRetryWithSleep(
-	policy RetryPolicy,
-	opName string,
-	fn func() error,
-	onRetry func(attempt int, wait time.Duration, err error),
-	sleepFn func(time.Duration),
-) error {
-	return updatespkg.RunWithRetryWithSleep(policy, opName, fn, onRetry, sleepFn, log.Printf)
-}
-
-func runWithRetry(policy RetryPolicy, opName string, fn func() error, onRetry func(attempt int, wait time.Duration, err error)) error {
-	return updatespkg.RunWithRetry(policy, opName, fn, onRetry, log.Printf)
-}
-
-func reconnectSSHClient(server Server, config *ssh.ClientConfig, clientRef *sshConnection) error {
-	if clientRef != nil && *clientRef != nil {
-		(*clientRef).Close()
-		*clientRef = nil
-	}
-	dial := getDialSSHConnection()
-	conn, err := dial(server, config)
-	if err != nil {
-		return err
-	}
-	if clientRef != nil {
-		*clientRef = conn
-	} else {
-		conn.Close()
-	}
-	return nil
-}
-
-func appendStatusRetryLog(serverName string, format string, args ...any) {
-	mu.Lock()
-	if status := statusMap[serverName]; status != nil {
-		status.Logs += fmt.Sprintf(format, args...)
-	}
-	mu.Unlock()
-}
-
-func dialSSHWithRetry(server Server, config *ssh.ClientConfig, policy RetryPolicy, opName string, attemptsUsed *int) (sshConnection, error) {
-	var client sshConnection
-	err := runWithRetry(policy, opName, func() error {
-		if attemptsUsed != nil {
-			*attemptsUsed += 1
-		}
-		dial := getDialSSHConnection()
-		c, dialErr := dial(server, config)
-		if dialErr == nil {
-			if client != nil {
-				_ = client.Close()
-			}
-			client = c
-		}
-		return dialErr
-	}, func(attempt int, wait time.Duration, retryErr error) {
-		appendStatusRetryLog(
-			server.Name,
-			"\nSSH dial attempt %d/%d failed: %v; retrying in %s",
-			attempt,
-			policy.MaxAttempts,
-			retryErr,
-			wait.Round(time.Millisecond),
-		)
-	})
-	return client, err
-}
-
-func runSSHOperationWithRetry(
-	server Server,
-	config *ssh.ClientConfig,
-	clientRef *sshConnection,
-	policy RetryPolicy,
-	opName string,
-	retryLogFormat string,
-	attemptsUsed *int,
-	operation func() error,
-) error {
-	attempt := 0
-	return runWithRetry(policy, opName, func() error {
-		if attemptsUsed != nil {
-			*attemptsUsed += 1
-		}
-		attempt++
-		if attempt > 1 {
-			if reconnectErr := reconnectSSHClient(server, config, clientRef); reconnectErr != nil {
-				return reconnectErr
-			}
-		}
-		return operation()
-	}, func(retryAttempt int, wait time.Duration, retryErr error) {
-		appendStatusRetryLog(
-			server.Name,
-			retryLogFormat,
-			retryAttempt,
-			policy.MaxAttempts,
-			retryErr,
-			wait.Round(time.Millisecond),
-		)
-	})
-}
-
 func compactCommandOutput(stdout, stderr string) string {
 	combined := strings.TrimSpace(strings.TrimSpace(stdout) + "\n" + strings.TrimSpace(stderr))
 	if combined == "" {
@@ -1507,26 +1397,17 @@ func errorString(err error) string {
 
 func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
 	deps = updateServiceDepsWithDefaults(deps)
-	authMethods, err := deps.BuildAuthMethods(server)
+	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         server,
+		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
+		DialOperation:  "facts_refresh.ssh_dial",
+		CommandTimeout: deps.LoadCommandTimeout(),
+	})
 	if err != nil {
 		return serverFactsRecord{}, err
 	}
-	hostKeyCallback, err := deps.HostKeyCallback()
-	if err != nil {
-		return serverFactsRecord{}, err
-	}
-	config := &ssh.ClientConfig{
-		User:            server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         deps.SSHConnectTimeout,
-	}
-	conn, err := deps.DialSSH(server, config)
-	if err != nil {
-		return serverFactsRecord{}, err
-	}
-	defer conn.Close()
-	record := deps.CollectServerFacts(server, conn, deps.LoadCommandTimeout())
+	defer session.Close()
+	record := session.CollectServerFacts(context.Background())
 	if err := deps.SaveServerFacts(record); err != nil {
 		return serverFactsRecord{}, err
 	}
@@ -2171,8 +2052,8 @@ func queryPackageCVEs(client sshConnection, pkg string) ([]string, error) {
 	return extractCVEsFromText(stdout, cveLookupMaxPerPackage), nil
 }
 
-func startPendingUpdateCVEEnrichment(server Server, config *ssh.ClientConfig, updates []PendingUpdate, parentJobID, actor, clientIP string) {
-	defaultUpdateService().StartPendingCVEEnrichment(server, config, updates, parentJobID, actor, clientIP)
+func startPendingUpdateCVEEnrichment(server Server, updates []PendingUpdate, parentJobID, actor, clientIP string) {
+	defaultUpdateService().StartPendingCVEEnrichment(server, updates, parentJobID, actor, clientIP)
 }
 
 func getGlobalKey() string {

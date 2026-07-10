@@ -2,15 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"io"
 	"mime"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func performContractRequest(handler http.Handler, method, path string, body *bytes.Buffer, cookie *http.Cookie, sameOrigin bool) *httptest.ResponseRecorder {
@@ -404,12 +403,17 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 	preserveServerState(t)
 	updateDeps := testUpdateServiceDeps(t)
 	updateDeps.CurrentJobManager = currentJobManager
-	updateDeps.DiscoverPackages = func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-		return PackageDiscoveryOutcome{}, nil
-	}
-	updateDeps.RunSSHCommandWithTimeout = func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
-		return "", "", nil
-	}
+	updateDeps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+			return HostCommandResult{Attempts: 1}, nil
+		},
+		RunUpdatePrechecksFunc: func(context.Context) updatePrecheckSummary {
+			return updatePrecheckSummary{AllPassed: true}
+		},
+		DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+			return HostPackageDiscoveryResult{Attempts: 1}, nil
+		},
+	})
 	routeState := globalServerState()
 	updateDeps.ServerState = routeState
 	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "contract-update.db"), AppDeps{

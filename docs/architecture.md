@@ -10,6 +10,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - [Request flow](#request-flow)
 - [Services and state](#services-and-state)
 - [Data storage](#data-storage)
+- [Host maintenance sessions](#host-maintenance-sessions)
 - [Update runner lifecycle](#update-runner-lifecycle)
 - [Scheduled policies](#scheduled-policies)
 - [Audit, reports, and observability](#audit-reports-and-observability)
@@ -38,7 +39,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 
 - `internal/audit.Service` writes audit rows, lists audit events, prunes old rows, and renders Markdown reports.
 - `internal/servers.Service` owns server CRUD, tag normalization, secret persistence, rollback behavior, and per-server known-host operations.
-- `internal/updates.Service` owns update, autoremove, sudoers, approval, scheduled-scan, SSH, retry, precheck/postcheck, CVE, job, and audit runner behavior.
+- `internal/updates.Service` owns update, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
 - `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, runtime-status sync callbacks, and dashboard notifications after successful writes.
@@ -66,18 +67,26 @@ Legacy import:
 
 - On first run, the app may import `servers.json` if present, then uses SQLite going forward.
 
+## Host maintenance sessions
+
+Host Maintenance Session is the bounded execution context used by Update Service for one server maintenance phase. Its production adapter owns SSH authentication setup, host-key verification, dialing, command timeouts, reconnect and connection replacement, retry events and accounting, semantic host inspection, and idempotent transport closure.
+
+Update Service retains Server Action Lifecycle, Approval Scope, Package Discovery and Upgrade Plan interpretation, Scheduled Run behavior, jobs, audit, runtime status, and persistence. It receives structured session outcomes and never receives an SSH client configuration, raw connection, or mutable connection pointer.
+
+One runner owns one session at a time. CVE enrichment opens an independent read-only session. A manual approval wait keeps the Server Action reserved but closes the discovery session; approval opens a fresh session before the approved upgrade, while cancellation or approval timeout does not reconnect.
+
 ## Update runner lifecycle
 
 Typical update:
 
 1. A route creates a persisted job and starts the runner through `UpdateService`.
-2. SSH auth methods and host-key callback are built from per-server credentials, global key fallback, and known-hosts configuration.
+2. Host Maintenance Session builds SSH authentication and host-key verification from per-server credentials, global key fallback, and known-hosts configuration, then opens the bounded discovery session.
 3. Pre-checks run before `apt-get update`.
 4. `apt-get update` runs with retry and timeout metadata.
 5. Simulated upgrade determines pending packages.
-6. Status becomes `pending_approval` when approval is required.
-7. Approval or cancel transitions the pending state.
-8. Upgrade runs with all packages or scoped security packages.
+6. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
+7. Approval opens a fresh session, while cancellation or timeout finishes without reconnecting.
+8. Upgrade runs with all packages or scoped security packages through the active session.
 9. Post-update health checks run when enabled.
 10. Job state, status map, audit metadata, server facts, and dashboard events are updated.
 

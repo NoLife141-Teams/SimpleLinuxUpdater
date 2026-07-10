@@ -2,10 +2,9 @@ package main
 
 import (
 	"log"
-	"strings"
 	"time"
 
-	runtimepkg "debian-updater/internal/runtime"
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +20,18 @@ type PackageDiscoveryOutcome = updatespkg.PackageDiscoveryOutcome
 type scheduledJobBehavior = updatespkg.ScheduledJobBehavior
 type scheduledJobDiscovery = updatespkg.ScheduledJobDiscovery
 type scheduledJobMeta = updatespkg.ScheduledJobMeta
+type HostMaintenanceSession = updatespkg.HostMaintenanceSession
+type HostMaintenanceSessionFactory = updatespkg.HostMaintenanceSessionFactory
+type HostMaintenanceSessionFactoryFunc = updatespkg.HostMaintenanceSessionFactoryFunc
+type HostMaintenanceSessionRequest = updatespkg.HostMaintenanceSessionRequest
+type HostMaintenanceSessionFuncs = updatespkg.HostMaintenanceSessionFuncs
+type HostCommandRequest = updatespkg.HostCommandRequest
+type HostCommandResult = updatespkg.HostCommandResult
+type HostOperationRequest = updatespkg.HostOperationRequest
+type HostPackageDiscoveryResult = updatespkg.HostPackageDiscoveryResult
+type HostMaintenanceError = updatespkg.HostMaintenanceError
+
+const HostMaintenanceStageAuth = updatespkg.HostMaintenanceStageAuth
 
 func NewUpdateService(deps UpdateServiceDeps) *UpdateService {
 	return updatespkg.NewService(updateServiceDepsWithDefaults(deps))
@@ -38,23 +49,8 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.ServerState == nil {
 		d.ServerState = globalServerState()
 	}
-	if d.BuildAuthMethods == nil {
-		d.BuildAuthMethods = buildAuthMethods
-	}
-	if d.HostKeyCallback == nil {
-		d.HostKeyCallback = getHostKeyCallback
-	}
-	if d.DialSSH == nil {
-		d.DialSSH = getDialSSHConnection()
-	}
-	if d.DialSSHWithRetry == nil {
-		d.DialSSHWithRetry = dialSSHWithRetry
-	}
-	if d.RunSSHOperationWithRetry == nil {
-		d.RunSSHOperationWithRetry = runSSHOperationWithRetry
-	}
-	if d.RunSSHCommandWithTimeout == nil {
-		d.RunSSHCommandWithTimeout = runSSHCommandWithTimeout
+	if d.HostMaintenanceSessions == nil {
+		d.HostMaintenanceSessions = newHostMaintenanceSessionFactory(buildAuthMethods, getHostKeyCallback, getDialSSHConnection())
 	}
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager
@@ -80,23 +76,8 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.LoadScheduledJobBehavior == nil {
 		d.LoadScheduledJobBehavior = loadScheduledJobBehavior
 	}
-	if d.RunUpdatePrechecks == nil {
-		d.RunUpdatePrechecks = runUpdatePrechecks
-	}
-	if d.RunPostUpdateHealthChecks == nil {
-		d.RunPostUpdateHealthChecks = runPostUpdateHealthChecks
-	}
-	if d.ListFailedSystemdUnits == nil {
-		d.ListFailedSystemdUnits = listFailedSystemdUnits
-	}
-	if d.CollectServerFacts == nil {
-		d.CollectServerFacts = collectServerFactsWithConnection
-	}
 	if d.SaveServerFacts == nil {
 		d.SaveServerFacts = saveServerFacts
-	}
-	if d.QueryPackageCVEs == nil {
-		d.QueryPackageCVEs = queryPackageCVEs
 	}
 	if d.UpdateScheduledDiscoveryMeta == nil {
 		d.UpdateScheduledDiscoveryMeta = updateScheduledJobDiscoveryMeta
@@ -113,10 +94,30 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.Logf == nil {
 		d.Logf = log.Printf
 	}
-	if d.SSHConnectTimeout <= 0 {
-		d.SSHConnectTimeout = sshConnectTimeout
-	}
 	return d
+}
+
+func newHostMaintenanceSessionFactory(
+	buildAuth func(serverpkg.Server) ([]ssh.AuthMethod, error),
+	hostKeyCallback func() (ssh.HostKeyCallback, error),
+	dial func(serverpkg.Server, *ssh.ClientConfig) (sshConnection, error),
+) HostMaintenanceSessionFactory {
+	return updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods:          buildAuth,
+		HostKeyCallback:           hostKeyCallback,
+		DialSSH:                   dial,
+		RunCommandWithTimeout:     runSSHCommandWithTimeout,
+		RunUpdatePrechecks:        runUpdatePrechecks,
+		ListFailedSystemdUnits:    listFailedSystemdUnits,
+		RunPostUpdateHealthChecks: runPostUpdateHealthChecks,
+		CollectServerFacts:        collectServerFactsWithConnection,
+		DiscoverPackages: func(conn sshConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
+			return updatespkg.DiscoverPackageUpdates(conn, timeout, runSSHCommandWithTimeout)
+		},
+		QueryPackageCVEs:  queryPackageCVEs,
+		SSHConnectTimeout: sshConnectTimeout,
+		Logf:              log.Printf,
+	})
 }
 
 func updateServiceEnsureDeps(service *UpdateService) UpdateServiceDeps {
@@ -124,98 +125,4 @@ func updateServiceEnsureDeps(service *UpdateService) UpdateServiceDeps {
 		return updateServiceDepsWithDefaults(UpdateServiceDeps{})
 	}
 	return updateServiceDepsWithDefaults(service.EnsureDeps())
-}
-
-// withActorRunner is a temporary compatibility test seam. Runtime runner
-// ownership lives in internal/updates; these methods preserve a few legacy
-// main-package tests until the final wrapper cleanup phase.
-type withActorRunner struct {
-	service         *UpdateService
-	server          Server
-	policy          RetryPolicy
-	jobID           string
-	config          *ssh.ClientConfig
-	client          sshConnection
-	sshDialAttempts int
-	lastErrClass    string
-}
-
-func (r *withActorRunner) deps() UpdateServiceDeps {
-	if r != nil && r.service != nil {
-		return updateServiceEnsureDeps(r.service)
-	}
-	return updateServiceDepsWithDefaults(UpdateServiceDeps{})
-}
-
-func (r *withActorRunner) setErrorLogs(logs string) {
-	mu.Lock()
-	if status := statusMap[r.server.Name]; status != nil {
-		status.Status = "error"
-		status.Logs = logs
-	}
-	mu.Unlock()
-}
-
-func (r *withActorRunner) markErrorClass(err error) {
-	if isRetryableError(err) {
-		r.lastErrClass = "transient"
-		return
-	}
-	r.lastErrClass = "permanent"
-}
-
-func (r *withActorRunner) setupSSH(dialOpName string) bool {
-	deps := r.deps()
-	authMethods, err := deps.BuildAuthMethods(r.server)
-	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs("Auth setup failed: " + err.Error())
-		return false
-	}
-	hostKeyCallback, err := deps.HostKeyCallback()
-	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs("Host key verification setup failed: " + err.Error())
-		return false
-	}
-	r.config = &ssh.ClientConfig{
-		User:            r.server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         sshConnectTimeout,
-	}
-	client, err := deps.DialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
-	if err != nil {
-		r.markErrorClass(err)
-		r.setErrorLogs("SSH connection failed: " + err.Error())
-		return false
-	}
-	r.client = client
-	return true
-}
-
-func (r *withActorRunner) currentJobManager() *JobManager {
-	return r.deps().CurrentJobManager()
-}
-
-func (r *withActorRunner) syncJobFromStatus(snapshot *ServerStatus) {
-	if snapshot == nil {
-		return
-	}
-	jm := r.currentJobManager()
-	if jm == nil || strings.TrimSpace(r.jobID) == "" {
-		return
-	}
-	timestamp := ""
-	if runtimepkg.ServerStatusFinishesJob(snapshot.Status) {
-		timestamp = jobTimestampNow()
-	}
-	update := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
-		Logs:           snapshot.Logs,
-		LastErrorClass: r.lastErrClass,
-		Timestamp:      timestamp,
-	})
-	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
-		log.Printf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
-	}
 }

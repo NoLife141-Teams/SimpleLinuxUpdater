@@ -186,21 +186,24 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.UpdateService == nil {
-		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
-			ServerState:       deps.ServerState,
-			CurrentJobManager: deps.CurrentJobManager,
-			StartJobRunner:    func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
-			BuildAuthMethods: func(server Server) ([]ssh.AuthMethod, error) {
+		hostMaintenanceSessions := newHostMaintenanceSessionFactory(
+			func(server Server) ([]ssh.AuthMethod, error) {
 				return serverpkg.BuildAuthMethods(server, deps.GetGlobalKey)
 			},
-			HostKeyCallback: func() (ssh.HostKeyCallback, error) {
+			func() (ssh.HostKeyCallback, error) {
 				return serverpkg.HostKeyCallback(appKnownHostsDeps(deps.DBPath))
 			},
-			DialSSH: func(server Server, config *ssh.ClientConfig) (sshConnection, error) {
+			func(server Server, config *ssh.ClientConfig) (sshConnection, error) {
 				return getDialSSHConnection()(server, config)
 			},
-			AuditWithActor:  recordAudit,
-			SaveServerFacts: factsRepo.Save,
+		)
+		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
+			ServerState:             deps.ServerState,
+			HostMaintenanceSessions: hostMaintenanceSessions,
+			CurrentJobManager:       deps.CurrentJobManager,
+			StartJobRunner:          func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
+			AuditWithActor:          recordAudit,
+			SaveServerFacts:         factsRepo.Save,
 			UpdateScheduledDiscoveryMeta: func(jobID string, discovery PackageDiscoveryOutcome) {
 				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, discovery)
 			},

@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,9 +16,14 @@ import (
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 
-	"golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 )
+
+func testHostMaintenanceSessionFactory(session *HostMaintenanceSessionFuncs) HostMaintenanceSessionFactory {
+	return HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		return session, nil
+	})
+}
 
 type fakeSession struct{}
 
@@ -67,9 +73,9 @@ func TestServiceApproveCancelUsesInjectedServerState(t *testing.T) {
 	}
 }
 
-func TestServiceDepsDefaultQueryPackageCVEsIsSafeNoop(t *testing.T) {
-	deps := ServiceDeps{}.withDefaults()
-	cves, err := deps.QueryPackageCVEs(fakeConnection{}, "openssl")
+func TestHostMaintenanceSessionFuncsDefaultQueryPackageCVEsIsSafeNoop(t *testing.T) {
+	session := &HostMaintenanceSessionFuncs{}
+	cves, err := session.QueryPackageCVEs(context.Background(), "openssl")
 	if err != nil {
 		t.Fatalf("default QueryPackageCVEs() error = %v", err)
 	}
@@ -166,24 +172,20 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 			var commands []string
 			deps := ServiceDeps{
 				ServerState: servers.NewState(mu, &inventory, &statuses, nil),
-				BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) {
-					return nil, nil
-				},
-				HostKeyCallback: func() (ssh.HostKeyCallback, error) {
-					return ssh.InsecureIgnoreHostKey(), nil
-				},
+				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+					RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+						commands = append(commands, req.Command)
+						return HostCommandResult{Attempts: 1}, nil
+					},
+					RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+						return PrecheckSummary{AllPassed: true}
+					},
+					DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+						return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(tc.pending, tc.upgradable, tc.plan), Attempts: 1}, nil
+					},
+				}),
 				CurrentJobManager: func() *jobs.Manager {
 					return nil
-				},
-				DialSSHWithRetry: func(servers.Server, *ssh.ClientConfig, RetryPolicy, string, *int) (SSHConnection, error) {
-					return fakeConnection{}, nil
-				},
-				RunSSHOperationWithRetry: func(_ servers.Server, _ *ssh.ClientConfig, _ *SSHConnection, _ RetryPolicy, _ string, _ string, _ *int, operation func() error) error {
-					return operation()
-				},
-				RunSSHCommandWithTimeout: func(_ SSHConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
-					commands = append(commands, cmd)
-					return "", "", nil
 				},
 				LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig {
 					return PostUpdateCheckConfig{Enabled: false}
@@ -195,19 +197,7 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 					}
 					return ScheduledJobBehavior{ApprovalTimeout: 2 * time.Second, AutoApproveScope: autoApproveScope}
 				},
-				RunUpdatePrechecks: func(SSHConnection) PrecheckSummary {
-					return PrecheckSummary{AllPassed: true}
-				},
-				ListFailedSystemdUnits: func(SSHConnection) ([]string, string, error) {
-					return nil, "", nil
-				},
-				DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-					return newPackageDiscoveryOutcome(tc.pending, tc.upgradable, tc.plan), nil
-				},
 				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
-				CollectServerFacts: func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord {
-					return ServerFactsRecord{}
-				},
 				SaveServerFacts: func(ServerFactsRecord) error {
 					return nil
 				},
@@ -366,24 +356,20 @@ func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {
 			var commands []string
 			deps := ServiceDeps{
 				ServerState: servers.NewState(mu, &inventory, &statuses, nil),
-				BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) {
-					return nil, nil
-				},
-				HostKeyCallback: func() (ssh.HostKeyCallback, error) {
-					return ssh.InsecureIgnoreHostKey(), nil
-				},
+				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+					RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+						commands = append(commands, req.Command)
+						return HostCommandResult{Attempts: 1}, nil
+					},
+					RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+						return PrecheckSummary{AllPassed: true}
+					},
+					DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+						return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(tc.pending, []string{"linux-image-amd64"}, tc.plan), Attempts: 1}, nil
+					},
+				}),
 				CurrentJobManager: func() *jobs.Manager {
 					return nil
-				},
-				DialSSHWithRetry: func(servers.Server, *ssh.ClientConfig, RetryPolicy, string, *int) (SSHConnection, error) {
-					return fakeConnection{}, nil
-				},
-				RunSSHOperationWithRetry: func(_ servers.Server, _ *ssh.ClientConfig, _ *SSHConnection, _ RetryPolicy, _ string, _ string, _ *int, operation func() error) error {
-					return operation()
-				},
-				RunSSHCommandWithTimeout: func(_ SSHConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
-					commands = append(commands, cmd)
-					return "", "", nil
 				},
 				LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig {
 					return PostUpdateCheckConfig{Enabled: false}
@@ -391,19 +377,7 @@ func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {
 				LoadScheduledJobBehavior: func(string) ScheduledJobBehavior {
 					return ScheduledJobBehavior{ApprovalTimeout: 2 * time.Second}
 				},
-				RunUpdatePrechecks: func(SSHConnection) PrecheckSummary {
-					return PrecheckSummary{AllPassed: true}
-				},
-				ListFailedSystemdUnits: func(SSHConnection) ([]string, string, error) {
-					return nil, "", nil
-				},
-				DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-					return newPackageDiscoveryOutcome(tc.pending, []string{"linux-image-amd64"}, tc.plan), nil
-				},
 				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
-				CollectServerFacts: func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord {
-					return ServerFactsRecord{}
-				},
 				SaveServerFacts: func(ServerFactsRecord) error {
 					return nil
 				},
@@ -450,6 +424,142 @@ func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {
 	}
 }
 
+func TestRunUpdateJobReleasesHostSessionDuringManualApproval(t *testing.T) {
+	tests := []struct {
+		name      string
+		resolve   func(*Service, string)
+		wantOpens int
+		wantFinal string
+	}{
+		{
+			name: "approval reopens a fresh session",
+			resolve: func(service *Service, serverName string) {
+				service.ApprovePendingUpdate(serverName, ApprovalScopeAll)
+			},
+			wantOpens: 2,
+			wantFinal: "done",
+		},
+		{
+			name: "cancellation does not reopen",
+			resolve: func(service *Service, serverName string) {
+				service.CancelPendingUpdate(serverName)
+			},
+			wantOpens: 1,
+			wantFinal: "idle",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := servers.Server{Name: "srv", User: "root"}
+			inventory := []servers.Server{server}
+			statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+			state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+			opens := 0
+			closes := []int{0, 0}
+			var service *Service
+			factory := HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+				index := opens
+				opens++
+				return &HostMaintenanceSessionFuncs{
+					RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+						return HostCommandResult{Stdout: req.Operation, Attempts: 1}, nil
+					},
+					RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+						return PrecheckSummary{AllPassed: true}
+					},
+					DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+						outcome := newPackageDiscoveryOutcome(
+							[]servers.PendingUpdate{{Package: "openssl", CVEState: "ready"}},
+							[]string{"openssl"},
+							servers.UpgradePlan{StandardPackageCount: 1},
+						)
+						return HostPackageDiscoveryResult{Outcome: outcome, Attempts: 1}, nil
+					},
+					CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+						return ServerFactsRecord{ServerName: server.Name}
+					},
+					CloseFunc: func() error {
+						closes[index]++
+						return nil
+					},
+				}, nil
+			})
+			deps := ServiceDeps{
+				ServerState:                  state,
+				HostMaintenanceSessions:      factory,
+				CurrentJobManager:            func() *jobs.Manager { return nil },
+				StartJobRunner:               func(string, func()) {},
+				AuditWithActor:               func(string, string, string, string, string, string, string, map[string]any) {},
+				LoadPostUpdateCheckConfig:    func() PostUpdateCheckConfig { return PostUpdateCheckConfig{Enabled: false} },
+				LoadScheduledJobBehavior:     func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: time.Minute} },
+				SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+			}
+			deps.WaitForApprovalPoll = func() {
+				if closes[0] != 1 {
+					t.Fatalf("discovery session close count before approval poll = %d, want 1", closes[0])
+				}
+				tc.resolve(service, server.Name)
+			}
+			service = NewService(deps)
+			service.RunUpdateJob(UpdateRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+
+			if opens != tc.wantOpens {
+				t.Fatalf("session opens = %d, want %d", opens, tc.wantOpens)
+			}
+			status := state.CurrentStatusSnapshot(server.Name)
+			if status == nil || status.Status != tc.wantFinal {
+				t.Fatalf("final status = %+v, want %s", status, tc.wantFinal)
+			}
+		})
+	}
+}
+
+func TestRunUpdateJobApprovalTimeoutDoesNotReopenHostSession(t *testing.T) {
+	server := servers.Server{Name: "srv-timeout", User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	opens := 0
+	closed := 0
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			opens++
+			return &HostMaintenanceSessionFuncs{
+				RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+					return HostCommandResult{Attempts: 1}, nil
+				},
+				RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
+				DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+					outcome := newPackageDiscoveryOutcome([]servers.PendingUpdate{{Package: "openssl", CVEState: "ready"}}, []string{"openssl"}, servers.UpgradePlan{StandardPackageCount: 1})
+					return HostPackageDiscoveryResult{Outcome: outcome, Attempts: 1}, nil
+				},
+				CloseFunc: func() error { closed++; return nil },
+			}, nil
+		}),
+		CurrentJobManager:            func() *jobs.Manager { return nil },
+		StartJobRunner:               func(string, func()) {},
+		AuditWithActor:               func(string, string, string, string, string, string, string, map[string]any) {},
+		Now:                          func() time.Time { return now },
+		LoadPostUpdateCheckConfig:    func() PostUpdateCheckConfig { return PostUpdateCheckConfig{Enabled: false} },
+		LoadScheduledJobBehavior:     func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: time.Minute} },
+		WaitForApprovalPoll:          func() { now = now.Add(2 * time.Minute) },
+		SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+	})
+	service.RunUpdateJob(UpdateRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+	if opens != 1 || closed != 1 {
+		t.Fatalf("session opens/closes = %d/%d, want 1/1", opens, closed)
+	}
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "idle" {
+		t.Fatalf("final status = %+v, want idle", status)
+	}
+}
+
 func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	var auditActions []string
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
@@ -477,46 +587,40 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 		t.Fatalf("create scheduled scan job: %v", err)
 	}
 	deps := ServiceDeps{
-		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
-		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSHWithRetry: func(servers.Server, *ssh.ClientConfig, RetryPolicy, string, *int) (SSHConnection, error) {
-			return fakeConnection{}, nil
-		},
-		RunSSHOperationWithRetry: func(_ servers.Server, _ *ssh.ClientConfig, _ *SSHConnection, _ RetryPolicy, _ string, _ string, _ *int, operation func() error) error {
-			return operation()
-		},
-		RunSSHCommandWithTimeout: func(SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
-			return "", "", nil
-		},
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+				return HostCommandResult{Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{AllPassed: true}
+			},
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				pending := []servers.PendingUpdate{
+					{Package: "openssl", Security: true, Raw: "Inst openssl"},
+					{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
+				}
+				upgradable := []string{"openssl", "linux-image-amd64"}
+				plan := servers.UpgradePlan{
+					StandardPackageCount:       1,
+					KeptBackPackageCount:       1,
+					StandardSecurityCount:      1,
+					TotalSecurityCount:         2,
+					FullUpgradePackageCount:    2,
+					FullUpgradeNewPackages:     []string{"linux-image-6.1.0-39-amd64"},
+					FullUpgradeRemovedPackages: nil,
+				}
+				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(pending, upgradable, plan), Attempts: 1}, nil
+			},
+			QueryPackageCVEsFunc: func(_ context.Context, pkg string) ([]string, error) {
+				if pkg == "linux-image-amd64" {
+					return nil, errors.New("changelog unavailable")
+				}
+				return []string{"CVE-2026-0001"}, nil
+			},
+		}),
 		CurrentJobManager: func() *jobs.Manager { return jm },
 		AuditWithActor: func(_, _, action, _, _, _, _ string, _ map[string]any) {
 			auditActions = append(auditActions, action)
-		},
-		RunUpdatePrechecks: func(SSHConnection) PrecheckSummary {
-			return PrecheckSummary{AllPassed: true}
-		},
-		DiscoverPackages: func(SSHConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-			pending := []servers.PendingUpdate{
-				{Package: "openssl", Security: true, Raw: "Inst openssl"},
-				{Package: "linux-image-amd64", Security: true, KeptBack: true, RequiresFull: true, Raw: "linux-image-amd64/stable-security 6.1.174-1 amd64 [upgradable from: 6.1.159-1]"},
-			}
-			upgradable := []string{"openssl", "linux-image-amd64"}
-			plan := servers.UpgradePlan{
-				StandardPackageCount:       1,
-				KeptBackPackageCount:       1,
-				StandardSecurityCount:      1,
-				TotalSecurityCount:         2,
-				FullUpgradePackageCount:    2,
-				FullUpgradeNewPackages:     []string{"linux-image-6.1.0-39-amd64"},
-				FullUpgradeRemovedPackages: nil,
-			}
-			return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
-		},
-		QueryPackageCVEs: func(_ SSHConnection, pkg string) ([]string, error) {
-			if pkg == "linux-image-amd64" {
-				return nil, errors.New("changelog unavailable")
-			}
-			return []string{"CVE-2026-0001"}, nil
 		},
 		UpdatePolicyRun: func(_ int64, update policies.RunUpdate) error {
 			t.Fatalf("UpdatePolicyRun called from scheduled scan worker: %+v", update)

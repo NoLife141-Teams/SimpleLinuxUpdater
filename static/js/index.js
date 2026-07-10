@@ -1,13 +1,13 @@
 const LOG_BOTTOM_THRESHOLD = 20;
         const statusInteraction = window.statusPageInteraction;
+        const dashboardConsumption = window.DashboardProjectionConsumption;
         let allServers = [];
         let lastSuccessfulSyncAt = null;
         let lastFetchError = null;
         let recentActivity = [];
         let observabilitySummary = null;
         let policySummary = null;
-        let dashboardSummary = null;
-        let dashboardByServer = new Map();
+        let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
         let globalKeyAvailable = false;
         let dashboardExtraErrors = new Map();
         let hoveredName = null;
@@ -56,12 +56,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
             "failure", "failed", "started", "ignored", "running", "queued", "skipped",
             "facts_refresh"
         ]);
-        const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
-        const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
-        const transientActionBlockingStatuses = new Set(["updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
 
         function getStatusView() {
             return statusInteraction.getView();
+        }
+
+        function refreshDashboardPresentation() {
+            dashboardPresentation = dashboardConsumption.project({
+                statusView: getStatusView(),
+                globalKeyAvailable,
+                extras: { recentActivity, observabilitySummary, policySummary }
+            });
+            return dashboardPresentation;
+        }
+
+        function serverPresentation(serverOrName) {
+            const name = typeof serverOrName === "string" ? serverOrName : serverOrName?.name;
+            return dashboardPresentation.serversByName[name] || null;
         }
 
         function dispatchStatusInteraction(event) {
@@ -98,10 +109,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function isRunningTimelineState(state) {
             return ["active", "queued"].includes(String(state || "").toLowerCase());
-        }
-
-        function statusBlocksTransientAction(status) {
-            return transientActionBlockingStatuses.has(String(status || "").trim().toLowerCase());
         }
 
         function setText(id, value) {
@@ -197,15 +204,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return `${month} ${day} ${time}`;
         }
 
-        function isFailedServer(server) {
-            return server?.status === "error";
-        }
-
-        function isReachableServer(server) {
-            const status = String(server?.status || "").toLowerCase();
-            return nonFailedStatuses.has(status) || (status && status !== "error");
-        }
-
         function safeStatusClass(value) {
             const normalized = String(value ?? "").toLowerCase();
             return allowedStatuses.has(normalized) ? normalized : "error";
@@ -255,204 +253,72 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function hasPendingUpdates(server) {
-            if (!server || !isPendingApprovalHost(server)) return false;
-            return Array.isArray(server.pending_updates) && server.pending_updates.length > 0;
-        }
-
-        function getUpgradePlan(server) {
-            return server?.upgrade_plan && typeof server.upgrade_plan === "object" ? server.upgrade_plan : {};
+            return !!serverPresentation(server)?.hasPendingUpdates;
         }
 
         function getPendingApprovalCounts(server) {
-            const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
-            const totalFromPending = pendingUpdates.length;
-            const plan = getUpgradePlan(server);
-            const planStandard = Number(plan.standard_package_count);
-            const planKeptBack = Number(plan.kept_back_package_count);
-            const planStandardSecurity = Number(plan.standard_security_count);
-            const planTotalSecurity = Number(plan.total_security_count);
-            const hasPlan = Number.isFinite(planStandard) && Number.isFinite(planKeptBack) && (planStandard > 0 || planKeptBack > 0 || Number(plan.full_upgrade_package_count || 0) > 0);
-            const securityFromPending = pendingUpdates.filter(update => !!update?.security).length;
-            const keptBackSecurityFromPending = pendingUpdates.filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade)).length;
-            const standardSecurityFromPending = Math.max(0, securityFromPending - keptBackSecurityFromPending);
-            const upgradableFallback = Array.isArray(server?.upgradable) ? server.upgradable.length : 0;
-            const total = totalFromPending > 0 ? totalFromPending : upgradableFallback;
-            const standard = hasPlan ? planStandard : total;
-            const keptBack = hasPlan ? planKeptBack : pendingUpdates.filter(update => !!update?.kept_back || !!update?.requires_full_upgrade).length;
-            const full = Number(plan.full_upgrade_package_count || 0) || total;
-            const keptBackSecurity = hasPlan && Number.isFinite(planTotalSecurity) && Number.isFinite(planStandardSecurity)
-                ? Math.max(0, planTotalSecurity - planStandardSecurity)
-                : (totalFromPending > 0 ? keptBackSecurityFromPending : 0);
-            return {
-                total,
-                standard,
-                keptBack,
-                full,
-                security: hasPlan && Number.isFinite(planStandardSecurity) ? planStandardSecurity : (totalFromPending > 0 ? standardSecurityFromPending : null),
-                totalSecurity: hasPlan && Number.isFinite(planTotalSecurity) ? planTotalSecurity : (totalFromPending > 0 ? securityFromPending : null),
-                keptBackSecurity,
-                fullPlanAvailable: !!plan.full_upgrade_plan_available,
-                keptBackSecurityPlanAvailable: !!plan.kept_back_security_plan_available,
-                keptBackSecurityNewPackages: Array.isArray(plan.kept_back_security_new_packages) ? plan.kept_back_security_new_packages : [],
-                keptBackSecurityRemovedPackages: Array.isArray(plan.kept_back_security_removed_packages) ? plan.kept_back_security_removed_packages : [],
-                newPackages: Array.isArray(plan.full_upgrade_new_packages) ? plan.full_upgrade_new_packages : [],
-                removedPackages: Array.isArray(plan.full_upgrade_removed_packages) ? plan.full_upgrade_removed_packages : []
+            return serverPresentation(server)?.approvalCounts || {
+                total: 0, standard: 0, keptBack: 0, full: 0, security: null, totalSecurity: null,
+                keptBackSecurity: 0, fullPlanAvailable: false, keptBackSecurityPlanAvailable: false,
+                keptBackSecurityNewPackages: [], keptBackSecurityRemovedPackages: [], newPackages: [], removedPackages: []
             };
         }
 
         function getPendingPackageCount(server) {
-            const triageCount = Number(getServerIntelligence(server?.name)?.approval_triage?.pending_packages);
-            if (Number.isFinite(triageCount) && triageCount >= 0) return triageCount;
-            return getPendingApprovalCounts(server).total;
+            return serverPresentation(server)?.risk.pendingPackages || 0;
         }
 
         function getSecurityUpdateCount(server) {
-            const triageCount = Number(getServerIntelligence(server?.name)?.approval_triage?.security_updates);
-            if (Number.isFinite(triageCount) && triageCount >= 0) return triageCount;
-            const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
-            if (updates.length > 0) {
-                return updates.filter(update => !!update?.security).length;
-            }
-            return 0;
+            return serverPresentation(server)?.risk.securityUpdates || 0;
         }
 
         function getRiskLabel(server) {
-            const intelligence = getServerIntelligence(server?.name);
-            if (intelligence?.approval_triage?.risk_label) return intelligence.approval_triage.risk_label;
-            if (intelligence?.risk?.summary) return intelligence.risk.summary;
-            const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
-            const cveCount = updates.reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0);
-            const securityCount = getSecurityUpdateCount(server);
-            if (cveCount > 0) return `${cveCount} CVE`;
-            if (securityCount > 0) return `${securityCount} security`;
-            if (getPendingPackageCount(server) > 0) return "Package updates";
-            return "Normal";
+            return serverPresentation(server)?.risk.label || "Normal";
         }
 
         function getRiskLevel(server) {
-            const intelligence = getServerIntelligence(server?.name);
-            return String(intelligence?.approval_triage?.risk_level || intelligence?.risk?.level || "normal").toLowerCase();
+            return serverPresentation(server)?.risk.level || "normal";
         }
 
         function getServerIntelligence(name) {
-            if (!name) return null;
-            return dashboardByServer.get(name) || null;
+            return serverPresentation(name)?.intelligence || null;
         }
 
 	        function getServerTimeline(server) {
-	            const intelligence = getServerIntelligence(server?.name);
-	            return intelligence?.timeline || {
-	                current_phase: "",
-	                current_label: "Idle",
-                state: "idle",
-                progress_pct: 0,
-                summary: "No maintenance activity",
-                phases: []
-	            };
+	            return serverPresentation(server)?.timeline || { current_phase: "", current_label: "Idle", state: "idle", progress_pct: 0, summary: "No maintenance activity", phases: [] };
 	        }
 
 	        function isRuntimePendingApproval(server) {
-	            return !!server && server.status === "pending_approval";
+	            return !!serverPresentation(server)?.runtimePending;
 	        }
 
 	        function isTimelinePendingApproval(server) {
-	            return !!server && getServerTimeline(server).current_phase === "pending_approval";
+	            return !!serverPresentation(server)?.timelinePending;
 	        }
 
 	        function isPendingApprovalHost(server) {
-	            return isRuntimePendingApproval(server) || isTimelinePendingApproval(server);
+	            return !!serverPresentation(server)?.pendingApproval;
 	        }
 
 	        function pendingApprovalDriftReason(server) {
-	            if (!server || isRuntimePendingApproval(server) || !isTimelinePendingApproval(server)) return "";
-	            const runtimeStatus = statusLabel(server.status || "unknown");
-	            const timeline = getServerTimeline(server);
-	            const summary = String(timeline.summary || "").trim();
-	            const suffix = summary && summary.toLowerCase() !== "no maintenance activity"
-	                ? `: ${summary}`
-	                : ". Run a fresh update check or inspect logs before approving";
-	            return `Timeline is waiting for approval, but runtime status is ${runtimeStatus}${suffix}`;
+	            return serverPresentation(server)?.driftReason || "";
 	        }
 
 	        function getServerFailureReason(server) {
-	            const intelligence = getServerIntelligence(server?.name);
-	            const timeline = getServerTimeline(server);
-	            const failed = isFailedServer(server) || timeline?.state === "error";
-	            if (!failed) return "";
-	            const candidates = [
-	                timeline?.summary,
-	                intelligence?.last_update?.failure_cause,
-	                intelligence?.last_failed_update?.failure_cause,
-	                intelligence?.last_failed?.failure_cause,
-	                intelligence?.last_failure?.failure_cause,
-	                server?.failure_cause
-	            ];
-	            const reason = candidates
-	                .map(value => String(value || "").trim())
-	                .find(value => value && value.toLowerCase() !== "no maintenance activity");
-	            return reason || "Completed with errors";
-	        }
-
-	        function getServerActionContract(server, key, options = {}) {
-	            if (!server || !key) return null;
-	            return statusInteraction.getAction(server.name, key, options);
-	        }
-
-	        function dashboardActionEnabled(server, key, fallback, options = {}) {
-	            const action = getServerActionContract(server, key, options);
-	            if (action) return !!action.enabled;
-	            return typeof fallback === "function" ? !!fallback() : !!fallback;
+	            return serverPresentation(server)?.failureReason || "";
 	        }
 
 	        function getServerApprovalTriage(server, options = {}) {
-	            const intelligence = getServerIntelligence(server?.name);
-	            const approvalCounts = getPendingApprovalCounts(server);
-	            const triage = intelligence?.approval_triage || {
-	                eligible: hasPendingUpdates(server) || approvalCounts.total > 0,
-	                pending_packages: approvalCounts.total,
-	                security_updates: getSecurityUpdateCount(server),
-                cve_count: (Array.isArray(server?.pending_updates) ? server.pending_updates : [])
-                    .reduce((sum, update) => sum + (Array.isArray(update?.cves) ? update.cves.length : 0), 0),
-                risk_level: getRiskLevel(server),
-                risk_label: getRiskLabel(server),
-                risk_order: 1,
-                facts_state: "unknown",
-                last_check_display: "--",
-                standard_packages: approvalCounts.standard,
-                kept_back_packages: approvalCounts.keptBack,
-                standard_security_updates: approvalCounts.security || 0,
-                kept_back_security_updates: approvalCounts.keptBackSecurity || 0,
-                can_approve_all: server?.status === "pending_approval" && approvalCounts.standard > 0,
-                can_approve_security: server?.status === "pending_approval" && (approvalCounts.security || 0) > 0,
-                can_approve_kept_back_security: server?.status === "pending_approval" && (approvalCounts.keptBackSecurity || 0) > 0 && approvalCounts.keptBackSecurityPlanAvailable,
-                can_approve_full: server?.status === "pending_approval" && approvalCounts.fullPlanAvailable && (approvalCounts.keptBack > 0 || approvalCounts.newPackages.length > 0 || approvalCounts.removedPackages.length > 0),
-                can_cancel: server?.status === "pending_approval",
-	                can_refresh_facts: canRunTransientAction(server),
-	                can_run_checks: canRunTransientAction(server)
+	            const projected = serverPresentation(server)?.triage || { eligible: false, pending_packages: 0, security_updates: 0, cve_count: 0, risk_level: "normal", risk_label: "Normal", risk_order: 0, facts_state: "unknown" };
+	            if (!options.ignoreInFlight || !server) return projected;
+	            return {
+	                ...projected,
+	                can_approve_all: !!statusInteraction.getAction(server.name, "approve_all", options)?.enabled,
+	                can_approve_security: !!statusInteraction.getAction(server.name, "approve_security", options)?.enabled,
+	                can_approve_kept_back_security: !!statusInteraction.getAction(server.name, "approve_security_kept_back", options)?.enabled,
+	                can_approve_full: !!statusInteraction.getAction(server.name, "approve_full", options)?.enabled,
+	                can_cancel: !!statusInteraction.getAction(server.name, "cancel", options)?.enabled
 	            };
-	            const contractTriage = {
-	                ...triage,
-	                can_approve_all: dashboardActionEnabled(server, "approve_all", triage.can_approve_all, options),
-	                can_approve_security: dashboardActionEnabled(server, "approve_security", triage.can_approve_security, options),
-	                can_approve_kept_back_security: dashboardActionEnabled(server, "approve_security_kept_back", triage.can_approve_kept_back_security, options),
-	                can_approve_full: dashboardActionEnabled(server, "approve_full", triage.can_approve_full, options),
-	                can_cancel: dashboardActionEnabled(server, "cancel", triage.can_cancel, options),
-	                can_refresh_facts: dashboardActionEnabled(server, "refresh_facts", triage.can_refresh_facts, options),
-	                can_run_checks: dashboardActionEnabled(server, "update", triage.can_run_checks, options)
-	            };
-	            return contractTriage;
-	        }
-
-	        function isFactsStateStale(server) {
-	            return String(getServerApprovalTriage(server).facts_state || "").toLowerCase() === "stale";
-	        }
-
-	        function hasCVEExposure(server) {
-	            return Number(getServerApprovalTriage(server).cve_count || 0) > 0;
-	        }
-
-	        function canRunTransientAction(server) {
-	            return !!server && !statusBlocksTransientAction(server.status);
 	        }
 
         function timelinePhaseMap(server) {
@@ -476,20 +342,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
         function hasEffectiveKey(server) {
-            return !!server?.has_key || (!!globalKeyAvailable && !server?.has_key);
+            return !!serverPresentation(server)?.auth.effectiveKey;
         }
 
         function usesGlobalKey(server) {
-            return !!globalKeyAvailable && !server?.has_key;
+            return !!serverPresentation(server)?.auth.usesGlobalKey;
         }
 
         function getAuthLabel(server) {
-            if (server?.has_key && server?.has_password) return "Server key + password";
-            if (usesGlobalKey(server) && server?.has_password) return "Global SSH key + password";
-            if (server?.has_key) return "Server key";
-            if (usesGlobalKey(server)) return "Global SSH key";
-            if (server?.has_password) return "Password";
-            return "No auth configured";
+            return serverPresentation(server)?.auth.label || "No auth configured";
         }
 
         function getLatestLogLines(server, limit = 5) {
@@ -500,42 +361,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return lines.slice(-limit);
         }
 
-        function getAuthPostureMetrics(servers) {
-            const withKey = servers.filter(hasEffectiveKey).length;
-            const withServerKey = servers.filter(server => !!server.has_key).length;
-            const withGlobalKey = servers.filter(usesGlobalKey).length;
-            const withPassword = servers.filter(server => !!server.has_password).length;
-            const missing = servers.filter(server => !hasEffectiveKey(server) && !server.has_password).length;
-            const mixed = servers.filter(server => hasEffectiveKey(server) && !!server.has_password).length;
-
-            let label = "--";
-            if (servers.length === 0) {
-                label = "--";
-            } else if (missing > 0) {
-                label = "Gaps";
-            } else if (mixed > 0 || (withKey > 0 && withPassword > 0)) {
-                label = "Mixed";
-            } else if (withKey > 0) {
-                label = "Key";
-            } else if (withPassword > 0) {
-                label = "Password";
-            }
-
-            return { label, withKey, withServerKey, withGlobalKey, withPassword, missing };
-        }
-
         function renderDashboardMetrics() {
-            const total = allServers.length;
-            const reachable = allServers.filter(isReachableServer).length;
-            const pending = Number(dashboardSummary?.fleet?.pending_approval ?? allServers.filter(isPendingApprovalHost).length);
-            const active = Number(dashboardSummary?.fleet?.in_progress ?? allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length);
-            const failed = allServers.filter(server => server.status === "error").length;
-            const done = Number(dashboardSummary?.fleet?.done ?? allServers.filter(server => server.status === "done").length);
-            const highRiskCVE = Number(dashboardSummary?.fleet?.high_risk_cve ?? allServers.filter(hasCVEExposure).length);
-            const pendingPackages = Number(dashboardSummary?.fleet?.pending_packages ?? allServers.reduce((sum, server) => sum + getPendingPackageCount(server), 0));
-            const securityUpdates = Number(dashboardSummary?.fleet?.security_updates ?? allServers.reduce((sum, server) => sum + getSecurityUpdateCount(server), 0));
-            const staleFacts = Number(dashboardSummary?.fleet?.stale_facts ?? allServers.filter(isFactsStateStale).length);
-            const auth = getAuthPostureMetrics(allServers);
+            const { total, reachable, pendingApproval: pending, active, failed, done, highRiskCVE, pendingPackages, securityUpdates, staleFacts } = dashboardPresentation.fleet;
+            const auth = dashboardPresentation.auth;
 
             setText("metric-total-hosts", String(total));
             setText("metric-total-note", total === 0 ? "No servers loaded" : `${pluralize(total, "host")} monitored`);
@@ -763,52 +591,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
             el.innerHTML = rows.join("");
         }
 
-	        function compareRiskPriority(a, b) {
-	            const aTriage = getServerApprovalTriage(a);
-	            const bTriage = getServerApprovalTriage(b);
-            const fallbackOrder = {
-                critical: 4,
-                high: 4,
-                elevated: 3,
-                warning: 2,
-                normal: 1,
-                routine: 1
-            };
-            const aOrder = Number(aTriage.risk_order || 0) || fallbackOrder[getRiskLevel(a)] || 0;
-            const bOrder = Number(bTriage.risk_order || 0) || fallbackOrder[getRiskLevel(b)] || 0;
-            return bOrder - aOrder
-                || Number(bTriage.cve_count || 0) - Number(aTriage.cve_count || 0)
-                || Number(bTriage.security_updates || 0) - Number(aTriage.security_updates || 0)
-                || Number(bTriage.pending_packages || 0) - Number(aTriage.pending_packages || 0)
-	                || String(a.name || "").localeCompare(String(b.name || ""));
-	        }
-
-	        function getFailureTimestamp(server) {
-	            const intelligence = getServerIntelligence(server?.name);
-	            const timeline = getServerTimeline(server);
-	            const candidates = [
-	                intelligence?.last_failed_update?.finished_at,
-	                intelligence?.last_failed?.finished_at,
-	                intelligence?.last_failure?.finished_at,
-	                intelligence?.last_update?.finished_at,
-	                timeline?.updated_at
-	            ];
-	            const parsed = candidates
-	                .map(value => value ? new Date(value).getTime() : 0)
-	                .find(value => Number.isFinite(value) && value > 0);
-	            return parsed || 0;
-	        }
-
-	        function compareFailurePriority(a, b) {
-	            const aTriage = getServerApprovalTriage(a);
-	            const bTriage = getServerApprovalTriage(b);
-	            const riskDelta = Number(bTriage.risk_order || 0) - Number(aTriage.risk_order || 0);
-	            if (riskDelta !== 0) return riskDelta;
-	            const failureDelta = getFailureTimestamp(b) - getFailureTimestamp(a);
-	            if (failureDelta !== 0) return failureDelta;
-	            return String(a.name || "").localeCompare(String(b.name || ""));
-	        }
-
 	        function failureMiniDetail(server) {
 	            const reason = getServerFailureReason(server);
 	            return reason ? `${statusLabel(server.status)} · ${reason}` : `${statusLabel(server.status)} · ${getRiskLabel(server)}`;
@@ -817,15 +599,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderTagSummary() {
             const el = document.getElementById('tag-summary');
             if (!el) return;
-            const counts = new Map();
-            allServers.forEach(server => {
-                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
-                tags.forEach(tag => counts.set(tag, (counts.get(tag) || 0) + 1));
-            });
-            const entries = Array.from(counts.entries()).sort((a, b) => {
-                if (b[1] === a[1]) return a[0].localeCompare(b[0]);
-                return b[1] - a[1];
-            });
+            const entries = dashboardPresentation.panels.tags.map(item => [item.tag, item.total]);
             if (entries.length === 0) {
                 el.innerHTML = miniEmpty("No tags yet.");
                 return;
@@ -840,12 +614,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             setText("fleet-filter-summary", `${pluralize(view.visibleServers.length, "host")} visible`);
             const statusEl = document.getElementById('fleet-status-filters');
             if (statusEl) {
-                const activeCount = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state)).length;
-                const staleCount = allServers.filter(isFactsStateStale).length;
-                const highRiskCount = allServers.filter(hasCVEExposure).length;
+                const activeCount = dashboardPresentation.fleet.active;
+                const staleCount = dashboardPresentation.fleet.staleFacts;
+                const highRiskCount = dashboardPresentation.fleet.highRiskCVE;
                 const filters = [
                     { key: "", label: "All", count: allServers.length },
-                    { key: "pending_approval", label: "Pending", count: allServers.filter(isPendingApprovalHost).length },
+                    { key: "pending_approval", label: "Pending", count: dashboardPresentation.fleet.pendingApproval },
                     { key: "active", label: "Active", count: activeCount },
                     { key: "stale_facts", label: "Stale", count: staleCount },
                     { key: "high_risk", label: "High risk", count: highRiskCount }
@@ -861,12 +635,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
             const tagEl = document.getElementById('fleet-tag-list');
             if (!tagEl) return;
-            const counts = new Map();
-            allServers.forEach(server => {
-                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
-                tags.forEach(tag => counts.set(tag, (counts.get(tag) || 0) + 1));
-            });
-            const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+            const entries = dashboardPresentation.panels.tags.map(item => [item.tag, item.total]);
             if (entries.length === 0) {
                 tagEl.innerHTML = `<span class="empty-state compact-empty">No tags</span>`;
                 return;
@@ -889,17 +658,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const limit = 12;
             const expanded = expandedMiniLists.has(listID);
             const primaryServerName = getStatusView().primaryServerName;
-            const servers = getStatusView().visibleServers
-                .filter(server => getServerApprovalTriage(server).eligible || isPendingApprovalHost(server))
-                .sort((a, b) => {
-                    const aTriage = getServerApprovalTriage(a);
-                    const bTriage = getServerApprovalTriage(b);
-                    const riskDelta = Number(bTriage.risk_order || 0) - Number(aTriage.risk_order || 0);
-                    if (riskDelta !== 0) return riskDelta;
-                    const pendingDelta = Number(bTriage.pending_packages || 0) - Number(aTriage.pending_packages || 0);
-                    if (pendingDelta !== 0) return pendingDelta;
-                    return String(a.name || "").localeCompare(String(b.name || ""));
-                });
+            const servers = dashboardPresentation.panels.approval.map(model => model.server);
             setText("approval-queue-count", String(servers.length));
             if (servers.length === 0) {
                 body.innerHTML = `<tr><td colspan="9">${miniEmpty("No approvals require triage.")}</td></tr>`;
@@ -975,10 +734,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderScheduledRuns() {
             const el = document.getElementById('scheduled-runs');
             if (!el) return;
-            const scheduled = allServers
-                .map(server => ({ server, nextRun: getServerIntelligence(server.name)?.next_run || {} }))
-                .filter(item => item.nextRun.state === "scheduled")
-                .sort((a, b) => String(a.nextRun.scheduled_for_utc || "").localeCompare(String(b.nextRun.scheduled_for_utc || "")));
+            const scheduled = dashboardPresentation.panels.scheduled.map(model => ({ server: model.server, nextRun: model.nextRun }));
             setText("scheduled-runs-count", String(scheduled.length));
             if (scheduled.length === 0) {
                 el.innerHTML = miniEmpty("No scheduled runs.");
@@ -1022,20 +778,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderRecentActivity() {
             const el = document.getElementById('recent-activity');
             if (!el) return;
-            if (!Array.isArray(recentActivity) || recentActivity.length === 0) {
+            const activity = dashboardPresentation.panels.recentActivity;
+            if (activity.length === 0) {
                 el.innerHTML = miniEmpty("No recent activity.");
                 return;
             }
-            el.innerHTML = recentActivity.slice(0, 2).map(evt => {
-                const status = String(evt.status || "unknown").toLowerCase();
+            el.innerHTML = activity.slice(0, 2).map(item => {
+                const evt = item.raw;
+                const status = item.status;
                 const statusClass = safeStatusClass(status === "failure" ? "error" : status);
-                const target = [evt.target_type, evt.target_name].filter(Boolean).join(": ");
                 return `
                     <div class="activity-row">
                         <span class="status-pill status-${statusClass}">${escapeHtml(status || "unknown")}</span>
                         <div>
-                            <strong>${escapeHtml(evt.action || "activity")}</strong>
-                            <span>${escapeHtml(target || evt.message || "system")} · ${escapeHtml(formatActivityTime(evt))}</span>
+                            <strong>${escapeHtml(item.action)}</strong>
+                            <span>${escapeHtml(item.target)} · ${escapeHtml(formatActivityTime(evt))}</span>
                         </div>
                     </div>
                 `;
@@ -1043,13 +800,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderIntelligenceLists() {
-            const rebootHosts = allServers
-                .filter(server => getServerIntelligence(server.name)?.health?.reboot_required === true)
-                .sort(compareRiskPriority);
-            const riskHosts = allServers.filter(server => {
-                const level = getRiskLevel(server);
-                return level === "critical" || level === "elevated";
-            }).sort(compareRiskPriority);
+            const rebootHosts = dashboardPresentation.panels.reboot.map(model => model.server);
+            const riskHosts = dashboardPresentation.panels.risk.map(model => model.server);
             setText("reboot-required-count", String(rebootHosts.length));
             setText("risk-exposure-count", String(riskHosts.length));
             renderMiniServerList("reboot-required-panel", rebootHosts, "No reboot required.", {
@@ -1078,8 +830,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            const el = document.getElementById('command-history-panel');
 	            if (!el) return;
 	            const primaryServerName = getStatusView().primaryServerName;
-	            const intelligence = getServerIntelligence(primaryServerName);
-            const history = Array.isArray(intelligence?.command_history) ? intelligence.command_history : [];
+            const history = dashboardPresentation.panels.commandHistory;
             setText("command-history-count", String(history.length));
             if (history.length === 0) {
                 el.innerHTML = miniEmpty("No command history.");
@@ -1147,13 +898,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function renderSummaryBadges() {
             const policyEl = document.getElementById('policy-summary-label');
             if (policyEl) {
-                const count = Array.isArray(policySummary) ? policySummary.length : null;
+                const count = dashboardPresentation.summaries.policyCount;
                 policyEl.textContent = count === null ? "Policies --" : `Policies ${count}`;
             }
             const obsEl = document.getElementById('observability-summary-label');
             if (obsEl) {
-                const total = Number(observabilitySummary?.totals?.updates_total || 0);
-                const success = Number(observabilitySummary?.totals?.success_rate_pct || 0);
+                const total = dashboardPresentation.summaries.observabilityUpdates;
+                const success = dashboardPresentation.summaries.observabilitySuccessRate;
                 obsEl.textContent = total > 0 ? `7d ${success.toFixed(0)}%` : "7d no runs";
             }
         }
@@ -1163,7 +914,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const title = document.getElementById('selected-host-title');
             const subtitle = document.getElementById('selected-host-subtitle');
             if (!panel || !title || !subtitle) return;
-            const server = getServerByName(getStatusView().primaryServerName);
+            const selected = dashboardPresentation.selectedHost;
+            const server = selected?.server;
             if (!server) {
                 title.textContent = "No host selected";
                 subtitle.textContent = "Select a table row to inspect host details.";
@@ -1265,13 +1017,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function renderDashboardPanels() {
-	            const activeServers = allServers.filter(server => activeStatuses.has(server.status) || isRunningTimelineState(getServerTimeline(server).state));
-	            const failedServers = allServers
-	                .filter(server => isFailedServer(server) || getServerTimeline(server).state === "error")
-	                .sort(compareFailurePriority);
-	            const rebootHosts = allServers
-	                .filter(server => getServerIntelligence(server.name)?.health?.reboot_required === true)
-	                .sort(compareRiskPriority);
+	            const activeServers = dashboardPresentation.panels.active.map(model => model.server);
+	            const failedServers = dashboardPresentation.panels.failed.map(model => model.server);
+	            const rebootHosts = dashboardPresentation.panels.reboot.map(model => model.server);
 	            setText("active-operations-count", String(activeServers.length));
 	            setText("failed-hosts-count", String(failedServers.length));
 	            renderPriorityAttention(failedServers, rebootHosts);
@@ -1317,6 +1065,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 recentActivity = [];
                 setDashboardExtraError("audit", err);
             }
+            refreshDashboardPresentation();
             renderRecentActivity();
         }
 
@@ -1330,6 +1079,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 observabilitySummary = null;
                 setDashboardExtraError("observability", err);
             }
+            refreshDashboardPresentation();
             renderSummaryBadges();
         }
 
@@ -1344,6 +1094,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 policySummary = null;
                 setDashboardExtraError("policies", err);
             }
+            refreshDashboardPresentation();
             renderSummaryBadges();
         }
 
@@ -1392,6 +1143,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (nextGlobalKeyAvailable !== globalKeyAvailable) {
                     globalKeyAvailable = nextGlobalKeyAvailable;
                     dispatchStatusInteraction({ type: "globalKeyAvailabilityChanged", available: globalKeyAvailable });
+                    refreshDashboardPresentation();
                     renderDashboardMetrics();
                     if (allServers.length > 0) {
                         renderTable();
@@ -1506,8 +1258,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        function renderServerState() {
 	            const view = getStatusView();
 	            allServers = view.servers;
-	            dashboardSummary = view.dashboardSnapshot;
-	            dashboardByServer = new Map(view.dashboardServers.map(item => [item.name, item]));
+	            refreshDashboardPresentation();
 	            const pageScroll = saveWindowScroll();
 	            renderDashboardMetrics();
 	            renderTable();
@@ -1778,8 +1529,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
 		        function isServerActionBusy(server) {
-		            return !!server && (getStatusView().actions.inFlightServerNames.includes(server.name) || statusBlocksTransientAction(server.status));
-	        }
+		            return !!serverPresentation(server)?.busy;
+		        }
 
 	        async function runSingleHostAction(name, actionKey, actionLabel, work, refreshStreams = ["servers"]) {
 	            const plan = statusInteraction.planAction(name, actionKey, { actionLabel });
@@ -1801,21 +1552,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            }
 	        }
 
-		        function canRunUpdateAction(server) {
-		            return dashboardActionEnabled(server, "update", () => canRunTransientAction(server));
-		        }
+	        function canRunUpdateAction(server) {
+	            return !!serverPresentation(server)?.canRunUpdate;
+	        }
 
-		        function canRunAutoremoveAction(server) {
-		            return dashboardActionEnabled(server, "autoremove", () => canRunTransientAction(server));
-		        }
+	        function canRunAutoremoveAction(server) {
+	            return !!serverPresentation(server)?.canRunAutoremove;
+	        }
 
-		        function canRunSudoersAction(server) {
-		            return dashboardActionEnabled(server, "enable_apt", () => canRunTransientAction(server));
-		        }
+	        function canRunSudoersAction(server) {
+	            return !!serverPresentation(server)?.canRunSudoers;
+	        }
 
-		        function canRefreshFactsAction(server) {
-		            return dashboardActionEnabled(server, "refresh_facts", () => canRunTransientAction(server));
-		        }
+	        function canRefreshFactsAction(server) {
+	            return !!serverPresentation(server)?.canRefreshFacts;
+	        }
 
         function updateSelectPageState() {
             const selectAll = document.getElementById('select-all');
@@ -2025,6 +1776,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function renderTable(options = {}) {
             hidePhaseTooltip();
+            refreshDashboardPresentation();
             const tbody = document.querySelector('#servers-table tbody');
             tbody.innerHTML = '';
             const view = getStatusView();
@@ -2040,14 +1792,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     ? "Waiting for status data"
                     : `${pluralize(totalFiltered, "host")} visible · ${pluralize(allServers.length, "host")} loaded`
             );
-            view.groups.forEach(group => {
+            dashboardPresentation.groups.forEach(group => {
                 if (group.key) {
                     const groupRow = document.createElement('tr');
                     groupRow.className = 'group-row';
                     groupRow.innerHTML = `<td colspan="11">${escapeHtml(group.key)}</td>`;
                     tbody.appendChild(groupRow);
                 }
-                group.items.forEach(server => {
+                group.items.forEach(presentation => {
+                    const server = presentation.server;
                     const row = document.createElement('tr');
                     row.dataset.name = server.name;
                     const rowSelected = view.primaryServerName === server.name;
@@ -2063,9 +1816,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     const safeStatusText = escapeHtml(statusLabel(server.status));
                     const safeStatus = safeStatusClass(server.status);
                     const safeDataName = escapeHtml(server.name);
-                    const intelligence = getServerIntelligence(server.name);
-	                    const timeline = getServerTimeline(server);
-	                    const triage = getServerApprovalTriage(server);
+	                    const intelligence = presentation.intelligence;
+	                    const timeline = presentation.timeline;
+	                    const triage = presentation.triage;
 	                    const lastUpdate = intelligence?.last_update;
 	                    const nextRun = intelligence?.next_run;
 	                    const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
@@ -2074,14 +1827,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        : "None";
 	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
 	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
-	                    const approvalCounts = getPendingApprovalCounts(server);
+	                    const approvalCounts = presentation.approvalCounts;
 	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
 	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
 	                    const canApproveAll = !!triage.can_approve_all;
 	                    const canApproveSecurity = !!triage.can_approve_security;
-	                    const canUpdate = canRunUpdateAction(server);
-	                    const failureReason = getServerFailureReason(server);
-	                    const driftReason = pendingApprovalDriftReason(server);
+	                    const canUpdate = presentation.canRunUpdate;
+	                    const failureReason = presentation.failureReason;
+	                    const driftReason = presentation.driftReason;
 	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
 	                    const failureReasonHtml = failureReason && !failureReasonIsDuplicate
 	                        ? `<span class="failure-reason" title="${escapeHtml(failureReason)}">${escapeHtml(failureReason)}</span>`

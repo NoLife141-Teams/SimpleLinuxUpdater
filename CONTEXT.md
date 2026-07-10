@@ -32,6 +32,10 @@ _Avoid_: Admin page globals, policy editor event handlers
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query
 
+**Dashboard Projection Consumption**:
+The application-level interpretation of accepted Server and Dashboard Projection facts into deterministic operator-facing server, fleet, attention, approval, schedule, activity, command-history, and selected-host views.
+_Avoid_: Dashboard HTML helpers, frontend summary mapping
+
 **Dashboard Action Contract**:
 The Dashboard Projection-owned action eligibility vocabulary for dashboard-visible server actions, including whether each action is enabled, why it is ready or blocked, its machine-readable readiness state, blocking status, and action-specific counts.
 _Avoid_: Button state logic, frontend action rules

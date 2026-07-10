@@ -151,14 +151,15 @@
 
         function requestBulkActionReview(plan) {
             const modal = document.getElementById("bulk-review-modal");
-            document.getElementById("bulk-review-title").textContent = `Review bulk ${plan.actionLabel}`;
-            document.getElementById("bulk-review-summary").textContent = `${pluralize(plan.eligibleNames.length, "eligible visible host")} will run. ${pluralize(plan.skippedHosts.length, "host")} will be skipped.`;
-            document.getElementById("bulk-review-eligible-label").textContent = `Eligible hosts (${plan.eligibleNames.length})`;
-            document.getElementById("bulk-review-skipped-label").textContent = `Skipped hosts (${plan.skippedHosts.length})`;
-            fillBulkReviewRows("bulk-review-eligible", plan.eligibleHosts, "No eligible hosts.");
-            fillBulkReviewRows("bulk-review-skipped", plan.skippedHosts, "No skipped hosts.", true);
-            document.getElementById("bulk-review-warning").textContent = plan.warning || "";
-            document.getElementById("bulk-review-confirm").disabled = plan.eligibleNames.length === 0;
+            const review = window.DashboardProjectionConsumption.projectBulkReview(plan);
+            document.getElementById("bulk-review-title").textContent = review.title;
+            document.getElementById("bulk-review-summary").textContent = review.summary;
+            document.getElementById("bulk-review-eligible-label").textContent = review.eligibleLabel;
+            document.getElementById("bulk-review-skipped-label").textContent = review.skippedLabel;
+            fillBulkReviewRows("bulk-review-eligible", review.eligible, "No eligible hosts.");
+            fillBulkReviewRows("bulk-review-skipped", review.skipped, "No skipped hosts.", true);
+            document.getElementById("bulk-review-warning").textContent = review.warning;
+            document.getElementById("bulk-review-confirm").disabled = !review.canConfirm;
             modal.classList.add("active");
             document.getElementById("bulk-review-confirm").focus({ preventScroll: true });
             return new Promise(resolve => {

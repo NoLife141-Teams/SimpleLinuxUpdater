@@ -34,6 +34,7 @@
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
+    const dashboardActionKeys = ["update", "autoremove", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
@@ -758,6 +759,10 @@
                 servers: cloneValue(servers),
                 dashboardSnapshot: cloneValue(dashboardSnapshot),
                 dashboardServers: cloneValue(dashboardServers),
+                actionViews: Object.fromEntries(servers.map(server => [
+                    server.name,
+                    Object.fromEntries(dashboardActionKeys.map(key => [key, getAction(server.name, key)]))
+                ])),
                 filters: cloneValue(filters),
                 sort: cloneValue(sort),
                 page: safePage,

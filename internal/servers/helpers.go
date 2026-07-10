@@ -435,12 +435,9 @@ func TrustHostKey(deps KnownHostsDeps, host string, port int, expectedFingerprin
 	return fingerprint, line, !added, nil
 }
 
-func BuildAuthMethods(server Server, globalKey func() string) ([]ssh.AuthMethod, error) {
+func BuildAuthMethods(server Server) ([]ssh.AuthMethod, error) {
 	var methods []ssh.AuthMethod
 	key := strings.TrimSpace(server.Key)
-	if key == "" && globalKey != nil {
-		key = strings.TrimSpace(globalKey())
-	}
 	if key != "" {
 		signer, err := ssh.ParsePrivateKey([]byte(key))
 		if err != nil {

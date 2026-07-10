@@ -34,10 +34,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.CurrentJobManager == nil ||
 		deps.NewJobManager == nil ||
 		deps.SetCurrentJobManager == nil ||
-		deps.GetGlobalKey == nil ||
-		deps.SetGlobalKey == nil ||
-		deps.ClearGlobalKey == nil ||
-		deps.HasGlobalKey == nil ||
+		deps.GlobalSSHCredential == nil ||
 		deps.CurrentSessionManager == nil ||
 		deps.NewSessionManager == nil ||
 		deps.SetSessionManager == nil ||

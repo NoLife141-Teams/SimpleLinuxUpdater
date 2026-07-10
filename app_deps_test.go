@@ -16,6 +16,7 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
+	serverpkg "debian-updater/internal/servers"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
@@ -384,10 +385,10 @@ func TestSetupRouterWithDepsDefaultsGlobalKeyToInjectedDB(t *testing.T) {
 	if !statusResp.HasKey {
 		t.Fatalf("global key status has_key = false, want true")
 	}
-	if !settingExistsInDB(t, routeDBPath, globalKeySetting) {
+	if !settingExistsInDB(t, routeDBPath, "global_ssh_key") {
 		t.Fatalf("global key route did not write to injected db")
 	}
-	if settingExistsInDB(t, globalDBPath, globalKeySetting) {
+	if settingExistsInDB(t, globalDBPath, "global_ssh_key") {
 		t.Fatalf("global key route wrote to global db instead of only injected db")
 	}
 }
@@ -400,13 +401,17 @@ func TestAppGlobalKeyHasKeyReturnsDBErrors(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
-	_, _, _, hasKey := newAppGlobalKeyStore(func() *sql.DB { return db })
-	ok, err := hasKey()
+	credential := serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+		Store:   serverpkg.SQLiteGlobalSSHCredentialStore{DB: func() *sql.DB { return db }},
+		Encrypt: encryptSecret,
+		Decrypt: decryptSecret,
+	})
+	status, err := credential.Status(context.Background())
 	if err == nil {
-		t.Fatalf("HasGlobalKey() error = nil, want closed DB error")
+		t.Fatalf("Status() error = nil, want closed DB error")
 	}
-	if ok {
-		t.Fatalf("HasGlobalKey() ok = true, want false on DB error")
+	if status.Configured {
+		t.Fatalf("Status() configured = true, want false on DB error")
 	}
 }
 

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	serverpkg "debian-updater/internal/servers"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,18 +29,6 @@ func prepareServerInventoryServiceTest(t *testing.T, dbName string) *ServerInven
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), dbName))
 	_ = getDB()
 	return newServerInventoryService()
-}
-
-func preserveGlobalKeyState(t *testing.T) {
-	t.Helper()
-	globalKeyMu.RLock()
-	origGlobalKey := globalKey
-	globalKeyMu.RUnlock()
-	t.Cleanup(func() {
-		globalKeyMu.Lock()
-		globalKey = origGlobalKey
-		globalKeyMu.Unlock()
-	})
 }
 
 func TestServerInventoryServiceCreateAndUpdateValidation(t *testing.T) {
@@ -336,26 +326,10 @@ func TestHostKeyRoutesUseInventoryServiceWireShape(t *testing.T) {
 	}
 }
 
-func TestServerInventoryServiceAuthKeyFallback(t *testing.T) {
+func TestBuildAuthMethodsAcceptsServerPrivateKey(t *testing.T) {
 	prepareServerInventoryServiceTest(t, "server-inventory-auth-key.db")
-	preserveGlobalKeyState(t)
-
-	serverKey := testPrivateKeyPEM(t)
-	globalKeyValue := testPrivateKeyPEM(t)
-	if err := setGlobalKey(globalKeyValue); err != nil {
-		t.Fatalf("setGlobalKey(valid) unexpected error: %v", err)
-	}
-	if _, err := buildAuthMethods(Server{}); err != nil {
-		t.Fatalf("buildAuthMethods(empty server key) unexpected error with global fallback: %v", err)
-	}
-	if _, err := buildAuthMethods(Server{Key: "not-a-private-key"}); err == nil {
-		t.Fatalf("buildAuthMethods(invalid server key) error = nil, want server key parse failure before global fallback")
-	}
-	if err := setGlobalKey("not-a-private-key"); err != nil {
-		t.Fatalf("setGlobalKey(invalid) unexpected error: %v", err)
-	}
-	if _, err := buildAuthMethods(Server{Key: serverKey}); err != nil {
-		t.Fatalf("buildAuthMethods(valid server key) unexpected error with invalid global key: %v", err)
+	if _, err := serverpkg.BuildAuthMethods(Server{Key: testPrivateKeyPEM(t)}); err != nil {
+		t.Fatalf("BuildAuthMethods(valid server key) unexpected error: %v", err)
 	}
 }
 

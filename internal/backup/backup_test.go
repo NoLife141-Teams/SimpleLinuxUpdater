@@ -302,6 +302,44 @@ func TestValidateDatabaseDataRejectsMissingServersTableBeforeMigration(t *testin
 	}
 }
 
+func TestValidateDatabaseDataRejectsUndecryptableGlobalSSHCredential(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "undecryptable-global-credential.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE servers (name TEXT PRIMARY KEY, pass_enc TEXT NOT NULL, key_enc TEXT NOT NULL);
+		CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO settings(key, value) VALUES('global_ssh_key', 'invalid-ciphertext');
+	`); err != nil {
+		_ = db.Close()
+		t.Fatalf("seed restored database: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close restored database: %v", err)
+	}
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read restored database: %v", err)
+	}
+
+	service := NewService(ServiceDeps{
+		EnsureSchema: func(*sql.DB) error { return nil },
+		DecryptSecretWithKey: func(encrypted string, _ []byte) (string, error) {
+			if encrypted == "invalid-ciphertext" {
+				return "", errors.New("authentication failed")
+			}
+			return "", nil
+		},
+		Logf: func(string, ...any) {},
+	})
+	err = service.ValidateDatabaseData(context.Background(), data, []byte("backup-key"))
+	if err == nil || !strings.Contains(err.Error(), "validate restored Global SSH Credential") {
+		t.Fatalf("ValidateDatabaseData() error = %v, want credential validation failure", err)
+	}
+}
+
 func TestRestoreArchiveBeforeApplySkipsOnArchiveFailure(t *testing.T) {
 	applyStarted := false
 	service := NewService(ServiceDeps{Logf: func(string, ...any) {}})

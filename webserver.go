@@ -48,8 +48,6 @@ var dbOnce sync.Once
 var keyOnce sync.Once
 var encryptionKey []byte
 var runtimeStateMu sync.RWMutex
-var globalKeyMu sync.RWMutex
-var globalKey string
 var metricsBearerTokenHashMu sync.RWMutex
 var metricsBearerTokenHash string
 var metricsBearerTokenHashLoaded bool
@@ -61,7 +59,6 @@ var rebootRequiredPhraseRe = regexp.MustCompile(`\b(reboot required|requires reb
 
 const configFileName = "config.json"
 const legacyServersFileName = "servers.json"
-const globalKeySetting = "global_ssh_key"
 const metricsBearerTokenHashSetting = "metrics_bearer_token_hash"
 const metricsBearerTokenEntropyBytes = 32
 const maxUploadedKeyBytes = 64 * 1024
@@ -1791,28 +1788,6 @@ func activeServerActionNames() []string {
 	return names
 }
 
-func activeServerActionNamesForContext(c *gin.Context) []string {
-	if state := serverStateForContext(c); state != nil {
-		return state.ActiveActionNames()
-	}
-	return activeServerActionNames()
-}
-
-func rejectGlobalKeyMutationIfServerActionsActive(c *gin.Context, action string) bool {
-	activeNames := activeServerActionNamesForContext(c)
-	if len(activeNames) == 0 {
-		return false
-	}
-	audit(c, action, "global_key", "global", "failure", "Server action already in progress", map[string]any{
-		"active_servers": activeNames,
-	})
-	c.JSON(http.StatusConflict, gin.H{
-		"error":          "wait for active server actions to finish before changing the global SSH key",
-		"active_servers": activeNames,
-	})
-	return true
-}
-
 func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
@@ -2056,75 +2031,6 @@ func startPendingUpdateCVEEnrichment(server Server, updates []PendingUpdate, par
 	defaultUpdateService().StartPendingCVEEnrichment(server, updates, parentJobID, actor, clientIP)
 }
 
-func getGlobalKey() string {
-	db := getDB()
-	getCached := func() string {
-		globalKeyMu.RLock()
-		cached := globalKey
-		globalKeyMu.RUnlock()
-		return cached
-	}
-	for attempt := 1; attempt <= 3; attempt++ {
-		var enc string
-		err := db.QueryRow("SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&enc)
-		if err == sql.ErrNoRows {
-			globalKeyMu.Lock()
-			globalKey = ""
-			globalKeyMu.Unlock()
-			return ""
-		}
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "database is locked") && attempt < 3 {
-				time.Sleep(75 * time.Millisecond)
-				continue
-			}
-			cached := getCached()
-			log.Printf("Failed to load global SSH key: %v", err)
-			if strings.TrimSpace(cached) != "" {
-				log.Printf("Using cached global SSH key due to read failure")
-			}
-			return cached
-		}
-		// Do not hold runtimeStateMu while decrypting; decrypt may initialize
-		// encryption key and require runtimeStateMu write access.
-		key, decErr := decryptSecret(enc)
-		if decErr != nil {
-			cached := getCached()
-			log.Printf("Failed to decrypt global SSH key: %v", decErr)
-			if strings.TrimSpace(cached) != "" {
-				log.Printf("Using cached global SSH key due to decrypt failure")
-			}
-			return cached
-		}
-		globalKeyMu.Lock()
-		globalKey = key
-		globalKeyMu.Unlock()
-		return key
-	}
-	return ""
-}
-
-func setGlobalKey(key string) error {
-	enc, err := encryptSecret(key)
-	if err != nil {
-		return err
-	}
-	db := getDB()
-	_, err = db.Exec(
-		"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-		globalKeySetting, enc,
-	)
-	if err != nil {
-		return err
-	}
-	runtimeStateMu.Lock()
-	defer runtimeStateMu.Unlock()
-	globalKeyMu.Lock()
-	defer globalKeyMu.Unlock()
-	globalKey = key
-	return nil
-}
-
 func securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -2350,6 +2256,24 @@ func writeServerInventoryCommandResult(c *gin.Context, result serverpkg.CommandR
 	c.JSON(serverInventoryCommandHTTPStatus(result), gin.H{"error": result.Error})
 }
 
+func writeGlobalSSHCredentialCommandResult(c *gin.Context, result serverpkg.CommandResult) {
+	if result.Audit.Action != "" {
+		audit(c, result.Audit.Action, result.Audit.TargetType, result.Audit.TargetName, result.Audit.Status, result.Audit.Message, result.Audit.Meta)
+	}
+	if result.Succeeded() {
+		c.JSON(http.StatusOK, gin.H{"message": result.Message})
+		return
+	}
+	if result.Outcome == serverpkg.CommandOutcomeConflict {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          result.Error,
+			"active_servers": result.ActiveServers,
+		})
+		return
+	}
+	c.JSON(serverInventoryCommandHTTPStatus(result), gin.H{"error": result.Error})
+}
+
 func serverInventoryCommandHTTPStatus(result serverpkg.CommandResult) int {
 	switch result.Outcome {
 	case serverpkg.CommandOutcomeInvalid:
@@ -2507,7 +2431,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	})
 
 	r.POST("/api/keys/global", func(c *gin.Context) {
-		if rejectGlobalKeyMutationIfServerActionsActive(c, "global_key.upload") {
+		if allowed := deps.GlobalSSHCredential.CheckReplace(); !allowed.Succeeded() {
+			writeGlobalSSHCredentialCommandResult(c, allowed)
 			return
 		}
 		limitUploadedKeyRequest(c)
@@ -2537,39 +2462,20 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read key"})
 			return
 		}
-		if err := deps.SetGlobalKey(key); err != nil {
-			audit(c, "global_key.upload", "global_key", "global", "failure", "Failed to save global key", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		audit(c, "global_key.upload", "global_key", "global", "success", "Global key saved", nil)
-		c.JSON(http.StatusOK, gin.H{"message": "Global key saved"})
+		writeGlobalSSHCredentialCommandResult(c, deps.GlobalSSHCredential.Replace(c.Request.Context(), key))
 	})
 
 	r.DELETE("/api/keys/global", func(c *gin.Context) {
-		if rejectGlobalKeyMutationIfServerActionsActive(c, "global_key.clear") {
-			return
-		}
-		if err := deps.ClearGlobalKey(); err != nil {
-			audit(c, "global_key.clear", "global_key", "global", "failure", "Failed to clear global key", map[string]any{"error": err.Error()})
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		audit(c, "global_key.clear", "global_key", "global", "success", "Global key cleared", nil)
-		c.JSON(http.StatusOK, gin.H{"message": "Global key cleared"})
+		writeGlobalSSHCredentialCommandResult(c, deps.GlobalSSHCredential.Clear(c.Request.Context()))
 	})
 
 	r.GET("/api/keys/global", func(c *gin.Context) {
-		hasKey, err := deps.HasGlobalKey()
+		status, err := deps.GlobalSSHCredential.Status(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read global key"})
 			return
 		}
-		if !hasKey {
-			c.JSON(http.StatusOK, gin.H{"has_key": false})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"has_key": true})
+		c.JSON(http.StatusOK, gin.H{"has_key": status.Configured})
 	})
 
 	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {

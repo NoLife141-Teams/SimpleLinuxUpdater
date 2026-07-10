@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
 	"database/sql"
@@ -199,6 +200,42 @@ func TestGlobalKeyUploadRejectsOversizedRequestBody(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("global key upload status = %d, want %d (body=%s)", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+}
+
+func TestGlobalKeyUploadRejectsUnusablePrivateKeyBeforePersistence(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "global-key-invalid-upload.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("key", "id_ed25519")
+	if err != nil {
+		t.Fatalf("CreateFormFile() unexpected error: %v", err)
+	}
+	if _, err := part.Write([]byte("not a private key")); err != nil {
+		t.Fatalf("Write() unexpected error: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("multipart close unexpected error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/keys/global", &body)
+	req.AddCookie(sessionCookie)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	markSameOriginAuthRequest(req)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("global key upload status = %d, want %d (body=%s)", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var count int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM settings WHERE key = ?", "global_ssh_key").Scan(&count); err != nil {
+		t.Fatalf("query global key setting: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("persisted global key rows = %d, want 0", count)
 	}
 }
 
@@ -605,7 +642,7 @@ func TestRemoveKnownHostEntriesPreservesOtherAliasesOnSameLine(t *testing.T) {
 	}
 }
 
-func TestGetGlobalKeyDoesNotDeadlockWhenEncryptionKeyIsCold(t *testing.T) {
+func TestGlobalSSHCredentialResolveDoesNotDeadlockWhenEncryptionKeyIsCold(t *testing.T) {
 	preserveDBState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "global-key.db"))
@@ -617,32 +654,35 @@ func TestGetGlobalKeyDoesNotDeadlockWhenEncryptionKeyIsCold(t *testing.T) {
 	}
 	if _, err := getDB().Exec(
 		"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-		globalKeySetting,
+		"global_ssh_key",
 		enc,
 	); err != nil {
 		t.Fatalf("insert global key setting unexpected error: %v", err)
 	}
 
-	globalKeyMu.Lock()
-	globalKey = ""
-	globalKeyMu.Unlock()
 	runtimeStateMu.Lock()
 	encryptionKey = nil
 	keyOnce = sync.Once{}
 	runtimeStateMu.Unlock()
 
 	resultCh := make(chan string, 1)
+	credential := AppDeps{}.withDefaults().GlobalSSHCredential
 	go func() {
-		resultCh <- getGlobalKey()
+		resolved, resolveErr := credential.Resolve(context.Background(), "")
+		if resolveErr != nil {
+			resultCh <- "error: " + resolveErr.Error()
+			return
+		}
+		resultCh <- resolved.Key
 	}()
 
 	select {
 	case got := <-resultCh:
 		if got != want {
-			t.Fatalf("getGlobalKey() = %q, want %q", got, want)
+			t.Fatalf("GlobalSSHCredential.Resolve() = %q, want %q", got, want)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("getGlobalKey() timed out; possible deadlock")
+		t.Fatalf("GlobalSSHCredential.Resolve() timed out; possible deadlock")
 	}
 }
 

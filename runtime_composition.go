@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"sync"
@@ -87,6 +88,15 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.ServerState == nil {
 		deps.ServerState = newServerState()
 	}
+	if deps.GlobalSSHCredential == nil {
+		deps.GlobalSSHCredential = serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+			Store:               serverpkg.SQLiteGlobalSSHCredentialStore{DB: deps.DB},
+			Encrypt:             encryptSecret,
+			Decrypt:             decryptSecret,
+			ActiveServerActions: deps.ServerState.ActiveActionNames,
+			Logf:                log.Printf,
+		})
+	}
 	if deps.ServerInventoryService == nil {
 		deps.ServerInventoryService = newServerInventoryServiceWithStateDBPath(deps.ServerState, deps.DB, deps.DBPath)
 	}
@@ -121,21 +131,6 @@ func (c *runtimeComposition) Compose() AppDeps {
 		}
 	} else if deps.SetCurrentJobManager == nil {
 		deps.SetCurrentJobManager = setCurrentJobManager
-	}
-	if deps.GetGlobalKey == nil || deps.SetGlobalKey == nil || deps.ClearGlobalKey == nil || deps.HasGlobalKey == nil {
-		getKey, setKey, clearKey, hasKey := newAppGlobalKeyStore(deps.DB)
-		if deps.GetGlobalKey == nil {
-			deps.GetGlobalKey = getKey
-		}
-		if deps.SetGlobalKey == nil {
-			deps.SetGlobalKey = setKey
-		}
-		if deps.ClearGlobalKey == nil {
-			deps.ClearGlobalKey = clearKey
-		}
-		if deps.HasGlobalKey == nil {
-			deps.HasGlobalKey = hasKey
-		}
 	}
 	if deps.PolicyRepository == nil {
 		deps.PolicyRepository = policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{
@@ -188,7 +183,12 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.UpdateService == nil {
 		hostMaintenanceSessions := newHostMaintenanceSessionFactory(
 			func(server Server) ([]ssh.AuthMethod, error) {
-				return serverpkg.BuildAuthMethods(server, deps.GetGlobalKey)
+				resolved, err := deps.GlobalSSHCredential.Resolve(context.Background(), server.Key)
+				if err != nil {
+					return nil, err
+				}
+				server.Key = resolved.Key
+				return serverpkg.BuildAuthMethods(server)
 			},
 			func() (ssh.HostKeyCallback, error) {
 				return serverpkg.HostKeyCallback(appKnownHostsDeps(deps.DBPath))
@@ -292,10 +292,14 @@ func (c *runtimeComposition) Compose() AppDeps {
 		runtimeDeps := deps
 		metricsTokenService := deps.MetricsTokenService
 		deps.BackupService = NewBackupServiceWithDeps(internalbackup.ServiceDeps{
-			DB:     deps.DB,
-			DBPath: deps.DBPath,
+			DB:                  deps.DB,
+			DBPath:              deps.DBPath,
+			GlobalSSHCredential: deps.GlobalSSHCredential,
 			ResetRuntimeCaches: func() {
 				resetRuntimeCaches()
+				if runtimeDeps.GlobalSSHCredential != nil {
+					runtimeDeps.GlobalSSHCredential.ResetCache()
+				}
 				if metricsTokenService != nil {
 					metricsTokenService.RestoreCache("", false, "")
 				}

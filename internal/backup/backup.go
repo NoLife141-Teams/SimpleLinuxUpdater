@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	serverpkg "debian-updater/internal/servers"
+
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -243,6 +245,7 @@ type ServiceDeps struct {
 	CurrentEncryptionKey    func() []byte
 	DecryptSecretWithKey    func(string, []byte) (string, error)
 	EncryptSecretWithKey    func(string, []byte) (string, error)
+	GlobalSSHCredential     *serverpkg.GlobalSSHCredential
 	ResetRuntimeCaches      func()
 	ReloadRuntimeState      func() error
 	CurrentMaintenanceState func() MaintenanceState
@@ -380,9 +383,13 @@ func (s *Service) RestoreArchiveWithOptions(ctx context.Context, encrypted []byt
 	if err := s.ApplyFiles(ctx, files); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
-	globalKeyPresent, err := s.HasPersistedGlobalKey()
-	if err != nil {
-		s.deps.Logf("backup restore: failed to read global key presence after restore: %v", err)
+	globalKeyPresent := false
+	if s.deps.GlobalSSHCredential == nil {
+		s.deps.Logf("backup restore: Global SSH Credential status is not configured")
+	} else if status, statusErr := s.deps.GlobalSSHCredential.Status(ctx); statusErr != nil {
+		s.deps.Logf("backup restore: failed to read Global SSH Credential presence after restore: %v", statusErr)
+	} else {
+		globalKeyPresent = status.Configured
 	}
 	_, knownHostsRestored := files["known_hosts"]
 	return RestoreResult{
@@ -881,15 +888,14 @@ func (s *Service) ValidateDatabaseData(ctx context.Context, data []byte, encrypt
 		return fmt.Errorf("read restored servers: %w", err)
 	}
 
-	var globalKeyEnc string
-	err = db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", "global_ssh_key").Scan(&globalKeyEnc)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read restored global SSH key: %w", err)
-	}
-	if err == nil && strings.TrimSpace(globalKeyEnc) != "" {
-		if _, err := s.deps.DecryptSecretWithKey(globalKeyEnc, encryptionKey); err != nil {
-			return fmt.Errorf("decrypt restored global SSH key: %w", err)
-		}
+	credential := serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+		Store: serverpkg.SQLiteGlobalSSHCredentialStore{DB: func() *sql.DB { return db }},
+		Decrypt: func(encrypted string) (string, error) {
+			return s.deps.DecryptSecretWithKey(encrypted, encryptionKey)
+		},
+	})
+	if _, err := credential.Resolve(ctx, ""); err != nil {
+		return fmt.Errorf("validate restored Global SSH Credential: %w", err)
 	}
 	return nil
 }
@@ -1004,23 +1010,17 @@ func (s *Service) ReencryptDatabaseData(ctx context.Context, data []byte, fromKe
 	}
 	updateServerStmt = nil
 
-	var globalKeyEnc string
-	err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", "global_ssh_key").Scan(&globalKeyEnc)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("read restored global SSH key for rewrap: %w", err)
-	}
-	if err == nil && strings.TrimSpace(globalKeyEnc) != "" {
-		globalKey, err := s.deps.DecryptSecretWithKey(globalKeyEnc, fromKey)
-		if err != nil {
-			return nil, fmt.Errorf("decrypt restored global SSH key during rewrap: %w", err)
-		}
-		rewrappedGlobalKey, err := s.deps.EncryptSecretWithKey(globalKey, toKey)
-		if err != nil {
-			return nil, fmt.Errorf("encrypt restored global SSH key during rewrap: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE settings SET value = ? WHERE key = ?", rewrappedGlobalKey, "global_ssh_key"); err != nil {
-			return nil, fmt.Errorf("update restored global SSH key during rewrap: %w", err)
-		}
+	credential := serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+		Store: serverpkg.SQLiteGlobalSSHCredentialStore{Tx: tx},
+		Decrypt: func(encrypted string) (string, error) {
+			return s.deps.DecryptSecretWithKey(encrypted, fromKey)
+		},
+		Encrypt: func(key string) (string, error) {
+			return s.deps.EncryptSecretWithKey(key, toKey)
+		},
+	})
+	if err := credential.ReencryptStored(ctx); err != nil {
+		return nil, fmt.Errorf("rewrap restored Global SSH Credential: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1120,18 +1120,6 @@ func (s *Service) ClearPersistedSessions() error {
 		return fmt.Errorf("clear sessions: %w", err)
 	}
 	return nil
-}
-
-func (s *Service) HasPersistedGlobalKey() (bool, error) {
-	var enc string
-	err := s.deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", "global_ssh_key").Scan(&enc)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(enc) != "", nil
 }
 
 func ReadUploadedFile(file *multipart.FileHeader) ([]byte, error) {

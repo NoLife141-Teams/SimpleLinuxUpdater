@@ -242,15 +242,11 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 		t.Fatalf("known_hosts after clear = %q, want empty", raw)
 	}
 
-	globalKey := testPrivateKeyPEM(t)
-	if _, err := BuildAuthMethods(Server{}, func() string { return globalKey }); err != nil {
-		t.Fatalf("BuildAuthMethods(global fallback) unexpected error: %v", err)
+	if _, err := BuildAuthMethods(Server{Key: "not-a-private-key"}); err == nil {
+		t.Fatalf("BuildAuthMethods(invalid key) error = nil")
 	}
-	if _, err := BuildAuthMethods(Server{Key: "not-a-private-key"}, func() string { return globalKey }); err == nil {
-		t.Fatalf("BuildAuthMethods(invalid server key) error = nil, want server key parse failure before global fallback")
-	}
-	if _, err := BuildAuthMethods(Server{Key: testPrivateKeyPEM(t)}, func() string { return "invalid-global" }); err != nil {
-		t.Fatalf("BuildAuthMethods(server key first) unexpected error: %v", err)
+	if _, err := BuildAuthMethods(Server{Key: testPrivateKeyPEM(t)}); err != nil {
+		t.Fatalf("BuildAuthMethods(valid key) unexpected error: %v", err)
 	}
 }
 

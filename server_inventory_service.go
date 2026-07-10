@@ -175,10 +175,6 @@ func trustHostKey(host string, port int, expectedFingerprint string) (string, st
 	return serverpkg.TrustHostKey(defaultKnownHostsDeps(), host, port, expectedFingerprint)
 }
 
-func buildAuthMethods(server Server) ([]ssh.AuthMethod, error) {
-	return serverpkg.BuildAuthMethods(server, getGlobalKey)
-}
-
 func defaultKnownHostsDeps() serverpkg.KnownHostsDeps {
 	return serverpkg.KnownHostsDeps{
 		DBPath:              dbPath,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -50,7 +51,21 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.ServerState = globalServerState()
 	}
 	if d.HostMaintenanceSessions == nil {
-		d.HostMaintenanceSessions = newHostMaintenanceSessionFactory(buildAuthMethods, getHostKeyCallback, getDialSSHConnection())
+		credential := serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+			Store:               serverpkg.SQLiteGlobalSSHCredentialStore{DB: getDB},
+			Encrypt:             encryptSecret,
+			Decrypt:             decryptSecret,
+			ActiveServerActions: globalServerState().ActiveActionNames,
+			Logf:                log.Printf,
+		})
+		d.HostMaintenanceSessions = newHostMaintenanceSessionFactory(func(server Server) ([]ssh.AuthMethod, error) {
+			resolved, err := credential.Resolve(context.Background(), server.Key)
+			if err != nil {
+				return nil, err
+			}
+			server.Key = resolved.Key
+			return serverpkg.BuildAuthMethods(server)
+		}, getHostKeyCallback, getDialSSHConnection())
 	}
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager

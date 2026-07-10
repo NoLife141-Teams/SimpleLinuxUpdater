@@ -27,14 +27,15 @@ type CommandAudit struct {
 }
 
 type CommandResult struct {
-	Outcome      CommandOutcome
-	Message      string
-	Error        string
-	Audit        CommandAudit
-	Server       *Server
-	HostKeyScan  *HostKeyScanResult
-	HostKeyTrust *HostKeyTrustResult
-	HostKeyClear *HostKeyClearResult
+	Outcome       CommandOutcome
+	Message       string
+	Error         string
+	Audit         CommandAudit
+	ActiveServers []string
+	Server        *Server
+	HostKeyScan   *HostKeyScanResult
+	HostKeyTrust  *HostKeyTrustResult
+	HostKeyClear  *HostKeyClearResult
 }
 
 func (r CommandResult) Succeeded() bool {

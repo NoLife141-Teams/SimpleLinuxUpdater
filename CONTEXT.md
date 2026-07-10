@@ -68,6 +68,10 @@ _Avoid_: Auth route flow, session handler logic
 The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container
 
+**Global SSH Credential**:
+The optional app-wide SSH private key that Host Maintenance Session uses only when a Server has no per-server SSH key. It does not replace per-server credentials or host-key trust.
+_Avoid_: Global key, fallback key, shared key
+
 **Host Maintenance Session**:
 A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, and transport closure, while the invoking application service owns action lifecycle, approval, jobs, audit, and persistence.
 _Avoid_: SSH helper bundle, update connection

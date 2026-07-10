@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
+	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
@@ -92,6 +93,13 @@ func backupServiceDepsWithDefaults(deps internalbackup.ServiceDeps) internalback
 	}
 	if deps.EncryptSecretWithKey == nil {
 		deps.EncryptSecretWithKey = encryptSecretWithKey
+	}
+	if deps.GlobalSSHCredential == nil {
+		deps.GlobalSSHCredential = serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
+			Store:   serverpkg.SQLiteGlobalSSHCredentialStore{DB: deps.DB},
+			Encrypt: encryptSecret,
+			Decrypt: decryptSecret,
+		})
 	}
 	if deps.ResetRuntimeCaches == nil {
 		deps.ResetRuntimeCaches = resetRuntimeCaches
@@ -189,10 +197,6 @@ func resetRuntimeCaches() {
 	encryptionKey = nil
 	keyOnce = sync.Once{}
 
-	globalKeyMu.Lock()
-	globalKey = ""
-	globalKeyMu.Unlock()
-
 	metricsBearerTokenHashMu.Lock()
 	metricsBearerTokenHash = ""
 	metricsBearerTokenHashLoaded = false
@@ -231,7 +235,6 @@ func reloadRuntimeState() error {
 		}
 	}
 	mu.Unlock()
-	_ = getGlobalKey()
 	_ = getMetricsBearerTokenHash()
 	sm, err := newSessionManager(getDB())
 	if err != nil {

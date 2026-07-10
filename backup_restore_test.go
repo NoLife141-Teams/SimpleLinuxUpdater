@@ -82,7 +82,7 @@ func buildBackupDatabaseDataWithKey(t *testing.T, key []byte, server Server, bac
 		}
 		if _, err := backupDB.Exec(
 			"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-			globalKeySetting,
+			"global_ssh_key",
 			globalKeyEnc,
 		); err != nil {
 			_ = backupDB.Close()
@@ -595,8 +595,9 @@ func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 		t.Fatalf("loaded servers after rewrap = %+v, want restored server with decrypted secrets", servers)
 	}
 	mu.Unlock()
-	if got := getGlobalKey(); got != "restored-global-key" {
-		t.Fatalf("getGlobalKey() = %q, want restored global key", got)
+	resolved, err := AppDeps{}.withDefaults().GlobalSSHCredential.Resolve(context.Background(), "")
+	if err != nil || resolved.Key != "restored-global-key" {
+		t.Fatalf("GlobalSSHCredential.Resolve() = %+v, %v, want restored global key", resolved, err)
 	}
 
 	var passEnc string

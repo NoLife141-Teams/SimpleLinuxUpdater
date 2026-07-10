@@ -1,11 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"log"
-	"strings"
-	"sync"
 	"time"
 
 	"debian-updater/internal/events"
@@ -32,16 +30,12 @@ type AppDeps struct {
 	UpdateService          *UpdateService
 	ObservabilityService   *ObservabilityService
 	MetricsTokenService    *MetricsTokenService
+	GlobalSSHCredential    *serverpkg.GlobalSSHCredential
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager
 	NewJobManager        func(*sql.DB) *JobManager
 	SetCurrentJobManager func(*JobManager)
-
-	GetGlobalKey   func() string
-	SetGlobalKey   func(string) error
-	ClearGlobalKey func() error
-	HasGlobalKey   func() (bool, error)
 
 	SessionManager            *scs.SessionManager
 	CurrentSessionManager     func() *scs.SessionManager
@@ -106,98 +100,6 @@ func (deps AppDeps) initializeSessionManager() error {
 	return nil
 }
 
-func newAppGlobalKeyStore(dbProvider func() *sql.DB) (func() string, func(string) error, func() error, func() (bool, error)) {
-	if dbProvider == nil {
-		dbProvider = getDB
-	}
-	var keyMu sync.RWMutex
-	cachedKey := ""
-	getCached := func() string {
-		keyMu.RLock()
-		defer keyMu.RUnlock()
-		return cachedKey
-	}
-	setCached := func(key string) {
-		keyMu.Lock()
-		cachedKey = key
-		keyMu.Unlock()
-		globalKeyMu.Lock()
-		globalKey = key
-		globalKeyMu.Unlock()
-	}
-	getKey := func() string {
-		db := dbProvider()
-		for attempt := 1; attempt <= 3; attempt++ {
-			var enc string
-			err := db.QueryRow("SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&enc)
-			if err == sql.ErrNoRows {
-				setCached("")
-				return ""
-			}
-			if err != nil {
-				if strings.Contains(strings.ToLower(err.Error()), "database is locked") && attempt < 3 {
-					time.Sleep(75 * time.Millisecond)
-					continue
-				}
-				cached := getCached()
-				log.Printf("Failed to load global SSH key: %v", err)
-				if strings.TrimSpace(cached) != "" {
-					log.Printf("Using cached global SSH key due to read failure")
-				}
-				return cached
-			}
-			key, decErr := decryptSecret(enc)
-			if decErr != nil {
-				cached := getCached()
-				log.Printf("Failed to decrypt global SSH key: %v", decErr)
-				if strings.TrimSpace(cached) != "" {
-					log.Printf("Using cached global SSH key due to decrypt failure")
-				}
-				return cached
-			}
-			setCached(key)
-			return key
-		}
-		return ""
-	}
-	setKey := func(key string) error {
-		enc, err := encryptSecret(key)
-		if err != nil {
-			return err
-		}
-		if _, err := dbProvider().Exec(
-			"INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-			globalKeySetting, enc,
-		); err != nil {
-			return err
-		}
-		setCached(key)
-		return nil
-	}
-	clearKey := func() error {
-		if _, err := dbProvider().Exec("DELETE FROM settings WHERE key = ?", globalKeySetting); err != nil {
-			return err
-		}
-		setCached("")
-		return nil
-	}
-	hasKey := func() (bool, error) {
-		var enc string
-		err := dbProvider().QueryRow("SELECT value FROM settings WHERE key = ?", globalKeySetting).Scan(&enc)
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		if strings.TrimSpace(enc) == "" {
-			return false, nil
-		}
-		return true, nil
-	}
-	return getKey, setKey, clearKey, hasKey
-}
-
 func reloadAppRuntimeState(deps AppDeps) error {
 	if deps.DB == nil {
 		deps.DB = getDB
@@ -239,10 +141,9 @@ func reloadAppRuntimeState(deps AppDeps) error {
 	} else {
 		loadServers()
 	}
-	if deps.GetGlobalKey != nil {
-		_ = deps.GetGlobalKey()
-	} else {
-		_ = getGlobalKey()
+	if deps.GlobalSSHCredential != nil {
+		deps.GlobalSSHCredential.ResetCache()
+		_, _ = deps.GlobalSSHCredential.Resolve(context.Background(), "")
 	}
 	_ = getMetricsBearerTokenHash()
 	if deps.NewSessionManager == nil {

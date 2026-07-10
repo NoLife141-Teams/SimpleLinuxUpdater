@@ -2070,8 +2070,11 @@ func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 	}
 	return appshell.NewRouter(appshell.RouterConfig{
 		TrustedProxies:   deps.TrustedProxies,
-		GlobalMiddleware: []gin.HandlerFunc{securityHeadersMiddleware(), maintenanceCoordinationMiddleware(deps.MaintenanceCoordinator)},
+		GlobalMiddleware: []gin.HandlerFunc{securityHeadersMiddleware(), maintenanceCoordinationMiddleware(deps.MaintenanceCoordinator, deps.ApplicationTime)},
 		InitializeMaintenance: func() error {
+			if err := deps.ApplicationTime.Initialize(context.Background()); err != nil {
+				return err
+			}
 			return deps.MaintenanceCoordinator.Initialize(context.Background())
 		},
 		InitializeJobs:     deps.initializeJobManager,
@@ -2157,8 +2160,8 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/dashboard/events", func(c *gin.Context) {
 		handleDashboardEventsWithBroker(c, deps.DashboardEventBroker)
 	})
-	r.GET("/api/app-settings/timezone", handleAppTimezoneStatus)
-	r.PUT("/api/app-settings/timezone", handleAppTimezoneUpdate)
+	r.GET("/api/app-settings/timezone", handleAppTimezoneStatusWithModule(deps.ApplicationTime))
+	r.PUT("/api/app-settings/timezone", handleAppTimezoneUpdateWithModule(deps.ApplicationTime))
 	r.GET("/api/notifications/settings", func(c *gin.Context) {
 		handleNotificationSettingsStatus(c, deps.NotificationService)
 	})

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	auditpkg "debian-updater/internal/audit"
 	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
@@ -75,12 +76,14 @@ func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNo
 		}
 	}
 	opts := auditpkg.ServiceOptions{
-		DB:            func() *sql.DB { return db() },
-		Notify:        notifier,
-		OnRecord:      onRecord,
-		Timezone:      func() (*time.Location, string) { return timezone() },
-		FormatDisplay: formatTimestampForAppDisplayWithTimezone,
-		PruneGuard:    pruneGuard,
+		DB:       func() *sql.DB { return db() },
+		Notify:   notifier,
+		OnRecord: onRecord,
+		Timezone: func() (*time.Location, string) { return timezone() },
+		FormatDisplay: func(raw string, loc *time.Location, name string) (string, string) {
+			return (apptimepkg.Interpretation{Location: loc, DisplayName: name}).Format(raw, jobTimestampLayout)
+		},
+		PruneGuard: pruneGuard,
 	}
 	if now != nil {
 		opts.Now = now

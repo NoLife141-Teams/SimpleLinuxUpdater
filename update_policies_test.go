@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -849,6 +850,9 @@ func TestAppTimezoneAPIEditableTimezoneKeepsConfiguredOffset(t *testing.T) {
 
 	if err := upsertSettingValue(appTimezoneSetting, "+02:00"); err != nil {
 		t.Fatalf("upsertSettingValue(+02:00) unexpected error: %v", err)
+	}
+	if err := app.Deps.ApplicationTime.Initialize(context.Background()); err != nil {
+		t.Fatalf("ApplicationTime.Initialize() unexpected error: %v", err)
 	}
 
 	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)

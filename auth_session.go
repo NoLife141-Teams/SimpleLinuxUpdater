@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	authpkg "debian-updater/internal/auth"
 	maintenancepkg "debian-updater/internal/maintenance"
 	serverpkg "debian-updater/internal/servers"
@@ -345,7 +346,11 @@ func sameOriginWriteMiddleware() gin.HandlerFunc {
 
 const maintenanceExclusiveLeaseContextKey = "maintenance_exclusive_lease"
 
-func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator) gin.HandlerFunc {
+func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator, applicationTimes ...*apptimepkg.Module) gin.HandlerFunc {
+	var applicationTime *apptimepkg.Module
+	if len(applicationTimes) > 0 {
+		applicationTime = applicationTimes[0]
+	}
 	return func(c *gin.Context) {
 		if c == nil || c.Request == nil || c.Request.URL == nil {
 			c.Next()
@@ -359,7 +364,7 @@ func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator) 
 		if maintenanceExclusivePath(path) {
 			lease, decision := coordinator.TryExclusive(maintenanceOperationForPath(path))
 			if !decision.Allowed {
-				writeMaintenanceBlockedSnapshotResponse(c, decision.State)
+				writeMaintenanceBlockedSnapshotResponseWithTime(c, decision.State, applicationTime)
 				return
 			}
 			c.Set(maintenanceExclusiveLeaseContextKey, lease)
@@ -369,7 +374,7 @@ func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator) 
 		}
 		lease, decision := coordinator.TryShared(maintenancepkg.WorkInteractive)
 		if !decision.Allowed {
-			writeMaintenanceBlockedSnapshotResponse(c, decision.State)
+			writeMaintenanceBlockedSnapshotResponseWithTime(c, decision.State, applicationTime)
 			return
 		}
 		defer lease.Close()

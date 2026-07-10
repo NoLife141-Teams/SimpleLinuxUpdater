@@ -349,10 +349,11 @@ func handleUpdatePoliciesListWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load update policies"})
 		return
 	}
+	interpretation := deps.ApplicationTime.Current()
 	c.JSON(http.StatusOK, gin.H{
 		"items":             enrichPoliciesWithMatchesUsing(deps.PolicyService, policies),
-		"timezone":          deps.AppTimezoneDisplayName(),
-		"resolved_timezone": deps.AppTimezoneResolvedName(),
+		"timezone":          interpretation.DisplayName,
+		"resolved_timezone": interpretation.ResolvedName,
 	})
 }
 
@@ -473,14 +474,14 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load policy runs"})
 		return
 	}
-	loc, timezoneName := deps.CurrentAppTimezone()
+	interpretation := deps.ApplicationTime.Current()
 	for i := range runs {
-		runs[i].ScheduledForDisplay, _ = formatTimestampForAppDisplayWithTimezone(runs[i].ScheduledForUTC, loc, timezoneName)
+		runs[i].ScheduledForDisplay, _ = interpretation.Format(runs[i].ScheduledForUTC, jobTimestampLayout)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"items":             runs,
-		"timezone":          deps.AppTimezoneDisplayName(),
-		"resolved_timezone": deps.AppTimezoneResolvedName(),
+		"timezone":          interpretation.DisplayName,
+		"resolved_timezone": interpretation.ResolvedName,
 	})
 }
 
@@ -512,14 +513,15 @@ func handleUpdatePolicyCalendarWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load update policy calendar"})
 		return
 	}
+	interpretation := deps.ApplicationTime.Current()
 	c.JSON(http.StatusOK, gin.H{
 		"days":              calendar.Days,
 		"start_date":        calendar.StartDate,
 		"end_date":          calendar.EndDate,
 		"generated_at":      calendar.GeneratedAt,
 		"policies":          calendar.Policies,
-		"timezone":          deps.AppTimezoneDisplayName(),
-		"resolved_timezone": deps.AppTimezoneResolvedName(),
+		"timezone":          interpretation.DisplayName,
+		"resolved_timezone": interpretation.ResolvedName,
 	})
 }
 
@@ -597,9 +599,10 @@ func handleUpdatePolicySettingsStatusWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load scheduled update settings"})
 		return
 	}
+	interpretation := deps.ApplicationTime.Current()
 	c.JSON(http.StatusOK, UpdatePolicySettingsResponse{
-		Timezone:         deps.AppTimezoneDisplayName(),
-		ResolvedTimezone: deps.AppTimezoneResolvedName(),
+		Timezone:         interpretation.DisplayName,
+		ResolvedTimezone: interpretation.ResolvedName,
 		GlobalBlackouts:  windows,
 	})
 }
@@ -623,9 +626,10 @@ func handleUpdatePolicySettingsUpdateWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	audit(c, "update_policy.settings", "update_policy", "global", "success", "Scheduled update settings saved", map[string]any{"global_blackout_count": len(normalizedBlackouts)})
+	interpretation := deps.ApplicationTime.Current()
 	c.JSON(http.StatusOK, UpdatePolicySettingsResponse{
-		Timezone:         deps.AppTimezoneDisplayName(),
-		ResolvedTimezone: deps.AppTimezoneResolvedName(),
+		Timezone:         interpretation.DisplayName,
+		ResolvedTimezone: interpretation.ResolvedName,
 		GlobalBlackouts:  normalizedBlackouts,
 	})
 }

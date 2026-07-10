@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,8 +13,6 @@ import (
 	"strings"
 	"time"
 	_ "time/tzdata"
-
-	"github.com/gin-gonic/gin"
 )
 
 const appTimezoneSetting = "app_timezone"
@@ -491,55 +488,6 @@ func currentAppTimezoneName() string {
 	return name
 }
 
-func currentAppTimezoneDisplayName() string {
-	loc, name := currentAppTimezone()
-	display, _ := appTimezoneDisplayAndResolved(loc, name, time.Now())
-	return display
-}
-
-func currentAppTimezoneResolvedName() string {
-	loc, name := currentAppTimezone()
-	_, resolved := appTimezoneDisplayAndResolved(loc, name, time.Now())
-	return resolved
-}
-
-func currentAppTimezoneEditableName() string {
-	raw, err := getSettingValue(appTimezoneSetting)
-	if err == nil {
-		value := strings.TrimSpace(raw)
-		switch {
-		case value == "":
-			return ""
-		case isLocalTimezoneAlias(value):
-			return "Local"
-		default:
-			return value
-		}
-	}
-	loc, name := currentAppTimezone()
-	if _, _, ok := parseOffsetTimezoneLabel(name); ok {
-		return "Local"
-	}
-	display, _ := appTimezoneDisplayAndResolved(loc, name, time.Now())
-	if isLocalTimezoneAlias(display) {
-		return "Local"
-	}
-	if strings.TrimSpace(name) == "" {
-		return "UTC"
-	}
-	return name
-}
-
-func currentAppTimezoneResponse() AppTimezoneResponse {
-	loc, name := currentAppTimezone()
-	display, resolved := appTimezoneDisplayAndResolved(loc, name, time.Now())
-	return AppTimezoneResponse{
-		Timezone:         display,
-		ResolvedTimezone: resolved,
-		EditableTimezone: currentAppTimezoneEditableName(),
-	}
-}
-
 func saveAppTimezone(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		if err := upsertSettingValue(appTimezoneSetting, ""); err != nil {
@@ -606,36 +554,4 @@ func formatTimestampForAppDisplayWithTimezone(raw string, loc *time.Location, ti
 	}
 	display, _ := appTimezoneDisplayAndResolved(loc, timezoneName, parsed)
 	return parsed.In(loc).Format(appDisplayTimestampLayout), display
-}
-
-func handleAppTimezoneStatus(c *gin.Context) {
-	c.JSON(http.StatusOK, currentAppTimezoneResponse())
-}
-
-func handleAppTimezoneUpdate(c *gin.Context) {
-	var req struct {
-		Timezone *string `json:"timezone"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		audit(c, "app_settings.timezone", "settings", "app_timezone", "failure", "Invalid app timezone payload", nil)
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if req.Timezone == nil {
-		audit(c, "app_settings.timezone", "settings", "app_timezone", "failure", "Invalid app timezone payload", nil)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "timezone is required"})
-		return
-	}
-	timezone, err := saveAppTimezone(*req.Timezone)
-	if err != nil {
-		statusCode := http.StatusInternalServerError
-		if isAppTimezoneValidationError(err) {
-			statusCode = http.StatusBadRequest
-		}
-		audit(c, "app_settings.timezone", "settings", "app_timezone", "failure", "Failed to save app timezone", map[string]any{"error": err.Error()})
-		c.JSON(statusCode, gin.H{"error": err.Error()})
-		return
-	}
-	audit(c, "app_settings.timezone", "settings", "app_timezone", "success", "App timezone saved", map[string]any{"timezone": timezone})
-	c.JSON(http.StatusOK, currentAppTimezoneResponse())
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	maintenancepkg "debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
@@ -25,6 +26,7 @@ type ServiceDeps struct {
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation     func() *time.Location
 	Maintenance         *maintenancepkg.Coordinator
+	ApplicationTime     *apptimepkg.Module
 	MarkInterruptedRuns func() error
 	Now                 func() time.Time
 	Logf                func(string, ...any)
@@ -393,7 +395,7 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 		}
 		for offset := 0; offset < days; offset++ {
 			dayStart := startDate.AddDate(0, 0, offset)
-			slotLocal := policySlotForDay(policy, dayStart)
+			slotLocal, occurrenceOK := s.policySlotForDay(policy, dayStart)
 			day := CalendarDay{
 				Date:           dayStart.Format("2006-01-02"),
 				Weekday:        weekdayToken(dayStart),
@@ -401,7 +403,10 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 				AllowedSlots:   []CalendarSlot{},
 				BlockedWindows: []CalendarBlockedWindow{},
 			}
-			if policy.Enabled && s.PolicyDueAt(policy, slotLocal) {
+			if !occurrenceOK {
+				day.BlockedReasons = append(day.BlockedReasons, "nonexistent_local_time")
+			}
+			if occurrenceOK && policy.Enabled && s.PolicyDueAt(policy, slotLocal) {
 				blockedByGlobal := s.BlackoutApplies(slotLocal, globalBlackouts)
 				blockedByPolicy := s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)
 				if !blockedByGlobal && !blockedByPolicy {
@@ -464,12 +469,21 @@ func matchedServerNamesForPolicy(s *Service, policy Policy, serversSnapshot []se
 	return matched
 }
 
-func policySlotForDay(policy Policy, dayStart time.Time) time.Time {
+func (s *Service) policySlotForDay(policy Policy, dayStart time.Time) (time.Time, bool) {
 	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
 	if err != nil {
 		minutes = 0
 	}
-	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location())
+	deps := s.EnsureDeps()
+	if deps.ApplicationTime != nil {
+		interpretation := deps.ApplicationTime.Current()
+		occurrence := interpretation.ResolveLocal(dayStart, minutes/60, minutes%60)
+		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
+			return time.Time{}, false
+		}
+		return occurrence.Instant.In(interpretation.Location), true
+	}
+	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location()), true
 }
 
 func weekdayToken(t time.Time) string {
@@ -721,6 +735,13 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 	slotLocal := req.Now.In(deps.CurrentLocation()).Truncate(time.Minute)
 	scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
+	if deps.ApplicationTime != nil {
+		occurrence := deps.ApplicationTime.Current().ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
+		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
+			return nil
+		}
+		scheduledForUTC = occurrence.Instant.UTC().Format(deps.TimestampLayout)
+	}
 	serversSnapshot := deps.SnapshotServers()
 
 	var queueErrs []error

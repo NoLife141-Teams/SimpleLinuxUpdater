@@ -45,10 +45,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.StartScheduledRunReconciliation == nil ||
 		deps.NotifyDashboardEvent == nil ||
 		deps.DashboardEventBroker == nil ||
-		deps.CurrentAppTimezone == nil ||
-		deps.CurrentAppLocation == nil ||
-		deps.AppTimezoneDisplayName == nil ||
-		deps.AppTimezoneResolvedName == nil {
+		deps.ApplicationTime == nil {
 		t.Fatalf("runtime composition did not populate complete core defaults: %+v", deps)
 	}
 }

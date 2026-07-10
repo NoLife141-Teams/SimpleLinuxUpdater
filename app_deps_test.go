@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/gin-gonic/gin"
@@ -1186,9 +1187,13 @@ func TestPolicyRoutesUseInjectedPolicyServiceForList(t *testing.T) {
 		},
 	})
 	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "policy-list.db"), AppDeps{
-		PolicyService:           service,
-		AppTimezoneDisplayName:  func() string { return "Injected/TZ" },
-		AppTimezoneResolvedName: func() string { return "Injected/TZ" },
+		PolicyService: service,
+		ApplicationTime: apptimepkg.New(apptimepkg.Deps{
+			Store: apptimepkg.NewMemoryStore(""),
+			Detector: apptimepkg.DetectorFunc(func() (*time.Location, string, error) {
+				return time.FixedZone("Injected/TZ", 0), "Injected/TZ", nil
+			}),
+		}),
 	})
 	sessionCookie := app.authenticate(t)
 

@@ -1,22 +1,15 @@
-let serverCache = {};
-        let sortKey = "name";
-        let sortDir = "asc";
-        let manageServers = [];
-        let page = 1;
-        let editingServerName = null;
-        let auditEvents = [];
-        let auditPage = 1;
-        let auditPageSize = 20;
-let auditTotal = 0;
-let hostKeyModalPromise = null;
-let hostKeyModalResolvers = [];
-let editSaveInProgress = false;
-let editKnownHostState = { host: '', port: 0, checked: false, alreadyTrusted: false, fingerprint: '' };
-let editKnownHostCheckPromise = null;
-let editUpdatePolicies = [];
-let editPolicyOverrideStates = new Map();
-let manageGlobalKeyAvailable = false;
-let auditFetchHadError = false;
+const managePageInteraction = window.ManagePageInteraction.createStore();
+window.managePageInteraction = managePageInteraction;
+const manageAdapterState = managePageInteraction.adapterState;
+[
+    "serverCache", "sortKey", "sortDir", "manageServers", "page", "editingServerName", "auditEvents", "auditPage", "auditPageSize", "auditTotal",
+    "hostKeyModalPromise", "hostKeyModalResolvers", "editSaveInProgress", "editKnownHostState", "editKnownHostCheckPromise", "editUpdatePolicies",
+    "editPolicyOverrideStates", "manageGlobalKeyAvailable", "auditFetchHadError"
+].forEach((key) => Object.defineProperty(globalThis, key, {
+    configurable: true,
+    get: () => manageAdapterState[key],
+    set: (value) => { manageAdapterState[key] = value; }
+}));
 
 	        function escapeHtml(value) {
 	            return String(value ?? "")
@@ -173,6 +166,9 @@ let auditFetchHadError = false;
 
         async function fetchManageServers() {
             const pageScroll = saveWindowScroll();
+            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'inventory' })
+                .find((effect) => effect.type === 'fetchSnapshot');
+            if (!request) return;
             try {
                 const response = await fetch('/api/servers');
                 if (!response.ok) {
@@ -183,11 +179,13 @@ let auditFetchHadError = false;
                     throw new Error('Invalid server list response.');
                 }
                 manageServers = servers;
+                managePageInteraction.dispatch({ type: 'inventorySnapshotReceived', requestID: request.requestID, items: servers });
                 const tbody = document.querySelector('#manage-servers-table tbody');
                 tbody.innerHTML = '';
                 renderTable();
                 requestAnimationFrame(() => restoreWindowScroll(pageScroll));
             } catch (error) {
+                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'inventory', requestID: request.requestID, error: error?.message });
                 alert(error?.message || 'Failed to load servers.');
             }
         }
@@ -271,10 +269,10 @@ let auditFetchHadError = false;
             const tbody = document.querySelector('#manage-servers-table tbody');
             tbody.innerHTML = '';
             serverCache = {};
-            let servers = applyFilters(manageServers);
-            servers = sortServers(servers);
-            const paged = paginate(servers);
-            const groups = groupServers(paged);
+            const projection = managePageInteraction.getView().inventory;
+            page = projection.page;
+            document.getElementById('page-info').textContent = `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
+            const groups = projection.groups;
             groups.forEach(group => {
                 if (group.key) {
                     const groupRow = document.createElement('tr');
@@ -324,12 +322,10 @@ let auditFetchHadError = false;
         const applyManageSortFromHeader = (th) => {
             if (!th) return;
             const key = th.dataset.sortKey;
-            if (sortKey === key) {
-                sortDir = sortDir === "asc" ? "desc" : "asc";
-            } else {
-                sortKey = key;
-                sortDir = "asc";
-            }
+            managePageInteraction.dispatch({ type: 'sortChanged', key });
+            const view = managePageInteraction.getView();
+            sortKey = view.sort.key;
+            sortDir = view.sort.direction;
             renderTable();
         };
 
@@ -346,18 +342,29 @@ let auditFetchHadError = false;
             });
         });
 
-        document.getElementById('search').addEventListener('input', () => { page = 1; renderTable(); });
-        document.getElementById('tag-filter').addEventListener('input', () => { page = 1; renderTable(); });
-        document.getElementById('auth-filter').addEventListener('change', () => { page = 1; renderTable(); });
-        document.getElementById('group-by').addEventListener('change', () => { page = 1; renderTable(); });
-        document.getElementById('page-size').addEventListener('change', () => { page = 1; renderTable(); });
+        function syncInventoryFilters() {
+            managePageInteraction.dispatch({ type: 'filtersChanged', patch: {
+                search: document.getElementById('search').value,
+                tag: document.getElementById('tag-filter').value,
+                auth: document.getElementById('auth-filter').value,
+                group: document.getElementById('group-by').value,
+                pageSize: document.getElementById('page-size').value
+            } });
+            page = 1;
+            renderTable();
+        }
+        document.getElementById('search').addEventListener('input', syncInventoryFilters);
+        document.getElementById('tag-filter').addEventListener('input', syncInventoryFilters);
+        document.getElementById('auth-filter').addEventListener('change', syncInventoryFilters);
+        document.getElementById('group-by').addEventListener('change', syncInventoryFilters);
+        document.getElementById('page-size').addEventListener('change', syncInventoryFilters);
 
         document.getElementById('prev-page').addEventListener('click', () => {
-            page = Math.max(1, page - 1);
+            managePageInteraction.dispatch({ type: 'pageChanged', page: Math.max(1, managePageInteraction.getView().inventory.page - 1) });
             renderTable();
         });
         document.getElementById('next-page').addEventListener('click', () => {
-            page += 1;
+            managePageInteraction.dispatch({ type: 'pageChanged', page: managePageInteraction.getView().inventory.page + 1 });
             renderTable();
         });
         document.getElementById('audit-prev-page').addEventListener('click', async () => {
@@ -407,12 +414,21 @@ let auditFetchHadError = false;
             if (!(await window.confirmTypedAction('Prune audit events older than the configured retention window?', 'PRUNE'))) {
                 return;
             }
-            const res = await fetch('/api/audit-events/prune', { method: 'POST' });
-            if (!res.ok) {
-                alert(await parseErrorResponse(res, 'Failed to prune audit events.'));
+            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'auditPrune' });
+            const execution = command.find((effect) => effect.type === 'executeCommand');
+            if (!execution) {
+                alert(command.find((effect) => effect.type === 'commandRejected')?.reason || 'Audit prune is unavailable.');
                 return;
             }
-            await fetchAuditEvents();
+            try {
+                const res = await fetch('/api/audit-events/prune', { method: 'POST' });
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to prune audit events.'));
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Audit events pruned.' });
+                await fetchAuditEvents();
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err.message || 'Failed to prune audit events.' });
+                alert(err.message || 'Failed to prune audit events.');
+            }
         });
         document.querySelector('#audit-table tbody').addEventListener('click', (e) => {
             const button = e.target.closest('button[data-audit-detail]');
@@ -484,6 +500,7 @@ let auditFetchHadError = false;
 
         function openAuditDetailDrawer(evt) {
             if (!evt) return;
+            managePageInteraction.dispatch({ type: 'auditDetailSelected', id: evt.id });
             const modal = document.getElementById('audit-detail-modal');
             const status = escapeHtml(evt.status || 'unknown');
             const statusClass = `status-${safeStatusClassToken(evt.status)}`;
@@ -510,6 +527,7 @@ let auditFetchHadError = false;
             const modal = document.getElementById('audit-detail-modal');
             modal.classList.remove('active');
             releaseModalFocus(modal);
+            managePageInteraction.dispatch({ type: 'auditDetailSelected', id: '' });
         }
 
         function renderAuditTable() {
@@ -564,6 +582,9 @@ let auditFetchHadError = false;
                 if (status) params.set('status', status);
                 const from = auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value);
                 const to = auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value);
+                managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { targetName, action, status, from, to, page: auditPage, pageSize: auditPageSize } });
+                const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'audit' })
+                    .find((effect) => effect.type === 'fetchSnapshot');
                 if (from) params.set('from', from);
                 if (to) params.set('to', to);
                 const res = await fetch(`/api/audit-events?${params.toString()}`);
@@ -571,6 +592,7 @@ let auditFetchHadError = false;
                     throw new Error(await parseErrorResponse(res, 'Failed to load audit events.'));
                 }
                 const data = await res.json();
+                managePageInteraction.dispatch({ type: 'auditSnapshotReceived', requestID: request?.requestID, data });
                 auditEvents = data.items || [];
                 auditTotal = Number(data.total || 0);
                 auditFetchHadError = false;
@@ -582,6 +604,8 @@ let auditFetchHadError = false;
                 }
                 renderAuditTable();
             } catch (err) {
+                const requestID = managePageInteraction.getView().streams.audit.inFlight;
+                if (requestID) managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'audit', requestID, error: err?.message });
                 const message = err && err.message ? err.message : 'Failed to load audit events.';
                 const pageInfo = document.getElementById('audit-page-info');
                 if (pageInfo) {
@@ -676,6 +700,7 @@ let auditFetchHadError = false;
 
             async function editServer(name) {
                 const current = serverCache[name] || {};
+                managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
                 editSaveInProgress = false;
                 editingServerName = name;
                 resetEditKnownHostState();
@@ -708,7 +733,7 @@ let auditFetchHadError = false;
                 }
             }
 
-	            function closeEditModal() {
+            function closeEditModal() {
 	                const editModal = document.getElementById('edit-modal');
 	                editModal.classList.remove('active');
 	                releaseModalFocus(editModal);
@@ -717,6 +742,7 @@ let auditFetchHadError = false;
                 setEditSaveButtonState(false);
                 setEditKnownHostButtonsState(false);
                 editingServerName = null;
+                managePageInteraction.dispatch({ type: 'editorClosed' });
                 resetEditKnownHostState();
                 editUpdatePolicies = [];
                 editPolicyOverrideStates = new Map();
@@ -811,6 +837,7 @@ let auditFetchHadError = false;
                             return;
                         }
                         setEditKnownHostState(host, port, true, !!scanned?.already_trusted, scanned?.fingerprint_sha256 || '');
+                        managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: managePageInteraction.getView().editor.sessionID, host, port, hostKey: { fingerprint: scanned?.fingerprint_sha256 || '', alreadyTrusted: !!scanned?.already_trusted } });
                         if (scanned?.already_trusted) {
                             setEditHostKeyStatus(`Known host saved for ${host}:${port} (${scanned.fingerprint_sha256}).`);
                         } else {
@@ -1023,10 +1050,12 @@ let auditFetchHadError = false;
                 }
             });
             document.getElementById('edit-name').addEventListener('input', () => {
+                managePageInteraction.dispatch({ type: 'editorChanged', patch: { name: document.getElementById('edit-name').value } });
                 setEditFieldInvalidState('edit-name', false);
                 maybeClearEditValidationError();
             });
             document.getElementById('edit-host').addEventListener('input', () => {
+                managePageInteraction.dispatch({ type: 'editorChanged', patch: { host: document.getElementById('edit-host').value } });
                 setEditFieldInvalidState('edit-host', false);
                 maybeClearEditValidationError();
                 if (editingServerName) {
@@ -1037,6 +1066,7 @@ let auditFetchHadError = false;
                 }
             });
             document.getElementById('edit-port').addEventListener('input', () => {
+                managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
                 if (editingServerName) {
                     editKnownHostCheckPromise = null;
                     setEditKnownHostButtonsState(false);
@@ -1045,11 +1075,13 @@ let auditFetchHadError = false;
                 }
             });
             document.getElementById('edit-tags').addEventListener('input', () => {
+                managePageInteraction.dispatch({ type: 'editorChanged', patch: { tags: document.getElementById('edit-tags').value } });
                 if (editingServerName) {
                     renderEditPolicyOverrides();
                 }
             });
             document.getElementById('edit-user').addEventListener('input', () => {
+                managePageInteraction.dispatch({ type: 'editorChanged', patch: { user: document.getElementById('edit-user').value } });
                 setEditFieldInvalidState('edit-user', false);
                 maybeClearEditValidationError();
             });
@@ -1107,14 +1139,19 @@ let auditFetchHadError = false;
                 alert('Select a private key file to upload.');
                 return;
             }
+            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyUpload' });
+            const execution = command.find((effect) => effect.type === 'executeCommand');
+            if (!execution) { alert('Global key action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
             const res = await fetch('/api/keys/global', { method: 'POST', body: form });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to upload global key.' });
                 alert(data.error || 'Failed to upload global key.');
                 return;
             }
+            managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key saved.' });
             alert('Global key saved.');
             input.value = '';
             resetFileInputLabel(input);
@@ -1125,12 +1162,17 @@ let auditFetchHadError = false;
             if (!(await window.confirmTypedAction('Clear the global SSH key?', 'CLEAR GLOBAL KEY'))) {
                 return;
             }
+            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyClear' });
+            const execution = command.find((effect) => effect.type === 'executeCommand');
+            if (!execution) { alert('Global key action is already in progress.'); return; }
             const res = await fetch('/api/keys/global', { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to clear global key.' });
                 alert(data.error || 'Failed to clear global key.');
                 return;
             }
+            managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key cleared.' });
             alert('Global key cleared.');
             fetchGlobalKeyStatus();
         }
@@ -1138,18 +1180,21 @@ let auditFetchHadError = false;
         async function fetchGlobalKeyStatus() {
             const status = document.getElementById('global-key-status');
             if (!status) return;
-            const res = await fetch('/api/keys/global');
-            if (!res.ok) {
-                status.textContent = `Global key status: ${await parseErrorResponse(res, 'unknown')}`;
-                return;
-            }
-            const data = await res.json();
-            const nextGlobalKeyAvailable = !!data.has_key;
-            const changed = nextGlobalKeyAvailable !== manageGlobalKeyAvailable;
-            manageGlobalKeyAvailable = nextGlobalKeyAvailable;
-            status.textContent = data.has_key ? 'Global key: saved' : 'Global key: not set';
-            if (changed && manageServers.length > 0) {
-                renderTable();
+            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'globalKey' })
+                .find((effect) => effect.type === 'fetchSnapshot');
+            if (!request) return;
+            try {
+                const res = await fetch('/api/keys/global');
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
+                const data = await res.json();
+                const changed = !!data.has_key !== manageGlobalKeyAvailable;
+                manageGlobalKeyAvailable = !!data.has_key;
+                managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: manageGlobalKeyAvailable });
+                status.textContent = data.has_key ? 'Global key: saved' : 'Global key: not set';
+                if (changed && manageServers.length > 0) renderTable();
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
+                status.textContent = `Global key status: ${err.message || 'unknown'}`;
             }
         }
 

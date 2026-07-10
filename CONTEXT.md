@@ -40,6 +40,10 @@ _Avoid_: Button state logic, frontend action rules
 The application-level state and decision boundary for status-page snapshots, navigation, synchronization, selection, drawer state, and single or bulk action planning; browser adapters retain transport, persistence, DOM, focus, scrolling, and confirmation effects.
 _Avoid_: Status page globals, dashboard UI state
 
+**Manage Page Interaction**:
+The operator-facing interpretation of server inventory, editor sessions, host-key trust, policy-override visibility, global-key availability, audit query/results, and selected audit detail into the state and decisions used to administer servers.
+_Avoid_: Manage page globals, inventory handler flow
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

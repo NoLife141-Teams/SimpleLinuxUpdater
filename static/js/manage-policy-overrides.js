@@ -57,6 +57,13 @@
                 }
                 editUpdatePolicies = nextPolicies;
                 editPolicyOverrideStates = nextOverrideStates;
+                if (window.managePageInteraction) {
+                    window.managePageInteraction.dispatch({
+                        type: 'policyContextReceived',
+                        sessionID: window.managePageInteraction.getView().editor.sessionID,
+                        context: { policies: nextPolicies, overrides: Object.fromEntries(nextOverrideStates) }
+                    });
+                }
             }
 
             function renderEditPolicyOverrides() {

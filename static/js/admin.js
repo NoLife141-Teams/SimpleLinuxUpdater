@@ -1,11 +1,15 @@
-const scheduledPoliciesState = {
-    items: [],
-    runs: [],
-    calendar: null,
-    currentJob: null,
-    editableTimezone: "",
-    timezone: "UTC"
-};
+const scheduledPolicyAdministration = window.ScheduledPolicyAdministrationInteraction.createStore();
+let appTimezoneSelection = "";
+let scheduledPolicyPreviewTimer = 0;
+
+function scheduledPolicyView() {
+    return scheduledPolicyAdministration.getView();
+}
+
+function scheduledPolicyRows(kind) {
+    const editor = scheduledPolicyView().editor;
+    return kind === "global" ? editor.globalBlackouts : editor.policyBlackouts;
+}
 
 const weekdayOptions = [
     { value: "mon", label: "Mon", fullLabel: "Monday" },
@@ -16,31 +20,6 @@ const weekdayOptions = [
     { value: "sat", label: "Sat", fullLabel: "Saturday" },
     { value: "sun", label: "Sun", fullLabel: "Sunday" }
 ];
-
-
-
-const blackoutEditors = {
-    policy: {
-        rows: [],
-        rowsId: "policy-blackout-rows",
-        textareaId: "policy-blackouts-json",
-        jsonStatusId: "policy-blackouts-json-status"
-    },
-    global: {
-        rows: [],
-        rowsId: "global-blackout-rows",
-        textareaId: "scheduled-global-blackouts-json",
-        jsonStatusId: "scheduled-global-blackouts-json-status"
-    }
-};
-
-const policyFormState = {
-    weekdays: []
-};
-
-let policyPreviewTimer = 0;
-let policyPreviewRequestSeq = 0;
-
 function browserSupportedTimezones() {
     try {
         if (typeof Intl === "undefined" || typeof Intl.supportedValuesOf !== "function") {
@@ -75,7 +54,7 @@ function ensureTimezoneSelectHasValue(value) {
 function populateTimezonePicker() {
     const select = document.getElementById("app-timezone-input");
     if (!select) return;
-    const currentValue = select.value || scheduledPoliciesState.editableTimezone || "";
+    const currentValue = select.value || appTimezoneSelection || "";
     const combined = [
         "",
         "Local",
@@ -125,27 +104,28 @@ function populateTimezonePicker() {
 function applyScheduledTimezone(payload) {
     const timezoneState = window.setAppTimezoneCache
         ? window.setAppTimezoneCache(payload)
-        : { timezone: String(payload || "").trim() || scheduledPoliciesState.timezone || "UTC" };
-    scheduledPoliciesState.timezone = timezoneState.timezone || "UTC";
+        : { timezone: String(payload || "").trim() || scheduledPolicyView().timezone || "UTC" };
+    const timezone = timezoneState.timezone || "UTC";
+    scheduledPolicyAdministration.dispatch({ type: "timezoneReceived", timezone });
     if (timezoneState && typeof timezoneState === "object") {
         if (Object.prototype.hasOwnProperty.call(timezoneState, "editable_timezone")) {
-            scheduledPoliciesState.editableTimezone = String(timezoneState.editable_timezone ?? "").trim();
+            appTimezoneSelection = String(timezoneState.editable_timezone ?? "").trim();
         } else if (Object.prototype.hasOwnProperty.call(timezoneState, "editableTimezone")) {
-            scheduledPoliciesState.editableTimezone = String(timezoneState.editableTimezone ?? "").trim();
+            appTimezoneSelection = String(timezoneState.editableTimezone ?? "").trim();
         }
     }
     const timezoneLabel = document.getElementById("scheduled-timezone");
     if (timezoneLabel) {
-        timezoneLabel.textContent = scheduledPoliciesState.timezone;
+        timezoneLabel.textContent = timezone;
     }
     const timezoneInput = document.getElementById("app-timezone-input");
     if (timezoneInput && document.activeElement !== timezoneInput) {
-        ensureTimezoneSelectHasValue(scheduledPoliciesState.editableTimezone);
-        timezoneInput.value = scheduledPoliciesState.editableTimezone;
+        ensureTimezoneSelectHasValue(appTimezoneSelection);
+        timezoneInput.value = appTimezoneSelection;
     }
     updatePolicySummary();
     renderScheduledPolicies();
-    renderScheduledRuns(scheduledPoliciesState.runs);
+    renderScheduledRuns(scheduledPolicyView().runs);
 }
 
 function setAppTimezoneFeedback(successMessage, errorMessage) {
@@ -263,7 +243,7 @@ async function sendNotificationTest() {
 async function fetchAppTimezoneSettings(force = false) {
     const timezonePayload = window.ensureAppTimezoneLoaded
         ? await window.ensureAppTimezoneLoaded(force)
-        : scheduledPoliciesState.timezone;
+        : scheduledPolicyView().timezone;
     applyScheduledTimezone(timezonePayload);
 }
 
@@ -672,20 +652,6 @@ function normalizeWeekdays(values) {
         .sort((a, b) => weekdayOrder(a) - weekdayOrder(b));
 }
 
-function parseCommaList(raw) {
-    const seen = new Set();
-    return String(raw || "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .filter((item) => {
-            const key = item.toLowerCase();
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-}
-
 function formatWeekdayLabel(token) {
     const match = weekdayOptions.find((item) => item.value === token);
     return match ? match.label : token;
@@ -694,11 +660,6 @@ function formatWeekdayLabel(token) {
 function formatWeekdayList(weekdays) {
     const normalized = normalizeWeekdays(weekdays);
     return normalized.length ? normalized.map(formatWeekdayLabel).join(", ") : "No weekdays selected";
-}
-
-function normalizeTimeInput(raw, fallback) {
-    const value = String(raw || "").trim();
-    return /^\d{2}:\d{2}$/.test(value) ? value : fallback;
 }
 
 function humanizeExecutionMode(mode) {
@@ -741,87 +702,8 @@ function pluralize(count, singular, plural) {
     return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function parseBlackoutsJSON(raw, label) {
-    const trimmed = String(raw || "").trim();
-    if (!trimmed) return [];
-    let parsed;
-    try {
-        parsed = JSON.parse(trimmed);
-    } catch (_) {
-        throw new Error(`${label} must be valid JSON.`);
-    }
-    if (!Array.isArray(parsed)) {
-        throw new Error(`${label} must be a JSON array.`);
-    }
-    return parsed;
-}
-
-function normalizeBlackoutRow(row) {
-    return {
-        weekdays: normalizeWeekdays(Array.isArray(row?.weekdays) ? row.weekdays : []),
-        start_time: normalizeTimeInput(row?.start_time, "00:00"),
-        end_time: normalizeTimeInput(row?.end_time, "06:00")
-    };
-}
-
-function parseStrictBlackoutTime(value, label, index, field) {
-    const raw = String(value ?? "").trim();
-    const match = raw.match(/^(\d{2}):(\d{2})$/);
-    if (!match) {
-        throw new Error(`${label} ${index + 1}: ${field} must use HH:MM.`);
-    }
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-        throw new Error(`${label} ${index + 1}: ${field} must be a real 24-hour time.`);
-    }
-    return raw;
-}
-
-function parseStrictBlackoutWeekdays(values, label, index) {
-    if (!Array.isArray(values)) {
-        throw new Error(`${label} ${index + 1}: weekdays must be an array.`);
-    }
-    const normalized = values.map((value) => {
-        const token = normalizeWeekdayToken(value);
-        if (!token) {
-            throw new Error(`${label} ${index + 1}: invalid weekday "${String(value ?? "").trim()}".`);
-        }
-        return token;
-    });
-    const unique = normalizeWeekdays(normalized);
-    if (!unique.length) {
-        throw new Error(`${label} ${index + 1}: choose at least one weekday.`);
-    }
-    return unique;
-}
-
-function parseStrictBlackoutRow(row, label, index) {
-    if (!row || typeof row !== "object" || Array.isArray(row)) {
-        throw new Error(`${label} ${index + 1}: each item must be an object.`);
-    }
-    return {
-        weekdays: parseStrictBlackoutWeekdays(row.weekdays, label, index),
-        start_time: parseStrictBlackoutTime(row.start_time, label, index, "start_time"),
-        end_time: parseStrictBlackoutTime(row.end_time, label, index, "end_time")
-    };
-}
-
-function createEmptyBlackoutRow() {
-    return {
-        weekdays: [],
-        start_time: "00:00",
-        end_time: "06:00"
-    };
-}
-
-function getBlackoutEditor(kind) {
-    return blackoutEditors[kind];
-}
-
 function setBlackoutJsonStatus(kind, message, isError = false) {
-    const editor = getBlackoutEditor(kind);
-    const node = editor ? document.getElementById(editor.jsonStatusId) : null;
+    const node = document.getElementById(kind === "global" ? "scheduled-global-blackouts-json-status" : "policy-blackouts-json-status");
     if (!node) return;
     node.textContent = String(message || "").trim();
     node.classList.toggle("form-feedback-error", !!message && isError);
@@ -829,16 +711,13 @@ function setBlackoutJsonStatus(kind, message, isError = false) {
 }
 
 function syncBlackoutTextarea(kind) {
-    const editor = getBlackoutEditor(kind);
-    const textarea = editor ? document.getElementById(editor.textareaId) : null;
+    const textarea = document.getElementById(kind === "global" ? "scheduled-global-blackouts-json" : "policy-blackouts-json");
     if (!textarea) return;
-    textarea.value = JSON.stringify(editor.rows, null, 2);
+    textarea.value = JSON.stringify(scheduledPolicyRows(kind), null, 2);
 }
 
 function setBlackoutEditorRows(kind, rows) {
-    const editor = getBlackoutEditor(kind);
-    if (!editor) return;
-    editor.rows = (Array.isArray(rows) ? rows : []).map(normalizeBlackoutRow);
+    scheduledPolicyAdministration.dispatch({ type: "blackoutRowsReceived", kind, rows });
     renderBlackoutEditor(kind);
 }
 
@@ -858,26 +737,24 @@ function blackoutRowSummaryText(row) {
 }
 
 function updateBlackoutRowSummary(kind, index) {
-    const editor = getBlackoutEditor(kind);
-    const row = editor ? editor.rows[index] : null;
-    const summary = editor
-        ? document.querySelector(`#${editor.rowsId} [data-blackout-row-index="${String(index)}"] [data-blackout-summary]`)
-        : null;
+    const row = scheduledPolicyRows(kind)[index];
+    const rowsID = kind === "global" ? "global-blackout-rows" : "policy-blackout-rows";
+    const summary = document.querySelector(`#${rowsID} [data-blackout-row-index="${String(index)}"] [data-blackout-summary]`);
     if (!row || !summary) return;
     summary.textContent = blackoutRowSummaryText(row);
 }
 
 function renderBlackoutEditor(kind) {
-    const editor = getBlackoutEditor(kind);
-    const container = editor ? document.getElementById(editor.rowsId) : null;
-    if (!editor || !container) return;
-    if (!editor.rows.length) {
+    const rows = scheduledPolicyRows(kind);
+    const container = document.getElementById(kind === "global" ? "global-blackout-rows" : "policy-blackout-rows");
+    if (!container) return;
+    if (!rows.length) {
         container.innerHTML = '<div class="empty-editor-state subtle">No no-run windows yet.</div>';
         syncBlackoutTextarea(kind);
         if (kind === "policy") updatePolicySummary();
         return;
     }
-    container.innerHTML = editor.rows.map((row, index) => `
+    container.innerHTML = rows.map((row, index) => `
         <div class="blackout-row" data-blackout-row-index="${escapeHtml(String(index))}">
             <div class="blackout-row-top">
                 <span class="pill pill-muted">${escapeHtml(`Window ${index + 1}`)}</span>
@@ -907,15 +784,9 @@ function renderBlackoutEditor(kind) {
 }
 
 function addBlackoutRow(kind) {
-    const editor = getBlackoutEditor(kind);
-    if (!editor) return;
-    editor.rows.push(createEmptyBlackoutRow());
+    scheduledPolicyAdministration.dispatch({ type: "blackoutRowAdded", kind });
     setBlackoutJsonStatus(kind, "");
     renderBlackoutEditor(kind);
-}
-
-function validateBlackoutRows(rows, label) {
-    return rows.map((row, index) => parseStrictBlackoutRow(row, label, index));
 }
 
 function setPolicyFeedback(status, error = "") {
@@ -949,10 +820,11 @@ function clearPolicyFieldErrors() {
 }
 
 function setPolicyWeekdays(weekdays) {
-    policyFormState.weekdays = normalizeWeekdays(weekdays);
+    scheduledPolicyAdministration.dispatch({ type: "editorChanged", patch: { weekdays, cadence_kind: document.getElementById("policy-cadence-kind")?.value || "daily" } });
+    const selectedWeekdays = scheduledPolicyView().editor.draft.weekdays;
     document.querySelectorAll("#policy-weekdays-picker .day-chip").forEach((button) => {
         const day = button.dataset.weekday || "";
-        const isActive = policyFormState.weekdays.includes(day);
+        const isActive = selectedWeekdays.includes(day);
         button.classList.toggle("active", isActive);
         button.setAttribute("aria-pressed", isActive ? "true" : "false");
     });
@@ -961,13 +833,15 @@ function setPolicyWeekdays(weekdays) {
 }
 
 function togglePolicyWeekday(day) {
-    const normalized = normalizeWeekdayToken(day);
-    if (!normalized) return;
-    if (policyFormState.weekdays.includes(normalized)) {
-        setPolicyWeekdays(policyFormState.weekdays.filter((item) => item !== normalized));
-        return;
-    }
-    setPolicyWeekdays([...policyFormState.weekdays, normalized]);
+    scheduledPolicyAdministration.dispatch({ type: "policyWeekdayToggled", day });
+    const weekdays = scheduledPolicyView().editor.draft.weekdays;
+    document.querySelectorAll("#policy-weekdays-picker .day-chip").forEach((button) => {
+        const active = weekdays.includes(button.dataset.weekday || "");
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    updatePolicySummary();
+    schedulePolicyPreview();
 }
 
 function setPolicyEditorModeLabel(text) {
@@ -998,40 +872,10 @@ function refreshPolicyFormVisibility() {
 function updatePolicySummary() {
     const summary = document.getElementById("policy-summary");
     if (!summary) return;
-    const name = document.getElementById("policy-name").value.trim() || "Unnamed policy";
-    const targetTag = document.getElementById("policy-target-tag").value.trim() || "unset tag";
-    const includeTags = parseCommaList(document.getElementById("policy-include-tags").value);
-    const excludeTags = parseCommaList(document.getElementById("policy-exclude-tags").value);
-    const targetServers = parseCommaList(document.getElementById("policy-target-servers").value);
-    const cadence = document.getElementById("policy-cadence-kind").value;
-    const timeLocal = document.getElementById("policy-time-local").value || "--:--";
-	const executionMode = document.getElementById("policy-execution-mode").value;
-	const packageScope = document.getElementById("policy-package-scope").value;
-	const upgradeMode = document.getElementById("policy-upgrade-mode").value;
-    const timezone = scheduledPoliciesState.timezone || "UTC";
-    const noRunCount = getBlackoutEditor("policy").rows.length;
-    const scheduleText = cadence === "weekly"
-        ? `Every ${formatWeekdayList(policyFormState.weekdays)} at ${timeLocal}`
-        : `Daily at ${timeLocal}`;
-    const executionText = humanizeExecutionMode(executionMode);
-	const scopeText = humanizePackageScope(packageScope);
-	const upgradeModeText = humanizeUpgradeMode(upgradeMode);
-    const timeoutInput = document.getElementById("policy-approval-timeout");
-    const timeoutText = executionMode === "approval_required"
-        ? `, ${Number(timeoutInput?.value || 720)} minute approval window`
-        : "";
-    const noRunText = noRunCount
-        ? `${pluralize(noRunCount, "no-run window", "no-run windows")} configured`
-        : "No policy no-run windows";
-    const targetBits = [];
-    if (targetTag && targetTag !== "unset tag") targetBits.push(`tag=${targetTag}`);
-    if (includeTags.length) targetBits.push(`include=${includeTags.join(", ")}`);
-    if (excludeTags.length) targetBits.push(`exclude=${excludeTags.join(", ")}`);
-    if (targetServers.length) targetBits.push(`servers=${targetServers.join(", ")}`);
-    const targetText = targetBits.length ? targetBits.join("; ") : "no target";
+    const projection = scheduledPolicyView().editor.summary;
     summary.innerHTML = `
-        <div class="summary-title">${escapeHtml(name)}</div>
-		<div class="summary-body">${escapeHtml(`${scheduleText} (${timezone}), ${executionText}, ${scopeText}, ${upgradeModeText}${timeoutText}, ${targetText}. ${noRunText}.`)}</div>
+        <div class="summary-title">${escapeHtml(projection.title)}</div>
+		<div class="summary-body">${escapeHtml(projection.body)}</div>
 	`;
 }
 
@@ -1086,42 +930,33 @@ function setPolicyPreviewMessage(message, countText = "0 matched") {
 }
 
 async function refreshPolicyPreview() {
-    const seq = ++policyPreviewRequestSeq;
-    let payload;
-    try {
-        payload = collectPolicyPayload({ silent: true });
-    } catch (err) {
-        setPolicyPreviewMessage(err.message || "Complete policy fields to preview matching servers.");
+    const effect = scheduledPolicyAdministration.dispatch({ type: "previewRequested" }).find((item) => item.type === "fetchPreview");
+    if (!effect) {
+        setPolicyPreviewMessage(scheduledPolicyView().editor.preview.message || "Complete policy fields to preview matching servers.");
         return;
-    }
-    const id = document.getElementById("policy-id").value.trim();
-    if (id) {
-        payload.id = Number(id);
     }
     setPolicyPreviewMessage("Refreshing target preview...", "...");
     try {
         const res = await fetch("/api/update-policies/preview", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(effect.payload)
         });
         if (!res.ok) {
             throw new Error(await parseErrorResponse(res, "Failed to preview scheduled policy."));
         }
         const data = await res.json().catch(() => ({}));
-        if (seq === policyPreviewRequestSeq) {
-            renderPolicyPreview(data);
-        }
+        scheduledPolicyAdministration.dispatch({ type: "previewReceived", requestId: effect.requestId, preview: data });
+        renderPolicyPreview(scheduledPolicyView().editor.preview.data);
     } catch (err) {
-        if (seq === policyPreviewRequestSeq) {
-            setPolicyPreviewMessage(err.message || "Failed to preview scheduled policy.");
-        }
+        scheduledPolicyAdministration.dispatch({ type: "previewFailed", requestId: effect.requestId, error: err.message || "Failed to preview scheduled policy." });
+        setPolicyPreviewMessage(scheduledPolicyView().editor.preview.message);
     }
 }
 
 function schedulePolicyPreview() {
-    clearTimeout(policyPreviewTimer);
-    policyPreviewTimer = window.setTimeout(refreshPolicyPreview, 250);
+    clearTimeout(scheduledPolicyPreviewTimer);
+    scheduledPolicyPreviewTimer = window.setTimeout(refreshPolicyPreview, 250);
 }
 
 function formatCadence(policy) {
@@ -1150,8 +985,8 @@ function renderPolicySchedule(policy) {
     const noRunText = noRunCount
         ? `${pluralize(noRunCount, "policy no-run window", "policy no-run windows")}`
         : "No policy no-run windows";
-    const timezoneText = scheduledPoliciesState.timezone
-        ? `App timezone: ${scheduledPoliciesState.timezone}`
+    const timezoneText = scheduledPolicyView().timezone
+        ? `App timezone: ${scheduledPolicyView().timezone}`
         : "";
     const detailText = [noRunText, timezoneText].filter(Boolean).join(" · ");
     return `
@@ -1261,7 +1096,7 @@ function renderJobPhaseTimeline(job) {
 }
 
 function renderJobDetail(job, reportURL) {
-    scheduledPoliciesState.currentJob = job || null;
+    scheduledPolicyAdministration.dispatch({ type: "jobReceived", job, data: job });
     document.getElementById("job-detail-title").textContent = `Job ${job.id || ""}`;
     document.getElementById("job-detail-status").innerHTML = `<span class="status-chip status-${safeRunStatusClassToken(job.status)}">${escapeHtml(job.status || "unknown")}</span>`;
     document.getElementById("job-detail-phase").textContent = formatJobPhaseLabel(job.phase);
@@ -1285,12 +1120,15 @@ function closeJobDetailModal() {
     const modal = document.getElementById("job-detail-modal");
     if (!modal) return;
     modal.classList.remove("active");
-    scheduledPoliciesState.currentJob = null;
+    scheduledPolicyAdministration.dispatch({ type: "jobClosed" });
 }
 
 async function openJobDetail(jobID) {
     const cleanID = String(jobID || "").trim();
     if (!cleanID) return;
+    const request = scheduledPolicyAdministration.dispatch({ type: "jobSelected", jobID: cleanID })
+        .find((effect) => effect.type === "fetchSnapshot");
+    if (!request) return;
     try {
         const res = await fetch(`/api/jobs/${encodeURIComponent(cleanID)}`);
         if (!res.ok) {
@@ -1302,17 +1140,19 @@ async function openJobDetail(jobID) {
             alert("Job details were not returned.");
             return;
         }
-        renderJobDetail(data.job, data.report_url);
+        scheduledPolicyAdministration.dispatch({ type: "jobReceived", requestId: request.requestId, job: data.job, data: data.job });
+        renderJobDetail(scheduledPolicyView().selectedJob, data.report_url);
         document.getElementById("job-detail-modal").classList.add("active");
         document.getElementById("job-detail-close").focus({ preventScroll: true });
     } catch (err) {
+        scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: "job", requestId: request.requestId, error: err.message || "Failed to load job details." });
         console.error("Failed to load job details:", err);
         alert("Failed to load job details.");
     }
 }
 
 async function copyJobDetailText(kind) {
-    const job = scheduledPoliciesState.currentJob;
+    const job = scheduledPolicyView().selectedJob;
     if (!job) return;
     const text = kind === "logs"
         ? (job.logs_text || "")
@@ -1330,6 +1170,7 @@ async function copyJobDetailText(kind) {
 }
 
 function resetPolicyForm() {
+    scheduledPolicyAdministration.dispatch({ type: "editorReset" });
     document.getElementById("policy-id").value = "";
     document.getElementById("policy-name").value = "";
     document.getElementById("policy-target-tag").value = "";
@@ -1356,6 +1197,7 @@ function resetPolicyForm() {
 }
 
 function applyPolicyToForm(policy) {
+    scheduledPolicyAdministration.dispatch({ type: "editorLoaded", policy });
     document.getElementById("policy-id").value = String(policy.id || "");
     document.getElementById("policy-name").value = policy.name || "";
     document.getElementById("policy-target-tag").value = policy.target_tag || "";
@@ -1385,13 +1227,14 @@ function renderScheduledPolicies() {
     const tbody = document.querySelector("#scheduled-policy-table tbody");
     if (!tbody) return;
     tbody.innerHTML = "";
-    if (!scheduledPoliciesState.items.length) {
+    const policies = scheduledPolicyView().policies;
+    if (!policies.length) {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="5" class="subtle">No scheduled update policies yet.</td>';
         tbody.appendChild(row);
         return;
     }
-    scheduledPoliciesState.items.forEach((policy) => {
+    policies.forEach((policy) => {
         const row = document.createElement("tr");
         row.innerHTML = `
             <td>
@@ -1418,9 +1261,9 @@ function renderScheduledPolicies() {
 function renderMaintenanceCalendarFilter() {
     const select = document.getElementById("maintenance-calendar-policy");
     if (!select) return;
-    const current = select.value;
+    const current = scheduledPolicyView().selectedCalendarPolicyID || select.value;
     select.innerHTML = '<option value="">All policies</option>';
-    scheduledPoliciesState.items.forEach((policy) => {
+    scheduledPolicyView().policies.forEach((policy) => {
         const option = document.createElement("option");
         option.value = String(policy.id || "");
         option.textContent = policy.name || `Policy ${policy.id}`;
@@ -1470,10 +1313,9 @@ function renderMaintenanceCalendar(calendar) {
     const status = document.getElementById("maintenance-calendar-status");
     if (!container) return;
     const policies = Array.isArray(calendar?.policies) ? calendar.policies : [];
-    scheduledPoliciesState.calendar = calendar || null;
     if (status) {
         const range = calendar?.start_date && calendar?.end_date ? `${calendar.start_date} to ${calendar.end_date}` : "";
-        const tz = calendar?.timezone || scheduledPoliciesState.timezone || "UTC";
+        const tz = calendar?.timezone || scheduledPolicyView().timezone || "UTC";
         status.textContent = range ? `${range} · ${tz}` : `Calendar timezone: ${tz}`;
     }
     if (!policies.length) {
@@ -1521,15 +1363,15 @@ function renderMaintenanceCalendar(calendar) {
 function renderScheduledRuns(items) {
     const tbody = document.querySelector("#scheduled-runs-table tbody");
     if (!tbody) return;
-    scheduledPoliciesState.runs = Array.isArray(items) ? items : [];
+    const runs = Array.isArray(items) ? items : [];
     tbody.innerHTML = "";
-    if (!scheduledPoliciesState.runs.length) {
+    if (!runs.length) {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="7" class="subtle">No scheduled runs recorded yet.</td>';
         tbody.appendChild(row);
         return;
     }
-    scheduledPoliciesState.runs.forEach((run) => {
+    runs.forEach((run) => {
         const row = document.createElement("tr");
         const jobValue = run.job_id ? `<code>${escapeHtml(run.job_id)}</code>` : '<span class="subtle">-</span>';
         const statusToken = safeRunStatusClassToken(run.status);
@@ -1570,45 +1412,62 @@ function handleScheduledRunsTableClick(event) {
     openJobDetail(detailButton.dataset.jobId);
 }
 
-async function fetchScheduledPolicies() {
+async function fetchScheduledPolicies(request) {
+    request = request || scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "policies" })
+        .find((effect) => effect.type === "fetchSnapshot");
+    if (!request) return;
     const res = await fetch("/api/update-policies");
     if (!res.ok) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled policies."));
     }
     const data = await res.json().catch(() => ({}));
-    scheduledPoliciesState.items = Array.isArray(data.items) ? data.items : [];
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "policies", requestId: request.requestId, data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
     renderScheduledPolicies();
     renderMaintenanceCalendarFilter();
+    await runScheduledEffects(followUp);
 }
 
-async function fetchScheduledSettings() {
+async function fetchScheduledSettings(request) {
+    request = request || scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "settings" })
+        .find((effect) => effect.type === "fetchSnapshot");
+    if (!request) return;
     const res = await fetch("/api/update-policies/settings");
     if (!res.ok) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled update settings."));
     }
     const data = await res.json().catch(() => ({}));
-    applyScheduledTimezone(data.timezone ? data : scheduledPoliciesState.timezone || "UTC");
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "settings", requestId: request.requestId, data });
+    applyScheduledTimezone(data.timezone ? data : scheduledPolicyView().timezone || "UTC");
     setBlackoutEditorRows("global", data.global_blackouts || []);
     setBlackoutJsonStatus("global", "");
+    await runScheduledEffects(followUp);
 }
 
-async function fetchScheduledRuns() {
+async function fetchScheduledRuns(request) {
+    request = request || scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "runs" })
+        .find((effect) => effect.type === "fetchSnapshot");
+    if (!request) return;
     const res = await fetch("/api/update-policies/runs?limit=50");
     if (!res.ok) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled runs."));
     }
     const data = await res.json().catch(() => ({}));
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "runs", requestId: request.requestId, data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
-    renderScheduledRuns(data.items || []);
+    renderScheduledRuns(scheduledPolicyView().runs);
+    await runScheduledEffects(followUp);
 }
 
-async function fetchMaintenanceCalendar() {
-    const policyID = String(document.getElementById("maintenance-calendar-policy")?.value || "").trim();
+async function fetchMaintenanceCalendar(request) {
+    const policyID = String(request?.policyID || scheduledPolicyView().selectedCalendarPolicyID || document.getElementById("maintenance-calendar-policy")?.value || "").trim();
+    request = request || scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "calendar", payload: { policyID } })
+        .find((effect) => effect.type === "fetchSnapshot");
+    if (!request) return;
     const params = new URLSearchParams({ days: "14" });
     if (policyID) params.set("policy_id", policyID);
     const res = await fetch(`/api/update-policies/calendar?${params.toString()}`);
@@ -1616,10 +1475,12 @@ async function fetchMaintenanceCalendar() {
         throw new Error(await parseErrorResponse(res, "Failed to load maintenance window calendar."));
     }
     const data = await res.json().catch(() => ({}));
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "calendar", requestId: request.requestId, data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
-    renderMaintenanceCalendar(data);
+    renderMaintenanceCalendar(scheduledPolicyView().calendar);
+    await runScheduledEffects(followUp);
 }
 
 async function reloadMaintenanceCalendar() {
@@ -1628,20 +1489,35 @@ async function reloadMaintenanceCalendar() {
         if (status) status.textContent = "Loading calendar...";
         await fetchMaintenanceCalendar();
     } catch (err) {
+        const requestId = scheduledPolicyView().snapshots.calendar.inFlight;
+        if (requestId) scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: "calendar", requestId, error: err.message || "Failed to load maintenance window calendar." });
         console.error("Failed to load maintenance window calendar:", err);
         if (status) status.textContent = err.message || "Failed to load maintenance window calendar.";
+    }
+}
+
+async function runScheduledEffects(effects) {
+    for (const effect of effects) {
+        if (effect.type !== "fetchSnapshot") continue;
+        try {
+            if (effect.stream === "policies") await fetchScheduledPolicies(effect);
+            if (effect.stream === "settings") await fetchScheduledSettings(effect);
+            if (effect.stream === "runs") await fetchScheduledRuns(effect);
+            if (effect.stream === "calendar") await fetchMaintenanceCalendar(effect);
+        } catch (err) {
+            scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: effect.stream, requestId: effect.requestId, error: err.message || "Failed to refresh scheduled policy data." });
+            throw err;
+        }
     }
 }
 
 async function refreshScheduledUpdateViews() {
     try {
         await fetchAppTimezoneSettings(true);
-        await Promise.all([
-            fetchScheduledPolicies(),
-            fetchScheduledSettings(),
-            fetchScheduledRuns()
-        ]);
-        await fetchMaintenanceCalendar();
+        await runScheduledEffects(["policies", "settings", "runs"].flatMap((stream) => (
+            scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream })
+        )));
+        await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "calendar" }));
     } catch (err) {
         console.error("Failed to refresh scheduled update views:", err);
         setPolicyFeedback("", err.message || "Failed to load scheduled update views.");
@@ -1654,76 +1530,69 @@ function collectPolicyPayload(options = {}) {
         clearPolicyFieldErrors();
         setPolicyFeedback("", "");
     }
-    const name = document.getElementById("policy-name").value.trim();
-    const targetTag = document.getElementById("policy-target-tag").value.trim();
-    const includeTags = parseCommaList(document.getElementById("policy-include-tags").value);
-    const excludeTags = parseCommaList(document.getElementById("policy-exclude-tags").value);
-    const targetServers = parseCommaList(document.getElementById("policy-target-servers").value);
-    const cadenceKind = document.getElementById("policy-cadence-kind").value;
-	const executionMode = document.getElementById("policy-execution-mode").value;
-	const packageScope = document.getElementById("policy-package-scope").value;
-	const upgradeMode = document.getElementById("policy-upgrade-mode").value;
-    const timeLocal = document.getElementById("policy-time-local").value;
-    const weekdays = cadenceKind === "weekly" ? normalizeWeekdays(policyFormState.weekdays) : [];
-    const approvalTimeoutValue = Number(document.getElementById("policy-approval-timeout").value || 0);
+    scheduledPolicyAdministration.dispatch({
+        type: "editorChanged",
+        patch: {
+            id: document.getElementById("policy-id").value,
+            name: document.getElementById("policy-name").value,
+            enabled: document.getElementById("policy-enabled").checked,
+            target_tag: document.getElementById("policy-target-tag").value,
+            include_tags: document.getElementById("policy-include-tags").value,
+            exclude_tags: document.getElementById("policy-exclude-tags").value,
+            target_servers: document.getElementById("policy-target-servers").value,
+            cadence_kind: document.getElementById("policy-cadence-kind").value,
+            execution_mode: document.getElementById("policy-execution-mode").value,
+            package_scope: document.getElementById("policy-package-scope").value,
+            upgrade_mode: document.getElementById("policy-upgrade-mode").value,
+            time_local: document.getElementById("policy-time-local").value,
+            approval_timeout_minutes: document.getElementById("policy-approval-timeout").value
+        }
+    });
+    const result = scheduledPolicyAdministration.validatePolicyDraft();
+    const errors = result.errors || {};
     let firstInvalidId = "";
-    if (!name) {
+    if (errors.name) {
         if (!silent) setPolicyFieldInvalid("policy-name", true);
         firstInvalidId = firstInvalidId || "policy-name";
     }
-    if (!targetTag && !includeTags.length && !targetServers.length) {
+    if (errors.target_tag) {
         if (!silent) setPolicyFieldInvalid("policy-target-tag", true);
         firstInvalidId = firstInvalidId || "policy-target-tag";
     }
     if (firstInvalidId) {
         if (!silent) document.getElementById(firstInvalidId)?.focus();
-        throw new Error("Policy name and at least one target tag, included tag, or explicit server are required.");
     }
-    if (cadenceKind === "weekly" && !weekdays.length) {
-        throw new Error("Weekly policies require at least one weekday.");
-    }
-    const policyBlackouts = validateBlackoutRows(getBlackoutEditor("policy").rows, "Policy no-run window");
-    return {
-        name,
-        enabled: document.getElementById("policy-enabled").checked,
-        target_tag: targetTag,
-        include_tags: includeTags,
-        exclude_tags: excludeTags,
-		target_servers: targetServers,
-		package_scope: packageScope,
-		upgrade_mode: upgradeMode,
-		execution_mode: executionMode,
-        cadence_kind: cadenceKind,
-        time_local: timeLocal,
-        weekdays,
-        approval_timeout_minutes: executionMode === "approval_required" ? (approvalTimeoutValue || 720) : 0,
-        policy_blackouts: policyBlackouts
-    };
+    if (!result.ok) throw new Error(result.message || errors.blackouts || "Complete the scheduled policy fields.");
+    return result.payload;
 }
 
 async function saveScheduledPolicy(event) {
     event.preventDefault();
+    let plan;
     try {
-        const id = document.getElementById("policy-id").value.trim();
-        const payload = collectPolicyPayload();
-        const url = id ? `/api/update-policies/${encodeURIComponent(id)}` : "/api/update-policies";
-        const method = id ? "PUT" : "POST";
+        collectPolicyPayload();
+        const command = scheduledPolicyAdministration.dispatch({ type: "commandRequested", command: "savePolicy" });
+        const execution = command.find((effect) => effect.type === "executeCommand");
+        if (!execution) throw new Error(command.find((effect) => effect.type === "commandRejected")?.message || "Scheduled policy action is unavailable.");
+        plan = execution.plan;
+        const url = plan.command === "updatePolicy" ? `/api/update-policies/${encodeURIComponent(plan.policyID)}` : "/api/update-policies";
+        const method = plan.command === "updatePolicy" ? "PUT" : "POST";
         const saveBtn = document.getElementById("policy-save-btn");
         if (saveBtn) saveBtn.disabled = true;
         const res = await fetch(url, {
             method,
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(plan.payload)
         });
         if (!res.ok) {
-            setPolicyFeedback("", await parseErrorResponse(res, "Failed to save scheduled policy."));
-            return;
+            throw new Error(await parseErrorResponse(res, "Failed to save scheduled policy."));
         }
-        const successMessage = id ? "Policy updated." : "Policy created.";
+        const successMessage = plan.command === "updatePolicy" ? "Policy updated." : "Policy created.";
         resetPolicyForm();
-        await refreshScheduledUpdateViews();
+        await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "commandCompleted", plan, message: successMessage }));
         setPolicyFeedback(successMessage, "");
     } catch (err) {
+        if (plan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan, message: err.message || "Failed to save scheduled policy." });
         setPolicyFeedback("", err.message || "Failed to save scheduled policy.");
     } finally {
         const saveBtn = document.getElementById("policy-save-btn");
@@ -1732,33 +1601,39 @@ async function saveScheduledPolicy(event) {
 }
 
 async function saveScheduledSettings() {
+    let plan;
     try {
         setScheduledSettingsFeedback("", "");
-        const payload = {
-            global_blackouts: validateBlackoutRows(getBlackoutEditor("global").rows, "Global no-run window")
-        };
+        const command = scheduledPolicyAdministration.dispatch({ type: "commandRequested", command: "saveGlobalSettings" });
+        const execution = command.find((effect) => effect.type === "executeCommand");
+        if (!execution) throw new Error(command.find((effect) => effect.type === "commandRejected")?.message || "Global settings are unavailable.");
+        plan = execution.plan;
         const button = document.getElementById("scheduled-settings-save");
         if (button) button.disabled = true;
         const res = await fetch("/api/update-policies/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(plan.payload)
         });
         if (!res.ok) {
-            setScheduledSettingsFeedback("", await parseErrorResponse(res, "Failed to save global no-run windows."));
-            return;
+            throw new Error(await parseErrorResponse(res, "Failed to save global no-run windows."));
         }
         const data = await res.json().catch(() => ({}));
-        applyScheduledTimezone(data.timezone ? data : scheduledPoliciesState.timezone || "UTC");
+        applyScheduledTimezone(data.timezone ? data : scheduledPolicyView().timezone || "UTC");
         if (!String(data?.resolved_timezone ?? data?.resolvedTimezone ?? "").trim()) {
             try {
                 await fetchScheduledRuns();
             } catch (refreshErr) {
+                const requestId = scheduledPolicyView().snapshots.runs.inFlight;
+                if (requestId) scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: "runs", requestId, error: refreshErr.message || "Failed to load scheduled runs." });
                 console.error("Failed to refresh scheduled runs after settings save:", refreshErr);
             }
         }
-        setScheduledSettingsFeedback("Global no-run windows saved.", "");
+        const successMessage = "Global no-run windows saved.";
+        await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "commandCompleted", plan, message: successMessage }));
+        setScheduledSettingsFeedback(successMessage, "");
     } catch (err) {
+        if (plan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan, message: err.message || "Failed to save global no-run windows." });
         setScheduledSettingsFeedback("", err.message || "Failed to save global no-run windows.");
     } finally {
         const button = document.getElementById("scheduled-settings-save");
@@ -1767,23 +1642,33 @@ async function saveScheduledSettings() {
 }
 
 async function deleteScheduledPolicy(id) {
-    const policy = scheduledPoliciesState.items.find((item) => String(item.id) === String(id));
+    const plan = scheduledPolicyAdministration.planCommand("deletePolicy", id);
+    const policy = plan.policy;
     const required = policy?.name || String(id);
+    if (!plan.enabled) {
+        setPolicyFeedback("", plan.reason || "Scheduled policy action is unavailable.");
+        return;
+    }
     if (!(await window.confirmTypedAction(`Delete scheduled update policy "${required}"?`, required))) {
         return;
     }
+    let activePlan;
     try {
-        const res = await fetch(`/api/update-policies/${encodeURIComponent(id)}`, { method: "DELETE" });
+        const command = scheduledPolicyAdministration.dispatch({ type: "commandRequested", command: "deletePolicy", policyID: id });
+        const execution = command.find((effect) => effect.type === "executeCommand");
+        if (!execution) throw new Error(command.find((effect) => effect.type === "commandRejected")?.message || "Scheduled policy action is unavailable.");
+        activePlan = execution.plan;
+        const res = await fetch(`/api/update-policies/${encodeURIComponent(activePlan.policyID)}`, { method: "DELETE" });
         if (!res.ok) {
-            setPolicyFeedback("", await parseErrorResponse(res, "Failed to delete scheduled policy."));
-            return;
+            throw new Error(await parseErrorResponse(res, "Failed to delete scheduled policy."));
         }
         if (document.getElementById("policy-id").value === String(id)) {
             resetPolicyForm();
         }
         setPolicyFeedback("Policy deleted.", "");
-        await refreshScheduledUpdateViews();
+        await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "commandCompleted", plan: activePlan, message: "Policy deleted." }));
     } catch (err) {
+        if (activePlan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan: activePlan, message: err?.message || "Failed to delete scheduled policy." });
         setPolicyFeedback("", err?.message || "Failed to delete scheduled policy.");
     }
 }
@@ -1792,7 +1677,7 @@ function handleScheduledPolicyTableClick(event) {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
     const id = String(button.dataset.id || "").trim();
-    const policy = scheduledPoliciesState.items.find((item) => String(item.id) === id);
+    const policy = scheduledPolicyView().policies.find((item) => String(item.id) === id);
     if (!policy) return;
     if (button.dataset.action === "edit-policy") {
         applyPolicyToForm(policy);
@@ -1805,9 +1690,7 @@ function handleScheduledPolicyTableClick(event) {
 }
 
 function updateBlackoutRowField(kind, index, field, value) {
-    const editor = getBlackoutEditor(kind);
-    if (!editor || !editor.rows[index]) return;
-    editor.rows[index][field] = value;
+    scheduledPolicyAdministration.dispatch({ type: "blackoutRowChanged", kind, index, field, value });
     syncBlackoutTextarea(kind);
     updateBlackoutRowSummary(kind, index);
     if (kind === "policy") updatePolicySummary();
@@ -1819,24 +1702,17 @@ function handleBlackoutEditorClick(event) {
     const kind = button.dataset.blackoutKind;
     const action = button.dataset.blackoutAction;
     const index = Number(button.dataset.index || -1);
-    const editor = getBlackoutEditor(kind);
-    if (!editor) return;
     setBlackoutJsonStatus(kind, "");
     if (action === "remove-window") {
         if (index >= 0) {
-            editor.rows.splice(index, 1);
+            scheduledPolicyAdministration.dispatch({ type: "blackoutRowRemoved", kind, index });
             renderBlackoutEditor(kind);
         }
         return;
     }
     if (action === "toggle-day" && index >= 0) {
-        const day = normalizeWeekdayToken(button.dataset.day);
-        if (!day || !editor.rows[index]) return;
-        const nextDays = editor.rows[index].weekdays.includes(day)
-            ? editor.rows[index].weekdays.filter((item) => item !== day)
-            : [...editor.rows[index].weekdays, day];
-        editor.rows[index].weekdays = normalizeWeekdays(nextDays);
-        const isActive = editor.rows[index].weekdays.includes(day);
+        scheduledPolicyAdministration.dispatch({ type: "blackoutWeekdayToggled", kind, index, day: button.dataset.day });
+        const isActive = scheduledPolicyRows(kind)[index]?.weekdays.includes(normalizeWeekdayToken(button.dataset.day));
         button.classList.toggle("active", isActive);
         button.setAttribute("aria-pressed", isActive ? "true" : "false");
         syncBlackoutTextarea(kind);
@@ -1857,18 +1733,17 @@ function handleBlackoutEditorInput(event) {
 }
 
 function applyBlackoutJson(kind, label) {
-    const editor = getBlackoutEditor(kind);
-    const textarea = editor ? document.getElementById(editor.textareaId) : null;
-    if (!editor || !textarea) return;
-    try {
-        const rows = parseBlackoutsJSON(textarea.value, label).map((row, index) => parseStrictBlackoutRow(row, label, index));
-        setBlackoutEditorRows(kind, rows);
-        setBlackoutJsonStatus(kind, `${label} JSON applied to the editor.`, false);
+    const textarea = document.getElementById(kind === "global" ? "scheduled-global-blackouts-json" : "policy-blackouts-json");
+    if (!textarea) return;
+    const effect = scheduledPolicyAdministration.dispatch({ type: "blackoutJSONApplied", kind, label, raw: textarea.value })[0];
+    if (effect?.type === "blackoutJSONAccepted") {
+        renderBlackoutEditor(kind);
+        setBlackoutJsonStatus(kind, effect.message, false);
         if (kind === "global") {
             setScheduledSettingsFeedback("", "");
         }
-    } catch (err) {
-        setBlackoutJsonStatus(kind, err.message || `Failed to apply ${label.toLowerCase()}.`, true);
+    } else {
+        setBlackoutJsonStatus(kind, effect?.message || `Failed to apply ${label.toLowerCase()}.`, true);
     }
 }
 
@@ -1889,6 +1764,7 @@ function bindPolicyFormInteractions() {
     ];
     summaryFields.forEach((fieldId) => {
         document.getElementById(fieldId)?.addEventListener("input", () => {
+            try { collectPolicyPayload({ silent: true }); } catch (_) {}
             if (fieldId === "policy-name") setPolicyFieldInvalid("policy-name", false);
             if (fieldId === "policy-target-tag") setPolicyFieldInvalid("policy-target-tag", false);
             refreshPolicyFormVisibility();
@@ -1896,6 +1772,7 @@ function bindPolicyFormInteractions() {
             schedulePolicyPreview();
         });
         document.getElementById(fieldId)?.addEventListener("change", () => {
+            try { collectPolicyPayload({ silent: true }); } catch (_) {}
             if (fieldId === "policy-name") setPolicyFieldInvalid("policy-name", false);
             if (fieldId === "policy-target-tag") setPolicyFieldInvalid("policy-target-tag", false);
             refreshPolicyFormVisibility();
@@ -1940,7 +1817,10 @@ document.getElementById("update-policy-form").addEventListener("submit", saveSch
 document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
 document.getElementById("maintenance-calendar-refresh").addEventListener("click", reloadMaintenanceCalendar);
-document.getElementById("maintenance-calendar-policy").addEventListener("change", reloadMaintenanceCalendar);
+document.getElementById("maintenance-calendar-policy").addEventListener("change", (event) => {
+    scheduledPolicyAdministration.dispatch({ type: "calendarPolicySelected", policyID: event.target.value });
+    reloadMaintenanceCalendar();
+});
 document.querySelector("#scheduled-policy-table tbody").addEventListener("click", handleScheduledPolicyTableClick);
 document.querySelector("#scheduled-runs-table tbody").addEventListener("click", handleScheduledRunsTableClick);
 document.getElementById("policy-blackout-add").addEventListener("click", () => addBlackoutRow("policy"));

@@ -24,6 +24,10 @@ _Avoid_: Scheduled policy execution, policy job
 The read-only interpretation of scheduled policy matching, cadence, no-run windows, candidate priority, and future scheduled-run state into per-server schedule facts consumed by Dashboard Projection and calendar-facing views.
 _Avoid_: Dashboard schedule helper, next-run calculation
 
+**Scheduled Policy Administration Interaction**:
+The operator-facing interpretation of a scheduled policy draft, its matching preview, no-run windows, calendar and Scheduled Run views, and selected job detail into the state and decisions needed to administer scheduled maintenance.
+_Avoid_: Admin page globals, policy editor event handlers
+
 **Dashboard Projection**:
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query

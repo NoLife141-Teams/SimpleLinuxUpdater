@@ -2,9 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -1113,10 +1113,12 @@ func TestActionRoutesUseInjectedUpdateServiceJobManager(t *testing.T) {
 	updateDeps := testUpdateServiceDeps(t)
 	updateDeps.ServerState = routeState
 	updateDeps.CurrentJobManager = func() *JobManager { return routeJM }
-	updateDeps.RunSSHCommandWithTimeout = func(_ sshConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
-		command = cmd
-		return "removed packages", "", nil
-	}
+	updateDeps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+			command = req.Command
+			return HostCommandResult{Stdout: "removed packages", Attempts: 1}, nil
+		},
+	})
 	router, err := setupRouterWithDeps(AppDeps{
 		DB:            func() *sql.DB { return appDB },
 		JobManager:    globalJM,

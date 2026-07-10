@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -703,7 +704,28 @@ func TestRunUpdateWithActorSecurityApprovalRecordsAuditMeta(t *testing.T) {
 
 	origDial := getDialSSHConnection()
 	var dialCalls int32
-	setDialSSHConnection(makeDialSSHValidator(server, &dialCalls, updateConn, cveConn))
+	var connectionsMu sync.Mutex
+	connections := []*scriptedSSHConnection{updateConn}
+	setDialSSHConnection(func(got Server, _ *ssh.ClientConfig) (sshConnection, error) {
+		if got.Name != server.Name || got.Host != server.Host || got.Port != server.Port || got.User != server.User {
+			return nil, errors.New("unexpected server dial")
+		}
+		if atomic.AddInt32(&dialCalls, 1) == 1 {
+			return updateConn, nil
+		}
+		responses := make(map[string]scriptedResponse, len(updateConn.responses)+len(cveConn.responses))
+		for command, response := range updateConn.responses {
+			responses[command] = response
+		}
+		for command, response := range cveConn.responses {
+			responses[command] = response
+		}
+		connection := &scriptedSSHConnection{responses: responses}
+		connectionsMu.Lock()
+		connections = append(connections, connection)
+		connectionsMu.Unlock()
+		return connection, nil
+	})
 	t.Cleanup(func() { setDialSSHConnection(origDial) })
 
 	done := make(chan struct{})
@@ -732,8 +754,8 @@ func TestRunUpdateWithActorSecurityApprovalRecordsAuditMeta(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for update flow to finish")
 	}
-	if got := atomic.LoadInt32(&dialCalls); got != 2 {
-		t.Fatalf("dialSSHConnection calls = %d, want 2", got)
+	if got := atomic.LoadInt32(&dialCalls); got != 3 {
+		t.Fatalf("dialSSHConnection calls = %d, want discovery, CVE, and post-approval sessions", got)
 	}
 
 	mu.Lock()
@@ -746,9 +768,15 @@ func TestRunUpdateWithActorSecurityApprovalRecordsAuditMeta(t *testing.T) {
 		t.Fatalf("final status = %q, want done", final.Status)
 	}
 
-	updateConn.mu.Lock()
-	commands := append([]string(nil), updateConn.commands...)
-	updateConn.mu.Unlock()
+	connectionsMu.Lock()
+	connectionsSnapshot := append([]*scriptedSSHConnection(nil), connections...)
+	connectionsMu.Unlock()
+	var commands []string
+	for _, connection := range connectionsSnapshot {
+		connection.mu.Lock()
+		commands = append(commands, connection.commands...)
+		connection.mu.Unlock()
+	}
 	sawSecurityCmd := false
 	for _, cmd := range commands {
 		if cmd == securityUpgradeCmd {
@@ -833,7 +861,6 @@ func TestStartPendingUpdateCVEEnrichmentCreatesChildJob(t *testing.T) {
 
 	startPendingUpdateCVEEnrichment(
 		server,
-		&ssh.ClientConfig{User: server.User, Auth: []ssh.AuthMethod{}},
 		pendingUpdates,
 		parentJob.ID,
 		"tester",
@@ -906,7 +933,6 @@ func TestStartPendingUpdateCVEEnrichmentPersistsFailedChildJobOnDialFailure(t *t
 
 	startPendingUpdateCVEEnrichment(
 		server,
-		&ssh.ClientConfig{User: server.User, Auth: []ssh.AuthMethod{}},
 		pendingUpdates,
 		parentJob.ID,
 		"tester",
@@ -975,7 +1001,6 @@ func TestStartPendingUpdateCVEEnrichmentCancelledChildJobUsesCompletePhase(t *te
 
 	startPendingUpdateCVEEnrichment(
 		server,
-		&ssh.ClientConfig{User: server.User, Auth: []ssh.AuthMethod{}},
 		pendingUpdates,
 		parentJob.ID,
 		"tester",
@@ -1028,7 +1053,6 @@ func TestStartPendingUpdateCVEEnrichmentCreateJobFailureMarksPackagesUnavailable
 
 	startPendingUpdateCVEEnrichment(
 		server,
-		&ssh.ClientConfig{User: server.User, Auth: []ssh.AuthMethod{}},
 		pendingUpdates,
 		"parent-job",
 		"tester",

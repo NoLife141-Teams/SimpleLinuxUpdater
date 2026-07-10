@@ -1,13 +1,12 @@
 package updates
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
-
-	"golang.org/x/crypto/ssh"
 )
 
 func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) ScheduledJobMeta {
@@ -59,28 +58,23 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		}
 	}
 
-	authMethods, err := deps.BuildAuthMethods(req.Server)
+	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         req.Server,
+		RetryPolicy:    req.RetryPolicy,
+		DialOperation:  "scheduled_scan.ssh_dial",
+		CommandTimeout: deps.LoadCommandTimeout(),
+	})
 	if err != nil {
-		setFailure("Scheduled scan auth setup failed", err, jobs.PhaseDial, "")
+		summary := "Scheduled scan SSH connection failed"
+		if HostMaintenanceErrorStageOf(err) == HostMaintenanceStageAuth {
+			summary = "Scheduled scan auth setup failed"
+		} else if HostMaintenanceErrorStageOf(err) == HostMaintenanceStageHostKey {
+			summary = "Scheduled scan host key setup failed"
+		}
+		setFailure(summary, err, jobs.PhaseDial, "")
 		return
 	}
-	hostKeyCallback, err := deps.HostKeyCallback()
-	if err != nil {
-		setFailure("Scheduled scan host key setup failed", err, jobs.PhaseDial, "")
-		return
-	}
-	config := &ssh.ClientConfig{
-		User:            req.Server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         deps.SSHConnectTimeout,
-	}
-	client, err := deps.DialSSHWithRetry(req.Server, config, req.RetryPolicy, "scheduled_scan.ssh_dial", nil)
-	if err != nil {
-		setFailure("Scheduled scan SSH connection failed", err, jobs.PhaseDial, "")
-		return
-	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = session.Close() }()
 
 	logs := "Starting scheduled package scan..."
 	if jm != nil {
@@ -92,7 +86,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			LogsText: &logs,
 		})
 	}
-	precheckSummary := deps.RunUpdatePrechecks(client)
+	precheckSummary := session.RunUpdatePrechecks(context.Background())
 	for _, result := range precheckSummary.Results {
 		state := "PASS"
 		if !result.Passed {
@@ -118,44 +112,20 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			LogsText: &logs,
 		})
 	}
-	var stdout, stderr string
-	err = deps.RunSSHOperationWithRetry(
-		req.Server,
-		config,
-		&client,
-		req.RetryPolicy,
-		"scheduled_scan.apt_update",
-		"\napt update attempt %d/%d failed: %v; retrying in %s",
-		new(int),
-		func() error {
-			var runErr error
-			stdout, stderr, runErr = deps.RunSSHCommandWithTimeout(client, AptUpdateCmd, nil, deps.LoadCommandTimeout())
-			return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
-		},
-	)
+	commandResult, err := session.RunCommand(context.Background(), HostCommandRequest{
+		Operation:    "scheduled_scan.apt_update",
+		Command:      AptUpdateCmd,
+		ReplayPolicy: ReplayRetryableOutputErrors,
+	})
+	stdout, stderr := commandResult.Stdout, commandResult.Stderr
 	logs += "\n" + stdout + stderr
 	if err != nil {
 		setFailure("Scheduled scan apt update failed", err, jobs.PhaseAptUpdate, logs)
 		return
 	}
 
-	var discovery PackageDiscoveryOutcome
-	err = deps.RunSSHOperationWithRetry(
-		req.Server,
-		config,
-		&client,
-		req.RetryPolicy,
-		"scheduled_scan.list_upgradable",
-		"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
-		new(int),
-		func() error {
-			outcome, discoverErr := deps.DiscoverPackages(client, deps.LoadCommandTimeout())
-			if discoverErr == nil {
-				discovery = outcome
-			}
-			return discoverErr
-		},
-	)
+	discoveryResult, err := session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "scheduled_scan.list_upgradable"})
+	discovery := discoveryResult.Outcome
 	if err != nil {
 		setFailure("Scheduled scan package discovery failed", err, jobs.PhaseAptUpdate, logs)
 		return
@@ -165,7 +135,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		if discovery.PendingUpdates[i].CVEState != "pending" {
 			continue
 		}
-		cves, lookupErr := deps.QueryPackageCVEs(client, discovery.PendingUpdates[i].Package)
+		cves, lookupErr := session.QueryPackageCVEs(context.Background(), discovery.PendingUpdates[i].Package)
 		if lookupErr != nil {
 			discovery.PendingUpdates[i].CVEState = "unavailable"
 			discovery.PendingUpdates[i].CVEs = []string{}

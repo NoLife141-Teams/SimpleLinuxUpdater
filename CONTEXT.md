@@ -67,3 +67,7 @@ _Avoid_: Auth route flow, session handler logic
 **Runtime Composition**:
 The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container
+
+**Host Maintenance Session**:
+A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, and transport closure, while the invoking application service owns action lifecycle, approval, jobs, audit, and persistence.
+_Avoid_: SSH helper bundle, update connection

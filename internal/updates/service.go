@@ -1,6 +1,8 @@
 package updates
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,8 +11,6 @@ import (
 	"debian-updater/internal/jobs"
 	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
-
-	"golang.org/x/crypto/ssh"
 )
 
 type Service struct {
@@ -54,14 +54,11 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.LoadScheduledJobBehavior == nil {
 		d.LoadScheduledJobBehavior = func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: 30 * time.Minute} }
 	}
-	if d.QueryPackageCVEs == nil {
-		d.QueryPackageCVEs = func(SSHConnection, string) ([]string, error) { return []string{}, nil }
+	if d.WaitForApprovalPoll == nil {
+		d.WaitForApprovalPoll = func() { time.Sleep(ApprovalPollInterval) }
 	}
-	if d.DiscoverPackages == nil && d.RunSSHCommandWithTimeout != nil {
-		run := d.RunSSHCommandWithTimeout
-		d.DiscoverPackages = func(conn SSHConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
-			return DiscoverPackageUpdates(conn, timeout, run)
-		}
+	if d.HostMaintenanceSessions == nil {
+		d.HostMaintenanceSessions = hostMaintenanceUnavailableFactory()
 	}
 	if d.IsPostcheckFailureBlocking == nil {
 		d.IsPostcheckFailureBlocking = func(string, PostUpdateCheckConfig) bool { return true }
@@ -71,9 +68,6 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	}
 	if d.Logf == nil {
 		d.Logf = func(string, ...any) {}
-	}
-	if d.SSHConnectTimeout <= 0 {
-		d.SSHConnectTimeout = 15 * time.Second
 	}
 	return d
 }
@@ -95,8 +89,7 @@ type withActorRunner struct {
 	approvedPackages        []string
 	upgradePlan             servers.UpgradePlan
 
-	config *ssh.ClientConfig
-	client SSHConnection
+	session HostMaintenanceSession
 
 	commandTimeout time.Duration
 
@@ -121,6 +114,7 @@ type withActorRunner struct {
 	upgradeCompleted  bool
 
 	preUpdateFailedUnits []string
+	retryLogFormats      map[string]string
 }
 
 func (r *withActorRunner) deps() ServiceDeps {
@@ -217,32 +211,54 @@ func (r *withActorRunner) markErrorClass(err error) {
 
 func (r *withActorRunner) setupSSH(dialOpName string) bool {
 	deps := r.deps()
-	authMethods, err := deps.BuildAuthMethods(r.server)
-	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
-		return false
+	if r.retryLogFormats == nil {
+		r.retryLogFormats = map[string]string{}
 	}
-	hostKeyCallback, err := deps.HostKeyCallback()
+	r.retryLogFormats[dialOpName] = "\nSSH dial attempt %d/%d failed: %v; retrying in %s"
+	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         r.server,
+		RetryPolicy:    r.policy,
+		DialOperation:  dialOpName,
+		CommandTimeout: r.commandTimeout,
+		OnRetry:        r.onHostRetry,
+	})
 	if err != nil {
-		r.lastErrClass = "permanent"
-		r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
-		return false
-	}
-	r.config = &ssh.ClientConfig{
-		User:            r.server.User,
-		Auth:            authMethods,
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         deps.SSHConnectTimeout,
-	}
-	client, err := deps.DialSSHWithRetry(r.server, r.config, r.policy, dialOpName, &r.sshDialAttempts)
-	if err != nil {
+		var sessionErr *HostMaintenanceError
+		if errors.As(err, &sessionErr) {
+			r.sshDialAttempts += sessionErr.Attempts
+		}
 		r.markErrorClass(err)
-		r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
+		switch HostMaintenanceErrorStageOf(err) {
+		case HostMaintenanceStageAuth:
+			r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
+		case HostMaintenanceStageHostKey:
+			r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
+		default:
+			r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
+		}
 		return false
 	}
-	r.client = client
+	r.session = session
+	r.sshDialAttempts += session.Stats().DialAttempts
 	return true
+}
+
+func (r *withActorRunner) onHostRetry(event HostRetryEvent) {
+	format := r.retryLogFormats[event.Operation]
+	if format == "" {
+		format = "\n%s attempt %d/%d failed: %v; retrying in %s"
+		r.appendStatusLog(fmt.Sprintf(format, event.Operation, event.Attempt, event.MaxAttempts, event.Err, event.Wait.Round(time.Millisecond)))
+		return
+	}
+	r.appendStatusLog(fmt.Sprintf(format, event.Attempt, event.MaxAttempts, event.Err, event.Wait.Round(time.Millisecond)))
+}
+
+func (r *withActorRunner) closeSession() {
+	if r == nil || r.session == nil {
+		return
+	}
+	_ = r.session.Close()
+	r.session = nil
 }
 
 func (s *Service) runWithActorShared(
@@ -342,11 +358,7 @@ func (s *Service) runWithActorShared(
 	if !runner.setupSSH(dialOpName) {
 		return
 	}
-	defer func() {
-		if runner.client != nil {
-			_ = runner.client.Close()
-		}
-	}()
+	defer runner.closeSession()
 
 	runSteps(runner)
 }
@@ -401,11 +413,11 @@ func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]a
 }
 
 func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() {
-	if r == nil || r.client == nil {
+	if r == nil || r.session == nil {
 		return
 	}
 	deps := r.deps()
-	record := deps.CollectServerFacts(r.server, r.client, r.commandTimeout)
+	record := r.session.CollectServerFacts(context.Background())
 	if err := deps.SaveServerFacts(record); err != nil {
 		deps.Logf("failed to refresh facts after update for %q: %v", r.server.Name, err)
 	}
@@ -446,7 +458,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			r.postchecksEnabled = postcheckCfg.Enabled
 			r.appendStatusLog("\nRunning pre-checks...")
 
-			precheckSummary := deps.RunUpdatePrechecks(r.client)
+			precheckSummary := r.session.RunUpdatePrechecks(context.Background())
 			r.precheckResults = precheckSummary.Results
 			for _, result := range precheckSummary.Results {
 				state := "PASS"
@@ -474,7 +486,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			})
 
 			preUpdateFailedUnitsMap := make(map[string]struct{})
-			preUpdateFailedUnits, _, preUnitsErr := deps.ListFailedSystemdUnits(r.client)
+			preUpdateFailedUnits, _, preUnitsErr := r.session.ListFailedSystemdUnits(context.Background())
 			if preUnitsErr != nil {
 				r.appendStatusLog(fmt.Sprintf("\nBaseline failed-units snapshot unavailable: %v", preUnitsErr))
 			} else {
@@ -492,21 +504,14 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.setJobPhase(jobs.PhaseAptUpdate)
-			var stdout, stderr string
-			err := deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.apt_update",
-				"\napt update attempt %d/%d failed: %v; retrying in %s",
-				&r.aptUpdateAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = deps.RunSSHCommandWithTimeout(r.client, AptUpdateCmd, nil, r.commandTimeout)
-					return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
-				},
-			)
+			r.retryLogFormats["update.apt_update"] = "\napt update attempt %d/%d failed: %v; retrying in %s"
+			commandResult, err := r.session.RunCommand(context.Background(), HostCommandRequest{
+				Operation:    "update.apt_update",
+				Command:      AptUpdateCmd,
+				ReplayPolicy: ReplayRetryableOutputErrors,
+			})
+			r.aptUpdateAttempts += commandResult.Attempts
+			stdout, stderr := commandResult.Stdout, commandResult.Stderr
 			logs := r.currentLogs() + "\n" + stdout + stderr
 			if err != nil {
 				r.markErrorClass(err)
@@ -515,23 +520,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			var discovery PackageDiscoveryOutcome
-			err = deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.list_upgradable",
-				"\nlist upgradable attempt %d/%d failed: %v; retrying in %s",
-				&r.listUpgradableAttempts,
-				func() error {
-					outcome, listErr := deps.DiscoverPackages(r.client, r.commandTimeout)
-					if listErr == nil {
-						discovery = outcome
-					}
-					return listErr
-				},
-			)
+			r.retryLogFormats["update.list_upgradable"] = "\nlist upgradable attempt %d/%d failed: %v; retrying in %s"
+			discoveryResult, err := r.session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "update.list_upgradable"})
+			r.listUpgradableAttempts += discoveryResult.Attempts
+			discovery := discoveryResult.Outcome
 			if err != nil {
 				r.markErrorClass(err)
 				r.setErrorLogs(logs + fmt.Sprintf("\nError listing upgradable: %v", err))
@@ -571,7 +563,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				autoApproveScope = autoApproval.Scope
 			}
 			if autoApproveScope == "" {
-				s.StartPendingCVEEnrichment(r.server, r.config, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
+				s.StartPendingCVEEnrichment(r.server, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
 			}
 
 			if autoApproveScope != "" {
@@ -595,9 +587,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				}
 				r.approvedAt = deps.Now()
 			} else {
+				r.closeSession()
 				approvalDeadline := deps.Now().Add(behavior.ApprovalTimeout)
 				for {
-					time.Sleep(ApprovalPollInterval)
+					deps.WaitForApprovalPoll()
 					approved := false
 					cancelledByUser := false
 					approvalTimedOut := false
@@ -663,6 +656,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			r.approvedPackages = append([]string(nil), approvalRun.SelectedPackages...)
 
 			if approvalRun.SkipUpgrade {
+				if r.session == nil && !r.setupSSH("update.ssh_dial") {
+					return
+				}
 				r.refreshFactsAfterSuccessfulUpdate()
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
@@ -692,22 +688,19 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.setErrorLogs(r.currentLogs() + approvalRun.RunnerErrorLog)
 				return
 			}
+			if r.session == nil && !r.setupSSH("update.ssh_dial") {
+				return
+			}
 			upgradeCmd := approvalRun.Command
 			r.appendStatusLog(approvalRun.RunnerCommandLog)
-			err = deps.RunSSHOperationWithRetry(
-				r.server,
-				r.config,
-				&r.client,
-				r.policy,
-				"update.apt_upgrade",
-				"\napt upgrade attempt %d/%d failed: %v; retrying in %s",
-				&r.aptUpgradeAttempts,
-				func() error {
-					var runErr error
-					stdout, stderr, runErr = deps.RunSSHCommandWithTimeout(r.client, upgradeCmd, nil, r.commandTimeout)
-					return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
-				},
-			)
+			r.retryLogFormats["update.apt_upgrade"] = "\napt upgrade attempt %d/%d failed: %v; retrying in %s"
+			commandResult, err = r.session.RunCommand(context.Background(), HostCommandRequest{
+				Operation:    "update.apt_upgrade",
+				Command:      upgradeCmd,
+				ReplayPolicy: ReplayRetryableOutputErrors,
+			})
+			r.aptUpgradeAttempts += commandResult.Attempts
+			stdout, stderr = commandResult.Stdout, commandResult.Stderr
 			logs = r.currentLogs() + "\n" + stdout + stderr
 			if err != nil {
 				r.markErrorClass(err)
@@ -737,7 +730,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				status.Logs = logs + "\nUpgrade completed.\nRunning post-update health checks..."
 			})
 
-			postcheckSummary := deps.RunPostUpdateHealthChecks(r.client, postcheckCfg, preUpdateFailedUnitsMap)
+			postcheckSummary := r.session.RunPostUpdateHealthChecks(context.Background(), postcheckCfg, preUpdateFailedUnitsMap)
 			r.postcheckResults = postcheckSummary.Results
 			r.postcheckWarnings = postcheckSummary.Warnings
 			for _, result := range postcheckSummary.Results {
@@ -861,29 +854,19 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 }
 
 func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, stdin func() io.Reader, successSuffix string) {
-	deps := r.deps()
-	var stdout, stderr string
-	err := deps.RunSSHOperationWithRetry(
-		r.server,
-		r.config,
-		&r.client,
-		r.policy,
-		opName,
-		retryLogFormat,
-		&r.commandAttempts,
-		func() error {
-			var runErr error
-			var input io.Reader
-			if stdin != nil {
-				input = stdin()
-			}
-			stdout, stderr, runErr = deps.RunSSHCommandWithTimeout(r.client, cmd, input, r.commandTimeout)
-			if cmd == AptAutoremoveCmd {
-				return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
-			}
-			return runErr
-		},
-	)
+	r.retryLogFormats[opName] = retryLogFormat
+	replayPolicy := ReplayRetryableErrors
+	if cmd == AptAutoremoveCmd {
+		replayPolicy = ReplayRetryableOutputErrors
+	}
+	result, err := r.session.RunCommand(context.Background(), HostCommandRequest{
+		Operation:    opName,
+		Command:      cmd,
+		Stdin:        stdin,
+		ReplayPolicy: replayPolicy,
+	})
+	r.commandAttempts += result.Attempts
+	stdout, stderr := result.Stdout, result.Stderr
 	logs := r.currentLogs() + "\n" + stdout + stderr
 	if err != nil {
 		r.markErrorClass(err)
@@ -917,14 +900,12 @@ func (s *Service) CancelPendingUpdate(name string) (exists bool, cancelled bool)
 	return deps.ServerState.CancelPendingUpdate(name)
 }
 
-func (s *Service) StartPendingCVEEnrichment(server servers.Server, config *ssh.ClientConfig, updates []servers.PendingUpdate, parentJobID, actor, clientIP string) {
+func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []servers.PendingUpdate, parentJobID, actor, clientIP string) {
 	deps := s.EnsureDeps()
 	packages := PendingCVEPackages(updates)
-	if len(packages) == 0 || config == nil {
+	if len(packages) == 0 {
 		return
 	}
-	configCopy := *config
-	configCopy.Auth = append([]ssh.AuthMethod(nil), config.Auth...)
 
 	var jobID string
 	if jm := deps.CurrentJobManager(); jm != nil {
@@ -956,38 +937,42 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, config *ssh.C
 			summary := "Connecting for CVE enrichment"
 			_ = jm.UpdateJob(jobID, jobs.Update{Phase: &phase, Summary: &summary})
 		}
-		cveClient, err := s.dialCVEClient(server, &configCopy)
+		cveSession, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+			Server:         server,
+			RetryPolicy:    RetryPolicy{MaxAttempts: 2, BaseDelay: 250 * time.Millisecond, MaxDelay: 250 * time.Millisecond},
+			DialReplay:     ReplayAllDialErrors,
+			DialOperation:  "cve_enrichment.ssh_dial",
+			CommandTimeout: CVELookupCommandTimeout,
+			OnRetry: func(event HostRetryEvent) {
+				deps.Logf("CVE enrichment dial attempt %d failed for server %q: %v", event.Attempt, server.Name, event.Err)
+			},
+		})
 		if err != nil {
-			deps.Logf("CVE enrichment dial attempt 1 failed for server %q: %v", server.Name, err)
-			time.Sleep(250 * time.Millisecond)
-			cveClient, err = s.dialCVEClient(server, &configCopy)
-			if err != nil {
-				deps.Logf("CVE enrichment dial attempt 2 failed for server %q: %v", server.Name, err)
-				if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-					status := jobs.StatusFailed
-					phase := jobs.PhaseComplete
-					summary := "Failed to connect for CVE enrichment"
-					errorClass := "dial"
-					meta := jobs.MarshalJSON(map[string]any{"error": err.Error()})
-					finishedAt := deps.JobTimestampNow()
-					_ = jm.UpdateJob(jobID, jobs.Update{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						ErrorClass: &errorClass,
-						MetaJSON:   &meta,
-						FinishedAt: &finishedAt,
-					})
-				}
-				for _, pkg := range packages {
-					if !s.updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
-						return
-					}
-				}
-				return
+			deps.Logf("CVE enrichment dial attempt 2 failed for server %q: %v", server.Name, err)
+			if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
+				status := jobs.StatusFailed
+				phase := jobs.PhaseComplete
+				summary := "Failed to connect for CVE enrichment"
+				errorClass := "dial"
+				meta := jobs.MarshalJSON(map[string]any{"error": err.Error()})
+				finishedAt := deps.JobTimestampNow()
+				_ = jm.UpdateJob(jobID, jobs.Update{
+					Status:     &status,
+					Phase:      &phase,
+					Summary:    &summary,
+					ErrorClass: &errorClass,
+					MetaJSON:   &meta,
+					FinishedAt: &finishedAt,
+				})
 			}
+			for _, pkg := range packages {
+				if !s.updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
+					return
+				}
+			}
+			return
 		}
-		defer func() { _ = cveClient.Close() }()
+		defer func() { _ = cveSession.Close() }()
 
 		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 			phase := jobs.PhaseLookup
@@ -1010,7 +995,7 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, config *ssh.C
 				}
 				return
 			}
-			cves, queryErr := deps.QueryPackageCVEs(cveClient, pkg)
+			cves, queryErr := cveSession.QueryPackageCVEs(context.Background(), pkg)
 			state := "ready"
 			if queryErr != nil {
 				deps.Logf("CVE lookup failed for server %q package %q: %v", server.Name, pkg, queryErr)
@@ -1046,14 +1031,6 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, config *ssh.C
 			})
 		}
 	})
-}
-
-func (s *Service) dialCVEClient(server servers.Server, config *ssh.ClientConfig) (SSHConnection, error) {
-	deps := s.EnsureDeps()
-	if deps.DialSSH != nil {
-		return deps.DialSSH(server, config)
-	}
-	return deps.DialSSHWithRetry(server, config, RetryPolicy{MaxAttempts: 1}, "cve_enrichment.ssh_dial", nil)
 }
 
 func (s *Service) serverPendingApproval(serverName string) bool {

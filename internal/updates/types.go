@@ -7,8 +7,6 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
-
-	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -159,16 +157,9 @@ type ScheduledJobMeta struct {
 	Error                  string                 `json:"error,omitempty"`
 }
 
-type SSHOperationWithRetryFunc func(servers.Server, *ssh.ClientConfig, *SSHConnection, RetryPolicy, string, string, *int, func() error) error
-
 type ServiceDeps struct {
 	ServerState                  *servers.State
-	BuildAuthMethods             func(servers.Server) ([]ssh.AuthMethod, error)
-	HostKeyCallback              func() (ssh.HostKeyCallback, error)
-	DialSSH                      func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
-	DialSSHWithRetry             func(servers.Server, *ssh.ClientConfig, RetryPolicy, string, *int) (SSHConnection, error)
-	RunSSHOperationWithRetry     SSHOperationWithRetryFunc
-	RunSSHCommandWithTimeout     func(SSHConnection, string, io.Reader, time.Duration) (string, string, error)
+	HostMaintenanceSessions      HostMaintenanceSessionFactory
 	CurrentJobManager            func() *jobs.Manager
 	StartJobRunner               func(string, func())
 	AuditWithActor               func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any)
@@ -177,19 +168,13 @@ type ServiceDeps struct {
 	LoadCommandTimeout           func() time.Duration
 	LoadPostUpdateCheckConfig    func() PostUpdateCheckConfig
 	LoadScheduledJobBehavior     func(string) ScheduledJobBehavior
-	RunUpdatePrechecks           func(SSHConnection) PrecheckSummary
-	RunPostUpdateHealthChecks    func(SSHConnection, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
-	ListFailedSystemdUnits       func(SSHConnection) ([]string, string, error)
-	CollectServerFacts           func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord
+	WaitForApprovalPoll          func()
 	SaveServerFacts              func(ServerFactsRecord) error
-	DiscoverPackages             PackageDiscoverer
-	QueryPackageCVEs             func(SSHConnection, string) ([]string, error)
 	UpdateScheduledDiscoveryMeta func(string, PackageDiscoveryOutcome)
 	UpdatePolicyRun              func(int64, policies.RunUpdate) error
 	IsPostcheckFailureBlocking   func(string, PostUpdateCheckConfig) bool
 	SummarizeUnitNames           func([]string, int) string
 	Logf                         func(string, ...any)
-	SSHConnectTimeout            time.Duration
 }
 
 type UpdateRunRequest struct {

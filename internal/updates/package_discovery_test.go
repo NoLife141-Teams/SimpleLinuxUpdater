@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"context"
 	"errors"
 	"io"
 	"reflect"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"debian-updater/internal/servers"
+
+	"golang.org/x/crypto/ssh"
 )
 
 type packageDiscoveryCommandResponse struct {
@@ -268,7 +271,7 @@ func TestDiscoverPackageUpdatesRejectsMissingCommandRunner(t *testing.T) {
 	}
 }
 
-func TestServiceDepsDefaultDiscoverPackagesUsesPackageDiscovery(t *testing.T) {
+func TestProductionHostMaintenanceSessionUsesPackageDiscovery(t *testing.T) {
 	summaryStdout := strings.Join([]string{
 		"Reading package lists... Done",
 		"The following packages will be upgraded:",
@@ -283,14 +286,26 @@ func TestServiceDepsDefaultDiscoverPackagesUsesPackageDiscovery(t *testing.T) {
 		},
 	}
 
-	deps := ServiceDeps{RunSSHCommandWithTimeout: runner.run}.withDefaults()
-	if deps.DiscoverPackages == nil {
-		t.Fatal("DiscoverPackages default = nil, want package discovery module")
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+			return fakeConnection{}, nil
+		},
+		RunCommandWithTimeout: runner.run,
+		DiscoverPackages: func(conn SSHConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
+			return DiscoverPackageUpdates(conn, timeout, runner.run)
+		},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{Server: servers.Server{User: "root"}, RetryPolicy: RetryPolicy{MaxAttempts: 1}, CommandTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
 	}
-	outcome, err := deps.DiscoverPackages(fakeConnection{}, time.Second)
+	result, err := session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "test.discovery"})
 	if err != nil {
 		t.Fatalf("DiscoverPackages() error = %v", err)
 	}
+	outcome := result.Outcome
 	if got := PackageNamesFromPendingUpdates(outcome.PendingUpdates); !reflect.DeepEqual(got, []string{"openssl"}) {
 		t.Fatalf("PackageNamesFromPendingUpdates() = %#v, want openssl", got)
 	}

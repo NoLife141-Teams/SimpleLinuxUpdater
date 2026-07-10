@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"io"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -11,8 +11,6 @@ import (
 
 	internalbackup "debian-updater/internal/backup"
 	updatespkg "debian-updater/internal/updates"
-
-	"golang.org/x/crypto/ssh"
 )
 
 func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server, status string) (AppDeps, UpdatePolicy, UpdatePolicyRun, *JobManager) {
@@ -339,32 +337,26 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 	deps.UpdateService = NewUpdateService(UpdateServiceDeps{
 		ServerState:       deps.ServerState,
 		CurrentJobManager: func() *JobManager { return jm },
-		BuildAuthMethods:  func(Server) ([]ssh.AuthMethod, error) { return nil, nil },
-		HostKeyCallback:   func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSHWithRetry: func(Server, *ssh.ClientConfig, RetryPolicy, string, *int) (sshConnection, error) {
-			return &scriptedSSHConnection{}, nil
-		},
-		RunSSHOperationWithRetry: func(_ Server, _ *ssh.ClientConfig, _ *sshConnection, _ RetryPolicy, _ string, _ string, _ *int, op func() error) error {
-			return op()
-		},
-		RunSSHCommandWithTimeout: func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
-			return "", "", nil
-		},
-		RunUpdatePrechecks: func(sshConnection) updatespkg.PrecheckSummary {
-			return updatespkg.PrecheckSummary{AllPassed: true}
-		},
-		DiscoverPackages: func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-			return PackageDiscoveryOutcome{
-				PendingPackageCount:  len(upgradable),
-				SecurityPackageCount: 1,
-				PendingUpdates:       clonePendingUpdates(pending),
-				Upgradable:           append([]string(nil), upgradable...),
-				UpgradePlan:          UpgradePlan{StandardSecurityCount: 1, TotalSecurityCount: 1},
-			}, nil
-		},
-		QueryPackageCVEs: func(sshConnection, string) ([]string, error) {
-			return []string{"CVE-2026-1001"}, nil
-		},
+		HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+				return HostCommandResult{Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) updatespkg.PrecheckSummary {
+				return updatespkg.PrecheckSummary{AllPassed: true}
+			},
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{Outcome: PackageDiscoveryOutcome{
+					PendingPackageCount:  len(upgradable),
+					SecurityPackageCount: 1,
+					PendingUpdates:       clonePendingUpdates(pending),
+					Upgradable:           append([]string(nil), upgradable...),
+					UpgradePlan:          UpgradePlan{StandardSecurityCount: 1, TotalSecurityCount: 1},
+				}, Attempts: 1}, nil
+			},
+			QueryPackageCVEsFunc: func(context.Context, string) ([]string, error) {
+				return []string{"CVE-2026-1001"}, nil
+			},
+		}),
 		UpdatePolicyRun: func(int64, updatePolicyRunUpdate) error {
 			t.Fatalf("UpdatePolicyRun called from scheduled scan worker; reconciliation should update run state")
 			return nil

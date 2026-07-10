@@ -1,40 +1,40 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
+
+func testHostMaintenanceFactory(session *HostMaintenanceSessionFuncs) HostMaintenanceSessionFactory {
+	return HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		return session, nil
+	})
+}
 
 func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 	t.Helper()
 	return UpdateServiceDeps{
-		BuildAuthMethods: func(Server) ([]ssh.AuthMethod, error) {
-			return []ssh.AuthMethod{ssh.Password("secret")}, nil
-		},
-		HostKeyCallback: func() (ssh.HostKeyCallback, error) {
-			return ssh.InsecureIgnoreHostKey(), nil
-		},
-		DialSSHWithRetry: func(Server, *ssh.ClientConfig, RetryPolicy, string, *int) (sshConnection, error) {
-			return &fakeSSHConnection{}, nil
-		},
-		RunSSHOperationWithRetry: func(_ Server, _ *ssh.ClientConfig, _ *sshConnection, _ RetryPolicy, _ string, _ string, attempts *int, operation func() error) error {
-			if attempts != nil {
-				(*attempts)++
-			}
-			return operation()
-		},
-		RunSSHCommandWithTimeout: func(sshConnection, string, io.Reader, time.Duration) (string, string, error) {
-			t.Fatalf("RunSSHCommandWithTimeout test hook must be overridden")
-			return "", "", nil
-		},
+		HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+				t.Fatalf("RunCommand test hook must be overridden")
+				return HostCommandResult{}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) updatePrecheckSummary {
+				return updatePrecheckSummary{AllPassed: true, Results: []updatePrecheckResult{{Name: "apt", Passed: true, Details: "ok"}}}
+			},
+			RunPostUpdateHealthChecksFunc: func(context.Context, PostUpdateCheckConfig, map[string]struct{}) updatePostcheckSummary {
+				return updatePostcheckSummary{AllPassed: true}
+			},
+			CollectServerFactsFunc: func(context.Context) serverFactsRecord {
+				return serverFactsRecord{}
+			},
+		}),
 		CurrentJobManager: func() *JobManager {
 			return nil
 		},
@@ -54,26 +54,8 @@ func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 		LoadScheduledJobBehavior: func(string) scheduledJobBehavior {
 			return scheduledJobBehavior{ApprovalTimeout: time.Minute}
 		},
-		RunUpdatePrechecks: func(sshConnection) updatePrecheckSummary {
-			return updatePrecheckSummary{AllPassed: true, Results: []updatePrecheckResult{{Name: "apt", Passed: true, Details: "ok"}}}
-		},
-		RunPostUpdateHealthChecks: func(sshConnection, PostUpdateCheckConfig, map[string]struct{}) updatePostcheckSummary {
-			return updatePostcheckSummary{AllPassed: true}
-		},
-		ListFailedSystemdUnits: func(sshConnection) ([]string, string, error) {
-			return nil, "", nil
-		},
-		CollectServerFacts: func(server Server, sshConnection sshConnection, timeout time.Duration) serverFactsRecord {
-			return serverFactsRecord{ServerName: server.Name}
-		},
 		SaveServerFacts: func(serverFactsRecord) error {
 			return nil
-		},
-		DiscoverPackages: func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-			return PackageDiscoveryOutcome{}, nil
-		},
-		QueryPackageCVEs: func(sshConnection, string) ([]string, error) {
-			return nil, nil
 		},
 		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
 		UpdatePolicyRun: func(int64, updatePolicyRunUpdate) error {
@@ -82,57 +64,26 @@ func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 	}
 }
 
-func TestUpdateServiceSetupSSHUsesInjectedDependencies(t *testing.T) {
+func TestUpdateServiceUsesInjectedHostMaintenanceSession(t *testing.T) {
 	server := Server{Name: "srv", Host: "127.0.0.1", Port: 22, User: "root"}
-	var builtAuth, builtHostKey, dialed bool
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "idle"}})
+	opened := false
 	deps := testUpdateServiceDeps(t)
-	deps.BuildAuthMethods = func(got Server) ([]ssh.AuthMethod, error) {
-		builtAuth = true
-		if got.Name != server.Name {
-			t.Fatalf("BuildAuthMethods server = %q, want %q", got.Name, server.Name)
+	deps.ServerState = state
+	deps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		opened = true
+		if req.Server.Name != server.Name || req.DialOperation != "autoremove.ssh_dial" {
+			t.Fatalf("session request = %+v", req)
 		}
-		return []ssh.AuthMethod{ssh.Password("secret")}, nil
-	}
-	deps.HostKeyCallback = func() (ssh.HostKeyCallback, error) {
-		builtHostKey = true
-		return ssh.InsecureIgnoreHostKey(), nil
-	}
-	deps.DialSSHWithRetry = func(got Server, config *ssh.ClientConfig, _ RetryPolicy, opName string, attempts *int) (sshConnection, error) {
-		dialed = true
-		if got.Name != server.Name {
-			t.Fatalf("DialSSHWithRetry server = %q, want %q", got.Name, server.Name)
-		}
-		if config.User != server.User {
-			t.Fatalf("ssh config user = %q, want %q", config.User, server.User)
-		}
-		if opName != "update.ssh_dial" {
-			t.Fatalf("opName = %q, want update.ssh_dial", opName)
-		}
-		if attempts == nil {
-			t.Fatalf("attempts pointer = nil")
-		}
-		*attempts = 1
-		return &fakeSSHConnection{}, nil
-	}
-
-	runner := &withActorRunner{
-		service: defaultUpdateService(),
-		server:  server,
-		policy:  loadRetryPolicyFromEnv(),
-	}
-	runner.service = NewUpdateService(deps)
-
-	if !runner.setupSSH("update.ssh_dial") {
-		t.Fatalf("setupSSH() = false, want true")
-	}
-	if !builtAuth || !builtHostKey || !dialed {
-		t.Fatalf("setupSSH did not use all injected hooks: auth=%v hostkey=%v dial=%v", builtAuth, builtHostKey, dialed)
-	}
-	if runner.client == nil {
-		t.Fatalf("runner.client = nil")
-	}
-	if runner.sshDialAttempts != 1 {
-		t.Fatalf("sshDialAttempts = %d, want 1", runner.sshDialAttempts)
+		return &HostMaintenanceSessionFuncs{RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+			return HostCommandResult{Attempts: 1}, nil
+		}}, nil
+	})
+	NewUpdateService(deps).RunAutoremoveJob(AutoremoveRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+	if !opened {
+		t.Fatal("Host Maintenance Session was not opened")
 	}
 }
 
@@ -151,22 +102,10 @@ func TestUpdateServiceSetupSSHAuthFailureSetsRuntimeError(t *testing.T) {
 	})
 
 	deps := testUpdateServiceDeps(t)
-	deps.BuildAuthMethods = func(Server) ([]ssh.AuthMethod, error) {
-		return nil, errors.New("missing credentials")
-	}
-	deps.DialSSHWithRetry = func(Server, *ssh.ClientConfig, RetryPolicy, string, *int) (sshConnection, error) {
-		t.Fatalf("DialSSHWithRetry should not be called after auth setup failure")
-		return nil, nil
-	}
-	runner := &withActorRunner{
-		service: NewUpdateService(deps),
-		server:  server,
-		policy:  loadRetryPolicyFromEnv(),
-	}
-
-	if runner.setupSSH("update.ssh_dial") {
-		t.Fatalf("setupSSH() = true, want false")
-	}
+	deps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		return nil, &HostMaintenanceError{Stage: HostMaintenanceStageAuth, Err: errors.New("missing credentials")}
+	})
+	NewUpdateService(deps).RunAutoremoveJob(AutoremoveRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
 	mu.Lock()
 	gotStatus := statusMap[server.Name].Status
 	gotLogs := statusMap[server.Name].Logs
@@ -196,10 +135,12 @@ func TestUpdateServiceAutoremoveUsesCommandHookAndAuditsSuccess(t *testing.T) {
 	var command string
 	var auditStatus string
 	deps := testUpdateServiceDeps(t)
-	deps.RunSSHCommandWithTimeout = func(_ sshConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
-		command = cmd
-		return "removed packages", "", nil
-	}
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+			command = req.Command
+			return HostCommandResult{Stdout: "removed packages", Attempts: 1}, nil
+		},
+	})
 	deps.AuditWithActor = func(_, _, action, _, _, status, _ string, _ map[string]any) {
 		if action == "autoremove.complete" {
 			auditStatus = status
@@ -259,34 +200,39 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 	}
 	deps := testUpdateServiceDeps(t)
 	deps.CurrentJobManager = func() *JobManager { return jm }
-	deps.RunSSHCommandWithTimeout = func(_ sshConnection, cmd string, _ io.Reader, _ time.Duration) (string, string, error) {
-		if cmd != aptUpdateCmd {
-			t.Fatalf("command = %q, want apt update command", cmd)
-		}
-		return "apt updated", "", nil
-	}
-	deps.DiscoverPackages = func(sshConnection, time.Duration) (PackageDiscoveryOutcome, error) {
-		return PackageDiscoveryOutcome{
-			PendingPackageCount:  1,
-			SecurityPackageCount: 1,
-			PendingUpdates: []PendingUpdate{{
-				Package:          "openssl",
-				CurrentVersion:   "1.0",
-				CandidateVersion: "1.1",
-				Security:         true,
-				CVEState:         "pending",
-				Raw:              "openssl/now 1.1",
-			}},
-			Upgradable:  []string{"openssl/now 1.1"},
-			UpgradePlan: UpgradePlan{StandardPackageCount: 1, StandardSecurityCount: 1, TotalSecurityCount: 1, FullUpgradePackageCount: 1},
-		}, nil
-	}
-	deps.QueryPackageCVEs = func(_ sshConnection, pkg string) ([]string, error) {
-		if pkg != "openssl" {
-			t.Fatalf("CVE package = %q, want openssl", pkg)
-		}
-		return []string{"CVE-2026-0001"}, nil
-	}
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+			if req.Command != aptUpdateCmd {
+				t.Fatalf("command = %q, want apt update command", req.Command)
+			}
+			return HostCommandResult{Stdout: "apt updated", Attempts: 1}, nil
+		},
+		RunUpdatePrechecksFunc: func(context.Context) updatePrecheckSummary {
+			return updatePrecheckSummary{AllPassed: true}
+		},
+		DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+			return HostPackageDiscoveryResult{Outcome: PackageDiscoveryOutcome{
+				PendingPackageCount:  1,
+				SecurityPackageCount: 1,
+				PendingUpdates: []PendingUpdate{{
+					Package:          "openssl",
+					CurrentVersion:   "1.0",
+					CandidateVersion: "1.1",
+					Security:         true,
+					CVEState:         "pending",
+					Raw:              "openssl/now 1.1",
+				}},
+				Upgradable:  []string{"openssl/now 1.1"},
+				UpgradePlan: UpgradePlan{StandardPackageCount: 1, StandardSecurityCount: 1, TotalSecurityCount: 1, FullUpgradePackageCount: 1},
+			}, Attempts: 1}, nil
+		},
+		QueryPackageCVEsFunc: func(_ context.Context, pkg string) ([]string, error) {
+			if pkg != "openssl" {
+				t.Fatalf("CVE package = %q, want openssl", pkg)
+			}
+			return []string{"CVE-2026-0001"}, nil
+		},
+	})
 	deps.UpdatePolicyRun = func(_ int64, update updatePolicyRunUpdate) error {
 		t.Fatalf("UpdatePolicyRun called from scheduled scan worker: %+v", update)
 		return nil

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 func testPolicyServiceDeps() PolicyServiceDeps {
@@ -26,16 +29,9 @@ func testPolicyServiceDeps() PolicyServiceDeps {
 		CurrentLocation: func() *time.Location {
 			return time.UTC
 		},
-		CurrentMaintenanceActive: func() bool {
-			return false
-		},
 		MarkInterruptedRuns: func() error {
 			return nil
 		},
-		TryBackupRestoreReadLock: func() bool {
-			return true
-		},
-		UnlockBackupRestoreRead: func() {},
 		Now: func() time.Time {
 			return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		},
@@ -272,13 +268,13 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	t.Cleanup(service.ResetMissedTicksForTest)
 
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
-	var lockAvailable bool
 	var handled []PolicyScheduledRunRequest
 	deps := testPolicyServiceDeps()
-	deps.TryBackupRestoreReadLock = func() bool {
-		return lockAvailable
+	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
+	if err := coordinator.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
 	}
-	deps.UnlockBackupRestoreRead = func() {}
+	deps.Maintenance = coordinator
 	deps.ListPolicies = func() ([]UpdatePolicy, error) {
 		return []UpdatePolicy{{
 			ID:            7,
@@ -300,6 +296,10 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	}
 
 	service = NewPolicyService(deps)
+	exclusive, decision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatalf("TryExclusive() decision = %+v", decision)
+	}
 	if err := service.ProcessDue(slot); err != nil {
 		t.Fatalf("ProcessDue(blocked) unexpected error: %v", err)
 	}
@@ -307,7 +307,9 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 		t.Fatalf("missed ticks = %v, want one tick", got)
 	}
 
-	lockAvailable = true
+	if err := exclusive.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 	if err := service.ProcessDue(slot.Add(time.Minute)); err != nil {
 		t.Fatalf("ProcessDue(replay) unexpected error: %v", err)
 	}
@@ -319,10 +321,10 @@ func TestPolicyServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	}
 }
 
-func TestPolicyServicePartialBackupRestoreLockOverridesAreNonLocking(t *testing.T) {
+func TestPolicyServiceWithoutMaintenanceCoordinatorProcessesDueWork(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
-	baseDeps := testPolicyServiceDeps()
-	baseDeps.ListPolicies = func() ([]UpdatePolicy, error) {
+	deps := testPolicyServiceDeps()
+	deps.ListPolicies = func() ([]UpdatePolicy, error) {
 		return []UpdatePolicy{{
 			ID:            8,
 			Name:          "nightly",
@@ -334,45 +336,18 @@ func TestPolicyServicePartialBackupRestoreLockOverridesAreNonLocking(t *testing.
 			TimeLocal:     "03:00",
 		}}, nil
 	}
-	baseDeps.SnapshotServers = func() []Server {
+	deps.SnapshotServers = func() []Server {
 		return []Server{{Name: "srv"}}
 	}
-
-	t.Run("try only", func(t *testing.T) {
-		deps := baseDeps
-		deps.TryBackupRestoreReadLock = func() bool { return true }
-		deps.UnlockBackupRestoreRead = nil
-		handled := 0
-		deps.HandleScheduledRun = func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
-			handled++
-			return PolicyScheduledRunResult{Handled: true, Inserted: true}
-		}
-
-		if err := NewPolicyService(deps).ProcessDue(slot); err != nil {
-			t.Fatalf("ProcessDue() unexpected error: %v", err)
-		}
-		if handled != 1 {
-			t.Fatalf("handled = %d, want 1", handled)
-		}
-	})
-
-	t.Run("unlock only", func(t *testing.T) {
-		deps := baseDeps
-		deps.TryBackupRestoreReadLock = nil
-		deps.UnlockBackupRestoreRead = func() {
-			t.Fatalf("unlock-only override should not be called")
-		}
-		handled := 0
-		deps.HandleScheduledRun = func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
-			handled++
-			return PolicyScheduledRunResult{Handled: true, Inserted: true}
-		}
-
-		if err := NewPolicyService(deps).ProcessDue(slot); err != nil {
-			t.Fatalf("ProcessDue() unexpected error: %v", err)
-		}
-		if handled != 1 {
-			t.Fatalf("handled = %d, want 1", handled)
-		}
-	})
+	handled := 0
+	deps.HandleScheduledRun = func(PolicyScheduledRunRequest) PolicyScheduledRunResult {
+		handled++
+		return PolicyScheduledRunResult{Handled: true, Inserted: true}
+	}
+	if err := NewPolicyService(deps).ProcessDue(slot); err != nil {
+		t.Fatalf("ProcessDue() unexpected error: %v", err)
+	}
+	if handled != 1 {
+		t.Fatalf("handled = %d, want 1", handled)
+	}
 }

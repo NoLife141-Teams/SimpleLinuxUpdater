@@ -171,23 +171,6 @@ func TestServerActionLifecycleStartJobFailureRollsBackRuntimeState(t *testing.T)
 	}
 }
 
-func TestServerActionLifecycleStartMaintenanceFailureRollsBackRuntimeState(t *testing.T) {
-	server := Server{Name: "srv-maint", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
-	original := &ServerStatus{Name: server.Name, Status: "idle", Logs: "ready"}
-	h := newLifecycleTestHarness(t, server, original)
-	h.jobManager = newJobManagerWithRuntime(h.db, nil, h.state, func() bool { return true })
-
-	result := h.lifecycle().StartAutoremove(server.Name, "alice", "192.0.2.10")
-
-	if !result.maintenanceBlocked {
-		t.Fatalf("maintenance result = %+v, want maintenance blocked marker", result)
-	}
-	restored := h.state.CurrentStatusSnapshot(server.Name)
-	if restored == nil || restored.Status != "idle" || restored.Logs != "ready" {
-		t.Fatalf("restored status = %+v, want original idle snapshot", restored)
-	}
-}
-
 func TestServerActionLifecycleApproveSuccessUpdatesJobFirst(t *testing.T) {
 	server := Server{Name: "srv-approve", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	h := newLifecycleTestHarness(t, server, &ServerStatus{

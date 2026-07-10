@@ -22,7 +22,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	serverpkg "debian-updater/internal/servers"
@@ -104,15 +103,6 @@ type RestoreSnapshot struct {
 	Data   []byte
 }
 
-type MaintenanceState struct {
-	Active    bool   `json:"active"`
-	Kind      string `json:"kind"`
-	JobID     string `json:"job_id"`
-	StartedAt string `json:"started_at"`
-	Actor     string `json:"actor"`
-	Message   string `json:"message"`
-}
-
 type ExportResult struct {
 	Bytes              []byte
 	KnownHostsIncluded bool
@@ -136,7 +126,8 @@ type VerifyResult struct {
 }
 
 type RestoreOptions struct {
-	BeforeApply func()
+	BeforeApply    func()
+	RestoreHandoff func(context.Context) error
 }
 
 type ExportStage string
@@ -194,46 +185,6 @@ func (e *RestoreError) Unwrap() error {
 	return e.Err
 }
 
-type Barrier struct {
-	mu sync.RWMutex
-}
-
-func NewBarrier() *Barrier {
-	return &Barrier{}
-}
-
-func (b *Barrier) Lock() {
-	if b != nil {
-		b.mu.Lock()
-	}
-}
-
-func (b *Barrier) Unlock() {
-	if b != nil {
-		b.mu.Unlock()
-	}
-}
-
-func (b *Barrier) RLock() {
-	if b != nil {
-		b.mu.RLock()
-	}
-}
-
-func (b *Barrier) RUnlock() {
-	if b != nil {
-		b.mu.RUnlock()
-	}
-}
-
-func (b *Barrier) TryLock() bool {
-	return b != nil && b.mu.TryLock()
-}
-
-func (b *Barrier) TryRLock() bool {
-	return b != nil && b.mu.TryRLock()
-}
-
 type ServiceDeps struct {
 	DB                      func() *sql.DB
 	DBPath                  func() string
@@ -248,8 +199,6 @@ type ServiceDeps struct {
 	GlobalSSHCredential     *serverpkg.GlobalSSHCredential
 	ResetRuntimeCaches      func()
 	ReloadRuntimeState      func() error
-	CurrentMaintenanceState func() MaintenanceState
-	PersistMaintenanceState func(MaintenanceState) error
 	Now                     func() time.Time
 	Logf                    func(string, ...any)
 }
@@ -380,7 +329,7 @@ func (s *Service) RestoreArchiveWithOptions(ctx context.Context, encrypted []byt
 	if opts.BeforeApply != nil {
 		opts.BeforeApply()
 	}
-	if err := s.ApplyFiles(ctx, files); err != nil {
+	if err := s.applyFiles(ctx, files, opts.RestoreHandoff); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
 	globalKeyPresent := false
@@ -755,17 +704,6 @@ func WriteAtomicFile(path string, data []byte, mode os.FileMode, ensurePrivateDi
 	return nil
 }
 
-func (s *Service) PersistActiveMaintenanceStateForRestore() error {
-	state := s.deps.CurrentMaintenanceState()
-	if !state.Active {
-		return nil
-	}
-	if err := s.deps.PersistMaintenanceState(state); err != nil {
-		return fmt.Errorf("persist active maintenance marker in restored database: %w", err)
-	}
-	return nil
-}
-
 func SnapshotExistingFiles(paths []string) (map[string]RestoreSnapshot, error) {
 	out := make(map[string]RestoreSnapshot, len(paths))
 	for _, p := range paths {
@@ -1055,6 +993,10 @@ func (s *Service) PrepareRuntimeFiles(ctx context.Context, files map[string][]by
 }
 
 func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error {
+	return s.applyFiles(ctx, files, nil)
+}
+
+func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, restoreHandoff func(context.Context) error) error {
 	dbTarget := s.deps.DBPath()
 	knownHostsTarget := filepath.Join(filepath.Dir(s.deps.DBPath()), "known_hosts")
 	if p, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(p) != "" {
@@ -1083,6 +1025,11 @@ func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error
 			errs = append(errs, fmt.Errorf("rollback restore snapshots: %w", restoreErr))
 		}
 		s.deps.ResetRuntimeCaches()
+		if restoreHandoff != nil {
+			if handoffErr := restoreHandoff(ctx); handoffErr != nil {
+				errs = append(errs, fmt.Errorf("rollback maintenance handoff: %w", handoffErr))
+			}
+		}
 		if reloadErr := s.deps.ReloadRuntimeState(); reloadErr != nil {
 			errs = append(errs, fmt.Errorf("rollback reload runtime state after reset: %w", reloadErr))
 		}
@@ -1103,8 +1050,10 @@ func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error
 			return rollback(err)
 		}
 	}
-	if err := s.PersistActiveMaintenanceStateForRestore(); err != nil {
-		return rollback(err)
+	if restoreHandoff != nil {
+		if err := restoreHandoff(ctx); err != nil {
+			return rollback(fmt.Errorf("maintenance restore handoff: %w", err))
+		}
 	}
 	if err := s.deps.ReloadRuntimeState(); err != nil {
 		return rollback(err)

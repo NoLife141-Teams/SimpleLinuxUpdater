@@ -23,9 +23,8 @@ type serverActionLifecycle struct {
 }
 
 type serverActionLifecycleResult struct {
-	statusCode         int
-	body               map[string]any
-	maintenanceBlocked bool
+	statusCode int
+	body       map[string]any
 }
 
 type serverActionStartSpec struct {
@@ -179,9 +178,6 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	job, err := createServerActionJobWithStateAndManager(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy)
 	if err != nil {
 		l.serverState.RestoreStatusSnapshot(name, preStartStatus)
-		if errors.Is(err, errMaintenanceModeActive) {
-			return serverActionLifecycleResult{maintenanceBlocked: true}
-		}
 		retryMeta["error"] = err.Error()
 		l.recordAudit(spec.auditAction, name, "failure", "Failed to create job", retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)

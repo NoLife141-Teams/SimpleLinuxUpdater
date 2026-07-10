@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	internalbackup "debian-updater/internal/backup"
+	maintenancepkg "debian-updater/internal/maintenance"
 	updatespkg "debian-updater/internal/updates"
 )
 
@@ -52,11 +52,9 @@ func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server
 	}
 
 	deps := AppDeps{
-		ServerState:              state,
-		CurrentJobManager:        func() *JobManager { return jm },
-		BackupBarrier:            internalbackup.NewBarrier(),
-		CurrentMaintenanceActive: func() bool { return false },
-		JobTimestampNow:          func() string { return "2026-07-05T14:00:01Z" },
+		ServerState:       state,
+		CurrentJobManager: func() *JobManager { return jm },
+		JobTimestampNow:   func() string { return "2026-07-05T14:00:01Z" },
 		LoadRetryPolicy: func() RetryPolicy {
 			return RetryPolicy{MaxAttempts: 4, BaseDelay: time.Second, MaxDelay: 5 * time.Second, JitterPct: 7}
 		},
@@ -140,39 +138,24 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 	}
 }
 
-func TestScheduledRunLifecycleMaintenanceAndBarrierSkip(t *testing.T) {
+func TestScheduledRunLifecycleExclusiveMaintenanceSkip(t *testing.T) {
 	server := Server{Name: "srv-maintenance-barrier", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
+	exclusive, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatalf("TryExclusive() decision = %+v", decision)
+	}
+	defer exclusive.Close()
 
-	t.Run("backup barrier locked", func(t *testing.T) {
-		deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-barrier.db", server, "idle")
-		deps.BackupBarrier.Lock()
-		defer deps.BackupBarrier.Unlock()
+	newScheduledRunLifecycle(deps).Execute(run, policy, server)
 
-		newScheduledRunLifecycle(deps).Execute(run, policy, server)
-
-		current := getScheduledLifecycleRun(t, deps, run.ID)
-		if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
-			t.Fatalf("run = status %q reason %q, want skipped/maintenance", current.Status, current.Reason)
-		}
-		if current.Summary != "Maintenance mode active; scheduled run skipped" {
-			t.Fatalf("summary = %q, want maintenance run skip", current.Summary)
-		}
-	})
-
-	t.Run("maintenance active", func(t *testing.T) {
-		deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
-		deps.CurrentMaintenanceActive = func() bool { return true }
-
-		newScheduledRunLifecycle(deps).Execute(run, policy, server)
-
-		current := getScheduledLifecycleRun(t, deps, run.ID)
-		if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
-			t.Fatalf("run = status %q reason %q, want skipped/maintenance", current.Status, current.Reason)
-		}
-		if current.Summary != "Maintenance mode active; scheduled run skipped" {
-			t.Fatalf("summary = %q, want maintenance run skip", current.Summary)
-		}
-	})
+	current := getScheduledLifecycleRun(t, deps, run.ID)
+	if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
+		t.Fatalf("run = status %q reason %q, want skipped/maintenance", current.Status, current.Reason)
+	}
+	if current.Summary != "Maintenance mode active; scheduled run skipped" {
+		t.Fatalf("summary = %q, want maintenance run skip", current.Summary)
+	}
 }
 
 func TestScheduledRunLifecycleMissingAndBusyServer(t *testing.T) {

@@ -57,24 +57,8 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	if deps.CurrentLocation == nil {
 		deps.CurrentLocation = currentAppLocation
 	}
-	if deps.CurrentMaintenanceActive == nil {
-		deps.CurrentMaintenanceActive = func() bool {
-			return currentMaintenanceState().Active
-		}
-	}
 	if deps.MarkInterruptedRuns == nil {
 		deps.MarkInterruptedRuns = markInterruptedUpdatePolicyRuns
-	}
-	switch {
-	case deps.TryBackupRestoreReadLock == nil && deps.UnlockBackupRestoreRead == nil:
-		deps.TryBackupRestoreReadLock = backupRestoreMu.TryRLock
-		deps.UnlockBackupRestoreRead = backupRestoreMu.RUnlock
-	case deps.TryBackupRestoreReadLock != nil && deps.UnlockBackupRestoreRead != nil:
-	case deps.TryBackupRestoreReadLock != nil:
-		deps.UnlockBackupRestoreRead = func() {}
-	default:
-		deps.TryBackupRestoreReadLock = func() bool { return true }
-		deps.UnlockBackupRestoreRead = func() {}
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now

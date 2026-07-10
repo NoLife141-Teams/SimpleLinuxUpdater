@@ -20,16 +20,16 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 
 - Web server: Go + Gin, HTML templates under `templates/`, static assets under `static/`.
 - Route registry: `setupRouterWithDeps(AppDeps)` builds the engine, middleware, sessions, jobs, templates, static files, and then calls `registerRoutes`.
-- Dependency boundary: `AppDeps` provides injectable DB, service, job-manager, session, timezone, dashboard-event, backup-barrier, server-state, and initialization dependencies.
+- Dependency boundary: `AppDeps` provides injectable DB, service, job-manager, session, timezone, dashboard-event, Maintenance Coordination, server-state, and initialization dependencies.
 - Services: audit, auth, backup, events, jobs, observability, policy scheduling, server inventory, and update runner behavior live behind `internal/...` package boundaries.
-- Runtime state: default router setup creates fresh app-scoped services, broker, barrier, rate limiters, job manager, server state, session manager, metrics-token service, policy service, update service, backup service, audit service, and observability service.
+- Runtime state: default router setup creates fresh app-scoped services, broker, Maintenance Coordinator, rate limiters, job manager, server state, session manager, metrics-token service, policy service, update service, backup service, audit service, and observability service.
 - Schema ownership: each domain package owns its SQLite table creation/migration; `package main` calls those installers in a deterministic startup order.
 - UI: Status, Manage, Observability, and Admin pages are backed by JSON APIs and live dashboard events.
 
 ## Request flow
 
 1. `setupRouter()` delegates to `setupRouterWithDeps(NewDefaultAppDeps())`.
-2. Router setup configures trusted proxies, security headers, backup/restore barriers, maintenance state, job recovery, sessions, templates, and static files.
+2. Router setup configures trusted proxies and security headers, reconciles Maintenance Coordination before job recovery, then initializes sessions, templates, and static files.
 3. `registerRoutes(router, deps)` registers public setup/login/status routes first.
 4. Protected routes are installed after `authGateMiddleware()` and `sameOriginWriteMiddleware()`.
 5. Route groups pass `AppDeps` into server/action routes, policy/audit/report routes, dashboard summaries, metrics, backup, auth/session, and dashboard events.
@@ -43,7 +43,8 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, runtime-status sync callbacks, and dashboard notifications after successful writes.
-- `internal/backup.Barrier` owns the backup/export/restore coordination lock used by middleware and scheduler access checks.
+- `internal/maintenance.Coordinator` owns shared admission, exclusive backup leases, durable/public maintenance state, startup recovery, and restore handoff.
+- `internal/backup` owns archive validation, file replacement, rollback, runtime reload, and session invalidation; it invokes the active exclusive lease at restore handoff boundaries.
 - `internal/events.Broker` owns dashboard event fan-out for SSE clients.
 - `internal/servers.State` owns the server inventory snapshot and live status map for each app instance. Process-wide globals remain only for process startup, constants, pure helpers, and low-level test seams that must be replaced at process scope.
 

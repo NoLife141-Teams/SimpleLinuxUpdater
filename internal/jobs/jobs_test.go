@@ -13,16 +13,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestJobManagerCreateJobDefaultsTrimsAndBlocksMaintenance(t *testing.T) {
+func TestJobManagerCreateJobDefaultsAndTrims(t *testing.T) {
 	db := openJobTestDB(t)
 	var notifications []string
 	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
-	maintenanceErr := errors.New("maintenance active")
-	maintenanceActive := false
 	idSeq := 0
 	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
-		MaintenanceActive: func() bool { return maintenanceActive },
-		MaintenanceError:  maintenanceErr,
 		Notify: func(reason string) {
 			notifications = append(notifications, reason)
 		},
@@ -58,13 +54,6 @@ func TestJobManagerCreateJobDefaultsTrimsAndBlocksMaintenance(t *testing.T) {
 		t.Fatalf("notifications = %v, want job.create", notifications)
 	}
 
-	maintenanceActive = true
-	if _, err := manager.CreateJob(CreateParams{Kind: KindUpdate, Actor: "admin"}); !errors.Is(err, maintenanceErr) {
-		t.Fatalf("CreateJob(maintenance update) error = %v, want %v", err, maintenanceErr)
-	}
-	if _, err := manager.CreateJob(CreateParams{Kind: KindBackupExport, Actor: "admin"}); err != nil {
-		t.Fatalf("CreateJob(backup during maintenance) error = %v", err)
-	}
 }
 
 func TestJobManagerUpsertSyncsRuntimeAndNotifies(t *testing.T) {

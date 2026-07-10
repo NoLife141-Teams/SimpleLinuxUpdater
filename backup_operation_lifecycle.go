@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	internalbackup "debian-updater/internal/backup"
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 type backupOperationKind string
@@ -17,8 +18,8 @@ const (
 	backupOperationSnapshotFailed            backupOperationKind = "snapshot_failed"
 	backupOperationJobManagerUnavailable     backupOperationKind = "job_manager_unavailable"
 	backupOperationJobCreateFailed           backupOperationKind = "job_create_failed"
-	backupOperationMaintenanceBlocked        backupOperationKind = "maintenance_blocked"
 	backupOperationMaintenanceActivateFailed backupOperationKind = "maintenance_activate_failed"
+	backupOperationMaintenanceReleaseFailed  backupOperationKind = "maintenance_release_failed"
 	backupOperationExportFailed              backupOperationKind = "export_failed"
 	backupOperationRestoreDecryptFailed      backupOperationKind = "restore_decrypt_failed"
 	backupOperationRestoreArchiveFailed      backupOperationKind = "restore_archive_failed"
@@ -48,8 +49,6 @@ type backupOperationLifecycleDeps struct {
 	ActiveServerActionNames func() []string
 	ActivateMaintenance     func(kind, jobID, actor, message string) error
 	DeactivateMaintenance   func() error
-	CurrentMaintenanceState func() MaintenanceState
-	PersistMaintenanceState func(MaintenanceState) error
 	RecordAudit             func(backupOperationAuditRecord)
 	EnsureEncryptionKey     func() []byte
 	JobTimestampNow         func() string
@@ -65,6 +64,7 @@ type backupExportCommand struct {
 	Actor    string
 	ClientIP string
 	Request  backupExportRequest
+	Lease    *maintenancepkg.ExclusiveLease
 }
 
 type backupRestoreCommand struct {
@@ -72,6 +72,7 @@ type backupRestoreCommand struct {
 	ClientIP   string
 	Blob       []byte
 	Passphrase string
+	Lease      *maintenancepkg.ExclusiveLease
 }
 
 type backupOperationOutcome struct {
@@ -98,10 +99,6 @@ func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 			}
 			return activeServerActionNames()
 		},
-		ActivateMaintenance:     activateMaintenance,
-		DeactivateMaintenance:   deactivateMaintenance,
-		CurrentMaintenanceState: currentMaintenanceState,
-		PersistMaintenanceState: persistMaintenanceState,
 		RecordAudit: func(record backupOperationAuditRecord) {
 			if deps.AuditService != nil {
 				if err := deps.AuditService.Record(record.Actor, record.ClientIP, record.Action, record.TargetType, record.TargetName, record.Status, record.Message, record.Meta); err != nil {
@@ -130,16 +127,10 @@ func (deps backupOperationLifecycleDeps) withDefaults() backupOperationLifecycle
 		deps.ActiveServerActionNames = activeServerActionNames
 	}
 	if deps.ActivateMaintenance == nil {
-		deps.ActivateMaintenance = activateMaintenance
+		deps.ActivateMaintenance = func(string, string, string, string) error { return errors.New("maintenance lease is not configured") }
 	}
 	if deps.DeactivateMaintenance == nil {
-		deps.DeactivateMaintenance = deactivateMaintenance
-	}
-	if deps.CurrentMaintenanceState == nil {
-		deps.CurrentMaintenanceState = currentMaintenanceState
-	}
-	if deps.PersistMaintenanceState == nil {
-		deps.PersistMaintenanceState = persistMaintenanceState
+		deps.DeactivateMaintenance = func() error { return nil }
 	}
 	if deps.RecordAudit == nil {
 		deps.RecordAudit = func(record backupOperationAuditRecord) {
@@ -161,7 +152,7 @@ func (deps backupOperationLifecycleDeps) withDefaults() backupOperationLifecycle
 	return deps
 }
 
-func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportCommand) backupOperationOutcome {
+func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportCommand) (outcome backupOperationOutcome) {
 	deps := l.deps.withDefaults()
 	if ctx == nil {
 		ctx = context.Background()
@@ -218,12 +209,16 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		StartedAt: deps.JobTimestampNow(),
 	})
 	if err != nil {
-		if errors.Is(err, errMaintenanceModeActive) {
-			return backupOperationOutcome{Kind: backupOperationMaintenanceBlocked, Err: err}
-		}
 		return backupOperationOutcome{Kind: backupOperationJobCreateFailed, PublicError: "failed to create backup export job", Err: err}
 	}
-	if err := deps.ActivateMaintenance(jobKindBackupExport, job.ID, cmd.Actor, "Backup export in progress. The application will reopen when the encrypted archive is ready."); err != nil {
+	activateErr := error(nil)
+	if cmd.Lease != nil {
+		activateErr = cmd.Lease.Activate(ctx, maintenancepkg.OperationFacts{JobID: job.ID, Actor: cmd.Actor, Message: "Backup export in progress. The application will reopen when the encrypted archive is ready."})
+	} else {
+		activateErr = deps.ActivateMaintenance(jobKindBackupExport, job.ID, cmd.Actor, "Backup export in progress. The application will reopen when the encrypted archive is ready.")
+	}
+	if activateErr != nil {
+		err := activateErr
 		deps.Logf("backup export lifecycle: activateMaintenance failed for job %q: %v", job.ID, err)
 		status := jobStatusFailed
 		summary := "Failed to activate maintenance mode"
@@ -238,8 +233,15 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		return backupOperationOutcome{Kind: backupOperationMaintenanceActivateFailed, JobID: job.ID, PublicError: "failed to activate maintenance mode", Err: err}
 	}
 	defer func() {
-		if err := deps.DeactivateMaintenance(); err != nil {
+		var err error
+		if cmd.Lease != nil {
+			err = cmd.Lease.Close()
+		} else {
+			err = deps.DeactivateMaintenance()
+		}
+		if err != nil {
 			deps.Logf("backup export lifecycle: failed to clear maintenance mode: %v", err)
+			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.export", err)
 		}
 	}()
 
@@ -335,7 +337,7 @@ func (l *backupOperationLifecycle) failExportArchive(jm *JobManager, jobID strin
 	return backupOperationOutcome{Kind: backupOperationExportFailed, JobID: jobID, PublicError: publicError, Err: err}
 }
 
-func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestoreCommand) backupOperationOutcome {
+func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestoreCommand) (outcome backupOperationOutcome) {
 	deps := l.deps.withDefaults()
 	if ctx == nil {
 		ctx = context.Background()
@@ -376,12 +378,16 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		StartedAt: deps.JobTimestampNow(),
 	})
 	if err != nil {
-		if errors.Is(err, errMaintenanceModeActive) {
-			return backupOperationOutcome{Kind: backupOperationMaintenanceBlocked, Err: err}
-		}
 		return backupOperationOutcome{Kind: backupOperationJobCreateFailed, PublicError: "failed to create backup restore job", Err: err}
 	}
-	if err := deps.ActivateMaintenance(jobKindBackupRestore, job.ID, cmd.Actor, "Backup restore in progress. Requests are paused until the restored state is ready."); err != nil {
+	activateErr := error(nil)
+	if cmd.Lease != nil {
+		activateErr = cmd.Lease.Activate(ctx, maintenancepkg.OperationFacts{JobID: job.ID, Actor: cmd.Actor, Message: "Backup restore in progress. Requests are paused until the restored state is ready."})
+	} else {
+		activateErr = deps.ActivateMaintenance(jobKindBackupRestore, job.ID, cmd.Actor, "Backup restore in progress. Requests are paused until the restored state is ready.")
+	}
+	if activateErr != nil {
+		err := activateErr
 		status := jobStatusFailed
 		summary := "Failed to activate maintenance mode"
 		errorClass := "maintenance"
@@ -395,8 +401,15 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		return backupOperationOutcome{Kind: backupOperationMaintenanceActivateFailed, JobID: job.ID, PublicError: "failed to activate maintenance mode", Err: err}
 	}
 	defer func() {
-		if err := deps.DeactivateMaintenance(); err != nil {
+		var err error
+		if cmd.Lease != nil {
+			err = cmd.Lease.Close()
+		} else {
+			err = deps.DeactivateMaintenance()
+		}
+		if err != nil {
 			deps.Logf("backup restore lifecycle: failed to clear maintenance mode: %v", err)
+			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.restore", err)
 		}
 	}()
 
@@ -406,12 +419,17 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			summary := "Applying restored backup files"
 			_ = jm.UpdateJob(job.ID, JobUpdate{Phase: &phase, Summary: &summary})
 		},
+		RestoreHandoff: func(ctx context.Context) error {
+			if cmd.Lease == nil {
+				return errors.New("maintenance lease is not configured")
+			}
+			return cmd.Lease.Handoff(ctx)
+		},
 	})
 	if err != nil {
 		return l.failRestoreArchive(job, cmd, err)
 	}
 	jm = deps.CurrentJobManager()
-	l.persistActiveMaintenanceAfterRestore("after restore")
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
 		ClientIP:   cmd.ClientIP,
@@ -451,6 +469,22 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		KnownHostsRestored:  result.KnownHostsRestored,
 		SessionsInvalidated: true,
 	}
+}
+
+func (l *backupOperationLifecycle) failMaintenanceRelease(jobID, actor, clientIP, action string, err error) backupOperationOutcome {
+	deps := l.deps.withDefaults()
+	status := jobStatusFailed
+	summary := "Maintenance mode could not be cleared"
+	errorClass := "maintenance_coordination"
+	finishedAt := deps.JobTimestampNow()
+	if jm := deps.CurrentJobManager(); jm != nil {
+		_ = jm.UpdateJob(jobID, JobUpdate{Status: &status, Summary: &summary, ErrorClass: &errorClass, FinishedAt: &finishedAt})
+	}
+	deps.RecordAudit(backupOperationAuditRecord{
+		Actor: actor, ClientIP: clientIP, Action: action, TargetType: "backup", TargetName: "state",
+		Status: "failure", Message: summary, Meta: map[string]any{"error": err.Error()},
+	})
+	return backupOperationOutcome{Kind: backupOperationMaintenanceReleaseFailed, JobID: jobID, PublicError: "maintenance mode could not be cleared", Err: err}
 }
 
 func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupRestoreCommand, err error) backupOperationOutcome {
@@ -511,7 +545,6 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 		return backupOperationOutcome{Kind: backupOperationRestoreArchiveFailed, JobID: job.ID, PublicError: "invalid backup payload", Err: err}
 	default:
 		jm := deps.CurrentJobManager()
-		l.persistActiveMaintenanceAfterRestore("after restore error")
 		status := jobStatusFailed
 		summary := "Failed to apply backup files"
 		errorClass := "apply"
@@ -535,13 +568,6 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			Meta:       map[string]any{"error": err.Error()},
 		})
 		return backupOperationOutcome{Kind: backupOperationRestoreApplyFailed, JobID: job.ID, PublicError: "failed to apply backup", Err: err}
-	}
-}
-
-func (l *backupOperationLifecycle) persistActiveMaintenanceAfterRestore(context string) {
-	deps := l.deps.withDefaults()
-	if err := deps.PersistMaintenanceState(deps.CurrentMaintenanceState()); err != nil {
-		deps.Logf("backup restore lifecycle: failed to re-persist active maintenance state %s: %v", context, err)
 	}
 }
 

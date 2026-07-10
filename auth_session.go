@@ -12,6 +12,7 @@ import (
 	"time"
 
 	authpkg "debian-updater/internal/auth"
+	maintenancepkg "debian-updater/internal/maintenance"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
@@ -342,56 +343,60 @@ func sameOriginWriteMiddleware() gin.HandlerFunc {
 	return authpkg.SameOriginWriteMiddleware()
 }
 
-func backupRestoreBarrierMiddleware(barriers ...*BackupBarrier) gin.HandlerFunc {
-	barrier := backupRestoreBarrier
-	if len(barriers) > 0 && barriers[0] != nil {
-		barrier = barriers[0]
-	}
+const maintenanceExclusiveLeaseContextKey = "maintenance_exclusive_lease"
+
+func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c == nil || c.Request == nil || c.Request.URL == nil {
 			c.Next()
 			return
 		}
 		path := c.Request.URL.Path
-		if maintenanceBypassPath(path) {
-			c.Next()
-			return
-		}
-		if currentMaintenanceState().Active && !maintenanceExclusivePath(path) {
-			writeMaintenanceBlockedResponse(c)
-			return
-		}
-		if backupRestoreBarrierBypassPath(path) {
+		if maintenanceBypassPath(path) || maintenanceAdmissionBypassPath(path) {
 			c.Next()
 			return
 		}
 		if maintenanceExclusivePath(path) {
-			if !barrier.TryLock() {
-				writeMaintenanceBlockedResponse(c)
+			lease, decision := coordinator.TryExclusive(maintenanceOperationForPath(path))
+			if !decision.Allowed {
+				writeMaintenanceBlockedSnapshotResponse(c, decision.State)
 				return
 			}
-			defer barrier.Unlock()
-			if currentMaintenanceState().Active {
-				writeMaintenanceBlockedResponse(c)
-				return
-			}
+			c.Set(maintenanceExclusiveLeaseContextKey, lease)
+			defer lease.Close()
 			c.Next()
 			return
 		}
-		if !barrier.TryRLock() {
-			writeMaintenanceBlockedResponse(c)
+		lease, decision := coordinator.TryShared(maintenancepkg.WorkInteractive)
+		if !decision.Allowed {
+			writeMaintenanceBlockedSnapshotResponse(c, decision.State)
 			return
 		}
-		defer barrier.RUnlock()
-		if currentMaintenanceState().Active {
-			writeMaintenanceBlockedResponse(c)
-			return
-		}
+		defer lease.Close()
 		c.Next()
 	}
 }
 
-func backupRestoreBarrierBypassPath(path string) bool {
+func maintenanceOperationForPath(path string) maintenancepkg.OperationClass {
+	if path == "/api/backup/restore" {
+		return maintenancepkg.OperationBackupRestore
+	}
+	return maintenancepkg.OperationBackupExport
+}
+
+func maintenanceExclusiveLeaseFromContext(c *gin.Context) *maintenancepkg.ExclusiveLease {
+	if c == nil {
+		return nil
+	}
+	value, ok := c.Get(maintenanceExclusiveLeaseContextKey)
+	if !ok {
+		return nil
+	}
+	lease, _ := value.(*maintenancepkg.ExclusiveLease)
+	return lease
+}
+
+func maintenanceAdmissionBypassPath(path string) bool {
 	return path == "/api/dashboard/events"
 }
 

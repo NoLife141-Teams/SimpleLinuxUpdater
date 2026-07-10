@@ -2069,14 +2069,16 @@ func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 		initializeServerStateStatuses(deps.ServerState)
 	}
 	return appshell.NewRouter(appshell.RouterConfig{
-		TrustedProxies:        deps.TrustedProxies,
-		GlobalMiddleware:      []gin.HandlerFunc{securityHeadersMiddleware(), backupRestoreBarrierMiddleware(deps.BackupBarrier)},
-		InitializeMaintenance: deps.InitializeMaintenanceState,
-		InitializeJobs:        deps.initializeJobManager,
-		InitializeSessions:    deps.initializeSessionManager,
-		TemplatesGlob:         "templates/*",
-		StaticPath:            "/static",
-		StaticRoot:            "./static",
+		TrustedProxies:   deps.TrustedProxies,
+		GlobalMiddleware: []gin.HandlerFunc{securityHeadersMiddleware(), maintenanceCoordinationMiddleware(deps.MaintenanceCoordinator)},
+		InitializeMaintenance: func() error {
+			return deps.MaintenanceCoordinator.Initialize(context.Background())
+		},
+		InitializeJobs:     deps.initializeJobManager,
+		InitializeSessions: deps.initializeSessionManager,
+		TemplatesGlob:      "templates/*",
+		StaticPath:         "/static",
+		StaticRoot:         "./static",
 		RegisterRoutes: func(r *gin.Engine) error {
 			return registerRoutes(r, deps)
 		},
@@ -2102,7 +2104,9 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/auth/setup", sameOriginWriteMiddleware(), handleAuthSetup)
 	r.POST("/api/auth/login", sameOriginWriteMiddleware(), handleAuthLogin)
 	r.GET("/api/auth/status", handleAuthStatus)
-	r.GET("/api/maintenance", handleMaintenanceStatus)
+	r.GET("/api/maintenance", func(c *gin.Context) {
+		c.JSON(http.StatusOK, publicMaintenanceSnapshotPayload(deps.MaintenanceCoordinator.Snapshot()))
+	})
 	r.GET("/metrics", metricsBearerMiddlewareWithServiceAndLimiter(deps.MetricsTokenService, deps.MetricsRateLimiter), func(c *gin.Context) {
 		handleMetricsWithService(c, deps.ObservabilityService)
 	})
@@ -2629,10 +2633,6 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 }
 
 func writeServerActionLifecycleResult(c *gin.Context, result serverActionLifecycleResult) {
-	if result.maintenanceBlocked {
-		writeMaintenanceBlockedResponse(c)
-		return
-	}
 	c.JSON(result.statusCode, gin.H(result.body))
 }
 

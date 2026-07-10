@@ -1,10 +1,12 @@
 package policies
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	maintenancepkg "debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
@@ -28,16 +30,9 @@ func testServiceDeps() ServiceDeps {
 		CurrentLocation: func() *time.Location {
 			return time.UTC
 		},
-		CurrentMaintenanceActive: func() bool {
-			return false
-		},
 		MarkInterruptedRuns: func() error {
 			return nil
 		},
-		TryBackupRestoreReadLock: func() bool {
-			return true
-		},
-		UnlockBackupRestoreRead: func() {},
 		Now: func() time.Time {
 			return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 		},
@@ -334,11 +329,13 @@ func TestServiceProcessDueSendsCandidatesAndPolicySideSkipsToScheduledRunCallbac
 
 func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	slot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
-	var lockAvailable bool
 	var handled []ScheduledRunRequest
 	deps := testServiceDeps()
-	deps.TryBackupRestoreReadLock = func() bool { return lockAvailable }
-	deps.UnlockBackupRestoreRead = func() {}
+	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
+	if err := coordinator.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	deps.Maintenance = coordinator
 	deps.ListPolicies = func() ([]Policy, error) {
 		return []Policy{{ID: 7, Name: "maintenance replay", Enabled: true, TargetServers: []string{"srv"}, PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily, TimeLocal: "03:00"}}, nil
 	}
@@ -349,6 +346,10 @@ func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 	}
 
 	service := NewService(deps)
+	exclusive, decision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatalf("TryExclusive() decision = %+v", decision)
+	}
 	if err := service.ProcessDue(slot); err != nil {
 		t.Fatalf("ProcessDue(blocked) unexpected error: %v", err)
 	}
@@ -356,7 +357,9 @@ func TestServiceProcessDueRemembersAndReplaysMissedTicks(t *testing.T) {
 		t.Fatalf("missed ticks = %v, want one tick", got)
 	}
 
-	lockAvailable = true
+	if err := exclusive.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 	if err := service.ProcessDue(slot.Add(time.Minute)); err != nil {
 		t.Fatalf("ProcessDue(replay) unexpected error: %v", err)
 	}

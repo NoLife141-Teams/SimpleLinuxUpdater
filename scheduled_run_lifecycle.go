@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	updatespkg "debian-updater/internal/updates"
 )
@@ -50,7 +51,11 @@ func (l *scheduledRunLifecycle) HandleScheduledRun(req policypkg.ScheduledRunReq
 	if !inserted {
 		return result
 	}
-	l.Execute(run, req.Policy, req.Server)
+	if req.Admitted {
+		l.executeAdmitted(run, req.Policy, req.Server)
+	} else {
+		l.Execute(run, req.Policy, req.Server)
+	}
 	return result
 }
 
@@ -58,18 +63,18 @@ func (l *scheduledRunLifecycle) Execute(run UpdatePolicyRun, policy UpdatePolicy
 	if l == nil {
 		l = newScheduledRunLifecycle(AppDeps{})
 	}
-	if l.deps.BackupBarrier != nil && !l.deps.BackupBarrier.TryRLock() {
-		l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
-		return
+	if l.deps.MaintenanceCoordinator != nil {
+		lease, decision := l.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled)
+		if !decision.Allowed {
+			l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
+			return
+		}
+		defer lease.Close()
 	}
-	if l.deps.BackupBarrier != nil {
-		defer l.deps.BackupBarrier.RUnlock()
-	}
-	if l.deps.CurrentMaintenanceActive != nil && l.deps.CurrentMaintenanceActive() {
-		l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
-		return
-	}
+	l.executeAdmitted(run, policy, server)
+}
 
+func (l *scheduledRunLifecycle) executeAdmitted(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
 	switch policy.ExecutionMode {
 	case updatePolicyExecutionScanOnly:
 		l.runScan(run, policy, server)
@@ -188,13 +193,6 @@ func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePoli
 		summary := "Failed to create scheduled update job"
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
-		if errors.Is(err, errMaintenanceModeActive) {
-			status = updatePolicyRunSkipped
-			reason = updatePolicyRunReasonMaintenance
-			summary = "Maintenance mode active; scheduled update skipped"
-			auditAction = "schedule.run.skipped"
-			auditStatus = "skipped"
-		}
 		finishedAt := l.deps.JobTimestampNow()
 		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,
@@ -306,13 +304,6 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 		summary := "Failed to create scheduled scan job"
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
-		if errors.Is(err, errMaintenanceModeActive) {
-			status = updatePolicyRunSkipped
-			reason = updatePolicyRunReasonMaintenance
-			summary = "Maintenance mode active; scheduled scan skipped"
-			auditAction = "schedule.run.skipped"
-			auditStatus = "skipped"
-		}
 		finishedAt := l.deps.JobTimestampNow()
 		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
 			Status:     &status,

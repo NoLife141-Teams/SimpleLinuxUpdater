@@ -9,6 +9,7 @@ import (
 
 	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
+	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
@@ -73,11 +74,14 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.AuthService == nil {
 		deps.AuthService = NewAuthService(deps.DB)
 	}
-	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService, deps.Now)
+	if deps.MaintenanceCoordinator == nil {
+		deps.MaintenanceCoordinator = maintenancepkg.NewCoordinator(maintenancepkg.Deps{
+			Store: maintenancepkg.SQLiteStore{DB: deps.DB},
+			Now:   deps.Now,
+		})
 	}
-	if deps.BackupBarrier == nil {
-		deps.BackupBarrier = backupRestoreMu
+	if deps.AuditService == nil {
+		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, deps.CurrentAppTimezone, deps.NotificationService, deps.Now, deps.MaintenanceCoordinator)
 	}
 	if deps.MetricsTokenService == nil {
 		deps.MetricsTokenService = NewMetricsTokenService(MetricsTokenDeps{
@@ -103,7 +107,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntime(db, notify, deps.ServerState, deps.CurrentMaintenanceActive)
+			return newJobManagerWithRuntime(db, notify, deps.ServerState, nil)
 		}
 	}
 	if deps.CurrentJobManager == nil {
@@ -139,11 +143,6 @@ func (c *runtimeComposition) Compose() AppDeps {
 			MarshalJSON: marshalJobJSON,
 		})
 	}
-	if deps.CurrentMaintenanceActive == nil {
-		deps.CurrentMaintenanceActive = func() bool {
-			return currentMaintenanceState().Active
-		}
-	}
 	if deps.StartJobRunner == nil {
 		deps.StartJobRunner = func(jobID string, run func()) {
 			startJobRunnerWithManager(deps.CurrentJobManager, jobID, run)
@@ -162,15 +161,13 @@ func (c *runtimeComposition) Compose() AppDeps {
 	factsRepo := updatespkg.SQLiteServerFactsRepository{DB: deps.DB, Now: deps.Now}
 	if deps.PolicyService == nil {
 		deps.PolicyService = NewPolicyService(PolicyServiceDeps{
-			ListPolicies:             deps.PolicyRepository.ListPolicies,
-			LoadOverrides:            deps.PolicyRepository.LoadAllOverrides,
-			LoadGlobalBlackouts:      deps.PolicyRepository.LoadGlobalBlackouts,
-			ListRuns:                 deps.PolicyRepository.ListRuns,
-			CurrentLocation:          deps.CurrentAppLocation,
-			CurrentMaintenanceActive: deps.CurrentMaintenanceActive,
-			Now:                      deps.Now,
-			TryBackupRestoreReadLock: deps.BackupBarrier.TryRLock,
-			UnlockBackupRestoreRead:  deps.BackupBarrier.RUnlock,
+			ListPolicies:        deps.PolicyRepository.ListPolicies,
+			LoadOverrides:       deps.PolicyRepository.LoadAllOverrides,
+			LoadGlobalBlackouts: deps.PolicyRepository.LoadGlobalBlackouts,
+			ListRuns:            deps.PolicyRepository.ListRuns,
+			CurrentLocation:     deps.CurrentAppLocation,
+			Maintenance:         deps.MaintenanceCoordinator,
+			Now:                 deps.Now,
 			SnapshotServers: func() []Server {
 				return deps.ServerState.CloneServers()
 			},
@@ -284,9 +281,6 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.TrustedProxies == nil {
 		deps.TrustedProxies = trustedProxiesFromEnv
-	}
-	if deps.InitializeMaintenanceState == nil {
-		deps.InitializeMaintenanceState = initializeMaintenanceState
 	}
 	if deps.BackupService == nil {
 		runtimeDeps := deps

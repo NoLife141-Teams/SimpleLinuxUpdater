@@ -48,6 +48,10 @@ _Avoid_: Status page globals, dashboard UI state
 The operator-facing interpretation of server inventory, editor sessions, host-key trust, policy-override visibility, global-key availability, audit query/results, and selected audit detail into the state and decisions used to administer servers.
 _Avoid_: Manage page globals, inventory handler flow
 
+**Observability Page Interaction**:
+The operator-facing interpretation of observability window selection, health-trend host selection, independently refreshed snapshots, partial failure, visibility, and refresh lifecycle into one accepted page view.
+_Avoid_: Observability globals, polling helpers, observability DOM state
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

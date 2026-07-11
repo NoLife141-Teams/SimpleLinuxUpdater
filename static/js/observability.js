@@ -3,8 +3,9 @@ const refreshBtn = document.getElementById('refresh-btn');
 const errorBanner = document.getElementById('error-banner');
 const rangeLabel = document.getElementById('range-label');
 const healthTrendServerSelect = document.getElementById('health-trend-server');
-let refreshIntervalId = null;
-let knownHealthTrendServers = [];
+const observabilityInteraction = window.ObservabilityPageInteraction.createStore({ window: windowSelect.value || '7d' });
+const sourceControllers = { summary: null, trends: null };
+let refreshTimeoutId = null;
 
         function showError(message) {
             errorBanner.style.display = 'block';
@@ -86,33 +87,73 @@ let knownHealthTrendServers = [];
             return raw;
         }
 
-        async function fetchObservabilitySummary() {
-            const selectedWindow = windowSelect.value || '7d';
+        function sourceError(error) {
+            if (error?.name === 'AbortError') return { kind: 'aborted' };
+            if (error?.kind) return error;
+            return { kind: 'transport', message: error?.message || String(error || 'Unknown error') };
+        }
+
+        async function loadSource(effect) {
+            const controller = new AbortController();
+            sourceControllers[effect.source] = { requestID: effect.requestID, controller };
             try {
                 if (window.ensureAppTimezoneLoaded) {
                     await window.ensureAppTimezoneLoaded();
                 }
-                const summaryRes = await fetch(`/api/observability/summary?window=${encodeURIComponent(selectedWindow)}`);
-                if (!summaryRes.ok) {
-                    throw new Error(`summary HTTP ${summaryRes.status}`);
+                let url = `/api/observability/summary?window=${encodeURIComponent(effect.window)}`;
+                if (effect.source === 'trends') {
+                    const params = new URLSearchParams({ window: effect.queryWindow });
+                    if (effect.host) params.set('server', effect.host);
+                    url = `/api/observability/health-trends?${params.toString()}`;
                 }
-                const trendParams = new URLSearchParams({ window: selectedWindow === '24h' ? '7d' : selectedWindow });
-                const selectedServer = healthTrendServerSelect?.value || '';
-                if (selectedServer) {
-                    trendParams.set('server', selectedServer);
+                const response = await fetch(url, { signal: controller.signal });
+                if (!response.ok) {
+                    throw { kind: 'http', status: response.status };
                 }
-                const trendRes = await fetch(`/api/observability/health-trends?${trendParams.toString()}`);
-                if (!trendRes.ok) {
-                    throw new Error(`health trends HTTP ${trendRes.status}`);
-                }
-                const data = await summaryRes.json();
-                const trends = await trendRes.json();
-                clearError();
-                renderSummary(data);
-                renderHealthTrends(trends);
+                const data = await response.json();
+                executeEffects(observabilityInteraction.dispatch({ type: 'sourceSucceeded', source: effect.source, requestID: effect.requestID, data, unfiltered: effect.unfiltered }));
             } catch (err) {
-                showError(`Unable to refresh observability data: ${err.message}`);
+                executeEffects(observabilityInteraction.dispatch({ type: 'sourceFailed', source: effect.source, requestID: effect.requestID, error: sourceError(err) }));
+            } finally {
+                if (sourceControllers[effect.source]?.requestID === effect.requestID) sourceControllers[effect.source] = null;
             }
+        }
+
+        function errorMessage(source, state) {
+            if (!state.error) return '';
+            const detail = state.error.kind === 'http' ? `HTTP ${state.error.status}` : (state.error.message || state.error.kind);
+            return `${source === 'summary' ? 'Summary' : 'Health trends'} ${state.status === 'stale' ? 'is stale' : 'is unavailable'} (${detail})`;
+        }
+
+        function renderAcceptedView() {
+            const view = observabilityInteraction.getView();
+            windowSelect.value = view.selectedWindow;
+            renderHealthTrendServerOptions(view.knownHosts, view.selectedHost);
+            if (view.summary.data) renderSummary(view.summary.data);
+            if (view.trends.data) renderHealthTrends(view.trends.data);
+            const errors = [errorMessage('summary', view.summary), errorMessage('trends', view.trends)].filter(Boolean);
+            if (errors.length) showError(errors.join('; ')); else clearError();
+            refreshBtn.setAttribute('aria-busy', view.refreshing ? 'true' : 'false');
+        }
+
+        function executeEffects(effects) {
+            (effects || []).forEach(effect => {
+                if (effect.type === 'render') renderAcceptedView();
+                if (effect.type === 'loadSource') void loadSource(effect);
+                if (effect.type === 'abortSource' && sourceControllers[effect.source]?.requestID === effect.requestID) sourceControllers[effect.source].controller.abort();
+                if (effect.type === 'cancelRefresh' && refreshTimeoutId !== null) {
+                    clearTimeout(refreshTimeoutId);
+                    refreshTimeoutId = null;
+                }
+                if (effect.type === 'scheduleRefresh') {
+                    if (refreshTimeoutId !== null) clearTimeout(refreshTimeoutId);
+                    refreshTimeoutId = setTimeout(() => {
+                        refreshTimeoutId = null;
+                        executeEffects(observabilityInteraction.dispatch({ type: 'timerFired' }));
+                    }, effect.delayMs);
+                }
+            });
+            renderAcceptedView();
         }
 
         function renderSummary(summary) {
@@ -165,27 +206,20 @@ let knownHealthTrendServers = [];
             );
         }
 
-        function renderHealthTrendServerOptions(servers) {
-            if (!healthTrendServerSelect || !Array.isArray(servers)) return;
-            const selected = healthTrendServerSelect.value || '';
-            const names = servers.map(server => String(server?.name || '').trim()).filter(Boolean).sort();
-            if (!selected && names.length > 0) {
-                knownHealthTrendServers = names;
-            } else if (knownHealthTrendServers.length === 0 && names.length > 0) {
-                knownHealthTrendServers = names;
-            }
+        function renderHealthTrendServerOptions(names, selected) {
+            if (!healthTrendServerSelect || !Array.isArray(names)) return;
             healthTrendServerSelect.innerHTML = '';
             const allOption = document.createElement('option');
             allOption.value = '';
             allOption.textContent = 'All hosts';
             healthTrendServerSelect.appendChild(allOption);
-            knownHealthTrendServers.forEach(name => {
+            names.forEach(name => {
                 const option = document.createElement('option');
                 option.value = name;
                 option.textContent = name;
                 healthTrendServerSelect.appendChild(option);
             });
-            healthTrendServerSelect.value = knownHealthTrendServers.includes(selected) ? selected : '';
+            healthTrendServerSelect.value = names.includes(selected) ? selected : '';
         }
 
         function statusText(value) {
@@ -211,8 +245,6 @@ let knownHealthTrendServers = [];
         function renderHealthTrends(trends) {
             const servers = Array.isArray(trends?.servers) ? trends.servers : [];
             const fleet = trends?.fleet || {};
-            renderHealthTrendServerOptions(servers);
-
             const from = window.formatAppTimestamp
                 ? window.formatAppTimestamp(trends?.from, { titleUTC: true, preformattedPrimary: trends?.from_display })
                 : { primary: trends?.from || '-', title: trends?.from || '' };
@@ -258,35 +290,18 @@ let knownHealthTrendServers = [];
             });
         }
 
-        function startAutoRefresh() {
-            if (refreshIntervalId !== null) {
-                return;
-            }
-            refreshIntervalId = setInterval(fetchObservabilitySummary, 15000);
-        }
-
-        function stopAutoRefresh() {
-            if (refreshIntervalId === null) {
-                return;
-            }
-            clearInterval(refreshIntervalId);
-            refreshIntervalId = null;
-        }
-
-        refreshBtn.addEventListener('click', fetchObservabilitySummary);
-        windowSelect.addEventListener('change', fetchObservabilitySummary);
-        healthTrendServerSelect?.addEventListener('change', fetchObservabilitySummary);
+        refreshBtn.addEventListener('click', () => executeEffects(observabilityInteraction.dispatch({ type: 'manualRefresh' })));
+        windowSelect.addEventListener('change', () => executeEffects(observabilityInteraction.dispatch({ type: 'windowChanged', window: windowSelect.value })));
+        healthTrendServerSelect?.addEventListener('change', () => executeEffects(observabilityInteraction.dispatch({ type: 'hostChanged', host: healthTrendServerSelect.value })));
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
-                stopAutoRefresh();
+                executeEffects(observabilityInteraction.dispatch({ type: 'pageHidden' }));
                 return;
             }
-            fetchObservabilitySummary();
-            startAutoRefresh();
+            executeEffects(observabilityInteraction.dispatch({ type: 'pageShown' }));
         });
 
         if (!document.hidden) {
-            fetchObservabilitySummary();
-            startAutoRefresh();
+            executeEffects(observabilityInteraction.dispatch({ type: 'pageShown' }));
         }

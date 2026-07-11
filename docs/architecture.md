@@ -56,12 +56,12 @@ SQLite table ownership:
 - `internal/servers`: `servers`.
 - `internal/auth`: `auth_users`, `sessions`, and `sessions_expiry_idx`.
 - `internal/audit`: `audit_events` and audit indexes.
-- `internal/updates`: `server_facts` and `idx_server_facts_collected_at`.
+- `internal/health`: `server_facts`, `server_health_snapshots`, and their indexes.
 - `internal/jobs`: `jobs` and job indexes.
 - `internal/policies`: `update_policies`, `update_policy_overrides`, `update_policy_runs`, and policy-run indexes.
 - Shared main/app schema: `settings`, used by maintenance state, global SSH key storage, policy settings, app timezone/blackout settings, and metrics token state.
 
-SQLite stores server inventory, encrypted credentials, audit events, auth/session state, persisted jobs, scheduled policy state, server facts, metrics token state, backup/restore metadata, and related operational state.
+SQLite stores server inventory, encrypted credentials, audit events, auth/session state, persisted jobs, scheduled policy state, current Server facts, time-ordered health snapshots, metrics token state, backup/restore metadata, and related operational state.
 
 An encryption key is stored in `config.json` alongside the DB, typically under `/data`.
 

@@ -134,13 +134,12 @@ function populateTimezonePicker() {
     }
 }
 
-function applyScheduledTimezone(payload) {
+function renderScheduledTimezone(payload) {
     const timezoneState = window.setAppTimezoneCache
         ? window.setAppTimezoneCache(payload)
         : { timezone: String(payload || "").trim() || scheduledPolicyView().timezone || "UTC" };
     const timezone = timezoneState.timezone || "UTC";
     scheduledPolicyAdministration.dispatch({ type: "timezoneReceived", timezone });
-    adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", data: timezoneState });
     const timezoneSelection = adminPageView().timezone.draft;
     const timezoneLabel = document.getElementById("scheduled-timezone");
     if (timezoneLabel) {
@@ -154,6 +153,13 @@ function applyScheduledTimezone(payload) {
     updatePolicySummary();
     renderScheduledPolicies();
     renderScheduledRuns(scheduledPolicyView().runs);
+}
+
+function applyScheduledTimezone(payload, requestID = null) {
+    const effects = adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", requestID, data: payload });
+    if (effects.length === 0) return false;
+    renderScheduledTimezone(payload);
+    return true;
 }
 
 function setAppTimezoneFeedback(successMessage, errorMessage) {
@@ -191,8 +197,7 @@ function renderNotificationLastDelivery(status) {
     node.textContent = `Last delivery: ${outcome} ${status.event_type || status.action || "notification"}${target} at ${status.delivered_at} after ${Number(status.attempts || 0)} attempt(s).${code}${err}`;
 }
 
-function applyNotificationSettings(payload) {
-    adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", data: payload });
+function renderNotificationSettings() {
     const view = adminPageView().notifications;
     const enabled = document.getElementById("notification-enabled");
     const webhookURL = document.getElementById("notification-webhook-url");
@@ -203,6 +208,13 @@ function applyNotificationSettings(payload) {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
     renderNotificationLastDelivery(view.lastDelivery);
+}
+
+function applyNotificationSettings(payload, requestID = null) {
+    const effects = adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", requestID, data: payload });
+    if (effects.length === 0) return false;
+    renderNotificationSettings();
+    return true;
 }
 
 async function fetchNotificationSettings() {
@@ -216,8 +228,7 @@ async function fetchNotificationSettings() {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", requestID, data });
-        applyNotificationSettings(data);
+        applyNotificationSettings(data, requestID);
     } catch (err) {
         console.error("Failed to load notification settings:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notifications", requestID, error: "Failed to load notification settings." });
@@ -252,7 +263,7 @@ async function saveNotificationSettings() {
         }
         const data = await res.json().catch(() => ({}));
         finishAdminCommand(plan, data, "Notification settings saved.");
-        applyNotificationSettings(data);
+        renderNotificationSettings();
         setNotificationFeedback("Notification settings saved.", "");
     } catch (err) {
         console.error("Failed to save notification settings:", err);
@@ -296,8 +307,7 @@ async function fetchAppTimezoneSettings(force = false) {
     const timezonePayload = window.ensureAppTimezoneLoaded
         ? await window.ensureAppTimezoneLoaded(force)
         : scheduledPolicyView().timezone;
-    adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", requestID, data: timezonePayload });
-    applyScheduledTimezone(timezonePayload);
+    applyScheduledTimezone(timezonePayload, requestID);
 }
 
 async function saveAppTimezoneSettings() {
@@ -324,7 +334,7 @@ async function saveAppTimezoneSettings() {
         }
         const data = await res.json().catch(() => ({}));
         finishAdminCommand(plan, data, "App timezone saved.");
-        applyScheduledTimezone(data);
+        renderScheduledTimezone(data);
         if (!String(data?.resolved_timezone ?? data?.resolvedTimezone ?? "").trim()) {
             try {
                 await fetchScheduledRuns();

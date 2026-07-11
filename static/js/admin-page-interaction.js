@@ -80,7 +80,9 @@
 
         function accept(stream, requestID) {
             const state = streams[stream];
-            if (!state || (requestID && state.activeRequestID !== requestID)) return false;
+            if (!state) return false;
+            if (state.activeRequestID !== null && state.activeRequestID !== requestID) return false;
+            if (state.activeRequestID === null && requestID) return false;
             state.activeRequestID = null;
             state.accepted = true;
             state.freshness = "fresh";

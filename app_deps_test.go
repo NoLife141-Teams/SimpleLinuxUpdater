@@ -283,7 +283,9 @@ func TestAppScopedServerInventoryImportsLegacyServers(t *testing.T) {
 	}
 	state := newServerState()
 	service := newServerInventoryServiceWithStateDBPath(state, func() *sql.DB { return db }, func() string { return dbPath })
-	service.Load()
+	if err := service.Load(); err != nil {
+		t.Fatalf("load legacy inventory: %v", err)
+	}
 	initializeServerStateStatuses(state)
 
 	statuses := service.ListStatuses()

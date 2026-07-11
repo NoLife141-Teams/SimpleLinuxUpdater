@@ -10,10 +10,19 @@ import (
 	"time"
 
 	"debian-updater/internal/events"
+	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
 	_ "modernc.org/sqlite"
 )
+
+type failingInventoryRepository struct {
+	err error
+}
+
+func (r failingInventoryRepository) Load() ([]serverpkg.Server, error)             { return nil, r.err }
+func (failingInventoryRepository) Save([]serverpkg.Server, serverpkg.TxHook) error { return nil }
+func (failingInventoryRepository) UpdateServerKey(string, string) error            { return nil }
 
 func TestRuntimeCompositionReloadRestoredStateHonorsCancellation(t *testing.T) {
 	composition := newRuntimeComposition(AppDeps{})
@@ -53,6 +62,38 @@ func TestRuntimeCompositionReloadRestoredStateLabelsSessionFailureWithoutPublish
 	}
 	if got := deps.CurrentSessionManager(); got != initial {
 		t.Fatalf("current session manager = %p, want original %p", got, initial)
+	}
+}
+
+func TestRuntimeCompositionReloadRestoredStateReturnsInventoryFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reload-inventory-failure.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := ensureSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	state := newServerState()
+	inventoryErr := errors.New("restored inventory cannot be decrypted")
+	inventory := serverpkg.NewService(serverpkg.ServiceDeps{
+		State:      state,
+		Repository: failingInventoryRepository{err: inventoryErr},
+	})
+	composition := newRuntimeComposition(AppDeps{
+		DB:                     func() *sql.DB { return db },
+		DBPath:                 func() string { return dbPath },
+		ServerState:            state,
+		ServerInventoryService: inventory,
+	})
+	composition.resetCaches = func() {}
+	composition.Compose()
+
+	err = composition.ReloadRestoredState(context.Background())
+	if !errors.Is(err, inventoryErr) || !strings.Contains(err.Error(), "reload restored Server inventory") {
+		t.Fatalf("ReloadRestoredState() error = %v, want labelled inventory failure", err)
 	}
 }
 

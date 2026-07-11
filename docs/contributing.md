@@ -54,10 +54,15 @@ If you want to implement a fix or feature:
   - `internal/audit` for audit persistence, listing, pruning, and Markdown reports.
   - `internal/auth` for users, sessions, same-origin helpers, and rate limiters.
   - `internal/backup` for backup archive/export/restore behavior and restore barriers.
+  - `internal/apptime` for configured/system timezone interpretation and civil-time resolution.
+  - `internal/health` for current Server facts, Health Snapshot Capture, history, retention, rename, and deletion continuity.
+  - `internal/maintenance` for app-wide ordinary-work admission and exclusive maintenance leases.
+  - `internal/notifications` for notification admission, redaction, delivery, retry, recorded outcome, and shutdown.
+  - `internal/runtime` for runtime status projection and job/status reconciliation facts.
   - `internal/servers` for inventory state, persistence, credentials, known_hosts, and SSH auth helpers.
   - `internal/policies` for scheduled policy validation, matching, run records, scheduler ticks, and missed-run replay.
   - `internal/updates` for update/autoremove/sudoers execution, approval/cancel, CVE enrichment, SSH retries, and scheduled scans.
-  - `internal/observability` for dashboard summaries, observability summaries, Prometheus rendering, and metrics tokens.
+  - `internal/observability` for dashboard summaries, observability summaries, Prometheus rendering, and the Metrics Access Credential lifecycle.
   - `internal/events` and `internal/jobs` for dashboard SSE fan-out and persisted job management.
 - Use `AppDeps` to inject DB providers, services, runtime state, job managers, session managers, event brokers, rate limiters, and time providers. Do not add mutable package-level service singletons.
 - Do not put new business logic directly in route registration. Route handlers should parse requests, preserve response behavior, and delegate.

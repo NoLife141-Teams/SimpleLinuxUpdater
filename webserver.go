@@ -1663,9 +1663,9 @@ func loadLegacyServersIntoService(service *ServerInventoryService, state *server
 	return false
 }
 
-func loadServers() {
+func loadServers() error {
 	service := newServerInventoryService()
-	service.Load()
+	return service.Load()
 }
 
 type saveServersTxHook func(*sql.Tx) error
@@ -1882,7 +1882,9 @@ func stringsEqualConstantTime(a, b string) bool {
 }
 
 func init() {
-	loadServers()
+	if err := loadServers(); err != nil {
+		log.Printf("Failed to load initial Server inventory: %v", err)
+	}
 	for _, s := range servers {
 		statusMap[s.Name] = &ServerStatus{
 			Name:           s.Name,
@@ -2032,7 +2034,9 @@ func setupRouter() (*gin.Engine, error) {
 func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 	deps = deps.withDefaults()
 	if deps.ServerInventoryService != nil {
-		deps.ServerInventoryService.Load()
+		if err := deps.ServerInventoryService.Load(); err != nil {
+			return nil, fmt.Errorf("load Server inventory: %w", err)
+		}
 		initializeServerStateStatuses(deps.ServerState)
 	}
 	return appshell.NewRouter(appshell.RouterConfig{

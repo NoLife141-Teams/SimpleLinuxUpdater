@@ -185,15 +185,16 @@ func (s *Service) repo() Repository {
 	return s.deps.Repository
 }
 
-func (s *Service) Load() {
+func (s *Service) Load() error {
 	loaded, err := s.repo().Load()
 	if err != nil {
-		log.Fatalf("Failed to load servers: %v", err)
+		return fmt.Errorf("load Server inventory: %w", err)
 	}
 	s.state().SetServers(loaded)
 	if len(loaded) == 0 && s.deps.LegacyImport != nil {
 		s.deps.LegacyImport()
 	}
+	return nil
 }
 
 func (s *Service) SaveWithTxHook(txHook TxHook) error {

@@ -29,6 +29,9 @@ const (
 	jobStatusFailed          = internaljobs.StatusFailed
 	jobStatusCancelled       = internaljobs.StatusCancelled
 	jobStatusInterrupted     = internaljobs.StatusInterrupted
+	jobIntentResumeApproval  = internaljobs.IntentResumeAfterApproval
+	jobIntentWaitApproval    = internaljobs.IntentWaitForApproval
+	jobIntentCancel          = internaljobs.IntentCancel
 
 	jobPhaseDial         = internaljobs.PhaseDial
 	jobPhasePrechecks    = internaljobs.PhasePrechecks
@@ -48,7 +51,7 @@ const (
 )
 
 type JobRecord = internaljobs.Record
-type JobUpdate = internaljobs.Update
+type JobTransitionIntent = internaljobs.Intent
 type JobCreateParams = internaljobs.CreateParams
 type JobManager = internaljobs.Manager
 
@@ -185,11 +188,9 @@ func startJobRunnerWithManager(current func() *JobManager, jobID string, run fun
 	startTrackedActionRunner(func() {
 		jm := current()
 		if jm != nil && strings.TrimSpace(jobID) != "" {
-			now := jobTimestampNow()
 			status := jobStatusRunning
-			if err := jm.UpdateJob(jobID, JobUpdate{
-				Status:    &status,
-				StartedAt: &now,
+			if err := jm.Transition(jobID, JobTransitionIntent{
+				Status: &status,
 			}); err != nil {
 				log.Printf("failed to mark job %q running: %v", jobID, err)
 			}
@@ -202,13 +203,11 @@ func startJobRunnerWithManager(current func() *JobManager, jobID string, run fun
 					phase := jobPhaseComplete
 					summary := "Runner panicked"
 					errorClass := "panic"
-					finishedAt := jobTimestampNow()
-					_ = jm.UpdateJob(jobID, JobUpdate{
+					_ = jm.Transition(jobID, JobTransitionIntent{
 						Status:     &status,
 						Phase:      &phase,
 						Summary:    &summary,
 						ErrorClass: &errorClass,
-						FinishedAt: &finishedAt,
 					})
 				}
 			}

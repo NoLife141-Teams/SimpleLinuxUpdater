@@ -863,7 +863,7 @@ func TestAppDepsDefaultJobManagerSyncsAppScopedServerState(t *testing.T) {
 	}
 	phase := jobPhaseAptUpdate
 	status := jobStatusRunning
-	if err := deps.CurrentJobManager().UpdateJob(job.ID, JobUpdate{Status: &status, Phase: &phase}); err != nil {
+	if err := deps.CurrentJobManager().Transition(job.ID, JobTransitionIntent{Status: &status, Phase: &phase}); err != nil {
 		t.Fatalf("update job: %v", err)
 	}
 

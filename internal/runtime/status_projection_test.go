@@ -83,7 +83,7 @@ func TestRuntimeStatusFromJob(t *testing.T) {
 	}
 }
 
-func TestJobUpdateFromServerStatus(t *testing.T) {
+func TestJobTransitionIntentFromServerStatus(t *testing.T) {
 	tests := []struct {
 		name              string
 		status            string
@@ -179,12 +179,11 @@ func TestJobUpdateFromServerStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			update := JobUpdateFromServerStatus(tt.status, tt.options)
+			update := JobTransitionIntentFromServerStatus(tt.status, tt.options)
 			assertStringPointer(t, "Status", update.Status, true, tt.wantStatus)
 			assertStringPointer(t, "Phase", update.Phase, tt.wantPhaseSet, tt.wantPhase)
 			assertStringPointer(t, "Summary", update.Summary, tt.wantSummarySet, tt.wantSummary)
 			assertStringPointer(t, "LogsText", update.LogsText, true, tt.wantLogs)
-			assertStringPointer(t, "FinishedAt", update.FinishedAt, tt.wantFinishedAtSet, tt.wantFinishedAt)
 			assertStringPointer(t, "ErrorClass", update.ErrorClass, tt.wantErrorClassSet, tt.wantErrorClass)
 			if got := ServerStatusFinishesJob(tt.status); got != tt.wantFinishesJob {
 				t.Fatalf("ServerStatusFinishesJob(%q) = %t, want %t", tt.status, got, tt.wantFinishesJob)

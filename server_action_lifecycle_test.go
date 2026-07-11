@@ -77,7 +77,6 @@ func (h *lifecycleTestHarness) lifecycle() *serverActionLifecycle {
 		loadRetryPolicy: func() RetryPolicy {
 			return RetryPolicy{MaxAttempts: 2, BaseDelay: time.Second, MaxDelay: 3 * time.Second, JitterPct: 0}
 		},
-		jobTimestampNow: func() string { return "2026-05-17T15:00:00.000000000Z" },
 		audit: func(action, _, _, status, message string, meta map[string]any) {
 			h.auditEvents = append(h.auditEvents, lifecycleAuditRecord{action: action, status: status, message: message, meta: meta})
 		},

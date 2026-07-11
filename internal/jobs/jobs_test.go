@@ -56,6 +56,90 @@ func TestJobManagerCreateJobDefaultsAndTrims(t *testing.T) {
 
 }
 
+func TestJobStateTransitionOwnsRevisionAndLifecycleTimestamps(t *testing.T) {
+	db := openJobTestDB(t)
+	times := []time.Time{
+		time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 5, 17, 12, 1, 0, 0, time.UTC),
+		time.Date(2026, 5, 17, 12, 2, 0, 0, time.UTC),
+	}
+	next := 0
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		Now: func() time.Time {
+			value := times[next]
+			next++
+			return value
+		},
+		NewID: func() string { return "transition-job" },
+	})
+
+	job, err := manager.CreateJob(CreateParams{Kind: KindUpdate, Actor: "admin"})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+	if err := manager.Transition(job.ID, Intent{Kind: IntentStart, Phase: stringPointer(PhaseDial)}); err != nil {
+		t.Fatalf("Transition(Start) error = %v", err)
+	}
+	running, err := manager.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob(running) error = %v", err)
+	}
+	if running.Status != StatusRunning || running.StartedAt != FormatTimestamp(times[1]) || running.Revision != 1 {
+		t.Fatalf("running transition = %+v", running)
+	}
+
+	if err := manager.Transition(job.ID, Intent{Kind: IntentSucceed}); err != nil {
+		t.Fatalf("Transition(Succeed) error = %v", err)
+	}
+	finished, err := manager.GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob(finished) error = %v", err)
+	}
+	if finished.Status != StatusSucceeded || finished.Phase != PhaseComplete || finished.FinishedAt != FormatTimestamp(times[2]) || finished.Revision != 2 {
+		t.Fatalf("finished transition = %+v", finished)
+	}
+}
+
+func TestJobStateTransitionRejectsStaleRevision(t *testing.T) {
+	db := openJobTestDB(t)
+	repo := NewSQLiteRepository(db)
+	manager := NewManager(repo, ManagerOptions{NewID: func() string { return "stale-job" }})
+	job, err := manager.CreateJob(CreateParams{Kind: KindUpdate, Actor: "admin"})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+	stale := job
+	stale.Status = StatusRunning
+	stale.Revision = 1
+	updated, err := repo.ApplyTransition(stale, job.Revision+1, false)
+	if err != nil {
+		t.Fatalf("ApplyTransition(stale) error = %v", err)
+	}
+	if updated {
+		t.Fatal("ApplyTransition(stale) updated = true, want false")
+	}
+}
+
+func TestEnsureSchemaAddsRevisionToExistingJobsTable(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy-jobs.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("create legacy jobs table: %v", err)
+	}
+	if err := ensureRevisionColumn(db); err != nil {
+		t.Fatalf("ensureRevisionColumn() error = %v", err)
+	}
+	var revision int64
+	if err := db.QueryRow("SELECT revision FROM jobs LIMIT 1").Scan(&revision); err != sql.ErrNoRows {
+		t.Fatalf("revision query error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestJobManagerUpsertSyncsRuntimeAndNotifies(t *testing.T) {
 	db := openJobTestDB(t)
 	var synced []Record
@@ -71,13 +155,13 @@ func TestJobManagerUpsertSyncsRuntimeAndNotifies(t *testing.T) {
 		NewID: func() string { return "job-upsert" },
 	})
 
-	if err := manager.UpsertJobRecord(Record{
+	if err := manager.ImportJobRecord(Record{
 		Kind:       KindAutoremove,
 		ServerName: "srv-upsert",
 		Status:     StatusSucceeded,
 		Phase:      PhaseComplete,
 	}); err != nil {
-		t.Fatalf("UpsertJobRecord() error = %v", err)
+		t.Fatalf("ImportJobRecord() error = %v", err)
 	}
 	record, err := manager.GetJob("job-upsert")
 	if err != nil {
@@ -94,7 +178,7 @@ func TestJobManagerUpsertSyncsRuntimeAndNotifies(t *testing.T) {
 	}
 }
 
-func TestJobManagerUpdateActiveJobCompareAndSet(t *testing.T) {
+func TestJobManagerTransitionActiveCompareAndSet(t *testing.T) {
 	db := openJobTestDB(t)
 	var notifications []string
 	var synced []Record
@@ -119,19 +203,19 @@ func TestJobManagerUpdateActiveJobCompareAndSet(t *testing.T) {
 	synced = nil
 
 	status := StatusRunning
-	updated, err := manager.UpdateActiveJob(active.ID, Update{Status: &status})
+	updated, err := manager.TransitionActive(active.ID, Intent{Status: &status})
 	if err != nil {
-		t.Fatalf("UpdateActiveJob(active) error = %v", err)
+		t.Fatalf("TransitionActive(active) error = %v", err)
 	}
 	if !updated {
-		t.Fatalf("UpdateActiveJob(active) updated = false, want true")
+		t.Fatalf("TransitionActive(active) updated = false, want true")
 	}
-	updated, err = manager.UpdateActiveJob(done.ID, Update{Status: &status})
+	updated, err = manager.TransitionActive(done.ID, Intent{Status: &status})
 	if err != nil {
-		t.Fatalf("UpdateActiveJob(done) error = %v", err)
+		t.Fatalf("TransitionActive(done) error = %v", err)
 	}
 	if updated {
-		t.Fatalf("UpdateActiveJob(done) updated = true, want false")
+		t.Fatalf("TransitionActive(done) updated = true, want false")
 	}
 	if !reflect.DeepEqual(notifications, []string{"job.update"}) {
 		t.Fatalf("notifications = %v, want one job.update", notifications)
@@ -150,8 +234,8 @@ func TestJobManagerLookupLatestActiveJob(t *testing.T) {
 	newer := Record{ID: "newer", Kind: KindUpdate, ServerName: "srv", Actor: "admin", Status: StatusWaitingApproval, CreatedAt: "2026-05-17T15:00:00.000000000Z", UpdatedAt: "2026-05-17T15:00:00.000000000Z", RetryPolicyJSON: "{}", MetaJSON: "{}"}
 	finished := Record{ID: "finished", Kind: KindUpdate, ServerName: "srv", Actor: "admin", Status: StatusSucceeded, CreatedAt: "2026-05-17T16:00:00.000000000Z", UpdatedAt: "2026-05-17T16:00:00.000000000Z", RetryPolicyJSON: "{}", MetaJSON: "{}"}
 	for _, record := range []Record{older, newer, finished} {
-		if err := manager.UpsertJobRecord(record); err != nil {
-			t.Fatalf("UpsertJobRecord(%s) error = %v", record.ID, err)
+		if err := manager.ImportJobRecord(record); err != nil {
+			t.Fatalf("ImportJobRecord(%s) error = %v", record.ID, err)
 		}
 	}
 
@@ -211,12 +295,12 @@ func TestJobManagerDoesNotDispatchCallbacksAfterRepositoryFailure(t *testing.T) 
 	if _, err := manager.CreateJob(CreateParams{Kind: KindUpdate, Actor: "admin"}); err == nil {
 		t.Fatalf("CreateJob() error = nil, want repository failure")
 	}
-	if err := manager.UpsertJobRecord(Record{ID: "job-fail", Actor: "admin"}); err == nil {
-		t.Fatalf("UpsertJobRecord() error = nil, want repository failure")
+	if err := manager.ImportJobRecord(Record{ID: "job-fail", Actor: "admin"}); err == nil {
+		t.Fatalf("ImportJobRecord() error = nil, want repository failure")
 	}
 	status := StatusRunning
-	if _, err := manager.UpdateActiveJob("job-fail", Update{Status: &status}); err == nil {
-		t.Fatalf("UpdateActiveJob() error = nil, want repository failure")
+	if _, err := manager.TransitionActive("job-fail", Intent{Status: &status}); err == nil {
+		t.Fatalf("TransitionActive() error = nil, want repository failure")
 	}
 	if len(notifications) != 0 || len(synced) != 0 {
 		t.Fatalf("callbacks after failures: notifications=%v synced=%+v", notifications, synced)
@@ -250,7 +334,7 @@ func (r *failingRepository) Upsert(Record) error {
 	return r.err
 }
 
-func (r *failingRepository) UpdateWithCondition(string, Update, string, string, ...any) (bool, error) {
+func (r *failingRepository) ApplyTransition(Record, int64, bool) (bool, error) {
 	return false, r.err
 }
 

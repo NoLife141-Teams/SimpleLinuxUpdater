@@ -39,21 +39,19 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		if jm != nil && strings.TrimSpace(req.JobID) != "" {
 			status := jobs.StatusFailed
 			jobPhase := phase
-			finishedAt := deps.JobTimestampNow()
 			errorClass := "permanent"
 			meta := BuildScheduledJobMeta(req.Policy, req.ScheduledForUTC)
 			if err != nil {
 				meta.Error = err.Error()
 			}
 			metaJSON := jobs.MarshalJSON(meta)
-			_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, jobs.Update{
+			_ = jm.Transition(req.JobID, jobs.Intent{
 				Status:     &status,
 				Phase:      &jobPhase,
 				Summary:    &summary,
 				LogsText:   &logs,
 				ErrorClass: &errorClass,
 				MetaJSON:   &metaJSON,
-				FinishedAt: &finishedAt,
 			})
 		}
 	}
@@ -80,7 +78,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	if jm != nil {
 		phase := jobs.PhasePrechecks
 		summary := "Running pre-checks"
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, jobs.Update{
+		_ = jm.Transition(req.JobID, jobs.Intent{
 			Phase:    &phase,
 			Summary:  &summary,
 			LogsText: &logs,
@@ -106,7 +104,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	if jm != nil {
 		phase := jobs.PhaseAptUpdate
 		summary := "Running apt update"
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, jobs.Update{
+		_ = jm.Transition(req.JobID, jobs.Intent{
 			Phase:    &phase,
 			Summary:  &summary,
 			LogsText: &logs,
@@ -156,14 +154,12 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		meta := BuildScheduledJobMeta(req.Policy, req.ScheduledForUTC)
 		meta.Discovery = &result
 		metaJSON := jobs.MarshalJSON(meta)
-		finishedAt := deps.JobTimestampNow()
-		_ = jm.UpdateJobWithoutRuntimeSync(req.JobID, jobs.Update{
-			Status:     &status,
-			Phase:      &phase,
-			Summary:    &finalSummary,
-			LogsText:   &logs,
-			MetaJSON:   &metaJSON,
-			FinishedAt: &finishedAt,
+		_ = jm.Transition(req.JobID, jobs.Intent{
+			Status:   &status,
+			Phase:    &phase,
+			Summary:  &finalSummary,
+			LogsText: &logs,
+			MetaJSON: &metaJSON,
 		})
 	}
 }

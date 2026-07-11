@@ -200,13 +200,12 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		return backupOperationOutcome{Kind: backupOperationJobManagerUnavailable, PublicError: "job manager unavailable"}
 	}
 	job, err := jm.CreateJob(JobCreateParams{
-		Kind:      jobKindBackupExport,
-		Actor:     cmd.Actor,
-		ClientIP:  cmd.ClientIP,
-		Status:    jobStatusRunning,
-		Phase:     jobPhaseSnapshot,
-		Summary:   "Preparing backup export",
-		StartedAt: deps.JobTimestampNow(),
+		Kind:     jobKindBackupExport,
+		Actor:    cmd.Actor,
+		ClientIP: cmd.ClientIP,
+		Status:   jobStatusRunning,
+		Phase:    jobPhaseSnapshot,
+		Summary:  "Preparing backup export",
 	})
 	if err != nil {
 		return backupOperationOutcome{Kind: backupOperationJobCreateFailed, PublicError: "failed to create backup export job", Err: err}
@@ -223,15 +222,14 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		status := jobStatusFailed
 		summary := "Failed to activate maintenance mode"
 		errorClass := "maintenance"
-		finishedAt := deps.JobTimestampNow()
-		_ = jm.UpdateJob(job.ID, JobUpdate{
+		_ = jm.Transition(job.ID, JobTransitionIntent{
 			Status:     &status,
 			Summary:    &summary,
 			ErrorClass: &errorClass,
-			FinishedAt: &finishedAt,
 		})
 		return backupOperationOutcome{Kind: backupOperationMaintenanceActivateFailed, JobID: job.ID, PublicError: "failed to activate maintenance mode", Err: err}
 	}
+	var completion *JobTransitionIntent
 	defer func() {
 		var err error
 		if cmd.Lease != nil {
@@ -242,13 +240,17 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		if err != nil {
 			deps.Logf("backup export lifecycle: failed to clear maintenance mode: %v", err)
 			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.export", err)
+			return
+		}
+		if completion != nil {
+			_ = jm.Transition(job.ID, *completion)
 		}
 	}()
 
 	_ = deps.EnsureEncryptionKey()
 	phase := jobPhaseEncrypt
 	summary := "Encrypting backup payload"
-	_ = jm.UpdateJob(job.ID, JobUpdate{Phase: &phase, Summary: &summary})
+	_ = jm.Transition(job.ID, JobTransitionIntent{Phase: &phase, Summary: &summary})
 	result, err := deps.Archive.ExportArchive(ctx, cmd.Request)
 	if err != nil {
 		return l.failExportArchive(jm, job.ID, cmd, err)
@@ -257,18 +259,16 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	status := jobStatusSucceeded
 	phase = jobPhaseComplete
 	summary = "Backup export completed"
-	finishedAt := deps.JobTimestampNow()
 	meta := deps.MarshalJobJSON(map[string]any{
 		"bytes":                len(result.Bytes),
 		"known_hosts_included": result.KnownHostsIncluded,
 	})
-	_ = jm.UpdateJob(job.ID, JobUpdate{
-		Status:     &status,
-		Phase:      &phase,
-		Summary:    &summary,
-		MetaJSON:   &meta,
-		FinishedAt: &finishedAt,
-	})
+	completion = &JobTransitionIntent{
+		Status:   &status,
+		Phase:    &phase,
+		Summary:  &summary,
+		MetaJSON: &meta,
+	}
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
 		ClientIP:   cmd.ClientIP,
@@ -317,12 +317,10 @@ func (l *backupOperationLifecycle) failExportArchive(jm *JobManager, jobID strin
 		}
 	}
 	status := jobStatusFailed
-	finishedAt := deps.JobTimestampNow()
-	_ = jm.UpdateJob(jobID, JobUpdate{
+	_ = jm.Transition(jobID, JobTransitionIntent{
 		Status:     &status,
 		Summary:    &summary,
 		ErrorClass: &errorClass,
-		FinishedAt: &finishedAt,
 	})
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
@@ -369,13 +367,12 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		return backupOperationOutcome{Kind: backupOperationJobManagerUnavailable, PublicError: "job manager unavailable"}
 	}
 	job, err := jm.CreateJob(JobCreateParams{
-		Kind:      jobKindBackupRestore,
-		Actor:     cmd.Actor,
-		ClientIP:  cmd.ClientIP,
-		Status:    jobStatusRunning,
-		Phase:     jobPhaseDecrypt,
-		Summary:   "Restoring backup archive",
-		StartedAt: deps.JobTimestampNow(),
+		Kind:     jobKindBackupRestore,
+		Actor:    cmd.Actor,
+		ClientIP: cmd.ClientIP,
+		Status:   jobStatusRunning,
+		Phase:    jobPhaseDecrypt,
+		Summary:  "Restoring backup archive",
 	})
 	if err != nil {
 		return backupOperationOutcome{Kind: backupOperationJobCreateFailed, PublicError: "failed to create backup restore job", Err: err}
@@ -391,15 +388,14 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		status := jobStatusFailed
 		summary := "Failed to activate maintenance mode"
 		errorClass := "maintenance"
-		finishedAt := deps.JobTimestampNow()
-		_ = jm.UpdateJob(job.ID, JobUpdate{
+		_ = jm.Transition(job.ID, JobTransitionIntent{
 			Status:     &status,
 			Summary:    &summary,
 			ErrorClass: &errorClass,
-			FinishedAt: &finishedAt,
 		})
 		return backupOperationOutcome{Kind: backupOperationMaintenanceActivateFailed, JobID: job.ID, PublicError: "failed to activate maintenance mode", Err: err}
 	}
+	var restoredCompletion *JobRecord
 	defer func() {
 		var err error
 		if cmd.Lease != nil {
@@ -409,7 +405,23 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		}
 		if err != nil {
 			deps.Logf("backup restore lifecycle: failed to clear maintenance mode: %v", err)
-			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.restore", err)
+			failed := job
+			failed.Status = jobStatusFailed
+			failed.Phase = jobPhaseComplete
+			failed.Summary = "Maintenance mode could not be cleared"
+			failed.ErrorClass = "maintenance_coordination"
+			failed.FinishedAt = deps.JobTimestampNow()
+			if manager := deps.CurrentJobManager(); manager != nil {
+				_ = manager.ImportJobRecord(failed)
+			}
+			deps.RecordAudit(backupOperationAuditRecord{Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "backup.restore", TargetType: "backup", TargetName: "state", Status: "failure", Message: failed.Summary, Meta: map[string]any{"error": err.Error()}})
+			outcome = backupOperationOutcome{Kind: backupOperationMaintenanceReleaseFailed, JobID: job.ID, PublicError: "maintenance mode could not be cleared", Err: err}
+			return
+		}
+		if restoredCompletion != nil {
+			if manager := deps.CurrentJobManager(); manager != nil {
+				_ = manager.ImportJobRecord(*restoredCompletion)
+			}
 		}
 	}()
 
@@ -417,7 +429,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		BeforeApply: func() {
 			phase := jobPhaseApply
 			summary := "Applying restored backup files"
-			_ = jm.UpdateJob(job.ID, JobUpdate{Phase: &phase, Summary: &summary})
+			_ = jm.Transition(job.ID, JobTransitionIntent{Phase: &phase, Summary: &summary})
 		},
 		RestoreHandoff: func(ctx context.Context) error {
 			if cmd.Lease == nil {
@@ -460,7 +472,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		job.Summary = summary
 		job.MetaJSON = meta
 		job.FinishedAt = finishedAt
-		_ = jm.UpsertJobRecord(job)
+		restoredCompletion = &job
 	}
 	return backupOperationOutcome{
 		Kind:                backupOperationSucceeded,
@@ -476,9 +488,8 @@ func (l *backupOperationLifecycle) failMaintenanceRelease(jobID, actor, clientIP
 	status := jobStatusFailed
 	summary := "Maintenance mode could not be cleared"
 	errorClass := "maintenance_coordination"
-	finishedAt := deps.JobTimestampNow()
 	if jm := deps.CurrentJobManager(); jm != nil {
-		_ = jm.UpdateJob(jobID, JobUpdate{Status: &status, Summary: &summary, ErrorClass: &errorClass, FinishedAt: &finishedAt})
+		_ = jm.Transition(jobID, JobTransitionIntent{Status: &status, Summary: &summary, ErrorClass: &errorClass})
 	}
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor: actor, ClientIP: clientIP, Action: action, TargetType: "backup", TargetName: "state",
@@ -499,13 +510,11 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 		status := jobStatusFailed
 		summary := "Failed to decrypt backup archive"
 		errorClass := "decrypt"
-		finishedAt := deps.JobTimestampNow()
 		if jm := deps.CurrentJobManager(); jm != nil {
-			_ = jm.UpdateJob(job.ID, JobUpdate{
+			_ = jm.Transition(job.ID, JobTransitionIntent{
 				Status:     &status,
 				Summary:    &summary,
 				ErrorClass: &errorClass,
-				FinishedAt: &finishedAt,
 			})
 		}
 		deps.RecordAudit(backupOperationAuditRecord{
@@ -523,13 +532,11 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 		status := jobStatusFailed
 		summary := "Invalid backup payload"
 		errorClass := "archive"
-		finishedAt := deps.JobTimestampNow()
 		if jm := deps.CurrentJobManager(); jm != nil {
-			_ = jm.UpdateJob(job.ID, JobUpdate{
+			_ = jm.Transition(job.ID, JobTransitionIntent{
 				Status:     &status,
 				Summary:    &summary,
 				ErrorClass: &errorClass,
-				FinishedAt: &finishedAt,
 			})
 		}
 		deps.RecordAudit(backupOperationAuditRecord{
@@ -555,7 +562,7 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			job.Summary = summary
 			job.ErrorClass = errorClass
 			job.FinishedAt = finishedAt
-			_ = jm.UpsertJobRecord(job)
+			_ = jm.ImportJobRecord(job)
 		}
 		deps.RecordAudit(backupOperationAuditRecord{
 			Actor:      cmd.Actor,

@@ -89,7 +89,7 @@ An operator-facing authentication mutation that coordinates account state, crede
 _Avoid_: Auth route flow, session handler logic
 
 **Runtime Composition**:
-The assembly of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
+The assembly and restored-state rehydration of one app-scoped runtime from persistence, server state, services, job and session managers, eventing, rate limiters, clocks, maintenance state, and startup initializers.
 _Avoid_: AppDeps wiring, dependency injection container
 
 **Global SSH Credential**:

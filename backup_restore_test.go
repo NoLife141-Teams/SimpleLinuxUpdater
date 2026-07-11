@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,8 +21,52 @@ import (
 	"sync"
 	"testing"
 
+	internalbackup "debian-updater/internal/backup"
+
 	"github.com/gin-gonic/gin"
 )
+
+func TestBackupRestoreRollbackUsesSameRestoredRuntimeInterface(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveMetricsTokenState(t)
+	preserveEncryptionState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "rollback-runtime.db"))
+
+	if err := saveServers(); err != nil {
+		t.Fatalf("save initial Servers: %v", err)
+	}
+	backupKey := append([]byte(nil), getEncryptionKey()...)
+	restoredDB := buildBackupDatabaseDataWithKey(t, backupKey, Server{Name: "replacement", Host: "example.org", Port: 22, User: "root"}, "")
+	config, err := json.Marshal(map[string]string{"encryption_key": base64.StdEncoding.EncodeToString(backupKey)})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	forwardErr := errors.New("forward runtime reload failed")
+	rollbackErr := errors.New("rollback runtime reload failed")
+	reloads := 0
+	service := NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+		RestoredRuntime: restoredRuntimeAdapter{
+			prepare: resetRuntimeCaches,
+			reload: func(context.Context) error {
+				reloads++
+				if reloads == 1 {
+					return forwardErr
+				}
+				return rollbackErr
+			},
+		},
+	})
+
+	err = service.ApplyFiles(context.Background(), map[string][]byte{"servers.db": restoredDB, "config.json": config})
+	if !errors.Is(err, forwardErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("ApplyFiles() error = %v, want joined forward and rollback reload failures", err)
+	}
+	if reloads != 2 {
+		t.Fatalf("restored-runtime reload calls = %d, want forward and rollback", reloads)
+	}
+}
 
 func buildBackupDatabaseDataWithKey(t *testing.T, key []byte, server Server, backupGlobalKey string) []byte {
 	t.Helper()

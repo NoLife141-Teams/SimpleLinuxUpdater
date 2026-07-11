@@ -70,7 +70,7 @@ func (d MetricsAccessCredentialDeps) withDefaults() MetricsAccessCredentialDeps 
 
 func (c *metricsAccessCredential) Status(ctx context.Context) (MetricsAccessStatus, error) {
 	if c == nil {
-		return MetricsAccessUnavailable, errors.New("Metrics Access Credential is unavailable")
+		return MetricsAccessUnavailable, errors.New("metrics access credential is unavailable")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -85,7 +85,7 @@ func (c *metricsAccessCredential) Status(ctx context.Context) (MetricsAccessStat
 
 func (c *metricsAccessCredential) Verify(ctx context.Context, presented string) (MetricsAccessVerification, error) {
 	if c == nil {
-		return MetricsAccessUnavailableVerification, errors.New("Metrics Access Credential is unavailable")
+		return MetricsAccessUnavailableVerification, errors.New("metrics access credential is unavailable")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -107,7 +107,7 @@ func (c *metricsAccessCredential) Verify(ctx context.Context, presented string) 
 
 func (c *metricsAccessCredential) Rotate(ctx context.Context) (string, error) {
 	if c == nil {
-		return "", errors.New("Metrics Access Credential is unavailable")
+		return "", errors.New("metrics access credential is unavailable")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -138,7 +138,7 @@ func (c *metricsAccessCredential) Rotate(ctx context.Context) (string, error) {
 
 func (c *metricsAccessCredential) Disable(ctx context.Context) error {
 	if c == nil {
-		return errors.New("Metrics Access Credential is unavailable")
+		return errors.New("metrics access credential is unavailable")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -176,13 +176,13 @@ func (c *metricsAccessCredential) loadLocked(ctx context.Context) error {
 type unavailableMetricsCredentialStore struct{}
 
 func (unavailableMetricsCredentialStore) Load(context.Context) (string, error) {
-	return "", errors.New("Metrics Access Credential store is unavailable")
+	return "", errors.New("metrics access credential store is unavailable")
 }
 func (unavailableMetricsCredentialStore) Replace(context.Context, string) error {
-	return errors.New("Metrics Access Credential store is unavailable")
+	return errors.New("metrics access credential store is unavailable")
 }
 func (unavailableMetricsCredentialStore) Delete(context.Context) error {
-	return errors.New("Metrics Access Credential store is unavailable")
+	return errors.New("metrics access credential store is unavailable")
 }
 
 type SQLiteMetricsCredentialStore struct {
@@ -193,11 +193,11 @@ type SQLiteMetricsCredentialStore struct {
 
 func (s SQLiteMetricsCredentialStore) Load(ctx context.Context) (string, error) {
 	if s.DB == nil {
-		return "", errors.New("Metrics Access Credential database is unavailable")
+		return "", errors.New("metrics access credential database is unavailable")
 	}
 	db := s.DB()
 	if db == nil {
-		return "", errors.New("Metrics Access Credential database is unavailable")
+		return "", errors.New("metrics access credential database is unavailable")
 	}
 	key := strings.TrimSpace(s.SettingKey)
 	if key == "" {
@@ -232,11 +232,11 @@ func (s SQLiteMetricsCredentialStore) Load(ctx context.Context) (string, error) 
 
 func (s SQLiteMetricsCredentialStore) Replace(ctx context.Context, hash string) error {
 	if s.DB == nil {
-		return errors.New("Metrics Access Credential database is unavailable")
+		return errors.New("metrics access credential database is unavailable")
 	}
 	db := s.DB()
 	if db == nil {
-		return errors.New("Metrics Access Credential database is unavailable")
+		return errors.New("metrics access credential database is unavailable")
 	}
 	key := strings.TrimSpace(s.SettingKey)
 	if key == "" {
@@ -248,11 +248,11 @@ func (s SQLiteMetricsCredentialStore) Replace(ctx context.Context, hash string) 
 
 func (s SQLiteMetricsCredentialStore) Delete(ctx context.Context) error {
 	if s.DB == nil {
-		return errors.New("Metrics Access Credential database is unavailable")
+		return errors.New("metrics access credential database is unavailable")
 	}
 	db := s.DB()
 	if db == nil {
-		return errors.New("Metrics Access Credential database is unavailable")
+		return errors.New("metrics access credential database is unavailable")
 	}
 	key := strings.TrimSpace(s.SettingKey)
 	if key == "" {

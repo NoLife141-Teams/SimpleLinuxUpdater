@@ -20,6 +20,10 @@ _Avoid_: Approval intent, upgrade mode
 One scheduler-created attempt to apply a scheduled update policy to one server for one scheduled time, including skipped, queued, running, waiting-approval, succeeded, failed, cancelled, and interrupted outcomes.
 _Avoid_: Scheduled policy execution, policy job
 
+**Job State Transition**:
+An accepted change to a persisted job's lifecycle state, including its status, phase, progress facts, terminal outcome, and runtime publication, governed by transition and concurrency rules.
+_Avoid_: Job update patch, status write, job field update
+
 **Policy Schedule Projection**:
 The read-only interpretation of scheduled policy matching, cadence, no-run windows, candidate priority, and future scheduled-run state into per-server schedule facts consumed by Dashboard Projection and calendar-facing views.
 _Avoid_: Dashboard schedule helper, next-run calculation

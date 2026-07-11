@@ -46,6 +46,23 @@ const (
 	TimestampLayout = "2006-01-02T15:04:05.000000000Z"
 )
 
+type IntentKind string
+
+const (
+	IntentStart               IntentKind = "start"
+	IntentAdvance             IntentKind = "advance"
+	IntentWaitForApproval     IntentKind = "wait_for_approval"
+	IntentResumeAfterApproval IntentKind = "resume_after_approval"
+	IntentSucceed             IntentKind = "succeed"
+	IntentFail                IntentKind = "fail"
+	IntentCancel              IntentKind = "cancel"
+	IntentInterrupt           IntentKind = "interrupt"
+	IntentAmendProgress       IntentKind = "amend_progress"
+	IntentReplaceMetadata     IntentKind = "replace_metadata"
+)
+
+var ErrTransitionConflict = errors.New("job state transition conflict")
+
 type Record struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`
@@ -64,9 +81,11 @@ type Record struct {
 	UpdatedAt       string `json:"updated_at"`
 	StartedAt       string `json:"started_at"`
 	FinishedAt      string `json:"finished_at"`
+	Revision        int64  `json:"-"`
 }
 
-type Update struct {
+type Intent struct {
+	Kind       IntentKind
 	Status     *string
 	Phase      *string
 	Summary    *string
@@ -74,8 +93,6 @@ type Update struct {
 	AppendLog  string
 	ErrorClass *string
 	MetaJSON   *string
-	StartedAt  *string
-	FinishedAt *string
 }
 
 type CreateParams struct {
@@ -91,14 +108,12 @@ type CreateParams struct {
 	ErrorClass      string
 	RetryPolicyJSON string
 	MetaJSON        string
-	StartedAt       string
-	FinishedAt      string
 }
 
 type Repository interface {
 	Create(record Record) error
 	Upsert(record Record) error
-	UpdateWithCondition(id string, update Update, updatedAt string, condition string, conditionArgs ...any) (bool, error)
+	ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error)
 	Get(id string) (Record, error)
 	FindLatestActiveByServerAndKind(serverName, kind string) (*Record, error)
 	ListUnfinishedServerNames() ([]string, error)
@@ -156,9 +171,13 @@ func EnsureSchema(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			started_at TEXT NOT NULL DEFAULT '',
-			finished_at TEXT NOT NULL DEFAULT ''
+			finished_at TEXT NOT NULL DEFAULT '',
+			revision INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
+		return err
+	}
+	if err := ensureRevisionColumn(db); err != nil {
 		return err
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_server_created_at ON jobs (server_name, created_at DESC)"); err != nil {
@@ -171,6 +190,31 @@ func EnsureSchema(db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+func ensureRevisionColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(jobs)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "revision" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+	return err
 }
 
 func NewID() string {
@@ -244,8 +288,13 @@ func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 		MetaJSON:        params.MetaJSON,
 		CreatedAt:       now,
 		UpdatedAt:       now,
-		StartedAt:       strings.TrimSpace(params.StartedAt),
-		FinishedAt:      strings.TrimSpace(params.FinishedAt),
+	}
+	if record.Status == StatusRunning {
+		record.StartedAt = now
+	}
+	if isTerminalStatus(record.Status) {
+		record.Phase = PhaseComplete
+		record.FinishedAt = now
 	}
 	if err := m.repo.Create(record); err != nil {
 		return Record{}, err
@@ -254,7 +303,7 @@ func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 	return record, nil
 }
 
-func (m *Manager) UpsertJobRecord(record Record) error {
+func (m *Manager) ImportJobRecord(record Record) error {
 	if m == nil || m.repo == nil {
 		return errors.New("job manager is not initialized")
 	}
@@ -283,25 +332,13 @@ func (m *Manager) UpsertJobRecord(record Record) error {
 	return nil
 }
 
-func (m *Manager) UpdateActiveJob(id string, update Update) (bool, error) {
-	active := ActiveStatuses()
-	return m.updateJobWithCondition(
-		id,
-		update,
-		true,
-		"status IN (?, ?, ?)",
-		active[0],
-		active[1],
-		active[2],
-	)
+func (m *Manager) TransitionActive(id string, intent Intent) (bool, error) {
+	return m.transition(id, intent, true)
 }
 
-func (m *Manager) UpdateJob(id string, update Update) error {
-	return m.updateJob(id, update, true)
-}
-
-func (m *Manager) UpdateJobWithoutRuntimeSync(id string, update Update) error {
-	return m.updateJob(id, update, false)
+func (m *Manager) Transition(id string, intent Intent) error {
+	_, err := m.transition(id, intent, false)
+	return err
 }
 
 func (m *Manager) GetJob(id string) (Record, error) {
@@ -354,29 +391,131 @@ func (m *Manager) MarkUnfinishedJobsInterrupted() error {
 	if len(affected) > 0 && m.opts.SyncInterruptedServer != nil {
 		m.opts.SyncInterruptedServer(affected)
 	}
+	m.notify("job.update")
 	return nil
 }
 
-func (m *Manager) updateJob(id string, update Update, syncRuntime bool) error {
-	_, err := m.updateJobWithCondition(id, update, syncRuntime, "")
-	return err
-}
-
-func (m *Manager) updateJobWithCondition(id string, update Update, syncRuntime bool, condition string, conditionArgs ...any) (bool, error) {
+func (m *Manager) transition(id string, intent Intent, activeOnly bool) (bool, error) {
 	if m == nil || m.repo == nil || strings.TrimSpace(id) == "" {
 		return false, nil
 	}
-	updated, err := m.repo.UpdateWithCondition(id, update, m.timestampNow(), condition, conditionArgs...)
+	current, err := m.repo.Get(id)
 	if err != nil {
 		return false, err
 	}
-	if updated && syncRuntime {
+	if activeOnly && isTerminalStatus(current.Status) {
+		return false, nil
+	}
+	next, alreadyApplied, err := m.applyIntent(current, intent)
+	if err != nil {
+		return false, err
+	}
+	if alreadyApplied {
+		return false, nil
+	}
+	updated, err := m.repo.ApplyTransition(next, current.Revision, activeOnly)
+	if err != nil {
+		return false, err
+	}
+	if !updated {
+		if activeOnly {
+			return false, nil
+		}
+		return false, ErrTransitionConflict
+	}
+	if activeOnly || (intent.Kind != IntentResumeAfterApproval && intent.Kind != IntentCancel) {
 		m.syncRuntime(id)
 	}
-	if updated {
-		m.notify("job.update")
+	m.notify("job.update")
+	return true, nil
+}
+
+func (m *Manager) applyIntent(current Record, intent Intent) (Record, bool, error) {
+	next := current
+	target := transitionStatus(current.Status, intent)
+	if isTerminalStatus(current.Status) {
+		if target == current.Status {
+			return current, true, nil
+		}
+		return Record{}, false, fmt.Errorf("%w: terminal job %s cannot become %s", ErrTransitionConflict, current.Status, target)
 	}
-	return updated, nil
+	if !validTransition(current.Status, target) {
+		return Record{}, false, fmt.Errorf("%w: %s cannot become %s", ErrTransitionConflict, current.Status, target)
+	}
+	now := m.timestampNow()
+	next.Status = target
+	next.UpdatedAt = now
+	next.Revision = current.Revision + 1
+	if intent.Phase != nil {
+		next.Phase = strings.TrimSpace(*intent.Phase)
+	}
+	if intent.Summary != nil {
+		next.Summary = strings.TrimSpace(*intent.Summary)
+	}
+	if intent.LogsText != nil {
+		next.LogsText = *intent.LogsText
+	}
+	if intent.AppendLog != "" {
+		next.LogsText += intent.AppendLog
+	}
+	if intent.ErrorClass != nil {
+		next.ErrorClass = strings.TrimSpace(*intent.ErrorClass)
+	}
+	if intent.MetaJSON != nil {
+		next.MetaJSON = strings.TrimSpace(*intent.MetaJSON)
+	}
+	if target == StatusRunning && next.StartedAt == "" {
+		next.StartedAt = now
+	}
+	if target == StatusWaitingApproval {
+		next.Phase = PhaseApprovalWait
+	}
+	if isTerminalStatus(target) {
+		next.Phase = PhaseComplete
+		next.FinishedAt = now
+	}
+	return next, false, nil
+}
+
+func transitionStatus(current string, intent Intent) string {
+	switch intent.Kind {
+	case IntentStart, IntentResumeAfterApproval:
+		return StatusRunning
+	case IntentWaitForApproval:
+		return StatusWaitingApproval
+	case IntentSucceed:
+		return StatusSucceeded
+	case IntentFail:
+		return StatusFailed
+	case IntentCancel:
+		return StatusCancelled
+	case IntentInterrupt:
+		return StatusInterrupted
+	}
+	if intent.Status != nil {
+		return strings.TrimSpace(*intent.Status)
+	}
+	return current
+}
+
+func validTransition(from, to string) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case StatusQueued:
+		return to == StatusRunning || isTerminalStatus(to)
+	case StatusRunning:
+		return to == StatusWaitingApproval || isTerminalStatus(to)
+	case StatusWaitingApproval:
+		return to == StatusRunning || isTerminalStatus(to)
+	default:
+		return false
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	return status == StatusSucceeded || status == StatusFailed || status == StatusCancelled || status == StatusInterrupted
 }
 
 func (m *Manager) syncRuntime(id string) {
@@ -403,8 +542,8 @@ func (r *SQLiteRepository) Create(record Record) error {
 	_, err := r.db.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.ID,
 		record.Kind,
@@ -423,6 +562,7 @@ func (r *SQLiteRepository) Create(record Record) error {
 		record.UpdatedAt,
 		record.StartedAt,
 		record.FinishedAt,
+		record.Revision,
 	)
 	return err
 }
@@ -434,8 +574,8 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 	_, err := r.db.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind = excluded.kind,
 			parent_job_id = excluded.parent_job_id,
@@ -451,7 +591,8 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 			meta_json = excluded.meta_json,
 			updated_at = excluded.updated_at,
 			started_at = excluded.started_at,
-			finished_at = excluded.finished_at
+			finished_at = excluded.finished_at,
+			revision = excluded.revision
 	`,
 		record.ID,
 		record.Kind,
@@ -470,57 +611,22 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.UpdatedAt,
 		record.StartedAt,
 		record.FinishedAt,
+		record.Revision,
 	)
 	return err
 }
 
-func (r *SQLiteRepository) UpdateWithCondition(id string, update Update, updatedAt string, condition string, conditionArgs ...any) (bool, error) {
-	if r == nil || r.db == nil || strings.TrimSpace(id) == "" {
+func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
+	if r == nil || r.db == nil || strings.TrimSpace(record.ID) == "" {
 		return false, nil
 	}
-	setClauses := []string{"updated_at = ?"}
-	args := []any{updatedAt}
-	if update.Status != nil {
-		setClauses = append(setClauses, "status = ?")
-		args = append(args, strings.TrimSpace(*update.Status))
-	}
-	if update.Phase != nil {
-		setClauses = append(setClauses, "phase = ?")
-		args = append(args, strings.TrimSpace(*update.Phase))
-	}
-	if update.Summary != nil {
-		setClauses = append(setClauses, "summary = ?")
-		args = append(args, strings.TrimSpace(*update.Summary))
-	}
-	if update.LogsText != nil {
-		setClauses = append(setClauses, "logs_text = ?")
-		args = append(args, *update.LogsText)
-	}
-	if update.AppendLog != "" {
-		setClauses = append(setClauses, "logs_text = COALESCE(logs_text, '') || ?")
-		args = append(args, update.AppendLog)
-	}
-	if update.ErrorClass != nil {
-		setClauses = append(setClauses, "error_class = ?")
-		args = append(args, strings.TrimSpace(*update.ErrorClass))
-	}
-	if update.MetaJSON != nil {
-		setClauses = append(setClauses, "meta_json = ?")
-		args = append(args, strings.TrimSpace(*update.MetaJSON))
-	}
-	if update.StartedAt != nil {
-		setClauses = append(setClauses, "started_at = ?")
-		args = append(args, strings.TrimSpace(*update.StartedAt))
-	}
-	if update.FinishedAt != nil {
-		setClauses = append(setClauses, "finished_at = ?")
-		args = append(args, strings.TrimSpace(*update.FinishedAt))
-	}
-	args = append(args, id)
-	query := "UPDATE jobs SET " + strings.Join(setClauses, ", ") + " WHERE id = ?"
-	if strings.TrimSpace(condition) != "" {
-		query += " AND " + condition
-		args = append(args, conditionArgs...)
+	query := `UPDATE jobs SET status=?, phase=?, summary=?, logs_text=?, error_class=?, meta_json=?,
+		updated_at=?, started_at=?, finished_at=?, revision=? WHERE id=? AND revision=?`
+	args := []any{record.Status, record.Phase, record.Summary, record.LogsText, record.ErrorClass, record.MetaJSON,
+		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.ID, expectedRevision}
+	if activeOnly {
+		query += " AND status IN (?, ?, ?)"
+		args = append(args, StatusQueued, StatusRunning, StatusWaitingApproval)
 	}
 	result, err := r.db.Exec(query, args...)
 	if err != nil {
@@ -540,7 +646,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	var record Record
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(
@@ -561,6 +667,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 		&record.UpdatedAt,
 		&record.StartedAt,
 		&record.FinishedAt,
+		&record.Revision,
 	)
 	return record, err
 }
@@ -572,7 +679,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	var record Record
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
 		  FROM jobs
 		 WHERE server_name = ?
 		   AND kind = ?
@@ -597,6 +704,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 		&record.UpdatedAt,
 		&record.StartedAt,
 		&record.FinishedAt,
+		&record.Revision,
 	)
 	if err == sql.ErrNoRows {
 		return nil, err
@@ -641,9 +749,9 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 	}
 	_, err := r.db.Exec(`
 		UPDATE jobs
-		   SET status = ?, summary = ?, finished_at = ?, updated_at = ?
+		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
 		 WHERE status IN (?, ?, ?)
-	`, StatusInterrupted, "Interrupted during restart recovery", now, now, StatusQueued, StatusRunning, StatusWaitingApproval)
+	`, StatusInterrupted, PhaseComplete, "Interrupted during restart recovery", "restart", now, now, StatusQueued, StatusRunning, StatusWaitingApproval)
 	return err
 }
 

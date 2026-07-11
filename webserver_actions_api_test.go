@@ -879,7 +879,7 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 	}
 }
 
-func TestCancelRoutePreservesExplicitCancelSummaryOnUpdateJob(t *testing.T) {
+func TestCancelRoutePreservesExplicitCancelSummaryOnTransition(t *testing.T) {
 	preserveDBState(t)
 	preserveServerState(t)
 
@@ -973,15 +973,14 @@ func TestCancelRoutePreservesExplicitCancelSummaryOnUpdateJob(t *testing.T) {
 	cancelledStatus := jobStatusCancelled
 	cancelledPhase := jobPhaseComplete
 	cancelledSummary := "Update cancelled"
-	finishedAt := jobTimestampNow()
-	if err := currentJobManager().UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-		Status:     &cancelledStatus,
-		Phase:      &cancelledPhase,
-		Summary:    &cancelledSummary,
-		LogsText:   &logsBeforeCancel,
-		FinishedAt: &finishedAt,
+	if err := currentJobManager().Transition(job.ID, JobTransitionIntent{
+		Kind:     jobIntentCancel,
+		Status:   &cancelledStatus,
+		Phase:    &cancelledPhase,
+		Summary:  &cancelledSummary,
+		LogsText: &logsBeforeCancel,
 	}); err != nil {
-		t.Fatalf("UpdateJobWithoutRuntimeSync(cancelled) unexpected error: %v", err)
+		t.Fatalf("Transition(cancelled) unexpected error: %v", err)
 	}
 
 	select {
@@ -1261,7 +1260,7 @@ func TestApproveKeptBackSecurityRouteUsesTargetedRemovalPlan(t *testing.T) {
 	}
 }
 
-func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
+func TestRunnerJobSyncDoesNotOverwriteCancelledTransition(t *testing.T) {
 	preserveDBState(t)
 	preserveServerState(t)
 
@@ -1292,15 +1291,14 @@ func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
 	cancelledStatus := jobStatusCancelled
 	cancelledPhase := jobPhaseComplete
 	cancelledSummary := "Update cancelled"
-	finishedAt := jobTimestampNow()
-	if err := currentJobManager().UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-		Status:     &cancelledStatus,
-		Phase:      &cancelledPhase,
-		Summary:    &cancelledSummary,
-		LogsText:   stringPtr("cancelled logs"),
-		FinishedAt: &finishedAt,
+	if err := currentJobManager().Transition(job.ID, JobTransitionIntent{
+		Kind:     jobIntentCancel,
+		Status:   &cancelledStatus,
+		Phase:    &cancelledPhase,
+		Summary:  &cancelledSummary,
+		LogsText: stringPtr("cancelled logs"),
 	}); err != nil {
-		t.Fatalf("UpdateJobWithoutRuntimeSync(cancelled) unexpected error: %v", err)
+		t.Fatalf("Transition(cancelled) unexpected error: %v", err)
 	}
 
 	snapshot := &ServerStatus{
@@ -1310,13 +1308,13 @@ func TestRunnerJobSyncDoesNotOverwriteCancelledUpdateJob(t *testing.T) {
 		Upgradable:     []string{"openssl"},
 		PendingUpdates: []PendingUpdate{{Package: "openssl"}},
 	}
-	jobUpdate := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
+	jobUpdate := runtimepkg.JobTransitionIntentFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
 		Logs:         snapshot.Logs,
 		CurrentPhase: jobPhaseApprovalWait,
 		Timestamp:    jobTimestampNow(),
 	})
-	if _, err := currentJobManager().UpdateActiveJob(job.ID, jobUpdate); err != nil {
-		t.Fatalf("UpdateActiveJob(stale pending projection) unexpected error: %v", err)
+	if _, err := currentJobManager().TransitionActive(job.ID, jobUpdate); err != nil {
+		t.Fatalf("TransitionActive(stale pending projection) unexpected error: %v", err)
 	}
 
 	var jobStatus, jobPhase, jobSummary, jobLogs string

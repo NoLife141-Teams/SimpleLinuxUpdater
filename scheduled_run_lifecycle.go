@@ -526,7 +526,7 @@ func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, di
 	cloned := discovery.Clone()
 	meta.Discovery = &cloned
 	metaJSON := marshalJobJSON(meta)
-	if err := jm.UpdateJobWithoutRuntimeSync(jobID, JobUpdate{MetaJSON: &metaJSON}); err != nil {
+	if err := jm.Transition(jobID, JobTransitionIntent{MetaJSON: &metaJSON}); err != nil {
 		log.Printf("failed to persist scheduled discovery meta for job %q: %v", jobID, err)
 	}
 }

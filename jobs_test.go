@@ -27,11 +27,11 @@ func TestJobRuntimeStatusSyncFromRecord(t *testing.T) {
 	}
 	status := jobStatusRunning
 	phase := jobPhaseAptUpgrade
-	if err := currentJobManager().UpdateJob(job.ID, JobUpdate{
+	if err := currentJobManager().Transition(job.ID, JobTransitionIntent{
 		Status: &status,
 		Phase:  &phase,
 	}); err != nil {
-		t.Fatalf("UpdateJob() error = %v", err)
+		t.Fatalf("Transition() error = %v", err)
 	}
 
 	snapshot := currentStatusSnapshot(server.Name)

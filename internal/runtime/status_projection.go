@@ -123,11 +123,12 @@ func ServerStatusFinishesJob(status string) bool {
 	}
 }
 
-func JobUpdateFromServerStatus(status string, options ServerStatusJobUpdateOptions) jobs.Update {
+func JobTransitionIntentFromServerStatus(status string, options ServerStatusJobUpdateOptions) jobs.Intent {
 	logs := options.Logs
-	update := jobs.Update{LogsText: &logs}
+	update := jobs.Intent{LogsText: &logs}
 	switch status {
 	case StatusPendingApproval:
+		update.Kind = jobs.IntentWaitForApproval
 		status := jobs.StatusWaitingApproval
 		phase := jobs.PhaseApprovalWait
 		summary := "Waiting for approval"
@@ -135,37 +136,35 @@ func JobUpdateFromServerStatus(status string, options ServerStatusJobUpdateOptio
 		update.Phase = &phase
 		update.Summary = &summary
 	case StatusDone:
+		update.Kind = jobs.IntentSucceed
 		status := jobs.StatusSucceeded
 		phase := jobs.PhaseComplete
 		summary := "Completed successfully"
-		finishedAt := options.Timestamp
 		update.Status = &status
 		update.Phase = &phase
 		update.Summary = &summary
-		update.FinishedAt = &finishedAt
 	case StatusError:
+		update.Kind = jobs.IntentFail
 		status := jobs.StatusFailed
 		phase := jobs.PhaseComplete
 		summary := "Completed with errors"
-		finishedAt := options.Timestamp
 		errorClass := strings.TrimSpace(options.LastErrorClass)
 		update.Status = &status
 		update.Phase = &phase
 		update.Summary = &summary
-		update.FinishedAt = &finishedAt
 		if errorClass != "" {
 			update.ErrorClass = &errorClass
 		}
 	case StatusCancelled:
+		update.Kind = jobs.IntentCancel
 		status := jobs.StatusCancelled
 		phase := jobs.PhaseComplete
 		summary := "Cancelled"
-		finishedAt := options.Timestamp
 		update.Status = &status
 		update.Phase = &phase
 		update.Summary = &summary
-		update.FinishedAt = &finishedAt
 	case StatusApproved:
+		update.Kind = jobs.IntentResumeAfterApproval
 		status := jobs.StatusRunning
 		phase := jobs.PhaseAptUpgrade
 		summary := "Approval received"
@@ -173,6 +172,7 @@ func JobUpdateFromServerStatus(status string, options ServerStatusJobUpdateOptio
 		update.Phase = &phase
 		update.Summary = &summary
 	default:
+		update.Kind = jobs.IntentAdvance
 		status := jobs.StatusRunning
 		update.Status = &status
 		if currentPhase := strings.TrimSpace(options.CurrentPhase); currentPhase != "" {

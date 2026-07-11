@@ -170,7 +170,7 @@ func (r *withActorRunner) currentLogs() string {
 func (r *withActorRunner) setJobPhase(phase string) {
 	r.jobPhase = strings.TrimSpace(phase)
 	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && r.jobPhase != "" {
-		if err := jm.UpdateJob(r.jobID, jobs.Update{Phase: &r.jobPhase}); err != nil {
+		if err := jm.Transition(r.jobID, jobs.Intent{Phase: &r.jobPhase}); err != nil {
 			r.deps().Logf("failed to update job %q phase to %q: %v", r.jobID, r.jobPhase, err)
 		}
 	}
@@ -188,14 +188,14 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
 	if runtimepkg.ServerStatusFinishesJob(snapshot.Status) {
 		timestamp = r.deps().JobTimestampNow()
 	}
-	update := runtimepkg.JobUpdateFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
+	update := runtimepkg.JobTransitionIntentFromServerStatus(snapshot.Status, runtimepkg.ServerStatusJobUpdateOptions{
 		Logs:           snapshot.Logs,
 		LastErrorClass: r.lastErrClass,
 		CurrentPhase:   r.jobPhase,
 		Timestamp:      timestamp,
 	})
 
-	if _, err := jm.UpdateActiveJob(r.jobID, update); err != nil {
+	if _, err := jm.TransitionActive(r.jobID, update); err != nil {
 		r.deps().Logf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
 	}
 }
@@ -326,13 +326,11 @@ func (s *Service) runWithActorShared(
 			phase := jobs.PhaseComplete
 			summary := "Server runtime status missing"
 			errorClass := "runtime_state"
-			finishedAt := deps.JobTimestampNow()
-			if err := jm.UpdateJob(runner.jobID, jobs.Update{
+			if err := jm.Transition(runner.jobID, jobs.Intent{
 				Status:     &status,
 				Phase:      &phase,
 				Summary:    &summary,
 				ErrorClass: &errorClass,
-				FinishedAt: &finishedAt,
 			}); err != nil {
 				deps.Logf("failed to mark job %q failed after runtime status loss: %v", runner.jobID, err)
 			}
@@ -638,12 +636,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 							jobStatus := jobs.StatusCancelled
 							phase := jobs.PhaseComplete
 							summary := "Approval window expired"
-							finishedAt := deps.JobTimestampNow()
-							_ = jm.UpdateJob(r.jobID, jobs.Update{
-								Status:     &jobStatus,
-								Phase:      &phase,
-								Summary:    &summary,
-								FinishedAt: &finishedAt,
+							_ = jm.Transition(r.jobID, jobs.Intent{
+								Status:  &jobStatus,
+								Phase:   &phase,
+								Summary: &summary,
 							})
 						}
 						return
@@ -935,7 +931,7 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 			phase := jobs.PhaseDial
 			summary := "Connecting for CVE enrichment"
-			_ = jm.UpdateJob(jobID, jobs.Update{Phase: &phase, Summary: &summary})
+			_ = jm.Transition(jobID, jobs.Intent{Phase: &phase, Summary: &summary})
 		}
 		cveSession, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
 			Server:         server,
@@ -955,14 +951,12 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 				summary := "Failed to connect for CVE enrichment"
 				errorClass := "dial"
 				meta := jobs.MarshalJSON(map[string]any{"error": err.Error()})
-				finishedAt := deps.JobTimestampNow()
-				_ = jm.UpdateJob(jobID, jobs.Update{
+				_ = jm.Transition(jobID, jobs.Intent{
 					Status:     &status,
 					Phase:      &phase,
 					Summary:    &summary,
 					ErrorClass: &errorClass,
 					MetaJSON:   &meta,
-					FinishedAt: &finishedAt,
 				})
 			}
 			for _, pkg := range packages {
@@ -977,7 +971,7 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 			phase := jobs.PhaseLookup
 			summary := "Looking up package CVEs"
-			_ = jm.UpdateJob(jobID, jobs.Update{Phase: &phase, Summary: &summary})
+			_ = jm.Transition(jobID, jobs.Intent{Phase: &phase, Summary: &summary})
 		}
 		for _, pkg := range packages {
 			if !s.serverPendingApproval(server.Name) {
@@ -985,12 +979,10 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 					status := jobs.StatusCancelled
 					phase := jobs.PhaseComplete
 					summary := "Parent update no longer pending approval"
-					finishedAt := deps.JobTimestampNow()
-					_ = jm.UpdateJob(jobID, jobs.Update{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						FinishedAt: &finishedAt,
+					_ = jm.Transition(jobID, jobs.Intent{
+						Status:  &status,
+						Phase:   &phase,
+						Summary: &summary,
 					})
 				}
 				return
@@ -1007,12 +999,10 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 					status := jobs.StatusCancelled
 					phase := jobs.PhaseComplete
 					summary := "Pending update state changed before CVE enrichment finished"
-					finishedAt := deps.JobTimestampNow()
-					_ = jm.UpdateJob(jobID, jobs.Update{
-						Status:     &status,
-						Phase:      &phase,
-						Summary:    &summary,
-						FinishedAt: &finishedAt,
+					_ = jm.Transition(jobID, jobs.Intent{
+						Status:  &status,
+						Phase:   &phase,
+						Summary: &summary,
 					})
 				}
 				return
@@ -1022,12 +1012,10 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			status := jobs.StatusSucceeded
 			phase := jobs.PhaseComplete
 			summary := "CVE enrichment completed"
-			finishedAt := deps.JobTimestampNow()
-			_ = jm.UpdateJob(jobID, jobs.Update{
-				Status:     &status,
-				Phase:      &phase,
-				Summary:    &summary,
-				FinishedAt: &finishedAt,
+			_ = jm.Transition(jobID, jobs.Intent{
+				Status:  &status,
+				Phase:   &phase,
+				Summary: &summary,
 			})
 		}
 	})

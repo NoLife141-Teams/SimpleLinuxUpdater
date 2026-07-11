@@ -18,7 +18,6 @@ type serverActionLifecycle struct {
 	currentJobManager func() *JobManager
 	startJobRunner    func(func() *JobManager, string, func())
 	loadRetryPolicy   func() RetryPolicy
-	jobTimestampNow   func() string
 	audit             func(action, targetType, targetName, status, message string, meta map[string]any)
 }
 
@@ -66,7 +65,6 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 		currentJobManager: currentJobs,
 		startJobRunner:    startJobRunnerWithManager,
 		loadRetryPolicy:   loadRetryPolicyFromEnv,
-		jobTimestampNow:   jobTimestampNow,
 		audit:             audit,
 	}
 }
@@ -261,7 +259,8 @@ func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOp
 	status := jobStatusRunning
 	phase := jobPhaseAptUpgrade
 	logs := preApproveStatus.Logs
-	if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+	if err := jm.Transition(job.ID, JobTransitionIntent{
+		Kind:     jobIntentResumeApproval,
 		Status:   &status,
 		Phase:    &phase,
 		Summary:  &approval.JobSummary,
@@ -276,7 +275,8 @@ func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOp
 		rollbackStatus := jobStatusWaitingApproval
 		rollbackPhase := jobPhaseApprovalWait
 		rollbackSummary := "Waiting for approval"
-		if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+		if rollbackErr := jm.Transition(job.ID, JobTransitionIntent{
+			Kind:     jobIntentWaitApproval,
 			Status:   &rollbackStatus,
 			Phase:    &rollbackPhase,
 			Summary:  &rollbackSummary,
@@ -319,13 +319,12 @@ func (l *serverActionLifecycle) Cancel(name string) serverActionLifecycleResult 
 	status := jobStatusCancelled
 	phase := jobPhaseComplete
 	summary := "Update cancelled"
-	finishedAt := l.jobTimestamp()
-	if err := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
-		Status:     &status,
-		Phase:      &phase,
-		Summary:    &summary,
-		LogsText:   &logsBeforeCancel,
-		FinishedAt: &finishedAt,
+	if err := jm.Transition(job.ID, JobTransitionIntent{
+		Kind:     jobIntentCancel,
+		Status:   &status,
+		Phase:    &phase,
+		Summary:  &summary,
+		LogsText: &logsBeforeCancel,
 	}); err != nil {
 		l.recordAuditWithMeta("update.cancel", name, "failure", "Failed to persist cancelled update", map[string]any{"error": err.Error()})
 		return jsonResult(http.StatusInternalServerError, "Failed to persist cancelled update")
@@ -335,7 +334,8 @@ func (l *serverActionLifecycle) Cancel(name string) serverActionLifecycleResult 
 		rollbackStatus := jobStatusWaitingApproval
 		rollbackPhase := jobPhaseApprovalWait
 		rollbackSummary := "Waiting for approval"
-		if rollbackErr := jm.UpdateJobWithoutRuntimeSync(job.ID, JobUpdate{
+		if rollbackErr := jm.Transition(job.ID, JobTransitionIntent{
+			Kind:     jobIntentWaitApproval,
 			Status:   &rollbackStatus,
 			Phase:    &rollbackPhase,
 			Summary:  &rollbackSummary,
@@ -358,13 +358,6 @@ func (l *serverActionLifecycle) retryPolicy() RetryPolicy {
 		return loadRetryPolicyFromEnv()
 	}
 	return l.loadRetryPolicy()
-}
-
-func (l *serverActionLifecycle) jobTimestamp() string {
-	if l.jobTimestampNow == nil {
-		return jobTimestampNow()
-	}
-	return l.jobTimestampNow()
 }
 
 func (l *serverActionLifecycle) recordAudit(action, targetName, status, message string, meta map[string]any) {

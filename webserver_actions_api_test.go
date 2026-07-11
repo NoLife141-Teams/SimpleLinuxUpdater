@@ -946,17 +946,19 @@ func TestCancelRoutePreservesExplicitCancelSummaryOnTransition(t *testing.T) {
 		status := statusMap[server.Name]
 		currentStatus := ""
 		currentLogs := ""
+		enrichmentReady := false
 		if status != nil {
 			currentStatus = status.Status
 			currentLogs = status.Logs
+			enrichmentReady = currentStatus == "pending_approval" && len(status.PendingUpdates) == 1 && status.PendingUpdates[0].CVEState == "ready"
 		}
 		mu.Unlock()
-		if currentStatus == "pending_approval" {
+		if enrichmentReady {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for pending approval, last status=%q logs=%s", currentStatus, currentLogs)
+			t.Fatalf("timed out waiting for pending approval with CVE enrichment complete, last status=%q logs=%s", currentStatus, currentLogs)
 		}
 	}
 

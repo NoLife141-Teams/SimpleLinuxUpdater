@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"debian-updater/internal/health"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
@@ -240,9 +241,7 @@ type ServiceDeps struct {
 	CurrentLocation             func() *time.Location
 	FormatTimestamp             func(string, *time.Location, string) (string, string)
 	ServerSnapshot              func() ([]servers.Server, map[string]*servers.ServerStatus)
-	LoadServerFacts             func() (map[string]updates.ServerFactsRecord, error)
-	ListHealthSnapshots         func(from, to, serverName string) ([]updates.HealthSnapshotRecord, error)
-	HealthSnapshotRetentionDays func() (int, error)
+	HostHealthObservation       health.Reader
 	ProjectPolicySchedule       func(policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error)
 	ParseAppTimestamp           func(string) (time.Time, error)
 	HealthStatusFromResult      func(updates.PrecheckResult) string

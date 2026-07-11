@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
 	updatespkg "debian-updater/internal/updates"
 )
@@ -479,7 +480,7 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 			if tt.errorText != "" && !strings.Contains(audits.Items[0].MetaJSON, tt.errorText) {
 				t.Fatalf("failure audit meta = %s, want error text %q", audits.Items[0].MetaJSON, tt.errorText)
 			}
-			snapshots, err := (updatespkg.SQLiteServerFactsRepository{DB: deps.DB}).ListHealthSnapshots("0000", "9999", server.Name)
+			snapshots, err := (healthpkg.SQLiteObservation{DB: deps.DB}).History("0000", "9999", server.Name)
 			if err != nil {
 				t.Fatalf("ListHealthSnapshots() unexpected error: %v", err)
 			}

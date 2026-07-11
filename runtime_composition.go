@@ -11,10 +11,10 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
+	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
-	updatespkg "debian-updater/internal/updates"
 
 	"github.com/alexedwards/scs/v2"
 	"golang.org/x/crypto/ssh"
@@ -125,6 +125,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if deps.HostHealthObservation == nil {
+		deps.HostHealthObservation = healthpkg.SQLiteObservation{DB: deps.DB, Now: deps.Now}
+	}
 	if deps.JobTimestampNow == nil {
 		deps.JobTimestampNow = jobTimestampNow
 	}
@@ -157,10 +160,10 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithNotificationsAndClock(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
+		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
 			value := deps.ApplicationTime.Current()
 			return value.Location, value.DisplayName
-		}, deps.NotificationService, deps.Now, deps.MaintenanceCoordinator)
+		}, deps.NotificationService, deps.Now, deps.HostHealthObservation, deps.MaintenanceCoordinator)
 	}
 	if deps.MetricsTokenService == nil {
 		deps.MetricsTokenService = NewMetricsTokenService(MetricsTokenDeps{
@@ -181,7 +184,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.ServerInventoryService == nil {
-		deps.ServerInventoryService = newServerInventoryServiceWithStateDBPath(deps.ServerState, deps.DB, deps.DBPath)
+		deps.ServerInventoryService = newServerInventoryServiceWithHealthObservation(deps.ServerState, deps.DB, deps.DBPath, deps.HostHealthObservation)
 	}
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
@@ -237,7 +240,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
 		}
 	}
-	factsRepo := updatespkg.SQLiteServerFactsRepository{DB: deps.DB, Now: deps.Now}
+	factsRepo := deps.HostHealthObservation
 	if deps.PolicyService == nil {
 		deps.PolicyService = NewPolicyService(PolicyServiceDeps{
 			ListPolicies:        deps.PolicyRepository.ListPolicies,
@@ -282,7 +285,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			CurrentJobManager:       deps.CurrentJobManager,
 			StartJobRunner:          func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
 			AuditWithActor:          recordAudit,
-			SaveServerFacts:         factsRepo.Save,
+			SaveServerFacts:         factsRepo.AcceptCollectedFacts,
 			UpdateScheduledDiscoveryMeta: func(jobID string, discovery PackageDiscoveryOutcome) {
 				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, discovery)
 			},
@@ -323,10 +326,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 				defer deps.ServerState.Unlock()
 				return serverpkg.CloneServers(deps.ServerState.Servers()), serverpkg.CloneStatusMap(deps.ServerState.StatusMap())
 			},
-			LoadServerFacts:             factsRepo.LoadAll,
-			ListHealthSnapshots:         factsRepo.ListHealthSnapshots,
-			HealthSnapshotRetentionDays: factsRepo.HealthSnapshotRetentionDays,
-			ProjectPolicySchedule:       policyScheduleService.ProjectSchedule,
+			HostHealthObservation: factsRepo,
+			ProjectPolicySchedule: policyScheduleService.ProjectSchedule,
 		})
 	}
 	if deps.NewSessionManager == nil {

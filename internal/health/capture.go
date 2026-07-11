@@ -1,4 +1,4 @@
-package updates
+package health
 
 import (
 	"encoding/json"
@@ -26,15 +26,15 @@ type HealthObservation struct {
 
 // HealthResultInterpreter supplies parsing policies while keeping result precedence shared.
 type HealthResultInterpreter struct {
-	Status         func(PrecheckResult) string
+	Status         func(CheckResult) string
 	DiskFree       func(string) (int64, bool)
 	DiskFreeTotal  func(string) (int64, int64, bool)
-	RebootRequired func(PrecheckResult) (bool, bool)
+	RebootRequired func(CheckResult) (bool, bool)
 }
 
 func (d HealthResultInterpreter) withDefaults() HealthResultInterpreter {
 	if d.Status == nil {
-		d.Status = func(result PrecheckResult) string {
+		d.Status = func(result CheckResult) string {
 			if result.Passed {
 				return "ok"
 			}
@@ -54,7 +54,7 @@ func (d HealthResultInterpreter) withDefaults() HealthResultInterpreter {
 }
 
 // ApplyHealthResults applies results in order; later results supersede earlier dimensions.
-func ApplyHealthResults(health *HealthObservation, results []PrecheckResult, interpreter HealthResultInterpreter) bool {
+func ApplyHealthResults(health *HealthObservation, results []CheckResult, interpreter HealthResultInterpreter) bool {
 	if health == nil {
 		return false
 	}
@@ -89,7 +89,7 @@ func ApplyHealthResults(health *HealthObservation, results []PrecheckResult, int
 	return applied
 }
 
-func (r SQLiteServerFactsRepository) CaptureCompletion(completion MaintenanceCompletion) error {
+func (r SQLiteObservation) AcceptMaintenance(completion MaintenanceOutcome) error {
 	meta := map[string]any{}
 	if strings.TrimSpace(completion.RawJSON) != "" {
 		if err := json.Unmarshal([]byte(completion.RawJSON), &meta); err != nil {
@@ -109,7 +109,7 @@ func (r SQLiteServerFactsRepository) CaptureCompletion(completion MaintenanceCom
 			securityCount = healthMetaInt(discovery, "security_package_count")
 		}
 	}
-	record := HealthSnapshotRecord{
+	record := Snapshot{
 		ServerName: completion.ServerName, CapturedAt: completion.CompletedAt, Source: "audit",
 		PackageCount: packageCount, SecurityCount: securityCount,
 		DiskStatus: "unknown", AptStatus: "unknown", RawJSON: completion.RawJSON,
@@ -181,7 +181,7 @@ func healthMetaMap(meta map[string]any, key string) map[string]any {
 	return result
 }
 
-func healthResultsFromMeta(meta map[string]any, key string) []PrecheckResult {
+func healthResultsFromMeta(meta map[string]any, key string) []CheckResult {
 	value, ok := meta[key]
 	if !ok || value == nil {
 		return nil
@@ -190,7 +190,7 @@ func healthResultsFromMeta(meta map[string]any, key string) []PrecheckResult {
 	if err != nil {
 		return nil
 	}
-	var results []PrecheckResult
+	var results []CheckResult
 	if json.Unmarshal(data, &results) != nil {
 		return nil
 	}
@@ -230,7 +230,7 @@ func diskFreeTotalKBFromHealthOutput(output string) (int64, int64, bool) {
 	return minimum, total, found
 }
 
-func rebootRequiredFromHealthResult(result PrecheckResult) (bool, bool) {
+func rebootRequiredFromHealthResult(result CheckResult) (bool, bool) {
 	if strings.TrimSpace(result.Error) != "" {
 		return false, false
 	}

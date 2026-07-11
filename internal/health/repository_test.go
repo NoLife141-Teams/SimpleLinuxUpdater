@@ -1,4 +1,4 @@
-package updates
+package health
 
 import (
 	"database/sql"
@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
+func TestObservationSchemaAndRoundTrip(t *testing.T) {
 	db, repo := openServerFactsTestRepository(t, "server-facts.db")
 	for i := 0; i < 2; i++ {
 		if err := EnsureServerFactsSchema(db); err != nil {
@@ -18,7 +18,7 @@ func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
 		}
 	}
 	rebootRequired := true
-	record := ServerFactsRecord{
+	record := CollectedFacts{
 		ServerName:     "srv-a",
 		CollectedAt:    "2026-05-18T12:00:00Z",
 		OSPrettyName:   "Ubuntu 24.04",
@@ -32,12 +32,12 @@ func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
 		RebootRequired: &rebootRequired,
 		RawJSON:        `{"source":"test"}`,
 	}
-	if err := repo.Save(record); err != nil {
+	if err := repo.AcceptCollectedFacts(record); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	loaded, err := repo.LoadAll()
+	loaded, err := repo.Latest()
 	if err != nil {
-		t.Fatalf("LoadAll() error = %v", err)
+		t.Fatalf("Latest() error = %v", err)
 	}
 	got := loaded["srv-a"]
 	if got.ServerName != record.ServerName || got.OSPrettyName != record.OSPrettyName || got.RawJSON != record.RawJSON || got.DiskTotalKB != record.DiskTotalKB {
@@ -48,9 +48,9 @@ func TestServerFactsRepositorySchemaAndRoundTrip(t *testing.T) {
 	}
 }
 
-func TestServerFactsRepositoryRenameAndDeleteTx(t *testing.T) {
+func TestObservationRenameAndDeleteTx(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-facts-tx.db")
-	if err := repo.Save(ServerFactsRecord{ServerName: "old", CollectedAt: "2026-05-18T12:00:00Z"}); err != nil {
+	if err := repo.AcceptCollectedFacts(CollectedFacts{ServerName: "old", CollectedAt: "2026-05-18T12:00:00Z"}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 	tx, err := repo.dbConn().Begin()
@@ -64,16 +64,16 @@ func TestServerFactsRepositoryRenameAndDeleteTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("rename commit error = %v", err)
 	}
-	loaded, err := repo.LoadAll()
+	loaded, err := repo.Latest()
 	if err != nil {
-		t.Fatalf("LoadAll() after rename error = %v", err)
+		t.Fatalf("Latest() after rename error = %v", err)
 	}
 	if _, ok := loaded["new"]; !ok {
 		t.Fatalf("renamed record missing: %+v", loaded)
 	}
-	snapshots, err := repo.ListHealthSnapshots("2026-05-01T00:00:00Z", "2026-05-30T00:00:00Z", "new")
+	snapshots, err := repo.History("2026-05-01T00:00:00Z", "2026-05-30T00:00:00Z", "new")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots() after rename error = %v", err)
+		t.Fatalf("History() after rename error = %v", err)
 	}
 	if len(snapshots) != 1 || snapshots[0].ServerName != "new" {
 		t.Fatalf("snapshots after rename = %+v, want one renamed snapshot", snapshots)
@@ -89,42 +89,77 @@ func TestServerFactsRepositoryRenameAndDeleteTx(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("delete commit error = %v", err)
 	}
-	loaded, err = repo.LoadAll()
+	loaded, err = repo.Latest()
 	if err != nil {
-		t.Fatalf("LoadAll() after delete error = %v", err)
+		t.Fatalf("Latest() after delete error = %v", err)
 	}
 	if len(loaded) != 0 {
 		t.Fatalf("records after delete = %+v, want empty", loaded)
 	}
-	snapshots, err = repo.ListHealthSnapshots("2026-05-01T00:00:00Z", "2026-05-30T00:00:00Z", "")
+	snapshots, err = repo.History("2026-05-01T00:00:00Z", "2026-05-30T00:00:00Z", "")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots() after delete error = %v", err)
+		t.Fatalf("History() after delete error = %v", err)
 	}
 	if len(snapshots) != 0 {
 		t.Fatalf("snapshots after delete = %+v, want empty", snapshots)
 	}
 }
 
-func TestServerFactsRepositoryDefaultsCollectedAt(t *testing.T) {
+func TestHostHealthObservationIdentityRenameRollsBackWithInventoryTransaction(t *testing.T) {
+	db, observation := openServerFactsTestRepository(t, "rename-rollback.db")
+	if err := observation.AcceptCollectedFacts(CollectedFacts{ServerName: "before", CollectedAt: "2026-07-11T10:00:00Z"}); err != nil {
+		t.Fatalf("AcceptCollectedFacts() error = %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := observation.RenameServerTx(tx, "before", "after"); err != nil {
+		t.Fatalf("RenameServerTx() error = %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+
+	latest, err := observation.Latest()
+	if err != nil {
+		t.Fatalf("Latest() error = %v", err)
+	}
+	if _, ok := latest["before"]; !ok {
+		t.Fatal("latest observation did not retain original Server identity after rollback")
+	}
+	if _, ok := latest["after"]; ok {
+		t.Fatal("latest observation retained rolled-back Server identity")
+	}
+	history, err := observation.History("0000", "9999", "before")
+	if err != nil {
+		t.Fatalf("History() error = %v", err)
+	}
+	if len(history) != 1 || history[0].ServerName != "before" {
+		t.Fatalf("history = %+v, want original Server identity", history)
+	}
+}
+
+func TestObservationDefaultsCollectedAt(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-facts-default-time.db")
 	now := time.Date(2026, 5, 18, 12, 34, 56, 0, time.UTC)
 	repo.Now = func() time.Time { return now }
-	if err := repo.Save(ServerFactsRecord{ServerName: "srv-time"}); err != nil {
+	if err := repo.AcceptCollectedFacts(CollectedFacts{ServerName: "srv-time"}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	loaded, err := repo.LoadAll()
+	loaded, err := repo.Latest()
 	if err != nil {
-		t.Fatalf("LoadAll() error = %v", err)
+		t.Fatalf("Latest() error = %v", err)
 	}
 	if got := loaded["srv-time"].CollectedAt; got != "2026-05-18T12:34:56Z" {
 		t.Fatalf("CollectedAt = %q, want default timestamp", got)
 	}
 }
 
-func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
+func TestObservationHealthSnapshotsAndRetention(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-health-snapshots.db")
 	rebootRequired := true
-	if err := repo.saveHealthSnapshot(HealthSnapshotRecord{
+	if err := repo.saveHealthSnapshot(Snapshot{
 		ServerName:       "srv-a",
 		CapturedAt:       "2026-05-18T12:00:00Z",
 		Source:           "audit",
@@ -141,9 +176,9 @@ func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("saveHealthSnapshot() error = %v", err)
 	}
-	snapshots, err := repo.ListHealthSnapshots("2026-05-18T00:00:00Z", "2026-05-19T00:00:00Z", "srv-a")
+	snapshots, err := repo.History("2026-05-18T00:00:00Z", "2026-05-19T00:00:00Z", "srv-a")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots() error = %v", err)
+		t.Fatalf("History() error = %v", err)
 	}
 	if len(snapshots) != 1 {
 		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
@@ -165,12 +200,12 @@ func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 	); err != nil {
 		t.Fatalf("update retention setting: %v", err)
 	}
-	if err := repo.saveHealthSnapshot(HealthSnapshotRecord{ServerName: "srv-a", CapturedAt: now.Format(time.RFC3339)}); err != nil {
+	if err := repo.saveHealthSnapshot(Snapshot{ServerName: "srv-a", CapturedAt: now.Format(time.RFC3339)}); err != nil {
 		t.Fatalf("saveHealthSnapshot(new) error = %v", err)
 	}
-	snapshots, err = repo.ListHealthSnapshots("2026-05-01T00:00:00Z", "2026-05-21T00:00:00Z", "srv-a")
+	snapshots, err = repo.History("2026-05-01T00:00:00Z", "2026-05-21T00:00:00Z", "srv-a")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots(after prune) error = %v", err)
+		t.Fatalf("History(after prune) error = %v", err)
 	}
 	if len(snapshots) != 1 || snapshots[0].CapturedAt != "2026-05-20T12:00:00Z" {
 		t.Fatalf("snapshots after retention prune = %+v, want only newest snapshot", snapshots)
@@ -179,7 +214,7 @@ func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 
 func TestServerFactsSaveWritesHealthSnapshot(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-facts-snapshot.db")
-	if err := repo.Save(ServerFactsRecord{
+	if err := repo.AcceptCollectedFacts(CollectedFacts{
 		ServerName:   "srv-save",
 		CollectedAt:  "2026-05-18T12:00:00Z",
 		DiskStatus:   "ok",
@@ -191,30 +226,30 @@ func TestServerFactsSaveWritesHealthSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	snapshots, err := repo.ListHealthSnapshots("2026-05-18T00:00:00Z", "2026-05-19T00:00:00Z", "srv-save")
+	snapshots, err := repo.History("2026-05-18T00:00:00Z", "2026-05-19T00:00:00Z", "srv-save")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots() error = %v", err)
+		t.Fatalf("History() error = %v", err)
 	}
 	if len(snapshots) != 1 || snapshots[0].Source != "facts" || snapshots[0].DiskFreeKB != 2048 || snapshots[0].OSPrettyName != "Ubuntu" {
 		t.Fatalf("snapshots = %+v, want one facts-derived snapshot", snapshots)
 	}
 }
 
-func TestHealthSnapshotCaptureFactsWritesNormalizedObservation(t *testing.T) {
+func TestObservationFactsWritesNormalizedObservation(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "capture-facts.db")
-	if err := repo.CaptureFacts(ServerFactsRecord{
+	if err := repo.appendCollectedHistory(CollectedFacts{
 		ServerName:   " capture-facts ",
 		CollectedAt:  "2026-07-10T12:00:00Z",
 		DiskFreeKB:   512,
 		DiskTotalKB:  1024,
 		OSPrettyName: "Debian",
 	}); err != nil {
-		t.Fatalf("CaptureFacts() error = %v", err)
+		t.Fatalf("appendCollectedHistory() error = %v", err)
 	}
 
-	snapshots, err := repo.ListHealthSnapshots("2026-07-10T00:00:00Z", "2026-07-11T00:00:00Z", "capture-facts")
+	snapshots, err := repo.History("2026-07-10T00:00:00Z", "2026-07-11T00:00:00Z", "capture-facts")
 	if err != nil {
-		t.Fatalf("ListHealthSnapshots() error = %v", err)
+		t.Fatalf("History() error = %v", err)
 	}
 	if len(snapshots) != 1 {
 		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
@@ -225,7 +260,7 @@ func TestHealthSnapshotCaptureFactsWritesNormalizedObservation(t *testing.T) {
 	}
 }
 
-func TestServerFactsSaveKeepsCurrentFactsWhenCaptureFails(t *testing.T) {
+func TestHostHealthObservationRejectsLatestFactsWhenHistoryCaptureFails(t *testing.T) {
 	db, repo := openServerFactsTestRepository(t, "capture-failure.db")
 	if _, err := db.Exec(`CREATE TRIGGER reject_health_snapshot
 		BEFORE INSERT ON server_health_snapshots
@@ -233,20 +268,20 @@ func TestServerFactsSaveKeepsCurrentFactsWhenCaptureFails(t *testing.T) {
 		t.Fatalf("create rejection trigger: %v", err)
 	}
 
-	err := repo.Save(ServerFactsRecord{ServerName: "srv-capture-failure", CollectedAt: "2026-07-10T12:00:00Z"})
+	err := repo.AcceptCollectedFacts(CollectedFacts{ServerName: "srv-capture-failure", CollectedAt: "2026-07-10T12:00:00Z"})
 	if err == nil || !strings.Contains(err.Error(), "capture rejected") {
 		t.Fatalf("Save() error = %v, want capture failure", err)
 	}
-	loaded, err := repo.LoadAll()
+	loaded, err := repo.Latest()
 	if err != nil {
-		t.Fatalf("LoadAll() error = %v", err)
+		t.Fatalf("Latest() error = %v", err)
 	}
-	if got := loaded["srv-capture-failure"].CollectedAt; got != "2026-07-10T12:00:00Z" {
-		t.Fatalf("saved current facts collected_at = %q, want retained facts", got)
+	if _, ok := loaded["srv-capture-failure"]; ok {
+		t.Fatal("latest observation was retained after history capture failed")
 	}
 }
 
-func openServerFactsTestRepository(t *testing.T, name string) (*sql.DB, SQLiteServerFactsRepository) {
+func openServerFactsTestRepository(t *testing.T, name string) (*sql.DB, SQLiteObservation) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
 	if err != nil {
@@ -256,5 +291,5 @@ func openServerFactsTestRepository(t *testing.T, name string) (*sql.DB, SQLiteSe
 	if err := EnsureServerFactsSchema(db); err != nil {
 		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
 	}
-	return db, SQLiteServerFactsRepository{DB: func() *sql.DB { return db }}
+	return db, SQLiteObservation{DB: func() *sql.DB { return db }}
 }

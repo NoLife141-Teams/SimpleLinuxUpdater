@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	healthpkg "debian-updater/internal/health"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
@@ -48,6 +49,13 @@ func newServerInventoryServiceWithStateAndDB(state *serverpkg.State, dbProvider 
 }
 
 func newServerInventoryServiceWithStateDBPath(state *serverpkg.State, dbProvider func() *sql.DB, dbPathProvider func() string) *ServerInventoryService {
+	if dbProvider == nil {
+		dbProvider = getDB
+	}
+	return newServerInventoryServiceWithHealthObservation(state, dbProvider, dbPathProvider, healthpkg.SQLiteObservation{DB: dbProvider})
+}
+
+func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbProvider func() *sql.DB, dbPathProvider func() string, observation healthpkg.Observation) *ServerInventoryService {
 	if state == nil {
 		state = newServerState()
 	}
@@ -68,8 +76,8 @@ func newServerInventoryServiceWithStateDBPath(state *serverpkg.State, dbProvider
 		PrunePolicyOverridesForServers: pruneUpdatePolicyOverridesForServersTx,
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,
 		RenamePolicyTargetServers:      renameUpdatePolicyTargetServersTx,
-		RenameServerFacts:              renameServerFactsTx,
-		DeleteServerFacts:              defaultServerFactsRepository().DeleteServerTx,
+		RenameServerFacts:              observation.RenameServerTx,
+		DeleteServerFacts:              observation.DeleteServerTx,
 	})
 	service.SetLegacyImport(func() bool {
 		return loadLegacyServersIntoService(service, state)

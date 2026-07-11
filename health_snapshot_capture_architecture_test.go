@@ -6,18 +6,18 @@ import (
 	"testing"
 
 	auditpkg "debian-updater/internal/audit"
-	updatespkg "debian-updater/internal/updates"
+	healthpkg "debian-updater/internal/health"
 )
 
 func TestMaintenanceCompletionFromAuditEventTranslatesSupportedServerActions(t *testing.T) {
 	tests := []struct {
 		action string
-		kind   updatespkg.MaintenanceKind
+		kind   healthpkg.MaintenanceKind
 		ok     bool
 	}{
-		{action: updateCompleteAction, kind: updatespkg.MaintenanceKindUpdate, ok: true},
-		{action: "schedule.run.completed", kind: updatespkg.MaintenanceKindScheduledRun, ok: true},
-		{action: "schedule.run.failed", kind: updatespkg.MaintenanceKindScheduledRun, ok: true},
+		{action: updateCompleteAction, kind: healthpkg.MaintenanceKindUpdate, ok: true},
+		{action: "schedule.run.completed", kind: healthpkg.MaintenanceKindScheduledRun, ok: true},
+		{action: "schedule.run.failed", kind: healthpkg.MaintenanceKindScheduledRun, ok: true},
 		{action: "update.started", ok: false},
 	}
 	for _, test := range tests {
@@ -53,6 +53,15 @@ func TestHealthSnapshotCaptureArchitectureBoundary(t *testing.T) {
 	for _, forbidden := range []string{"CaptureFacts(", "CaptureCompletion(", "SaveHealthSnapshot("} {
 		if strings.Contains(string(dashboardSource), forbidden) {
 			t.Errorf("Dashboard Projection restores health-history write %q", forbidden)
+		}
+	}
+	updatesSource, err := os.ReadFile("internal/updates/types.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"SQLiteObservation", "server_health_snapshots", "HealthSnapshotCapture interface"} {
+		if strings.Contains(string(updatesSource), forbidden) {
+			t.Errorf("updates restores Host Health Observation implementation %q", forbidden)
 		}
 	}
 }

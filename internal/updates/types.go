@@ -4,6 +4,7 @@ import (
 	"io"
 	"time"
 
+	"debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
@@ -50,13 +51,7 @@ type PostUpdateCheckConfig struct {
 	CustomCommand         string
 }
 
-type PrecheckResult struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Details string `json:"details"`
-	Output  string `json:"output,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
+type PrecheckResult = health.CheckResult
 
 type PrecheckSummary struct {
 	AllPassed   bool             `json:"all_passed"`
@@ -103,54 +98,17 @@ type SSHConnection interface {
 	Close() error
 }
 
-type ServerFactsRecord struct {
-	ServerName     string `json:"server_name"`
-	CollectedAt    string `json:"collected_at"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	DiskStatus     string `json:"disk_status"`
-	DiskFreeKB     int64  `json:"disk_free_kb"`
-	DiskTotalKB    int64  `json:"disk_total_kb"`
-	DiskDetails    string `json:"disk_details"`
-	AptStatus      string `json:"apt_status"`
-	AptDetails     string `json:"apt_details"`
-	RebootRequired *bool  `json:"reboot_required"`
-	RawJSON        string `json:"raw_json,omitempty"`
-}
-
-type HealthSnapshotRecord struct {
-	ID               int64  `json:"id,omitempty"`
-	ServerName       string `json:"server_name"`
-	CapturedAt       string `json:"captured_at"`
-	Source           string `json:"source"`
-	PackageCount     int    `json:"package_count"`
-	SecurityCount    int    `json:"security_count"`
-	LastScanStatus   string `json:"last_scan_status"`
-	LastUpdateStatus string `json:"last_update_status"`
-	DiskStatus       string `json:"disk_status"`
-	DiskFreeKB       int64  `json:"disk_free_kb"`
-	DiskTotalKB      int64  `json:"disk_total_kb"`
-	AptStatus        string `json:"apt_status"`
-	RebootRequired   *bool  `json:"reboot_required"`
-	OSPrettyName     string `json:"os_pretty_name"`
-	RawJSON          string `json:"raw_json,omitempty"`
-}
-
-type MaintenanceKind string
+type ServerFactsRecord = health.CollectedFacts
+type HealthSnapshotRecord = health.Snapshot
+type MaintenanceKind = health.MaintenanceKind
 
 const (
-	MaintenanceKindUpdate       MaintenanceKind = "update"
-	MaintenanceKindScheduledRun MaintenanceKind = "scheduled_run"
+	MaintenanceKindUpdate       = health.MaintenanceKindUpdate
+	MaintenanceKindScheduledRun = health.MaintenanceKindScheduledRun
 )
 
 // MaintenanceCompletion contains transport-neutral facts from completed maintenance.
-type MaintenanceCompletion struct {
-	ServerName  string
-	CompletedAt string
-	Kind        MaintenanceKind
-	Status      string
-	RawJSON     string
-}
+type MaintenanceCompletion = health.MaintenanceOutcome
 
 type ScheduledJobBehavior struct {
 	ApprovalTimeout  time.Duration

@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
 	observabilitypkg "debian-updater/internal/observability"
 	serverpkg "debian-updater/internal/servers"
 
@@ -55,8 +56,8 @@ func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) Observa
 	if deps.ServerSnapshot == nil {
 		deps.ServerSnapshot = observabilityServerSnapshot
 	}
-	if deps.LoadServerFacts == nil {
-		deps.LoadServerFacts = loadServerFacts
+	if deps.HostHealthObservation == nil {
+		deps.HostHealthObservation = healthpkg.SQLiteObservation{DB: getDB}
 	}
 	if deps.ProjectPolicySchedule == nil {
 		deps.ProjectPolicySchedule = defaultPolicyService().ProjectSchedule

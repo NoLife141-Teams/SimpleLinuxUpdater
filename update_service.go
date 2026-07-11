@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
@@ -40,10 +41,6 @@ func NewUpdateService(deps UpdateServiceDeps) *UpdateService {
 
 func defaultUpdateService() *UpdateService {
 	return NewUpdateService(UpdateServiceDeps{})
-}
-
-func defaultServerFactsRepository() updatespkg.SQLiteServerFactsRepository {
-	return updatespkg.SQLiteServerFactsRepository{DB: getDB}
 }
 
 func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
@@ -92,7 +89,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.LoadScheduledJobBehavior = loadScheduledJobBehavior
 	}
 	if d.SaveServerFacts == nil {
-		d.SaveServerFacts = saveServerFacts
+		d.SaveServerFacts = (healthpkg.SQLiteObservation{DB: getDB}).AcceptCollectedFacts
 	}
 	if d.UpdateScheduledDiscoveryMeta == nil {
 		d.UpdateScheduledDiscoveryMeta = updateScheduledJobDiscoveryMeta

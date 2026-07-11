@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
@@ -52,6 +53,16 @@ func newTestDB(t *testing.T, name string) (*sql.DB, string) {
 		t.Fatalf("create jobs schema: %v", err)
 	}
 	return db, path
+}
+
+func testHealthReader(latest func() (map[string]health.CollectedFacts, error)) health.Reader {
+	return health.ReaderFuncs{
+		LatestFunc: latest,
+		HistoryFunc: func(string, string, string) ([]health.Snapshot, error) {
+			return []health.Snapshot{}, nil
+		},
+		RetentionDaysFunc: func() (int, error) { return health.DefaultRetentionDays, nil },
+	}
 }
 
 func insertAudit(t *testing.T, db *sql.DB, createdAt, action, status, targetType, targetName, message string, meta map[string]any) {
@@ -186,8 +197,8 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 				"srv-a": {Name: "srv-a", Status: "pending_approval", PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}}}},
 			}
 		},
-		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
-			return map[string]updates.ServerFactsRecord{
+		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+			return map[string]health.CollectedFacts{
 				"srv-a": {
 					ServerName:     "srv-a",
 					CollectedAt:    now.Add(-2 * time.Hour).Format(time.RFC3339),
@@ -197,7 +208,7 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 					RebootRequired: &rebootRequired,
 				},
 			}, nil
-		},
+		}),
 		ParseAppTimestamp: func(raw string) (time.Time, error) {
 			return time.Parse(time.RFC3339, raw)
 		},
@@ -272,9 +283,9 @@ func TestServiceBuildDashboardSummaryUsesPolicyScheduleProjection(t *testing.T) 
 				"srv-a": {Name: "srv-a", Status: "online"},
 			}
 		},
-		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
-			return map[string]updates.ServerFactsRecord{}, nil
-		},
+		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+			return map[string]health.CollectedFacts{}, nil
+		}),
 		ProjectPolicySchedule: func(req policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error) {
 			if req.RunLimit != 500 || len(req.Servers) != 1 || req.Servers[0].Name != "srv-a" {
 				t.Fatalf("schedule projection request = %+v, want dashboard server and run limit", req)
@@ -353,8 +364,8 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 				"srv-sudoers":               {Name: "srv-sudoers", Status: "sudoers"},
 			}
 		},
-		LoadServerFacts: func() (map[string]updates.ServerFactsRecord, error) {
-			return map[string]updates.ServerFactsRecord{
+		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+			return map[string]health.CollectedFacts{
 				"srv-active":                {ServerName: "srv-active", CollectedAt: now.Add(-49 * time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-done":                  {ServerName: "srv-done", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-failed":                {ServerName: "srv-failed", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
@@ -362,7 +373,7 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 				"srv-stale-terminal-active": {ServerName: "srv-stale-terminal-active", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 				"srv-sudoers":               {ServerName: "srv-sudoers", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
 			}, nil
-		},
+		}),
 		ParseAppTimestamp: func(raw string) (time.Time, error) {
 			return time.Parse(time.RFC3339, raw)
 		},
@@ -411,7 +422,7 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 
 func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 	db, path := newTestDB(t, "health-trends.db")
-	if err := updates.EnsureServerFactsSchema(db); err != nil {
+	if err := health.EnsureServerFactsSchema(db); err != nil {
 		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
 	}
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -468,7 +479,7 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 		PackageCount: 99,
 	})
 
-	repo := updates.SQLiteServerFactsRepository{DB: func() *sql.DB { return db }}
+	repo := health.SQLiteObservation{DB: func() *sql.DB { return db }}
 	service := NewService(ServiceDeps{
 		DB:     func() *sql.DB { return db },
 		DBPath: func() string { return path },
@@ -481,15 +492,14 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
 			return []servers.Server{{Name: "srv-a"}, {Name: "srv-b"}}, nil
 		},
-		ListHealthSnapshots:         repo.ListHealthSnapshots,
-		HealthSnapshotRetentionDays: repo.HealthSnapshotRetentionDays,
+		HostHealthObservation: repo,
 	})
 
 	trends, err := service.BuildHealthTrends("7d", "", now)
 	if err != nil {
 		t.Fatalf("BuildHealthTrends() error = %v", err)
 	}
-	if trends.RetentionDays != updates.DefaultHealthSnapshotRetentionDays || !strings.HasPrefix(trends.FromDisplay, "display:") {
+	if trends.RetentionDays != health.DefaultRetentionDays || !strings.HasPrefix(trends.FromDisplay, "display:") {
 		t.Fatalf("retention/display = %d/%q, want default retention and display", trends.RetentionDays, trends.FromDisplay)
 	}
 	if len(trends.Servers) != 2 {

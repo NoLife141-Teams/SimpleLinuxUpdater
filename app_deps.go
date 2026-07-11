@@ -7,6 +7,7 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	"debian-updater/internal/events"
+	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
@@ -33,6 +34,7 @@ type AppDeps struct {
 	GlobalSSHCredential    *serverpkg.GlobalSSHCredential
 	MaintenanceCoordinator *maintenancepkg.Coordinator
 	ApplicationTime        *apptimepkg.Module
+	HostHealthObservation  healthpkg.Observation
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager

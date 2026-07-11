@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	runtimepkg "debian-updater/internal/runtime"
@@ -58,19 +59,17 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			return []servers.Server{}, map[string]*servers.ServerStatus{}
 		}
 	}
-	if d.LoadServerFacts == nil {
-		d.LoadServerFacts = func() (map[string]updates.ServerFactsRecord, error) {
-			return map[string]updates.ServerFactsRecord{}, nil
-		}
-	}
-	if d.ListHealthSnapshots == nil {
-		d.ListHealthSnapshots = func(string, string, string) ([]updates.HealthSnapshotRecord, error) {
-			return []updates.HealthSnapshotRecord{}, nil
-		}
-	}
-	if d.HealthSnapshotRetentionDays == nil {
-		d.HealthSnapshotRetentionDays = func() (int, error) {
-			return updates.DefaultHealthSnapshotRetentionDays, nil
+	if d.HostHealthObservation == nil {
+		d.HostHealthObservation = healthpkg.ReaderFuncs{
+			LatestFunc: func() (map[string]healthpkg.CollectedFacts, error) {
+				return map[string]healthpkg.CollectedFacts{}, nil
+			},
+			HistoryFunc: func(string, string, string) ([]healthpkg.Snapshot, error) {
+				return []healthpkg.Snapshot{}, nil
+			},
+			RetentionDaysFunc: func() (int, error) {
+				return healthpkg.DefaultRetentionDays, nil
+			},
 		}
 	}
 	defaultPolicy := policies.NewService(policies.ServiceDeps{})
@@ -409,12 +408,12 @@ func UpdateHealthFromResults(health *DashboardHealthInfo, results []updates.Prec
 	if !HealthUpdateIsNewer(health.CollectedAt, collectedAt, deps.ParseAppTimestamp) {
 		return
 	}
-	observation := updates.HealthObservation{
+	observation := healthpkg.HealthObservation{
 		DiskStatus: health.DiskStatus, DiskFreeKB: health.DiskFreeKB, DiskTotalKB: health.DiskTotalKB,
 		DiskDetails: health.DiskDetails, AptStatus: health.AptStatus, AptDetails: health.AptDetails,
 		RebootRequired: health.RebootRequired,
 	}
-	applied := updates.ApplyHealthResults(&observation, results, updates.HealthResultInterpreter{
+	applied := healthpkg.ApplyHealthResults(&observation, results, healthpkg.HealthResultInterpreter{
 		Status: deps.HealthStatusFromResult, DiskFree: deps.DiskFreeKBFromOutput,
 		DiskFreeTotal: deps.DiskFreeTotalKBFromOutput, RebootRequired: deps.RebootResultRequiresRestart,
 	})
@@ -1065,7 +1064,7 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	toFormatted := to.Format(time.RFC3339)
 
 	serversSnapshot, statusByName := deps.ServerSnapshot()
-	facts, err := deps.LoadServerFacts()
+	facts, err := deps.HostHealthObservation.Latest()
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
@@ -1276,7 +1275,7 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 	loc, timezoneName := deps.CurrentTimezone()
 	fromRaw := from.Format(time.RFC3339)
 	toRaw := to.Format(time.RFC3339)
-	retentionDays, err := deps.HealthSnapshotRetentionDays()
+	retentionDays, err := deps.HostHealthObservation.RetentionDays()
 	if err != nil {
 		return HealthTrendResponse{}, err
 	}
@@ -1312,7 +1311,7 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 		}
 	}
 
-	snapshots, err := deps.ListHealthSnapshots(fromRaw, toRaw, filter)
+	snapshots, err := deps.HostHealthObservation.History(fromRaw, toRaw, filter)
 	if err != nil {
 		return HealthTrendResponse{}, err
 	}

@@ -16,8 +16,8 @@ import (
 	"time"
 
 	maintenancepkg "debian-updater/internal/maintenance"
+	observabilitypkg "debian-updater/internal/observability"
 
-	"github.com/alexedwards/argon2id"
 	"github.com/gin-gonic/gin"
 )
 
@@ -59,25 +59,6 @@ func preserveRateLimiterState(t *testing.T) {
 		passwordChangeRateLimiter = origPasswordChange
 		setupRateLimiter = origSetup
 		metricsRateLimiter = origMetrics
-	})
-}
-
-func preserveMetricsTokenState(t *testing.T) {
-	t.Helper()
-	metricsBearerTokenHashMu.RLock()
-	origHash := metricsBearerTokenHash
-	origLoaded := metricsBearerTokenHashLoaded
-	origDBPath := metricsBearerTokenHashDBPath
-	metricsBearerTokenHashMu.RUnlock()
-	serviceHash, serviceLoaded, serviceDBPath := metricsTokenService.SnapshotCache()
-
-	t.Cleanup(func() {
-		metricsBearerTokenHashMu.Lock()
-		metricsBearerTokenHash = origHash
-		metricsBearerTokenHashLoaded = origLoaded
-		metricsBearerTokenHashDBPath = origDBPath
-		metricsBearerTokenHashMu.Unlock()
-		metricsTokenService.RestoreCache(serviceHash, serviceLoaded, serviceDBPath)
 	})
 }
 
@@ -291,7 +272,6 @@ func TestMaintenanceModeBlocksRoutesAndAllowsStatusEndpoint(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "maintenance-mode.db"))
 
 	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
@@ -358,7 +338,6 @@ func TestAuthSetupAndLoginRejectOversizedBodies(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-body-cap.db"))
 
 	r, err := setupRouter()
@@ -400,7 +379,6 @@ func TestNativeAuthFormPostsRedirectOnSuccess(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-native-form.db"))
 
 	r, err := setupRouter()
@@ -583,17 +561,17 @@ func TestSetupRequiredAndSingleUserLifecycle(t *testing.T) {
 func TestMetricsBearerMiddleware(t *testing.T) {
 	preserveDBState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "metrics-middleware.db"))
 	_ = getDB()
+	credential := NewMetricsAccessCredential(MetricsAccessCredentialDeps{})
 
-	if err := clearMetricsBearerTokenHash(); err != nil {
-		t.Fatalf("clearMetricsBearerTokenHash() unexpected error: %v", err)
+	if err := credential.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable() unexpected error: %v", err)
 	}
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(metricsBearerMiddleware())
+	r.Use(metricsBearerMiddlewareWithService(credential))
 	r.GET("/metrics", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
@@ -605,9 +583,9 @@ func TestMetricsBearerMiddleware(t *testing.T) {
 		t.Fatalf("disabled metrics status = %d, want %d", disabledRec.Code, http.StatusNotFound)
 	}
 
-	token, err := issueMetricsBearerToken()
+	token, err := credential.Rotate(context.Background())
 	if err != nil {
-		t.Fatalf("issueMetricsBearerToken() unexpected error: %v", err)
+		t.Fatalf("Rotate() unexpected error: %v", err)
 	}
 
 	cases := []struct {
@@ -664,45 +642,38 @@ func TestMetricsBearerMiddleware(t *testing.T) {
 
 func TestMetricsBearerTokenLifecycle(t *testing.T) {
 	preserveDBState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "metrics-token-lifecycle.db"))
 	_ = getDB()
+	credential := NewMetricsAccessCredential(MetricsAccessCredentialDeps{})
 
-	if err := clearMetricsBearerTokenHash(); err != nil {
-		t.Fatalf("clearMetricsBearerTokenHash() unexpected error: %v", err)
+	if err := credential.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable() unexpected error: %v", err)
 	}
-	if got := getMetricsBearerTokenHash(); got != "" {
-		t.Fatalf("getMetricsBearerTokenHash() = %q, want empty", got)
+	if status, err := credential.Status(context.Background()); err != nil || status != observabilitypkg.MetricsAccessDisabled {
+		t.Fatalf("Status() = %q, %v; want disabled", status, err)
 	}
 
-	token, err := issueMetricsBearerToken()
+	token, err := credential.Rotate(context.Background())
 	if err != nil {
-		t.Fatalf("issueMetricsBearerToken() unexpected error: %v", err)
+		t.Fatalf("Rotate() unexpected error: %v", err)
 	}
 	if token == "" {
-		t.Fatalf("issueMetricsBearerToken() token is empty")
+		t.Fatalf("Rotate() token is empty")
 	}
 	if _, err := base64.RawURLEncoding.DecodeString(token); err != nil {
-		t.Fatalf("issueMetricsBearerToken() token is not valid base64url: %v", err)
+		t.Fatalf("Rotate() token is not valid base64url: %v", err)
 	}
 
-	tokenHash := getMetricsBearerTokenHash()
-	if tokenHash == "" {
-		t.Fatalf("getMetricsBearerTokenHash() empty after issue")
-	}
-	match, err := argon2id.ComparePasswordAndHash(token, tokenHash)
-	if err != nil {
-		t.Fatalf("ComparePasswordAndHash() unexpected error: %v", err)
-	}
-	if !match {
-		t.Fatalf("ComparePasswordAndHash() = false, want true")
+	result, err := credential.Verify(context.Background(), token)
+	if err != nil || result != observabilitypkg.MetricsAccessAccepted {
+		t.Fatalf("Verify() = %q, %v; want accepted", result, err)
 	}
 
-	if err := clearMetricsBearerTokenHash(); err != nil {
-		t.Fatalf("clearMetricsBearerTokenHash() unexpected error: %v", err)
+	if err := credential.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable() unexpected error: %v", err)
 	}
-	if got := getMetricsBearerTokenHash(); got != "" {
-		t.Fatalf("getMetricsBearerTokenHash() = %q after clear, want empty", got)
+	if status, err := credential.Status(context.Background()); err != nil || status != observabilitypkg.MetricsAccessDisabled {
+		t.Fatalf("Status() = %q, %v after disable; want disabled", status, err)
 	}
 }
 
@@ -710,7 +681,6 @@ func TestAuthSetupLoginLogoutAndGate(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-flow.db"))
 
 	sm, err := newSessionManager(getDB())
@@ -895,7 +865,6 @@ func TestAuthenticatedHTMLRoutesSetNoStoreHeaders(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-html-cache.db"))
 
 	r, err := setupRouter()
@@ -941,7 +910,6 @@ func TestAuthEndpointsAllowMissingSecFetchSite(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-missing-sec-fetch.db"))
 
 	r, err := setupRouter()
@@ -986,7 +954,6 @@ func TestAuthSetupRejectsMismatchedOriginAndInvalidSecFetchSite(t *testing.T) {
 		preserveDBState(t)
 		preserveSessionState(t)
 		preserveRateLimiterState(t)
-		preserveMetricsTokenState(t)
 		t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-origin-mismatch.db"))
 
 		r, err := setupRouter()
@@ -1013,7 +980,6 @@ func TestAuthSetupRejectsMismatchedOriginAndInvalidSecFetchSite(t *testing.T) {
 		preserveDBState(t)
 		preserveSessionState(t)
 		preserveRateLimiterState(t)
-		preserveMetricsTokenState(t)
 		t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-sec-fetch-invalid.db"))
 
 		r, err := setupRouter()
@@ -1042,7 +1008,6 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "metrics-router-lifecycle.db"))
 
 	r, err := setupRouter()
@@ -1178,7 +1143,6 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "security-headers.db"))
 
 	r, err := setupRouter()
@@ -1227,7 +1191,6 @@ func TestAuthGateAllowsStaticAssetsUnauthenticated(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "auth-gate-static.db"))
 
 	r, err := setupRouter()

@@ -59,7 +59,6 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 	preserveEncryptionState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	resetMissedUpdatePolicyTicksForTest()
 	t.Cleanup(resetMissedUpdatePolicyTicksForTest)
 

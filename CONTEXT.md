@@ -72,6 +72,10 @@ _Avoid_: Server facts repository, health tables, observability health query
 The lifecycle of an accepted outbound notification from event eligibility and admission through payload redaction, delivery attempts, retry, recorded outcome, and graceful shutdown; operator test delivery follows the same lifecycle synchronously.
 _Avoid_: Notification goroutine, webhook helper, audit notification callback
 
+**Metrics Access Credential**:
+The optional app-wide credential that grants bearer access to operational metrics, including its enabled state, rotation, disablement, verification, and continuity across restored persistence.
+_Avoid_: Metrics token cache, metrics bearer hash, metrics API token helper
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

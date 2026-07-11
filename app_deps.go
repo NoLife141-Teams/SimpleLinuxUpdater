@@ -19,22 +19,22 @@ type AppDeps struct {
 	DB     func() *sql.DB
 	DBPath func() string
 
-	AuditService           *AuditService
-	AuthService            *AuthService
-	AuthSessionCommands    *authSessionCommands
-	BackupService          *BackupService
-	NotificationService    NotificationDeliveryLifecycle
-	ServerState            *serverpkg.State
-	ServerInventoryService *ServerInventoryService
-	PolicyService          *PolicyService
-	PolicyRepository       policypkg.Repository
-	UpdateService          *UpdateService
-	ObservabilityService   *ObservabilityService
-	MetricsTokenService    *MetricsTokenService
-	GlobalSSHCredential    *serverpkg.GlobalSSHCredential
-	MaintenanceCoordinator *maintenancepkg.Coordinator
-	ApplicationTime        *apptimepkg.Module
-	HostHealthObservation  healthpkg.Observation
+	AuditService            *AuditService
+	AuthService             *AuthService
+	AuthSessionCommands     *authSessionCommands
+	BackupService           *BackupService
+	NotificationService     NotificationDeliveryLifecycle
+	ServerState             *serverpkg.State
+	ServerInventoryService  *ServerInventoryService
+	PolicyService           *PolicyService
+	PolicyRepository        policypkg.Repository
+	UpdateService           *UpdateService
+	ObservabilityService    *ObservabilityService
+	MetricsAccessCredential MetricsAccessCredential
+	GlobalSSHCredential     *serverpkg.GlobalSSHCredential
+	MaintenanceCoordinator  *maintenancepkg.Coordinator
+	ApplicationTime         *apptimepkg.Module
+	HostHealthObservation   healthpkg.Observation
 
 	JobManager           *JobManager
 	CurrentJobManager    func() *JobManager

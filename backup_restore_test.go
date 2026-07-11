@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	internalbackup "debian-updater/internal/backup"
+	observabilitypkg "debian-updater/internal/observability"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,7 +31,6 @@ func TestBackupRestoreRollbackUsesSameRestoredRuntimeInterface(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
 	preserveSessionState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "rollback-runtime.db"))
 
@@ -417,7 +417,6 @@ func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
 	preserveSessionState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "restore-sidecars.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
@@ -462,11 +461,10 @@ func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
 	}
 }
 
-func TestAppScopedBackupRestoreClearsMetricsTokenCache(t *testing.T) {
+func TestAppScopedBackupRestoreInvalidatesMetricsAccessCredential(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
 	preserveSessionState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "restore-metrics-cache.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
@@ -474,6 +472,11 @@ func TestAppScopedBackupRestoreClearsMetricsTokenCache(t *testing.T) {
 	servers = []Server{{Name: "srv-cache", Host: "example.org", Port: 22, User: "root", Pass: "pw"}}
 	if err := saveServers(); err != nil {
 		t.Fatalf("saveServers() unexpected error: %v", err)
+	}
+	deps := AppDeps{}.withDefaults()
+	restoredToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
+	if err != nil {
+		t.Fatalf("rotate restored Metrics Access Credential: %v", err)
 	}
 	dbSnapshot, err := createDBBackupSnapshot()
 	if err != nil {
@@ -484,10 +487,12 @@ func TestAppScopedBackupRestoreClearsMetricsTokenCache(t *testing.T) {
 		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
 	}
 
-	deps := AppDeps{}.withDefaults()
-	deps.MetricsTokenService.RestoreCache("stale-token-hash", true, dbPath())
-	if hash, loaded, _ := deps.MetricsTokenService.SnapshotCache(); hash != "stale-token-hash" || !loaded {
-		t.Fatalf("metrics token cache was not primed: hash=%q loaded=%t", hash, loaded)
+	staleToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
+	if err != nil {
+		t.Fatalf("rotate stale Metrics Access Credential: %v", err)
+	}
+	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); verifyErr != nil || result != observabilitypkg.MetricsAccessAccepted {
+		t.Fatalf("stale credential before restore = %q, %v; want accepted", result, verifyErr)
 	}
 
 	if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{
@@ -496,8 +501,14 @@ func TestAppScopedBackupRestoreClearsMetricsTokenCache(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ApplyFiles() unexpected error: %v", err)
 	}
-	if hash, loaded, cachePath := deps.MetricsTokenService.SnapshotCache(); hash != "" || loaded || cachePath != "" {
-		t.Fatalf("metrics token cache after restore = hash %q loaded %t path %q, want cleared", hash, loaded, cachePath)
+	if status, statusErr := deps.MetricsAccessCredential.Status(context.Background()); statusErr != nil || status != observabilitypkg.MetricsAccessEnabled {
+		t.Fatalf("credential status after restore = %q, %v; want restored enabled state", status, statusErr)
+	}
+	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); verifyErr != nil || result != observabilitypkg.MetricsAccessRejected {
+		t.Fatalf("stale credential after restore = %q, %v; want rejected", result, verifyErr)
+	}
+	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), restoredToken); verifyErr != nil || result != observabilitypkg.MetricsAccessAccepted {
+		t.Fatalf("restored credential after restore = %q, %v; want accepted", result, verifyErr)
 	}
 }
 
@@ -505,7 +516,6 @@ func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T)
 	preserveServerState(t)
 	preserveDBState(t)
 	preserveSessionState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "restore-app-runtime.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
@@ -561,7 +571,6 @@ func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 	preserveServerState(t)
 	preserveDBState(t)
 	preserveSessionState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	dbFile := filepath.Join(t.TempDir(), "restore-rewrap.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
@@ -633,7 +642,6 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-lifecycle.db"))
 
@@ -843,7 +851,6 @@ func TestBackupRoutesRequireAuthentication(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-auth-gate.db"))
 
@@ -887,7 +894,6 @@ func TestBackupWriteRoutesRequireSameOrigin(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-same-origin.db"))
 
@@ -922,7 +928,6 @@ func TestBackupExportRejectsOversizedJSONBody(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-export-body-cap.db"))
 
@@ -960,7 +965,6 @@ func TestBackupRoutesRejectWhileServerActionsAreActive(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "backup-busy-actions.db"))
 

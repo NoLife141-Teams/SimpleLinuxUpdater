@@ -49,10 +49,6 @@ var dbOnce sync.Once
 var keyOnce sync.Once
 var encryptionKey []byte
 var runtimeStateMu sync.RWMutex
-var metricsBearerTokenHashMu sync.RWMutex
-var metricsBearerTokenHash string
-var metricsBearerTokenHashLoaded bool
-var metricsBearerTokenHashDBPath string
 var saveServersFunc = saveServers
 var auditPruneTickerOnce sync.Once
 var rebootCheckErrorRe = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
@@ -1466,45 +1462,43 @@ func handleMetricsWithService(c *gin.Context, service *ObservabilityService) {
 	c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(body))
 }
 
-func handleMetricsTokenStatusWithService(c *gin.Context, service *MetricsTokenService) {
-	if service == nil {
-		service = metricsTokenService
+func handleMetricsTokenStatusWithService(c *gin.Context, credential MetricsAccessCredential) {
+	if credential == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "metrics credential unavailable"})
+		return
 	}
-	enabled := service.Status()
-	if service == metricsTokenService {
-		syncMetricsTokenGlobals(service)
+	status, err := credential.Status(c.Request.Context())
+	if err != nil || status == observabilitypkg.MetricsAccessUnavailable {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "metrics credential unavailable"})
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
+	c.JSON(http.StatusOK, gin.H{"enabled": status == observabilitypkg.MetricsAccessEnabled})
 }
 
-func handleMetricsTokenRotateWithService(c *gin.Context, service *MetricsTokenService) {
-	if service == nil {
-		service = metricsTokenService
+func handleMetricsTokenRotateWithService(c *gin.Context, credential MetricsAccessCredential) {
+	if credential == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rotate metrics token"})
+		return
 	}
-	token, err := service.Rotate()
+	token, err := credential.Rotate(c.Request.Context())
 	if err != nil {
 		audit(c, "metrics.token.rotate", "metrics_token", "metrics", "failure", "Failed to rotate metrics API token", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rotate metrics token"})
 		return
 	}
-	if service == metricsTokenService {
-		syncMetricsTokenGlobals(service)
-	}
 	audit(c, "metrics.token.rotate", "metrics_token", "metrics", "success", "Metrics API token rotated", nil)
 	c.JSON(http.StatusOK, gin.H{"enabled": true, "token": token})
 }
 
-func handleMetricsTokenClearWithService(c *gin.Context, service *MetricsTokenService) {
-	if service == nil {
-		service = metricsTokenService
-	}
-	if err := service.Clear(); err != nil {
-		audit(c, "metrics.token.clear", "metrics_token", "metrics", "failure", "Failed to disable metrics API token", map[string]any{"error": err.Error()})
+func handleMetricsTokenClearWithService(c *gin.Context, credential MetricsAccessCredential) {
+	if credential == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable metrics token"})
 		return
 	}
-	if service == metricsTokenService {
-		syncMetricsTokenGlobals(service)
+	if err := credential.Disable(c.Request.Context()); err != nil {
+		audit(c, "metrics.token.clear", "metrics_token", "metrics", "failure", "Failed to disable metrics API token", map[string]any{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to disable metrics token"})
+		return
 	}
 	audit(c, "metrics.token.clear", "metrics_token", "metrics", "success", "Metrics API token disabled", nil)
 	c.JSON(http.StatusOK, gin.H{"enabled": false, "message": "Metrics token disabled"})
@@ -2083,7 +2077,7 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/maintenance", func(c *gin.Context) {
 		c.JSON(http.StatusOK, publicMaintenanceSnapshotPayload(deps.MaintenanceCoordinator.Snapshot()))
 	})
-	r.GET("/metrics", metricsBearerMiddlewareWithServiceAndLimiter(deps.MetricsTokenService, deps.MetricsRateLimiter), func(c *gin.Context) {
+	r.GET("/metrics", metricsBearerMiddlewareWithServiceAndLimiter(deps.MetricsAccessCredential, deps.MetricsRateLimiter), func(c *gin.Context) {
 		handleMetricsWithService(c, deps.ObservabilityService)
 	})
 
@@ -2119,13 +2113,13 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.PUT("/api/auth/password", handleAuthPasswordChange)
 	r.DELETE("/api/auth/sessions", handleAuthSessionsClear)
 	r.GET("/api/metrics/token", func(c *gin.Context) {
-		handleMetricsTokenStatusWithService(c, deps.MetricsTokenService)
+		handleMetricsTokenStatusWithService(c, deps.MetricsAccessCredential)
 	})
 	r.POST("/api/metrics/token", func(c *gin.Context) {
-		handleMetricsTokenRotateWithService(c, deps.MetricsTokenService)
+		handleMetricsTokenRotateWithService(c, deps.MetricsAccessCredential)
 	})
 	r.DELETE("/api/metrics/token", func(c *gin.Context) {
-		handleMetricsTokenClearWithService(c, deps.MetricsTokenService)
+		handleMetricsTokenClearWithService(c, deps.MetricsAccessCredential)
 	})
 	r.GET("/api/backup/status", func(c *gin.Context) {
 		handleBackupStatusWithService(c, deps.BackupService)

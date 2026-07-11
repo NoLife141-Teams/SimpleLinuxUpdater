@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"time"
@@ -254,17 +255,16 @@ type ServiceDeps struct {
 	Logf                        func(string, ...any)
 }
 
-type MetricsTokenDeps struct {
-	DB                     func() *sql.DB
-	DBPath                 func() string
+type MetricsCredentialStore interface {
+	Load(context.Context) (string, error)
+	Replace(context.Context, string) error
+	Delete(context.Context) error
+}
+
+type MetricsAccessCredentialDeps struct {
+	Store                  MetricsCredentialStore
 	RandomRead             func([]byte) (int, error)
 	HashPassword           func(string) (string, error)
 	ComparePasswordAndHash func(string, string) (bool, error)
-	StateRLock             func()
-	StateRUnlock           func()
-	StateLock              func()
-	StateUnlock            func()
-	SettingKey             string
 	EntropyBytes           int
-	Logf                   func(string, ...any)
 }

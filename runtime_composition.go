@@ -13,6 +13,7 @@ import (
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
+	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
 
@@ -42,8 +43,8 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	if c.deps.GlobalSSHCredential != nil {
 		c.deps.GlobalSSHCredential.ResetCache()
 	}
-	if c.deps.MetricsTokenService != nil {
-		c.deps.MetricsTokenService.RestoreCache("", false, "")
+	if c.deps.MetricsAccessCredential != nil {
+		c.deps.MetricsAccessCredential.Invalidate()
 	}
 	return nil
 }
@@ -94,8 +95,8 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 		deps.GlobalSSHCredential.ResetCache()
 		_, _ = deps.GlobalSSHCredential.Resolve(ctx, "")
 	}
-	if deps.MetricsTokenService != nil {
-		deps.MetricsTokenService.RestoreCache("", false, "")
+	if deps.MetricsAccessCredential != nil {
+		deps.MetricsAccessCredential.Invalidate()
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reload restored runtime: %w", err)
@@ -165,10 +166,12 @@ func (c *runtimeComposition) Compose() AppDeps {
 			return value.Location, value.DisplayName
 		}, deps.NotificationService, deps.Now, deps.HostHealthObservation, deps.MaintenanceCoordinator)
 	}
-	if deps.MetricsTokenService == nil {
-		deps.MetricsTokenService = NewMetricsTokenService(MetricsTokenDeps{
-			DB:     deps.DB,
-			DBPath: deps.DBPath,
+	if deps.MetricsAccessCredential == nil {
+		deps.MetricsAccessCredential = NewMetricsAccessCredential(MetricsAccessCredentialDeps{
+			Store: observabilitypkg.SQLiteMetricsCredentialStore{
+				DB:         deps.DB,
+				SettingKey: metricsBearerTokenHashSetting,
+			},
 		})
 	}
 	if deps.ServerState == nil {

@@ -16,6 +16,25 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type testRestoredRuntime struct {
+	prepare func()
+	reload  func(context.Context) error
+}
+
+func (r testRestoredRuntime) PreparePersistenceReplacement(context.Context) error {
+	if r.prepare != nil {
+		r.prepare()
+	}
+	return nil
+}
+
+func (r testRestoredRuntime) ReloadRestoredState(ctx context.Context) error {
+	if r.reload != nil {
+		return r.reload(ctx)
+	}
+	return nil
+}
+
 const testPassphrase = "very-strong-passphrase"
 
 func TestValidatePassphrase(t *testing.T) {
@@ -234,10 +253,10 @@ func TestVerifyArchiveValidatesWithoutApplying(t *testing.T) {
 			return "", nil
 		},
 		EnsureSchema: func(*sql.DB) error { return nil },
-		ReloadRuntimeState: func() error {
+		RestoredRuntime: testRestoredRuntime{reload: func(context.Context) error {
 			applied = true
 			return nil
-		},
+		}},
 		Logf: func(string, ...any) {},
 	})
 	result, err := service.VerifyArchive(context.Background(), encrypted, testPassphrase)

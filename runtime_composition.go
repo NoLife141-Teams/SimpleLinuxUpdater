@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -20,11 +21,94 @@ import (
 )
 
 type runtimeComposition struct {
-	deps AppDeps
+	deps        AppDeps
+	resetCaches func()
 }
 
 func newRuntimeComposition(overrides AppDeps) *runtimeComposition {
-	return &runtimeComposition{deps: overrides}
+	return &runtimeComposition{deps: overrides, resetCaches: resetRuntimeCaches}
+}
+
+func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("prepare persistence replacement: runtime composition is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("prepare persistence replacement: %w", err)
+	}
+	if c.resetCaches != nil {
+		c.resetCaches()
+	}
+	if c.deps.GlobalSSHCredential != nil {
+		c.deps.GlobalSSHCredential.ResetCache()
+	}
+	if c.deps.MetricsTokenService != nil {
+		c.deps.MetricsTokenService.RestoreCache("", false, "")
+	}
+	return nil
+}
+
+func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("reload restored runtime: runtime composition is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reload restored runtime: %w", err)
+	}
+	if err := c.PreparePersistenceReplacement(ctx); err != nil {
+		return err
+	}
+	deps := c.deps
+	if deps.DB == nil {
+		return fmt.Errorf("reopen restored persistence: database is unavailable")
+	}
+	db := deps.DB()
+	if db == nil {
+		return fmt.Errorf("reopen restored persistence: database is unavailable")
+	}
+	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
+		if err := deps.MaintenanceCoordinator.Initialize(ctx); err != nil {
+			return fmt.Errorf("restore Maintenance Coordination: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reload restored runtime: %w", err)
+	}
+	if deps.NewJobManager == nil || deps.SetCurrentJobManager == nil {
+		return fmt.Errorf("rebuild restored job manager: runtime dependency is unavailable")
+	}
+	jm := deps.NewJobManager(db)
+	if jm == nil {
+		return fmt.Errorf("rebuild restored job manager: job manager unavailable")
+	}
+	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
+		return fmt.Errorf("interrupt unfinished restored jobs: %w", err)
+	}
+	deps.SetCurrentJobManager(jm)
+	if deps.ServerInventoryService == nil || deps.ServerState == nil {
+		return fmt.Errorf("reload restored Server inventory: runtime dependency is unavailable")
+	}
+	deps.ServerInventoryService.Load()
+	initializeServerStateStatuses(deps.ServerState)
+	if deps.GlobalSSHCredential != nil {
+		deps.GlobalSSHCredential.ResetCache()
+		_, _ = deps.GlobalSSHCredential.Resolve(ctx, "")
+	}
+	if deps.MetricsTokenService != nil {
+		deps.MetricsTokenService.RestoreCache("", false, "")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reload restored runtime: %w", err)
+	}
+	if deps.NewSessionManager == nil || deps.SetSessionManager == nil {
+		return fmt.Errorf("rebuild restored auth session manager: runtime dependency is unavailable")
+	}
+	sm, err := deps.NewSessionManager(db)
+	if err != nil {
+		return fmt.Errorf("rebuild restored auth session manager: %w", err)
+	}
+	deps.SetSessionManager(sm)
+	return nil
 }
 
 func (c *runtimeComposition) Compose() AppDeps {
@@ -293,25 +377,14 @@ func (c *runtimeComposition) Compose() AppDeps {
 		deps.TrustedProxies = trustedProxiesFromEnv
 	}
 	if deps.BackupService == nil {
-		runtimeDeps := deps
-		metricsTokenService := deps.MetricsTokenService
+		c.deps = deps
 		deps.BackupService = NewBackupServiceWithDeps(internalbackup.ServiceDeps{
 			DB:                  deps.DB,
 			DBPath:              deps.DBPath,
 			GlobalSSHCredential: deps.GlobalSSHCredential,
-			ResetRuntimeCaches: func() {
-				resetRuntimeCaches()
-				if runtimeDeps.GlobalSSHCredential != nil {
-					runtimeDeps.GlobalSSHCredential.ResetCache()
-				}
-				if metricsTokenService != nil {
-					metricsTokenService.RestoreCache("", false, "")
-				}
-			},
-			ReloadRuntimeState: func() error {
-				return reloadAppRuntimeState(runtimeDeps)
-			},
+			RestoredRuntime:     c,
 		})
 	}
+	c.deps = deps
 	return deps
 }

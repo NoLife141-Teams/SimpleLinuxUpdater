@@ -197,10 +197,25 @@ type ServiceDeps struct {
 	DecryptSecretWithKey    func(string, []byte) (string, error)
 	EncryptSecretWithKey    func(string, []byte) (string, error)
 	GlobalSSHCredential     *serverpkg.GlobalSSHCredential
-	ResetRuntimeCaches      func()
-	ReloadRuntimeState      func() error
+	RestoredRuntime         RestoredRuntime
 	Now                     func() time.Time
 	Logf                    func(string, ...any)
+}
+
+// RestoredRuntime prepares persistence replacement and rehydrates app-scoped state afterward.
+type RestoredRuntime interface {
+	PreparePersistenceReplacement(context.Context) error
+	ReloadRestoredState(context.Context) error
+}
+
+type unavailableRestoredRuntime struct{}
+
+func (unavailableRestoredRuntime) PreparePersistenceReplacement(context.Context) error {
+	return errors.New("runtime composition restored-state rehydration is unavailable")
+}
+
+func (unavailableRestoredRuntime) ReloadRestoredState(context.Context) error {
+	return errors.New("runtime composition restored-state rehydration is unavailable")
 }
 
 type Service struct {
@@ -212,6 +227,9 @@ func NewService(deps ServiceDeps) *Service {
 }
 
 func (deps ServiceDeps) withDefaults() ServiceDeps {
+	if deps.RestoredRuntime == nil {
+		deps.RestoredRuntime = unavailableRestoredRuntime{}
+	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -1018,19 +1036,23 @@ func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, resto
 		return err
 	}
 
-	s.deps.ResetRuntimeCaches()
+	if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); err != nil {
+		return fmt.Errorf("prepare restored persistence replacement: %w", err)
+	}
 	rollback := func(cause error) error {
 		errs := []error{cause}
 		if restoreErr := RestoreSnapshots(snaps, s.deps.EnsurePrivateDirForFile); restoreErr != nil {
 			errs = append(errs, fmt.Errorf("rollback restore snapshots: %w", restoreErr))
 		}
-		s.deps.ResetRuntimeCaches()
+		if prepareErr := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); prepareErr != nil {
+			errs = append(errs, fmt.Errorf("rollback prepare restored persistence replacement: %w", prepareErr))
+		}
 		if restoreHandoff != nil {
 			if handoffErr := restoreHandoff(ctx); handoffErr != nil {
 				errs = append(errs, fmt.Errorf("rollback maintenance handoff: %w", handoffErr))
 			}
 		}
-		if reloadErr := s.deps.ReloadRuntimeState(); reloadErr != nil {
+		if reloadErr := s.deps.RestoredRuntime.ReloadRestoredState(ctx); reloadErr != nil {
 			errs = append(errs, fmt.Errorf("rollback reload runtime state after reset: %w", reloadErr))
 		}
 		return errors.Join(errs...)
@@ -1055,7 +1077,7 @@ func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, resto
 			return rollback(fmt.Errorf("maintenance restore handoff: %w", err))
 		}
 	}
-	if err := s.deps.ReloadRuntimeState(); err != nil {
+	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
 		return rollback(err)
 	}
 	if err := s.ClearPersistedSessions(); err != nil {

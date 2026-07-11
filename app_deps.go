@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -92,58 +91,6 @@ func (deps AppDeps) initializeSessionManager() error {
 		if err != nil {
 			return err
 		}
-	}
-	deps.SetSessionManager(sm)
-	return nil
-}
-
-func reloadAppRuntimeState(deps AppDeps) error {
-	if deps.DB == nil {
-		deps.DB = getDB
-	}
-	_ = deps.DB()
-	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
-		if err := deps.MaintenanceCoordinator.Initialize(context.Background()); err != nil {
-			return err
-		}
-	}
-	if deps.NewJobManager == nil {
-		notify := deps.NotifyDashboardEvent
-		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntime(db, notify, deps.ServerState, nil)
-		}
-	}
-	if deps.SetCurrentJobManager == nil {
-		deps.SetCurrentJobManager = setCurrentJobManager
-	}
-	jm := deps.NewJobManager(deps.DB())
-	if jm == nil {
-		return fmt.Errorf("job manager unavailable")
-	}
-	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
-		return err
-	}
-	deps.SetCurrentJobManager(jm)
-	if deps.ServerInventoryService != nil {
-		deps.ServerInventoryService.Load()
-		initializeServerStateStatuses(deps.ServerState)
-	} else {
-		loadServers()
-	}
-	if deps.GlobalSSHCredential != nil {
-		deps.GlobalSSHCredential.ResetCache()
-		_, _ = deps.GlobalSSHCredential.Resolve(context.Background(), "")
-	}
-	_ = getMetricsBearerTokenHash()
-	if deps.NewSessionManager == nil {
-		deps.NewSessionManager = newSessionManager
-	}
-	if deps.SetSessionManager == nil {
-		deps.SetSessionManager = setGlobalSessionManager
-	}
-	sm, err := deps.NewSessionManager(deps.DB())
-	if err != nil {
-		return err
 	}
 	deps.SetSessionManager(sm)
 	return nil

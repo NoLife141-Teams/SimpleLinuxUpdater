@@ -38,15 +38,14 @@ type backupManifest = internalbackup.Manifest
 type backupManifestFile = internalbackup.ManifestFile
 
 func NewBackupService() *BackupService {
-	return NewBackupServiceWithResetRuntimeCaches(resetRuntimeCaches)
-}
-
-func NewBackupServiceWithResetRuntimeCaches(reset func()) *BackupService {
-	deps := backupServiceDepsWithDefaults(internalbackup.ServiceDeps{})
-	if reset != nil {
-		deps.ResetRuntimeCaches = reset
-	}
-	return internalbackup.NewService(deps)
+	return newRuntimeComposition(AppDeps{
+		ServerState:           globalServerState(),
+		MetricsTokenService:   metricsTokenService,
+		CurrentJobManager:     currentJobManager,
+		SetCurrentJobManager:  setCurrentJobManager,
+		CurrentSessionManager: currentSessionManager,
+		SetSessionManager:     setGlobalSessionManager,
+	}).Compose().BackupService
 }
 
 func NewBackupServiceWithDeps(deps internalbackup.ServiceDeps) *BackupService {
@@ -95,11 +94,12 @@ func backupServiceDepsWithDefaults(deps internalbackup.ServiceDeps) internalback
 			Decrypt: decryptSecret,
 		})
 	}
-	if deps.ResetRuntimeCaches == nil {
-		deps.ResetRuntimeCaches = resetRuntimeCaches
-	}
-	if deps.ReloadRuntimeState == nil {
-		deps.ReloadRuntimeState = reloadRuntimeState
+	if deps.RestoredRuntime == nil {
+		deps.RestoredRuntime = restoredRuntimeAdapter{
+			reload: func(context.Context) error {
+				return errors.New("runtime composition restored-state rehydration is unavailable")
+			},
+		}
 	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
@@ -108,6 +108,28 @@ func backupServiceDepsWithDefaults(deps internalbackup.ServiceDeps) internalback
 		deps.Logf = log.Printf
 	}
 	return deps
+}
+
+type restoredRuntimeAdapter struct {
+	prepare func()
+	reload  func(context.Context) error
+}
+
+func (a restoredRuntimeAdapter) PreparePersistenceReplacement(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if a.prepare != nil {
+		a.prepare()
+	}
+	return nil
+}
+
+func (a restoredRuntimeAdapter) ReloadRestoredState(ctx context.Context) error {
+	if a.reload == nil {
+		return errors.New("restored runtime is unavailable")
+	}
+	return a.reload(ctx)
 }
 
 func expireSessionCookieWithManager(c *gin.Context, sm *scs.SessionManager) {
@@ -183,41 +205,6 @@ func resetRuntimeCaches() {
 	metricsBearerTokenHashDBPath = ""
 	metricsBearerTokenHashMu.Unlock()
 	setCurrentJobManager(nil)
-}
-
-func reloadRuntimeState() error {
-	_ = getDB()
-	if err := initializeJobManager(); err != nil {
-		return err
-	}
-	loadServers()
-	mu.Lock()
-	statusMap = make(map[string]*ServerStatus, len(servers))
-	for _, s := range servers {
-		statusMap[s.Name] = &ServerStatus{
-			Name:           s.Name,
-			Host:           s.Host,
-			Port:           normalizePort(s.Port),
-			User:           s.User,
-			Status:         "idle",
-			Logs:           "",
-			Upgradable:     []string{},
-			PendingUpdates: []PendingUpdate{},
-			HasPassword:    s.Pass != "",
-			HasKey:         s.Key != "",
-			Tags:           append([]string(nil), s.Tags...),
-		}
-	}
-	mu.Unlock()
-	_ = getMetricsBearerTokenHash()
-	sm, err := newSessionManager(getDB())
-	if err != nil {
-		return err
-	}
-	sessionManagerMu.Lock()
-	sessionManager = sm
-	sessionManagerMu.Unlock()
-	return nil
 }
 
 func applyBackupFiles(ctx context.Context, files map[string][]byte) error {

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,47 @@ import (
 	"github.com/alexedwards/scs/v2"
 	_ "modernc.org/sqlite"
 )
+
+func TestRuntimeCompositionReloadRestoredStateHonorsCancellation(t *testing.T) {
+	composition := newRuntimeComposition(AppDeps{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := composition.ReloadRestoredState(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReloadRestoredState() error = %v, want context canceled", err)
+	}
+}
+
+func TestRuntimeCompositionReloadRestoredStateLabelsSessionFailureWithoutPublishing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reload-session-failure.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := ensureSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	composition := newRuntimeComposition(AppDeps{DB: func() *sql.DB { return db }, DBPath: func() string { return dbPath }})
+	composition.resetCaches = func() {}
+	deps := composition.Compose()
+	initial := scs.New()
+	deps.SetSessionManager(initial)
+	sessionErr := errors.New("session database unavailable")
+	composition.deps.NewSessionManager = func(*sql.DB) (*scs.SessionManager, error) {
+		return nil, sessionErr
+	}
+
+	err = composition.ReloadRestoredState(context.Background())
+	if !errors.Is(err, sessionErr) || !strings.Contains(err.Error(), "rebuild restored auth session manager") {
+		t.Fatalf("ReloadRestoredState() error = %v, want labelled session failure", err)
+	}
+	if got := deps.CurrentSessionManager(); got != initial {
+		t.Fatalf("current session manager = %p, want original %p", got, initial)
+	}
+}
 
 func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 	deps := AppDeps{}.withDefaults()

@@ -2633,10 +2633,15 @@ func main() {
 	}
 	go func() {
 		<-shutdownCtx.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		serverCtx, cancelServer := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("Failed to shutdown web server cleanly: %v", err)
+		}
+		cancelServer()
+		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelDelivery()
+		if err := closeNotificationDelivery(deliveryCtx, deps.NotificationService); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("Failed to drain notification delivery cleanly: %v", err)
 		}
 	}()
 	log.Println("Starting web server on :8080")

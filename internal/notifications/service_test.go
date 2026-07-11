@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +17,10 @@ import (
 )
 
 func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan WebhookPayload) {
+	return newTestServiceWithQueue(t, handler, defaultQueueSize)
+}
+
+func newTestServiceWithQueue(t *testing.T, handler http.HandlerFunc, queueSize int) (*Service, <-chan WebhookPayload) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notifications.db"))
 	if err != nil {
@@ -39,8 +44,14 @@ func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan We
 		Now: func() time.Time {
 			return time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 		},
-		Backoff: func(int) time.Duration { return 0 },
-		Logf:    func(string, ...any) {},
+		Backoff:   func(int) time.Duration { return 0 },
+		Logf:      func(string, ...any) {},
+		QueueSize: queueSize,
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Close(ctx)
 	})
 	if _, err := svc.SaveSettings(Settings{
 		Enabled:    true,
@@ -52,12 +63,69 @@ func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan We
 	return svc, payloads
 }
 
-func TestDeliverAuditEventPostsRedactedPayloadAndStoresStatus(t *testing.T) {
+func TestNotificationDeliveryLifecycleAcceptsAndDeliversAuditIntent(t *testing.T) {
 	svc, payloads := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
-	status, err := svc.DeliverAuditEvent(context.Background(), AuditEvent{
+	admission := svc.Accept(DeliveryIntent{
+		CreatedAt: "2026-05-17T12:00:00Z", Action: EventUpdateComplete,
+		TargetType: "server", TargetName: "srv-a", Status: "success", MetaJSON: `{}`,
+	})
+	if admission.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", admission)
+	}
+	select {
+	case payload := <-payloads:
+		if payload.TargetName != "srv-a" || payload.EventType != EventUpdateComplete {
+			t.Fatalf("payload = %+v, want accepted audit intent", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("accepted notification was not delivered")
+	}
+}
+
+func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	svc, _ := newTestServiceWithQueue(t, func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusAccepted)
+	}, 1)
+
+	skipped := svc.Accept(DeliveryIntent{Action: EventBackupRestore, MetaJSON: `{}`})
+	if skipped.State != AdmissionSkipped {
+		t.Fatalf("disabled Accept() = %+v, want skipped", skipped)
+	}
+	intent := DeliveryIntent{Action: EventUpdateComplete, TargetName: "srv", MetaJSON: `{}`}
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		t.Fatalf("first Accept() = %+v, want admitted", got)
+	}
+	<-started
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		t.Fatalf("queued Accept() = %+v, want admitted", got)
+	}
+	if got := svc.Accept(intent); got.State != AdmissionRejected {
+		t.Fatalf("saturated Accept() = %+v, want rejected", got)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := svc.Accept(intent); got.State != AdmissionClosing {
+		t.Fatalf("post-close Accept() = %+v, want closing", got)
+	}
+}
+
+func TestAcceptedDeliveryPostsRedactedPayloadAndStoresStatus(t *testing.T) {
+	svc, payloads := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	admission := svc.Accept(DeliveryIntent{
 		CreatedAt:  "2026-05-17T12:00:00Z",
 		Actor:      "admin",
 		Action:     EventUpdateComplete,
@@ -67,12 +135,9 @@ func TestDeliverAuditEventPostsRedactedPayloadAndStoresStatus(t *testing.T) {
 		Message:    "Update completed",
 		MetaJSON:   `{"package_count":3,"password":"secret-value","nested":[{"apiKey":"nested-secret","safe":"visible"}]}`,
 		ClientIP:   "127.0.0.1",
-	}, false)
-	if err != nil {
-		t.Fatalf("DeliverAuditEvent() error = %v", err)
-	}
-	if !status.Success || status.Attempts != 1 || status.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %+v, want accepted success", status)
+	})
+	if admission.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", admission)
 	}
 	payload := <-payloads
 	if payload.EventType != EventUpdateComplete || payload.TargetName != "srv-a" || payload.Meta["password"] != "[redacted]" {
@@ -86,6 +151,11 @@ func TestDeliverAuditEventPostsRedactedPayloadAndStoresStatus(t *testing.T) {
 	if !ok || nestedMeta["apiKey"] != "[redacted]" || nestedMeta["safe"] != "visible" {
 		t.Fatalf("nested payload meta = %#v, want redacted apiKey and preserved safe value", nested[0])
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 	settings, err := svc.Settings()
 	if err != nil {
 		t.Fatalf("Settings() error = %v", err)
@@ -95,14 +165,14 @@ func TestDeliverAuditEventPostsRedactedPayloadAndStoresStatus(t *testing.T) {
 	}
 }
 
-func TestDeliverAuditEventRetriesAndStoresFailure(t *testing.T) {
+func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	var attempts int32
 	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		http.Error(w, "down", http.StatusBadGateway)
 	})
 
-	status, err := svc.DeliverAuditEvent(context.Background(), AuditEvent{
+	admission := svc.Accept(DeliveryIntent{
 		CreatedAt:  "2026-05-17T12:00:00Z",
 		Action:     EventUpdateComplete,
 		TargetType: "server",
@@ -110,12 +180,17 @@ func TestDeliverAuditEventRetriesAndStoresFailure(t *testing.T) {
 		Status:     "failure",
 		Message:    "Update failed",
 		MetaJSON:   `{}`,
-	}, false)
-	if err == nil {
-		t.Fatalf("DeliverAuditEvent() error = nil, want failure")
+	})
+	if admission.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", admission)
 	}
-	if status.Success || status.Attempts != 3 || status.StatusCode != http.StatusBadGateway || atomic.LoadInt32(&attempts) != 3 {
-		t.Fatalf("status=%+v attempts=%d, want three failed attempts", status, attempts)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Fatalf("attempts=%d, want three failed attempts", attempts)
 	}
 	settings, err := svc.Settings()
 	if err != nil {
@@ -126,26 +201,23 @@ func TestDeliverAuditEventRetriesAndStoresFailure(t *testing.T) {
 	}
 }
 
-func TestDeliverAuditEventSkipsDisabledEventTypes(t *testing.T) {
+func TestAcceptedDeliverySkipsDisabledEventTypes(t *testing.T) {
 	var attempts int32
 	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	status, err := svc.DeliverAuditEvent(context.Background(), AuditEvent{
+	admission := svc.Accept(DeliveryIntent{
 		Action:     EventBackupRestore,
 		TargetType: "backup",
 		TargetName: "state",
 		Status:     "success",
 		Message:    "Backup restored",
 		MetaJSON:   `{}`,
-	}, false)
-	if err != nil {
-		t.Fatalf("DeliverAuditEvent() error = %v", err)
-	}
-	if status != (DeliveryStatus{}) || atomic.LoadInt32(&attempts) != 0 {
-		t.Fatalf("status=%+v attempts=%d, want skipped event", status, attempts)
+	})
+	if admission.State != AdmissionSkipped || atomic.LoadInt32(&attempts) != 0 {
+		t.Fatalf("admission=%+v attempts=%d, want skipped event", admission, attempts)
 	}
 }
 
@@ -159,6 +231,11 @@ func TestSaveSettingsValidatesURLAndEvents(t *testing.T) {
 		t.Fatalf("create settings table: %v", err)
 	}
 	svc := NewService(ServiceDeps{DB: func() *sql.DB { return db }, Logf: func(string, ...any) {}})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Close(ctx)
+	})
 	if _, err := svc.SaveSettings(Settings{Enabled: true, WebhookURL: "ftp://example.test/hook", EventTypes: []string{EventUpdateComplete}}); err == nil {
 		t.Fatalf("SaveSettings() accepted invalid URL")
 	}
@@ -171,5 +248,88 @@ func TestSaveSettingsValidatesURLAndEvents(t *testing.T) {
 	}
 	if len(resp.EventTypes) != 0 {
 		t.Fatalf("EventTypes = %+v, want explicit empty selection preserved", resp.EventTypes)
+	}
+}
+
+func TestDeliveryOutcomeDoesNotOverwriteConcurrentSettings(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusAccepted)
+	})
+	intent := DeliveryIntent{Action: EventUpdateComplete, TargetName: "srv", MetaJSON: `{}`}
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", got)
+	}
+	<-started
+	const replacementURL = "https://replacement.example.test/hook"
+	if _, err := svc.SaveSettings(Settings{
+		Enabled: true, WebhookURL: replacementURL, EventTypes: []string{EventScheduleRunFailed},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	settings, err := svc.Settings()
+	if err != nil {
+		t.Fatalf("Settings() error = %v", err)
+	}
+	if settings.WebhookURL != replacementURL || len(settings.EventTypes) != 1 || settings.EventTypes[0] != EventScheduleRunFailed {
+		t.Fatalf("settings = %+v, want concurrent replacement preserved", settings)
+	}
+	if settings.LastDelivery == nil || !settings.LastDelivery.Success {
+		t.Fatalf("last delivery = %+v, want recorded outcome", settings.LastDelivery)
+	}
+}
+
+func TestTestDeliveryReturnsOutcomePersistenceFailure(t *testing.T) {
+	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	db := svc.deps.DB()
+	if _, err := db.Exec(`CREATE TRIGGER reject_notification_outcome
+		BEFORE UPDATE ON settings
+		WHEN NEW.value LIKE '%last_delivery%'
+		BEGIN SELECT RAISE(FAIL, 'outcome rejected'); END`); err != nil {
+		t.Fatalf("create rejection trigger: %v", err)
+	}
+	status, err := svc.TestDelivery(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "outcome rejected") {
+		t.Fatalf("TestDelivery() status=%+v error=%v, want outcome persistence failure", status, err)
+	}
+}
+
+func TestNotificationDeliveryLifecycleCloseCancelsInFlightDelivery(t *testing.T) {
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	svc, _ := newTestService(t, func(_ http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+		cancelled <- struct{}{}
+	})
+	if got := svc.Accept(DeliveryIntent{Action: EventUpdateComplete, TargetName: "srv", MetaJSON: `{}`}); got.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", got)
+	}
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := svc.Close(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close() error = %v, want context canceled", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight delivery was not cancelled")
+	}
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), time.Second)
+	defer drainCancel()
+	if err := svc.Close(drainCtx); err != nil {
+		t.Fatalf("second Close() error = %v", err)
 	}
 }

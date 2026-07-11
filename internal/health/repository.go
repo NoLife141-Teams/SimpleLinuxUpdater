@@ -1,4 +1,4 @@
-package updates
+package health
 
 import (
 	"database/sql"
@@ -10,36 +10,49 @@ import (
 )
 
 const (
-	HealthSnapshotRetentionSettingKey  = "health_snapshot_retention_days"
-	DefaultHealthSnapshotRetentionDays = 90
+	HealthSnapshotRetentionSettingKey = "health_snapshot_retention_days"
+	DefaultRetentionDays              = 90
 )
 
-type ServerFactsRepository interface {
-	Save(ServerFactsRecord) error
-	LoadAll() (map[string]ServerFactsRecord, error)
+type Reader interface {
+	Latest() (map[string]CollectedFacts, error)
+	History(from, to, serverName string) ([]Snapshot, error)
+	RetentionDays() (int, error)
+}
+
+type Observation interface {
+	Reader
+	AcceptCollectedFacts(CollectedFacts) error
+	AcceptMaintenance(MaintenanceOutcome) error
 	RenameServerTx(*sql.Tx, string, string) error
 	DeleteServerTx(*sql.Tx, string) error
 }
 
-// HealthSnapshotCapture records accepted, time-ordered Server health observations.
-type HealthSnapshotCapture interface {
-	CaptureFacts(ServerFactsRecord) error
-	CaptureCompletion(MaintenanceCompletion) error
+type ReaderFuncs struct {
+	LatestFunc        func() (map[string]CollectedFacts, error)
+	HistoryFunc       func(string, string, string) ([]Snapshot, error)
+	RetentionDaysFunc func() (int, error)
 }
 
-type SQLiteServerFactsRepository struct {
+func (f ReaderFuncs) Latest() (map[string]CollectedFacts, error) { return f.LatestFunc() }
+func (f ReaderFuncs) History(from, to, server string) ([]Snapshot, error) {
+	return f.HistoryFunc(from, to, server)
+}
+func (f ReaderFuncs) RetentionDays() (int, error) { return f.RetentionDaysFunc() }
+
+type SQLiteObservation struct {
 	DB  func() *sql.DB
 	Now func() time.Time
 }
 
-func (r SQLiteServerFactsRepository) dbConn() *sql.DB {
+func (r SQLiteObservation) dbConn() *sql.DB {
 	if r.DB != nil {
 		return r.DB()
 	}
 	return nil
 }
 
-func (r SQLiteServerFactsRepository) now() time.Time {
+func (r SQLiteObservation) now() time.Time {
 	if r.Now != nil {
 		return r.Now()
 	}
@@ -105,14 +118,14 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 	if _, err := db.Exec(
 		"INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
 		HealthSnapshotRetentionSettingKey,
-		strconv.Itoa(DefaultHealthSnapshotRetentionDays),
+		strconv.Itoa(DefaultRetentionDays),
 	); err != nil {
 		return err
 	}
 	return pruneHealthSnapshotsWithDB(db, time.Now().UTC())
 }
 
-func (r SQLiteServerFactsRepository) HealthSnapshotRetentionDays() (int, error) {
+func (r SQLiteObservation) RetentionDays() (int, error) {
 	db := r.dbConn()
 	if db == nil {
 		return 0, errors.New("database is not initialized")
@@ -120,23 +133,28 @@ func (r SQLiteServerFactsRepository) HealthSnapshotRetentionDays() (int, error) 
 	return healthSnapshotRetentionDays(db)
 }
 
-func healthSnapshotRetentionDays(db *sql.DB) (int, error) {
+type healthSnapshotStore interface {
+	healthSnapshotExecer
+	QueryRow(string, ...any) *sql.Row
+}
+
+func healthSnapshotRetentionDays(db healthSnapshotStore) (int, error) {
 	var raw string
 	err := db.QueryRow("SELECT value FROM settings WHERE key = ?", HealthSnapshotRetentionSettingKey).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return DefaultHealthSnapshotRetentionDays, nil
+		return DefaultRetentionDays, nil
 	}
 	if err != nil {
 		return 0, err
 	}
 	days, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || days <= 0 {
-		return DefaultHealthSnapshotRetentionDays, nil
+		return DefaultRetentionDays, nil
 	}
 	return days, nil
 }
 
-func pruneHealthSnapshotsWithDB(db *sql.DB, now time.Time) error {
+func pruneHealthSnapshots(db healthSnapshotStore, now time.Time) error {
 	retentionDays, err := healthSnapshotRetentionDays(db)
 	if err != nil {
 		return err
@@ -146,7 +164,11 @@ func pruneHealthSnapshotsWithDB(db *sql.DB, now time.Time) error {
 	return err
 }
 
-func (r SQLiteServerFactsRepository) PruneHealthSnapshots() error {
+func pruneHealthSnapshotsWithDB(db *sql.DB, now time.Time) error {
+	return pruneHealthSnapshots(db, now)
+}
+
+func (r SQLiteObservation) PruneHealthSnapshots() error {
 	db := r.dbConn()
 	if db == nil {
 		return errors.New("database is not initialized")
@@ -180,7 +202,7 @@ func ensureColumn(db *sql.DB, table, name, definition string) error {
 	return err
 }
 
-func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
+func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
 	db := r.dbConn()
 	if db == nil {
 		return errors.New("database is not initialized")
@@ -205,7 +227,12 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 	if record.RebootRequired != nil {
 		rebootValue = boolToInt(*record.RebootRequired)
 	}
-	_, err := db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 		INSERT INTO server_facts (
 			server_name, collected_at, os_pretty_name, uptime_seconds,
 			disk_status, disk_free_kb, disk_total_kb, disk_details, apt_status, apt_details,
@@ -240,10 +267,16 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 	if err != nil {
 		return err
 	}
-	return r.CaptureFacts(record)
+	if err := r.appendCollectedHistoryTx(tx, record); err != nil {
+		return err
+	}
+	if err := pruneHealthSnapshots(tx, r.now()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, error) {
+func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 	db := r.dbConn()
 	if db == nil {
 		return nil, errors.New("database is not initialized")
@@ -258,9 +291,9 @@ func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, er
 		return nil, err
 	}
 	defer rows.Close()
-	records := map[string]ServerFactsRecord{}
+	records := map[string]CollectedFacts{}
 	for rows.Next() {
-		var record ServerFactsRecord
+		var record CollectedFacts
 		var reboot sql.NullInt64
 		if err := rows.Scan(
 			&record.ServerName,
@@ -287,7 +320,7 @@ func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, er
 	return records, rows.Err()
 }
 
-func (r SQLiteServerFactsRepository) RenameServerTx(tx *sql.Tx, oldName, newName string) error {
+func (r SQLiteObservation) RenameServerTx(tx *sql.Tx, oldName, newName string) error {
 	if strings.TrimSpace(oldName) == "" || strings.TrimSpace(newName) == "" || oldName == newName {
 		return nil
 	}
@@ -298,7 +331,7 @@ func (r SQLiteServerFactsRepository) RenameServerTx(tx *sql.Tx, oldName, newName
 	return err
 }
 
-func (r SQLiteServerFactsRepository) DeleteServerTx(tx *sql.Tx, name string) error {
+func (r SQLiteObservation) DeleteServerTx(tx *sql.Tx, name string) error {
 	if _, err := tx.Exec("DELETE FROM server_facts WHERE server_name = ?", name); err != nil {
 		return err
 	}
@@ -306,8 +339,8 @@ func (r SQLiteServerFactsRepository) DeleteServerTx(tx *sql.Tx, name string) err
 	return err
 }
 
-func (r SQLiteServerFactsRepository) CaptureFacts(record ServerFactsRecord) error {
-	return r.saveHealthSnapshot(HealthSnapshotRecord{
+func (r SQLiteObservation) appendCollectedHistory(record CollectedFacts) error {
+	return r.saveHealthSnapshot(Snapshot{
 		ServerName:     record.ServerName,
 		CapturedAt:     record.CollectedAt,
 		Source:         "facts",
@@ -321,7 +354,22 @@ func (r SQLiteServerFactsRepository) CaptureFacts(record ServerFactsRecord) erro
 	})
 }
 
-func (r SQLiteServerFactsRepository) saveHealthSnapshot(record HealthSnapshotRecord) error {
+func (r SQLiteObservation) appendCollectedHistoryTx(tx *sql.Tx, record CollectedFacts) error {
+	return insertHealthSnapshot(tx, Snapshot{
+		ServerName:     record.ServerName,
+		CapturedAt:     record.CollectedAt,
+		Source:         "facts",
+		DiskStatus:     record.DiskStatus,
+		DiskFreeKB:     record.DiskFreeKB,
+		DiskTotalKB:    record.DiskTotalKB,
+		AptStatus:      record.AptStatus,
+		RebootRequired: record.RebootRequired,
+		OSPrettyName:   record.OSPrettyName,
+		RawJSON:        record.RawJSON,
+	})
+}
+
+func (r SQLiteObservation) saveHealthSnapshot(record Snapshot) error {
 	db := r.dbConn()
 	if db == nil {
 		return errors.New("database is not initialized")
@@ -348,11 +396,22 @@ func (r SQLiteServerFactsRepository) saveHealthSnapshot(record HealthSnapshotRec
 	if record.PackageCount < 0 || record.SecurityCount < 0 {
 		return fmt.Errorf("snapshot package counts must be non-negative")
 	}
+	if err := insertHealthSnapshot(db, record); err != nil {
+		return err
+	}
+	return r.PruneHealthSnapshots()
+}
+
+type healthSnapshotExecer interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func insertHealthSnapshot(exec healthSnapshotExecer, record Snapshot) error {
 	var rebootValue any
 	if record.RebootRequired != nil {
 		rebootValue = boolToInt(*record.RebootRequired)
 	}
-	_, err := db.Exec(`
+	_, err := exec.Exec(`
 		INSERT INTO server_health_snapshots (
 			server_name, captured_at, source, package_count, security_count,
 			last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
@@ -374,13 +433,10 @@ func (r SQLiteServerFactsRepository) saveHealthSnapshot(record HealthSnapshotRec
 		record.OSPrettyName,
 		record.RawJSON,
 	)
-	if err != nil {
-		return err
-	}
-	return r.PruneHealthSnapshots()
+	return err
 }
 
-func (r SQLiteServerFactsRepository) ListHealthSnapshots(from, to, serverName string) ([]HealthSnapshotRecord, error) {
+func (r SQLiteObservation) History(from, to, serverName string) ([]Snapshot, error) {
 	db := r.dbConn()
 	if db == nil {
 		return nil, errors.New("database is not initialized")
@@ -402,9 +458,9 @@ func (r SQLiteServerFactsRepository) ListHealthSnapshots(from, to, serverName st
 		return nil, err
 	}
 	defer rows.Close()
-	var records []HealthSnapshotRecord
+	var records []Snapshot
 	for rows.Next() {
-		var record HealthSnapshotRecord
+		var record Snapshot
 		var reboot sql.NullInt64
 		if err := rows.Scan(
 			&record.ID,

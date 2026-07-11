@@ -8,9 +8,9 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	auditpkg "debian-updater/internal/audit"
+	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
-	updatespkg "debian-updater/internal/updates"
 )
 
 type AuditEvent = auditpkg.Event
@@ -37,6 +37,13 @@ func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNo
 	if db == nil {
 		db = getDB
 	}
+	return newAuditServiceWithHealthObservation(db, notify, timezone, notifications, now, healthpkg.SQLiteObservation{DB: db, Now: now}, coordinators...)
+}
+
+func newAuditServiceWithHealthObservation(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time, observation healthpkg.Observation, coordinators ...*maintenancepkg.Coordinator) *AuditService {
+	if db == nil {
+		db = getDB
+	}
 	if timezone == nil {
 		timezone = currentAppTimezone
 	}
@@ -45,7 +52,7 @@ func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNo
 		notifier = func(reason string) { notify(reason) }
 	}
 	onRecord := func(evt auditpkg.Event) {
-		recordHealthSnapshotFromAuditEvent(db, evt)
+		recordHealthSnapshotFromAuditEvent(observation, evt)
 		if notifications != nil {
 			notifications.NotifyAuditEvent(notificationpkg.AuditEvent{
 				CreatedAt:  evt.CreatedAt,
@@ -88,31 +95,30 @@ func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNo
 	return auditpkg.NewService(opts)
 }
 
-func recordHealthSnapshotFromAuditEvent(db auditDBProvider, evt auditpkg.Event) {
+func recordHealthSnapshotFromAuditEvent(observation healthpkg.Observation, evt auditpkg.Event) {
 	completion, ok := maintenanceCompletionFromAuditEvent(evt)
-	if db == nil || !ok {
+	if observation == nil || !ok {
 		return
 	}
-	repo := updatespkg.SQLiteServerFactsRepository{DB: db}
-	if err := repo.CaptureCompletion(completion); err != nil {
+	if err := observation.AcceptMaintenance(completion); err != nil {
 		log.Printf("health snapshot write failed: action=%s target=%s err=%v", evt.Action, evt.TargetName, err)
 	}
 }
 
-func maintenanceCompletionFromAuditEvent(evt auditpkg.Event) (updatespkg.MaintenanceCompletion, bool) {
+func maintenanceCompletionFromAuditEvent(evt auditpkg.Event) (healthpkg.MaintenanceOutcome, bool) {
 	if evt.TargetType != "server" || strings.TrimSpace(evt.TargetName) == "" || strings.TrimSpace(evt.TargetName) == "-" {
-		return updatespkg.MaintenanceCompletion{}, false
+		return healthpkg.MaintenanceOutcome{}, false
 	}
-	var kind updatespkg.MaintenanceKind
+	var kind healthpkg.MaintenanceKind
 	switch strings.TrimSpace(evt.Action) {
 	case updateCompleteAction:
-		kind = updatespkg.MaintenanceKindUpdate
+		kind = healthpkg.MaintenanceKindUpdate
 	case "schedule.run.completed", "schedule.run.failed":
-		kind = updatespkg.MaintenanceKindScheduledRun
+		kind = healthpkg.MaintenanceKindScheduledRun
 	default:
-		return updatespkg.MaintenanceCompletion{}, false
+		return healthpkg.MaintenanceOutcome{}, false
 	}
-	return updatespkg.MaintenanceCompletion{
+	return healthpkg.MaintenanceOutcome{
 		ServerName:  evt.TargetName,
 		CompletedAt: evt.CreatedAt,
 		Kind:        kind,

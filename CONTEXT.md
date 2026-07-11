@@ -64,6 +64,10 @@ _Avoid_: Observability globals, polling helpers, observability DOM state
 The accepted recording of time-ordered Server health observations from collected facts or completed maintenance, including package counts, update or scan outcome, disk, APT, reboot, source, and retention.
 _Avoid_: Audit health callback, health-history write, snapshot row
 
+**Host Health Observation**:
+The accepted operational health knowledge for a Server, combining its latest collected host facts with time-ordered Health Snapshot Capture, retention, and continuity when the Server is renamed or deleted.
+_Avoid_: Server facts repository, health tables, observability health query
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

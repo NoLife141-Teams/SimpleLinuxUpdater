@@ -33,6 +33,7 @@ import (
 	auditpkg "debian-updater/internal/audit"
 	authpkg "debian-updater/internal/auth"
 	"debian-updater/internal/events"
+	healthpkg "debian-updater/internal/health"
 	observabilitypkg "debian-updater/internal/observability"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
@@ -371,7 +372,7 @@ func ensureSchema(db *sql.DB) error {
 	if err := auditpkg.EnsureSchema(db); err != nil {
 		return err
 	}
-	if err := updatespkg.EnsureServerFactsSchema(db); err != nil {
+	if err := healthpkg.EnsureServerFactsSchema(db); err != nil {
 		return err
 	}
 	if err := ensureJobSchema(db); err != nil {
@@ -1221,34 +1222,6 @@ func handleHealthTrendsWithService(c *gin.Context, service *ObservabilityService
 		return
 	}
 	c.JSON(http.StatusOK, trends)
-}
-
-func saveServerFacts(record serverFactsRecord) error {
-	record.ServerName = strings.TrimSpace(record.ServerName)
-	if record.ServerName == "" {
-		return errors.New("server name is required")
-	}
-	if strings.TrimSpace(record.CollectedAt) == "" {
-		record.CollectedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if strings.TrimSpace(record.DiskStatus) == "" {
-		record.DiskStatus = "unknown"
-	}
-	if strings.TrimSpace(record.AptStatus) == "" {
-		record.AptStatus = "unknown"
-	}
-	if strings.TrimSpace(record.RawJSON) == "" {
-		record.RawJSON = "{}"
-	}
-	return defaultServerFactsRepository().Save(record)
-}
-
-func loadServerFacts() (map[string]serverFactsRecord, error) {
-	return defaultServerFactsRepository().LoadAll()
-}
-
-func renameServerFactsTx(tx *sql.Tx, oldName, newName string) error {
-	return defaultServerFactsRepository().RenameServerTx(tx, oldName, newName)
 }
 
 func diskFreeKBFromOutput(output string) (int64, bool) {

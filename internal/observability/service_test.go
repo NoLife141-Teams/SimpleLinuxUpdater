@@ -97,9 +97,25 @@ func insertDashboardJob(t *testing.T, db *sql.DB, id, serverName, status, phase,
 
 func insertHealthSnapshot(t *testing.T, db *sql.DB, record updates.HealthSnapshotRecord) {
 	t.Helper()
-	repo := updates.SQLiteServerFactsRepository{DB: func() *sql.DB { return db }}
-	if err := repo.SaveHealthSnapshot(record); err != nil {
-		t.Fatalf("SaveHealthSnapshot() error = %v", err)
+	var reboot any
+	if record.RebootRequired != nil {
+		if *record.RebootRequired {
+			reboot = 1
+		} else {
+			reboot = 0
+		}
+	}
+	_, err := db.Exec(`INSERT INTO server_health_snapshots (
+		server_name, captured_at, source, package_count, security_count,
+		last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
+		apt_status, reboot_required, os_pretty_name, raw_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ServerName, record.CapturedAt, record.Source, record.PackageCount, record.SecurityCount,
+		record.LastScanStatus, record.LastUpdateStatus, record.DiskStatus, record.DiskFreeKB, record.DiskTotalKB,
+		record.AptStatus, reboot, record.OSPrettyName, record.RawJSON,
+	)
+	if err != nil {
+		t.Fatalf("insert health snapshot fixture: %v", err)
 	}
 }
 

@@ -21,6 +21,12 @@ type ServerFactsRepository interface {
 	DeleteServerTx(*sql.Tx, string) error
 }
 
+// HealthSnapshotCapture records accepted, time-ordered Server health observations.
+type HealthSnapshotCapture interface {
+	CaptureFacts(ServerFactsRecord) error
+	CaptureCompletion(MaintenanceCompletion) error
+}
+
 type SQLiteServerFactsRepository struct {
 	DB  func() *sql.DB
 	Now func() time.Time
@@ -234,7 +240,7 @@ func (r SQLiteServerFactsRepository) Save(record ServerFactsRecord) error {
 	if err != nil {
 		return err
 	}
-	return r.SaveHealthSnapshot(HealthSnapshotFromFacts(record, "facts"))
+	return r.CaptureFacts(record)
 }
 
 func (r SQLiteServerFactsRepository) LoadAll() (map[string]ServerFactsRecord, error) {
@@ -300,15 +306,11 @@ func (r SQLiteServerFactsRepository) DeleteServerTx(tx *sql.Tx, name string) err
 	return err
 }
 
-func HealthSnapshotFromFacts(record ServerFactsRecord, source string) HealthSnapshotRecord {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		source = "facts"
-	}
-	return HealthSnapshotRecord{
+func (r SQLiteServerFactsRepository) CaptureFacts(record ServerFactsRecord) error {
+	return r.saveHealthSnapshot(HealthSnapshotRecord{
 		ServerName:     record.ServerName,
 		CapturedAt:     record.CollectedAt,
-		Source:         source,
+		Source:         "facts",
 		DiskStatus:     record.DiskStatus,
 		DiskFreeKB:     record.DiskFreeKB,
 		DiskTotalKB:    record.DiskTotalKB,
@@ -316,10 +318,10 @@ func HealthSnapshotFromFacts(record ServerFactsRecord, source string) HealthSnap
 		RebootRequired: record.RebootRequired,
 		OSPrettyName:   record.OSPrettyName,
 		RawJSON:        record.RawJSON,
-	}
+	})
 }
 
-func (r SQLiteServerFactsRepository) SaveHealthSnapshot(record HealthSnapshotRecord) error {
+func (r SQLiteServerFactsRepository) saveHealthSnapshot(record HealthSnapshotRecord) error {
 	db := r.dbConn()
 	if db == nil {
 		return errors.New("database is not initialized")

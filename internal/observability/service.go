@@ -409,36 +409,21 @@ func UpdateHealthFromResults(health *DashboardHealthInfo, results []updates.Prec
 	if !HealthUpdateIsNewer(health.CollectedAt, collectedAt, deps.ParseAppTimestamp) {
 		return
 	}
-	for _, result := range results {
-		switch result.Name {
-		case "disk_space":
-			health.DiskStatus = deps.HealthStatusFromResult(result)
-			if parsedFreeKB, parsedTotalKB, ok := deps.DiskFreeTotalKBFromOutput(result.Output); ok {
-				health.DiskFreeKB = parsedFreeKB
-				health.DiskTotalKB = parsedTotalKB
-			} else if parsedFreeKB, ok := deps.DiskFreeKBFromOutput(result.Output); ok {
-				health.DiskFreeKB = parsedFreeKB
-			}
-			health.DiskDetails = result.Details
-			health.Source = source
-			health.CollectedAt = collectedAt
-		case "apt_health", updates.PostcheckNameAptHealth:
-			health.AptStatus = deps.HealthStatusFromResult(result)
-			health.AptDetails = result.Details
-			health.Source = source
-			health.CollectedAt = collectedAt
-		case updates.PostcheckNameRebootNeeded:
-			if strings.TrimSpace(result.Error) != "" {
-				continue
-			}
-			required, known := deps.RebootResultRequiresRestart(result)
-			if !known {
-				continue
-			}
-			health.RebootRequired = &required
-			health.Source = source
-			health.CollectedAt = collectedAt
-		}
+	observation := updates.HealthObservation{
+		DiskStatus: health.DiskStatus, DiskFreeKB: health.DiskFreeKB, DiskTotalKB: health.DiskTotalKB,
+		DiskDetails: health.DiskDetails, AptStatus: health.AptStatus, AptDetails: health.AptDetails,
+		RebootRequired: health.RebootRequired,
+	}
+	applied := updates.ApplyHealthResults(&observation, results, updates.HealthResultInterpreter{
+		Status: deps.HealthStatusFromResult, DiskFree: deps.DiskFreeKBFromOutput,
+		DiskFreeTotal: deps.DiskFreeTotalKBFromOutput, RebootRequired: deps.RebootResultRequiresRestart,
+	})
+	health.DiskStatus, health.DiskFreeKB, health.DiskTotalKB = observation.DiskStatus, observation.DiskFreeKB, observation.DiskTotalKB
+	health.DiskDetails, health.AptStatus, health.AptDetails = observation.DiskDetails, observation.AptStatus, observation.AptDetails
+	health.RebootRequired = observation.RebootRequired
+	if applied {
+		health.Source = source
+		health.CollectedAt = collectedAt
 	}
 }
 

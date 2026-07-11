@@ -60,6 +60,10 @@ _Avoid_: Manage page globals, inventory handler flow
 The operator-facing interpretation of observability window selection, health-trend host selection, independently refreshed snapshots, partial failure, visibility, and refresh lifecycle into one accepted page view.
 _Avoid_: Observability globals, polling helpers, observability DOM state
 
+**Health Snapshot Capture**:
+The accepted recording of time-ordered Server health observations from collected facts or completed maintenance, including package counts, update or scan outcome, disk, APT, reboot, source, and retention.
+_Avoid_: Audit health callback, health-history write, snapshot row
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

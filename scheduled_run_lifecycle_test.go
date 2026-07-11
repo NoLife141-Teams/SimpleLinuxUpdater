@@ -479,6 +479,16 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 			if tt.errorText != "" && !strings.Contains(audits.Items[0].MetaJSON, tt.errorText) {
 				t.Fatalf("failure audit meta = %s, want error text %q", audits.Items[0].MetaJSON, tt.errorText)
 			}
+			snapshots, err := (updatespkg.SQLiteServerFactsRepository{DB: deps.DB}).ListHealthSnapshots("0000", "9999", server.Name)
+			if err != nil {
+				t.Fatalf("ListHealthSnapshots() unexpected error: %v", err)
+			}
+			if len(snapshots) != 1 || snapshots[0].LastScanStatus != tt.auditStatus {
+				t.Fatalf("health snapshots = %+v, want one Scheduled Run observation", snapshots)
+			}
+			if tt.jobStatus == jobStatusSucceeded && (snapshots[0].PackageCount != 2 || snapshots[0].SecurityCount != 1) {
+				t.Fatalf("health snapshot counts = %+v, want discovery counts", snapshots[0])
+			}
 
 			lifecycle.updatePolicyRunFromJobRecord(run.ID, job)
 			audits, err = deps.AuditService.List(AuditListFilter{Action: tt.auditAction, TargetName: server.Name})

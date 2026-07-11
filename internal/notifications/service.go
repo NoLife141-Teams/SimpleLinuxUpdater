@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +26,8 @@ const (
 	EventBackupRestore      = "backup.restore"
 	EventTest               = "notification.test"
 
-	defaultAttempts = 3
+	defaultAttempts  = 3
+	defaultQueueSize = 64
 )
 
 var supportedEvents = []string{
@@ -66,7 +68,7 @@ type DeliveryStatus struct {
 	DeliveredAt string `json:"delivered_at"`
 }
 
-type AuditEvent struct {
+type DeliveryIntent struct {
 	CreatedAt  string
 	Actor      string
 	Action     string
@@ -76,6 +78,28 @@ type AuditEvent struct {
 	Message    string
 	MetaJSON   string
 	ClientIP   string
+}
+
+type AdmissionState string
+
+const (
+	AdmissionAdmitted AdmissionState = "admitted"
+	AdmissionSkipped  AdmissionState = "skipped"
+	AdmissionRejected AdmissionState = "rejected"
+	AdmissionClosing  AdmissionState = "closing"
+)
+
+type Admission struct {
+	State AdmissionState
+	Error string
+}
+
+type Lifecycle interface {
+	Settings() (SettingsResponse, error)
+	SaveSettings(Settings) (SettingsResponse, error)
+	Accept(DeliveryIntent) Admission
+	TestDelivery(context.Context) (DeliveryStatus, error)
+	Close(context.Context) error
 }
 
 type WebhookPayload struct {
@@ -92,15 +116,30 @@ type WebhookPayload struct {
 }
 
 type ServiceDeps struct {
-	DB         DBProvider
-	HTTPClient HTTPClient
-	Now        func() time.Time
-	Backoff    func(attempt int) time.Duration
-	Logf       func(string, ...any)
+	DB              DBProvider
+	HTTPClient      HTTPClient
+	Now             func() time.Time
+	Backoff         func(attempt int) time.Duration
+	Logf            func(string, ...any)
+	QueueSize       int
+	DeliveryTimeout time.Duration
 }
 
 type Service struct {
 	deps ServiceDeps
+
+	settingsMu  sync.Mutex
+	lifecycleMu sync.Mutex
+	queue       chan queuedDelivery
+	closing     bool
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+
+type queuedDelivery struct {
+	settings  Settings
+	intent    DeliveryIntent
+	eventType string
 }
 
 func NewService(deps ServiceDeps) *Service {
@@ -121,7 +160,91 @@ func NewService(deps ServiceDeps) *Service {
 	if deps.Logf == nil {
 		deps.Logf = log.Printf
 	}
-	return &Service{deps: deps}
+	if deps.QueueSize <= 0 {
+		deps.QueueSize = defaultQueueSize
+	}
+	if deps.DeliveryTimeout <= 0 {
+		deps.DeliveryTimeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Service{
+		deps:   deps,
+		queue:  make(chan queuedDelivery, deps.QueueSize),
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	go s.run(ctx)
+	return s
+}
+
+func (s *Service) run(ctx context.Context) {
+	defer close(s.done)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case delivery, ok := <-s.queue:
+			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			deliveryCtx, cancel := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
+			_, err := s.deliverWithSettings(deliveryCtx, delivery.settings, delivery.intent, delivery.eventType)
+			cancel()
+			if err != nil && s.deps.Logf != nil {
+				s.deps.Logf("notification delivery failed for action=%q target=%q: %v", delivery.intent.Action, delivery.intent.TargetName, err)
+			}
+		}
+	}
+}
+
+func (s *Service) Accept(intent DeliveryIntent) Admission {
+	s.lifecycleMu.Lock()
+	if s.closing {
+		s.lifecycleMu.Unlock()
+		return Admission{State: AdmissionClosing}
+	}
+	s.lifecycleMu.Unlock()
+
+	settings, eventType, err := s.notificationPlan(intent, false)
+	if err != nil {
+		return Admission{State: AdmissionRejected, Error: err.Error()}
+	}
+	if eventType == "" {
+		return Admission{State: AdmissionSkipped}
+	}
+	delivery := queuedDelivery{settings: settings, intent: intent, eventType: eventType}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closing {
+		return Admission{State: AdmissionClosing}
+	}
+	select {
+	case s.queue <- delivery:
+		return Admission{State: AdmissionAdmitted}
+	default:
+		return Admission{State: AdmissionRejected, Error: "notification delivery queue is full"}
+	}
+}
+
+func (s *Service) Close(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	if !s.closing {
+		s.closing = true
+		close(s.queue)
+	}
+	done := s.done
+	s.lifecycleMu.Unlock()
+	select {
+	case <-done:
+		s.cancel()
+		return nil
+	case <-ctx.Done():
+		s.cancel()
+		return ctx.Err()
+	}
 }
 
 func SupportedEvents() []string {
@@ -129,6 +252,8 @@ func SupportedEvents() []string {
 }
 
 func (s *Service) Settings() (SettingsResponse, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
 	settings, err := s.loadSettings()
 	if err != nil {
 		return SettingsResponse{}, err
@@ -140,6 +265,8 @@ func (s *Service) Settings() (SettingsResponse, error) {
 }
 
 func (s *Service) SaveSettings(settings Settings) (SettingsResponse, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
 	current, err := s.loadSettings()
 	if err != nil {
 		return SettingsResponse{}, err
@@ -165,28 +292,8 @@ func (s *Service) SaveSettings(settings Settings) (SettingsResponse, error) {
 	}, nil
 }
 
-func (s *Service) NotifyAuditEvent(evt AuditEvent) {
-	settings, eventType, err := s.notificationPlan(evt, false)
-	if err != nil {
-		if s.deps.Logf != nil {
-			s.deps.Logf("notification webhook delivery skipped for action=%q target=%q: %v", evt.Action, evt.TargetName, err)
-		}
-		return
-	}
-	if eventType == "" {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := s.deliverWithSettings(ctx, settings, evt, eventType); err != nil && s.deps.Logf != nil {
-			s.deps.Logf("notification webhook delivery skipped/failed for action=%q target=%q: %v", evt.Action, evt.TargetName, err)
-		}
-	}()
-}
-
 func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
-	evt := AuditEvent{
+	evt := DeliveryIntent{
 		CreatedAt:  s.deps.Now().UTC().Format(time.RFC3339),
 		Actor:      "admin",
 		Action:     EventTest,
@@ -199,11 +306,7 @@ func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
 	return s.deliver(ctx, evt, true)
 }
 
-func (s *Service) DeliverAuditEvent(ctx context.Context, evt AuditEvent, force bool) (DeliveryStatus, error) {
-	return s.deliver(ctx, evt, force)
-}
-
-func (s *Service) deliver(ctx context.Context, evt AuditEvent, force bool) (DeliveryStatus, error) {
+func (s *Service) deliver(ctx context.Context, evt DeliveryIntent, force bool) (DeliveryStatus, error) {
 	settings, eventType, err := s.notificationPlan(evt, force)
 	if err != nil || eventType == "" {
 		return DeliveryStatus{}, err
@@ -211,7 +314,9 @@ func (s *Service) deliver(ctx context.Context, evt AuditEvent, force bool) (Deli
 	return s.deliverWithSettings(ctx, settings, evt, eventType)
 }
 
-func (s *Service) notificationPlan(evt AuditEvent, force bool) (Settings, string, error) {
+func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, string, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
 	settings, err := s.loadSettings()
 	if err != nil {
 		return Settings{}, "", err
@@ -225,7 +330,7 @@ func (s *Service) notificationPlan(evt AuditEvent, force bool) (Settings, string
 	return settings, eventType, nil
 }
 
-func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt AuditEvent, eventType string) (DeliveryStatus, error) {
+func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) (DeliveryStatus, error) {
 	if err := validateWebhookURL(settings.WebhookURL); err != nil {
 		return DeliveryStatus{}, err
 	}
@@ -263,7 +368,9 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 				status.Success = true
 				status.Error = ""
 				status.DeliveredAt = s.deps.Now().UTC().Format(time.RFC3339)
-				_ = s.storeLastDelivery(status)
+				if err := s.storeLastDelivery(status); err != nil {
+					return status, fmt.Errorf("record notification delivery outcome: %w", err)
+				}
 				return status, nil
 			}
 			lastErr = fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
@@ -280,7 +387,12 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 	status.Success = false
 	status.Error = truncate(strings.TrimSpace(fmt.Sprint(lastErr)), 240)
 	status.DeliveredAt = s.deps.Now().UTC().Format(time.RFC3339)
-	_ = s.storeLastDelivery(status)
+	if err := s.storeLastDelivery(status); err != nil {
+		if lastErr == nil {
+			lastErr = errors.New("webhook delivery failed")
+		}
+		return status, fmt.Errorf("%v; record notification delivery outcome: %w", lastErr, err)
+	}
 	if lastErr == nil {
 		lastErr = errors.New("webhook delivery failed")
 	}
@@ -345,6 +457,8 @@ func (s *Service) saveSettings(settings Settings) error {
 }
 
 func (s *Service) storeLastDelivery(status DeliveryStatus) error {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
 	settings, err := s.loadSettings()
 	if err != nil {
 		return err
@@ -353,7 +467,7 @@ func (s *Service) storeLastDelivery(status DeliveryStatus) error {
 	return s.saveSettings(settings)
 }
 
-func buildPayload(eventType string, evt AuditEvent) (WebhookPayload, error) {
+func buildPayload(eventType string, evt DeliveryIntent) (WebhookPayload, error) {
 	meta := map[string]any{}
 	if strings.TrimSpace(evt.MetaJSON) != "" {
 		if err := json.Unmarshal([]byte(evt.MetaJSON), &meta); err != nil {

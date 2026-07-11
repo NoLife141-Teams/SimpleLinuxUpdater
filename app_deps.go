@@ -23,7 +23,7 @@ type AppDeps struct {
 	AuthService            *AuthService
 	AuthSessionCommands    *authSessionCommands
 	BackupService          *BackupService
-	NotificationService    *NotificationService
+	NotificationService    NotificationDeliveryLifecycle
 	ServerState            *serverpkg.State
 	ServerInventoryService *ServerInventoryService
 	PolicyService          *PolicyService

@@ -68,6 +68,10 @@ _Avoid_: Audit health callback, health-history write, snapshot row
 The accepted operational health knowledge for a Server, combining its latest collected host facts with time-ordered Health Snapshot Capture, retention, and continuity when the Server is renamed or deleted.
 _Avoid_: Server facts repository, health tables, observability health query
 
+**Notification Delivery Lifecycle**:
+The lifecycle of an accepted outbound notification from event eligibility and admission through payload redaction, delivery attempts, retry, recorded outcome, and graceful shutdown; operator test delivery follows the same lifecycle synchronously.
+_Avoid_: Notification goroutine, webhook helper, audit notification callback
+
 **Runtime Status Projection**:
 The derived interpretation of runtime server status, job status, job phase, and scheduled-run/job reconciliation state into operation progress, action blocking, and dashboard timeline state.
 _Avoid_: Status helper logic, dashboard status mapping

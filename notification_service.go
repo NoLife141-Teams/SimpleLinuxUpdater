@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 )
 
 type NotificationService = notificationpkg.Service
+type NotificationDeliveryLifecycle = notificationpkg.Lifecycle
 type NotificationServiceDeps = notificationpkg.ServiceDeps
 type NotificationSettings = notificationpkg.Settings
 type NotificationSettingsResponse = notificationpkg.SettingsResponse
@@ -29,7 +31,14 @@ func defaultNotificationService() *NotificationService {
 	return NewNotificationService(NotificationServiceDeps{})
 }
 
-func handleNotificationSettingsStatus(c *gin.Context, service *NotificationService) {
+func closeNotificationDelivery(ctx context.Context, service NotificationDeliveryLifecycle) error {
+	if service == nil {
+		return nil
+	}
+	return service.Close(ctx)
+}
+
+func handleNotificationSettingsStatus(c *gin.Context, service NotificationDeliveryLifecycle) {
 	if service == nil {
 		service = defaultNotificationService()
 	}
@@ -41,7 +50,7 @@ func handleNotificationSettingsStatus(c *gin.Context, service *NotificationServi
 	c.JSON(http.StatusOK, settings)
 }
 
-func handleNotificationSettingsUpdate(c *gin.Context, service *NotificationService) {
+func handleNotificationSettingsUpdate(c *gin.Context, service NotificationDeliveryLifecycle) {
 	if service == nil {
 		service = defaultNotificationService()
 	}
@@ -64,7 +73,7 @@ func handleNotificationSettingsUpdate(c *gin.Context, service *NotificationServi
 	c.JSON(http.StatusOK, settings)
 }
 
-func handleNotificationTest(c *gin.Context, service *NotificationService) {
+func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycle) {
 	if service == nil {
 		service = defaultNotificationService()
 	}

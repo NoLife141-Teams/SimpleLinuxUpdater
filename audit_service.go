@@ -29,18 +29,18 @@ func NewAuditService(db auditDBProvider, notify auditNotifier, timezone auditTim
 	return NewAuditServiceWithNotifications(db, notify, timezone, nil)
 }
 
-func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService) *AuditService {
+func NewAuditServiceWithNotifications(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications NotificationDeliveryLifecycle) *AuditService {
 	return newAuditServiceWithNotificationsAndClock(db, notify, timezone, notifications, nil)
 }
 
-func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time, coordinators ...*maintenancepkg.Coordinator) *AuditService {
+func newAuditServiceWithNotificationsAndClock(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications NotificationDeliveryLifecycle, now func() time.Time, coordinators ...*maintenancepkg.Coordinator) *AuditService {
 	if db == nil {
 		db = getDB
 	}
 	return newAuditServiceWithHealthObservation(db, notify, timezone, notifications, now, healthpkg.SQLiteObservation{DB: db, Now: now}, coordinators...)
 }
 
-func newAuditServiceWithHealthObservation(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications *NotificationService, now func() time.Time, observation healthpkg.Observation, coordinators ...*maintenancepkg.Coordinator) *AuditService {
+func newAuditServiceWithHealthObservation(db auditDBProvider, notify auditNotifier, timezone auditTimezoneProvider, notifications NotificationDeliveryLifecycle, now func() time.Time, observation healthpkg.Observation, coordinators ...*maintenancepkg.Coordinator) *AuditService {
 	if db == nil {
 		db = getDB
 	}
@@ -54,7 +54,7 @@ func newAuditServiceWithHealthObservation(db auditDBProvider, notify auditNotifi
 	onRecord := func(evt auditpkg.Event) {
 		recordHealthSnapshotFromAuditEvent(observation, evt)
 		if notifications != nil {
-			notifications.NotifyAuditEvent(notificationpkg.AuditEvent{
+			admission := notifications.Accept(notificationpkg.DeliveryIntent{
 				CreatedAt:  evt.CreatedAt,
 				Actor:      evt.Actor,
 				Action:     evt.Action,
@@ -65,6 +65,9 @@ func newAuditServiceWithHealthObservation(db auditDBProvider, notify auditNotifi
 				MetaJSON:   evt.MetaJSON,
 				ClientIP:   evt.ClientIP,
 			})
+			if admission.State == notificationpkg.AdmissionRejected || admission.State == notificationpkg.AdmissionClosing {
+				log.Printf("notification delivery not admitted: action=%s target=%s state=%s error=%s", evt.Action, evt.TargetName, admission.State, admission.Error)
+			}
 		}
 	}
 	pruneGuard := func(prune func() error) error { return prune() }

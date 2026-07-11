@@ -3,6 +3,7 @@ package updates
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,7 +124,7 @@ func TestServerFactsRepositoryDefaultsCollectedAt(t *testing.T) {
 func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-health-snapshots.db")
 	rebootRequired := true
-	if err := repo.SaveHealthSnapshot(HealthSnapshotRecord{
+	if err := repo.saveHealthSnapshot(HealthSnapshotRecord{
 		ServerName:       "srv-a",
 		CapturedAt:       "2026-05-18T12:00:00Z",
 		Source:           "audit",
@@ -138,7 +139,7 @@ func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 		OSPrettyName:     "Debian",
 		RawJSON:          `{"source":"test"}`,
 	}); err != nil {
-		t.Fatalf("SaveHealthSnapshot() error = %v", err)
+		t.Fatalf("saveHealthSnapshot() error = %v", err)
 	}
 	snapshots, err := repo.ListHealthSnapshots("2026-05-18T00:00:00Z", "2026-05-19T00:00:00Z", "srv-a")
 	if err != nil {
@@ -164,8 +165,8 @@ func TestServerFactsRepositoryHealthSnapshotsAndRetention(t *testing.T) {
 	); err != nil {
 		t.Fatalf("update retention setting: %v", err)
 	}
-	if err := repo.SaveHealthSnapshot(HealthSnapshotRecord{ServerName: "srv-a", CapturedAt: now.Format(time.RFC3339)}); err != nil {
-		t.Fatalf("SaveHealthSnapshot(new) error = %v", err)
+	if err := repo.saveHealthSnapshot(HealthSnapshotRecord{ServerName: "srv-a", CapturedAt: now.Format(time.RFC3339)}); err != nil {
+		t.Fatalf("saveHealthSnapshot(new) error = %v", err)
 	}
 	snapshots, err = repo.ListHealthSnapshots("2026-05-01T00:00:00Z", "2026-05-21T00:00:00Z", "srv-a")
 	if err != nil {
@@ -196,6 +197,52 @@ func TestServerFactsSaveWritesHealthSnapshot(t *testing.T) {
 	}
 	if len(snapshots) != 1 || snapshots[0].Source != "facts" || snapshots[0].DiskFreeKB != 2048 || snapshots[0].OSPrettyName != "Ubuntu" {
 		t.Fatalf("snapshots = %+v, want one facts-derived snapshot", snapshots)
+	}
+}
+
+func TestHealthSnapshotCaptureFactsWritesNormalizedObservation(t *testing.T) {
+	_, repo := openServerFactsTestRepository(t, "capture-facts.db")
+	if err := repo.CaptureFacts(ServerFactsRecord{
+		ServerName:   " capture-facts ",
+		CollectedAt:  "2026-07-10T12:00:00Z",
+		DiskFreeKB:   512,
+		DiskTotalKB:  1024,
+		OSPrettyName: "Debian",
+	}); err != nil {
+		t.Fatalf("CaptureFacts() error = %v", err)
+	}
+
+	snapshots, err := repo.ListHealthSnapshots("2026-07-10T00:00:00Z", "2026-07-11T00:00:00Z", "capture-facts")
+	if err != nil {
+		t.Fatalf("ListHealthSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
+	}
+	got := snapshots[0]
+	if got.Source != "facts" || got.DiskStatus != "unknown" || got.AptStatus != "unknown" || got.RawJSON != "{}" {
+		t.Fatalf("snapshot = %+v, want normalized facts observation", got)
+	}
+}
+
+func TestServerFactsSaveKeepsCurrentFactsWhenCaptureFails(t *testing.T) {
+	db, repo := openServerFactsTestRepository(t, "capture-failure.db")
+	if _, err := db.Exec(`CREATE TRIGGER reject_health_snapshot
+		BEFORE INSERT ON server_health_snapshots
+		BEGIN SELECT RAISE(FAIL, 'capture rejected'); END`); err != nil {
+		t.Fatalf("create rejection trigger: %v", err)
+	}
+
+	err := repo.Save(ServerFactsRecord{ServerName: "srv-capture-failure", CollectedAt: "2026-07-10T12:00:00Z"})
+	if err == nil || !strings.Contains(err.Error(), "capture rejected") {
+		t.Fatalf("Save() error = %v, want capture failure", err)
+	}
+	loaded, err := repo.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll() error = %v", err)
+	}
+	if got := loaded["srv-capture-failure"].CollectedAt; got != "2026-07-10T12:00:00Z" {
+		t.Fatalf("saved current facts collected_at = %q, want retained facts", got)
 	}
 }
 

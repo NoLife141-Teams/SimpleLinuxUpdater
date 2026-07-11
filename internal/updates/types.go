@@ -136,6 +136,22 @@ type HealthSnapshotRecord struct {
 	RawJSON          string `json:"raw_json,omitempty"`
 }
 
+type MaintenanceKind string
+
+const (
+	MaintenanceKindUpdate       MaintenanceKind = "update"
+	MaintenanceKindScheduledRun MaintenanceKind = "scheduled_run"
+)
+
+// MaintenanceCompletion contains transport-neutral facts from completed maintenance.
+type MaintenanceCompletion struct {
+	ServerName  string
+	CompletedAt string
+	Kind        MaintenanceKind
+	Status      string
+	RawJSON     string
+}
+
 type ScheduledJobBehavior struct {
 	ApprovalTimeout  time.Duration
 	AutoApproveScope string

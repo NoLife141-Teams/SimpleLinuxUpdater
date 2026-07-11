@@ -621,6 +621,26 @@ test.describe.serial('setup and login flows', () => {
     await signIn(page);
   });
 
+  test('observability keeps a successful summary when health trends fail', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      totals: { updates_total: 4, success_rate_pct: 75 },
+      duration: { avg_ms: 1250, samples_with_duration: 3, samples_without_duration: 1 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    await page.route('**/api/observability/health-trends*', route => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'temporarily unavailable' }),
+    }));
+
+    await page.goto('/observability');
+    await expect(page.locator('#kpi-total')).toHaveText('4');
+    await expect(page.locator('#kpi-success-rate')).toHaveText('75.00%');
+    await expect(page.locator('#error-banner')).toContainText('Health trends is unavailable (HTTP 503)');
+  });
+
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
     let servers = [
       makeServer('demo-host', 'pending_approval', makePendingUpdates(80), { tags: ['prod'], has_key: true }),

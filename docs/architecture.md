@@ -24,7 +24,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - Services: audit, auth, backup, events, jobs, observability, policy scheduling, server inventory, and update runner behavior live behind `internal/...` package boundaries.
 - Runtime state: default router setup creates fresh app-scoped services, broker, Maintenance Coordinator, rate limiters, job manager, server state, session manager, metrics-token service, policy service, update service, backup service, audit service, and observability service.
 - Schema ownership: each domain package owns its SQLite table creation/migration; `package main` calls those installers in a deterministic startup order.
-- UI: Status, Manage, Observability, and Admin pages are backed by JSON APIs and live dashboard events.
+- UI: Status, Manage, Observability, and Admin pages are backed by JSON APIs and live dashboard events. Observability Page Interaction owns accepted summary and health-trend snapshots, independent freshness, host selection, stale-response rejection, and completion-aware refresh decisions while its browser adapter retains fetch, timer, visibility, timezone, and DOM effects.
 
 ## Request flow
 

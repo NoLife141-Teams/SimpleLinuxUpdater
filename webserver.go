@@ -1303,55 +1303,41 @@ func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 }
 
 func collectServerFactsWithConnection(server Server, client sshConnection, timeout time.Duration) serverFactsRecord {
-	record := serverFactsRecord{
-		ServerName:  server.Name,
-		CollectedAt: time.Now().UTC().Format(time.RFC3339),
-		DiskStatus:  "unknown",
-		AptStatus:   "unknown",
-		RawJSON:     "{}",
+	collector := healthpkg.Collector{
+		Probe: func(_ context.Context, kind healthpkg.ProbeKind) healthpkg.ProbeResult {
+			switch kind {
+			case healthpkg.ProbeOS:
+				stdout, stderr, err := runSSHCommandWithTimeout(client, serverFactsOSCmd, nil, timeout)
+				return healthpkg.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
+			case healthpkg.ProbeUptime:
+				stdout, stderr, err := runSSHCommandWithTimeout(client, serverFactsUptimeCmd, nil, timeout)
+				return healthpkg.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
+			case healthpkg.ProbeDisk:
+				stdout, stderr, err := runSSHCommandWithTimeout(client, precheckDiskSpaceCmd, nil, timeout)
+				check := checkDiskSpace(client)
+				result := healthpkg.ProbeResult{Output: stdout, Stderr: stderr, Status: healthStatusFromResult(check), Details: check.Details, Err: err}
+				if freeKB, totalKB, ok := diskFreeTotalKBFromOutput(stdout); ok {
+					result.FreeKB, result.TotalKB = freeKB, totalKB
+				} else if freeKB, ok := diskFreeKBFromOutput(stdout); ok {
+					result.FreeKB = freeKB
+				}
+				return result
+			case healthpkg.ProbeAPT:
+				check := checkAptHealth(client)
+				return healthpkg.ProbeResult{Status: healthStatusFromResult(check), Details: check.Details}
+			case healthpkg.ProbeReboot:
+				check := checkRebootRequired(client)
+				result := healthpkg.ProbeResult{Status: healthStatusFromResult(check), Details: check.Details}
+				if required, known := rebootResultRequiresRestart(check); known {
+					result.RebootRequired = &required
+				}
+				return result
+			default:
+				return healthpkg.ProbeResult{}
+			}
+		},
 	}
-	osOut, osErrOut, osErr := runSSHCommandWithTimeout(client, serverFactsOSCmd, nil, timeout)
-	if osErr == nil {
-		record.OSPrettyName = truncateString(osOut, 160)
-	} else {
-		record.OSPrettyName = "Unknown"
-	}
-	uptimeOut, _, uptimeErr := runSSHCommandWithTimeout(client, serverFactsUptimeCmd, nil, timeout)
-	if uptimeErr == nil {
-		record.UptimeSeconds = parseUptimeSeconds(uptimeOut)
-	}
-	diskOut, _, _ := runSSHCommandWithTimeout(client, precheckDiskSpaceCmd, nil, timeout)
-	disk := checkDiskSpace(client)
-	record.DiskStatus = healthStatusFromResult(disk)
-	if diskFreeKB, diskTotalKB, ok := diskFreeTotalKBFromOutput(diskOut); ok {
-		record.DiskFreeKB = diskFreeKB
-		record.DiskTotalKB = diskTotalKB
-	} else if diskFreeKB, ok := diskFreeKBFromOutput(diskOut); ok {
-		record.DiskFreeKB = diskFreeKB
-	}
-	record.DiskDetails = disk.Details
-	apt := checkAptHealth(client)
-	record.AptStatus = healthStatusFromResult(apt)
-	record.AptDetails = apt.Details
-	reboot := checkRebootRequired(client)
-	if required, known := rebootResultRequiresRestart(reboot); known {
-		record.RebootRequired = &required
-	}
-	raw, err := json.Marshal(map[string]any{
-		"os_stderr":     truncateString(osErrOut, 160),
-		"os_error":      errorString(osErr),
-		"uptime_error":  errorString(uptimeErr),
-		"disk_result":   disk,
-		"apt_result":    apt,
-		"reboot_result": reboot,
-	})
-	if err != nil {
-		log.Printf("collectServerFactsWithConnection: failed to marshal raw facts for %q: %v", server.Name, err)
-		record.RawJSON = "{}"
-	} else {
-		record.RawJSON = string(raw)
-	}
-	return record
+	return collector.Capture(context.Background(), server.Name)
 }
 
 func errorString(err error) string {

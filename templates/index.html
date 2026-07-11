@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=file-input-fix-20260622b">
-    <link rel="stylesheet" href="/static/css/index.css?v=safe-bulk-review-20260625a">
+    <link rel="stylesheet" href="/static/css/base.css?v=quality-pass-20260711a">
+    <link rel="stylesheet" href="/static/css/index.css?v=quality-pass-20260711a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -37,8 +37,6 @@
                 <div class="head-meta" aria-label="Runtime metadata">
                     <span class="meta-pill live" id="polling-state-label">Live polling 2s</span>
                     <span class="meta-pill" id="last-sync-label">Waiting for sync</span>
-                    <span class="meta-pill">Local Docker</span>
-                    <span class="meta-pill">v0.2.9</span>
                 </div>
             </section>
 
@@ -81,7 +79,7 @@
                             <small>Security-marked packages</small>
                         </article>
                         <button type="button" class="metric-item metric-button" data-metric-filter="stale_facts">
-                            <span>Facts stale</span>
+                            <span>Stale host facts</span>
                             <strong id="metric-stale-facts">0</strong>
                             <small>Host intelligence</small>
                         </button>
@@ -168,8 +166,8 @@
 	                            <label class="select-page"><input type="checkbox" id="select-all" aria-label="Select all visible hosts on this page"> Select page</label>
 	                            <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
 	                            <button class="inline-btn" type="button" id="bulk-approve">Approve standard</button>
-	                            <button class="inline-btn btn-security" type="button" id="bulk-approve-security">Approve security</button>
-	                            <button class="inline-btn btn-security" type="button" id="bulk-approve-kept-security">Approve kept security</button>
+                            <button class="inline-btn btn-security" type="button" id="bulk-approve-security">Approve standard security</button>
+                            <button class="inline-btn btn-security" type="button" id="bulk-approve-kept-security">Approve kept-back security</button>
 	                            <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
 	                            <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
 	                            <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
@@ -478,11 +476,13 @@
     </div>
 
     <script src="/static/auth.js"></script>
-    <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
+    <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/status-page-interaction.js?v=status-interaction-20260709a"></script>
-    <script src="/static/js/dashboard-projection-consumption.js?v=dashboard-consumption-20260710a"></script>
+    <script src="/static/js/dashboard-projection-consumption.js?v=quality-pass-20260711a"></script>
+    <script src="/static/js/status-page-interaction.js?v=status-interaction-20260711a"></script>
+    <script src="/static/js/status-formatting.js?v=quality-pass-20260711a"></script>
+    <script src="/static/js/status-transport.js?v=quality-pass-20260711a"></script>
     <script src="/static/js/index-bulk-actions.js?v=frontend-modules-20260626a"></script>
-    <script src="/static/js/index.js?v=frontend-modules-20260626a"></script>
+    <script src="/static/js/index.js?v=quality-pass-20260711a"></script>
 </body>
 </html>

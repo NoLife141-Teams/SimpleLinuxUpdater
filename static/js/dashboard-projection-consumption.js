@@ -414,5 +414,18 @@
         });
     }
 
-    return Object.freeze({ project, projectBulkReview });
+    function interactionApprovalCounts(server) {
+        const counts = pendingApprovalCounts(server);
+        return {
+            ...counts,
+            standardSecurity: counts.security ?? 0
+        };
+    }
+
+    const presentationFacts = Object.freeze({
+        approvalCounts: interactionApprovalCounts,
+        authFacts
+    });
+
+    return Object.freeze({ project, projectBulkReview, presentationFacts });
 }));

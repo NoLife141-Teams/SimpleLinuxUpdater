@@ -1,6 +1,10 @@
 const LOG_BOTTOM_THRESHOLD = 20;
-        const statusInteraction = window.statusPageInteraction;
         const dashboardConsumption = window.DashboardProjectionConsumption;
+        const statusFormatting = window.StatusFormatting;
+        const statusInteraction = window.StatusPageInteraction.createStore({
+            presentationFacts: dashboardConsumption.presentationFacts
+        });
+        window.statusPageInteraction = statusInteraction;
         let allServers = [];
         let lastSuccessfulSyncAt = null;
         let lastFetchError = null;
@@ -23,16 +27,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let drawerPreviousFocus = null;
         let suppressSortClickUntil = 0;
         let actionInteractionReleaseTimer = null;
-        let dashboardEventSource = null;
-        let dashboardEventReconnectTimer = null;
-        let dashboardEventReconnectDelay = 1000;
-        let serverPollIntervalID = null;
-        let dashboardExtrasIntervalID = null;
         const actionInteractionDeferMs = 350;
-        const eventBackedServerPollMs = 10000;
-        const fallbackServerPollMs = 5000;
-        const eventBackedExtrasPollMs = 60000;
-        const fallbackExtrasPollMs = 30000;
         const columnResizeStorageKey = "simplelinuxupdater.statusTableColWidths.v15";
         const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
         const defaultColumnWidths = Object.freeze({
@@ -99,9 +94,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         dispatchStatusInteraction({ type: "interactionReleased" });
                     }, effect.delayMs);
                 } else if (effect.type === "actionRejected") {
-                    window.alert(effect.reason || "Action is no longer available");
+                    window.notifyApp(effect.reason || "Action is no longer available");
                 } else if (effect.type === "announceResult" && effect.message) {
-                    window.alert(effect.message);
+                    window.notifyApp(effect.message);
                 }
             });
             return Promise.all(tasks);
@@ -129,46 +124,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function formatDuration(ms) {
-            const value = Number(ms || 0);
-            if (!Number.isFinite(value) || value <= 0) return "--";
-            if (value < 1000) return `${Math.round(value)}ms`;
-            const seconds = value / 1000;
-            if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-            const minutes = Math.floor(seconds / 60);
-            const remainder = Math.round(seconds % 60);
-            return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+            return statusFormatting.duration(ms);
         }
 
         function formatDiskFree(kb) {
-            if (kb === null || kb === undefined || kb === "") return "--";
-            const value = Number(kb);
-            if (!Number.isFinite(value) || value < 0) return "--";
-            const gib = value / 1024 / 1024;
-            if (gib >= 1) return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`;
-            return `${Math.round(value / 1024)} MiB`;
+            return statusFormatting.diskFree(kb);
         }
 
         function formatDiskCapacity(freeKB, totalKB) {
-            const free = formatDiskFree(freeKB);
-            const total = formatDiskFree(totalKB);
-            if (free === "--" && total === "--") return "--";
-            if (total === "--") return `${free} free`;
-            if (free === "--") return `${total} total`;
-            return `${free} free of ${total} total`;
+            return statusFormatting.diskCapacity(freeKB, totalKB);
         }
 
         function formatUptime(seconds) {
-            const value = Number(seconds || 0);
-            if (!Number.isFinite(value) || value <= 0) return "--";
-            const days = Math.floor(value / 86400);
-            if (days > 0) return `${days}d`;
-            const hours = Math.floor(value / 3600);
-            if (hours > 0) return `${hours}h`;
-            return `${Math.floor(value / 60)}m`;
+            return statusFormatting.uptime(seconds);
         }
 
         function statusLabel(value) {
-            return String(value || "unknown").replace(/_/g, " ");
+            return statusFormatting.statusLabel(value);
         }
 
         function formatRelativeTime(date) {
@@ -510,7 +482,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 : "";
             const degraded = !!lastFetchError || !!extrasError;
             if (pollingEl) {
-                pollingEl.textContent = degraded ? "Polling degraded" : (dashboardEventSource ? "Live events" : "Live polling");
+                pollingEl.textContent = degraded ? "Polling degraded" : (statusTransport.isLive() ? "Live events" : "Live polling");
                 pollingEl.classList.toggle('warning', degraded);
                 pollingEl.classList.toggle('live', !degraded);
             }
@@ -687,8 +659,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    ? `
 		                        <div class="triage-actions">
 		                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
-		                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Std sec (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
-		                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
+		                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
+		                            ${canApproveKeptBackSecurity ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>` : ""}
 		                            ${triage.can_approve_full ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>` : ""}
 		                            <button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${triage.can_cancel ? "" : "disabled"}>Cancel</button>
                             <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
@@ -706,7 +678,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    : `
 	                        <div class="triage-actions">
 	                            <button type="button" data-action="update-server" data-name="${safeDataName}" ${canUpdate ? "" : "disabled"} title="${canUpdate ? "Run update checks" : "Host cannot run update checks right now"}">Update</button>
-	                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Facts</button>
+	                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Host facts</button>
 	                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 	                        </div>
 		                    `;
@@ -972,8 +944,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Std security (${approvalCounts.security ?? 0})</button>` : ""}
-                    ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard securityurity (${approvalCounts.security ?? 0})</button>` : ""}
+                    ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>` : ""}
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
@@ -983,7 +955,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="mini-label">Tools</span>
 		                    <div class="inspector-actions inspector-actions-secondary">
 		                        <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}" ${canRunAutoremove ? "" : "disabled"} title="${canRunAutoremove ? "Run apt autoremove" : "Host cannot run autoremove right now"}">Autoremove</button>
-		                        <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Facts</button>
+		                        <button type="button" class="inline-btn" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Host facts</button>
 	                        <button type="button" class="inline-btn" data-action="enable-apt" data-name="${safeDataName}" ${canRunSudoers ? "" : "disabled"} title="${canRunSudoers ? "Enable passwordless apt" : "Host cannot change passwordless apt while another action is active"}">Enable apt</button>
 	                        <button type="button" class="inline-btn" data-action="disable-apt" data-name="${safeDataName}" ${canRunSudoers ? "" : "disabled"} title="${canRunSudoers ? "Disable passwordless apt" : "Host cannot change passwordless apt while another action is active"}">Disable apt</button>
 	                    </div>
@@ -994,7 +966,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <div><dt>Reboot</dt><dd>${escapeHtml(rebootText)}</dd></div>
                     <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskCapacity(health.disk_free_kb, health.disk_total_kb)}`)}</dd></div>
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>
-                    <div><dt>Facts</dt><dd>${escapeHtml(triage.facts_state || "unknown")} · ${escapeHtml(factsAge)}</dd></div>
+                    <div><dt>Host facts</dt><dd>${escapeHtml(triage.facts_state || "unknown")} · ${escapeHtml(factsAge)}</dd></div>
                 </dl>
                 <details class="inspector-more facts-more" data-name="${safeDataName}" ${factsMoreOpen ? "open" : ""}>
                     <summary>More host facts</summary>
@@ -1166,56 +1138,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (includeDashboard) fetchDashboardSummary(false, reason);
         }
 
-        function configurePolling(serverMs, extrasMs) {
-            if (serverPollIntervalID !== null) {
-                clearInterval(serverPollIntervalID);
-            }
-            if (dashboardExtrasIntervalID !== null) {
-                clearInterval(dashboardExtrasIntervalID);
-            }
-            serverPollIntervalID = setInterval(() => fetchServers(false, "poll"), serverMs);
-            dashboardExtrasIntervalID = setInterval(() => fetchDashboardExtras("poll"), extrasMs);
-        }
-
-        function scheduleDashboardEventReconnect() {
-            if (dashboardEventReconnectTimer !== null) return;
-            const delay = dashboardEventReconnectDelay;
-            dashboardEventReconnectDelay = Math.min(dashboardEventReconnectDelay * 2, 30000);
-            dashboardEventReconnectTimer = setTimeout(() => {
-                dashboardEventReconnectTimer = null;
-                connectDashboardEvents();
-            }, delay);
-        }
-
-        function connectDashboardEvents() {
-            if (!window.EventSource) {
-                configurePolling(fallbackServerPollMs, fallbackExtrasPollMs);
-                return;
-            }
-            if (dashboardEventSource) {
-                dashboardEventSource.close();
-            }
-            const source = new EventSource('/api/dashboard/events');
-            dashboardEventSource = source;
-            source.addEventListener('open', () => {
-                dashboardEventReconnectDelay = 1000;
-                configurePolling(eventBackedServerPollMs, eventBackedExtrasPollMs);
-                renderSyncState();
-            });
-            source.addEventListener('dashboard', () => {
+        const statusTransport = window.StatusTransport.createController({
+            EventSourceType: window.EventSource,
+            onServersPoll: () => fetchServers(false, "poll"),
+            onExtrasPoll: () => fetchDashboardExtras("poll"),
+            onDashboardEvent: () => {
                 requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
                 fetchDashboardExtras("sse", false);
-            });
-            source.addEventListener('error', () => {
-                if (dashboardEventSource === source) {
-                    dashboardEventSource = null;
-                }
-                source.close();
-                configurePolling(fallbackServerPollMs, fallbackExtrasPollMs);
-                renderSyncState();
-                scheduleDashboardEventReconnect();
-            });
-        }
+            },
+            onConnectionChanged: () => renderSyncState()
+        });
 
 	        function updateRefreshAllFactsState() {
 	            const button = document.getElementById('refresh-all-facts');
@@ -1843,10 +1775,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        ? `<span class="pending-drift-row" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
 	                        : "";
                     const securityApprovalLabel = approvalCounts.security === null
-                        ? "Std sec (?)"
-                        : `Std sec (${approvalCounts.security})`;
+                        ? "Standard security (?)"
+                        : `Standard security (${approvalCounts.security})`;
                     const keptBackSecurityButton = canApproveKeptBackSecurity
-                        ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept sec (${keptBackSecurityCount})</button>`
+                        ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>`
                         : "";
                     const fullApprovalButton = triage.can_approve_full
                         ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
@@ -2207,12 +2139,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             try {
                 const response = await fetch(url, { method: 'POST', ...options });
                 if (!response.ok) {
-                    alert(await parseErrorResponse(response, fallbackMessage));
+                    window.notifyApp(await parseErrorResponse(response, fallbackMessage));
                     return false;
                 }
                 return true;
             } catch (error) {
-                alert(error?.message || fallbackMessage);
+                window.notifyApp(error?.message || fallbackMessage);
                 return false;
             }
         }
@@ -2231,7 +2163,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        async function enablePasswordlessApt(name) {
 	            if (!canRunSudoersAction(getServerByName(name))) {
-	                alert("Host cannot change passwordless apt while another action is active.");
+	                window.notifyApp("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
 	            await runSingleHostAction(name, "enable_apt", "enable apt", async () => {
@@ -2251,7 +2183,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        async function disablePasswordlessApt(name) {
 	            if (!canRunSudoersAction(getServerByName(name))) {
-	                alert("Host cannot change passwordless apt while another action is active.");
+	                window.notifyApp("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
 	            await runSingleHostAction(name, "disable_apt", "disable apt", async () => {
@@ -2553,7 +2485,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            await runSingleHostAction(name, "approve_all", "approve", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
-	                    window.alert("No standard updates are eligible for approval.");
+	                    window.notifyApp("No standard updates are eligible for approval.");
 	                    return false;
 	                }
 	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.');
@@ -2564,7 +2496,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            await runSingleHostAction(name, "approve_security", "approve security", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
-	                    window.alert("No standard security updates are eligible for approval.");
+	                    window.notifyApp("No standard security updates are eligible for approval.");
 	                    return false;
 	                }
 	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.');
@@ -2578,14 +2510,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_kept_back_security) {
 	                    if (!counts.keptBackSecurityPlanAvailable) {
-	                        window.alert("Run a fresh package scan before approving kept-back security updates.");
+	                        window.notifyApp("Run a fresh package scan before approving kept-back security updates.");
 	                        return false;
 	                    }
-	                    window.alert("No kept-back security updates are eligible for approval.");
+	                    window.notifyApp("No kept-back security updates are eligible for approval.");
 	                    return false;
 	                }
 	                if (!counts.keptBackSecurityPlanAvailable) {
-	                    window.alert("Run a fresh package scan before approving kept-back security updates.");
+	                    window.notifyApp("Run a fresh package scan before approving kept-back security updates.");
 	                    return false;
 	                }
 	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
@@ -2604,7 +2536,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return false;
+	                if (!await window.confirmAction(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
 	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
 	                    headers: { 'Content-Type': 'application/json' },
@@ -2620,14 +2552,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_full) {
 	                    if (!counts.fullPlanAvailable) {
-	                        window.alert("Run a fresh package scan before approving full-upgrade.");
+	                        window.notifyApp("Run a fresh package scan before approving full-upgrade.");
 	                        return false;
 	                    }
-	                    window.alert("No full-upgrade packages are eligible for approval.");
+	                    window.notifyApp("No full-upgrade packages are eligible for approval.");
 	                    return false;
 	                }
 	                if (!counts.fullPlanAvailable) {
-	                    window.alert("Run a fresh package scan before approving full-upgrade.");
+	                    window.notifyApp("Run a fresh package scan before approving full-upgrade.");
 	                    return false;
 	                }
 	                const removed = counts.removedPackages;
@@ -2639,7 +2571,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    `Run full-upgrade on ${name}?`,
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!window.confirm(confirmText)) return false;
+	                if (!await window.confirmAction(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
 	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
 	                    headers: { 'Content-Type': 'application/json' },
@@ -2660,12 +2592,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
-	                        alert(payload.error || "Failed to refresh host facts");
+	                        window.notifyApp(payload.error || "Failed to refresh host facts");
 	                        return false;
 	                    }
 	                    return true;
 	                } catch (err) {
-	                    alert(err?.message || "Failed to refresh host facts");
+	                    window.notifyApp(err?.message || "Failed to refresh host facts");
 	                    return false;
 	                }
 	            }, ["servers", "dashboard"]);
@@ -2720,7 +2652,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
         loadDashboardFilters();
         initColumnResizing();
         setInterval(renderSyncState, 5000);
-        configurePolling(fallbackServerPollMs, fallbackExtrasPollMs);
-        connectDashboardEvents();
+        statusTransport.start();
         fetchDashboardExtras();
         fetchServers();

@@ -190,12 +190,12 @@
             const plan = buildBulkActionPlan(actionPath, actionLabel);
             if (plan.visibleNames.length === 0) {
                 if (plan.selectedNames.length > 0) {
-                    alert(`No visible selected hosts for bulk ${actionLabel}.`);
+                    window.notifyApp(`No visible selected hosts for bulk ${actionLabel}.`);
                 }
                 return;
             }
             if (plan.eligibleNames.length === 0) {
-                alert(`No visible selected hosts can run bulk ${actionLabel}.`);
+                window.notifyApp(`No visible selected hosts can run bulk ${actionLabel}.`);
                 return;
             }
             if (!(await requestBulkActionReview(plan))) {
@@ -315,12 +315,12 @@
             const plan = buildBulkActionPlan("facts-refresh", "refresh facts");
 	            if (plan.visibleNames.length === 0) {
 	                if (plan.selectedNames.length > 0) {
-	                    alert("No visible selected hosts for facts refresh.");
+	                    window.notifyApp("No visible selected hosts for facts refresh.");
 	                }
 	                return;
 	            }
 	            if (plan.eligibleNames.length === 0) {
-	                alert("No visible selected hosts can refresh facts right now.");
+	                window.notifyApp("No visible selected hosts can refresh facts right now.");
 	                return;
 	            }
             if (!(await requestBulkActionReview(plan))) {

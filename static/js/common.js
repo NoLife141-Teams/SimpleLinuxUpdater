@@ -77,6 +77,102 @@
         label.textContent = file ? file.name : emptyLabel;
     };
 
+    function ensureFeedbackRegion() {
+        let region = document.getElementById("app-feedback-region");
+        if (region) return region;
+        region = document.createElement("div");
+        region.id = "app-feedback-region";
+        region.className = "app-feedback-region";
+        region.setAttribute("role", "status");
+        region.setAttribute("aria-live", "polite");
+        region.setAttribute("aria-atomic", "true");
+        document.body.appendChild(region);
+        return region;
+    }
+
+    window.notifyApp = window.notifyApp || function notifyApp(message, options = {}) {
+        const region = ensureFeedbackRegion();
+        const item = document.createElement("div");
+        item.className = `app-feedback ${options.tone === "success" ? "success" : options.tone === "warning" ? "warning" : options.tone === "info" ? "info" : "danger"}`;
+        item.textContent = String(message || "");
+        region.replaceChildren(item);
+        window.setTimeout(() => {
+            if (item.parentNode === region) item.remove();
+        }, Number(options.duration || 6000));
+    };
+
+    function ensureActionConfirmModal() {
+        let backdrop = document.getElementById("action-confirm-modal");
+        if (backdrop) return backdrop;
+        backdrop = document.createElement("div");
+        backdrop.className = "modal-backdrop action-confirm-backdrop";
+        backdrop.id = "action-confirm-modal";
+        backdrop.innerHTML = `
+            <div class="modal action-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title" aria-describedby="action-confirm-message">
+                <div class="eyebrow">Review operation</div>
+                <h2 id="action-confirm-title">Confirm action</h2>
+                <p class="muted action-confirm-message" id="action-confirm-message"></p>
+                <div class="modal-actions">
+                    <button class="btn-ghost inline-btn" id="action-confirm-cancel" type="button">Cancel</button>
+                    <button class="primary-action inline-btn" id="action-confirm-submit" type="button">Confirm</button>
+                </div>
+            </div>`;
+        document.body.appendChild(backdrop);
+        return backdrop;
+    }
+
+    window.confirmAction = window.confirmAction || function confirmAction(message, options = {}) {
+        return new Promise((resolve) => {
+            const backdrop = ensureActionConfirmModal();
+            const dialog = backdrop.querySelector(".action-confirm-modal");
+            const submit = backdrop.querySelector("#action-confirm-submit");
+            const cancel = backdrop.querySelector("#action-confirm-cancel");
+            const messageNode = backdrop.querySelector("#action-confirm-message");
+            const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            const focusable = () => Array.from(dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"));
+            const close = (confirmed) => {
+                backdrop.classList.remove("active");
+                document.removeEventListener("keydown", onKeydown);
+                submit.removeEventListener("click", onSubmit);
+                cancel.removeEventListener("click", onCancel);
+                backdrop.removeEventListener("click", onBackdrop);
+                if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
+                resolve(confirmed);
+            };
+            const onSubmit = () => close(true);
+            const onCancel = () => close(false);
+            const onBackdrop = (event) => { if (event.target === backdrop) close(false); };
+            const onKeydown = (event) => {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    close(false);
+                    return;
+                }
+                if (event.key !== "Tab") return;
+                const items = focusable();
+                if (!items.length) return;
+                const first = items[0];
+                const last = items[items.length - 1];
+                if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
+            };
+            messageNode.textContent = String(message || "");
+            submit.textContent = String(options.confirmLabel || "Confirm");
+            submit.className = `${options.danger ? "btn-danger" : "primary-action"} inline-btn`;
+            submit.addEventListener("click", onSubmit);
+            cancel.addEventListener("click", onCancel);
+            backdrop.addEventListener("click", onBackdrop);
+            document.addEventListener("keydown", onKeydown);
+            backdrop.classList.add("active");
+            window.requestAnimationFrame(() => cancel.focus());
+        });
+    };
+
     function ensureTypedConfirmModal() {
         let backdrop = document.getElementById("typed-confirm-modal");
         if (backdrop) return backdrop;
@@ -105,7 +201,7 @@
     window.confirmTypedAction = window.confirmTypedAction || function confirmTypedAction(message, requiredText) {
         const required = String(requiredText || "").trim();
         if (!required) {
-            return Promise.resolve(window.confirm(message));
+            return window.confirmAction(message);
         }
         return new Promise((resolve) => {
             const backdrop = ensureTypedConfirmModal();

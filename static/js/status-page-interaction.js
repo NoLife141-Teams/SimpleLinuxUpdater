@@ -208,7 +208,16 @@
         };
     }
 
-    function createStore() {
+    function createStore(options = {}) {
+        const presentationFacts = options.presentationFacts && typeof options.presentationFacts === "object"
+            ? options.presentationFacts
+            : {};
+        const canonicalApprovalCounts = typeof presentationFacts.approvalCounts === "function"
+            ? presentationFacts.approvalCounts
+            : pendingApprovalCounts;
+        const canonicalAuthFacts = typeof presentationFacts.authFacts === "function"
+            ? presentationFacts.authFacts
+            : (server, globalKeyAvailable) => ({ label: authLabel(server, globalKeyAvailable) });
         let servers = [];
         let serversByName = new Map();
         let dashboardSnapshot = {};
@@ -673,7 +682,7 @@
                 reason: defaultActionReason(actionKey, server, action),
                 readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
                 blockingStatus: String(action.blocking_status || ""),
-                payloadFacts: { counts: pendingApprovalCounts(server) }
+                payloadFacts: { counts: canonicalApprovalCounts(server) }
             };
         }
 
@@ -691,14 +700,14 @@
                 const reason = defaultActionReason(actionKey, server, action);
                 if (action.enabled) {
                     eligibleNames.push(name);
-                    eligibleHosts.push({ name, auth: authLabel(server, globalKeyAvailable), readiness: reason });
+                    eligibleHosts.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, readiness: reason });
                 } else {
-                    ineligible.push({ name, auth: authLabel(server, globalKeyAvailable), reason });
+                    ineligible.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, reason });
                 }
             });
             const hiddenHosts = hiddenSelectedNames.map(name => ({
                 name,
-                auth: authLabel(actionServer(name), globalKeyAvailable),
+                auth: canonicalAuthFacts(actionServer(name), globalKeyAvailable).label,
                 reason: "Hidden by current filter or page"
             }));
             return {
@@ -714,7 +723,7 @@
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: pendingApprovalCounts(actionServer(name)) }]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: canonicalApprovalCounts(actionServer(name)) }]))
             };
         }
 

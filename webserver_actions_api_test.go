@@ -480,7 +480,6 @@ func TestCancelRouteReturnsFailureWhenPendingJobCannotBePersisted(t *testing.T) 
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-cancel-persist-failure.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -528,7 +527,6 @@ func TestApproveRouteUpdatesJobWithoutOverwritingApprovedRuntimeState(t *testing
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-approve-job-sync.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -595,7 +593,6 @@ func TestBulkUpdateRouteHandlesConcurrentStarts(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-bulk-update-concurrent.db")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
@@ -682,7 +679,6 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 			preserveServerState(t)
 			preserveSessionState(t)
 			preserveRateLimiterState(t)
-			preserveMetricsTokenState(t)
 			dbFile := filepath.Join(t.TempDir(), strings.ReplaceAll(tc.kind, "/", "-")+".db")
 			handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 
@@ -769,7 +765,6 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 			preserveServerState(t)
 			preserveSessionState(t)
 			preserveRateLimiterState(t)
-			preserveMetricsTokenState(t)
 
 			dbFile := filepath.Join(t.TempDir(), strings.ReplaceAll(tc.name, " ", "-")+".db")
 			jobDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), strings.ReplaceAll(tc.name, " ", "-")+"-jobs.db"))
@@ -1008,7 +1003,6 @@ func TestApproveFullRouteRequiresRemovalConfirmation(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-approve-full-confirm.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -1109,7 +1103,6 @@ func TestApproveKeptBackSecurityRouteRequiresRemovalConfirmation(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-approve-kept-back-security-confirm.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -1202,7 +1195,6 @@ func TestApproveKeptBackSecurityRouteUsesTargetedRemovalPlan(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-approve-kept-back-security-targeted.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -1337,7 +1329,6 @@ func TestCancelRouteDoesNotRehydrateClearedRuntimeLogsFromJobSync(t *testing.T) 
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 
 	dbFile := filepath.Join(t.TempDir(), "actions-cancel-route-job-sync.db")
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -1434,7 +1425,6 @@ func TestApproveRoutesReturnFailureWhenPendingJobCannotBePersisted(t *testing.T)
 			preserveServerState(t)
 			preserveSessionState(t)
 			preserveRateLimiterState(t)
-			preserveMetricsTokenState(t)
 
 			dbFile := filepath.Join(t.TempDir(), strings.ReplaceAll(tc.name, " ", "-")+".db")
 			handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)

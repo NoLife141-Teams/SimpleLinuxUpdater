@@ -14,6 +14,7 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	authpkg "debian-updater/internal/auth"
 	maintenancepkg "debian-updater/internal/maintenance"
+	observabilitypkg "debian-updater/internal/observability"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
@@ -419,26 +420,22 @@ func rateLimitClientIP(c *gin.Context) string {
 	return host
 }
 
-func metricsBearerMiddleware() gin.HandlerFunc {
-	return metricsBearerMiddlewareWithService(metricsTokenService)
-}
-
-func metricsBearerMiddlewareWithService(service *MetricsTokenService) gin.HandlerFunc {
+func metricsBearerMiddlewareWithService(service MetricsAccessCredential) gin.HandlerFunc {
 	return metricsBearerMiddlewareWithServiceAndLimiter(service, nil)
 }
 
-func metricsBearerMiddlewareWithServiceAndLimiter(service *MetricsTokenService, limiter *AuthRateLimiter) gin.HandlerFunc {
+func metricsBearerMiddlewareWithServiceAndLimiter(service MetricsAccessCredential, limiter *AuthRateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		svc := service
-		if svc == nil {
-			svc = metricsTokenService
+		if service == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+			return
 		}
-		if svc == metricsTokenService {
-			if strings.TrimSpace(getMetricsBearerTokenHash()) == "" {
-				c.AbortWithStatus(http.StatusNotFound)
-				return
-			}
-		} else if !svc.Status() {
+		status, err := service.Status(c.Request.Context())
+		if err != nil || status == observabilitypkg.MetricsAccessUnavailable {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
+			return
+		}
+		if status == observabilitypkg.MetricsAccessDisabled {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
@@ -461,8 +458,8 @@ func metricsBearerMiddlewareWithServiceAndLimiter(service *MetricsTokenService, 
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return
 		}
-		match, err := svc.VerifyBearerToken(parts[1])
-		if err != nil || !match {
+		result, err := service.Verify(c.Request.Context(), parts[1])
+		if err != nil || result != observabilitypkg.MetricsAccessAccepted {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return
 		}

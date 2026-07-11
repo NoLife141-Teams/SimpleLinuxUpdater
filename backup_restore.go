@@ -39,12 +39,12 @@ type backupManifestFile = internalbackup.ManifestFile
 
 func NewBackupService() *BackupService {
 	return newRuntimeComposition(AppDeps{
-		ServerState:           globalServerState(),
-		MetricsTokenService:   metricsTokenService,
-		CurrentJobManager:     currentJobManager,
-		SetCurrentJobManager:  setCurrentJobManager,
-		CurrentSessionManager: currentSessionManager,
-		SetSessionManager:     setGlobalSessionManager,
+		ServerState:             globalServerState(),
+		MetricsAccessCredential: NewMetricsAccessCredential(MetricsAccessCredentialDeps{}),
+		CurrentJobManager:       currentJobManager,
+		SetCurrentJobManager:    setCurrentJobManager,
+		CurrentSessionManager:   currentSessionManager,
+		SetSessionManager:       setGlobalSessionManager,
 	}).Compose().BackupService
 }
 
@@ -199,11 +199,6 @@ func resetRuntimeCaches() {
 	encryptionKey = nil
 	keyOnce = sync.Once{}
 
-	metricsBearerTokenHashMu.Lock()
-	metricsBearerTokenHash = ""
-	metricsBearerTokenHashLoaded = false
-	metricsBearerTokenHashDBPath = ""
-	metricsBearerTokenHashMu.Unlock()
 	setCurrentJobManager(nil)
 }
 

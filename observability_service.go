@@ -20,10 +20,8 @@ type healthTrendResponse = observabilitypkg.HealthTrendResponse
 
 type ObservabilityServiceDeps = observabilitypkg.ServiceDeps
 type ObservabilityService = observabilitypkg.Service
-type MetricsTokenDeps = observabilitypkg.MetricsTokenDeps
-type MetricsTokenService = observabilitypkg.MetricsTokenService
-
-var metricsTokenService = NewMetricsTokenService(MetricsTokenDeps{})
+type MetricsAccessCredentialDeps = observabilitypkg.MetricsAccessCredentialDeps
+type MetricsAccessCredential = observabilitypkg.MetricsAccessCredential
 
 func NewObservabilityService(deps ObservabilityServiceDeps) *ObservabilityService {
 	return observabilitypkg.NewService(observabilityServiceDepsWithDefaults(deps))
@@ -33,8 +31,8 @@ func defaultObservabilityService() *ObservabilityService {
 	return NewObservabilityService(ObservabilityServiceDeps{})
 }
 
-func NewMetricsTokenService(deps MetricsTokenDeps) *MetricsTokenService {
-	return observabilitypkg.NewMetricsTokenService(metricsTokenDepsWithDefaults(deps))
+func NewMetricsAccessCredential(deps MetricsAccessCredentialDeps) MetricsAccessCredential {
+	return observabilitypkg.NewMetricsAccessCredential(metricsAccessCredentialDepsWithDefaults(deps))
 }
 
 func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) ObservabilityServiceDeps {
@@ -92,12 +90,12 @@ func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) Observa
 	return deps
 }
 
-func metricsTokenDepsWithDefaults(deps MetricsTokenDeps) MetricsTokenDeps {
-	if deps.DB == nil {
-		deps.DB = getDB
-	}
-	if deps.DBPath == nil {
-		deps.DBPath = dbPath
+func metricsAccessCredentialDepsWithDefaults(deps MetricsAccessCredentialDeps) MetricsAccessCredentialDeps {
+	if deps.Store == nil {
+		deps.Store = observabilitypkg.SQLiteMetricsCredentialStore{
+			DB:         getDB,
+			SettingKey: metricsBearerTokenHashSetting,
+		}
 	}
 	if deps.RandomRead == nil {
 		deps.RandomRead = rand.Read
@@ -110,26 +108,8 @@ func metricsTokenDepsWithDefaults(deps MetricsTokenDeps) MetricsTokenDeps {
 	if deps.ComparePasswordAndHash == nil {
 		deps.ComparePasswordAndHash = argon2id.ComparePasswordAndHash
 	}
-	if deps.StateRLock == nil {
-		deps.StateRLock = runtimeStateMu.RLock
-	}
-	if deps.StateRUnlock == nil {
-		deps.StateRUnlock = runtimeStateMu.RUnlock
-	}
-	if deps.StateLock == nil {
-		deps.StateLock = runtimeStateMu.Lock
-	}
-	if deps.StateUnlock == nil {
-		deps.StateUnlock = runtimeStateMu.Unlock
-	}
-	if deps.SettingKey == "" {
-		deps.SettingKey = metricsBearerTokenHashSetting
-	}
 	if deps.EntropyBytes <= 0 {
 		deps.EntropyBytes = metricsBearerTokenEntropyBytes
-	}
-	if deps.Logf == nil {
-		deps.Logf = log.Printf
 	}
 	return deps
 }
@@ -157,48 +137,4 @@ func updateHealthFromResults(health *dashboardHealthInfo, results []updatePreche
 
 func buildDashboardSummary(rawWindow string, now time.Time) (dashboardSummaryResponse, error) {
 	return defaultObservabilityService().BuildDashboardSummary(rawWindow, now)
-}
-
-func getMetricsBearerTokenHash() string {
-	cacheDBPath := dbPath()
-	metricsBearerTokenHashMu.RLock()
-	if metricsBearerTokenHashLoaded && metricsBearerTokenHashDBPath == cacheDBPath {
-		cached := metricsBearerTokenHash
-		metricsBearerTokenHashMu.RUnlock()
-		metricsTokenService.RestoreCache(cached, true, cacheDBPath)
-		return cached
-	}
-	metricsBearerTokenHashMu.RUnlock()
-	tokenHash := metricsTokenService.Hash()
-	syncMetricsTokenGlobals(metricsTokenService)
-	return tokenHash
-}
-
-func clearMetricsBearerTokenHash() error {
-	if err := metricsTokenService.Clear(); err != nil {
-		return err
-	}
-	syncMetricsTokenGlobals(metricsTokenService)
-	return nil
-}
-
-func issueMetricsBearerToken() (string, error) {
-	token, err := metricsTokenService.Rotate()
-	if err != nil {
-		return "", err
-	}
-	syncMetricsTokenGlobals(metricsTokenService)
-	return token, nil
-}
-
-func syncMetricsTokenGlobals(service *MetricsTokenService) {
-	if service == nil {
-		return
-	}
-	tokenHash, loaded, dbPath := service.SnapshotCache()
-	metricsBearerTokenHashMu.Lock()
-	defer metricsBearerTokenHashMu.Unlock()
-	metricsBearerTokenHash = tokenHash
-	metricsBearerTokenHashLoaded = loaded
-	metricsBearerTokenHashDBPath = dbPath
 }

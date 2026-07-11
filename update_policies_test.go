@@ -33,7 +33,6 @@ func prepareUpdatePolicyTestState(t *testing.T, dbFile string) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	resetMissedUpdatePolicyTicksForTest()
 	t.Cleanup(resetMissedUpdatePolicyTicksForTest)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)

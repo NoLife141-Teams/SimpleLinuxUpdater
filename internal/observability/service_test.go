@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -583,12 +584,12 @@ func TestServiceBuildMetricsCachesPerDBPathAndWindow(t *testing.T) {
 	}
 }
 
-func TestMetricsTokenServiceLifecycleAndFallback(t *testing.T) {
+func TestMetricsAccessCredentialLifecycle(t *testing.T) {
 	db, path := newTestDB(t, "token.db")
+	_ = path
 	random := byte(1)
-	service := NewMetricsTokenService(MetricsTokenDeps{
-		DB:     func() *sql.DB { return db },
-		DBPath: func() string { return path },
+	credential := NewMetricsAccessCredential(MetricsAccessCredentialDeps{
+		Store: SQLiteMetricsCredentialStore{DB: func() *sql.DB { return db }},
 		RandomRead: func(buf []byte) (int, error) {
 			for i := range buf {
 				buf[i] = random
@@ -604,54 +605,44 @@ func TestMetricsTokenServiceLifecycleAndFallback(t *testing.T) {
 			return bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)) == nil, nil
 		},
 	})
+	ctx := context.Background()
 
-	if service.Status() {
-		t.Fatalf("Status() = true before token creation")
+	if status, err := credential.Status(ctx); err != nil || status != MetricsAccessDisabled {
+		t.Fatalf("Status() = %q, %v before credential creation", status, err)
 	}
-	token, err := service.Rotate()
+	token, err := credential.Rotate(ctx)
 	if err != nil {
 		t.Fatalf("Rotate() error = %v", err)
 	}
-	if token == "" || !service.Status() {
-		t.Fatalf("Rotate() token/status = %q/%t, want token and enabled", token, service.Status())
+	if status, statusErr := credential.Status(ctx); token == "" || statusErr != nil || status != MetricsAccessEnabled {
+		t.Fatalf("Rotate() token/status = %q/%q/%v, want token and enabled", token, status, statusErr)
 	}
-	ok, err := service.VerifyBearerToken(token)
-	if err != nil || !ok {
-		t.Fatalf("VerifyBearerToken(valid) = %t/%v, want true/nil", ok, err)
+	result, err := credential.Verify(ctx, token)
+	if err != nil || result != MetricsAccessAccepted {
+		t.Fatalf("Verify(valid) = %q/%v, want accepted/nil", result, err)
 	}
-	ok, err = service.VerifyBearerToken("wrong")
-	if err != nil || ok {
-		t.Fatalf("VerifyBearerToken(wrong) = %t/%v, want false/nil", ok, err)
+	result, err = credential.Verify(ctx, "wrong")
+	if err != nil || result != MetricsAccessRejected {
+		t.Fatalf("Verify(wrong) = %q/%v, want rejected/nil", result, err)
 	}
-	if err := service.Clear(); err != nil {
-		t.Fatalf("Clear() error = %v", err)
+	if err := credential.Disable(ctx); err != nil {
+		t.Fatalf("Disable() error = %v", err)
 	}
-	if service.Status() {
-		t.Fatalf("Status() = true after clear")
-	}
-
-	cachedHash := "$2a$04$jW5I0PMb7s8eyxZswzruCOx2Unio5jXScWp55MSfS.KMtMucHEVKq"
-	closedDB, closedPath := newTestDB(t, "token-closed.db")
-	service.deps.DB = func() *sql.DB { return closedDB }
-	service.deps.DBPath = func() string { return closedPath }
-	service.RestoreCache(cachedHash, false, closedPath)
-	_ = closedDB.Close()
-	if got := service.Hash(); got != cachedHash {
-		t.Fatalf("Hash() locked fallback = %q, want cached hash", got)
+	if status, err := credential.Status(ctx); err != nil || status != MetricsAccessDisabled {
+		t.Fatalf("Status() = %q, %v after disable", status, err)
 	}
 }
 
-func TestMetricsTokenServiceUnavailableRandom(t *testing.T) {
-	db, path := newTestDB(t, "token-random.db")
-	service := NewMetricsTokenService(MetricsTokenDeps{
-		DB:     func() *sql.DB { return db },
-		DBPath: func() string { return path },
+func TestMetricsAccessCredentialUnavailableRandom(t *testing.T) {
+	db, _ := newTestDB(t, "token-random.db")
+	credential := NewMetricsAccessCredential(MetricsAccessCredentialDeps{
+		Store: SQLiteMetricsCredentialStore{DB: func() *sql.DB { return db }},
 		RandomRead: func([]byte) (int, error) {
 			return 0, errors.New("entropy unavailable")
 		},
 		HashPassword: func(string) (string, error) { return "", nil },
 	})
-	if _, err := service.Rotate(); err == nil {
+	if _, err := credential.Rotate(context.Background()); err == nil {
 		t.Fatalf("Rotate() error = nil, want entropy error")
 	}
 }

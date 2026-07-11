@@ -28,7 +28,6 @@ func TestSetupRouterWithDepsUsesInjectedInitialization(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	dbFile := filepath.Join(t.TempDir(), "deps-init.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
 
@@ -156,7 +155,6 @@ func TestSetupRouterWithDepsDefaultsAuthServiceToInjectedDB(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	globalDBPath := filepath.Join(t.TempDir(), "global-auth.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", globalDBPath)
 	_ = getDB()
@@ -201,7 +199,6 @@ func TestSetupRouterWithDepsDefaultsServerInventoryToInjectedDB(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	globalDBPath := filepath.Join(t.TempDir(), "global-inventory.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", globalDBPath)
 	_ = getDB()
@@ -304,7 +301,6 @@ func TestSetupRouterWithDepsDefaultsGlobalKeyToInjectedDB(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 	globalDBPath := filepath.Join(t.TempDir(), "global-key-global.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", globalDBPath)
@@ -413,7 +409,6 @@ func TestSetupRouterWithDepsInitializesStatusesForPersistedServers(t *testing.T)
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	preserveEncryptionState(t)
 
 	globalDBPath := filepath.Join(t.TempDir(), "global-persisted-servers.db")
@@ -484,7 +479,6 @@ func TestSetupRouterWithDepsDefaultsPolicyRepositoryToInjectedDB(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	globalDBPath := filepath.Join(t.TempDir(), "global-policy.db")
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", globalDBPath)
 	_ = getDB()
@@ -795,7 +789,7 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 		one.PolicyService == two.PolicyService ||
 		one.UpdateService == two.UpdateService ||
 		one.ObservabilityService == two.ObservabilityService ||
-		one.MetricsTokenService == two.MetricsTokenService ||
+		one.MetricsAccessCredential == two.MetricsAccessCredential ||
 		one.DashboardEventBroker == two.DashboardEventBroker ||
 		one.LoginRateLimiter == two.LoginRateLimiter ||
 		one.PasswordChangeRateLimiter == two.PasswordChangeRateLimiter ||
@@ -938,7 +932,7 @@ func TestMetricsRouteUsesAppScopedRateLimiter(t *testing.T) {
 	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "metrics-route-limiter.db"), AppDeps{
 		MetricsRateLimiter: appLimiter,
 	})
-	token, err := app.Deps.MetricsTokenService.Rotate()
+	token, err := app.Deps.MetricsAccessCredential.Rotate(context.Background())
 	if err != nil {
 		t.Fatalf("rotate metrics token: %v", err)
 	}
@@ -959,7 +953,6 @@ func TestServerFactsRefreshRouteUsesInjectedDB(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	globalDBPath := filepath.Join(t.TempDir(), "global-facts.db")
 	routeDBPath := filepath.Join(t.TempDir(), "route-facts.db")
 	routeDB, err := sql.Open("sqlite", routeDBPath)
@@ -1083,7 +1076,6 @@ func TestActionRoutesUseInjectedUpdateServiceJobManager(t *testing.T) {
 	preserveServerState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
-	preserveMetricsTokenState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "app.db"))
 
 	appDB := getDB()

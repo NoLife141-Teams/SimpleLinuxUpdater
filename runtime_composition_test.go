@@ -73,7 +73,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.PolicyRepository == nil ||
 		deps.UpdateService == nil ||
 		deps.ObservabilityService == nil ||
-		deps.MetricsTokenService == nil ||
+		deps.MetricsAccessCredential == nil ||
 		deps.CurrentJobManager == nil ||
 		deps.NewJobManager == nil ||
 		deps.SetCurrentJobManager == nil ||
@@ -131,12 +131,15 @@ func TestRuntimeCompositionInjectsDBPathIntoRuntimeServices(t *testing.T) {
 		DBPath: func() string { return dbPath },
 	}).Compose()
 
-	metricsDeps := deps.MetricsTokenService.EnsureDeps()
-	if got := metricsDeps.DB(); got != db {
-		t.Fatalf("metrics token DB = %p, want injected %p", got, db)
+	if _, err := deps.MetricsAccessCredential.Rotate(context.Background()); err != nil {
+		t.Fatalf("rotate composed Metrics Access Credential: %v", err)
 	}
-	if got := metricsDeps.DBPath(); got != dbPath {
-		t.Fatalf("metrics token DBPath = %q, want %q", got, dbPath)
+	var persistedHash string
+	if err := db.QueryRow("SELECT value FROM settings WHERE key = ?", metricsBearerTokenHashSetting).Scan(&persistedHash); err != nil {
+		t.Fatalf("read composed Metrics Access Credential: %v", err)
+	}
+	if strings.TrimSpace(persistedHash) == "" {
+		t.Fatal("composed Metrics Access Credential did not use injected persistence")
 	}
 	if got := deps.BackupService.Status().DBPath; got != dbPath {
 		t.Fatalf("backup service DBPath = %q, want %q", got, dbPath)

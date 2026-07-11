@@ -18,6 +18,7 @@ import (
 
 type fakeRepo struct {
 	loaded       []Server
+	loadErr      error
 	saved        []Server
 	saveErr      error
 	updateKeyErr error
@@ -27,7 +28,24 @@ type fakeRepo struct {
 }
 
 func (r *fakeRepo) Load() ([]Server, error) {
+	if r.loadErr != nil {
+		return nil, r.loadErr
+	}
 	return CloneServers(r.loaded), nil
+}
+
+func TestServerInventoryServiceLoadReturnsRepositoryFailureWithoutReplacingState(t *testing.T) {
+	loadErr := errors.New("inventory unavailable")
+	repo := &fakeRepo{loadErr: loadErr}
+	svc, _, stateServers, _ := newTestService(repo, []Server{{Name: "existing", Host: "existing.example", User: "root"}})
+
+	err := svc.Load()
+	if !errors.Is(err, loadErr) {
+		t.Fatalf("Load() error = %v, want %v", err, loadErr)
+	}
+	if len(*stateServers) != 1 || (*stateServers)[0].Name != "existing" {
+		t.Fatalf("Load() servers = %+v, want existing inventory preserved", *stateServers)
+	}
 }
 
 func (r *fakeRepo) Save(servers []Server, txHook TxHook) error {

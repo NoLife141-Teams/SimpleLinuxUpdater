@@ -23,6 +23,20 @@ test("timezone administration retains accepted facts and rejects stale responses
     assert.equal(store.getView().timezone.configured, "America/Toronto");
 });
 
+test("unscoped Admin snapshots cannot bypass an active request", () => {
+    const store = createStore();
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_url: "https://new.example.test" } });
+    const active = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
+
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: false, webhook_url: "https://stale.example.test" } });
+
+    assert.equal(store.getView().notifications.enabled, true);
+    assert.equal(store.getView().notifications.webhookURL, "https://new.example.test");
+    assert.equal(store.getView().streams.notifications.freshness, "refreshing");
+    store.dispatch({ type: "notificationSnapshotReceived", requestID: active.requestID, data: { enabled: false, webhook_url: "https://accepted.example.test" } });
+    assert.equal(store.getView().notifications.webhookURL, "https://accepted.example.test");
+});
+
 test("timezone save is deduplicated and requests schedule reconciliation", () => {
     const store = createStore();
     store.dispatch({ type: "timezoneDraftChanged", timezone: "Europe/Paris" });

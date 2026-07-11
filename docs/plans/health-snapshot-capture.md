@@ -1,5 +1,7 @@
 # Health Snapshot Capture implementation plan
 
+> Superseded by the accepted Host Health Observation deepening. The shipped implementation owns current Server facts and time-ordered health snapshots in `internal/health`; see `CONTEXT.md`, `docs/architecture.md`, and `health_snapshot_capture_architecture_test.go`. The remainder of this document is retained as historical planning context and is not current implementation guidance.
+
 ## Outcome
 
 Deepen `internal/updates` so Health Snapshot Capture owns the accepted recording of time-ordered Server health observations from collected facts and completed maintenance. Replace the audit-to-observability shaping leak with transport-neutral capture inputs while preserving current snapshot rows, retention, failure policies, Dashboard Projection behavior, and operator-visible results.

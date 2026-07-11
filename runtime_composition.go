@@ -89,7 +89,9 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if deps.ServerInventoryService == nil || deps.ServerState == nil {
 		return fmt.Errorf("reload restored Server inventory: runtime dependency is unavailable")
 	}
-	deps.ServerInventoryService.Load()
+	if err := deps.ServerInventoryService.Load(); err != nil {
+		return fmt.Errorf("reload restored Server inventory: %w", err)
+	}
 	initializeServerStateStatuses(deps.ServerState)
 	if deps.GlobalSSHCredential != nil {
 		deps.GlobalSSHCredential.ResetCache()

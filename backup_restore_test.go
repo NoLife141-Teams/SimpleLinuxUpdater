@@ -235,7 +235,9 @@ func TestLoadServersLeavesEmptyInventoryEmpty(t *testing.T) {
 	preserveServerState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "empty-inventory.db"))
 
-	loadServers()
+	if err := loadServers(); err != nil {
+		t.Fatalf("load empty inventory: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -668,7 +670,9 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert before-export server unexpected error: %v", err)
 	}
-	loadServers()
+	if err := loadServers(); err != nil {
+		t.Fatalf("load before-export inventory: %v", err)
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/backup/export", bytes.NewBufferString(`{"passphrase":"very-strong-passphrase","include_known_hosts":false}`))
@@ -707,7 +711,9 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert after-export server unexpected error: %v", err)
 	}
-	loadServers()
+	if err := loadServers(); err != nil {
+		t.Fatalf("load after-export inventory: %v", err)
+	}
 
 	var verifyBody bytes.Buffer
 	verifyWriter := multipart.NewWriter(&verifyBody)

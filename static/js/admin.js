@@ -1,6 +1,39 @@
-const scheduledPolicyAdministration = window.ScheduledPolicyAdministrationInteraction.createStore();
-let appTimezoneSelection = "";
+const scheduledPolicyInteraction = window.ScheduledPolicyAdministrationInteraction.createStore();
+const adminPageInteraction = window.AdminPageInteraction.createStore({ scheduled: scheduledPolicyInteraction });
+const scheduledPolicyAdministration = Object.freeze({
+    dispatch(event) {
+        return adminPageInteraction.dispatch({ type: "scheduledEvent", event });
+    },
+    getView() {
+        return adminPageInteraction.getView().scheduled;
+    },
+    planCommand(command, payload) {
+        return adminPageInteraction.planCommand(`scheduled:${command}`, payload);
+    },
+    validatePolicyDraft() {
+        return scheduledPolicyInteraction.validatePolicyDraft();
+    }
+});
 let scheduledPolicyPreviewTimer = 0;
+
+function adminPageView() {
+    return adminPageInteraction.getView();
+}
+
+function beginAdminCommand(command, payload = {}) {
+    return adminPageInteraction.dispatch({ type: "commandRequested", command, payload })
+        .find((item) => item.type === "executeCommand")?.plan || null;
+}
+
+function finishAdminCommand(plan, data, message, failed = false) {
+    if (!plan) return [];
+    return adminPageInteraction.dispatch({ type: failed ? "commandFailed" : "commandCompleted", plan, data, message });
+}
+
+function beginAdminSnapshot(stream) {
+    return adminPageInteraction.dispatch({ type: "snapshotRequested", stream })
+        .find((item) => item.type === "fetchSnapshot")?.requestID || null;
+}
 
 function scheduledPolicyView() {
     return scheduledPolicyAdministration.getView();
@@ -54,7 +87,7 @@ function ensureTimezoneSelectHasValue(value) {
 function populateTimezonePicker() {
     const select = document.getElementById("app-timezone-input");
     if (!select) return;
-    const currentValue = select.value || appTimezoneSelection || "";
+    const currentValue = select.value || adminPageView().timezone.draft || "";
     const combined = [
         "",
         "Local",
@@ -107,21 +140,16 @@ function applyScheduledTimezone(payload) {
         : { timezone: String(payload || "").trim() || scheduledPolicyView().timezone || "UTC" };
     const timezone = timezoneState.timezone || "UTC";
     scheduledPolicyAdministration.dispatch({ type: "timezoneReceived", timezone });
-    if (timezoneState && typeof timezoneState === "object") {
-        if (Object.prototype.hasOwnProperty.call(timezoneState, "editable_timezone")) {
-            appTimezoneSelection = String(timezoneState.editable_timezone ?? "").trim();
-        } else if (Object.prototype.hasOwnProperty.call(timezoneState, "editableTimezone")) {
-            appTimezoneSelection = String(timezoneState.editableTimezone ?? "").trim();
-        }
-    }
+    adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", data: timezoneState });
+    const timezoneSelection = adminPageView().timezone.draft;
     const timezoneLabel = document.getElementById("scheduled-timezone");
     if (timezoneLabel) {
         timezoneLabel.textContent = timezone;
     }
     const timezoneInput = document.getElementById("app-timezone-input");
     if (timezoneInput && document.activeElement !== timezoneInput) {
-        ensureTimezoneSelectHasValue(appTimezoneSelection);
-        timezoneInput.value = appTimezoneSelection;
+        ensureTimezoneSelectHasValue(timezoneSelection);
+        timezoneInput.value = timezoneSelection;
     }
     updatePolicySummary();
     renderScheduledPolicies();
@@ -164,33 +192,42 @@ function renderNotificationLastDelivery(status) {
 }
 
 function applyNotificationSettings(payload) {
+    adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", data: payload });
+    const view = adminPageView().notifications;
     const enabled = document.getElementById("notification-enabled");
     const webhookURL = document.getElementById("notification-webhook-url");
-    const eventTypes = Array.isArray(payload?.event_types) ? payload.event_types : [];
-    if (enabled) enabled.checked = Boolean(payload?.enabled);
-    if (webhookURL && document.activeElement !== webhookURL) webhookURL.value = payload?.webhook_url || "";
+    const eventTypes = view.eventTypes;
+    if (enabled) enabled.checked = view.enabled;
+    if (webhookURL && document.activeElement !== webhookURL) webhookURL.value = view.webhookURL;
     document.querySelectorAll("[data-notification-event]").forEach((input) => {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
-    renderNotificationLastDelivery(payload?.last_delivery);
+    renderNotificationLastDelivery(view.lastDelivery);
 }
 
 async function fetchNotificationSettings() {
+    const requestID = beginAdminSnapshot("notifications");
     try {
         const res = await fetch("/api/notifications/settings", { cache: "no-store" });
         if (!res.ok) {
-            setNotificationFeedback("", await parseErrorResponse(res, "Failed to load notification settings."));
+            const message = await parseErrorResponse(res, "Failed to load notification settings.");
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notifications", requestID, error: message });
+            setNotificationFeedback("", message);
             return;
         }
-        applyNotificationSettings(await res.json().catch(() => ({})));
+        const data = await res.json().catch(() => ({}));
+        adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", requestID, data });
+        applyNotificationSettings(data);
     } catch (err) {
         console.error("Failed to load notification settings:", err);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notifications", requestID, error: "Failed to load notification settings." });
         setNotificationFeedback("", "Failed to load notification settings.");
     }
 }
 
 async function saveNotificationSettings() {
     const button = document.getElementById("notification-save");
+    let plan;
     try {
         setNotificationFeedback("", "");
         if (button) button.disabled = true;
@@ -199,19 +236,27 @@ async function saveNotificationSettings() {
             webhook_url: document.getElementById("notification-webhook-url")?.value?.trim() || "",
             event_types: selectedNotificationEvents()
         };
+        adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: { enabled: payload.enabled, webhookURL: payload.webhook_url, eventTypes: payload.event_types } });
+        plan = beginAdminCommand("saveNotifications");
+        if (!plan) return;
         const res = await fetch("/api/notifications/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
         if (!res.ok) {
-            setNotificationFeedback("", await parseErrorResponse(res, "Failed to save notification settings."));
+            const message = await parseErrorResponse(res, "Failed to save notification settings.");
+            finishAdminCommand(plan, null, message, true);
+            setNotificationFeedback("", message);
             return;
         }
-        applyNotificationSettings(await res.json().catch(() => ({})));
+        const data = await res.json().catch(() => ({}));
+        finishAdminCommand(plan, data, "Notification settings saved.");
+        applyNotificationSettings(data);
         setNotificationFeedback("Notification settings saved.", "");
     } catch (err) {
         console.error("Failed to save notification settings:", err);
+        finishAdminCommand(plan, null, "Failed to save notification settings.", true);
         setNotificationFeedback("", "Failed to save notification settings.");
     } finally {
         if (button) button.disabled = false;
@@ -220,20 +265,26 @@ async function saveNotificationSettings() {
 
 async function sendNotificationTest() {
     const button = document.getElementById("notification-test");
+    let plan;
     try {
         setNotificationFeedback("", "");
         if (button) button.disabled = true;
+        plan = beginAdminCommand("testNotification");
+        if (!plan) return;
         const res = await fetch("/api/notifications/test", { method: "POST" });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
+            finishAdminCommand(plan, payload, "Notification test failed.", true);
             renderNotificationLastDelivery(payload.last_delivery);
             setNotificationFeedback("", await parseErrorResponse(res, "Notification test failed."));
             return;
         }
+        finishAdminCommand(plan, payload, "Notification test delivered.");
         renderNotificationLastDelivery(payload.last_delivery);
         setNotificationFeedback("Notification test delivered.", "");
     } catch (err) {
         console.error("Failed to send notification test:", err);
+        finishAdminCommand(plan, null, "Notification test failed.", true);
         setNotificationFeedback("", "Notification test failed.");
     } finally {
         if (button) button.disabled = false;
@@ -241,29 +292,38 @@ async function sendNotificationTest() {
 }
 
 async function fetchAppTimezoneSettings(force = false) {
+    const requestID = beginAdminSnapshot("timezone");
     const timezonePayload = window.ensureAppTimezoneLoaded
         ? await window.ensureAppTimezoneLoaded(force)
         : scheduledPolicyView().timezone;
+    adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", requestID, data: timezonePayload });
     applyScheduledTimezone(timezonePayload);
 }
 
 async function saveAppTimezoneSettings() {
+    let plan;
     try {
         setAppTimezoneFeedback("", "");
         const input = document.getElementById("app-timezone-input");
         const button = document.getElementById("app-timezone-save");
         const timezone = input ? input.value.trim() : "";
+        adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone });
+        plan = beginAdminCommand("saveTimezone");
+        if (!plan) return;
         if (button) button.disabled = true;
         const res = await fetch("/api/app-settings/timezone", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ timezone })
+            body: JSON.stringify(plan.payload)
         });
         if (!res.ok) {
-            setAppTimezoneFeedback("", await parseErrorResponse(res, "Failed to save app timezone."));
+            const message = await parseErrorResponse(res, "Failed to save app timezone.");
+            finishAdminCommand(plan, null, message, true);
+            setAppTimezoneFeedback("", message);
             return;
         }
         const data = await res.json().catch(() => ({}));
+        finishAdminCommand(plan, data, "App timezone saved.");
         applyScheduledTimezone(data);
         if (!String(data?.resolved_timezone ?? data?.resolvedTimezone ?? "").trim()) {
             try {
@@ -274,6 +334,7 @@ async function saveAppTimezoneSettings() {
         }
         setAppTimezoneFeedback("App timezone saved.", "");
     } catch (err) {
+        finishAdminCommand(plan, null, err.message || "Failed to save app timezone.", true);
         setAppTimezoneFeedback("", err.message || "Failed to save app timezone.");
     } finally {
         const button = document.getElementById("app-timezone-save");
@@ -291,16 +352,20 @@ function setAuthPasswordFeedback(successMessage, errorMessage) {
 async function fetchAuthSessionStatus() {
     const status = document.getElementById("auth-session-status");
     if (!status) return;
+    const requestID = beginAdminSnapshot("account");
     try {
         const res = await fetch("/api/auth/sessions");
         if (!res.ok) {
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status unavailable." });
             status.textContent = "Session status unavailable.";
             return;
         }
         const data = await res.json().catch(() => ({}));
+        adminPageInteraction.dispatch({ type: "accountSnapshotReceived", requestID, data: { count: data.session_count } });
         status.textContent = `${Number(data.session_count || 0)} server-side session(s) stored.`;
     } catch (err) {
         console.error("Failed to fetch session status:", err);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status request failed." });
         status.textContent = "Session status request failed.";
     }
 }
@@ -310,27 +375,44 @@ async function changeAdminPassword() {
     const newInput = document.getElementById("auth-new-password");
     const confirmInput = document.getElementById("auth-confirm-password");
     const button = document.getElementById("auth-password-save");
+    let plan;
     try {
         setAuthPasswordFeedback("", "");
         if (button) button.disabled = true;
+        const currentPassword = currentInput?.value || "";
+        const newPassword = newInput?.value || "";
+        const confirmPassword = confirmInput?.value || "";
+        plan = beginAdminCommand("changePassword", {
+            hasCurrentPassword: currentPassword.length > 0,
+            hasNewPassword: newPassword.length > 0,
+            passwordsMatch: newPassword === confirmPassword
+        });
+        if (!plan) {
+            setAuthPasswordFeedback("", "Current password and matching new passwords are required.");
+            return;
+        }
         const res = await fetch("/api/auth/password", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                current_password: currentInput?.value || "",
-                new_password: newInput?.value || "",
-                confirm_password: confirmInput?.value || ""
+                current_password: currentPassword,
+                new_password: newPassword,
+                confirm_password: confirmPassword
             })
         });
         if (!res.ok) {
-            setAuthPasswordFeedback("", await parseErrorResponse(res, "Failed to change password."));
+            const message = await parseErrorResponse(res, "Failed to change password.");
+            finishAdminCommand(plan, null, message, true);
+            setAuthPasswordFeedback("", message);
             return;
         }
+        finishAdminCommand(plan, null, "Password changed.");
         if (currentInput) currentInput.value = "";
         if (newInput) newInput.value = "";
         if (confirmInput) confirmInput.value = "";
         setAuthPasswordFeedback("Password changed.", "");
     } catch (err) {
+        finishAdminCommand(plan, null, err.message || "Failed to change password.", true);
         setAuthPasswordFeedback("", err.message || "Failed to change password.");
     } finally {
         if (button) button.disabled = false;
@@ -341,14 +423,21 @@ async function clearAuthSessions() {
     if (!(await window.confirmTypedAction("Logout every server-side session, including this browser?", "LOGOUT ALL"))) {
         return;
     }
+    const plan = beginAdminCommand("clearSessions");
+    if (!plan) return;
     try {
         const res = await fetch("/api/auth/sessions", { method: "DELETE" });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to clear sessions."));
+            const message = await parseErrorResponse(res, "Failed to clear sessions.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
+        finishAdminCommand(plan, { count: 0 }, "Sessions cleared.");
+        adminPageInteraction.dispatch({ type: "metricsTokenHidden" });
         window.location.assign("/login");
     } catch (err) {
+        finishAdminCommand(plan, null, err.message || "Failed to clear sessions.", true);
         alert(err.message || "Failed to clear sessions.");
     }
 }
@@ -358,6 +447,7 @@ function showMetricsTokenOnce(token) {
     const value = document.getElementById("metrics-token-value");
     if (!panel || !value) return;
     if (!token) {
+        adminPageInteraction.dispatch({ type: "metricsTokenHidden" });
         value.textContent = "";
         panel.style.display = "none";
         return;
@@ -372,16 +462,20 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
     if (resetReveal) {
         showMetricsTokenOnce("");
     }
+    const requestID = beginAdminSnapshot("metrics");
     try {
         const res = await fetch("/api/metrics/token");
         if (!res.ok) {
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "metrics", requestID, error: "Metrics token status: unknown" });
             status.textContent = "Metrics token status: unknown";
             return;
         }
         const data = await res.json().catch(() => ({}));
+        adminPageInteraction.dispatch({ type: "metricsSnapshotReceived", requestID, data });
         status.textContent = data.enabled ? "Metrics API token: enabled" : "Metrics API token: disabled";
     } catch (err) {
         console.error("Failed to fetch metrics token status:", err);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "metrics", requestID, error: "Metrics token status: request failed" });
         status.textContent = "Metrics token status: request failed";
     }
 }
@@ -390,22 +484,29 @@ async function rotateMetricsToken(askConfirm) {
     if (askConfirm && !(await window.confirmTypedAction("Rotate metrics token? Existing scrapers using the old token will fail until updated.", "ROTATE TOKEN"))) {
         return;
     }
+    const plan = beginAdminCommand("rotateMetricsToken");
+    if (!plan) return;
     try {
         const res = await fetch("/api/metrics/token", { method: "POST" });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to rotate metrics token."));
+            const message = await parseErrorResponse(res, "Failed to rotate metrics token.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
         const data = await res.json().catch(() => ({}));
         const token = (data && typeof data.token === "string") ? data.token : "";
         if (!token) {
+            finishAdminCommand(plan, data, "Token rotation succeeded but no token was returned.", true);
             alert("Token rotation succeeded but no token was returned.");
             return;
         }
+        finishAdminCommand(plan, data, "Metrics token rotated.");
         showMetricsTokenOnce(token);
         fetchMetricsTokenStatus(false);
     } catch (err) {
         console.error("Failed to rotate metrics token:", err);
+        finishAdminCommand(plan, null, "Failed to rotate metrics token.", true);
         alert("Failed to rotate metrics token.");
     }
 }
@@ -414,24 +515,28 @@ async function disableMetricsToken() {
     if (!(await window.confirmTypedAction("Disable metrics token and hide /metrics now?", "DISABLE METRICS"))) {
         return;
     }
+    const plan = beginAdminCommand("disableMetricsToken");
+    if (!plan) return;
     try {
         const res = await fetch("/api/metrics/token", { method: "DELETE" });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to disable metrics token."));
+            const message = await parseErrorResponse(res, "Failed to disable metrics token.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
+        finishAdminCommand(plan, { enabled: false }, "Metrics token disabled.");
         showMetricsTokenOnce("");
         fetchMetricsTokenStatus();
     } catch (err) {
         console.error("Failed to disable metrics token:", err);
+        finishAdminCommand(plan, null, "Failed to disable metrics token.", true);
         alert("Failed to disable metrics token.");
     }
 }
 
 async function copyMetricsToken() {
-    const tokenValue = document.getElementById("metrics-token-value");
-    if (!tokenValue) return;
-    const token = tokenValue.textContent || "";
+    const token = adminPageView().metrics.revealedToken;
     if (!token) {
         alert("No token to copy.");
         return;
@@ -462,17 +567,21 @@ function deriveDownloadFilename(contentDisposition) {
 async function fetchBackupStatus() {
     const status = document.getElementById("backup-status");
     if (!status) return;
+    const requestID = beginAdminSnapshot("backup");
     try {
         const res = await fetch("/api/backup/status");
         if (!res.ok) {
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "backup", requestID, error: "Backup status: unavailable" });
             status.textContent = "Backup status: unavailable";
             return;
         }
         const data = await res.json().catch(() => ({}));
+        adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, data });
         const knownHostsState = data.known_hosts_exists ? "present" : "missing";
         status.textContent = `Backup paths: DB=${data.db_path || "-"}, config=${data.config_path || "-"}, known_hosts=${data.known_hosts_path || "-"} (${knownHostsState})`;
     } catch (err) {
         console.error("Failed to fetch backup status:", err);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "backup", requestID, error: "Backup status: request failed" });
         status.textContent = "Backup status: request failed";
     }
 }
@@ -480,6 +589,7 @@ async function fetchBackupStatus() {
 async function exportBackup() {
     const exportPassInput = document.getElementById("backup-export-passphrase");
     const exportPassConfirmInput = document.getElementById("backup-export-passphrase-confirm");
+    let plan;
     try {
         const pass = exportPassInput?.value || "";
         const confirmPass = exportPassConfirmInput?.value || "";
@@ -492,13 +602,20 @@ async function exportBackup() {
             alert("Passphrase confirmation does not match.");
             return;
         }
+        plan = beginAdminCommand("exportBackup", { passphraseValid: pass.length >= 12, passwordsMatch: pass === confirmPass, includeKnownHosts });
+        if (!plan) {
+            alert(adminPageInteraction.planCommand("exportBackup").reason || "Backup is unavailable.");
+            return;
+        }
         const res = await fetch("/api/backup/export", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ passphrase: pass, include_known_hosts: includeKnownHosts })
         });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to export backup."));
+            const message = await parseErrorResponse(res, "Failed to export backup.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
         const blob = await res.blob();
@@ -511,9 +628,11 @@ async function exportBackup() {
         link.click();
         link.remove();
         URL.revokeObjectURL(url);
+        finishAdminCommand(plan, null, "Backup exported.");
         alert("Backup exported.");
     } catch (err) {
         console.error("Failed to export backup:", err);
+        finishAdminCommand(plan, null, "Failed to export backup.", true);
         alert("Failed to export backup.");
     } finally {
         if (exportPassInput) exportPassInput.value = "";
@@ -524,6 +643,7 @@ async function exportBackup() {
 async function restoreBackup() {
     const fileInput = document.getElementById("backup-restore-file");
     const restorePassInput = document.getElementById("backup-restore-passphrase");
+    let plan;
     try {
         const pass = restorePassInput?.value || "";
         const file = fileInput?.files?.[0];
@@ -538,6 +658,9 @@ async function restoreBackup() {
         if (!(await window.confirmTypedAction("Restore will replace the current DB and optional known_hosts. Local config.json stays in place.", "RESTORE"))) {
             return;
         }
+        adminPageInteraction.dispatch({ type: "backupFileSelected", file });
+        plan = beginAdminCommand("restoreBackup", { passphraseValid: pass.length >= 12 });
+        if (!plan) return;
         const form = new FormData();
         form.append("file", file);
         form.append("passphrase", pass);
@@ -546,10 +669,13 @@ async function restoreBackup() {
             body: form
         });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to restore backup."));
+            const message = await parseErrorResponse(res, "Failed to restore backup.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
         const payload = await res.json().catch(() => ({}));
+        finishAdminCommand(plan, payload, "Backup restored successfully.");
         alert("Backup restored successfully.");
         if (fileInput) {
             fileInput.value = "";
@@ -562,6 +688,7 @@ async function restoreBackup() {
         await fetchBackupStatus();
     } catch (err) {
         console.error("Failed to restore backup:", err);
+        finishAdminCommand(plan, null, "Failed to restore backup.", true);
         alert("Failed to restore backup.");
     } finally {
         if (restorePassInput) restorePassInput.value = "";
@@ -571,6 +698,7 @@ async function restoreBackup() {
 async function verifyBackup() {
     const fileInput = document.getElementById("backup-restore-file");
     const restorePassInput = document.getElementById("backup-restore-passphrase");
+    let plan;
     try {
         const pass = restorePassInput?.value || "";
         const file = fileInput?.files?.[0];
@@ -582,6 +710,9 @@ async function verifyBackup() {
             alert("Passphrase must be at least 12 characters.");
             return;
         }
+        adminPageInteraction.dispatch({ type: "backupFileSelected", file });
+        plan = beginAdminCommand("verifyBackup", { passphraseValid: pass.length >= 12 });
+        if (!plan) return;
         const form = new FormData();
         form.append("file", file);
         form.append("passphrase", pass);
@@ -590,16 +721,20 @@ async function verifyBackup() {
             body: form
         });
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to verify backup."));
+            const message = await parseErrorResponse(res, "Failed to verify backup.");
+            finishAdminCommand(plan, null, message, true);
+            alert(message);
             return;
         }
         const payload = await res.json().catch(() => ({}));
+        finishAdminCommand(plan, payload, "Backup verified.");
         const files = Number(payload.manifest_files || 0);
         const knownHosts = payload.known_hosts_included ? "includes known_hosts" : "no known_hosts";
         const created = payload.created_at ? ` Created ${payload.created_at}.` : "";
         document.getElementById("backup-status").textContent = `Backup verified: ${files} manifest file(s), ${knownHosts}.${created}`;
     } catch (err) {
         console.error("Failed to verify backup:", err);
+        finishAdminCommand(plan, null, "Failed to verify backup.", true);
         alert("Failed to verify backup.");
     }
 }
@@ -1794,6 +1929,7 @@ function bindPolicyFormInteractions() {
 
 document.addEventListener("change", (event) => {
     if (event.target && event.target.id === "backup-restore-file") {
+        adminPageInteraction.dispatch({ type: "backupFileSelected", file: event.target.files?.[0] || null });
         updateFileLabel(event.target, "Choose backup file");
     }
 });
@@ -1807,10 +1943,20 @@ document.getElementById("backup-export-btn").addEventListener("click", exportBac
 document.getElementById("backup-verify-btn").addEventListener("click", verifyBackup);
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);
 document.getElementById("app-timezone-save").addEventListener("click", saveAppTimezoneSettings);
-document.getElementById("app-timezone-input").addEventListener("input", () => setAppTimezoneFeedback("", ""));
+document.getElementById("app-timezone-input").addEventListener("input", (event) => {
+    adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone: event.target.value });
+    setAppTimezoneFeedback("", "");
+});
 document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
 document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
-document.getElementById("notification-webhook-url").addEventListener("input", () => setNotificationFeedback("", ""));
+document.getElementById("notification-webhook-url").addEventListener("input", () => {
+    adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: {
+        enabled: Boolean(document.getElementById("notification-enabled")?.checked),
+        webhookURL: document.getElementById("notification-webhook-url")?.value?.trim() || "",
+        eventTypes: selectedNotificationEvents()
+    } });
+    setNotificationFeedback("", "");
+});
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);

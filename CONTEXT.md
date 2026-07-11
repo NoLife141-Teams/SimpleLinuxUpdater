@@ -32,6 +32,10 @@ _Avoid_: Dashboard schedule helper, next-run calculation
 The operator-facing interpretation of a scheduled policy draft, its matching preview, no-run windows, calendar and Scheduled Run views, and selected job detail into the state and decisions needed to administer scheduled maintenance.
 _Avoid_: Admin page globals, policy editor event handlers
 
+**Admin Page Interaction**:
+The application-level interpretation of accepted administration facts and operator intents into deterministic timezone, notification, account-session, metrics-token, backup, and Scheduled Policy Administration Interaction views and command plans.
+_Avoid_: Admin page globals, admin DOM state, settings event handlers
+
 **Dashboard Projection**:
 The derived operational view that combines current server state, maintenance activity, scheduled availability, health facts, update history, approval triage, and fleet counters into the dashboard summary shown to operators.
 _Avoid_: Dashboard API response, observability query

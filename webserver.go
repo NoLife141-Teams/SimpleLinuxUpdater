@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -1273,18 +1272,6 @@ func healthStatusFromResult(result updatePrecheckResult) string {
 	return "critical"
 }
 
-func parseUptimeSeconds(output string) int64 {
-	fields := strings.Fields(output)
-	if len(fields) == 0 {
-		return 0
-	}
-	seconds, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil || seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
-		return 0
-	}
-	return int64(seconds)
-}
-
 func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 	if strings.TrimSpace(result.Error) != "" {
 		return false, false
@@ -1300,13 +1287,6 @@ func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 		return true, true
 	}
 	return false, true
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {

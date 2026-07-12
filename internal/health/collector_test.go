@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,5 +56,40 @@ func TestCollectorUsesSafeFallbacksForFailedProbes(t *testing.T) {
 	got := collector.Capture(context.Background(), "offline-01")
 	if got.OSPrettyName != "Unknown" || got.DiskStatus != "unknown" || got.AptStatus != "unknown" {
 		t.Fatalf("fallback observation = %+v", got)
+	}
+}
+
+func TestCollectorHandlesInvalidOutputAndTimeoutWithoutLosingObservationIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 11, 21, 30, 0, 0, time.UTC)
+	collector := Collector{
+		Now: func() time.Time { return now },
+		Probe: func(_ context.Context, kind ProbeKind) ProbeResult {
+			switch kind {
+			case ProbeOS:
+				return ProbeResult{Output: strings.Repeat("x", 220)}
+			case ProbeUptime:
+				return ProbeResult{Output: "not-a-number"}
+			case ProbeDisk:
+				return ProbeResult{Status: "unexpected", Err: context.DeadlineExceeded}
+			case ProbeAPT:
+				return ProbeResult{Err: errors.New("command failed")}
+			default:
+				return ProbeResult{}
+			}
+		},
+	}
+
+	got := collector.Capture(context.Background(), "slow-host")
+	if got.ServerName != "slow-host" || got.CollectedAt != "2026-07-11T21:30:00Z" {
+		t.Fatalf("observation identity changed: %+v", got)
+	}
+	if len(got.OSPrettyName) != 160 || got.UptimeSeconds != 0 {
+		t.Fatalf("invalid output handling = %+v", got)
+	}
+	if got.DiskStatus != "unknown" || got.AptStatus != "unknown" {
+		t.Fatalf("failed probe status = %+v", got)
+	}
+	if !strings.Contains(got.RawJSON, "context deadline exceeded") || !strings.Contains(got.RawJSON, "command failed") {
+		t.Fatalf("raw failures not retained: %s", got.RawJSON)
 	}
 }

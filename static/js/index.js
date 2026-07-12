@@ -1,6 +1,10 @@
 const LOG_BOTTOM_THRESHOLD = 20;
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
+        const statusRendering = window.StatusRendering.create(document);
+        const statusDrawerAdapter = window.StatusDrawerAdapter.create(document, window);
+        const statusTableAdapter = window.StatusTableAdapter.create(localStorage, "simplelinuxupdater.statusTableColWidths.v15");
+        const statusActionAdapter = window.StatusActionAdapter.create(window);
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts
         });
@@ -24,11 +28,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let passwordResolve = null;
         let passwordReject = null;
         let passwordModalPreviousFocus = null;
-        let drawerPreviousFocus = null;
         let suppressSortClickUntil = 0;
         let actionInteractionReleaseTimer = null;
         const actionInteractionDeferMs = 350;
-        const columnResizeStorageKey = "simplelinuxupdater.statusTableColWidths.v15";
         const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
         const defaultColumnWidths = Object.freeze({
             name: 140,
@@ -94,9 +96,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         dispatchStatusInteraction({ type: "interactionReleased" });
                     }, effect.delayMs);
                 } else if (effect.type === "actionRejected") {
-                    window.notifyApp(effect.reason || "Action is no longer available");
+                    statusActionAdapter.notify(effect.reason || "Action is no longer available");
                 } else if (effect.type === "announceResult" && effect.message) {
-                    window.notifyApp(effect.message);
+                    statusActionAdapter.notify(effect.message);
                 }
             });
             return Promise.all(tasks);
@@ -107,10 +109,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function setText(id, value) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.textContent = value;
-            }
+            statusRendering.text(id, value);
         }
 
         function pluralize(count, singular, plural = `${singular}s`) {
@@ -334,54 +333,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderDashboardMetrics() {
-            const { total, reachable, pendingApproval: pending, active, failed, done, highRiskCVE, pendingPackages, securityUpdates, staleFacts } = dashboardPresentation.fleet;
-            const auth = dashboardPresentation.auth;
-
-            setText("metric-total-hosts", String(total));
-            setText("metric-total-note", total === 0 ? "No servers loaded" : `${pluralize(total, "host")} monitored`);
-            setText("metric-reachable-hosts", String(reachable));
-            setText("metric-pending-approvals", String(pending));
-            setText("metric-prechecks", String(active));
-            setText("metric-active-runs", String(active));
-            setText("metric-done-hosts", String(done));
-            setText("metric-failed-hosts", String(failed));
-            setText("metric-pending-packages", String(pendingPackages));
-            setText("metric-security-updates", String(securityUpdates));
-            setText("metric-stale-facts", String(staleFacts));
-            setText("metric-high-risk-cve", String(highRiskCVE));
-            setText("metric-auth-posture", auth.label);
-            setText("metric-auth-note", `${auth.withServerKey} server key · ${auth.withGlobalKey} global SSH key · ${auth.withPassword} password · ${auth.missing} missing`);
+            statusRendering.metrics(dashboardPresentation, getStatusView().filters.quick);
             updateRefreshAllFactsState();
-            updateMetricFilterState();
         }
 
         function updateMetricFilterState() {
-            const quickFilter = getStatusView().filters.quick;
-            document.querySelectorAll('[data-metric-filter]').forEach(button => {
-                const key = button.dataset.metricFilter || "";
-                const active = quickFilter === key;
-                const label = quickFilterActionLabel(key);
-                button.classList.toggle('active', active);
-                button.closest('.metric-item')?.classList.toggle('active', active);
-                button.setAttribute('aria-pressed', active ? "true" : "false");
-                button.setAttribute('aria-label', label);
-                button.title = label;
-            });
+            statusRendering.metricFilterState(getStatusView().filters.quick);
         }
 
         function quickFilterActionLabel(key) {
-            switch (key) {
-                case "pending_approval":
-                    return "Show hosts waiting for approval";
-                case "active":
-                    return "Show hosts with active maintenance phases";
-                case "stale_facts":
-                    return "Show hosts with stale facts";
-                case "high_risk":
-                    return "Show hosts with high risk CVE exposure";
-                default:
-                    return "Show all hosts";
-            }
+            return statusRendering.metricFilterLabel(key);
         }
 
         function buttonStateAttrs(enabled, enabledTitle, disabledTitle) {
@@ -475,23 +436,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderSyncState() {
-            const pollingEl = document.getElementById('polling-state-label');
-            const lastSyncEl = document.getElementById('last-sync-label');
             const extrasError = dashboardExtraErrors.size > 0
                 ? Array.from(dashboardExtraErrors.values()).join("; ")
                 : "";
             const degraded = !!lastFetchError || !!extrasError;
-            if (pollingEl) {
-                pollingEl.textContent = degraded ? "Polling degraded" : (statusTransport.isLive() ? "Live events" : "Live polling");
-                pollingEl.classList.toggle('warning', degraded);
-                pollingEl.classList.toggle('live', !degraded);
-            }
-            if (lastSyncEl) {
-                lastSyncEl.textContent = lastFetchError || extrasError
+            statusRendering.syncState({
+                degraded,
+                live: statusTransport.isLive(),
+                lastSyncText: lastFetchError || extrasError
                     ? `Last sync error: ${lastFetchError?.message || extrasError || "unknown"}`
-                    : formatRelativeTime(lastSuccessfulSyncAt);
-                lastSyncEl.classList.toggle('warning', degraded);
-            }
+                    : formatRelativeTime(lastSuccessfulSyncAt)
+            });
         }
 
         function setDashboardExtraError(key, err) {
@@ -1278,22 +1233,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function loadColumnWidths() {
-            try {
-                const raw = localStorage.getItem(columnResizeStorageKey);
-                if (!raw) return {};
-                const parsed = JSON.parse(raw);
-                return parsed && typeof parsed === "object" ? parsed : {};
-            } catch (_) {
-                return {};
-            }
+            return statusTableAdapter.load();
         }
 
         function saveColumnWidths(widths) {
-            try {
-                localStorage.setItem(columnResizeStorageKey, JSON.stringify(widths));
-            } catch (_) {
-                // Ignore storage failures (private mode, quota, etc.)
-            }
+            statusTableAdapter.save(widths);
         }
 
         function applyColumnWidths(widths) {
@@ -1306,10 +1250,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const maxWidth = maxColumnWidths[key] || 9999;
                 const fallback = defaultColumnWidths[key];
                 const boundedFallback = Math.min(maxWidth, Math.max(minWidth, fallback));
-                const nextWidth = Number.isFinite(configured)
-                    ? Math.min(maxWidth, Math.max(minWidth, configured))
-                    : boundedFallback;
-                col.style.width = `${Math.round(nextWidth)}px`;
+                const nextWidth = statusTableAdapter.boundedWidth(configured, minWidth, maxWidth, boundedFallback);
+                col.style.width = `${nextWidth}px`;
             });
         }
 
@@ -1525,36 +1467,19 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 drawerLogScrollTop = 0;
                 drawerPendingScrollTop = 0;
             }
-            if (!previousDrawer.open) {
-                drawerPreviousFocus = document.activeElement;
-            }
             dispatchStatusInteraction({ type: "drawerOpened", name, tab });
-            document.body.classList.add('drawer-open');
             renderDrawer();
-            window.setTimeout(() => {
-                const drawer = document.getElementById('status-drawer');
-                if (!getStatusView().drawer.open || !drawer) return;
-                const focusable = drawerFocusableElements(drawer);
-                const target = focusable[0] || drawer;
-                if (target && typeof target.focus === 'function') {
-                    target.focus({ preventScroll: true });
-                }
-            }, 0);
+            statusDrawerAdapter.open(
+                document.getElementById('status-drawer'),
+                document.getElementById('status-drawer-backdrop')
+            );
         }
 
         function closeDrawer() {
             dispatchStatusInteraction({ type: "drawerClosed" });
             const drawer = document.getElementById('status-drawer');
             const backdrop = document.getElementById('status-drawer-backdrop');
-            drawer.classList.remove('open');
-            backdrop.classList.remove('open');
-            drawer.setAttribute('aria-hidden', 'true');
-            document.body.classList.remove('drawer-open');
-            const previous = drawerPreviousFocus;
-            drawerPreviousFocus = null;
-            if (previous && document.contains(previous) && typeof previous.focus === 'function') {
-                window.setTimeout(() => previous.focus({ preventScroll: true }), 0);
-            }
+            statusDrawerAdapter.close(drawer, backdrop);
         }
 
         function setDrawerTab(tab) {
@@ -2139,12 +2064,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
             try {
                 const response = await fetch(url, { method: 'POST', ...options });
                 if (!response.ok) {
-                    window.notifyApp(await parseErrorResponse(response, fallbackMessage));
+                    statusActionAdapter.notify(await parseErrorResponse(response, fallbackMessage));
                     return false;
                 }
                 return true;
             } catch (error) {
-                window.notifyApp(error?.message || fallbackMessage);
+                statusActionAdapter.notify(error?.message || fallbackMessage);
                 return false;
             }
         }
@@ -2163,7 +2088,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        async function enablePasswordlessApt(name) {
 	            if (!canRunSudoersAction(getServerByName(name))) {
-	                window.notifyApp("Host cannot change passwordless apt while another action is active.");
+	                statusActionAdapter.notify("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
 	            await runSingleHostAction(name, "enable_apt", "enable apt", async () => {
@@ -2183,7 +2108,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        async function disablePasswordlessApt(name) {
 	            if (!canRunSudoersAction(getServerByName(name))) {
-	                window.notifyApp("Host cannot change passwordless apt while another action is active.");
+	                statusActionAdapter.notify("Host cannot change passwordless apt while another action is active.");
 	                return;
 	            }
 	            await runSingleHostAction(name, "disable_apt", "disable apt", async () => {
@@ -2485,7 +2410,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            await runSingleHostAction(name, "approve_all", "approve", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
-	                    window.notifyApp("No standard updates are eligible for approval.");
+	                    statusActionAdapter.notify("No standard updates are eligible for approval.");
 	                    return false;
 	                }
 	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.');
@@ -2496,7 +2421,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            await runSingleHostAction(name, "approve_security", "approve security", async () => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
-	                    window.notifyApp("No standard security updates are eligible for approval.");
+	                    statusActionAdapter.notify("No standard security updates are eligible for approval.");
 	                    return false;
 	                }
 	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.');
@@ -2510,14 +2435,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_kept_back_security) {
 	                    if (!counts.keptBackSecurityPlanAvailable) {
-	                        window.notifyApp("Run a fresh package scan before approving kept-back security updates.");
+	                        statusActionAdapter.notify("Run a fresh package scan before approving kept-back security updates.");
 	                        return false;
 	                    }
-	                    window.notifyApp("No kept-back security updates are eligible for approval.");
+	                    statusActionAdapter.notify("No kept-back security updates are eligible for approval.");
 	                    return false;
 	                }
 	                if (!counts.keptBackSecurityPlanAvailable) {
-	                    window.notifyApp("Run a fresh package scan before approving kept-back security updates.");
+	                    statusActionAdapter.notify("Run a fresh package scan before approving kept-back security updates.");
 	                    return false;
 	                }
 	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
@@ -2536,7 +2461,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!await window.confirmAction(confirmText)) return false;
+	                if (!await statusActionAdapter.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
 	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
 	                    headers: { 'Content-Type': 'application/json' },
@@ -2552,14 +2477,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_full) {
 	                    if (!counts.fullPlanAvailable) {
-	                        window.notifyApp("Run a fresh package scan before approving full-upgrade.");
+	                        statusActionAdapter.notify("Run a fresh package scan before approving full-upgrade.");
 	                        return false;
 	                    }
-	                    window.notifyApp("No full-upgrade packages are eligible for approval.");
+	                    statusActionAdapter.notify("No full-upgrade packages are eligible for approval.");
 	                    return false;
 	                }
 	                if (!counts.fullPlanAvailable) {
-	                    window.notifyApp("Run a fresh package scan before approving full-upgrade.");
+	                    statusActionAdapter.notify("Run a fresh package scan before approving full-upgrade.");
 	                    return false;
 	                }
 	                const removed = counts.removedPackages;
@@ -2571,7 +2496,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    `Run full-upgrade on ${name}?`,
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
-	                if (!await window.confirmAction(confirmText)) return false;
+	                if (!await statusActionAdapter.confirm(confirmText)) return false;
 	                const body = removed.length ? { confirm_removals: true } : {};
 	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
 	                    headers: { 'Content-Type': 'application/json' },
@@ -2592,12 +2517,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
-	                        window.notifyApp(payload.error || "Failed to refresh host facts");
+	                        statusActionAdapter.notify(payload.error || "Failed to refresh host facts");
 	                        return false;
 	                    }
 	                    return true;
 	                } catch (err) {
-	                    window.notifyApp(err?.message || "Failed to refresh host facts");
+	                    statusActionAdapter.notify(err?.message || "Failed to refresh host facts");
 	                    return false;
 	                }
 	            }, ["servers", "dashboard"]);

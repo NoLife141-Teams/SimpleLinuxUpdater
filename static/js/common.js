@@ -92,9 +92,16 @@
 
     window.notifyApp = window.notifyApp || function notifyApp(message, options = {}) {
         const region = ensureFeedbackRegion();
+        const normalizedMessage = String(message || "");
+        const inferredError = /\b(fail(?:ed|ure)?|error|invalid|cannot|unavailable|required|must|denied)\b/i.test(normalizedMessage);
+        const tone = ["success", "warning", "info", "danger"].includes(options.tone)
+            ? options.tone
+            : inferredError ? "danger" : "info";
         const item = document.createElement("div");
-        item.className = `app-feedback ${options.tone === "success" ? "success" : options.tone === "warning" ? "warning" : options.tone === "info" ? "info" : "danger"}`;
-        item.textContent = String(message || "");
+        item.className = `app-feedback ${tone}`;
+        item.textContent = normalizedMessage;
+        region.setAttribute("role", tone === "danger" ? "alert" : "status");
+        region.setAttribute("aria-live", tone === "danger" ? "assertive" : "polite");
         region.replaceChildren(item);
         window.setTimeout(() => {
             if (item.parentNode === region) item.remove();
@@ -246,6 +253,22 @@
                 if (event.key === "Escape" && backdrop.classList.contains("active")) {
                     event.preventDefault();
                     close(false);
+                    return;
+                }
+                if (event.key === "Tab" && backdrop.classList.contains("active")) {
+                    const focusable = Array.from(backdrop.querySelectorAll(
+                        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+                    ));
+                    if (!focusable.length) return;
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    if (event.shiftKey && document.activeElement === first) {
+                        event.preventDefault();
+                        last.focus();
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        event.preventDefault();
+                        first.focus();
+                    }
                 }
             };
             messageNode.textContent = String(message || "");

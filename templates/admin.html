@@ -103,9 +103,9 @@
             <div class="admin-grid">
                 <div class="admin-block">
                     <h3>Change Password</h3>
-                    <input type="password" id="auth-current-password" placeholder="Current password" autocomplete="current-password">
-                    <input type="password" id="auth-new-password" placeholder="New password" autocomplete="new-password">
-                    <input type="password" id="auth-confirm-password" placeholder="Confirm new password" autocomplete="new-password">
+                    <input type="password" id="auth-current-password" aria-label="Current password" placeholder="Current password" autocomplete="current-password">
+                    <input type="password" id="auth-new-password" aria-label="New password" placeholder="New password" autocomplete="new-password">
+                    <input type="password" id="auth-confirm-password" aria-label="Confirm new password" placeholder="Confirm new password" autocomplete="new-password">
                     <div class="policy-actions">
                         <button class="primary-action" type="button" id="auth-password-save">Change Password</button>
                     </div>
@@ -274,7 +274,7 @@
                             <details class="json-fallback">
                                 <summary>Advanced JSON fallback</summary>
                                 <p class="muted">Paste existing JSON here if you need it, then apply it to the guided editor before saving.</p>
-                                <textarea id="policy-blackouts-json" rows="6" placeholder='[{"weekdays":["sat"],"start_time":"00:00","end_time":"06:00"}]'></textarea>
+                                <textarea id="policy-blackouts-json" aria-label="Policy blackout windows JSON" rows="6" placeholder='[{"weekdays":["sat"],"start_time":"00:00","end_time":"06:00"}]'></textarea>
                                 <div class="policy-actions">
                                     <button class="btn-ghost" type="button" id="policy-blackouts-json-apply">Apply JSON to Editor</button>
                                 </div>
@@ -313,7 +313,7 @@
                         <details class="json-fallback">
                             <summary>Advanced JSON fallback</summary>
                             <p class="muted">Paste existing JSON here if you need it, then apply it back into the guided rows.</p>
-                            <textarea id="scheduled-global-blackouts-json" rows="8" placeholder='[{"weekdays":["sun"],"start_time":"01:00","end_time":"04:00"}]'></textarea>
+                            <textarea id="scheduled-global-blackouts-json" aria-label="Global blackout windows JSON" rows="8" placeholder='[{"weekdays":["sun"],"start_time":"01:00","end_time":"04:00"}]'></textarea>
                             <div class="policy-actions">
                                 <button class="btn-ghost" type="button" id="scheduled-global-blackouts-json-apply">Apply JSON to Editor</button>
                             </div>
@@ -403,8 +403,8 @@
             <div class="backup-grid">
                 <div class="backup-block">
                     <h3>Export Backup</h3>
-                    <input type="password" id="backup-export-passphrase" placeholder="Backup passphrase (min 12 chars)">
-                    <input type="password" id="backup-export-passphrase-confirm" placeholder="Confirm passphrase">
+                    <input type="password" id="backup-export-passphrase" aria-label="Backup export passphrase" placeholder="Backup passphrase (min 12 chars)">
+                    <input type="password" id="backup-export-passphrase-confirm" aria-label="Confirm backup export passphrase" placeholder="Confirm passphrase">
                     <label class="checkbox-inline"><input type="checkbox" id="backup-include-known-hosts" checked> Include known_hosts</label>
                     <button class="primary-action" type="button" id="backup-export-btn">Download Backup</button>
                 </div>
@@ -412,7 +412,7 @@
                     <h3>Restore Backup</h3>
                     <input class="file-input" type="file" id="backup-restore-file" accept=".slubkp,application/octet-stream">
                     <label class="file-btn" for="backup-restore-file">Choose backup file</label>
-                    <input type="password" id="backup-restore-passphrase" placeholder="Backup passphrase">
+                    <input type="password" id="backup-restore-passphrase" aria-label="Backup restore passphrase" placeholder="Backup passphrase">
                     <button class="btn-ghost" type="button" id="backup-verify-btn">Verify Backup</button>
                     <button class="btn-danger" type="button" id="backup-restore-btn">Restore Backup (Full Replace)</button>
                 </div>
@@ -496,10 +496,10 @@
     </div>
 
     <script src="/static/auth.js"></script>
-    <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
+    <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
     <script src="/static/js/admin-page-interaction.js?v=admin-page-interaction-20260710a"></script>
-    <script src="/static/js/admin.js?v=admin-page-interaction-20260710a"></script>
+    <script src="/static/js/admin.js?v=quality-pass-20260711b"></script>
 </body>
 </html>

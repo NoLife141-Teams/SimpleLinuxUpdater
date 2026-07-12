@@ -1,7 +1,10 @@
 (function initStatusPageInteraction(root, factory) {
     const isCommonJS = typeof module === "object" && module.exports;
-    const defaultPresentationFacts = root && root.DashboardProjectionConsumption
-        ? root.DashboardProjectionConsumption.presentationFacts
+    const projectionConsumption = isCommonJS
+        ? require("./dashboard-projection-consumption.js")
+        : root && root.DashboardProjectionConsumption;
+    const defaultPresentationFacts = projectionConsumption
+        ? projectionConsumption.presentationFacts
         : null;
     const api = factory(defaultPresentationFacts);
     if (isCommonJS) {

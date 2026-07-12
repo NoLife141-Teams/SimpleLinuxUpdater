@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -88,6 +89,9 @@ func IsRetryableMessage(msg string) bool {
 
 func IsRetryableError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	var tagged interface{ Retryable() bool }

@@ -98,7 +98,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.UpdatePolicyRun = updateUpdatePolicyRun
 	}
 	if d.IsPostcheckFailureBlocking == nil {
-		d.IsPostcheckFailureBlocking = isPostcheckFailureBlocking
+		d.IsPostcheckFailureBlocking = updatespkg.IsPostcheckFailureBlocking
 	}
 	if d.SummarizeUnitNames == nil {
 		d.SummarizeUnitNames = updatespkg.SummarizeUnitNames
@@ -115,18 +115,10 @@ func newHostMaintenanceSessionFactory(
 	dial func(serverpkg.Server, *ssh.ClientConfig) (sshConnection, error),
 ) HostMaintenanceSessionFactory {
 	return updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
-		BuildAuthMethods:          buildAuth,
-		HostKeyCallback:           hostKeyCallback,
-		DialSSH:                   dial,
-		RunCommandWithTimeout:     runSSHCommandWithTimeout,
-		RunUpdatePrechecks:        runUpdatePrechecks,
-		ListFailedSystemdUnits:    listFailedSystemdUnits,
-		RunPostUpdateHealthChecks: runPostUpdateHealthChecks,
-		CollectServerFacts:        collectServerFactsWithConnection,
-		DiscoverPackages: func(conn sshConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
-			return updatespkg.DiscoverPackageUpdates(conn, timeout, runSSHCommandWithTimeout)
-		},
-		QueryPackageCVEs:  queryPackageCVEs,
+		BuildAuthMethods:  buildAuth,
+		HostKeyCallback:   hostKeyCallback,
+		DialSSH:           dial,
+		RunCommand:        runSSHCommandWithContext,
 		SSHConnectTimeout: sshConnectTimeout,
 		Logf:              log.Printf,
 	})

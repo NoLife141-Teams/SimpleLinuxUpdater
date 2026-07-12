@@ -73,13 +73,7 @@ const postcheckBlockOnAptHealthEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_APT_HEAL
 const postcheckBlockOnFailedUnitsEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_FAILED_UNITS"
 const postcheckRebootRequiredWarningEnv = "DEBIAN_UPDATER_POSTCHECK_REBOOT_REQUIRED_WARNING"
 const postcheckCustomCmdEnv = "DEBIAN_UPDATER_POSTCHECK_CMD"
-const updatePrecheckMinFreeKB int64 = 1024 * 1024
-const precheckOutputMaxLen = 240
-const precheckDiskSpaceCmd = "df -Pk /var / | awk 'NR>1 {print $2, $4}'"
 
-var precheckLocksCmd = updatespkg.RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
-var precheckDpkgAuditCmd = updatespkg.RootOrSudoCommand("dpkg --audit")
-var precheckAptCheckCmd = updatespkg.RootOrSudoCommand("apt-get check")
 var aptUpdateCmd = updatespkg.AptUpdateCmd
 var aptUpgradeCmd = updatespkg.AptUpgradeCmd
 var aptAutoremoveCmd = updatespkg.AptAutoremoveCmd
@@ -90,19 +84,9 @@ var aptFullUpgradeSimCmd = updatespkg.AptFullUpgradeSimCmd
 const defaultSSHCommandTimeout = 5 * time.Minute
 const minSSHCommandTimeout = 1 * time.Second
 const maxSSHCommandTimeout = 30 * time.Minute
-const cveLookupMaxPerPackage = 12
-const cveLookupCommandTimeout = 20 * time.Second
-const postcheckFailedUnitsCmd = "systemctl --failed --no-legend --plain"
-const postcheckRebootRequiredCmd = "sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\""
-const postcheckNameAptHealth = "post_apt_health"
 const sqliteBusyTimeoutMS = 5000
-const postcheckNameFailedUnits = "failed_units"
-const postcheckNameRebootRequired = "reboot_required"
-const postcheckNameCustomCmd = "custom_command"
 const updateCompleteAction = "update.complete"
 const serverFactsRefreshAction = "server.facts.refresh"
-const serverFactsOSCmd = "sh -c '. /etc/os-release 2>/dev/null; printf \"%s\\n\" \"${PRETTY_NAME:-unknown}\"'"
-const serverFactsUptimeCmd = "cat /proc/uptime"
 const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'"
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
@@ -383,17 +367,6 @@ func ensureSettingsSchema(db *sql.DB) error {
 	return nil
 }
 
-func truncateString(s string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= maxLen {
-		return string(runes)
-	}
-	return string(runes[:maxLen])
-}
-
 func normalizeAuditFilterTimestamp(raw string) (string, error) {
 	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	if err != nil {
@@ -505,57 +478,6 @@ func loadPostUpdateCheckConfigFromEnv() PostUpdateCheckConfig {
 	return cfg
 }
 
-func compactCommandOutput(stdout, stderr string) string {
-	combined := strings.TrimSpace(strings.TrimSpace(stdout) + "\n" + strings.TrimSpace(stderr))
-	if combined == "" {
-		return ""
-	}
-	return truncateString(combined, precheckOutputMaxLen)
-}
-
-func kbToGiB(kb int64) float64 {
-	return float64(kb) / (1024.0 * 1024.0)
-}
-
-func isSudoPolicyOrPasswordError(msg string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(msg))
-	return strings.Contains(normalized, "a password is required") ||
-		strings.Contains(normalized, "not allowed to run sudo") ||
-		strings.Contains(normalized, "is not in the sudoers file")
-}
-
-func isSudoCommandNotFoundError(msg string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(msg))
-	return strings.Contains(normalized, "sudo: command not found") ||
-		strings.Contains(normalized, "sudo: not found")
-}
-
-func isCommandNotFoundError(msg string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(msg))
-	return strings.Contains(normalized, "/usr/bin/fuser: command not found") ||
-		strings.Contains(normalized, "/usr/bin/fuser: not found") ||
-		strings.Contains(normalized, "unable to execute /usr/bin/fuser") ||
-		strings.Contains(normalized, "sudo: /usr/bin/fuser: no such file or directory") ||
-		(strings.Contains(normalized, "command not found") && strings.Contains(normalized, "fuser"))
-}
-
-func isBenignNoLockStateOutput(msg string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(msg))
-	if normalized == "" {
-		return true
-	}
-	if strings.Contains(normalized, "no process found") {
-		return true
-	}
-	lockPathMentioned := strings.Contains(normalized, "/var/lib/dpkg/lock-frontend") ||
-		strings.Contains(normalized, "/var/lib/dpkg/lock") ||
-		strings.Contains(normalized, "/var/cache/apt/archives/lock")
-	if lockPathMentioned && (strings.Contains(normalized, "does not exist") || strings.Contains(normalized, "no such file or directory")) {
-		return true
-	}
-	return false
-}
-
 func runSSHCommandNoTimeout(client sshConnection, cmd string, stdin io.Reader) (string, string, error) {
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")
@@ -662,397 +584,29 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 	}
 }
 
-func runSSHCommand(client sshConnection, cmd string, stdin io.Reader) (string, string, error) {
-	return runSSHCommandWithTimeout(client, cmd, stdin, loadSSHCommandTimeoutFromEnv())
-}
-
-func sshExitCode(err error) (int, bool) {
-	return updatespkg.SSHExitCode(err)
-}
-
-func checkDiskSpace(client sshConnection) updatePrecheckResult {
-	stdout, stderr, err := runSSHCommand(client, precheckDiskSpaceCmd, nil)
-	output := compactCommandOutput(stdout, stderr)
-	if err != nil {
-		return updatePrecheckResult{
-			Name:    "disk_space",
-			Passed:  false,
-			Details: fmt.Sprintf("Failed to read free disk space: %v", err),
-			Output:  output,
+func runSSHCommandWithContext(ctx context.Context, client sshConnection, cmd string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	type commandResult struct {
+		stdout string
+		stderr string
+		err    error
+	}
+	resultCh := make(chan commandResult, 1)
+	go func() {
+		stdout, stderr, err := runSSHCommandWithTimeout(client, cmd, stdin, timeout)
+		resultCh <- commandResult{stdout: stdout, stderr: stderr, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		return result.stdout, result.stderr, result.err
+	case <-ctx.Done():
+		if client != nil {
+			_ = client.Close()
 		}
+		return "", "", ctx.Err()
 	}
-	fields := strings.Fields(stdout)
-	if len(fields) == 0 {
-		return updatePrecheckResult{
-			Name:    "disk_space",
-			Passed:  false,
-			Details: "Could not parse free disk space output.",
-			Output:  output,
-		}
-	}
-	minFreeKB := int64(-1)
-	for _, field := range fields {
-		value, convErr := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
-		if convErr != nil {
-			return updatePrecheckResult{
-				Name:    "disk_space",
-				Passed:  false,
-				Details: fmt.Sprintf("Invalid free space value %q.", field),
-				Output:  output,
-			}
-		}
-		if minFreeKB == -1 || value < minFreeKB {
-			minFreeKB = value
-		}
-	}
-	if minFreeKB < updatePrecheckMinFreeKB {
-		return updatePrecheckResult{
-			Name:    "disk_space",
-			Passed:  false,
-			Details: fmt.Sprintf("Insufficient disk space: %.2f GiB free (minimum %.2f GiB).", kbToGiB(minFreeKB), kbToGiB(updatePrecheckMinFreeKB)),
-			Output:  "",
-		}
-	}
-	return updatePrecheckResult{
-		Name:    "disk_space",
-		Passed:  true,
-		Details: fmt.Sprintf("Disk space OK: %.2f GiB free (minimum %.2f GiB).", kbToGiB(minFreeKB), kbToGiB(updatePrecheckMinFreeKB)),
-		Output:  "",
-	}
-}
-
-func checkAptLocks(client sshConnection) updatePrecheckResult {
-	stdout, stderr, err := runSSHCommand(client, precheckLocksCmd, nil)
-	output := compactCommandOutput(stdout, stderr)
-	if err == nil {
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  false,
-			Details: "APT/DPKG lock files are currently in use.",
-			Output:  output,
-		}
-	}
-	if isSudoPolicyOrPasswordError(output + "\n" + err.Error()) {
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  false,
-			Details: "Lock pre-check requires passwordless sudo for `/usr/bin/fuser`. Click \"Enable passwordless apt\" for this server, then retry.",
-			Output:  output,
-		}
-	}
-	if isSudoCommandNotFoundError(output + "\n" + err.Error()) {
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  false,
-			Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
-			Output:  output,
-		}
-	}
-	if isCommandNotFoundError(output + "\n" + err.Error()) {
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  false,
-			Details: "Lock check command not found. Install package `psmisc` (provides /usr/bin/fuser).",
-			Output:  output,
-		}
-	}
-	if exitCode, ok := sshExitCode(err); ok && exitCode == 1 {
-		trimmedOutput := strings.TrimSpace(output)
-		if !isBenignNoLockStateOutput(trimmedOutput) {
-			return updatePrecheckResult{
-				Name:    "apt_locks",
-				Passed:  false,
-				Details: "Could not determine apt/dpkg lock state from lock check output.",
-				Output:  output,
-			}
-		}
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  true,
-			Details: "No apt/dpkg lock contention detected.",
-			Output:  output,
-		}
-	}
-	if exitCode, ok := sshExitCode(err); ok && exitCode == 127 {
-		return updatePrecheckResult{
-			Name:    "apt_locks",
-			Passed:  false,
-			Details: "Lock check command failed because a required command was not found. Install `sudo` for non-root users or `psmisc` for `/usr/bin/fuser`.",
-			Output:  output,
-		}
-	}
-	return updatePrecheckResult{
-		Name:    "apt_locks",
-		Passed:  false,
-		Details: fmt.Sprintf("Failed to evaluate apt/dpkg lock state: %v", err),
-		Output:  output,
-	}
-}
-
-func runAptHealthCheck(client sshConnection, checkName string) updatePrecheckResult {
-	dpkgStdout, dpkgStderr, dpkgErr := runSSHCommand(client, precheckDpkgAuditCmd, nil)
-	dpkgOutput := compactCommandOutput(dpkgStdout, dpkgStderr)
-	if dpkgErr != nil {
-		if isSudoPolicyOrPasswordError(dpkgOutput + "\n" + dpkgErr.Error()) {
-			return updatePrecheckResult{
-				Name:    checkName,
-				Passed:  false,
-				Details: "APT health pre-check requires passwordless sudo for `/usr/bin/dpkg`. Click \"Enable passwordless apt\" for this server, then retry.",
-				Output:  dpkgOutput,
-			}
-		}
-		if isSudoCommandNotFoundError(dpkgOutput + "\n" + dpkgErr.Error()) {
-			return updatePrecheckResult{
-				Name:    checkName,
-				Passed:  false,
-				Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
-				Output:  dpkgOutput,
-			}
-		}
-		return updatePrecheckResult{
-			Name:    checkName,
-			Passed:  false,
-			Details: fmt.Sprintf("dpkg audit failed: %v", dpkgErr),
-			Output:  dpkgOutput,
-		}
-	}
-	if strings.TrimSpace(dpkgStdout+dpkgStderr) != "" {
-		return updatePrecheckResult{
-			Name:    checkName,
-			Passed:  false,
-			Details: "dpkg audit reported package state issues.",
-			Output:  dpkgOutput,
-		}
-	}
-	aptStdout, aptStderr, aptErr := runSSHCommand(client, precheckAptCheckCmd, nil)
-	aptOutput := compactCommandOutput(aptStdout, aptStderr)
-	if aptErr != nil {
-		if isSudoPolicyOrPasswordError(aptOutput + "\n" + aptErr.Error()) {
-			return updatePrecheckResult{
-				Name:    checkName,
-				Passed:  false,
-				Details: "APT health pre-check requires passwordless sudo for `/usr/bin/apt-get`. Click \"Enable passwordless apt\" for this server, then retry.",
-				Output:  aptOutput,
-			}
-		}
-		if isSudoCommandNotFoundError(aptOutput + "\n" + aptErr.Error()) {
-			return updatePrecheckResult{
-				Name:    checkName,
-				Passed:  false,
-				Details: "Remote user is not root and `sudo` is not installed. Install `sudo` on the host or connect as root, then retry.",
-				Output:  aptOutput,
-			}
-		}
-		return updatePrecheckResult{
-			Name:    checkName,
-			Passed:  false,
-			Details: fmt.Sprintf("apt-get check failed: %v", aptErr),
-			Output:  aptOutput,
-		}
-	}
-	return updatePrecheckResult{
-		Name:    checkName,
-		Passed:  true,
-		Details: "APT health checks passed.",
-		Output:  compactCommandOutput(dpkgOutput, aptOutput),
-	}
-}
-
-func checkAptHealth(client sshConnection) updatePrecheckResult {
-	return runAptHealthCheck(client, "apt_health")
-}
-
-func checkPostAptHealth(client sshConnection) updatePrecheckResult {
-	result := runAptHealthCheck(client, postcheckNameAptHealth)
-	result.Details = strings.Replace(result.Details, "pre-check", "post-check", 1)
-	return result
-}
-
-func listFailedSystemdUnits(client sshConnection) ([]string, string, error) {
-	stdout, stderr, err := runSSHCommand(client, postcheckFailedUnitsCmd, nil)
-	output := compactCommandOutput(stdout, stderr)
-	if err != nil {
-		return nil, output, err
-	}
-	units := updatespkg.ParseFailedSystemdUnits(stdout)
-	return units, output, nil
-}
-
-func checkFailedSystemdUnits(client sshConnection, preUpdateFailedUnits map[string]struct{}) updatePrecheckResult {
-	units, output, err := listFailedSystemdUnits(client)
-	if err != nil {
-		return updatePrecheckResult{
-			Name:    postcheckNameFailedUnits,
-			Passed:  false,
-			Details: fmt.Sprintf("failed to evaluate systemd unit health: %v", err),
-			Output:  output,
-		}
-	}
-	if len(units) == 0 {
-		return updatePrecheckResult{
-			Name:    postcheckNameFailedUnits,
-			Passed:  true,
-			Details: "No failed systemd units detected.",
-			Output:  "",
-		}
-	}
-	newlyFailed := make([]string, 0, len(units))
-	for _, unit := range units {
-		if _, existedBefore := preUpdateFailedUnits[unit]; existedBefore {
-			continue
-		}
-		newlyFailed = append(newlyFailed, unit)
-	}
-	if len(newlyFailed) == 0 {
-		return updatePrecheckResult{
-			Name:    postcheckNameFailedUnits,
-			Passed:  true,
-			Details: fmt.Sprintf("No new failed systemd units detected after upgrade (%d pre-existing).", len(units)),
-			Output:  output,
-		}
-	}
-	return updatePrecheckResult{
-		Name:    postcheckNameFailedUnits,
-		Passed:  false,
-		Details: "systemd reports newly failed units after upgrade.",
-		Output: func() string {
-			fullOutput := strings.Join(newlyFailed, "\n")
-			if trimmed := strings.TrimSpace(output); trimmed != "" {
-				fullOutput += "\n\n" + trimmed
-			}
-			return truncateString(fullOutput, precheckOutputMaxLen)
-		}(),
-	}
-}
-
-func checkRebootRequired(client sshConnection) updatePrecheckResult {
-	stdout, stderr, err := runSSHCommand(client, postcheckRebootRequiredCmd, nil)
-	output := compactCommandOutput(stdout, stderr)
-	if err != nil {
-		return updatePrecheckResult{
-			Name:    postcheckNameRebootRequired,
-			Passed:  false,
-			Details: fmt.Sprintf("failed to evaluate reboot-required state: %v", err),
-			Output:  output,
-			Error:   err.Error(),
-		}
-	}
-	if strings.Contains(strings.ToLower(strings.TrimSpace(stdout)), "required") {
-		return updatePrecheckResult{
-			Name:    postcheckNameRebootRequired,
-			Passed:  false,
-			Details: "Reboot required to fully apply updates.",
-			Output:  output,
-		}
-	}
-	return updatePrecheckResult{
-		Name:    postcheckNameRebootRequired,
-		Passed:  true,
-		Details: "No reboot requirement detected.",
-		Output:  "",
-	}
-}
-
-func checkCustomPostUpdateCommand(client sshConnection, cmd string) updatePrecheckResult {
-	stdout, stderr, err := runSSHCommand(client, cmd, nil)
-	output := compactCommandOutput(stdout, stderr)
-	if err != nil {
-		return updatePrecheckResult{
-			Name:    postcheckNameCustomCmd,
-			Passed:  false,
-			Details: fmt.Sprintf("custom post-check command failed: %v", err),
-			Output:  output,
-		}
-	}
-	return updatePrecheckResult{
-		Name:    postcheckNameCustomCmd,
-		Passed:  true,
-		Details: "Custom post-check command passed.",
-		Output:  output,
-	}
-}
-
-func isPostcheckFailureBlocking(name string, cfg PostUpdateCheckConfig) bool {
-	switch name {
-	case postcheckNameAptHealth:
-		return cfg.BlockOnAptHealth
-	case postcheckNameFailedUnits:
-		return cfg.BlockOnFailedUnits
-	case postcheckNameRebootRequired:
-		return false
-	case postcheckNameCustomCmd:
-		// Custom command runs only when configured and is blocking by design.
-		return strings.TrimSpace(cfg.CustomCommand) != ""
-	default:
-		return true
-	}
-}
-
-func runPostUpdateHealthChecks(client sshConnection, cfg PostUpdateCheckConfig, preUpdateFailedUnits map[string]struct{}) updatePostcheckSummary {
-	summary := updatePostcheckSummary{
-		AllPassed: true,
-		Results:   make([]updatePrecheckResult, 0, 4),
-	}
-	if !cfg.Enabled {
-		return summary
-	}
-	checks := []func(sshConnection) updatePrecheckResult{
-		checkPostAptHealth,
-		func(client sshConnection) updatePrecheckResult {
-			return checkFailedSystemdUnits(client, preUpdateFailedUnits)
-		},
-	}
-	if cfg.RebootRequiredWarning {
-		checks = append(checks, checkRebootRequired)
-	}
-	for _, check := range checks {
-		result := check(client)
-		summary.Results = append(summary.Results, result)
-		if result.Passed {
-			continue
-		}
-		if isPostcheckFailureBlocking(result.Name, cfg) {
-			summary.AllPassed = false
-			if summary.FailedCheck == "" {
-				summary.FailedCheck = result.Name
-			}
-			continue
-		}
-		summary.Warnings++
-	}
-	if strings.TrimSpace(cfg.CustomCommand) != "" {
-		result := checkCustomPostUpdateCommand(client, cfg.CustomCommand)
-		summary.Results = append(summary.Results, result)
-		if !result.Passed {
-			summary.AllPassed = false
-			if summary.FailedCheck == "" {
-				summary.FailedCheck = result.Name
-			}
-		}
-	}
-	return summary
-}
-
-func runUpdatePrechecks(client sshConnection) updatePrecheckSummary {
-	checks := []func(sshConnection) updatePrecheckResult{
-		checkDiskSpace,
-		checkAptLocks,
-		checkAptHealth,
-	}
-	summary := updatePrecheckSummary{
-		AllPassed: true,
-		Results:   make([]updatePrecheckResult, 0, len(checks)),
-	}
-	for _, check := range checks {
-		result := check(client)
-		summary.Results = append(summary.Results, result)
-		if !result.Passed {
-			summary.AllPassed = false
-			summary.FailedCheck = result.Name
-			return summary
-		}
-	}
-	return summary
 }
 
 func handleAuditEvents(c *gin.Context) {
@@ -1914,14 +1468,6 @@ func extractCVEsFromText(text string, max int) []string {
 
 func buildPackageCVEQueryCmd(pkg string) string {
 	return updatespkg.BuildPackageCVEQueryCmd(pkg)
-}
-
-func queryPackageCVEs(client sshConnection, pkg string) ([]string, error) {
-	stdout, _, err := runSSHCommandWithTimeout(client, buildPackageCVEQueryCmd(pkg), nil, cveLookupCommandTimeout)
-	if err != nil {
-		return nil, err
-	}
-	return extractCVEsFromText(stdout, cveLookupMaxPerPackage), nil
 }
 
 func startPendingUpdateCVEEnrichment(server Server, updates []PendingUpdate, parentJobID, actor, clientIP string) {

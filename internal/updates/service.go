@@ -726,7 +726,8 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				status.Logs = logs + "\nUpgrade completed.\nRunning post-update health checks..."
 			})
 
-			postcheckSummary := r.session.RunPostUpdateHealthChecks(context.Background(), postcheckCfg, preUpdateFailedUnitsMap)
+			inspectionSummary := r.session.RunPostUpdateHealthChecks(context.Background(), postcheckCfg, preUpdateFailedUnitsMap)
+			postcheckSummary := applyPostcheckPolicy(inspectionSummary.Results, postcheckCfg, deps.IsPostcheckFailureBlocking)
 			r.postcheckResults = postcheckSummary.Results
 			r.postcheckWarnings = postcheckSummary.Warnings
 			for _, result := range postcheckSummary.Results {
@@ -785,6 +786,24 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			})
 		},
 	)
+}
+
+func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, isBlocking func(string, PostUpdateCheckConfig) bool) PostcheckSummary {
+	summary := PostcheckSummary{AllPassed: true, Results: results}
+	for _, result := range results {
+		if result.Passed {
+			continue
+		}
+		if isBlocking(result.Name, cfg) {
+			summary.AllPassed = false
+			if summary.FailedCheck == "" {
+				summary.FailedCheck = result.Name
+			}
+			continue
+		}
+		summary.Warnings++
+	}
+	return summary
 }
 
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {

@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -420,6 +421,14 @@ func TestRetryHelpersClassifyRetryableOutput(t *testing.T) {
 	delay := ComputeRetryDelay(RetryPolicy{BaseDelay: time.Second, MaxDelay: 8 * time.Second, JitterPct: 0}, 3, 0)
 	if delay != 4*time.Second {
 		t.Fatalf("ComputeRetryDelay() = %s, want 4s", delay)
+	}
+}
+
+func TestRetryHelpersNeverReplayContextTermination(t *testing.T) {
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
+		if IsRetryableError(err) {
+			t.Fatalf("IsRetryableError(%v) = true, want false", err)
+		}
 	}
 }
 

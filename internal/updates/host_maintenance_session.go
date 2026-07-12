@@ -200,19 +200,13 @@ func (s *HostMaintenanceSessionFuncs) Close() error {
 }
 
 type ProductionHostMaintenanceSessionDeps struct {
-	BuildAuthMethods          func(servers.Server) ([]ssh.AuthMethod, error)
-	HostKeyCallback           func() (ssh.HostKeyCallback, error)
-	DialSSH                   func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
-	RunCommandWithTimeout     func(SSHConnection, string, io.Reader, time.Duration) (string, string, error)
-	RunUpdatePrechecks        func(SSHConnection) PrecheckSummary
-	ListFailedSystemdUnits    func(SSHConnection) ([]string, string, error)
-	RunPostUpdateHealthChecks func(SSHConnection, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
-	CollectServerFacts        func(servers.Server, SSHConnection, time.Duration) ServerFactsRecord
-	DiscoverPackages          PackageDiscoverer
-	QueryPackageCVEs          func(SSHConnection, string) ([]string, error)
-	SSHConnectTimeout         time.Duration
-	Sleep                     func(time.Duration)
-	Logf                      func(string, ...any)
+	BuildAuthMethods  func(servers.Server) ([]ssh.AuthMethod, error)
+	HostKeyCallback   func() (ssh.HostKeyCallback, error)
+	DialSSH           func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
+	RunCommand        func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error)
+	SSHConnectTimeout time.Duration
+	Sleep             func(time.Duration)
+	Logf              func(string, ...any)
 }
 
 type productionHostMaintenanceSessionFactory struct {
@@ -222,9 +216,6 @@ type productionHostMaintenanceSessionFactory struct {
 func NewProductionHostMaintenanceSessionFactory(deps ProductionHostMaintenanceSessionDeps) HostMaintenanceSessionFactory {
 	if deps.SSHConnectTimeout <= 0 {
 		deps.SSHConnectTimeout = 15 * time.Second
-	}
-	if deps.Sleep == nil {
-		deps.Sleep = time.Sleep
 	}
 	if deps.Logf == nil {
 		deps.Logf = func(string, ...any) {}
@@ -268,6 +259,9 @@ func (f *productionHostMaintenanceSessionFactory) Open(ctx context.Context, req 
 		},
 	}
 	err = RunWithRetryWithSleep(req.RetryPolicy, req.DialOperation, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		session.stats.DialAttempts++
 		conn, dialErr := f.deps.DialSSH(req.Server, config)
 		if dialErr == nil {
@@ -277,7 +271,9 @@ func (f *productionHostMaintenanceSessionFactory) Open(ctx context.Context, req 
 			return RetryableTaggedError{Err: dialErr}
 		}
 		return dialErr
-	}, session.notifyRetry(req.DialOperation), f.deps.Sleep, f.deps.Logf)
+	}, session.notifyRetry(req.DialOperation), func(wait time.Duration) {
+		waitForHostRetry(ctx, wait, f.deps.Sleep)
+	}, f.deps.Logf)
 	if err != nil {
 		return nil, &HostMaintenanceError{Stage: HostMaintenanceStageDial, Operation: req.DialOperation, Attempts: session.stats.DialAttempts, Err: err}
 	}
@@ -339,15 +335,38 @@ func (s *productionHostMaintenanceSession) runWithRetry(ctx context.Context, ope
 			}
 		}
 		return fn(s.conn)
-	}, s.notifyRetry(operation), s.deps.Sleep, s.deps.Logf)
+	}, s.notifyRetry(operation), func(wait time.Duration) {
+		waitForHostRetry(ctx, wait, s.deps.Sleep)
+	}, s.deps.Logf)
 	if err != nil {
 		return attempts, &HostMaintenanceError{Stage: HostMaintenanceStageCommand, Operation: operation, Attempts: attempts, Err: err}
 	}
 	return attempts, nil
 }
 
+func waitForHostRetry(ctx context.Context, wait time.Duration, sleep func(time.Duration)) {
+	if sleep == nil {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		return
+	}
+	sleepDone := make(chan struct{})
+	go func() {
+		sleep(wait)
+		close(sleepDone)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-sleepDone:
+	}
+}
+
 func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req HostCommandRequest) (HostCommandResult, error) {
-	if s.deps.RunCommandWithTimeout == nil {
+	if s.deps.RunCommand == nil {
 		return HostCommandResult{}, errors.New("host command runner is not configured")
 	}
 	var stdout, stderr string
@@ -357,7 +376,7 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 		if req.Stdin != nil {
 			stdin = req.Stdin()
 		}
-		stdout, stderr, runErr = s.deps.RunCommandWithTimeout(conn, req.Command, stdin, s.request.CommandTimeout)
+		stdout, stderr, runErr = s.deps.RunCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout)
 		if req.ReplayPolicy == ReplayRetryableOutputErrors {
 			return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
 		}
@@ -366,52 +385,49 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 	return HostCommandResult{Stdout: stdout, Stderr: stderr, Attempts: attempts}, err
 }
 
-func (s *productionHostMaintenanceSession) RunUpdatePrechecks(context.Context) PrecheckSummary {
-	if s.deps.RunUpdatePrechecks == nil {
-		return PrecheckSummary{AllPassed: false, FailedCheck: "session", Results: []PrecheckResult{{Name: "session", Details: "update prechecks are not configured"}}}
-	}
-	return s.deps.RunUpdatePrechecks(s.conn)
+func (s *productionHostMaintenanceSession) RunUpdatePrechecks(ctx context.Context) PrecheckSummary {
+	return s.runUpdatePrechecks(ctx)
 }
 
-func (s *productionHostMaintenanceSession) ListFailedSystemdUnits(context.Context) ([]string, string, error) {
-	if s.deps.ListFailedSystemdUnits == nil {
-		return nil, "", errors.New("failed-unit inspection is not configured")
-	}
-	return s.deps.ListFailedSystemdUnits(s.conn)
+func (s *productionHostMaintenanceSession) ListFailedSystemdUnits(ctx context.Context) ([]string, string, error) {
+	return s.listFailedSystemdUnits(ctx)
 }
 
-func (s *productionHostMaintenanceSession) RunPostUpdateHealthChecks(_ context.Context, cfg PostUpdateCheckConfig, baseline map[string]struct{}) PostcheckSummary {
-	if s.deps.RunPostUpdateHealthChecks == nil {
-		return PostcheckSummary{AllPassed: false, FailedCheck: "session"}
-	}
-	return s.deps.RunPostUpdateHealthChecks(s.conn, cfg, baseline)
+func (s *productionHostMaintenanceSession) RunPostUpdateHealthChecks(ctx context.Context, cfg PostUpdateCheckConfig, baseline map[string]struct{}) PostcheckSummary {
+	return s.runPostUpdateHealthChecks(ctx, cfg, baseline)
 }
 
-func (s *productionHostMaintenanceSession) CollectServerFacts(context.Context) ServerFactsRecord {
-	if s.deps.CollectServerFacts == nil {
-		return ServerFactsRecord{ServerName: s.request.Server.Name}
-	}
-	return s.deps.CollectServerFacts(s.request.Server, s.conn, s.request.CommandTimeout)
+func (s *productionHostMaintenanceSession) CollectServerFacts(ctx context.Context) ServerFactsRecord {
+	return s.collectServerFacts(ctx)
 }
 
 func (s *productionHostMaintenanceSession) DiscoverPackages(ctx context.Context, req HostOperationRequest) (HostPackageDiscoveryResult, error) {
-	if s.deps.DiscoverPackages == nil {
+	if s.deps.RunCommand == nil {
 		return HostPackageDiscoveryResult{}, errors.New("package discovery is not configured")
 	}
 	var outcome PackageDiscoveryOutcome
 	attempts, err := s.runWithRetry(ctx, req.Operation, func(conn SSHConnection) error {
 		var discoverErr error
-		outcome, discoverErr = s.deps.DiscoverPackages(conn, s.request.CommandTimeout)
+		outcome, discoverErr = DiscoverPackageUpdates(conn, s.request.CommandTimeout, func(conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+			return s.deps.RunCommand(ctx, conn, command, stdin, timeout)
+		})
 		return discoverErr
 	})
 	return HostPackageDiscoveryResult{Outcome: outcome, Attempts: attempts}, err
 }
 
-func (s *productionHostMaintenanceSession) QueryPackageCVEs(_ context.Context, pkg string) ([]string, error) {
-	if s.deps.QueryPackageCVEs == nil {
-		return []string{}, nil
+func (s *productionHostMaintenanceSession) QueryPackageCVEs(ctx context.Context, pkg string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return s.deps.QueryPackageCVEs(s.conn, pkg)
+	if s.deps.RunCommand == nil {
+		return nil, errors.New("CVE query command runner is not configured")
+	}
+	stdout, _, err := s.deps.RunCommand(ctx, s.conn, BuildPackageCVEQueryCmd(pkg), nil, CVELookupCommandTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return ExtractCVEsFromText(stdout, CVELookupMaxPerPackage), nil
 }
 
 func (s *productionHostMaintenanceSession) Stats() HostMaintenanceSessionStats {

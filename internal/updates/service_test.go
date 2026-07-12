@@ -47,6 +47,23 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+func TestApplyPostcheckPolicyOwnsTerminalClassification(t *testing.T) {
+	results := []PrecheckResult{
+		{Name: PostcheckNameFailedUnits, Details: "new failure"},
+		{Name: PostcheckNameRebootNeeded, Details: "restart required"},
+	}
+	cfg := PostUpdateCheckConfig{BlockOnFailedUnits: true, RebootRequiredWarning: true}
+	summary := applyPostcheckPolicy(results, cfg, func(name string, _ PostUpdateCheckConfig) bool {
+		return name == PostcheckNameFailedUnits
+	})
+	if summary.AllPassed || summary.FailedCheck != PostcheckNameFailedUnits || summary.Warnings != 1 {
+		t.Fatalf("applyPostcheckPolicy() = %+v", summary)
+	}
+	if !reflect.DeepEqual(summary.Results, results) {
+		t.Fatalf("Results = %+v, want %+v", summary.Results, results)
+	}
+}
+
 func testState() (*servers.State, map[string]*servers.ServerStatus) {
 	mu := &sync.Mutex{}
 	inventory := []servers.Server{{Name: "srv", Host: "127.0.0.1", Port: 22, User: "root"}}

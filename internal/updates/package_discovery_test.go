@@ -292,9 +292,8 @@ func TestProductionHostMaintenanceSessionUsesPackageDiscovery(t *testing.T) {
 		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return fakeConnection{}, nil
 		},
-		RunCommandWithTimeout: runner.run,
-		DiscoverPackages: func(conn SSHConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
-			return DiscoverPackageUpdates(conn, timeout, runner.run)
+		RunCommand: func(_ context.Context, conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+			return runner.run(conn, command, stdin, timeout)
 		},
 	})
 	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{Server: servers.Server{User: "root"}, RetryPolicy: RetryPolicy{MaxAttempts: 1}, CommandTimeout: time.Second})
@@ -314,5 +313,30 @@ func TestProductionHostMaintenanceSessionUsesPackageDiscovery(t *testing.T) {
 	}
 	if !outcome.UpgradePlan.FullUpgradePlanAvailable {
 		t.Fatalf("upgrade plan = %+v, want full-upgrade plan available", outcome.UpgradePlan)
+	}
+}
+
+func TestProductionHostMaintenanceSessionPackageDiscoveryFailsWithoutReplay(t *testing.T) {
+	runner := &packageDiscoveryCommandRunner{responses: map[string]packageDiscoveryCommandResponse{
+		AptListUpgradableCmd: {stderr: "simulation failed", err: errors.New("exit status 100")},
+	}}
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return fakeConnection{}, nil },
+		RunCommand: func(_ context.Context, conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+			return runner.run(conn, command, stdin, timeout)
+		},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{Server: servers.Server{User: "root"}, RetryPolicy: RetryPolicy{MaxAttempts: 2}, CommandTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	_, err = session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "test.discovery"})
+	if err == nil {
+		t.Fatal("DiscoverPackages() error = nil, want simulation failure")
+	}
+	if !reflect.DeepEqual(runner.commands, []string{AptListUpgradableCmd}) {
+		t.Fatalf("commands = %#v, want no replay", runner.commands)
 	}
 }

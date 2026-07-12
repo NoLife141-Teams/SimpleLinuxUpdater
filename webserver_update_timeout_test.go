@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +14,20 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+func TestRunSSHCommandWithContextCancelsInFlightCommand(t *testing.T) {
+	conn := &slowSSHConnection{delay: 3 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	started := time.Now()
+	_, _, err := runSSHCommandWithContext(ctx, conn, "slow command", nil, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSSHCommandWithContext() error = %v, want context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cancellation took %s, want under one second", elapsed)
+	}
+}
 
 type slowSSHConnection struct {
 	delay    time.Duration

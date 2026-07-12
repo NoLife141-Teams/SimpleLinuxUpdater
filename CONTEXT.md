@@ -109,5 +109,5 @@ The optional app-wide SSH private key that Host Maintenance Session uses only wh
 _Avoid_: Global key, fallback key, shared key
 
 **Host Maintenance Session**:
-A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, and transport closure, while the invoking application service owns action lifecycle, approval, jobs, audit, and persistence.
+A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, connection-bound pre-update and post-update health inspection, package discovery, host-fact collection, and transport closure, while the invoking application service owns action lifecycle, approval and blocking policy, jobs, audit, and persistence.
 _Avoid_: SSH helper bundle, update connection

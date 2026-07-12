@@ -752,6 +752,37 @@ tbody tr:last-child td {
     display: flex;
 }
 
+.app-feedback-region {
+    position: fixed;
+    z-index: 120;
+    right: 18px;
+    bottom: 18px;
+    width: min(420px, calc(100vw - 36px));
+}
+
+.app-feedback {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    background: rgba(var(--panel-rgb), 0.98);
+    box-shadow: var(--shadow);
+}
+
+.app-feedback.danger { border-color: rgba(var(--danger-rgb), 0.55); }
+.app-feedback.warning { border-color: rgba(var(--warning-rgb), 0.55); }
+.app-feedback.success { border-color: rgba(var(--success-rgb), 0.55); }
+.app-feedback.info { border-color: rgba(var(--accent-rgb), 0.55); }
+
+.action-confirm-modal {
+    width: min(560px, 100%);
+}
+
+.action-confirm-message {
+    margin: 12px 0 18px;
+    white-space: pre-line;
+}
+
 .modal {
     width: min(960px, 100%);
     max-height: min(86vh, 920px);

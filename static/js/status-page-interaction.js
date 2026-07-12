@@ -1,13 +1,19 @@
 (function initStatusPageInteraction(root, factory) {
-    const api = factory();
-    if (typeof module === "object" && module.exports) {
+    const isCommonJS = typeof module === "object" && module.exports;
+    const projectionConsumption = isCommonJS
+        ? require("./dashboard-projection-consumption.js")
+        : root && root.DashboardProjectionConsumption;
+    const defaultPresentationFacts = projectionConsumption
+        ? projectionConsumption.presentationFacts
+        : null;
+    const api = factory(defaultPresentationFacts);
+    if (isCommonJS) {
         module.exports = api;
     }
-    if (root) {
+    if (root && !isCommonJS) {
         root.StatusPageInteraction = api;
-        root.statusPageInteraction = root.statusPageInteraction || api.createStore();
     }
-}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory() {
+}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory(defaultPresentationFacts) {
     "use strict";
 
     const transientBlockingStatuses = new Set([
@@ -94,51 +100,14 @@
         return value === "immediate" ? "immediate" : "deferable";
     }
 
-    function pendingApprovalCounts(server) {
-        const pending = Array.isArray(server && server.pending_updates) ? server.pending_updates : [];
-        const plan = server && server.upgrade_plan && typeof server.upgrade_plan === "object" ? server.upgrade_plan : {};
-        const standardPlanCount = Number(plan.standard_package_count);
-        const keptBackPlanCount = Number(plan.kept_back_package_count);
-        const standardSecurityPlanCount = Number(plan.standard_security_count);
-        const totalSecurityPlanCount = Number(plan.total_security_count);
-        const standard = Number.isFinite(standardPlanCount)
-            ? Math.max(0, standardPlanCount)
-            : pending.filter(update => !update.kept_back && !update.requires_full_upgrade).length;
-        const keptBack = Number.isFinite(keptBackPlanCount)
-            ? Math.max(0, keptBackPlanCount)
-            : pending.filter(update => update.kept_back || update.requires_full_upgrade).length;
-        const pendingSecurity = pending.filter(update => !!update.security);
-        const pendingKeptSecurity = pendingSecurity.filter(update => update.kept_back || update.requires_full_upgrade).length;
-        const standardSecurity = Number.isFinite(standardSecurityPlanCount)
-            ? Math.max(0, standardSecurityPlanCount)
-            : Math.max(0, pendingSecurity.length - pendingKeptSecurity);
-        const totalSecurity = Number.isFinite(totalSecurityPlanCount)
-            ? Math.max(0, totalSecurityPlanCount)
-            : pendingSecurity.length;
-        const keptBackSecurity = Math.max(0, totalSecurity - standardSecurity);
-        return {
-            standard,
-            keptBack,
-            standardSecurity,
-            keptBackSecurity,
-            full: Number(plan.full_upgrade_package_count || standard + keptBack),
-            keptBackSecurityPlanAvailable: !!plan.kept_back_security_plan_available,
-            fullPlanAvailable: !!plan.full_upgrade_plan_available,
-            keptBackSecurityRemovedPackages: cloneValue(Array.isArray(plan.kept_back_security_removed_packages) ? plan.kept_back_security_removed_packages : []),
-            keptBackSecurityNewPackages: cloneValue(Array.isArray(plan.kept_back_security_new_packages) ? plan.kept_back_security_new_packages : []),
-            removedPackages: cloneValue(Array.isArray(plan.removed_packages) ? plan.removed_packages : []),
-            newPackages: cloneValue(Array.isArray(plan.new_packages) ? plan.new_packages : [])
-        };
-    }
-
     function pluralized(count, singular) {
         return `${count} ${count === 1 ? singular : `${singular}s`}`;
     }
 
-    function defaultActionReason(key, server, action) {
+    function defaultActionReason(key, server, action, approvalCounts) {
         if (action && action.reason) return action.reason;
         if (!server) return "Host is no longer loaded";
-        const counts = pendingApprovalCounts(server);
+        const counts = approvalCounts(server);
         const enabled = !!(action && action.enabled);
         const status = String(server.status || "").toLowerCase();
         if (enabled) {
@@ -169,16 +138,7 @@
         return "Action is unavailable";
     }
 
-    function authLabel(server, globalKeyAvailable) {
-        if (server && server.has_key && server.has_password) return "Server key + password";
-        if (server && !server.has_key && globalKeyAvailable && server.has_password) return "Global SSH key + password";
-        if (server && server.has_key) return "Server key";
-        if (server && !server.has_key && globalKeyAvailable) return "Global SSH key";
-        if (server && server.has_password) return "Password";
-        return "No auth configured";
-    }
-
-    function legacyAction(server, dashboardServer, key) {
+    function legacyAction(server, dashboardServer, key, approvalCounts) {
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
         let enabled;
@@ -188,7 +148,7 @@
         } else if (field && triage && typeof triage === "object" && typeof triage[field] === "boolean") {
             enabled = triage[field];
         } else if (["approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"].includes(key)) {
-            const counts = pendingApprovalCounts(server);
+            const counts = approvalCounts(server);
             const pending = String(server && server.status || "").toLowerCase() === "pending_approval";
             if (key === "approve_all") enabled = pending && counts.standard > 0;
             if (key === "approve_security") enabled = pending && counts.standardSecurity > 0;
@@ -208,7 +168,15 @@
         };
     }
 
-    function createStore() {
+    function createStore(options = {}) {
+        const presentationFacts = options.presentationFacts && typeof options.presentationFacts === "object"
+            ? options.presentationFacts
+            : defaultPresentationFacts;
+        if (!presentationFacts || typeof presentationFacts.approvalCounts !== "function" || typeof presentationFacts.authFacts !== "function") {
+            throw new Error("Status Page Interaction requires Dashboard Projection Consumption presentation facts");
+        }
+        const canonicalApprovalCounts = presentationFacts.approvalCounts;
+        const canonicalAuthFacts = presentationFacts.authFacts;
         let servers = [];
         let serversByName = new Map();
         let dashboardSnapshot = {};
@@ -506,7 +474,7 @@
                     return [{
                         type: "actionRejected",
                         operationId: plan.id,
-                        reason: defaultActionReason(plan.actionKey, actionServer(unavailable), getAction(unavailable, plan.actionKey))
+                        reason: defaultActionReason(plan.actionKey, actionServer(unavailable), getAction(unavailable, plan.actionKey), canonicalApprovalCounts)
                     }];
                 }
                 names.forEach(name => inFlightActions.set(name, {
@@ -634,7 +602,7 @@
             const server = actionServer(normalizedName);
             const dashboardServer = actionDashboardServer(normalizedName);
             const canonical = normalizeCanonicalAction(dashboardServer && dashboardServer.actions && dashboardServer.actions[key]);
-            const action = canonical || legacyAction(server, dashboardServer, key);
+            const action = canonical || legacyAction(server, dashboardServer, key, canonicalApprovalCounts);
             if (!action) return null;
             if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
                 return {
@@ -670,10 +638,10 @@
                 serverName: normalizedName,
                 serverNames: normalizedName ? [normalizedName] : [],
                 enabled: !!action.enabled,
-                reason: defaultActionReason(actionKey, server, action),
+                reason: defaultActionReason(actionKey, server, action, canonicalApprovalCounts),
                 readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
                 blockingStatus: String(action.blocking_status || ""),
-                payloadFacts: { counts: pendingApprovalCounts(server) }
+                payloadFacts: { counts: canonicalApprovalCounts(server) }
             };
         }
 
@@ -688,17 +656,17 @@
             visibleSelectedNames.forEach(name => {
                 const server = actionServer(name);
                 const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
-                const reason = defaultActionReason(actionKey, server, action);
+                const reason = defaultActionReason(actionKey, server, action, canonicalApprovalCounts);
                 if (action.enabled) {
                     eligibleNames.push(name);
-                    eligibleHosts.push({ name, auth: authLabel(server, globalKeyAvailable), readiness: reason });
+                    eligibleHosts.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, readiness: reason });
                 } else {
-                    ineligible.push({ name, auth: authLabel(server, globalKeyAvailable), reason });
+                    ineligible.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, reason });
                 }
             });
             const hiddenHosts = hiddenSelectedNames.map(name => ({
                 name,
-                auth: authLabel(actionServer(name), globalKeyAvailable),
+                auth: canonicalAuthFacts(actionServer(name), globalKeyAvailable).label,
                 reason: "Hidden by current filter or page"
             }));
             return {
@@ -714,7 +682,7 @@
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: pendingApprovalCounts(actionServer(name)) }]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: canonicalApprovalCounts(actionServer(name)) }]))
             };
         }
 

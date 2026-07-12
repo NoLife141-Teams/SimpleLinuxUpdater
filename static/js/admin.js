@@ -440,7 +440,7 @@ async function clearAuthSessions() {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to clear sessions.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         finishAdminCommand(plan, { count: 0 }, "Sessions cleared.");
@@ -448,7 +448,7 @@ async function clearAuthSessions() {
         window.location.assign("/login");
     } catch (err) {
         finishAdminCommand(plan, null, err.message || "Failed to clear sessions.", true);
-        alert(err.message || "Failed to clear sessions.");
+        window.notifyApp(err.message || "Failed to clear sessions.");
     }
 }
 
@@ -501,14 +501,14 @@ async function rotateMetricsToken(askConfirm) {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to rotate metrics token.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         const data = await res.json().catch(() => ({}));
         const token = (data && typeof data.token === "string") ? data.token : "";
         if (!token) {
             finishAdminCommand(plan, data, "Token rotation succeeded but no token was returned.", true);
-            alert("Token rotation succeeded but no token was returned.");
+            window.notifyApp("Token rotation succeeded but no token was returned.");
             return;
         }
         finishAdminCommand(plan, data, "Metrics token rotated.");
@@ -517,7 +517,7 @@ async function rotateMetricsToken(askConfirm) {
     } catch (err) {
         console.error("Failed to rotate metrics token:", err);
         finishAdminCommand(plan, null, "Failed to rotate metrics token.", true);
-        alert("Failed to rotate metrics token.");
+        window.notifyApp("Failed to rotate metrics token.");
     }
 }
 
@@ -532,7 +532,7 @@ async function disableMetricsToken() {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to disable metrics token.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         finishAdminCommand(plan, { enabled: false }, "Metrics token disabled.");
@@ -541,21 +541,21 @@ async function disableMetricsToken() {
     } catch (err) {
         console.error("Failed to disable metrics token:", err);
         finishAdminCommand(plan, null, "Failed to disable metrics token.", true);
-        alert("Failed to disable metrics token.");
+        window.notifyApp("Failed to disable metrics token.");
     }
 }
 
 async function copyMetricsToken() {
     const token = adminPageView().metrics.revealedToken;
     if (!token) {
-        alert("No token to copy.");
+        window.notifyApp("No token to copy.");
         return;
     }
     try {
         await navigator.clipboard.writeText(token);
-        alert("Metrics token copied.");
+        window.notifyApp("Metrics token copied.");
     } catch (_) {
-        alert("Failed to copy token. Copy it manually from the box.");
+        window.notifyApp("Failed to copy token. Copy it manually from the box.");
     }
 }
 
@@ -605,16 +605,16 @@ async function exportBackup() {
         const confirmPass = exportPassConfirmInput?.value || "";
         const includeKnownHosts = !!document.getElementById("backup-include-known-hosts")?.checked;
         if (pass.length < 12) {
-            alert("Passphrase must be at least 12 characters.");
+            window.notifyApp("Passphrase must be at least 12 characters.");
             return;
         }
         if (pass !== confirmPass) {
-            alert("Passphrase confirmation does not match.");
+            window.notifyApp("Passphrase confirmation does not match.");
             return;
         }
         plan = beginAdminCommand("exportBackup", { passphraseValid: pass.length >= 12, passwordsMatch: pass === confirmPass, includeKnownHosts });
         if (!plan) {
-            alert(adminPageInteraction.planCommand("exportBackup").reason || "Backup is unavailable.");
+            window.notifyApp(adminPageInteraction.planCommand("exportBackup").reason || "Backup is unavailable.");
             return;
         }
         const res = await fetch("/api/backup/export", {
@@ -625,7 +625,7 @@ async function exportBackup() {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to export backup.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         const blob = await res.blob();
@@ -639,11 +639,11 @@ async function exportBackup() {
         link.remove();
         URL.revokeObjectURL(url);
         finishAdminCommand(plan, null, "Backup exported.");
-        alert("Backup exported.");
+        window.notifyApp("Backup exported.");
     } catch (err) {
         console.error("Failed to export backup:", err);
         finishAdminCommand(plan, null, "Failed to export backup.", true);
-        alert("Failed to export backup.");
+        window.notifyApp("Failed to export backup.");
     } finally {
         if (exportPassInput) exportPassInput.value = "";
         if (exportPassConfirmInput) exportPassConfirmInput.value = "";
@@ -658,11 +658,11 @@ async function restoreBackup() {
         const pass = restorePassInput?.value || "";
         const file = fileInput?.files?.[0];
         if (!file) {
-            alert("Choose a backup file first.");
+            window.notifyApp("Choose a backup file first.");
             return;
         }
         if (pass.length < 12) {
-            alert("Passphrase must be at least 12 characters.");
+            window.notifyApp("Passphrase must be at least 12 characters.");
             return;
         }
         if (!(await window.confirmTypedAction("Restore will replace the current DB and optional known_hosts. Local config.json stays in place.", "RESTORE"))) {
@@ -681,12 +681,12 @@ async function restoreBackup() {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to restore backup.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         const payload = await res.json().catch(() => ({}));
         finishAdminCommand(plan, payload, "Backup restored successfully.");
-        alert("Backup restored successfully.");
+        window.notifyApp("Backup restored successfully.");
         if (fileInput) {
             fileInput.value = "";
             updateFileLabel(fileInput, "Choose backup file");
@@ -699,7 +699,7 @@ async function restoreBackup() {
     } catch (err) {
         console.error("Failed to restore backup:", err);
         finishAdminCommand(plan, null, "Failed to restore backup.", true);
-        alert("Failed to restore backup.");
+        window.notifyApp("Failed to restore backup.");
     } finally {
         if (restorePassInput) restorePassInput.value = "";
     }
@@ -713,11 +713,11 @@ async function verifyBackup() {
         const pass = restorePassInput?.value || "";
         const file = fileInput?.files?.[0];
         if (!file) {
-            alert("Choose a backup file first.");
+            window.notifyApp("Choose a backup file first.");
             return;
         }
         if (pass.length < 12) {
-            alert("Passphrase must be at least 12 characters.");
+            window.notifyApp("Passphrase must be at least 12 characters.");
             return;
         }
         adminPageInteraction.dispatch({ type: "backupFileSelected", file });
@@ -733,7 +733,7 @@ async function verifyBackup() {
         if (!res.ok) {
             const message = await parseErrorResponse(res, "Failed to verify backup.");
             finishAdminCommand(plan, null, message, true);
-            alert(message);
+            window.notifyApp(message);
             return;
         }
         const payload = await res.json().catch(() => ({}));
@@ -745,7 +745,7 @@ async function verifyBackup() {
     } catch (err) {
         console.error("Failed to verify backup:", err);
         finishAdminCommand(plan, null, "Failed to verify backup.", true);
-        alert("Failed to verify backup.");
+        window.notifyApp("Failed to verify backup.");
     }
 }
 
@@ -1277,12 +1277,12 @@ async function openJobDetail(jobID) {
     try {
         const res = await fetch(`/api/jobs/${encodeURIComponent(cleanID)}`);
         if (!res.ok) {
-            alert(await parseErrorResponse(res, "Failed to load job details."));
+            window.notifyApp(await parseErrorResponse(res, "Failed to load job details."));
             return;
         }
         const data = await res.json().catch(() => ({}));
         if (!data.job) {
-            alert("Job details were not returned.");
+            window.notifyApp("Job details were not returned.");
             return;
         }
         scheduledPolicyAdministration.dispatch({ type: "jobReceived", requestId: request.requestId, job: data.job, data: data.job });
@@ -1292,7 +1292,7 @@ async function openJobDetail(jobID) {
     } catch (err) {
         scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: "job", requestId: request.requestId, error: err.message || "Failed to load job details." });
         console.error("Failed to load job details:", err);
-        alert("Failed to load job details.");
+        window.notifyApp("Failed to load job details.");
     }
 }
 
@@ -1303,14 +1303,14 @@ async function copyJobDetailText(kind) {
         ? (job.logs_text || "")
         : `Job ${job.id}\nStatus: ${job.status || "unknown"}\nPhase: ${job.phase || "unknown"}\nSummary: ${job.summary || ""}`;
     if (!String(text || "").trim()) {
-        alert("Nothing to copy.");
+        window.notifyApp("Nothing to copy.");
         return;
     }
     try {
         await navigator.clipboard.writeText(text);
-        alert(kind === "logs" ? "Job logs copied." : "Job summary copied.");
+        window.notifyApp(kind === "logs" ? "Job logs copied." : "Job summary copied.");
     } catch (_) {
-        alert("Failed to copy. Select the text and copy it manually.");
+        window.notifyApp("Failed to copy. Select the text and copy it manually.");
     }
 }
 

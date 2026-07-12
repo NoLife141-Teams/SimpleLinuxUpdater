@@ -116,7 +116,10 @@ const manageAdapterState = managePageInteraction.adapterState;
             const modal = document.getElementById('hostkey-modal');
             const details = document.getElementById('hostkey-modal-details');
             if (!modal || !details) {
-                return Promise.resolve(confirm(`Verify SSH host key before trusting:\n\n${hostKeyPromptText(scanned)}`));
+                return window.confirmAction(
+                    `Verify SSH host key before trusting:\n\n${hostKeyPromptText(scanned)}`,
+                    { confirmLabel: "Trust key" }
+                );
             }
             if (hostKeyModalPromise) {
                 return Promise.resolve(false);
@@ -186,7 +189,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 requestAnimationFrame(() => restoreWindowScroll(pageScroll));
             } catch (error) {
                 managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'inventory', requestID: request.requestID, error: error?.message });
-                alert(error?.message || 'Failed to load servers.');
+                window.notifyApp(error?.message || 'Failed to load servers.');
             }
         }
 
@@ -417,7 +420,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'auditPrune' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
             if (!execution) {
-                alert(command.find((effect) => effect.type === 'commandRejected')?.reason || 'Audit prune is unavailable.');
+                window.notifyApp(command.find((effect) => effect.type === 'commandRejected')?.reason || 'Audit prune is unavailable.');
                 return;
             }
             try {
@@ -427,7 +430,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 await fetchAuditEvents();
             } catch (err) {
                 managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err.message || 'Failed to prune audit events.' });
-                alert(err.message || 'Failed to prune audit events.');
+                window.notifyApp(err.message || 'Failed to prune audit events.');
             }
         });
         document.querySelector('#audit-table tbody').addEventListener('click', (e) => {
@@ -637,7 +640,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 body: JSON.stringify({ name, host, port, user, pass, tags })
             });
             if (!createRes.ok) {
-                alert(await parseErrorResponse(createRes, 'Failed to add server.'));
+                window.notifyApp(await parseErrorResponse(createRes, 'Failed to add server.'));
                 return;
             }
             const created = await createRes.json().catch(() => ({
@@ -654,9 +657,9 @@ const manageAdapterState = managePageInteraction.adapterState;
                     const uploadError = await parseErrorResponse(res, 'Failed to upload key.');
                     const rollback = await fetch(`/api/servers/${encodeURIComponent(serverName)}`, { method: 'DELETE' }).catch(() => null);
                     if (rollback && rollback.ok) {
-                        alert(`Server was not saved because key upload failed: ${uploadError}`);
+                        window.notifyApp(`Server was not saved because key upload failed: ${uploadError}`);
                     } else {
-                        alert(`Key upload failed and the server could not be removed automatically: ${uploadError}`);
+                        window.notifyApp(`Key upload failed and the server could not be removed automatically: ${uploadError}`);
                         fetchManageServers();
                     }
                     return;
@@ -666,7 +669,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 try {
                     await trustHostKeyFlow(created.host || host.trim(), normalizePort(created.port, 22));
                 } catch (err) {
-                    alert(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
+                    window.notifyApp(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
                 }
             }
             if (keyFileInput) {
@@ -693,7 +696,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                     }
                     await fetchManageServers();
                 } catch (error) {
-                    alert(error?.message || 'Failed to delete server.');
+                    window.notifyApp(error?.message || 'Failed to delete server.');
                 }
             }
         }
@@ -873,7 +876,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 const host = document.getElementById('edit-host').value.trim();
                 const port = normalizePort(document.getElementById('edit-port').value, 22);
                 if (!host) {
-                    alert('Host is required.');
+                    window.notifyApp('Host is required.');
                     return;
                 }
                 if (!(await window.confirmTypedAction(`Remove known_hosts entry for ${host}:${port}?`, `${host}:${port}`))) {
@@ -889,7 +892,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                         setEditHostKeyStatus(`Known host entry not found for ${host}:${port}.`);
                     }
                 } catch (err) {
-                    alert(err.message || 'Failed to clear known host entry.');
+                    window.notifyApp(err.message || 'Failed to clear known host entry.');
                 } finally {
                     setEditKnownHostButtonsState(false);
                 }
@@ -936,7 +939,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                     body: JSON.stringify({ name: newName, host: newHost, port: newPort, user: newUser, pass: newPass, tags })
                 });
                     if (!res.ok) {
-                        alert(await parseErrorResponse(res, 'Failed to save server.'));
+                        window.notifyApp(await parseErrorResponse(res, 'Failed to save server.'));
                         setEditHostKeyStatus('');
                         return;
                     }
@@ -969,7 +972,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                                 setEditHostKeyStatus('Host key trusted.');
                             }
                         } catch (err) {
-                            alert(`Server saved, but host key was not trusted: ${err.message || 'unknown error'}`);
+                            window.notifyApp(`Server saved, but host key was not trusted: ${err.message || 'unknown error'}`);
                             setEditHostKeyStatus('');
                         }
                         }
@@ -983,10 +986,10 @@ const manageAdapterState = managePageInteraction.adapterState;
                     closeEditModal();
                     fetchManageServers();
                     if (overrideSaveError) {
-                        alert(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
+                        window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
                     }
                 } catch (err) {
-                    alert(err?.message || 'Failed to save server.');
+                    window.notifyApp(err?.message || 'Failed to save server.');
                 } finally {
                     editSaveInProgress = false;
                     setEditSaveButtonState(false);
@@ -996,7 +999,7 @@ const manageAdapterState = managePageInteraction.adapterState;
         async function uploadServerKey(name) {
             const input = document.getElementById('edit-key');
             if (!input || !input.files || input.files.length === 0) {
-                alert('Select a private key file to upload.');
+                window.notifyApp('Select a private key file to upload.');
                 return;
             }
             const form = new FormData();
@@ -1004,7 +1007,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'POST', body: form });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                alert(data.error || 'Failed to upload key.');
+                window.notifyApp(data.error || 'Failed to upload key.');
                 return;
             }
             input.value = '';
@@ -1016,7 +1019,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                alert(data.error || 'Failed to clear key.');
+                window.notifyApp(data.error || 'Failed to clear key.');
                 return;
             }
             fetchManageServers();
@@ -1026,7 +1029,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             const res = await fetch(`/api/servers/${encodeURIComponent(name)}/password`, { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                alert(data.error || 'Failed to clear password.');
+                window.notifyApp(data.error || 'Failed to clear password.');
                 return;
             }
             fetchManageServers();
@@ -1136,23 +1139,23 @@ const manageAdapterState = managePageInteraction.adapterState;
         async function uploadGlobalKey() {
             const input = document.getElementById('global-key-file');
             if (!input || !input.files || input.files.length === 0) {
-                alert('Select a private key file to upload.');
+                window.notifyApp('Select a private key file to upload.');
                 return;
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyUpload' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { alert('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
             const res = await fetch('/api/keys/global', { method: 'POST', body: form });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
                 managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to upload global key.' });
-                alert(data.error || 'Failed to upload global key.');
+                window.notifyApp(data.error || 'Failed to upload global key.');
                 return;
             }
             managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key saved.' });
-            alert('Global key saved.');
+            window.notifyApp('Global key saved.');
             input.value = '';
             resetFileInputLabel(input);
             fetchGlobalKeyStatus();
@@ -1164,16 +1167,16 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyClear' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { alert('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
             const res = await fetch('/api/keys/global', { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
                 managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to clear global key.' });
-                alert(data.error || 'Failed to clear global key.');
+                window.notifyApp(data.error || 'Failed to clear global key.');
                 return;
             }
             managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key cleared.' });
-            alert('Global key cleared.');
+            window.notifyApp('Global key cleared.');
             fetchGlobalKeyStatus();
         }
 

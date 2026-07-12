@@ -764,11 +764,7 @@ test.describe.serial('setup and login flows', () => {
       makeServer('fail-sec-host', 'pending_approval', makePendingUpdates(3), { has_password: true }),
       makeServer('no-sec-host', 'pending_approval', [], { has_password: true }),
     ];
-    const state = { dialogs: [] };
-    page.on('dialog', async dialog => {
-      state.dialogs.push(dialog.message());
-      await dialog.dismiss();
-    });
+    const state = {};
     await stubDashboardApi(page, () => servers);
     await page.route('**/api/update/idle-host', route => {
       state.updateIdle = (state.updateIdle || 0) + 1;
@@ -867,8 +863,9 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.approveSecurityOk || 0).toBe(1);
     await expect.poll(() => state.approveSecurityFail || 0).toBe(1);
     await expect.poll(() => state.approveSecuritySkipped || 0).toBe(0);
-    await expect.poll(() => state.dialogs.some(message => message.includes('fail-sec-host: backend down'))).toBe(true);
-    expect(state.dialogs.some(message => message.includes('no-sec-host: backend down'))).toBe(false);
+    const failureNotice = page.locator('#app-feedback-region[role="alert"]');
+    await expect(failureNotice).toContainText('fail-sec-host: backend down');
+    await expect(failureNotice).not.toContainText('no-sec-host: backend down');
 
     await page.locator('#servers-table tbody tr[data-name="fail-sec-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="no-sec-host"] .row-select').uncheck();

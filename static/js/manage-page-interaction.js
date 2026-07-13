@@ -54,7 +54,7 @@
         const inFlightCommands = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         // Transitional adapter storage keeps browser-only mechanics out of the module projection.
-        const adapterState = { serverCache: {}, sortKey: "name", sortDir: "asc", manageServers: [], page: 1, editingServerName: null, auditEvents: [], auditPage: 1, auditPageSize: 20, auditTotal: 0, hostKeyModalPromise: null, hostKeyModalResolvers: [], editSaveInProgress: false, editKnownHostState: { host: "", port: 0, checked: false, alreadyTrusted: false, fingerprint: "" }, editKnownHostCheckPromise: null, editUpdatePolicies: [], editPolicyOverrideStates: new Map(), manageGlobalKeyAvailable: false, auditFetchHadError: false };
+        const adapterState = { editingServerName: null, auditEvents: [], auditPage: 1, auditPageSize: 20, auditTotal: 0, hostKeyModalPromise: null, hostKeyModalResolvers: [], editSaveInProgress: false, editKnownHostState: { host: "", port: 0, checked: false, alreadyTrusted: false, fingerprint: "" }, editKnownHostCheckPromise: null, editUpdatePolicies: [], editPolicyOverrideStates: new Map(), auditFetchHadError: false };
 
         function effect(type, props) { return { type, ...props }; }
         function request(stream, payload = {}) {
@@ -106,7 +106,7 @@
                 const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "global key") : "no key") + " / " + (server.has_password ? "password" : "no password")];
                 keys.forEach(key => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(server); });
             });
-            return { items: clone(items), groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: clone(value) })), total: filtered.length, page: safePage, totalPages };
+            return { allItems: clone(inventory), items: clone(items), groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: clone(value) })), total: filtered.length, page: safePage, totalPages };
         }
         function commandPlan(command, payload = {}) {
             const key = command === "auditPrune" || command.startsWith("globalKey") ? command : `${command}:${payload.serverName || editor.originalName || "new"}`;

@@ -2,9 +2,9 @@ const managePageInteraction = window.ManagePageInteraction.createStore();
 window.managePageInteraction = managePageInteraction;
 const manageAdapterState = managePageInteraction.adapterState;
 [
-    "serverCache", "sortKey", "sortDir", "manageServers", "page", "editingServerName", "auditEvents", "auditPage", "auditPageSize", "auditTotal",
+    "editingServerName", "auditEvents", "auditPage", "auditPageSize", "auditTotal",
     "hostKeyModalPromise", "hostKeyModalResolvers", "editSaveInProgress", "editKnownHostState", "editKnownHostCheckPromise", "editUpdatePolicies",
-    "editPolicyOverrideStates", "manageGlobalKeyAvailable", "auditFetchHadError"
+    "editPolicyOverrideStates", "auditFetchHadError"
 ].forEach((key) => Object.defineProperty(globalThis, key, {
     configurable: true,
     get: () => manageAdapterState[key],
@@ -181,7 +181,6 @@ const manageAdapterState = managePageInteraction.adapterState;
                 if (!Array.isArray(servers)) {
                     throw new Error('Invalid server list response.');
                 }
-                manageServers = servers;
                 managePageInteraction.dispatch({ type: 'inventorySnapshotReceived', requestID: request.requestID, items: servers });
                 const tbody = document.querySelector('#manage-servers-table tbody');
                 tbody.innerHTML = '';
@@ -193,87 +192,10 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
         }
 
-        function sortServers(servers) {
-            const dir = sortDir === "asc" ? 1 : -1;
-            return servers.slice().sort((a, b) => {
-                const aVal = (sortKey === "tags" ? (a.tags || []).join(",") : (a[sortKey] || "")).toString().toLowerCase();
-                const bVal = (sortKey === "tags" ? (b.tags || []).join(",") : (b[sortKey] || "")).toString().toLowerCase();
-                if (aVal < bVal) return -1 * dir;
-                if (aVal > bVal) return 1 * dir;
-                return 0;
-            });
-        }
-
-        function hasEffectiveKey(server) {
-            return !!server?.has_key || (!!manageGlobalKeyAvailable && !server?.has_key);
-        }
-
-        function usesGlobalKey(server) {
-            return !!manageGlobalKeyAvailable && !server?.has_key;
-        }
-
-        function applyFilters(servers) {
-            const search = document.getElementById('search').value.trim().toLowerCase();
-            const tagFilter = document.getElementById('tag-filter').value.trim().toLowerCase();
-            const authFilter = document.getElementById('auth-filter').value;
-            return servers.filter(server => {
-                if (authFilter === "password" && !server.has_password) return false;
-                if (authFilter === "key" && !hasEffectiveKey(server)) return false;
-                if (tagFilter) {
-                    const tags = (server.tags || []).join(" ").toLowerCase();
-                    if (!tags.includes(tagFilter)) return false;
-                }
-                if (!search) return true;
-                const haystack = [
-                    server.name,
-                    server.host,
-                    server.user,
-                    (server.tags || []).join(" ")
-                ].join(" ").toLowerCase();
-                return haystack.includes(search);
-            });
-        }
-
-        function paginate(servers) {
-            const size = parseInt(document.getElementById('page-size').value, 10);
-            const totalPages = Math.max(1, Math.ceil(servers.length / size));
-            page = Math.min(page, totalPages);
-            const start = (page - 1) * size;
-            const end = start + size;
-            document.getElementById('page-info').textContent = `Page ${page} of ${totalPages} (${servers.length} hosts)`;
-            return servers.slice(start, end);
-        }
-
-        function groupServers(servers) {
-            const groupBy = document.getElementById('group-by').value;
-            if (!groupBy) return [{ key: "", items: servers }];
-            const groups = new Map();
-            if (groupBy === "tag") {
-                servers.forEach(server => {
-                    const tags = server.tags && server.tags.length ? server.tags : ["untagged"];
-                    tags.forEach(tag => {
-                        if (!groups.has(tag)) groups.set(tag, []);
-                        groups.get(tag).push(server);
-                    });
-                });
-            } else if (groupBy === "auth") {
-                servers.forEach(server => {
-                    const key = hasEffectiveKey(server) ? (usesGlobalKey(server) ? "global key" : "key") : "no key";
-                    const pw = server.has_password ? "password" : "no password";
-                    const group = `${key} / ${pw}`;
-                    if (!groups.has(group)) groups.set(group, []);
-                    groups.get(group).push(server);
-                });
-            }
-            return Array.from(groups.entries()).map(([key, items]) => ({ key, items }));
-        }
-
         function renderTable() {
             const tbody = document.querySelector('#manage-servers-table tbody');
             tbody.innerHTML = '';
-            serverCache = {};
             const projection = managePageInteraction.getView().inventory;
-            page = projection.page;
             document.getElementById('page-info').textContent = `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
             const groups = projection.groups;
             groups.forEach(group => {
@@ -284,7 +206,6 @@ const manageAdapterState = managePageInteraction.adapterState;
                     tbody.appendChild(groupRow);
                 }
                 group.items.forEach(server => {
-                    serverCache[server.name] = server;
                     const row = document.createElement('tr');
                     row.dataset.name = server.name;
                     const safeName = escapeHtml(server.name);
@@ -326,9 +247,6 @@ const manageAdapterState = managePageInteraction.adapterState;
             if (!th) return;
             const key = th.dataset.sortKey;
             managePageInteraction.dispatch({ type: 'sortChanged', key });
-            const view = managePageInteraction.getView();
-            sortKey = view.sort.key;
-            sortDir = view.sort.direction;
             renderTable();
         };
 
@@ -353,7 +271,6 @@ const manageAdapterState = managePageInteraction.adapterState;
                 group: document.getElementById('group-by').value,
                 pageSize: document.getElementById('page-size').value
             } });
-            page = 1;
             renderTable();
         }
         document.getElementById('search').addEventListener('input', syncInventoryFilters);
@@ -448,7 +365,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
             if (server.has_key) {
                 bits.push('<span class="pill pill-success">Key</span>');
-            } else if (usesGlobalKey(server)) {
+            } else if (managePageInteraction.getView().globalKeyAvailable && !server.has_key) {
                 bits.push('<span class="pill pill-success">Global Key</span>');
             } else {
                 bits.push('<span class="pill pill-muted">No Key</span>');
@@ -702,7 +619,7 @@ const manageAdapterState = managePageInteraction.adapterState;
         }
 
             async function editServer(name) {
-                const current = serverCache[name] || {};
+                const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === name) || {};
                 managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
                 editSaveInProgress = false;
                 editingServerName = name;
@@ -909,7 +826,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const newPass = document.getElementById('edit-pass').value;
             const trustHostNow = document.getElementById('edit-trust-host-key').checked;
-            const current = serverCache[editingServerName] || {};
+            const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === editingServerName) || {};
             const currentPort = normalizePort(current.port, 22);
             const targetPort = normalizePort(newPort || currentPort, 22);
                 clearEditValidationState();
@@ -1190,11 +1107,9 @@ const manageAdapterState = managePageInteraction.adapterState;
                 const res = await fetch('/api/keys/global');
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
                 const data = await res.json();
-                const changed = !!data.has_key !== manageGlobalKeyAvailable;
-                manageGlobalKeyAvailable = !!data.has_key;
-                managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: manageGlobalKeyAvailable });
+                managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: !!data.has_key });
                 status.textContent = data.has_key ? 'Global key: saved' : 'Global key: not set';
-                if (changed && manageServers.length > 0) renderTable();
+                if (managePageInteraction.getView().inventory.allItems.length > 0) renderTable();
             } catch (err) {
                 managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
                 status.textContent = `Global key status: ${err.message || 'unknown'}`;

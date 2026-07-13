@@ -130,3 +130,30 @@ test("accepted projections are immutable copies from the caller perspective", ()
     assert.equal(second.inventory.items[0].name, "alpha");
     assert.deepEqual(second.inventory.items[0].tags, ["prod"]);
 });
+
+test("inventory projection is the complete source for rows, lookup, and paging", () => {
+    const store = createStore();
+    const servers = Array.from({ length: 12 }, (_, index) => ({
+        name: `host-${String(index + 1).padStart(2, "0")}`,
+        host: `192.0.2.${index + 1}`,
+        user: "root"
+    }));
+    store.dispatch({ type: "inventorySnapshotReceived", items: servers });
+    store.dispatch({ type: "filtersChanged", patch: { pageSize: 10 } });
+
+    const view = store.getView();
+    assert.equal(view.inventory.allItems.length, 12);
+    assert.equal(view.inventory.items.length, 10);
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-12").host, "192.0.2.12");
+    assert.equal(view.inventory.totalPages, 2);
+});
+
+test("Manage adapter owns no accepted inventory cache or paging state", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/manage.js"), "utf8");
+    assert.doesNotMatch(source, /\bserverCache\b/);
+    assert.doesNotMatch(source, /\bmanageServers\b/);
+    assert.doesNotMatch(source, /\bmanageGlobalKeyAvailable\b/);
+    assert.doesNotMatch(source, /(?:^|[^\w.])sortKey\s*=/m);
+    assert.doesNotMatch(source, /(?:^|[^\w.])sortDir\s*=/m);
+    assert.doesNotMatch(source, /(?:^|[^\w.])page\s*=/m);
+});

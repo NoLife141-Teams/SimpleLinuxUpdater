@@ -4,7 +4,6 @@ import (
 	"sort"
 	"time"
 
-	"debian-updater/internal/jobs"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
 )
@@ -21,22 +20,33 @@ type dashboardProjectionContext struct {
 }
 
 type dashboardProjectionInput struct {
-	window      string
-	from        string
-	to          string
-	generatedAt string
-	servers     []dashboardServerProjectionInput
+	window       string
+	from         string
+	to           string
+	generatedAt  string
+	now          time.Time
+	loc          *time.Location
+	timezoneName string
+	servers      []dashboardServerProjectionInput
 }
 
 type dashboardServerProjectionInput struct {
-	server          servers.Server
-	status          *servers.ServerStatus
-	fact            updates.ServerFactsRecord
-	nextRun         DashboardScheduleInfo
-	noRun           DashboardNoRunInfo
-	latestUpdateJob *jobs.Record
-	updateHistory   dashboardUpdateHistoryProjection
-	commandHistory  []DashboardCommandHistoryItem
+	server         servers.Server
+	status         *servers.ServerStatus
+	fact           updates.ServerFactsRecord
+	nextRun        DashboardScheduleInfo
+	noRun          DashboardNoRunInfo
+	timelineSource dashboardTimelineSourceFacts
+	updateHistory  dashboardUpdateHistoryProjection
+	commandHistory []DashboardCommandHistoryItem
+}
+
+type dashboardTimelineSourceFacts struct {
+	currentPhase string
+	state        string
+	summary      string
+	startedAt    string
+	updatedAt    string
 }
 
 type dashboardUpdateHistoryProjection struct {
@@ -77,8 +87,7 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 		nextRun = defaultScheduleInfo()
 	}
 	risk := DashboardRiskFromStatus(input.status)
-	job := dashboardTimelineJobForStatus(input.status, input.latestUpdateJob)
-	timeline := buildDashboardTimeline(input.status, job, p.ctx.deps, p.ctx.loc, p.ctx.timezoneName)
+	timeline := buildDashboardTimeline(input.timelineSource, p.ctx.deps, p.ctx.loc, p.ctx.timezoneName)
 
 	lastUpdate := input.updateHistory.lastSuccess
 	durationSamples := input.updateHistory.samples

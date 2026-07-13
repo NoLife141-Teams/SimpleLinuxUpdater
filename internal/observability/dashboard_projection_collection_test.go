@@ -1,10 +1,15 @@
 package observability
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
+	"debian-updater/internal/health"
+	"debian-updater/internal/jobs"
+	"debian-updater/internal/policies"
+	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
 )
 
@@ -105,5 +110,64 @@ func TestDashboardProjectionCollectionCollectsTypedCommandHistory(t *testing.T) 
 	}
 	if _, ok := got[""]; ok {
 		t.Fatalf("non-server audit event leaked into command history: %+v", got[""])
+	}
+}
+
+func TestDashboardProjectionCollectionCollectsTypedServerAndRuntimeFacts(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-projection-collection-runtime.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	scheduledFor := now.Add(2 * time.Hour).Format(time.RFC3339)
+	insertDashboardJob(t, db, "job-srv-a", "srv-a", jobs.StatusRunning, jobs.PhaseAptUpdate, "Refreshing package metadata", now.Add(-10*time.Minute))
+
+	collector := newDashboardProjectionCollector(NewService(ServiceDeps{
+		DB:              func() *sql.DB { return db },
+		DBPath:          func() string { return path },
+		CurrentTimezone: func() (*time.Location, string) { return time.UTC, "UTC" },
+		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
+			return "display:" + raw, "UTC"
+		},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}}, map[string]*servers.ServerStatus{
+				"srv-a": {Name: "srv-a", Status: "updating"},
+			}
+		},
+		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+			return map[string]health.CollectedFacts{
+				"srv-a": {ServerName: "srv-a", CollectedAt: now.Add(-time.Hour).Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+			}, nil
+		}),
+		ProjectPolicySchedule: func(policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error) {
+			return policies.ScheduleProjection{Servers: map[string]policies.ServerScheduleProjection{
+				"srv-a": {
+					NextRun: policies.ProjectedScheduleRun{State: policies.ScheduleProjectionStateScheduled, PolicyName: "nightly", ScheduledForUTC: scheduledFor},
+					NoRun:   policies.NoRunWindow{Active: true, Scope: policies.NoRunScopePolicy, PolicyName: "nightly"},
+				},
+			}}, nil
+		},
+		UpdateCompleteAction: "update.complete",
+	}).EnsureDeps())
+
+	got, err := collector.Collect("24h", now)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if got.window != "24h" || got.from != now.Add(-24*time.Hour).Format(time.RFC3339) || got.to != now.Format(time.RFC3339) || !got.now.Equal(now) {
+		t.Fatalf("collection window/time = %q/%q/%q/%v, want one fixed 24h observation", got.window, got.from, got.to, got.now)
+	}
+	if got.timezoneName != "UTC" || got.loc != time.UTC {
+		t.Fatalf("collection timezone = %q/%v, want UTC", got.timezoneName, got.loc)
+	}
+	if len(got.servers) != 1 {
+		t.Fatalf("server inputs = %d, want 1", len(got.servers))
+	}
+	server := got.servers[0]
+	if server.server.Name != "srv-a" || server.status == nil || server.status.Status != "updating" || server.fact.ServerName != "srv-a" {
+		t.Fatalf("server facts = %+v, want typed server, runtime, and health facts", server)
+	}
+	if server.nextRun.PolicyName != "nightly" || server.nextRun.ScheduledForDisplay != "display:"+scheduledFor || !server.noRun.Active {
+		t.Fatalf("schedule facts = %+v/%+v, want typed policy schedule and no-run facts", server.nextRun, server.noRun)
+	}
+	if server.timelineSource.currentPhase != "apt_update" || server.timelineSource.state != "active" || server.timelineSource.summary != "Refreshing package metadata" {
+		t.Fatalf("timeline source = %+v, want typed active apt-update facts", server.timelineSource)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"debian-updater/internal/jobs"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
 )
@@ -47,18 +46,8 @@ func requireDashboardAction(t *testing.T, server DashboardServerSummary, key str
 	return action
 }
 
-func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.T) {
+func TestDashboardProjectionUsesCollectedRuntimeSourceFacts(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	staleJob := jobs.Record{
-		ID:         "job-stale",
-		Status:     jobs.StatusFailed,
-		Phase:      jobs.PhasePostchecks,
-		Summary:    "Old post-check failed",
-		CreatedAt:  now.Add(-10 * time.Minute).Format(time.RFC3339),
-		UpdatedAt:  now.Add(-10 * time.Minute).Format(time.RFC3339),
-		StartedAt:  now.Add(-11 * time.Minute).Format(time.RFC3339),
-		ServerName: "srv-active",
-	}
 
 	summary := testDashboardProjection(now).Project(dashboardProjectionInput{
 		window:      "7d",
@@ -66,9 +55,9 @@ func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.
 		to:          now.Format(time.RFC3339),
 		generatedAt: now.Format(time.RFC3339),
 		servers: []dashboardServerProjectionInput{{
-			server:          servers.Server{Name: "srv-active"},
-			status:          &servers.ServerStatus{Name: "srv-active", Status: "updating"},
-			latestUpdateJob: &staleJob,
+			server:         servers.Server{Name: "srv-active"},
+			status:         &servers.ServerStatus{Name: "srv-active", Status: "updating"},
+			timelineSource: dashboardTimelineSourceFacts{currentPhase: "prechecks", state: "active", summary: "Runtime status: Updating"},
 		}},
 	})
 
@@ -107,6 +96,7 @@ func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) 
 					DiskStatus:  "ok",
 					AptStatus:   "ok",
 				},
+				timelineSource: dashboardTimelineSourceFacts{currentPhase: "pending_approval", state: "waiting", summary: "Runtime status: Pending approval"},
 			},
 			{
 				server: servers.Server{Name: "srv-a"},
@@ -118,6 +108,7 @@ func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) 
 					AptStatus:      "ok",
 					RebootRequired: &rebootRequired,
 				},
+				timelineSource: dashboardTimelineSourceFacts{currentPhase: "done_error", state: "done", summary: "Runtime status: Done"},
 			},
 		},
 	})
@@ -187,7 +178,8 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 					Status:         "done",
 					PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true}},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-done-risk", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				fact:           updates.ServerFactsRecord{ServerName: "srv-done-risk", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				timelineSource: dashboardTimelineSourceFacts{currentPhase: "done_error", state: "done", summary: "Runtime status: Done"},
 			},
 			{
 				server: servers.Server{Name: "srv-pending"},
@@ -204,7 +196,8 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 						FullUpgradeNewPackages:        []string{"new-lib"},
 					},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-pending", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				fact:           updates.ServerFactsRecord{ServerName: "srv-pending", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				timelineSource: dashboardTimelineSourceFacts{currentPhase: "pending_approval", state: "waiting", summary: "Runtime status: Pending approval"},
 			},
 			{
 				server: servers.Server{Name: "srv-needs-scan"},
@@ -215,7 +208,8 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 						{Package: "kernel", Security: true, KeptBack: true},
 					},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-needs-scan", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				fact:           updates.ServerFactsRecord{ServerName: "srv-needs-scan", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				timelineSource: dashboardTimelineSourceFacts{currentPhase: "pending_approval", state: "waiting", summary: "Runtime status: Pending approval"},
 			},
 		},
 	})

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"debian-updater/internal/jobs"
+	"debian-updater/internal/policies"
 	"debian-updater/internal/updates"
 )
 
@@ -20,6 +22,138 @@ type dashboardHealthOverlayFacts struct {
 
 func newDashboardProjectionCollector(deps ServiceDeps) dashboardProjectionCollector {
 	return dashboardProjectionCollector{deps: deps.withDefaults()}
+}
+
+func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (dashboardProjectionInput, error) {
+	window, span, err := ParseWindow(rawWindow)
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+	to := now.UTC()
+	from := to.Add(-span)
+	fromFormatted := from.Format(time.RFC3339)
+	toFormatted := to.Format(time.RFC3339)
+
+	serversSnapshot, statusByName := c.deps.ServerSnapshot()
+	facts, err := c.deps.HostHealthObservation.Latest()
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+	scheduleProjection, err := c.deps.ProjectPolicySchedule(policies.ScheduleProjectionRequest{
+		Now:      now,
+		Servers:  serversSnapshot,
+		RunLimit: 500,
+	})
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+	latestUpdateJobs, err := c.collectLatestUpdateJobs()
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+	loc, timezoneName := c.deps.CurrentTimezone()
+	updateByServer, err := c.collectUpdateHistory(fromFormatted, toFormatted, loc, timezoneName)
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+	commandHistory, err := c.collectCommandHistory(fromFormatted, toFormatted, loc, timezoneName)
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
+
+	input := dashboardProjectionInput{
+		window:       window,
+		from:         fromFormatted,
+		to:           toFormatted,
+		generatedAt:  toFormatted,
+		now:          now,
+		loc:          loc,
+		timezoneName: timezoneName,
+		servers:      make([]dashboardServerProjectionInput, 0, len(serversSnapshot)),
+	}
+	for _, server := range serversSnapshot {
+		status := statusByName[server.Name]
+		agg := updateByServer[server.Name]
+		if agg == nil {
+			agg = &dashboardUpdateHistoryProjection{}
+		}
+		schedule := scheduleProjection.Servers[server.Name]
+		var latestUpdateJob *jobs.Record
+		if job, ok := latestUpdateJobs[server.Name]; ok {
+			jobCopy := job
+			latestUpdateJob = &jobCopy
+		}
+		input.servers = append(input.servers, dashboardServerProjectionInput{
+			server:         server,
+			status:         status,
+			fact:           facts[server.Name],
+			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
+			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
+			timelineSource: dashboardTimelineSourceFor(status, latestUpdateJob),
+			updateHistory:  *agg,
+			commandHistory: commandHistory[server.Name],
+		})
+	}
+	return input, nil
+}
+
+func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs.Record, error) {
+	result := map[string]jobs.Record{}
+	db := c.deps.DB()
+	if db == nil {
+		return result, nil
+	}
+	rows, err := db.Query(
+		`SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
+		        error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+		   FROM jobs
+		  WHERE kind = ?
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT 1000`,
+		jobs.KindUpdate,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return result, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record jobs.Record
+		if err := rows.Scan(
+			&record.ID,
+			&record.Kind,
+			&record.ParentJobID,
+			&record.ServerName,
+			&record.Actor,
+			&record.ClientIP,
+			&record.Status,
+			&record.Phase,
+			&record.Summary,
+			&record.LogsText,
+			&record.ErrorClass,
+			&record.RetryPolicyJSON,
+			&record.MetaJSON,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+			&record.StartedAt,
+			&record.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		serverName := strings.TrimSpace(record.ServerName)
+		if serverName == "" {
+			continue
+		}
+		if _, exists := result[serverName]; !exists {
+			result[serverName] = record
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardUpdateHistoryProjection, error) {

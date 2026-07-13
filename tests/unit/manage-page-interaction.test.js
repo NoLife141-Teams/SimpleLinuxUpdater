@@ -54,3 +54,79 @@ test("Manage adapter no longer declares legacy interaction globals", () => {
     assert.doesNotMatch(source, /let\s+auditEvents\s*=/);
     assert.doesNotMatch(source, /let\s+editKnownHostState\s*=/);
 });
+
+test("stream failure retains the last accepted source and reports only that source", () => {
+    const store = createStore();
+    const accepted = store.dispatch({ type: "snapshotRequested", stream: "inventory" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        requestID: accepted.requestID,
+        items: [{ name: "accepted", host: "host", user: "root" }]
+    });
+    const failing = store.dispatch({ type: "snapshotRequested", stream: "inventory" })
+        .find(effect => effect.type === "fetchSnapshot");
+    const effects = store.dispatch({
+        type: "snapshotFailed",
+        stream: "inventory",
+        requestID: failing.requestID,
+        error: "offline"
+    });
+
+    assert.deepEqual(store.getView().inventory.items.map(server => server.name), ["accepted"]);
+    assert.equal(store.getView().streams.inventory.lastError, "offline");
+    assert.equal(store.getView().streams.audit.lastError, "");
+    assert.deepEqual(effects.find(effect => effect.type === "announce"), {
+        type: "announce",
+        scope: "inventory",
+        message: "offline",
+        error: true
+    });
+});
+
+test("queued refresh starts after the active request settles", () => {
+    const store = createStore();
+    const first = store.dispatch({ type: "snapshotRequested", stream: "audit", payload: { reason: "initial" } })
+        .find(effect => effect.type === "fetchSnapshot");
+    assert.deepEqual(store.dispatch({ type: "snapshotRequested", stream: "audit", payload: { reason: "poll" } }), []);
+
+    const effects = store.dispatch({
+        type: "auditSnapshotReceived",
+        requestID: first.requestID,
+        data: { items: [], total: 0 }
+    });
+    const queued = effects.find(effect => effect.type === "fetchSnapshot");
+    assert.equal(queued.stream, "audit");
+    assert.equal(queued.reason, "poll");
+    assert.notEqual(queued.requestID, first.requestID);
+});
+
+test("command effects and projections stay transport neutral", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "host", user: "root", port: 22 }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    const effects = store.dispatch({ type: "commandRequested", command: "saveEditor" });
+    const serialized = JSON.stringify({ effects, view: store.getView() });
+
+    for (const forbidden of ["/api/", "FormData", "HTMLElement", "querySelector", "fetch("]) {
+        assert.equal(serialized.includes(forbidden), false, `public contract leaked ${forbidden}`);
+    }
+});
+
+test("accepted projections are immutable copies from the caller perspective", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "host", user: "root", tags: ["prod"] }]
+    });
+    const first = store.getView();
+    first.inventory.items[0].name = "mutated";
+    first.inventory.items[0].tags.push("caller");
+
+    const second = store.getView();
+    assert.equal(second.inventory.items[0].name, "alpha");
+    assert.deepEqual(second.inventory.items[0].tags, ["prod"]);
+});

@@ -10,13 +10,13 @@
             return store.getView().editor;
         }
 
-        async function fetchContext(serverName) {
+        async function fetchContext(serverName, pendingRequest = null, pendingSessionID = null) {
             const editor = activeEditor();
             if (!editor.open || editor.originalName !== String(serverName || "")) return;
-            const request = store.dispatch({ type: "snapshotRequested", stream: "policyContext" })
+            const request = pendingRequest || store.dispatch({ type: "snapshotRequested", stream: "policyContext" })
                 .find(effect => effect.type === "fetchSnapshot");
             if (!request) return;
-            const sessionID = editor.sessionID;
+            const sessionID = pendingSessionID || editor.sessionID;
             try {
                 const policiesData = await requestJSON("/api/update-policies", {}, "Failed to load scheduled policies.");
                 const policies = Array.isArray(policiesData.items) ? policiesData.items : [];
@@ -31,12 +31,14 @@
                         : null;
                     return [String(policy.id), !!match?.disabled];
                 }));
-                store.dispatch({
+                const effects = store.dispatch({
                     type: "policyContextReceived",
                     requestID: request.requestID,
                     sessionID,
                     context: { policies, overrides: Object.fromEntries(entries) }
                 });
+                const followup = effects.find(effect => effect.type === "fetchSnapshot" && effect.stream === "policyContext");
+                if (followup && activeEditor().sessionID === sessionID) await fetchContext(serverName, followup, sessionID);
             } catch (error) {
                 store.dispatch({
                     type: "snapshotFailed",

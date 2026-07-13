@@ -366,3 +366,76 @@ test("Manage adapter owns no accepted audit list, query, total, or pagination st
     }
     assert.match(source, /setInterval\(fetchAuditEvents,\s*15000\)/);
 });
+
+test("Manage Page Interaction exposes only the accepted event and projection interface", () => {
+    const store = createStore();
+    assert.deepEqual(Object.keys(store).sort(), ["dispatch", "getView"]);
+});
+
+test("architecture guard keeps the transitional bridge and browser mechanics deleted", () => {
+    const moduleSource = fs.readFileSync(path.join(__dirname, "../../static/js/manage-page-interaction.js"), "utf8");
+    const adapterSource = fs.readFileSync(path.join(__dirname, "../../static/js/manage.js"), "utf8");
+    assert.doesNotMatch(moduleSource, /\badapterState\b|\bplanCommand\b/);
+    assert.doesNotMatch(moduleSource, /\bdocument\.|\bwindow\.|\bfetch\s*\(|\bFormData\b|\bURLSearchParams\b|\bPromise\b|\bFile\b|\bBlob\b|\bsetInterval\b|\bsetTimeout\b/);
+    assert.doesNotMatch(adapterSource, /window\.managePageInteraction|\bmanageAdapterState\b|Object\.defineProperty\(globalThis/);
+});
+
+test("editor replacement invalidates host-key and policy requests from the old session", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [
+            { name: "alpha", host: "alpha.example", user: "root" },
+            { name: "beta", host: "beta.example", user: "root" }
+        ]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    const oldSession = store.getView().editor.sessionID;
+    const oldHostKey = store.dispatch({ type: "snapshotRequested", stream: "hostKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    const oldPolicy = store.dispatch({ type: "snapshotRequested", stream: "policyContext" })
+        .find(effect => effect.type === "fetchSnapshot");
+
+    store.dispatch({ type: "editorOpened", name: "beta" });
+    const newSession = store.getView().editor.sessionID;
+    const newHostKey = store.dispatch({ type: "snapshotRequested", stream: "hostKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    const newPolicy = store.dispatch({ type: "snapshotRequested", stream: "policyContext" })
+        .find(effect => effect.type === "fetchSnapshot");
+    assert.ok(newHostKey);
+    assert.ok(newPolicy);
+
+    store.dispatch({
+        type: "hostKeyReceived",
+        requestID: oldHostKey.requestID,
+        sessionID: oldSession,
+        host: "alpha.example",
+        port: 22,
+        hostKey: { fingerprint: "SHA256:old" }
+    });
+    store.dispatch({
+        type: "policyContextReceived",
+        requestID: oldPolicy.requestID,
+        sessionID: oldSession,
+        context: { policies: [{ id: 1, name: "Old" }], overrides: {} }
+    });
+    assert.equal(store.getView().editor.hostKey, null);
+    assert.deepEqual(store.getView().editor.policyContext.policies, []);
+
+    store.dispatch({
+        type: "hostKeyReceived",
+        requestID: newHostKey.requestID,
+        sessionID: newSession,
+        host: "beta.example",
+        port: 22,
+        hostKey: { fingerprint: "SHA256:new" }
+    });
+    store.dispatch({
+        type: "policyContextReceived",
+        requestID: newPolicy.requestID,
+        sessionID: newSession,
+        context: { policies: [{ id: 2, name: "New" }], overrides: {} }
+    });
+    assert.equal(store.getView().editor.hostKey.fingerprint, "SHA256:new");
+    assert.deepEqual(store.getView().editor.policyContext.policies.map(policy => policy.name), ["New"]);
+});

@@ -1,6 +1,4 @@
 const managePageInteraction = window.ManagePageInteraction.createStore();
-window.managePageInteraction = managePageInteraction;
-const manageAdapterState = managePageInteraction.adapterState;
 let hostKeyModalPromise = null;
 let hostKeyModalResolvers = [];
 let editKnownHostCheckPromise = null;
@@ -16,10 +14,11 @@ function commandExecution(command, payload = {}) {
         .find((effect) => effect.type === 'executeCommand');
 }
 
-async function executeManageEffects(effects) {
+async function executeManageEffects(effects, options = {}) {
+    const announce = options.announce !== false;
     const refreshStreams = new Set();
     for (const effect of effects || []) {
-        if (effect.type === 'announce') window.notifyApp(effect.message || 'Manage action completed.');
+        if (effect.type === 'announce' && announce) window.notifyApp(effect.message || 'Manage action completed.');
         if (effect.type === 'refresh') (effect.streams || []).forEach(stream => refreshStreams.add(stream));
     }
     const refreshes = [];
@@ -29,9 +28,9 @@ async function executeManageEffects(effects) {
     await Promise.all(refreshes);
 }
 
-async function settleCommand(type, plan, message) {
+async function settleCommand(type, plan, message, options = {}) {
     const effects = managePageInteraction.dispatch({ type, plan, message });
-    await executeManageEffects(effects);
+    await executeManageEffects(effects, options);
 }
 
 const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
@@ -184,11 +183,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             window.scrollTo(pos.x, pos.y);
         }
 
-        async function fetchManageServers() {
-            const pageScroll = saveWindowScroll();
-            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'inventory' })
-                .find((effect) => effect.type === 'fetchSnapshot');
-            if (!request) return;
+        async function performInventoryRequest(request, pageScroll) {
             try {
                 const response = await fetch('/api/servers');
                 if (!response.ok) {
@@ -198,15 +193,26 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (!Array.isArray(servers)) {
                     throw new Error('Invalid server list response.');
                 }
-                managePageInteraction.dispatch({ type: 'inventorySnapshotReceived', requestID: request.requestID, items: servers });
+                const effects = managePageInteraction.dispatch({ type: 'inventorySnapshotReceived', requestID: request.requestID, items: servers });
                 const tbody = document.querySelector('#manage-servers-table tbody');
                 tbody.innerHTML = '';
                 renderTable();
                 requestAnimationFrame(() => restoreWindowScroll(pageScroll));
+                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'inventory');
+                if (followup) await performInventoryRequest(followup, saveWindowScroll());
             } catch (error) {
-                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'inventory', requestID: request.requestID, error: error?.message });
+                const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'inventory', requestID: request.requestID, error: error?.message });
                 window.notifyApp(error?.message || 'Failed to load servers.');
+                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'inventory');
+                if (followup) await performInventoryRequest(followup, saveWindowScroll());
             }
+        }
+
+        async function fetchManageServers() {
+            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'inventory' })
+                .find((effect) => effect.type === 'fetchSnapshot');
+            if (!request) return;
+            await performInventoryRequest(request, saveWindowScroll());
         }
 
         function renderTable() {
@@ -360,7 +366,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch('/api/audit-events/prune', { method: 'POST' });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to prune audit events.'));
-                await settleCommand('commandCompleted', execution.plan, 'Audit events pruned.');
+                await settleCommand('commandCompleted', execution.plan, 'Audit events pruned.', { announce: false });
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err.message || 'Failed to prune audit events.');
             }
@@ -606,7 +612,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     if (!res.ok) {
                         const uploadError = await parseErrorResponse(res, 'Failed to upload key.');
                         const rollback = await fetch(`/api/servers/${encodeURIComponent(serverName)}`, { method: 'DELETE' }).catch(() => null);
-                        managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: uploadError });
+                        await settleCommand('commandFailed', execution.plan, uploadError, { announce: false });
                         if (rollback && rollback.ok) {
                             window.notifyApp(`Server was not saved because key upload failed: ${uploadError}`);
                         } else {
@@ -623,16 +629,15 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                         window.notifyApp(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
                     }
                 }
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server added.' });
+                await settleCommand('commandCompleted', execution.plan, 'Server added.', { announce: false });
                 if (keyFileInput) {
                     keyFileInput.value = '';
                     resetFileInputLabel(keyFileInput);
                 }
-                fetchManageServers();
                 e.target.reset();
                 document.getElementById('trust-host-key').checked = true;
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to add server.' });
+                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to add server.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to add server.');
             }
         });
@@ -655,10 +660,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     if (!response.ok) {
                         throw new Error(await parseErrorResponse(response, 'Failed to delete server.'));
                     }
-                    managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server deleted.' });
-                    await fetchManageServers();
+                    await settleCommand('commandCompleted', execution.plan, 'Server deleted.', { announce: false });
                 } catch (error) {
-                    managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: error?.message || 'Failed to delete server.' });
+                    await settleCommand('commandFailed', execution.plan, error?.message || 'Failed to delete server.', { announce: false });
                     window.notifyApp(error?.message || 'Failed to delete server.');
                 }
             }
@@ -778,8 +782,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
 
             async function checkEditKnownHostStatus() {
                 if (!activeEditorName()) return;
-                const host = document.getElementById('edit-host').value.trim();
-                const port = normalizePort(document.getElementById('edit-port').value, 22);
+                const editor = managePageInteraction.getView().editor;
+                const host = String(editor.draft?.host || '').trim();
+                const port = normalizePort(editor.draft?.port, 22);
                 if (!host) {
                     setEditHostKeyStatus('Known host status: host is required.');
                     return;
@@ -793,9 +798,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     setEditHostKeyStatus('Checking known_hosts entry...');
                     try {
                         const scanned = await scanHostKey(host, port);
-                        const currentHost = document.getElementById('edit-host').value.trim();
-                        const currentPort = normalizePort(document.getElementById('edit-port').value, 22);
-                        if (currentHost !== host || currentPort !== port) {
+                        const currentEditor = managePageInteraction.getView().editor;
+                        if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
                             return;
                         }
                         managePageInteraction.dispatch({ type: 'hostKeyReceived', requestID: request.requestID, sessionID, host, port, hostKey: { fingerprint: scanned?.fingerprint_sha256 || '', alreadyTrusted: !!scanned?.already_trusted } });
@@ -805,9 +809,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                             setEditHostKeyStatus(`Known host not saved for ${host}:${port} (${scanned.fingerprint_sha256}).`);
                         }
                     } catch (err) {
-                        const currentHost = document.getElementById('edit-host').value.trim();
-                        const currentPort = normalizePort(document.getElementById('edit-port').value, 22);
-                        if (currentHost !== host || currentPort !== port) {
+                        const currentEditor = managePageInteraction.getView().editor;
+                        if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
                             return;
                         }
                         managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'hostKey', requestID: request.requestID, error: err?.message });
@@ -831,8 +834,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
 
             async function clearEditKnownHost() {
                 if (!activeEditorName()) return;
-                const host = document.getElementById('edit-host').value.trim();
-                const port = normalizePort(document.getElementById('edit-port').value, 22);
+                const editor = managePageInteraction.getView().editor;
+                const host = String(editor.draft?.host || '').trim();
+                const port = normalizePort(editor.draft?.port, 22);
                 if (!host) {
                     window.notifyApp('Host is required.');
                     return;
@@ -849,14 +853,14 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 try {
                     const result = await clearKnownHost(host, port);
                     managePageInteraction.dispatch({ type: 'hostKeyCleared', sessionID: managePageInteraction.getView().editor.sessionID, host, port });
-                    managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Known host entry cleared.' });
+                    await settleCommand('commandCompleted', execution.plan, 'Known host entry cleared.', { announce: false });
                     if (Number(result?.removed_entries || 0) > 0) {
                         setEditHostKeyStatus(`Known host entry cleared for ${host}:${port}.`);
                     } else {
                         setEditHostKeyStatus(`Known host entry not found for ${host}:${port}.`);
                     }
                 } catch (err) {
-                    managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err.message || 'Failed to clear known host entry.' });
+                    await settleCommand('commandFailed', execution.plan, err.message || 'Failed to clear known host entry.', { announce: false });
                     window.notifyApp(err.message || 'Failed to clear known host entry.');
                 } finally {
                     setEditKnownHostButtonsState(false);
@@ -866,17 +870,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         async function saveServerEdit() {
             const originalName = activeEditorName();
             if (!originalName) return;
-            const newName = document.getElementById('edit-name').value.trim();
-            const newHost = document.getElementById('edit-host').value.trim();
-            const portValue = document.getElementById('edit-port').value;
-            const newPort = portValue ? parseInt(portValue, 10) : 0;
-            const newUser = document.getElementById('edit-user').value.trim();
-            const tagsRaw = document.getElementById('edit-tags').value;
-            const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const newPass = document.getElementById('edit-pass').value;
-            const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === originalName) || {};
-            const currentPort = normalizePort(current.port, 22);
-            const targetPort = normalizePort(newPort || currentPort, 22);
             clearEditValidationState();
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'saveEditor' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
@@ -886,7 +880,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 for (const field of rejected.invalidFields || []) {
                     setEditFieldInvalidState(fieldIDs[field], true);
                 }
-                setEditValidationError(rejected.reason || 'This server action is already in progress.');
+                const invalidFields = rejected.invalidFields || [];
+                if (invalidFields.length) {
+                    const labels = invalidFields.map(field => field.charAt(0).toUpperCase() + field.slice(1)).join(', ');
+                    setEditValidationError(`${labels} ${invalidFields.length === 1 ? 'is' : 'are'} required.`);
+                } else {
+                    setEditValidationError(rejected.reason || 'This server action is already in progress.');
+                }
                 const firstInvalid = document.getElementById(fieldIDs[(rejected.invalidFields || [])[0]]);
                 if (firstInvalid) firstInvalid.focus();
                 return;
@@ -894,6 +894,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             setEditSaveButtonState(true, 'Saving...');
             try {
                 const accepted = execution.plan.payload;
+                const targetHost = accepted.host;
+                const targetPort = accepted.port;
                 const res = await fetch(`/api/servers/${encodeURIComponent(originalName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -903,11 +905,11 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
                 if (accepted.trustHostKey) {
                     if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
-                    if (isEditKnownHostTrusted(newHost, targetPort)) {
+                    if (isEditKnownHostTrusted(targetHost, targetPort)) {
                         setEditHostKeyStatus('Host key already saved in known_hosts.');
                     } else {
                         try {
-                            const trustResult = await trustHostKeyFlow(newHost, targetPort, {
+                            const trustResult = await trustHostKeyFlow(targetHost, targetPort, {
                                 onScanning: () => {
                                     setEditHostKeyStatus('Checking known_hosts entry...');
                                 },
@@ -925,7 +927,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                             managePageInteraction.dispatch({
                                 type: 'hostKeyReceived',
                                 sessionID: managePageInteraction.getView().editor.sessionID,
-                                host: newHost,
+                                host: targetHost,
                                 port: targetPort,
                                 hostKey: { fingerprint: scannedFp, alreadyTrusted: true }
                             });
@@ -940,7 +942,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 }
                 let overrideSaveError = null;
                 try {
-                    const outcome = await managePolicyOverrides.save(newName, accepted.policyOverrides);
+                    const outcome = await managePolicyOverrides.save(accepted.name, accepted.policyOverrides);
                     if (outcome.status === 'partial' || outcome.status === 'failure') {
                         const failures = outcome.failures.map(failure => `${failure.policyID}: ${failure.error}`).join('; ');
                         throw new Error(`Failed to save scheduled update overrides for policy IDs ${failures}`);
@@ -948,14 +950,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 } catch (err) {
                     overrideSaveError = err;
                 }
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server saved.' });
+                await settleCommand('commandCompleted', execution.plan, 'Server saved.', { announce: false });
                 closeEditModal();
-                fetchManageServers();
                 if (overrideSaveError) {
                     window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
                 }
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to save server.' });
+                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to save server.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to save server.');
                 setEditHostKeyStatus('');
             } finally {
@@ -976,12 +977,11 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'POST', body: form });
                 if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to upload key.');
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server key uploaded.' });
+                await settleCommand('commandCompleted', execution.plan, 'Server key uploaded.', { announce: false });
                 input.value = '';
                 resetFileInputLabel(input);
-                fetchManageServers();
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to upload key.' });
+                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to upload key.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to upload key.');
             }
         }
@@ -992,10 +992,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'DELETE' });
                 if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear key.');
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server key cleared.' });
-                fetchManageServers();
+                await settleCommand('commandCompleted', execution.plan, 'Server key cleared.', { announce: false });
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to clear key.' });
+                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to clear key.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to clear key.');
             }
         }
@@ -1006,10 +1005,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch(`/api/servers/${encodeURIComponent(name)}/password`, { method: 'DELETE' });
                 if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear password.');
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server password cleared.' });
-                fetchManageServers();
+                await settleCommand('commandCompleted', execution.plan, 'Server password cleared.', { announce: false });
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to clear password.' });
+                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to clear password.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to clear password.');
             }
         }
@@ -1158,23 +1156,31 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await settleCommand('commandCompleted', execution.plan, 'Global key cleared.');
         }
 
+        async function performGlobalKeyRequest(request, status) {
+            try {
+                const res = await fetch('/api/keys/global');
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
+                const data = await res.json();
+                const effects = managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: !!data.has_key });
+                status.textContent = managePageInteraction.getView().globalKeyAvailable ? 'Global key: saved' : 'Global key: not set';
+                if (managePageInteraction.getView().inventory.allItems.length > 0) renderTable();
+                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
+                if (followup) await performGlobalKeyRequest(followup, status);
+            } catch (err) {
+                const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
+                status.textContent = `Global key status: ${err.message || 'unknown'}`;
+                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
+                if (followup) await performGlobalKeyRequest(followup, status);
+            }
+        }
+
         async function fetchGlobalKeyStatus() {
             const status = document.getElementById('global-key-status');
             if (!status) return;
             const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'globalKey' })
                 .find((effect) => effect.type === 'fetchSnapshot');
             if (!request) return;
-            try {
-                const res = await fetch('/api/keys/global');
-                if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
-                const data = await res.json();
-                managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: !!data.has_key });
-                status.textContent = data.has_key ? 'Global key: saved' : 'Global key: not set';
-                if (managePageInteraction.getView().inventory.allItems.length > 0) renderTable();
-            } catch (err) {
-                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
-                status.textContent = `Global key status: ${err.message || 'unknown'}`;
-            }
+            await performGlobalKeyRequest(request, status);
         }
 
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());

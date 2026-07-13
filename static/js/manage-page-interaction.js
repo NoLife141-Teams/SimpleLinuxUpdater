@@ -58,10 +58,20 @@
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
-        // Transitional adapter storage keeps browser-only mechanics out of the module projection.
-        const adapterState = {};
 
         function effect(type, props) { return { type, ...props }; }
+        function invalidateStream(stream) {
+            const state = streams[stream];
+            if (!state) return;
+            state.inFlight = null;
+            state.queued = null;
+            state.lastError = "";
+            state.data = null;
+        }
+        function invalidateEditorStreams() {
+            invalidateStream("hostKey");
+            invalidateStream("policyContext");
+        }
         function request(stream, payload = {}) {
             const state = streams[stream];
             if (state.inFlight !== null) { state.queued = clone(payload); return []; }
@@ -187,11 +197,11 @@
                 case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
-                case "editorOpened": { const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, options: { trustHostKey: true }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
-                case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) editor.hostKey = null; } return [effect("render", { area: "editor" })];
+                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, options: { trustHostKey: true }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
+                case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];
                 case "editorOptionChanged": if (editor.open) editor.options = { ...editor.options, ...(input.patch || {}) }; return [effect("render", { area: "editor" })];
                 case "editorIdentityAccepted": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.originalName = String(input.name || editor.originalName); return [effect("render", { area: "editor" })];
-                case "editorClosed": editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];
+                case "editorClosed": invalidateEditorStreams(); editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];
                 case "hostKeyReceived": if (editor.open && input.sessionID === editor.sessionID && input.host === String(editor.draft.host || "").trim() && normalizePort(input.port) === normalizePort(editor.draft.port)) editor.hostKey = { ...clone(input.hostKey), host: String(input.host), port: normalizePort(input.port) }; return received("hostKey", input.requestID, input.hostKey);
                 case "hostKeyCleared": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.hostKey = { host: String(input.host || "").trim(), port: normalizePort(input.port), checked: true, alreadyTrusted: false, fingerprint: "" }; return [effect("render", { area: "editor" })];
                 case "policyContextReceived": if (editor.open && input.sessionID === editor.sessionID) { const context = input.context || {}; const overrides = clone(context.overrides || {}); editor.policyContext = { policies: clone(Array.isArray(context.policies) ? context.policies : []), overrides, originalOverrides: clone(overrides), outcome: { status: "idle", failures: [] } }; } return received("policyContext", input.requestID, input.context);
@@ -208,7 +218,7 @@
             }
         }
         function getView() { return clone({ inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
-        return Object.freeze({ dispatch, getView, planCommand: (command, payload) => clone(commandPlan(command, payload)), adapterState });
+        return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });
 }));

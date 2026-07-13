@@ -1177,6 +1177,12 @@ test.describe.serial('setup and login flows', () => {
         rowTops: [...element.querySelectorAll('.metric-item')]
           .filter(item => getComputedStyle(item).display !== 'none')
           .map(item => Math.round(item.getBoundingClientRect().top)),
+        labelTops: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => Math.round(item.querySelector('span').getBoundingClientRect().top)),
+        numberTops: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => Math.round(item.querySelector('strong').getBoundingClientRect().top)),
         visibleDescriptions: [...element.querySelectorAll('small')]
           .filter(item => getComputedStyle(item).display !== 'none')
           .map(item => item.textContent.trim()),
@@ -1188,6 +1194,8 @@ test.describe.serial('setup and login flows', () => {
       expect(metricState.visibleDescriptions).toEqual([]);
       expect(metricState.visibleLegacyMetrics).toEqual([]);
       expect(new Set(metricState.rowTops).size).toBe(1);
+      expect(new Set(metricState.labelTops).size).toBe(1);
+      expect(new Set(metricState.numberTops).size).toBe(1);
       expect(metricState.height).toBeLessThan(300);
     }
   });

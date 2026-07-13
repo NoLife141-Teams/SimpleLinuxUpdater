@@ -1922,6 +1922,17 @@ body.status-page .timeline-column .metric-hidden {
     padding: 5px 8px;
 }
 
+body.status-page .timeline-column .metric-item:not(.metric-hidden) {
+    display: grid;
+    grid-template-rows: 27px auto;
+    align-content: start;
+}
+
+body.status-page .timeline-column .metric-item > span {
+    align-self: start;
+    line-height: 1.35;
+}
+
 .timeline-column .metric-item strong {
     margin-top: 2px;
     font-size: clamp(0.98rem, 1.08vw, 1.24rem);

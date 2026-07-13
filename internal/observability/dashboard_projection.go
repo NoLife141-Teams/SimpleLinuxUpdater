@@ -40,12 +40,11 @@ type dashboardServerProjectionInput struct {
 }
 
 type dashboardUpdateHistoryProjection struct {
-	lastSuccess *DashboardUpdateHistory
-	lastFailure *DashboardUpdateHistory
-	meta        map[string]any
-	metaAt      string
-	durationSum float64
-	samples     int
+	lastSuccess   *DashboardUpdateHistory
+	lastFailure   *DashboardUpdateHistory
+	healthOverlay dashboardHealthOverlayFacts
+	durationSum   float64
+	samples       int
 }
 
 func newDashboardProjection(ctx dashboardProjectionContext) dashboardProjection {
@@ -128,10 +127,8 @@ func (p dashboardProjection) projectHealth(fact updates.ServerFactsRecord, histo
 	} else {
 		health.Source = "unknown"
 	}
-	if history.meta != nil {
-		auditResults := PrecheckResultsFromMeta(history.meta, "precheck_results")
-		auditResults = append(auditResults, PrecheckResultsFromMeta(history.meta, "postcheck_results")...)
-		UpdateHealthFromResults(&health, auditResults, "audit", history.metaAt, p.ctx.deps)
+	if history.healthOverlay.accepted {
+		UpdateHealthFromResults(&health, history.healthOverlay.results, "audit", history.healthOverlay.collectedAt, p.ctx.deps)
 	}
 	return health
 }

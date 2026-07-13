@@ -1082,69 +1082,11 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	}
 	loc, timezoneName := deps.CurrentTimezone()
 
-	updateByServer := map[string]*dashboardUpdateHistoryProjection{}
-	rows, err := deps.DB().Query(
-		`SELECT created_at, target_name, status, message, meta_json
-		   FROM audit_events
-		  WHERE action = ? AND target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC`,
-		deps.UpdateCompleteAction,
-		fromFormatted,
-		toFormatted,
-	)
+	collector := newDashboardProjectionCollector(deps)
+	updateByServer, err := collector.collectUpdateHistory(fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
-	for rows.Next() {
-		var createdAt, targetName, status, message, metaJSON string
-		if err := rows.Scan(&createdAt, &targetName, &status, &message, &metaJSON); err != nil {
-			rows.Close()
-			return DashboardSummaryResponse{}, err
-		}
-		agg := updateByServer[targetName]
-		if agg == nil {
-			agg = &dashboardUpdateHistoryProjection{}
-			updateByServer[targetName] = agg
-		}
-		meta := map[string]any{}
-		metaValid := false
-		if strings.TrimSpace(metaJSON) != "" {
-			if err := json.Unmarshal([]byte(metaJSON), &meta); err == nil {
-				metaValid = true
-			}
-		}
-		duration, hasDuration := MetaDurationMS(meta)
-		if hasDuration {
-			agg.durationSum += duration
-			agg.samples++
-		}
-		display, _ := deps.FormatTimestamp(createdAt, loc, timezoneName)
-		item := &DashboardUpdateHistory{
-			Status:            strings.ToLower(strings.TrimSpace(status)),
-			FinishedAt:        createdAt,
-			FinishedAtDisplay: display,
-			DurationMS:        duration,
-			Message:           message,
-		}
-		if item.Status == "failure" {
-			item.FailureCause = FailureCauseFromMeta(meta, metaValid)
-			if agg.lastFailure == nil {
-				agg.lastFailure = item
-			}
-		}
-		if item.Status == "success" && agg.lastSuccess == nil {
-			agg.lastSuccess = item
-		}
-		if agg.meta == nil && metaValid {
-			agg.meta = meta
-			agg.metaAt = createdAt
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return DashboardSummaryResponse{}, err
-	}
-	rows.Close()
 
 	commandHistory := map[string][]DashboardCommandHistoryItem{}
 	commandRows, err := deps.DB().Query(

@@ -297,9 +297,10 @@ func TestDashboardProjectionAuditMetadataOverlaysFactsAndKeepsMalformedStale(t *
 					RebootRequired: &rebootRequired,
 				},
 				updateHistory: dashboardUpdateHistoryProjection{
-					metaAt: now.Add(-time.Hour).Format(time.RFC3339),
-					meta: map[string]any{
-						"postcheck_results": []updates.PrecheckResult{
+					healthOverlay: dashboardHealthOverlayFacts{
+						accepted:    true,
+						collectedAt: now.Add(-time.Hour).Format(time.RFC3339),
+						results: []updates.PrecheckResult{
 							{Name: updates.PostcheckNameAptHealth, Passed: false, Details: "apt is unhealthy"},
 							{Name: updates.PostcheckNameRebootNeeded, Passed: true, Details: "reboot required"},
 						},
@@ -315,9 +316,10 @@ func TestDashboardProjectionAuditMetadataOverlaysFactsAndKeepsMalformedStale(t *
 					AptStatus:   "ok",
 				},
 				updateHistory: dashboardUpdateHistoryProjection{
-					metaAt: "also-not-a-time",
-					meta: map[string]any{
-						"postcheck_results": []updates.PrecheckResult{
+					healthOverlay: dashboardHealthOverlayFacts{
+						accepted:    true,
+						collectedAt: "also-not-a-time",
+						results: []updates.PrecheckResult{
 							{Name: updates.PostcheckNameAptHealth, Passed: false, Details: "ignored"},
 						},
 					},

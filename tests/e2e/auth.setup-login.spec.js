@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const fs = require('node:fs');
+const path = require('node:path');
 
 test.describe.serial('setup and login flows', () => {
   const username = 'admin';
@@ -1146,7 +1148,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
-  test('operator pages share one responsive and accessible application shell', async ({ page }) => {
+  test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     const pages = [
       ['/', '/', 'Status'],
@@ -1198,6 +1200,21 @@ test.describe.serial('setup and login flows', () => {
         await expect(focused).toBeVisible();
         const focusShadow = await focused.evaluate(element => getComputedStyle(element).boxShadow);
         expect(focusShadow).not.toBe('none');
+
+        if (route === '/manage') {
+          const screenshot = await page.screenshot({ fullPage: false });
+          await testInfo.attach(`manage-${viewport.width}x${viewport.height}`, {
+            body: screenshot,
+            contentType: 'image/png',
+          });
+          if (process.env.UI_EVIDENCE_DIR) {
+            fs.mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
+            fs.writeFileSync(
+              path.join(process.env.UI_EVIDENCE_DIR, `manage-after-${viewport.width}x${viewport.height}.png`),
+              screenshot,
+            );
+          }
+        }
       }
     }
 

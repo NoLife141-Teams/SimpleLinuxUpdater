@@ -1174,6 +1174,8 @@ test.describe.serial('setup and login flows', () => {
 
       const metricState = await page.locator('.metric-strip').evaluate(element => ({
         height: element.getBoundingClientRect().height,
+        timelineGap: Math.round(document.querySelector('.timeline-workspace').getBoundingClientRect().top
+          - element.getBoundingClientRect().bottom),
         rowTops: [...element.querySelectorAll('.metric-item')]
           .filter(item => getComputedStyle(item).display !== 'none')
           .map(item => Math.round(item.getBoundingClientRect().top)),
@@ -1196,6 +1198,7 @@ test.describe.serial('setup and login flows', () => {
       expect(new Set(metricState.rowTops).size).toBe(1);
       expect(new Set(metricState.labelTops).size).toBe(1);
       expect(new Set(metricState.numberTops).size).toBe(1);
+      expect(metricState.timelineGap).toBeLessThanOrEqual(24);
       expect(metricState.height).toBeLessThan(300);
     }
   });

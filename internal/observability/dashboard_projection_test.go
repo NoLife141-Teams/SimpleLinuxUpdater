@@ -4,38 +4,40 @@ import (
 	"testing"
 	"time"
 
-	"debian-updater/internal/jobs"
 	"debian-updater/internal/servers"
-	"debian-updater/internal/updates"
 )
 
-func testDashboardProjection(now time.Time) dashboardProjection {
-	deps := ServiceDeps{
-		CurrentTimezone: func() (*time.Location, string) { return time.UTC, "UTC" },
-		CurrentLocation: func() *time.Location { return time.UTC },
-		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
-			if raw == "" {
-				return "", "UTC"
-			}
-			return "display:" + raw, "UTC"
-		},
-		ParseAppTimestamp: func(raw string) (time.Time, error) {
-			return time.Parse(time.RFC3339, raw)
-		},
-		HealthStatusFromResult: func(result updates.PrecheckResult) string {
-			if result.Passed {
-				return "ok"
-			}
-			return "failed"
-		},
-		RebootResultRequiresRestart: func(updates.PrecheckResult) (bool, bool) { return true, true },
+func testDashboardProjection(time.Time) dashboardProjection {
+	return newDashboardProjection()
+}
+
+func testCollectedHealth(serverName, collectedAt, diskStatus, aptStatus string) DashboardHealthInfo {
+	source := "facts"
+	if serverName == "" {
+		source = "unknown"
 	}
-	return newDashboardProjection(dashboardProjectionContext{
-		now:          now,
-		deps:         deps,
-		loc:          time.UTC,
-		timezoneName: "UTC",
-	})
+	return DashboardHealthInfo{CollectedAt: collectedAt, DiskStatus: diskStatus, AptStatus: aptStatus, Source: source}
+}
+
+func testCollectedTimeline(currentPhase, state, summary string) DashboardTimelineInfo {
+	progress := timelinePhaseProgress(currentPhase)
+	if terminalTimelineState(state) {
+		progress = 100
+	}
+	return DashboardTimelineInfo{CurrentPhase: currentPhase, State: state, ProgressPct: progress, Summary: summary}
+}
+
+func testCollectedTriageTime(factsState, collectedAt string) dashboardTriageTimeFacts {
+	display := ""
+	if collectedAt != "" {
+		display = "display:" + collectedAt
+	}
+	return dashboardTriageTimeFacts{
+		factsState:              factsState,
+		factsCollectedAtDisplay: display,
+		lastCheckAt:             collectedAt,
+		lastCheckDisplay:        display,
+	}
 }
 
 func requireDashboardAction(t *testing.T, server DashboardServerSummary, key string) DashboardActionInfo {
@@ -47,18 +49,8 @@ func requireDashboardAction(t *testing.T, server DashboardServerSummary, key str
 	return action
 }
 
-func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.T) {
+func TestDashboardProjectionUsesCollectedRuntimeSourceFacts(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	staleJob := jobs.Record{
-		ID:         "job-stale",
-		Status:     jobs.StatusFailed,
-		Phase:      jobs.PhasePostchecks,
-		Summary:    "Old post-check failed",
-		CreatedAt:  now.Add(-10 * time.Minute).Format(time.RFC3339),
-		UpdatedAt:  now.Add(-10 * time.Minute).Format(time.RFC3339),
-		StartedAt:  now.Add(-11 * time.Minute).Format(time.RFC3339),
-		ServerName: "srv-active",
-	}
 
 	summary := testDashboardProjection(now).Project(dashboardProjectionInput{
 		window:      "7d",
@@ -66,9 +58,11 @@ func TestDashboardProjectionRuntimeActiveStatusBeatsStaleTerminalJob(t *testing.
 		to:          now.Format(time.RFC3339),
 		generatedAt: now.Format(time.RFC3339),
 		servers: []dashboardServerProjectionInput{{
-			server:          servers.Server{Name: "srv-active"},
-			status:          &servers.ServerStatus{Name: "srv-active", Status: "updating"},
-			latestUpdateJob: &staleJob,
+			server:     servers.Server{Name: "srv-active"},
+			status:     &servers.ServerStatus{Name: "srv-active", Status: "updating"},
+			health:     testCollectedHealth("", "", "unknown", "unknown"),
+			timeline:   testCollectedTimeline("prechecks", "active", "Runtime status: Updating"),
+			triageTime: testCollectedTriageTime("stale", ""),
 		}},
 	})
 
@@ -101,23 +95,20 @@ func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) 
 						{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}},
 					},
 				},
-				fact: updates.ServerFactsRecord{
-					ServerName:  "srv-z",
-					CollectedAt: now.Add(-time.Hour).Format(time.RFC3339),
-					DiskStatus:  "ok",
-					AptStatus:   "ok",
-				},
+				health:     testCollectedHealth("srv-z", now.Add(-time.Hour).Format(time.RFC3339), "ok", "ok"),
+				timeline:   testCollectedTimeline("pending_approval", "waiting", "Runtime status: Pending approval"),
+				triageTime: testCollectedTriageTime("fresh", now.Add(-time.Hour).Format(time.RFC3339)),
 			},
 			{
 				server: servers.Server{Name: "srv-a"},
 				status: &servers.ServerStatus{Name: "srv-a", Status: "done"},
-				fact: updates.ServerFactsRecord{
-					ServerName:     "srv-a",
-					CollectedAt:    now.Add(-49 * time.Hour).Format(time.RFC3339),
-					DiskStatus:     "ok",
-					AptStatus:      "ok",
-					RebootRequired: &rebootRequired,
-				},
+				health: func() DashboardHealthInfo {
+					health := testCollectedHealth("srv-a", now.Add(-49*time.Hour).Format(time.RFC3339), "ok", "ok")
+					health.RebootRequired = &rebootRequired
+					return health
+				}(),
+				timeline:   testCollectedTimeline("done_error", "done", "Runtime status: Done"),
+				triageTime: testCollectedTriageTime("stale", now.Add(-49*time.Hour).Format(time.RFC3339)),
 			},
 		},
 	})
@@ -152,7 +143,10 @@ func TestDashboardProjectionMissingFactsDefaultsRemainDashboardSafe(t *testing.T
 		to:          now.Format(time.RFC3339),
 		generatedAt: now.Format(time.RFC3339),
 		servers: []dashboardServerProjectionInput{{
-			server: servers.Server{Name: "srv-missing"},
+			server:     servers.Server{Name: "srv-missing"},
+			health:     testCollectedHealth("", "", "unknown", "unknown"),
+			timeline:   testCollectedTimeline("", "idle", "No maintenance activity"),
+			triageTime: testCollectedTriageTime("stale", ""),
 		}},
 	})
 
@@ -187,7 +181,9 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 					Status:         "done",
 					PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true}},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-done-risk", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				health:     testCollectedHealth("srv-done-risk", now.Format(time.RFC3339), "ok", "ok"),
+				timeline:   testCollectedTimeline("done_error", "done", "Runtime status: Done"),
+				triageTime: testCollectedTriageTime("fresh", now.Format(time.RFC3339)),
 			},
 			{
 				server: servers.Server{Name: "srv-pending"},
@@ -204,7 +200,9 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 						FullUpgradeNewPackages:        []string{"new-lib"},
 					},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-pending", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				health:     testCollectedHealth("srv-pending", now.Format(time.RFC3339), "ok", "ok"),
+				timeline:   testCollectedTimeline("pending_approval", "waiting", "Runtime status: Pending approval"),
+				triageTime: testCollectedTriageTime("fresh", now.Format(time.RFC3339)),
 			},
 			{
 				server: servers.Server{Name: "srv-needs-scan"},
@@ -215,7 +213,9 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 						{Package: "kernel", Security: true, KeptBack: true},
 					},
 				},
-				fact: updates.ServerFactsRecord{ServerName: "srv-needs-scan", CollectedAt: now.Format(time.RFC3339), DiskStatus: "ok", AptStatus: "ok"},
+				health:     testCollectedHealth("srv-needs-scan", now.Format(time.RFC3339), "ok", "ok"),
+				timeline:   testCollectedTimeline("pending_approval", "waiting", "Runtime status: Pending approval"),
+				triageTime: testCollectedTriageTime("fresh", now.Format(time.RFC3339)),
 			},
 		},
 	})
@@ -277,9 +277,9 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 	}
 }
 
-func TestDashboardProjectionAuditMetadataOverlaysFactsAndKeepsMalformedStale(t *testing.T) {
+func TestDashboardProjectionUsesCollectedHealthAndFreshnessFacts(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	rebootRequired := false
+	rebootRequired := true
 
 	summary := testDashboardProjection(now).Project(dashboardProjectionInput{
 		window:      "7d",
@@ -289,39 +289,26 @@ func TestDashboardProjectionAuditMetadataOverlaysFactsAndKeepsMalformedStale(t *
 		servers: []dashboardServerProjectionInput{
 			{
 				server: servers.Server{Name: "srv-overlay"},
-				fact: updates.ServerFactsRecord{
-					ServerName:     "srv-overlay",
-					CollectedAt:    now.Add(-2 * time.Hour).Format(time.RFC3339),
+				health: DashboardHealthInfo{
+					Source:         "audit",
+					CollectedAt:    now.Add(-time.Hour).Format(time.RFC3339),
 					DiskStatus:     "ok",
-					AptStatus:      "ok",
+					AptStatus:      "failed",
 					RebootRequired: &rebootRequired,
 				},
-				updateHistory: dashboardUpdateHistoryProjection{
-					metaAt: now.Add(-time.Hour).Format(time.RFC3339),
-					meta: map[string]any{
-						"postcheck_results": []updates.PrecheckResult{
-							{Name: updates.PostcheckNameAptHealth, Passed: false, Details: "apt is unhealthy"},
-							{Name: updates.PostcheckNameRebootNeeded, Passed: true, Details: "reboot required"},
-						},
-					},
-				},
+				timeline:   testCollectedTimeline("", "idle", "No maintenance activity"),
+				triageTime: testCollectedTriageTime("fresh", now.Add(-time.Hour).Format(time.RFC3339)),
 			},
 			{
 				server: servers.Server{Name: "srv-malformed"},
-				fact: updates.ServerFactsRecord{
-					ServerName:  "srv-malformed",
+				health: DashboardHealthInfo{
+					Source:      "facts",
 					CollectedAt: "not-a-time",
 					DiskStatus:  "ok",
 					AptStatus:   "ok",
 				},
-				updateHistory: dashboardUpdateHistoryProjection{
-					metaAt: "also-not-a-time",
-					meta: map[string]any{
-						"postcheck_results": []updates.PrecheckResult{
-							{Name: updates.PostcheckNameAptHealth, Passed: false, Details: "ignored"},
-						},
-					},
-				},
+				timeline:   testCollectedTimeline("", "idle", "No maintenance activity"),
+				triageTime: testCollectedTriageTime("stale", "not-a-time"),
 			},
 		},
 	})

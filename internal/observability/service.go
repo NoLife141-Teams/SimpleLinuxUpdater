@@ -619,64 +619,35 @@ func dashboardTimelineJobForStatus(status *servers.ServerStatus, job *jobs.Recor
 	return runtimepkg.DashboardTimelineJobForStatus(statusValue, job)
 }
 
-func (s *Service) latestUpdateJobsByServer() (map[string]jobs.Record, error) {
-	deps := s.EnsureDeps()
-	result := map[string]jobs.Record{}
-	db := deps.DB()
-	if db == nil {
-		return result, nil
-	}
-	rows, err := db.Query(
-		`SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		        error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
-		   FROM jobs
-		  WHERE kind = ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 1000`,
-		jobs.KindUpdate,
-	)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
-			return result, nil
+func dashboardTimelineSourceFor(status *servers.ServerStatus, job *jobs.Record) dashboardTimelineSourceFacts {
+	selectedJob := dashboardTimelineJobForStatus(status, job)
+	if selectedJob != nil && strings.TrimSpace(selectedJob.ID) != "" {
+		currentPhase, state := timelineStateFromJob(*selectedJob)
+		summary := strings.TrimSpace(selectedJob.Summary)
+		if summary == "" {
+			summary = fmt.Sprintf("Update job %s", strings.TrimSpace(selectedJob.Status))
 		}
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var record jobs.Record
-		if err := rows.Scan(
-			&record.ID,
-			&record.Kind,
-			&record.ParentJobID,
-			&record.ServerName,
-			&record.Actor,
-			&record.ClientIP,
-			&record.Status,
-			&record.Phase,
-			&record.Summary,
-			&record.LogsText,
-			&record.ErrorClass,
-			&record.RetryPolicyJSON,
-			&record.MetaJSON,
-			&record.CreatedAt,
-			&record.UpdatedAt,
-			&record.StartedAt,
-			&record.FinishedAt,
-		); err != nil {
-			return nil, err
+		updatedAt := strings.TrimSpace(selectedJob.UpdatedAt)
+		if updatedAt == "" {
+			updatedAt = strings.TrimSpace(selectedJob.CreatedAt)
 		}
-		serverName := strings.TrimSpace(record.ServerName)
-		if serverName == "" {
-			continue
-		}
-		if _, exists := result[serverName]; !exists {
-			result[serverName] = record
+		return dashboardTimelineSourceFacts{
+			currentPhase: currentPhase,
+			state:        state,
+			summary:      summary,
+			startedAt:    strings.TrimSpace(selectedJob.StartedAt),
+			updatedAt:    updatedAt,
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if status == nil {
+		return dashboardTimelineSourceFacts{state: "idle"}
 	}
-	return result, nil
+	currentPhase, state := timelinePhaseFromServerStatus(status.Status)
+	summary := "No maintenance activity"
+	if state != "idle" {
+		summary = fmt.Sprintf("Runtime status: %s", statusLabelText(status.Status))
+	}
+	return dashboardTimelineSourceFacts{currentPhase: currentPhase, state: state, summary: summary}
 }
 
 func formatDashboardTimestamp(raw string, deps ServiceDeps, loc *time.Location, timezoneName string) string {
@@ -688,30 +659,16 @@ func formatDashboardTimestamp(raw string, deps ServiceDeps, loc *time.Location, 
 	return display
 }
 
-func buildDashboardTimeline(status *servers.ServerStatus, job *jobs.Record, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardTimelineInfo {
+func buildDashboardTimeline(source dashboardTimelineSourceFacts, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardTimelineInfo {
 	deps = deps.withDefaults()
-	currentPhase := ""
-	state := "idle"
-	summary := "No maintenance activity"
-	startedAt := ""
-	updatedAt := ""
-	if job != nil && strings.TrimSpace(job.ID) != "" {
-		currentPhase, state = timelineStateFromJob(*job)
-		summary = strings.TrimSpace(job.Summary)
-		if summary == "" {
-			summary = fmt.Sprintf("Update job %s", strings.TrimSpace(job.Status))
-		}
-		startedAt = strings.TrimSpace(job.StartedAt)
-		updatedAt = strings.TrimSpace(job.UpdatedAt)
-		if updatedAt == "" {
-			updatedAt = strings.TrimSpace(job.CreatedAt)
-		}
-	} else if status != nil {
-		currentPhase, state = timelinePhaseFromServerStatus(status.Status)
-		if state != "idle" {
-			summary = fmt.Sprintf("Runtime status: %s", statusLabelText(status.Status))
-		}
+	currentPhase := source.currentPhase
+	state := source.state
+	if strings.TrimSpace(state) == "" {
+		state = "idle"
 	}
+	summary := source.summary
+	startedAt := source.startedAt
+	updatedAt := source.updatedAt
 	currentLabel := timelinePhaseLabel(currentPhase)
 	progress := timelinePhaseProgress(currentPhase)
 	if currentPhase == "" || state == "idle" {
@@ -974,20 +931,11 @@ func dashboardActionEnabled(actions map[string]DashboardActionInfo, key string) 
 	return ok && action.Enabled
 }
 
-func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, lastUpdate *DashboardUpdateHistory, now time.Time, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardApprovalTriageInfo {
-	deps = deps.withDefaults()
+func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, timeFacts dashboardTriageTimeFacts) DashboardApprovalTriageInfo {
 	statusValue := ""
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
 	}
-	lastCheckAt := strings.TrimSpace(health.CollectedAt)
-	if lastCheckAt == "" && lastUpdate != nil {
-		lastCheckAt = strings.TrimSpace(lastUpdate.FinishedAt)
-	}
-	if lastCheckAt == "" {
-		lastCheckAt = strings.TrimSpace(timeline.UpdatedAt)
-	}
-	factsState := factsFreshnessState(health, now, deps)
 	eligible := statusValue == "pending_approval" || risk.PendingPackages > 0 || risk.SecurityUpdates > 0 || len(risk.CVEs) > 0
 	canActOnApproval := statusValue == "pending_approval"
 	standardPackages := risk.PendingPackages
@@ -1037,11 +985,11 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 		RiskLevel:                  risk.Level,
 		RiskLabel:                  risk.Summary,
 		RiskOrder:                  dashboardRiskOrder(risk.Level),
-		FactsState:                 factsState,
+		FactsState:                 timeFacts.factsState,
 		FactsCollectedAt:           health.CollectedAt,
-		FactsCollectedAtDisplay:    formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
-		LastCheckAt:                lastCheckAt,
-		LastCheckDisplay:           formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
+		FactsCollectedAtDisplay:    timeFacts.factsCollectedAtDisplay,
+		LastCheckAt:                timeFacts.lastCheckAt,
+		LastCheckDisplay:           timeFacts.lastCheckDisplay,
 		CanApproveAll:              availability.CanApproveAll,
 		CanApproveSecurity:         availability.CanApproveSecurity,
 		CanApproveKeptBackSecurity: availability.CanApproveKeptBackSecurity,
@@ -1054,169 +1002,12 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 
 func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (DashboardSummaryResponse, error) {
 	deps := s.EnsureDeps()
-	window, span, err := ParseWindow(rawWindow)
+	collector := newDashboardProjectionCollector(deps)
+	projectionInput, err := collector.Collect(rawWindow, now)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
-	to := now.UTC()
-	from := to.Add(-span)
-	fromFormatted := from.Format(time.RFC3339)
-	toFormatted := to.Format(time.RFC3339)
-
-	serversSnapshot, statusByName := deps.ServerSnapshot()
-	facts, err := deps.HostHealthObservation.Latest()
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	scheduleProjection, err := deps.ProjectPolicySchedule(policies.ScheduleProjectionRequest{
-		Now:      now,
-		Servers:  serversSnapshot,
-		RunLimit: 500,
-	})
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	latestUpdateJobs, err := s.latestUpdateJobsByServer()
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	loc, timezoneName := deps.CurrentTimezone()
-
-	updateByServer := map[string]*dashboardUpdateHistoryProjection{}
-	rows, err := deps.DB().Query(
-		`SELECT created_at, target_name, status, message, meta_json
-		   FROM audit_events
-		  WHERE action = ? AND target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC`,
-		deps.UpdateCompleteAction,
-		fromFormatted,
-		toFormatted,
-	)
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	for rows.Next() {
-		var createdAt, targetName, status, message, metaJSON string
-		if err := rows.Scan(&createdAt, &targetName, &status, &message, &metaJSON); err != nil {
-			rows.Close()
-			return DashboardSummaryResponse{}, err
-		}
-		agg := updateByServer[targetName]
-		if agg == nil {
-			agg = &dashboardUpdateHistoryProjection{}
-			updateByServer[targetName] = agg
-		}
-		meta := map[string]any{}
-		metaValid := false
-		if strings.TrimSpace(metaJSON) != "" {
-			if err := json.Unmarshal([]byte(metaJSON), &meta); err == nil {
-				metaValid = true
-			}
-		}
-		duration, hasDuration := MetaDurationMS(meta)
-		if hasDuration {
-			agg.durationSum += duration
-			agg.samples++
-		}
-		display, _ := deps.FormatTimestamp(createdAt, loc, timezoneName)
-		item := &DashboardUpdateHistory{
-			Status:            strings.ToLower(strings.TrimSpace(status)),
-			FinishedAt:        createdAt,
-			FinishedAtDisplay: display,
-			DurationMS:        duration,
-			Message:           message,
-		}
-		if item.Status == "failure" {
-			item.FailureCause = FailureCauseFromMeta(meta, metaValid)
-			if agg.lastFailure == nil {
-				agg.lastFailure = item
-			}
-		}
-		if item.Status == "success" && agg.lastSuccess == nil {
-			agg.lastSuccess = item
-		}
-		if agg.meta == nil && metaValid {
-			agg.meta = meta
-			agg.metaAt = createdAt
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return DashboardSummaryResponse{}, err
-	}
-	rows.Close()
-
-	commandHistory := map[string][]DashboardCommandHistoryItem{}
-	commandRows, err := deps.DB().Query(
-		`SELECT created_at, target_name, action, status, message, actor
-		   FROM audit_events
-		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 400`,
-		fromFormatted,
-		toFormatted,
-	)
-	if err != nil {
-		return DashboardSummaryResponse{}, err
-	}
-	for commandRows.Next() {
-		var item DashboardCommandHistoryItem
-		var targetName string
-		if err := commandRows.Scan(&item.CreatedAt, &targetName, &item.Action, &item.Status, &item.Message, &item.Actor); err != nil {
-			commandRows.Close()
-			return DashboardSummaryResponse{}, err
-		}
-		if len(commandHistory[targetName]) >= 8 {
-			continue
-		}
-		item.CreatedAtDisplay, _ = deps.FormatTimestamp(item.CreatedAt, loc, timezoneName)
-		commandHistory[targetName] = append(commandHistory[targetName], item)
-	}
-	if err := commandRows.Err(); err != nil {
-		commandRows.Close()
-		return DashboardSummaryResponse{}, err
-	}
-	commandRows.Close()
-
-	projectionInput := dashboardProjectionInput{
-		window:      window,
-		from:        fromFormatted,
-		to:          toFormatted,
-		generatedAt: toFormatted,
-		servers:     make([]dashboardServerProjectionInput, 0, len(serversSnapshot)),
-	}
-	for _, server := range serversSnapshot {
-		status := statusByName[server.Name]
-		fact := facts[server.Name]
-		agg := updateByServer[server.Name]
-		if agg == nil {
-			agg = &dashboardUpdateHistoryProjection{}
-		}
-		schedule := scheduleProjection.Servers[server.Name]
-		nextRun := dashboardScheduleInfoFromPolicy(schedule.NextRun, deps, loc, timezoneName)
-		noRun := dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName)
-		var latestUpdateJob *jobs.Record
-		if job, ok := latestUpdateJobs[server.Name]; ok {
-			jobCopy := job
-			latestUpdateJob = &jobCopy
-		}
-		projectionInput.servers = append(projectionInput.servers, dashboardServerProjectionInput{
-			server:          server,
-			status:          status,
-			fact:            fact,
-			nextRun:         nextRun,
-			noRun:           noRun,
-			latestUpdateJob: latestUpdateJob,
-			updateHistory:   *agg,
-			commandHistory:  commandHistory[server.Name],
-		})
-	}
-	projection := newDashboardProjection(dashboardProjectionContext{
-		now:          now,
-		deps:         deps,
-		loc:          loc,
-		timezoneName: timezoneName,
-	})
+	projection := newDashboardProjection()
 	return projection.Project(projectionInput), nil
 }
 

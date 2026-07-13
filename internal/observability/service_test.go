@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -418,6 +419,115 @@ func TestServiceBuildDashboardSummaryMapsTimelineAndStaleFacts(t *testing.T) {
 	}
 	if summary.Fleet["in_progress"] != 4 || summary.Fleet["prechecks_running"] != 4 || summary.Fleet["done"] != 1 || summary.Fleet["stale_facts"] != 1 {
 		t.Fatalf("fleet counts = %+v, want active/done/stale facts counts", summary.Fleet)
+	}
+}
+
+func requireDashboardSummaryEqual(t *testing.T, got, want DashboardSummaryResponse) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DashboardSummaryResponse mismatch\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestServiceBuildDashboardSummaryEmptyContract(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-empty-contract.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	got, err := testService(db, path).BuildDashboardSummary("24h", now)
+	if err != nil {
+		t.Fatalf("BuildDashboardSummary() error = %v", err)
+	}
+	requireDashboardSummaryEqual(t, got, DashboardSummaryResponse{
+		Window:      "24h",
+		From:        now.Add(-24 * time.Hour).Format(time.RFC3339),
+		To:          now.Format(time.RFC3339),
+		GeneratedAt: now.Format(time.RFC3339),
+		Fleet: map[string]any{
+			"pending_approval":     0,
+			"prechecks_running":    0,
+			"in_progress":          0,
+			"done":                 0,
+			"pending_packages":     0,
+			"security_updates":     0,
+			"high_risk_cve":        0,
+			"hosts_needing_reboot": 0,
+			"stale_facts":          0,
+		},
+		Servers: []DashboardServerSummary{},
+	})
+}
+
+func TestServiceBuildDashboardSummaryInvalidWindowSkipsCollection(t *testing.T) {
+	collectionCalls := 0
+	service := NewService(ServiceDeps{
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			collectionCalls++
+			return nil, nil
+		},
+		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+			collectionCalls++
+			return nil, nil
+		}),
+	})
+
+	_, err := service.BuildDashboardSummary("fortnight", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Fatalf("BuildDashboardSummary() error = %v, want ErrInvalidWindow", err)
+	}
+	if collectionCalls != 0 {
+		t.Fatalf("collection calls = %d, want 0 for invalid window", collectionCalls)
+	}
+}
+
+func TestServiceBuildDashboardSummaryPreservesRequiredSourceErrors(t *testing.T) {
+	healthErr := errors.New("health unavailable")
+	scheduleErr := errors.New("schedule unavailable")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		deps func(*sql.DB, string) ServiceDeps
+		want error
+	}{
+		{
+			name: "host health observation",
+			deps: func(db *sql.DB, path string) ServiceDeps {
+				return ServiceDeps{
+					DB:     func() *sql.DB { return db },
+					DBPath: func() string { return path },
+					HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+						return nil, healthErr
+					}),
+				}
+			},
+			want: healthErr,
+		},
+		{
+			name: "policy schedule projection",
+			deps: func(db *sql.DB, path string) ServiceDeps {
+				return ServiceDeps{
+					DB:     func() *sql.DB { return db },
+					DBPath: func() string { return path },
+					HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {
+						return map[string]health.CollectedFacts{}, nil
+					}),
+					ProjectPolicySchedule: func(policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error) {
+						return policies.ScheduleProjection{}, scheduleErr
+					},
+				}
+			},
+			want: scheduleErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, path := newTestDB(t, "dashboard-required-source-error.db")
+			_, err := NewService(tt.deps(db, path)).BuildDashboardSummary("7d", now)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("BuildDashboardSummary() error = %v, want %v", err, tt.want)
+			}
+		})
 	}
 }
 

@@ -5,27 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Observability</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=file-input-fix-20260622b">
+    <link rel="stylesheet" href="/static/css/base.css?v=operator-shell-20260713a">
     <link rel="stylesheet" href="/static/css/observability.css?v=vscode-dark-20260601b">
 </head>
 <body>
     <div class="dashboard-shell">
-        <header class="app-header fade-in">
-            <a class="brand-lockup" href="/" aria-label="SimpleLinuxUpdater dashboard">
-                <img class="brand-logo" src="/static/logo.png" alt="Linux updates logo">
-                <span>
-                    <strong>SimpleLinuxUpdater</strong>
-                    <small>Fleet update dashboard</small>
-                </span>
-            </a>
-            <nav class="app-nav" aria-label="Main navigation">
-                <a href="/">Status</a>
-                <a href="/manage">Manage Servers</a>
-                <a class="active" href="/observability">Observability</a>
-                <a href="/admin">Admin</a>
-                <button type="button" id="logout-btn">Logout</button>
-            </nav>
-        </header>
+        {{template "operator-application-shell" .}}
 
         <main class="dashboard-main observability-main">
             <section class="dashboard-head fade-in" aria-label="Telemetry summary">

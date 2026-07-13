@@ -39,6 +39,118 @@ func TestOperatorPagesExposeAccessibleResponsiveShells(t *testing.T) {
 	}
 }
 
+func TestOperatorPagesRenderOneSharedApplicationShellContract(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	cookie := app.authenticate(t)
+	pages := []struct {
+		path        string
+		pageLabel   string
+		currentHref string
+		landmark    string
+	}{
+		{path: "/", pageLabel: "Status", currentHref: "/", landmark: "Fleet status"},
+		{path: "/manage", pageLabel: "Manage Servers", currentHref: "/manage", landmark: "Server directory"},
+		{path: "/observability", pageLabel: "Observability", currentHref: "/observability", landmark: "Update metrics"},
+		{path: "/admin", pageLabel: "Admin", currentHref: "/admin", landmark: "App Time"},
+	}
+	wantLinks := []struct {
+		label string
+		href  string
+	}{
+		{label: "Status", href: "/"},
+		{label: "Manage Servers", href: "/manage"},
+		{label: "Observability", href: "/observability"},
+		{label: "Admin", href: "/admin"},
+	}
+
+	for _, page := range pages {
+		t.Run(page.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, page.path, nil)
+			request.AddCookie(cookie)
+			app.Handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d", page.path, recorder.Code)
+			}
+			body := recorder.Body.String()
+			if !strings.Contains(body, page.landmark) {
+				t.Fatalf("GET %s lost page landmark %q", page.path, page.landmark)
+			}
+			root, err := html.Parse(strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("parse %s: %v", page.path, err)
+			}
+			shells := htmlElements(root, "header", "app-header")
+			if len(shells) != 1 {
+				t.Fatalf("GET %s application shells = %d, want 1", page.path, len(shells))
+			}
+			if got, want := htmlAttr(shells[0], "aria-label"), page.pageLabel+" application shell"; got != want {
+				t.Errorf("GET %s shell aria-label = %q, want %q", page.path, got, want)
+			}
+			navigations := htmlElements(shells[0], "nav", "app-nav")
+			if len(navigations) != 1 {
+				t.Fatalf("GET %s shell navigations = %d, want 1", page.path, len(navigations))
+			}
+			links := directElements(navigations[0], "a")
+			if len(links) != len(wantLinks) {
+				t.Fatalf("GET %s navigation links = %d, want %d", page.path, len(links), len(wantLinks))
+			}
+			currentCount := 0
+			for index, link := range links {
+				if got := strings.TrimSpace(nodeText(link)); got != wantLinks[index].label {
+					t.Errorf("GET %s navigation link %d label = %q, want %q", page.path, index, got, wantLinks[index].label)
+				}
+				if got := htmlAttr(link, "href"); got != wantLinks[index].href {
+					t.Errorf("GET %s navigation link %d href = %q, want %q", page.path, index, got, wantLinks[index].href)
+				}
+				if htmlAttr(link, "aria-current") == "page" {
+					currentCount++
+					if got := htmlAttr(link, "href"); got != page.currentHref {
+						t.Errorf("GET %s current navigation href = %q, want %q", page.path, got, page.currentHref)
+					}
+				}
+			}
+			if currentCount != 1 {
+				t.Errorf("GET %s current navigation items = %d, want 1", page.path, currentCount)
+			}
+		})
+	}
+}
+
+func htmlElements(root *html.Node, tag, className string) []*html.Node {
+	var matches []*html.Node
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == tag && hasHTMLClass(node, className) {
+			matches = append(matches, node)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return matches
+}
+
+func directElements(root *html.Node, tag string) []*html.Node {
+	var matches []*html.Node
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && child.Data == tag {
+			matches = append(matches, child)
+		}
+	}
+	return matches
+}
+
+func hasHTMLClass(node *html.Node, className string) bool {
+	for _, class := range strings.Fields(htmlAttr(node, "class")) {
+		if class == className {
+			return true
+		}
+	}
+	return false
+}
+
 func assertAccessiblePage(t *testing.T, handler http.Handler, cookie *http.Cookie, path string) {
 	t.Helper()
 	recorder := httptest.NewRecorder()

@@ -342,3 +342,27 @@ test("Manage adapters own no accepted policy or Global SSH Credential decision s
     }
     assert.doesNotMatch(policyAdapterSource, /serverMatchesPolicyTags|includeTags\.some|excludeTags\.some/);
 });
+
+test("audit projection owns the selected detail and retains it through caller mutation", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "auditSnapshotReceived",
+        data: { items: [{ id: 7, action: "server.update", meta_json: "{}" }], total: 1 }
+    });
+    store.dispatch({ type: "auditDetailSelected", id: 7 });
+    const first = store.getView();
+    assert.equal(first.audit.selectedDetail.action, "server.update");
+    first.audit.selectedDetail.action = "mutated";
+    assert.equal(store.getView().audit.selectedDetail.action, "server.update");
+
+    store.dispatch({ type: "auditDetailSelected", id: "" });
+    assert.equal(store.getView().audit.selectedDetail, null);
+});
+
+test("Manage adapter owns no accepted audit list, query, total, or pagination state", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/manage.js"), "utf8");
+    for (const legacy of ["auditEvents", "auditPage", "auditPageSize", "auditTotal"]) {
+        assert.doesNotMatch(source, new RegExp(`\\b${legacy}\\b`));
+    }
+    assert.match(source, /setInterval\(fetchAuditEvents,\s*15000\)/);
+});

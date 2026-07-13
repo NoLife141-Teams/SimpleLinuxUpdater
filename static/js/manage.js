@@ -1,16 +1,10 @@
 const managePageInteraction = window.ManagePageInteraction.createStore();
 window.managePageInteraction = managePageInteraction;
 const manageAdapterState = managePageInteraction.adapterState;
-[
-    "auditEvents", "auditPage", "auditPageSize", "auditTotal", "auditFetchHadError"
-].forEach((key) => Object.defineProperty(globalThis, key, {
-    configurable: true,
-    get: () => manageAdapterState[key],
-    set: (value) => { manageAdapterState[key] = value; }
-}));
 let hostKeyModalPromise = null;
 let hostKeyModalResolvers = [];
 let editKnownHostCheckPromise = null;
+let auditFetchHadError = false;
 
 function activeEditorName() {
     const editor = managePageInteraction.getView().editor;
@@ -311,45 +305,45 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             renderTable();
         });
         document.getElementById('audit-prev-page').addEventListener('click', async () => {
-            auditPage = Math.max(1, auditPage - 1);
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: Math.max(1, managePageInteraction.getView().audit.query.page - 1) } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-next-page').addEventListener('click', async () => {
-            auditPage += 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: managePageInteraction.getView().audit.query.page + 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-target-filter').addEventListener('input', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-action-filter').addEventListener('input', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             document.getElementById('audit-action-preset').value = "";
             await fetchAuditEvents();
         });
         document.getElementById('audit-action-preset').addEventListener('change', async () => {
             document.getElementById('audit-action-filter').value = document.getElementById('audit-action-preset').value;
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-status-filter').addEventListener('change', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-from-filter').addEventListener('change', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-from-filter').addEventListener('input', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-to-filter').addEventListener('change', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-to-filter').addEventListener('input', async () => {
-            auditPage = 1;
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
             await fetchAuditEvents();
         });
         document.getElementById('audit-refresh').addEventListener('click', fetchAuditEvents);
@@ -366,11 +360,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch('/api/audit-events/prune', { method: 'POST' });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to prune audit events.'));
-                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Audit events pruned.' });
-                await fetchAuditEvents();
+                await settleCommand('commandCompleted', execution.plan, 'Audit events pruned.');
             } catch (err) {
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err.message || 'Failed to prune audit events.' });
-                window.notifyApp(err.message || 'Failed to prune audit events.');
+                await settleCommand('commandFailed', execution.plan, err.message || 'Failed to prune audit events.');
             }
         });
         document.querySelector('#audit-table tbody').addEventListener('click', (e) => {
@@ -438,7 +430,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         function auditEventByID(id) {
-            return auditEvents.find(evt => String(evt.id) === String(id));
+            return managePageInteraction.getView().audit.items.find(evt => String(evt.id) === String(id));
         }
 
         function openAuditDetailDrawer(evt) {
@@ -476,13 +468,14 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         function renderAuditTable() {
             const tbody = document.querySelector('#audit-table tbody');
             if (!tbody) return;
+            const projection = managePageInteraction.getView().audit;
             tbody.innerHTML = '';
-            if (!auditEvents.length) {
+            if (!projection.items.length) {
                 const row = document.createElement('tr');
                 row.innerHTML = '<td colspan="8" class="subtle">No activity yet.</td>';
                 tbody.appendChild(row);
             } else {
-                auditEvents.forEach(evt => {
+                projection.items.forEach(evt => {
                     const row = document.createElement('tr');
                     const status = escapeHtml(evt.status || 'unknown');
                     const statusClass = `status-${safeStatusClassToken(evt.status)}`;
@@ -502,53 +495,38 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     tbody.appendChild(row);
                 });
             }
-            const totalPages = Math.max(1, Math.ceil(auditTotal / auditPageSize));
-            const currentPage = Math.min(auditPage, totalPages);
-            document.getElementById('audit-page-info').textContent = `Page ${currentPage} of ${totalPages} (${auditTotal} events)`;
+            const totalPages = Math.max(1, Math.ceil(projection.total / projection.query.pageSize));
+            const currentPage = Math.min(projection.query.page, totalPages);
+            document.getElementById('audit-page-info').textContent = `Page ${currentPage} of ${totalPages} (${projection.total} events)`;
         }
 
-        async function fetchAuditEvents(options = {}) {
-            const silent = !!options.silent;
+        async function performAuditRequest(request, silent) {
+            const query = request.query || managePageInteraction.getView().audit.query;
             try {
                 if (window.ensureAppTimezoneLoaded) {
                     await window.ensureAppTimezoneLoaded();
                 }
                 const params = new URLSearchParams({
-                    page: String(auditPage),
-                    page_size: String(auditPageSize)
+                    page: String(query.page),
+                    page_size: String(query.pageSize)
                 });
-                const targetName = document.getElementById('audit-target-filter').value.trim();
-                const action = document.getElementById('audit-action-filter').value.trim();
-                const status = document.getElementById('audit-status-filter').value;
-                if (targetName) params.set('target_name', targetName);
-                if (action) params.set('action', action);
-                if (status) params.set('status', status);
-                const from = auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value);
-                const to = auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value);
-                managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { targetName, action, status, from, to, page: auditPage, pageSize: auditPageSize } });
-                const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'audit' })
-                    .find((effect) => effect.type === 'fetchSnapshot');
-                if (from) params.set('from', from);
-                if (to) params.set('to', to);
+                if (query.targetName) params.set('target_name', query.targetName);
+                if (query.action) params.set('action', query.action);
+                if (query.status) params.set('status', query.status);
+                if (query.from) params.set('from', query.from);
+                if (query.to) params.set('to', query.to);
                 const res = await fetch(`/api/audit-events?${params.toString()}`);
                 if (!res.ok) {
                     throw new Error(await parseErrorResponse(res, 'Failed to load audit events.'));
                 }
                 const data = await res.json();
-                managePageInteraction.dispatch({ type: 'auditSnapshotReceived', requestID: request?.requestID, data });
-                auditEvents = data.items || [];
-                auditTotal = Number(data.total || 0);
+                const effects = managePageInteraction.dispatch({ type: 'auditSnapshotReceived', requestID: request.requestID, data });
                 auditFetchHadError = false;
-                const totalPages = Math.max(1, Math.ceil(auditTotal / auditPageSize));
-                if (auditPage > totalPages) {
-                    auditPage = totalPages;
-                    await fetchAuditEvents(options);
-                    return;
-                }
                 renderAuditTable();
+                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'audit');
+                if (followup) await performAuditRequest(followup, silent);
             } catch (err) {
-                const requestID = managePageInteraction.getView().streams.audit.inFlight;
-                if (requestID) managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'audit', requestID, error: err?.message });
+                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'audit', requestID: request.requestID, error: err?.message });
                 const message = err && err.message ? err.message : 'Failed to load audit events.';
                 const pageInfo = document.getElementById('audit-page-info');
                 if (pageInfo) {
@@ -559,6 +537,25 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 }
                 auditFetchHadError = true;
             }
+        }
+
+        async function fetchAuditEvents(options = {}) {
+            const current = managePageInteraction.getView().audit.query;
+            const patch = {
+                targetName: document.getElementById('audit-target-filter').value.trim(),
+                action: document.getElementById('audit-action-filter').value.trim(),
+                status: document.getElementById('audit-status-filter').value,
+                from: auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value),
+                to: auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value),
+                page: current.page,
+                pageSize: current.pageSize
+            };
+            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch });
+            const query = managePageInteraction.getView().audit.query;
+            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'audit', payload: { query } })
+                .find(effect => effect.type === 'fetchSnapshot');
+            if (!request) return;
+            await performAuditRequest(request, !!options.silent);
         }
 
         document.getElementById('add-server-form').addEventListener('submit', async (e) => {

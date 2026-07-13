@@ -59,7 +59,7 @@
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         // Transitional adapter storage keeps browser-only mechanics out of the module projection.
-        const adapterState = { auditEvents: [], auditPage: 1, auditPageSize: 20, auditTotal: 0, auditFetchHadError: false };
+        const adapterState = {};
 
         function effect(type, props) { return { type, ...props }; }
         function request(stream, payload = {}) {
@@ -153,6 +153,11 @@
             value.policyContext.visiblePolicies = value.policyContext.policies.filter(policyMatchesDraft);
             return value;
         }
+        function projectedAudit() {
+            const value = clone(audit);
+            value.selectedDetail = value.items.find(item => String(item.id) === value.selectedID) || null;
+            return value;
+        }
         function commandPlan(command, payload = {}) {
             const target = String(payload.serverName || editor.originalName || "new").trim() || "new";
             const key = command === "auditPrune" || command.startsWith("globalKey") || command === "createServer" ? command : `${command}:${target}`;
@@ -192,7 +197,7 @@
                 case "policyContextReceived": if (editor.open && input.sessionID === editor.sessionID) { const context = input.context || {}; const overrides = clone(context.overrides || {}); editor.policyContext = { policies: clone(Array.isArray(context.policies) ? context.policies : []), overrides, originalOverrides: clone(overrides), outcome: { status: "idle", failures: [] } }; } return received("policyContext", input.requestID, input.context);
                 case "policyOverrideChanged": if (editor.open) editor.policyContext.overrides[String(input.policyID || "")] = !!input.disabled; return [effect("render", { area: "policyOverrides" })];
                 case "policyOverrideBatchCompleted": if (editor.open && input.sessionID === editor.sessionID) { const results = Array.isArray(input.results) ? input.results : []; const failures = []; let successes = 0; results.forEach(result => { const policyID = String(result.policyID || ""); if (result.ok) { successes++; editor.policyContext.overrides[policyID] = !!result.disabled; editor.policyContext.originalOverrides[policyID] = !!result.disabled; } else failures.push({ policyID, error: String(result.error || "unknown error") }); }); editor.policyContext.outcome = { status: failures.length ? (successes ? "partial" : "failure") : "success", failures }; } return [effect("render", { area: "policyOverrides" })];
-                case "auditQueryChanged": audit.query = { ...audit.query, ...(input.patch || {}) }; audit.query.page = Math.max(1, Number(audit.query.page) || 1); return [effect("render", { area: "audit" })];
+                case "auditQueryChanged": audit.query = { ...audit.query, ...(input.patch || {}) }; audit.query.page = Math.max(1, Number(audit.query.page) || 1); audit.query.pageSize = pageSizes.has(Number(audit.query.pageSize)) ? Number(audit.query.pageSize) : 20; return [effect("render", { area: "audit" })];
                 case "auditSnapshotReceived": { if (input.requestID && streams.audit.inFlight !== input.requestID) return []; const data = input.data || {}; audit.items = clone(Array.isArray(data.items) ? data.items : []); audit.total = Math.max(0, Number(data.total) || 0); const pages = Math.max(1, Math.ceil(audit.total / audit.query.pageSize)); if (audit.query.page > pages) { audit.query.page = pages; return [...received("audit", input.requestID, data), ...request("audit", { query: clone(audit.query) })]; } return received("audit", input.requestID, data); }
                 case "auditDetailSelected": audit.selectedID = String(input.id || ""); return [effect("render", { area: "auditDetail" })];
                 case "snapshotRequested": return request(input.stream, input.payload);
@@ -202,7 +207,7 @@
                 default: return [];
             }
         }
-        function getView() { return clone({ inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit, streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView, planCommand: (command, payload) => clone(commandPlan(command, payload)), adapterState });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

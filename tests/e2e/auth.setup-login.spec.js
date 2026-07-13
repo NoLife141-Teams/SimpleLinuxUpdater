@@ -1166,6 +1166,26 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
+  test('status metrics stay compact without secondary descriptions', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1153, height: 879 });
+    await page.goto('/');
+
+    const metricState = await page.locator('.metric-strip').evaluate(element => ({
+      height: element.getBoundingClientRect().height,
+      visibleDescriptions: [...element.querySelectorAll('small')]
+        .filter(item => getComputedStyle(item).display !== 'none')
+        .map(item => item.textContent.trim()),
+      visibleLegacyMetrics: [...element.querySelectorAll('.metric-hidden')]
+        .filter(item => getComputedStyle(item).display !== 'none')
+        .map(item => item.textContent.trim()),
+    }));
+
+    expect(metricState.visibleDescriptions).toEqual([]);
+    expect(metricState.visibleLegacyMetrics).toEqual([]);
+    expect(metricState.height).toBeLessThan(300);
+  });
+
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     const pages = [

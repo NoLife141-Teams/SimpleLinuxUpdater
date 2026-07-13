@@ -1,0 +1,18 @@
+{{define "operator-application-shell"}}
+<header class="app-header fade-in" aria-label="{{.PageLabel}} application shell">
+    <a class="brand-lockup" href="/" aria-label="SimpleLinuxUpdater dashboard">
+        <img class="brand-logo" src="/static/logo.png" alt="Linux updates logo">
+        <span>
+            <strong>SimpleLinuxUpdater</strong>
+            <small>Fleet update dashboard</small>
+        </span>
+    </a>
+    <nav class="app-nav" aria-label="Main navigation">
+        <a{{if eq .ActiveSection "status"}} class="active" aria-current="page"{{end}} href="/">Status</a>
+        <a{{if eq .ActiveSection "manage"}} class="active" aria-current="page"{{end}} href="/manage">Manage Servers</a>
+        <a{{if eq .ActiveSection "observability"}} class="active" aria-current="page"{{end}} href="/observability">Observability</a>
+        <a{{if eq .ActiveSection "admin"}} class="active" aria-current="page"{{end}} href="/admin">Admin</a>
+        <button type="button" id="logout-btn">Logout</button>
+    </nav>
+</header>
+{{end}}

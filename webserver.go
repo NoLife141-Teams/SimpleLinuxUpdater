@@ -1564,22 +1564,22 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 func registerProtectedPageRoutes(r *gin.Engine) {
 	r.GET("/", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "index.html", nil)
+		c.HTML(http.StatusOK, "index.html", newOperatorApplicationShellView("status", "Status"))
 	})
 
 	r.GET("/manage", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "manage.html", nil)
+		c.HTML(http.StatusOK, "manage.html", newOperatorApplicationShellView("manage", "Manage Servers"))
 	})
 
 	r.GET("/observability", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "observability.html", nil)
+		c.HTML(http.StatusOK, "observability.html", newOperatorApplicationShellView("observability", "Observability"))
 	})
 
 	r.GET("/admin", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "admin.html", nil)
+		c.HTML(http.StatusOK, "admin.html", newOperatorApplicationShellView("admin", "Admin"))
 	})
 
 }

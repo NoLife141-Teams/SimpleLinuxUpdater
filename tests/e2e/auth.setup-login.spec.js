@@ -1145,4 +1145,72 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="Demo-Host"]').click();
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
+
+  test('operator pages share one responsive and accessible application shell', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    const pages = [
+      ['/', '/', 'Status'],
+      ['/manage', '/manage', 'Manage Servers'],
+      ['/observability', '/observability', 'Observability'],
+      ['/admin', '/admin', 'Admin'],
+    ];
+    const expectedLinks = [
+      ['Status', '/'],
+      ['Manage Servers', '/manage'],
+      ['Observability', '/observability'],
+      ['Admin', '/admin'],
+    ];
+
+    for (const viewport of [{ width: 1920, height: 1080 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      let expectedHeaderHeight = 0;
+      for (const [route, currentHref, pageLabel] of pages) {
+        await page.goto(route);
+        const shell = page.locator('.app-header');
+        await expect(shell).toHaveCount(1);
+        await expect(shell).toHaveAttribute('aria-label', `${pageLabel} application shell`);
+        const current = shell.locator('.app-nav a[aria-current="page"]');
+        await expect(current).toHaveCount(1);
+        await expect(current).toHaveAttribute('href', currentHref);
+
+        const links = shell.locator('.app-nav a');
+        await expect(links).toHaveCount(expectedLinks.length);
+        for (let index = 0; index < expectedLinks.length; index += 1) {
+          await expect(links.nth(index)).toHaveText(expectedLinks[index][0]);
+          await expect(links.nth(index)).toHaveAttribute('href', expectedLinks[index][1]);
+        }
+
+        const box = await shell.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+        if (expectedHeaderHeight === 0) expectedHeaderHeight = box.height;
+        expect(Math.abs(box.height - expectedHeaderHeight)).toBeLessThanOrEqual(1);
+
+        const hoverTarget = links.nth(currentHref === '/' ? 1 : 0);
+        await hoverTarget.hover();
+        await expect.poll(() => hoverTarget.evaluate(element => getComputedStyle(element).transform)).not.toBe('none');
+        await expect.poll(() => hoverTarget.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe('none');
+
+        await page.mouse.move(0, 0);
+        await page.keyboard.press('Tab');
+        const focused = page.locator(':focus');
+        await expect(focused).toBeVisible();
+        const focusShadow = await focused.evaluate(element => getComputedStyle(element).boxShadow);
+        expect(focusShadow).not.toBe('none');
+      }
+    }
+
+    const browser = page.context().browser();
+    const noScriptContext = await browser.newContext({
+      baseURL: 'http://127.0.0.1:8080',
+      javaScriptEnabled: false,
+    });
+    await noScriptContext.addCookies(await page.context().cookies());
+    const noScriptPage = await noScriptContext.newPage();
+    await noScriptPage.goto('/observability');
+    await noScriptPage.getByRole('link', { name: 'Manage Servers' }).click();
+    await expect(noScriptPage).toHaveURL('http://127.0.0.1:8080/manage');
+    await noScriptContext.close();
+  });
 });

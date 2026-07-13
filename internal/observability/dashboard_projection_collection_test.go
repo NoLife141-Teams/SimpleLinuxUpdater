@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -57,5 +58,52 @@ func TestDashboardProjectionCollectionCollectsTypedUpdateHistory(t *testing.T) {
 	overlay := got["srv-overlay"].healthOverlay
 	if overlay.collectedAt != olderOverlayAt || len(overlay.results) != 1 || overlay.results[0].Name != updates.PostcheckNameAptHealth {
 		t.Fatalf("srv-overlay health overlay = %+v, want newest valid typed metadata", overlay)
+	}
+}
+
+func TestDashboardProjectionCollectionCollectsTypedCommandHistory(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-projection-collection-commands.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		createdAt := now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)
+		if _, err := db.Exec(
+			`INSERT INTO audit_events (created_at, actor, action, target_type, target_name, status, message)
+			 VALUES (?, ?, ?, 'server', 'srv-a', 'success', ?)`,
+			createdAt,
+			fmt.Sprintf("actor-%d", i),
+			fmt.Sprintf("server.command.%d", i),
+			fmt.Sprintf("message-%d", i),
+		); err != nil {
+			t.Fatalf("insert command history %d: %v", i, err)
+		}
+	}
+	insertAudit(t, db, now.Format(time.RFC3339), "settings.changed", "success", "app", "", "ignored", nil)
+
+	collector := newDashboardProjectionCollector(testService(db, path).EnsureDeps())
+	got, err := collector.collectCommandHistory(
+		now.Add(-24*time.Hour).Format(time.RFC3339),
+		now.Format(time.RFC3339),
+		time.UTC,
+		"UTC",
+	)
+	if err != nil {
+		t.Fatalf("collectCommandHistory() error = %v", err)
+	}
+
+	items := got["srv-a"]
+	if len(items) != 8 {
+		t.Fatalf("srv-a command history length = %d, want 8", len(items))
+	}
+	if items[0].Action != "server.command.0" || items[0].Actor != "actor-0" || items[0].Message != "message-0" {
+		t.Fatalf("first command = %+v, want newest complete command facts", items[0])
+	}
+	if items[7].Action != "server.command.7" {
+		t.Fatalf("last retained command = %+v, want eighth-newest command", items[7])
+	}
+	if items[0].CreatedAtDisplay != "display:"+items[0].CreatedAt {
+		t.Fatalf("display time = %q, want formatted command time", items[0].CreatedAtDisplay)
+	}
+	if _, ok := got[""]; ok {
+		t.Fatalf("non-server audit event leaked into command history: %+v", got[""])
 	}
 }

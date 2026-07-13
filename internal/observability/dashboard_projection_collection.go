@@ -92,3 +92,37 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 	}
 	return updateByServer, nil
 }
+
+func (c dashboardProjectionCollector) collectCommandHistory(from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
+	commandHistory := map[string][]DashboardCommandHistoryItem{}
+	rows, err := c.deps.DB().Query(
+		`SELECT created_at, target_name, action, status, message, actor
+		   FROM audit_events
+		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT 400`,
+		from,
+		to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item DashboardCommandHistoryItem
+		var targetName string
+		if err := rows.Scan(&item.CreatedAt, &targetName, &item.Action, &item.Status, &item.Message, &item.Actor); err != nil {
+			return nil, err
+		}
+		if len(commandHistory[targetName]) >= 8 {
+			continue
+		}
+		item.CreatedAtDisplay, _ = c.deps.FormatTimestamp(item.CreatedAt, loc, timezoneName)
+		commandHistory[targetName] = append(commandHistory[targetName], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return commandHistory, nil
+}

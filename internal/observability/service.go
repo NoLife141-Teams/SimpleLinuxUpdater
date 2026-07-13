@@ -1088,37 +1088,10 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 		return DashboardSummaryResponse{}, err
 	}
 
-	commandHistory := map[string][]DashboardCommandHistoryItem{}
-	commandRows, err := deps.DB().Query(
-		`SELECT created_at, target_name, action, status, message, actor
-		   FROM audit_events
-		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 400`,
-		fromFormatted,
-		toFormatted,
-	)
+	commandHistory, err := collector.collectCommandHistory(fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
-	for commandRows.Next() {
-		var item DashboardCommandHistoryItem
-		var targetName string
-		if err := commandRows.Scan(&item.CreatedAt, &targetName, &item.Action, &item.Status, &item.Message, &item.Actor); err != nil {
-			commandRows.Close()
-			return DashboardSummaryResponse{}, err
-		}
-		if len(commandHistory[targetName]) >= 8 {
-			continue
-		}
-		item.CreatedAtDisplay, _ = deps.FormatTimestamp(item.CreatedAt, loc, timezoneName)
-		commandHistory[targetName] = append(commandHistory[targetName], item)
-	}
-	if err := commandRows.Err(); err != nil {
-		commandRows.Close()
-		return DashboardSummaryResponse{}, err
-	}
-	commandRows.Close()
 
 	projectionInput := dashboardProjectionInput{
 		window:      window,

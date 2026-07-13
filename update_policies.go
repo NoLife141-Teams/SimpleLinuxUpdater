@@ -259,48 +259,6 @@ func canonicalScheduledForUTC(slotLocal time.Time) string {
 	return policypkg.CanonicalScheduledForUTC(slotLocal, jobTimestampLayout, currentAppLocation)
 }
 
-func buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
-	return newScheduledRunLifecycle(globalRuntimeAppDeps()).buildScheduledJobMeta(policy, scheduledForUTC)
-}
-
-func createServerActionJobWithMetaAndState(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, meta any) (JobRecord, error) {
-	if jm == nil {
-		return JobRecord{}, errors.New("job manager is not initialized")
-	}
-	var snapshot *ServerStatus
-	if state != nil {
-		snapshot = state.CurrentStatusSnapshot(serverName)
-	} else {
-		snapshot = currentStatusSnapshot(serverName)
-	}
-	initialLogs := ""
-	if snapshot != nil {
-		initialLogs = snapshot.Logs
-	}
-	return jm.CreateJob(JobCreateParams{
-		Kind:            kind,
-		ServerName:      serverName,
-		Actor:           actor,
-		ClientIP:        clientIP,
-		Status:          jobStatusQueued,
-		LogsText:        initialLogs,
-		RetryPolicyJSON: marshalJobJSON(policy),
-		MetaJSON:        marshalJobJSON(meta),
-	})
-}
-
-func loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
-	return newScheduledRunLifecycle(globalRuntimeAppDeps()).loadScheduledJobBehavior(jobID)
-}
-
-func updateScheduledJobDiscoveryMeta(jobID string, discovery PackageDiscoveryOutcome) {
-	newScheduledRunLifecycle(globalRuntimeAppDeps()).updateScheduledJobDiscoveryMeta(jobID, discovery)
-}
-
-func handleScheduledRunRequest(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
-	return newScheduledRunLifecycle(globalRuntimeAppDeps()).HandleScheduledRun(req)
-}
-
 func globalRuntimeAppDeps() AppDeps {
 	state := globalServerState()
 	return AppDeps{
@@ -315,22 +273,6 @@ func globalRuntimeAppDeps() AppDeps {
 		NotifyDashboardEvent:   notifyDashboardEvent,
 		DashboardEventBroker:   dashboardEventBroker,
 	}
-}
-
-func runScheduledUpdatePolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	runScheduledUpdatePolicyWithDeps(globalRuntimeAppDeps(), run, policy, server)
-}
-
-func runScheduledUpdatePolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	newScheduledRunLifecycle(deps).runUpdate(run, policy, server)
-}
-
-func runScheduledScanPolicy(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	runScheduledScanPolicyWithDeps(globalRuntimeAppDeps(), run, policy, server)
-}
-
-func runScheduledScanPolicyWithDeps(deps AppDeps, run UpdatePolicyRun, policy UpdatePolicy, server Server) {
-	newScheduledRunLifecycle(deps).runScan(run, policy, server)
 }
 
 func resetMissedUpdatePolicyTicksForTest() {

@@ -1119,7 +1119,7 @@ func TestUpdateScheduledJobDiscoveryMetaCountsKeptBackSecurity(t *testing.T) {
 	prepareUpdatePolicyTestState(t, dbFile)
 
 	server := Server{Name: "srv-discovery-meta", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
-	meta := buildScheduledJobMeta(UpdatePolicy{
+	meta := updatespkg.BuildScheduledJobMeta(UpdatePolicy{
 		ID:                     11,
 		Name:                   "Approval required",
 		ExecutionMode:          updatePolicyExecutionApprovalRequired,
@@ -1151,7 +1151,7 @@ func TestUpdateScheduledJobDiscoveryMetaCountsKeptBackSecurity(t *testing.T) {
 		KeptBackSecurityPlanAvailable: true,
 		KeptBackSecurityPackageCount:  1,
 	}
-	updateScheduledJobDiscoveryMeta(job.ID, updatespkg.PackageDiscoveryOutcome{
+	defaultScheduledRunLifecycle().UpdateJobDiscovery(job.ID, updatespkg.PackageDiscoveryOutcome{
 		PendingPackageCount:  2,
 		SecurityPackageCount: 2,
 		Upgradable:           []string{"openssl", "linux-image-amd64"},
@@ -1756,7 +1756,7 @@ func TestRunUpdateJobWithActorScheduledAutoApplyUsesJobMeta(t *testing.T) {
 	}
 	mu.Unlock()
 
-	meta := buildScheduledJobMeta(UpdatePolicy{
+	meta := updatespkg.BuildScheduledJobMeta(UpdatePolicy{
 		ID:                     7,
 		Name:                   "Auto apply full",
 		ExecutionMode:          updatePolicyExecutionAutoApply,
@@ -1847,7 +1847,7 @@ func TestRunUpdateJobWithActorScheduledApprovalRequiredCancelledKeepsMeta(t *tes
 	mu.Unlock()
 
 	scheduledFor := time.Now().UTC().Format(jobTimestampLayout)
-	meta := buildScheduledJobMeta(UpdatePolicy{
+	meta := updatespkg.BuildScheduledJobMeta(UpdatePolicy{
 		ID:                     9,
 		Name:                   "Approval required security",
 		ExecutionMode:          updatePolicyExecutionApprovalRequired,
@@ -2055,7 +2055,7 @@ func TestScheduledScanPolicyStoresDiscoveryWithoutRuntimeMutation(t *testing.T) 
 	staleServer.Host = "old.example.org"
 	staleServer.User = "old-root"
 	staleServer.Pass = "old-pw"
-	runScheduledScanPolicy(run, policy, staleServer)
+	defaultScheduledRunLifecycle().ExecuteRun(run, policy, staleServer)
 	waitForCondition(t, 10*time.Second, func() bool {
 		current, err := getUpdatePolicyRun(run.ID)
 		return err == nil && current.Status == updatePolicyRunSucceeded
@@ -2144,7 +2144,7 @@ func TestScheduledScanPolicyPanicMarksRunFailed(t *testing.T) {
 		setDialSSHConnection(origDial)
 	})
 
-	runScheduledScanPolicy(run, policy, server)
+	defaultScheduledRunLifecycle().ExecuteRun(run, policy, server)
 	waitForCondition(t, 5*time.Second, func() bool {
 		current, err := getUpdatePolicyRun(run.ID)
 		return err == nil && current.Status == updatePolicyRunFailed
@@ -2210,7 +2210,7 @@ func TestRunScheduledUpdatePolicyMaintenanceModeSkipsRun(t *testing.T) {
 		setCurrentMaintenanceState(MaintenanceState{})
 	})
 
-	runScheduledUpdatePolicy(run, policy, server)
+	defaultScheduledRunLifecycle().ExecuteRun(run, policy, server)
 
 	currentRun, err := getUpdatePolicyRun(run.ID)
 	if err != nil {
@@ -2282,7 +2282,7 @@ func TestRunScheduledScanPolicyMaintenanceModeSkipsRun(t *testing.T) {
 		setCurrentMaintenanceState(MaintenanceState{})
 	})
 
-	runScheduledScanPolicy(run, policy, server)
+	defaultScheduledRunLifecycle().ExecuteRun(run, policy, server)
 
 	currentRun, err := getUpdatePolicyRun(run.ID)
 	if err != nil {

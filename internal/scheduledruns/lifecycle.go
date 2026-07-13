@@ -1,4 +1,4 @@
-package main
+package scheduledruns
 
 import (
 	"encoding/json"
@@ -7,27 +7,52 @@ import (
 	"strings"
 	"time"
 
-	maintenancepkg "debian-updater/internal/maintenance"
-	policypkg "debian-updater/internal/policies"
-	updatespkg "debian-updater/internal/updates"
+	"debian-updater/internal/audit"
+	"debian-updater/internal/jobs"
+	"debian-updater/internal/maintenance"
+	"debian-updater/internal/policies"
+	"debian-updater/internal/servers"
+	"debian-updater/internal/updates"
 )
 
-type scheduledRunLifecycle struct {
-	deps AppDeps
+type Deps struct {
+	AuditService                    *audit.Service
+	CurrentJobManager               func() *jobs.Manager
+	JobTimestampNow                 func() string
+	LoadRetryPolicy                 func() updates.RetryPolicy
+	MaintenanceCoordinator          *maintenance.Coordinator
+	PolicyRepository                RunRepository
+	ServerState                     *servers.State
+	StartJobRunner                  func(string, func())
+	StartScheduledRunReconciliation func(int64, string)
+	UpdateService                   *updates.Service
 }
 
-func newScheduledRunLifecycle(deps AppDeps) *scheduledRunLifecycle {
-	return &scheduledRunLifecycle{deps: deps.withDefaults()}
+// RunRepository is the complete persistence surface owned by the Scheduled Run
+// Lifecycle. Keeping this contract local prevents unrelated policy persistence
+// changes from widening the lifecycle module.
+type RunRepository interface {
+	CreateRun(policies.Run) (policies.Run, bool, error)
+	GetRun(int64) (policies.Run, error)
+	UpdateRun(int64, policies.RunUpdate) error
 }
 
-func (l *scheduledRunLifecycle) HandleScheduledRun(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
+type Lifecycle struct {
+	deps Deps
+}
+
+func New(deps Deps) *Lifecycle {
+	return &Lifecycle{deps: deps}
+}
+
+func (l *Lifecycle) HandleScheduledRun(req policies.ScheduledRunRequest) policies.ScheduledRunResult {
 	if l == nil {
-		l = newScheduledRunLifecycle(AppDeps{})
+		return policies.ScheduledRunResult{Err: errors.New("scheduled run lifecycle is unavailable")}
 	}
 	if strings.TrimSpace(req.Outcome) != "" {
 		return l.recordSkippedCandidate(req.Policy, req.Server, req.ScheduledForUTC, req.Outcome)
 	}
-	run, inserted, err := l.deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+	run, inserted, err := l.deps.PolicyRepository.CreateRun(policies.Run{
 		PolicyID:        req.Policy.ID,
 		PolicyName:      req.Policy.Name,
 		ServerName:      req.Server.Name,
@@ -35,14 +60,14 @@ func (l *scheduledRunLifecycle) HandleScheduledRun(req policypkg.ScheduledRunReq
 		ExecutionMode:   req.Policy.ExecutionMode,
 		PackageScope:    req.Policy.PackageScope,
 		UpgradeMode:     req.Policy.UpgradeMode,
-		Status:          updatePolicyRunQueued,
+		Status:          policies.RunQueued,
 		Summary:         "Scheduled run queued",
 		ResultJSON:      "{}",
 	})
 	if err != nil {
-		return policypkg.ScheduledRunResult{Handled: false, Err: err}
+		return policies.ScheduledRunResult{Handled: false, Err: err}
 	}
-	result := policypkg.ScheduledRunResult{
+	result := policies.ScheduledRunResult{
 		Handled:  true,
 		Inserted: inserted,
 		RunID:    run.ID,
@@ -54,17 +79,17 @@ func (l *scheduledRunLifecycle) HandleScheduledRun(req policypkg.ScheduledRunReq
 	if req.Admitted {
 		l.executeAdmitted(run, req.Policy, req.Server)
 	} else {
-		l.Execute(run, req.Policy, req.Server)
+		l.ExecuteRun(run, req.Policy, req.Server)
 	}
 	return result
 }
 
-func (l *scheduledRunLifecycle) Execute(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+func (l *Lifecycle) ExecuteRun(run policies.Run, policy policies.Policy, server servers.Server) {
 	if l == nil {
-		l = newScheduledRunLifecycle(AppDeps{})
+		return
 	}
 	if l.deps.MaintenanceCoordinator != nil {
-		lease, decision := l.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled)
+		lease, decision := l.deps.MaintenanceCoordinator.TryShared(maintenance.WorkScheduled)
 		if !decision.Allowed {
 			l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
 			return
@@ -74,23 +99,23 @@ func (l *scheduledRunLifecycle) Execute(run UpdatePolicyRun, policy UpdatePolicy
 	l.executeAdmitted(run, policy, server)
 }
 
-func (l *scheduledRunLifecycle) executeAdmitted(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) {
 	switch policy.ExecutionMode {
-	case updatePolicyExecutionScanOnly:
+	case policies.ExecutionScanOnly:
 		l.runScan(run, policy, server)
 	default:
 		l.runUpdate(run, policy, server)
 	}
 }
 
-func (l *scheduledRunLifecycle) buildScheduledJobMeta(policy UpdatePolicy, scheduledForUTC string) scheduledJobMeta {
-	return updatespkg.BuildScheduledJobMeta(policy, scheduledForUTC)
+func (l *Lifecycle) buildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) updates.ScheduledJobMeta {
+	return updates.BuildScheduledJobMeta(policy, scheduledForUTC)
 }
 
-func (l *scheduledRunLifecycle) recordSkippedCandidate(policy UpdatePolicy, server Server, scheduledForUTC, reason string) policypkg.ScheduledRunResult {
+func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server servers.Server, scheduledForUTC, reason string) policies.ScheduledRunResult {
 	summary := scheduledRunSkippedSummary(reason)
 	finishedAt := l.deps.JobTimestampNow()
-	run, inserted, err := l.deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+	run, inserted, err := l.deps.PolicyRepository.CreateRun(policies.Run{
 		PolicyID:        policy.ID,
 		PolicyName:      policy.Name,
 		ServerName:      server.Name,
@@ -98,16 +123,16 @@ func (l *scheduledRunLifecycle) recordSkippedCandidate(policy UpdatePolicy, serv
 		ExecutionMode:   policy.ExecutionMode,
 		PackageScope:    policy.PackageScope,
 		UpgradeMode:     policy.UpgradeMode,
-		Status:          updatePolicyRunSkipped,
+		Status:          policies.RunSkipped,
 		Reason:          reason,
 		Summary:         summary,
 		ResultJSON:      "{}",
 		FinishedAt:      finishedAt,
 	})
 	if err != nil {
-		return policypkg.ScheduledRunResult{Handled: false, Err: err}
+		return policies.ScheduledRunResult{Handled: false, Err: err}
 	}
-	result := policypkg.ScheduledRunResult{
+	result := policies.ScheduledRunResult{
 		Handled:  true,
 		Inserted: inserted,
 		RunID:    run.ID,
@@ -128,22 +153,22 @@ func (l *scheduledRunLifecycle) recordSkippedCandidate(policy UpdatePolicy, serv
 
 func scheduledRunSkippedSummary(reason string) string {
 	switch reason {
-	case updatePolicyRunReasonMaintenance:
+	case policies.RunReasonMaintenance:
 		return "Maintenance mode active; scheduled run skipped"
-	case updatePolicyRunReasonBlackout:
+	case policies.RunReasonBlackout:
 		return "Scheduled run skipped due to blackout window"
-	case updatePolicyRunReasonSuperseded:
+	case policies.RunReasonSuperseded:
 		return "Scheduled run superseded by higher-priority policy"
 	default:
 		return "Scheduled run skipped"
 	}
 }
 
-func (l *scheduledRunLifecycle) markMaintenanceSkipped(run UpdatePolicyRun, policy UpdatePolicy, server Server, summary string) {
-	status := updatePolicyRunSkipped
-	reason := updatePolicyRunReasonMaintenance
+func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Policy, server servers.Server, summary string) {
+	status := policies.RunSkipped
+	reason := policies.RunReasonMaintenance
 	finishedAt := l.deps.JobTimestampNow()
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:     &status,
 		Reason:     &reason,
 		Summary:    &summary,
@@ -156,20 +181,20 @@ func (l *scheduledRunLifecycle) markMaintenanceSkipped(run UpdatePolicyRun, poli
 	})
 }
 
-func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server servers.Server) {
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
 	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
-		status := updatePolicyRunFailed
-		reason := updatePolicyRunReasonMissing
+		status := policies.RunFailed
+		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled update"
-		if errors.Is(err, errActionInProgress) {
-			status = updatePolicyRunSkipped
-			reason = updatePolicyRunReasonBusy
+		if errors.Is(err, servers.ErrActionInProgress) {
+			status = policies.RunSkipped
+			reason = policies.RunReasonBusy
 			summary = "Server busy; scheduled update skipped"
 		}
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -185,16 +210,16 @@ func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePoli
 
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
-	job, err := createServerActionJobWithMetaAndState(l.deps.CurrentJobManager(), l.deps.ServerState, jobKindUpdate, server.Name, "system", "", retryPolicy, meta)
+	job, err := l.createServerActionJob(l.deps.CurrentJobManager(), l.deps.ServerState, jobs.KindUpdate, server.Name, "system", "", retryPolicy, meta)
 	if err != nil {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
-		status := updatePolicyRunFailed
-		reason := updatePolicyRunReasonPersistence
+		status := policies.RunFailed
+		reason := policies.RunReasonPersistence
 		summary := "Failed to create scheduled update job"
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -209,10 +234,10 @@ func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePoli
 		return
 	}
 
-	runningStatus := updatePolicyRunRunning
+	runningStatus := policies.RunRunning
 	startedAt := l.deps.JobTimestampNow()
 	summary := "Scheduled update started"
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
@@ -228,7 +253,7 @@ func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePoli
 		"upgrade_mode":      policy.UpgradeMode,
 	})
 	l.deps.StartJobRunner(job.ID, func() {
-		l.deps.UpdateService.RunUpdateJob(UpdateRunRequest{
+		l.deps.UpdateService.RunUpdateJob(updates.UpdateRunRequest{
 			Server:   serverForRun,
 			Actor:    "system",
 			ClientIP: "",
@@ -239,20 +264,20 @@ func (l *scheduledRunLifecycle) runUpdate(run UpdatePolicyRun, policy UpdatePoli
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 }
 
-func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy, server Server) {
+func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server servers.Server) {
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
 	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
-		status := updatePolicyRunFailed
-		reason := updatePolicyRunReasonMissing
+		status := policies.RunFailed
+		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled scan"
-		if errors.Is(err, errActionInProgress) {
-			status = updatePolicyRunSkipped
-			reason = updatePolicyRunReasonBusy
+		if errors.Is(err, servers.ErrActionInProgress) {
+			status = policies.RunSkipped
+			reason = policies.RunReasonBusy
 			summary = "Server busy; scheduled scan skipped"
 		}
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -270,11 +295,11 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
 	jm := l.deps.CurrentJobManager()
 	if jm == nil {
-		status := updatePolicyRunFailed
-		reason := updatePolicyRunReasonPersistence
+		status := policies.RunFailed
+		reason := policies.RunReasonPersistence
 		summary := "Job manager unavailable"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -289,23 +314,23 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		return
 	}
-	job, err := jm.CreateJob(JobCreateParams{
-		Kind:            jobKindScheduledScan,
+	job, err := jm.CreateJob(jobs.CreateParams{
+		Kind:            jobs.KindScheduledScan,
 		ServerName:      server.Name,
 		Actor:           "system",
-		Status:          jobStatusQueued,
-		RetryPolicyJSON: marshalJobJSON(retryPolicy),
-		MetaJSON:        marshalJobJSON(meta),
+		Status:          jobs.StatusQueued,
+		RetryPolicyJSON: jobs.MarshalJSON(retryPolicy),
+		MetaJSON:        jobs.MarshalJSON(meta),
 		Summary:         "Scheduled scan queued",
 	})
 	if err != nil {
-		status := updatePolicyRunFailed
-		reason := updatePolicyRunReasonPersistence
+		status := policies.RunFailed
+		reason := policies.RunReasonPersistence
 		summary := "Failed to create scheduled scan job"
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -321,10 +346,10 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 		return
 	}
 
-	runningStatus := updatePolicyRunRunning
+	runningStatus := policies.RunRunning
 	startedAt := l.deps.JobTimestampNow()
 	summary := "Scheduled scan started"
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, updatePolicyRunUpdate{
+	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
@@ -342,7 +367,7 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 
 	l.deps.StartJobRunner(job.ID, func() {
 		defer l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
-		l.deps.UpdateService.RunScheduledScanJob(ScheduledScanRunRequest{
+		l.deps.UpdateService.RunScheduledScanJob(updates.ScheduledScanRunRequest{
 			JobID:           job.ID,
 			RunID:           run.ID,
 			ScheduledForUTC: run.ScheduledForUTC,
@@ -354,32 +379,32 @@ func (l *scheduledRunLifecycle) runScan(run UpdatePolicyRun, policy UpdatePolicy
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 }
 
-func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job JobRecord) {
+func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
 	previous, previousErr := l.deps.PolicyRepository.GetRun(runID)
-	status := updatePolicyRunRunning
+	status := policies.RunRunning
 	switch job.Status {
-	case jobStatusQueued:
-		status = updatePolicyRunQueued
-	case jobStatusRunning:
-		status = updatePolicyRunRunning
-	case jobStatusWaitingApproval:
-		status = updatePolicyRunWaitingApproval
-	case jobStatusSucceeded:
-		status = updatePolicyRunSucceeded
-	case jobStatusFailed:
-		status = updatePolicyRunFailed
-	case jobStatusCancelled:
-		status = updatePolicyRunCancelled
-	case jobStatusInterrupted:
-		status = updatePolicyRunInterrupted
+	case jobs.StatusQueued:
+		status = policies.RunQueued
+	case jobs.StatusRunning:
+		status = policies.RunRunning
+	case jobs.StatusWaitingApproval:
+		status = policies.RunWaitingApproval
+	case jobs.StatusSucceeded:
+		status = policies.RunSucceeded
+	case jobs.StatusFailed:
+		status = policies.RunFailed
+	case jobs.StatusCancelled:
+		status = policies.RunCancelled
+	case jobs.StatusInterrupted:
+		status = policies.RunInterrupted
 	}
-	update := updatePolicyRunUpdate{
+	update := policies.RunUpdate{
 		Status:    &status,
-		Summary:   stringPtr(strings.TrimSpace(job.Summary)),
+		Summary:   stringPointer(strings.TrimSpace(job.Summary)),
 		JobID:     &job.ID,
 		StartedAt: &job.StartedAt,
 	}
-	var meta scheduledJobMeta
+	var meta updates.ScheduledJobMeta
 	hasMeta := false
 	if job.FinishedAt != "" {
 		update.FinishedAt = &job.FinishedAt
@@ -388,12 +413,12 @@ func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job Jo
 		if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err == nil {
 			hasMeta = true
 			if meta.Discovery != nil {
-				resultJSON := marshalJobJSON(meta.Discovery)
+				resultJSON := jobs.MarshalJSON(meta.Discovery)
 				update.ResultJSON = &resultJSON
 			}
 		}
 	}
-	if status == updatePolicyRunFailed || status == updatePolicyRunCancelled || status == updatePolicyRunInterrupted {
+	if status == policies.RunFailed || status == policies.RunCancelled || status == policies.RunInterrupted {
 		reason := status
 		update.Reason = &reason
 	}
@@ -406,13 +431,13 @@ func (l *scheduledRunLifecycle) updatePolicyRunFromJobRecord(runID int64, job Jo
 	}
 }
 
-func (l *scheduledRunLifecycle) recordScheduledScanTerminalAudit(job JobRecord, meta scheduledJobMeta) {
-	if job.Kind != jobKindScheduledScan || meta.Trigger != "scheduled" {
+func (l *Lifecycle) recordScheduledScanTerminalAudit(job jobs.Record, meta updates.ScheduledJobMeta) {
+	if job.Kind != jobs.KindScheduledScan || meta.Trigger != "scheduled" {
 		return
 	}
 	summary := strings.TrimSpace(job.Summary)
 	switch job.Status {
-	case jobStatusSucceeded:
+	case jobs.StatusSucceeded:
 		if summary == "" {
 			summary = "Scheduled scan completed"
 		}
@@ -425,7 +450,7 @@ func (l *scheduledRunLifecycle) recordScheduledScanTerminalAudit(job JobRecord, 
 			auditMeta["security_package_count"] = meta.Discovery.SecurityPackageCount
 		}
 		_ = l.deps.AuditService.Record("system", "", "schedule.run.completed", "server", job.ServerName, "success", summary, auditMeta)
-	case jobStatusFailed:
+	case jobs.StatusFailed:
 		if summary == "" {
 			summary = "Scheduled scan failed"
 		}
@@ -442,32 +467,30 @@ func (l *scheduledRunLifecycle) recordScheduledScanTerminalAudit(job JobRecord, 
 	}
 }
 
-func (l *scheduledRunLifecycle) watchUpdatePolicyRunForJob(runID int64, jobID string) {
-	startTrackedActionRunner(func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		for {
-			jm := l.deps.CurrentJobManager()
-			if jm == nil {
-				return
-			}
-			job, err := jm.GetJob(jobID)
-			if err != nil {
-				log.Printf("failed to read scheduled job %q for run %d: %v", jobID, runID, err)
-				return
-			}
-			l.updatePolicyRunFromJobRecord(runID, job)
-			switch job.Status {
-			case jobStatusSucceeded, jobStatusFailed, jobStatusCancelled, jobStatusInterrupted:
-				return
-			}
-			<-ticker.C
+func (l *Lifecycle) WatchJob(runID int64, jobID string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		jm := l.deps.CurrentJobManager()
+		if jm == nil {
+			return
 		}
-	})
+		job, err := jm.GetJob(jobID)
+		if err != nil {
+			log.Printf("failed to read scheduled job %q for run %d: %v", jobID, runID, err)
+			return
+		}
+		l.ReconcileJob(runID, job)
+		switch job.Status {
+		case jobs.StatusSucceeded, jobs.StatusFailed, jobs.StatusCancelled, jobs.StatusInterrupted:
+			return
+		}
+		<-ticker.C
+	}
 }
 
-func (l *scheduledRunLifecycle) loadScheduledJobBehavior(jobID string) scheduledJobBehavior {
-	behavior := scheduledJobBehavior{ApprovalTimeout: 30 * time.Minute}
+func (l *Lifecycle) LoadJobBehavior(jobID string) updates.ScheduledJobBehavior {
+	behavior := updates.ScheduledJobBehavior{ApprovalTimeout: 30 * time.Minute}
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return behavior
@@ -480,7 +503,7 @@ func (l *scheduledRunLifecycle) loadScheduledJobBehavior(jobID string) scheduled
 	if err != nil || strings.TrimSpace(job.MetaJSON) == "" {
 		return behavior
 	}
-	var meta scheduledJobMeta
+	var meta updates.ScheduledJobMeta
 	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {
 		return behavior
 	}
@@ -491,7 +514,7 @@ func (l *scheduledRunLifecycle) loadScheduledJobBehavior(jobID string) scheduled
 		behavior.ApprovalTimeout = time.Duration(meta.ApprovalTimeoutMinutes) * time.Minute
 	}
 	if strings.TrimSpace(meta.AutoApproveScope) != "" {
-		switch normalizeApprovalScope(meta.AutoApproveScope) {
+		switch updates.NormalizeApprovalScope(meta.AutoApproveScope) {
 		case "security":
 			behavior.AutoApproveScope = "security"
 		case "full_upgrade":
@@ -503,7 +526,7 @@ func (l *scheduledRunLifecycle) loadScheduledJobBehavior(jobID string) scheduled
 	return behavior
 }
 
-func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, discovery PackageDiscoveryOutcome) {
+func (l *Lifecycle) UpdateJobDiscovery(jobID string, discovery updates.PackageDiscoveryOutcome) {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return
@@ -516,7 +539,7 @@ func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, di
 	if err != nil || strings.TrimSpace(job.MetaJSON) == "" {
 		return
 	}
-	var meta scheduledJobMeta
+	var meta updates.ScheduledJobMeta
 	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {
 		return
 	}
@@ -525,8 +548,32 @@ func (l *scheduledRunLifecycle) updateScheduledJobDiscoveryMeta(jobID string, di
 	}
 	cloned := discovery.Clone()
 	meta.Discovery = &cloned
-	metaJSON := marshalJobJSON(meta)
-	if err := jm.Transition(jobID, JobTransitionIntent{MetaJSON: &metaJSON}); err != nil {
+	metaJSON := jobs.MarshalJSON(meta)
+	if err := jm.Transition(jobID, jobs.Intent{MetaJSON: &metaJSON}); err != nil {
 		log.Printf("failed to persist scheduled discovery meta for job %q: %v", jobID, err)
 	}
 }
+
+func (l *Lifecycle) createServerActionJob(jm *jobs.Manager, state *servers.State, kind, serverName, actor, clientIP string, policy updates.RetryPolicy, meta any) (jobs.Record, error) {
+	if jm == nil {
+		return jobs.Record{}, errors.New("job manager is not initialized")
+	}
+	initialLogs := ""
+	if state != nil {
+		if snapshot := state.CurrentStatusSnapshot(serverName); snapshot != nil {
+			initialLogs = snapshot.Logs
+		}
+	}
+	return jm.CreateJob(jobs.CreateParams{
+		Kind:            kind,
+		ServerName:      serverName,
+		Actor:           actor,
+		ClientIP:        clientIP,
+		Status:          jobs.StatusQueued,
+		LogsText:        initialLogs,
+		RetryPolicyJSON: jobs.MarshalJSON(policy),
+		MetaJSON:        jobs.MarshalJSON(meta),
+	})
+}
+
+func stringPointer(value string) *string { return &value }

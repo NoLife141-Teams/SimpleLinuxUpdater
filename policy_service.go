@@ -52,7 +52,9 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 		deps.SnapshotServers = snapshotServers
 	}
 	if deps.HandleScheduledRun == nil {
-		deps.HandleScheduledRun = handleScheduledRunRequest
+		deps.HandleScheduledRun = func(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
+			return defaultScheduledRunLifecycle().HandleScheduledRun(req)
+		}
 	}
 	if deps.CurrentLocation == nil {
 		deps.CurrentLocation = currentAppLocation

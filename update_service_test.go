@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	updatespkg "debian-updater/internal/updates"
 )
 
 func testHostMaintenanceFactory(session *HostMaintenanceSessionFuncs) HostMaintenanceSessionFactory {
@@ -193,7 +195,7 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 		ServerName: "srv-scan",
 		Actor:      "system",
 		Status:     jobStatusQueued,
-		MetaJSON:   marshalJobJSON(buildScheduledJobMeta(policy, scheduledForUTC)),
+		MetaJSON:   marshalJobJSON(updatespkg.BuildScheduledJobMeta(policy, scheduledForUTC)),
 	})
 	if err != nil {
 		t.Fatalf("create scheduled scan job: %v", err)

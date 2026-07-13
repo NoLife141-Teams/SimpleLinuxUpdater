@@ -2,14 +2,26 @@ const managePageInteraction = window.ManagePageInteraction.createStore();
 window.managePageInteraction = managePageInteraction;
 const manageAdapterState = managePageInteraction.adapterState;
 [
-    "editingServerName", "auditEvents", "auditPage", "auditPageSize", "auditTotal",
-    "hostKeyModalPromise", "hostKeyModalResolvers", "editSaveInProgress", "editKnownHostState", "editKnownHostCheckPromise", "editUpdatePolicies",
+    "auditEvents", "auditPage", "auditPageSize", "auditTotal", "editUpdatePolicies",
     "editPolicyOverrideStates", "auditFetchHadError"
 ].forEach((key) => Object.defineProperty(globalThis, key, {
     configurable: true,
     get: () => manageAdapterState[key],
     set: (value) => { manageAdapterState[key] = value; }
 }));
+let hostKeyModalPromise = null;
+let hostKeyModalResolvers = [];
+let editKnownHostCheckPromise = null;
+
+function activeEditorName() {
+    const editor = managePageInteraction.getView().editor;
+    return editor.open ? editor.originalName : "";
+}
+
+function commandExecution(command, payload = {}) {
+    return managePageInteraction.dispatch({ type: 'commandRequested', command, payload })
+        .find((effect) => effect.type === 'executeCommand');
+}
 
 	        function escapeHtml(value) {
 	            return String(value ?? "")
@@ -27,29 +39,13 @@ const manageAdapterState = managePageInteraction.adapterState;
                 return parsed;
             }
 
-
-            function resetEditKnownHostState() {
-                editKnownHostState = { host: '', port: 0, checked: false, alreadyTrusted: false, fingerprint: '' };
-                editKnownHostCheckPromise = null;
-            }
-
-            function setEditKnownHostState(host, port, checked, alreadyTrusted, fingerprint) {
-                editKnownHostState = {
-                    host: String(host || '').trim(),
-                    port: normalizePort(port, 22),
-                    checked: !!checked,
-                    alreadyTrusted: !!alreadyTrusted,
-                    fingerprint: String(fingerprint || '').trim()
-                };
-            }
-
             function isEditKnownHostTrusted(host, port) {
                 const normalizedHost = String(host || '').trim();
                 const normalizedPort = normalizePort(port, 22);
-                return !!editKnownHostState.checked &&
-                    !!editKnownHostState.alreadyTrusted &&
-                    editKnownHostState.host === normalizedHost &&
-                    editKnownHostState.port === normalizedPort;
+                const hostKey = managePageInteraction.getView().editor.hostKey;
+                return !!hostKey?.alreadyTrusted &&
+                    hostKey.host === normalizedHost &&
+                    hostKey.port === normalizedPort;
             }
 
         async function scanHostKey(host, port) {
@@ -549,53 +545,72 @@ const manageAdapterState = managePageInteraction.adapterState;
             const tagsRaw = document.getElementById('tags').value;
             const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const keyFileInput = document.getElementById('key_file');
-            const trustHostNow = document.getElementById('trust-host-key').checked;
             const trimmedName = name.trim();
-            const createRes = await fetch('/api/servers', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, host, port, user, pass, tags })
+            const execution = commandExecution('createServer', {
+                name,
+                host,
+                port,
+                user,
+                tags,
+                hasKeyFile: !!keyFileInput?.files?.length,
+                trustHostKey: document.getElementById('trust-host-key').checked
             });
-            if (!createRes.ok) {
-                window.notifyApp(await parseErrorResponse(createRes, 'Failed to add server.'));
+            if (!execution) {
+                window.notifyApp('Name, host, and user are required, or a server create is already in progress.');
                 return;
             }
-            const created = await createRes.json().catch(() => ({
-                name: trimmedName || name,
-                host: host.trim(),
-                port: normalizePort(port, 22)
-            }));
-            if (keyFileInput && keyFileInput.files && keyFileInput.files.length > 0) {
-                const form = new FormData();
-                form.append('key', keyFileInput.files[0]);
-                const serverName = created.name || trimmedName || name;
-                const res = await fetch(`/api/servers/${encodeURIComponent(serverName)}/key`, { method: 'POST', body: form });
-                if (!res.ok) {
-                    const uploadError = await parseErrorResponse(res, 'Failed to upload key.');
-                    const rollback = await fetch(`/api/servers/${encodeURIComponent(serverName)}`, { method: 'DELETE' }).catch(() => null);
-                    if (rollback && rollback.ok) {
-                        window.notifyApp(`Server was not saved because key upload failed: ${uploadError}`);
-                    } else {
-                        window.notifyApp(`Key upload failed and the server could not be removed automatically: ${uploadError}`);
-                        fetchManageServers();
+            try {
+                const accepted = execution.plan.payload;
+                const createRes = await fetch('/api/servers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass, tags: accepted.tags })
+                });
+                if (!createRes.ok) {
+                    throw new Error(await parseErrorResponse(createRes, 'Failed to add server.'));
+                }
+                const created = await createRes.json().catch(() => ({
+                    name: trimmedName || name,
+                    host: host.trim(),
+                    port: normalizePort(port, 22)
+                }));
+                if (accepted.uploadKey && keyFileInput?.files?.length) {
+                    const form = new FormData();
+                    form.append('key', keyFileInput.files[0]);
+                    const serverName = created.name || trimmedName || name;
+                    const res = await fetch(`/api/servers/${encodeURIComponent(serverName)}/key`, { method: 'POST', body: form });
+                    if (!res.ok) {
+                        const uploadError = await parseErrorResponse(res, 'Failed to upload key.');
+                        const rollback = await fetch(`/api/servers/${encodeURIComponent(serverName)}`, { method: 'DELETE' }).catch(() => null);
+                        managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: uploadError });
+                        if (rollback && rollback.ok) {
+                            window.notifyApp(`Server was not saved because key upload failed: ${uploadError}`);
+                        } else {
+                            window.notifyApp(`Key upload failed and the server could not be removed automatically: ${uploadError}`);
+                            fetchManageServers();
+                        }
+                        return;
                     }
-                    return;
                 }
-            }
-            if (trustHostNow) {
-                try {
-                    await trustHostKeyFlow(created.host || host.trim(), normalizePort(created.port, 22));
-                } catch (err) {
-                    window.notifyApp(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
+                if (accepted.trustHostKey) {
+                    try {
+                        await trustHostKeyFlow(created.host || host.trim(), normalizePort(created.port, 22));
+                    } catch (err) {
+                        window.notifyApp(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
+                    }
                 }
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server added.' });
+                if (keyFileInput) {
+                    keyFileInput.value = '';
+                    resetFileInputLabel(keyFileInput);
+                }
+                fetchManageServers();
+                e.target.reset();
+                document.getElementById('trust-host-key').checked = true;
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to add server.' });
+                window.notifyApp(err?.message || 'Failed to add server.');
             }
-            if (keyFileInput) {
-                keyFileInput.value = '';
-                resetFileInputLabel(keyFileInput);
-            }
-            fetchManageServers();
-            e.target.reset();
-            document.getElementById('trust-host-key').checked = true;
         });
 
         document.addEventListener('change', (e) => {
@@ -606,13 +621,20 @@ const manageAdapterState = managePageInteraction.adapterState;
 
         async function deleteServer(name) {
             if (await window.confirmTypedAction(`Delete server "${name}"?`, name)) {
+                const execution = commandExecution('deleteServer', { serverName: name });
+                if (!execution) {
+                    window.notifyApp('This server action is already in progress.');
+                    return;
+                }
                 try {
                     const response = await fetch(`/api/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
                     if (!response.ok) {
                         throw new Error(await parseErrorResponse(response, 'Failed to delete server.'));
                     }
+                    managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server deleted.' });
                     await fetchManageServers();
                 } catch (error) {
+                    managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: error?.message || 'Failed to delete server.' });
                     window.notifyApp(error?.message || 'Failed to delete server.');
                 }
             }
@@ -621,9 +643,6 @@ const manageAdapterState = managePageInteraction.adapterState;
             async function editServer(name) {
                 const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === name) || {};
                 managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
-                editSaveInProgress = false;
-                editingServerName = name;
-                resetEditKnownHostState();
             document.getElementById('edit-name').value = current.name || name;
             document.getElementById('edit-host').value = current.host || '';
             document.getElementById('edit-port').value = current.port || '';
@@ -661,9 +680,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 clearEditValidationState();
                 setEditSaveButtonState(false);
                 setEditKnownHostButtonsState(false);
-                editingServerName = null;
                 managePageInteraction.dispatch({ type: 'editorClosed' });
-                resetEditKnownHostState();
                 editUpdatePolicies = [];
                 editPolicyOverrideStates = new Map();
                 const overrides = document.getElementById('edit-policy-overrides');
@@ -738,14 +755,17 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
 
             async function checkEditKnownHostStatus() {
-                if (!editingServerName) return;
+                if (!activeEditorName()) return;
                 const host = document.getElementById('edit-host').value.trim();
                 const port = normalizePort(document.getElementById('edit-port').value, 22);
                 if (!host) {
-                    resetEditKnownHostState();
                     setEditHostKeyStatus('Known host status: host is required.');
                     return;
                 }
+                const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'hostKey' })
+                    .find((effect) => effect.type === 'fetchSnapshot');
+                if (!request) return editKnownHostCheckPromise;
+                const sessionID = managePageInteraction.getView().editor.sessionID;
                 const currentCheck = (async () => {
                     setEditKnownHostButtonsState(true, 'Checking...', 'Clear Known Host');
                     setEditHostKeyStatus('Checking known_hosts entry...');
@@ -756,8 +776,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                         if (currentHost !== host || currentPort !== port) {
                             return;
                         }
-                        setEditKnownHostState(host, port, true, !!scanned?.already_trusted, scanned?.fingerprint_sha256 || '');
-                        managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: managePageInteraction.getView().editor.sessionID, host, port, hostKey: { fingerprint: scanned?.fingerprint_sha256 || '', alreadyTrusted: !!scanned?.already_trusted } });
+                        managePageInteraction.dispatch({ type: 'hostKeyReceived', requestID: request.requestID, sessionID, host, port, hostKey: { fingerprint: scanned?.fingerprint_sha256 || '', alreadyTrusted: !!scanned?.already_trusted } });
                         if (scanned?.already_trusted) {
                             setEditHostKeyStatus(`Known host saved for ${host}:${port} (${scanned.fingerprint_sha256}).`);
                         } else {
@@ -769,7 +788,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                         if (currentHost !== host || currentPort !== port) {
                             return;
                         }
-                        setEditKnownHostState(host, port, false, false, '');
+                        managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'hostKey', requestID: request.requestID, error: err?.message });
                         setEditHostKeyStatus(`Known host check failed: ${err.message || 'unknown error'}`);
                     } finally {
                         if (editKnownHostCheckPromise === currentCheck) {
@@ -789,7 +808,7 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
 
             async function clearEditKnownHost() {
-                if (!editingServerName) return;
+                if (!activeEditorName()) return;
                 const host = document.getElementById('edit-host').value.trim();
                 const port = normalizePort(document.getElementById('edit-port').value, 22);
                 if (!host) {
@@ -799,16 +818,23 @@ const manageAdapterState = managePageInteraction.adapterState;
                 if (!(await window.confirmTypedAction(`Remove known_hosts entry for ${host}:${port}?`, `${host}:${port}`))) {
                     return;
                 }
+                const execution = commandExecution('clearHostKey', { serverName: activeEditorName(), host, port });
+                if (!execution) {
+                    window.notifyApp('Known host action is already in progress.');
+                    return;
+                }
                 setEditKnownHostButtonsState(true, 'Check Known Host', 'Clearing...');
                 try {
                     const result = await clearKnownHost(host, port);
-                    setEditKnownHostState(host, port, true, false, '');
+                    managePageInteraction.dispatch({ type: 'hostKeyCleared', sessionID: managePageInteraction.getView().editor.sessionID, host, port });
+                    managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Known host entry cleared.' });
                     if (Number(result?.removed_entries || 0) > 0) {
                         setEditHostKeyStatus(`Known host entry cleared for ${host}:${port}.`);
                     } else {
                         setEditHostKeyStatus(`Known host entry not found for ${host}:${port}.`);
                     }
                 } catch (err) {
+                    managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err.message || 'Failed to clear known host entry.' });
                     window.notifyApp(err.message || 'Failed to clear known host entry.');
                 } finally {
                     setEditKnownHostButtonsState(false);
@@ -816,7 +842,8 @@ const manageAdapterState = managePageInteraction.adapterState;
             }
 
         async function saveServerEdit() {
-            if (!editingServerName || editSaveInProgress) return;
+            const originalName = activeEditorName();
+            if (!originalName) return;
             const newName = document.getElementById('edit-name').value.trim();
             const newHost = document.getElementById('edit-host').value.trim();
             const portValue = document.getElementById('edit-port').value;
@@ -825,49 +852,38 @@ const manageAdapterState = managePageInteraction.adapterState;
             const tagsRaw = document.getElementById('edit-tags').value;
             const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const newPass = document.getElementById('edit-pass').value;
-            const trustHostNow = document.getElementById('edit-trust-host-key').checked;
-            const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === editingServerName) || {};
+            const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === originalName) || {};
             const currentPort = normalizePort(current.port, 22);
             const targetPort = normalizePort(newPort || currentPort, 22);
-                clearEditValidationState();
-                const missing = [];
-                if (!newName) missing.push({ id: 'edit-name', label: 'Name' });
-                if (!newHost) missing.push({ id: 'edit-host', label: 'Host' });
-                if (!newUser) missing.push({ id: 'edit-user', label: 'User' });
-                if (missing.length > 0) {
-                    for (const field of missing) {
-                        setEditFieldInvalidState(field.id, true);
-                    }
-                    const labels = missing.map((field) => field.label).join(', ');
-                    const verb = missing.length === 1 ? 'is' : 'are';
-                    setEditValidationError(`${labels} ${verb} required.`);
-                    const firstInvalid = document.getElementById(missing[0].id);
-                    if (firstInvalid) {
-                        firstInvalid.focus();
-                    }
-                    return;
+            clearEditValidationState();
+            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'saveEditor' });
+            const execution = command.find((effect) => effect.type === 'executeCommand');
+            if (!execution) {
+                const rejected = command.find((effect) => effect.type === 'commandRejected') || {};
+                const fieldIDs = { name: 'edit-name', host: 'edit-host', user: 'edit-user' };
+                for (const field of rejected.invalidFields || []) {
+                    setEditFieldInvalidState(fieldIDs[field], true);
                 }
-                editSaveInProgress = true;
-                setEditSaveButtonState(true, 'Saving...');
-                try {
-                    const res = await fetch(`/api/servers/${encodeURIComponent(editingServerName)}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: newName, host: newHost, port: newPort, user: newUser, pass: newPass, tags })
+                setEditValidationError(rejected.reason || 'This server action is already in progress.');
+                const firstInvalid = document.getElementById(fieldIDs[(rejected.invalidFields || [])[0]]);
+                if (firstInvalid) firstInvalid.focus();
+                return;
+            }
+            setEditSaveButtonState(true, 'Saving...');
+            try {
+                const accepted = execution.plan.payload;
+                const res = await fetch(`/api/servers/${encodeURIComponent(originalName)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: newPass, tags: accepted.tags })
                 });
-                    if (!res.ok) {
-                        window.notifyApp(await parseErrorResponse(res, 'Failed to save server.'));
-                        setEditHostKeyStatus('');
-                        return;
-                    }
-                    editingServerName = newName;
-                    if (trustHostNow) {
-                        if (editKnownHostCheckPromise) {
-                            await editKnownHostCheckPromise;
-                        }
-                        if (isEditKnownHostTrusted(newHost, targetPort)) {
-                            setEditHostKeyStatus('Host key already saved in known_hosts.');
-                        } else {
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
+                managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
+                if (accepted.trustHostKey) {
+                    if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
+                    if (isEditKnownHostTrusted(newHost, targetPort)) {
+                        setEditHostKeyStatus('Host key already saved in known_hosts.');
+                    } else {
                         try {
                             const trustResult = await trustHostKeyFlow(newHost, targetPort, {
                                 onScanning: () => {
@@ -884,7 +900,13 @@ const manageAdapterState = managePageInteraction.adapterState;
                                 }
                             });
                             const scannedFp = trustResult?.scanned?.fingerprint_sha256 || trustResult?.trusted?.fingerprint_sha256 || '';
-                            setEditKnownHostState(newHost, targetPort, true, true, scannedFp);
+                            managePageInteraction.dispatch({
+                                type: 'hostKeyReceived',
+                                sessionID: managePageInteraction.getView().editor.sessionID,
+                                host: newHost,
+                                port: targetPort,
+                                hostKey: { fingerprint: scannedFp, alreadyTrusted: true }
+                            });
                             if (!trustResult?.alreadyTrusted) {
                                 setEditHostKeyStatus('Host key trusted.');
                             }
@@ -892,25 +914,27 @@ const manageAdapterState = managePageInteraction.adapterState;
                             window.notifyApp(`Server saved, but host key was not trusted: ${err.message || 'unknown error'}`);
                             setEditHostKeyStatus('');
                         }
-                        }
                     }
-                    let overrideSaveError = null;
-                    try {
-                        await saveEditPolicyOverrides(newName);
-                    } catch (err) {
-                        overrideSaveError = err;
-                    }
-                    closeEditModal();
-                    fetchManageServers();
-                    if (overrideSaveError) {
-                        window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
-                    }
-                } catch (err) {
-                    window.notifyApp(err?.message || 'Failed to save server.');
-                } finally {
-                    editSaveInProgress = false;
-                    setEditSaveButtonState(false);
                 }
+                let overrideSaveError = null;
+                try {
+                    await saveEditPolicyOverrides(newName);
+                } catch (err) {
+                    overrideSaveError = err;
+                }
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server saved.' });
+                closeEditModal();
+                fetchManageServers();
+                if (overrideSaveError) {
+                    window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
+                }
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to save server.' });
+                window.notifyApp(err?.message || 'Failed to save server.');
+                setEditHostKeyStatus('');
+            } finally {
+                setEditSaveButtonState(false);
+            }
         }
 
         async function uploadServerKey(name) {
@@ -919,54 +943,66 @@ const manageAdapterState = managePageInteraction.adapterState;
                 window.notifyApp('Select a private key file to upload.');
                 return;
             }
+            const execution = commandExecution('uploadServerKey', { serverName: name });
+            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
-            const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'POST', body: form });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                window.notifyApp(data.error || 'Failed to upload key.');
-                return;
+            try {
+                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'POST', body: form });
+                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to upload key.');
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server key uploaded.' });
+                input.value = '';
+                resetFileInputLabel(input);
+                fetchManageServers();
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to upload key.' });
+                window.notifyApp(err?.message || 'Failed to upload key.');
             }
-            input.value = '';
-            resetFileInputLabel(input);
-            fetchManageServers();
         }
 
         async function clearServerKey(name) {
-            const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'DELETE' });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                window.notifyApp(data.error || 'Failed to clear key.');
-                return;
+            const execution = commandExecution('clearServerKey', { serverName: name });
+            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
+            try {
+                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'DELETE' });
+                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear key.');
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server key cleared.' });
+                fetchManageServers();
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to clear key.' });
+                window.notifyApp(err?.message || 'Failed to clear key.');
             }
-            fetchManageServers();
         }
 
         async function clearServerPassword(name) {
-            const res = await fetch(`/api/servers/${encodeURIComponent(name)}/password`, { method: 'DELETE' });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                window.notifyApp(data.error || 'Failed to clear password.');
-                return;
+            const execution = commandExecution('clearServerPassword', { serverName: name });
+            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
+            try {
+                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/password`, { method: 'DELETE' });
+                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear password.');
+                managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Server password cleared.' });
+                fetchManageServers();
+            } catch (err) {
+                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: err?.message || 'Failed to clear password.' });
+                window.notifyApp(err?.message || 'Failed to clear password.');
             }
-            fetchManageServers();
         }
 
         document.getElementById('edit-cancel').addEventListener('click', closeEditModal);
         document.getElementById('edit-save').addEventListener('click', saveServerEdit);
         document.getElementById('edit-upload-key').addEventListener('click', () => {
-            if (editingServerName) {
-                uploadServerKey(editingServerName);
+            if (activeEditorName()) {
+                uploadServerKey(activeEditorName());
             }
         });
         document.getElementById('edit-clear-key').addEventListener('click', () => {
-            if (editingServerName) {
-                clearServerKey(editingServerName);
+            if (activeEditorName()) {
+                clearServerKey(activeEditorName());
             }
         });
             document.getElementById('edit-clear-password').addEventListener('click', () => {
-                if (editingServerName) {
-                    clearServerPassword(editingServerName);
+                if (activeEditorName()) {
+                    clearServerPassword(activeEditorName());
                 }
             });
             document.getElementById('edit-name').addEventListener('input', () => {
@@ -978,25 +1014,23 @@ const manageAdapterState = managePageInteraction.adapterState;
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { host: document.getElementById('edit-host').value } });
                 setEditFieldInvalidState('edit-host', false);
                 maybeClearEditValidationError();
-                if (editingServerName) {
+                if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
                     setEditKnownHostButtonsState(false);
-                    resetEditKnownHostState();
                     setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
                 }
             });
             document.getElementById('edit-port').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
-                if (editingServerName) {
+                if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
                     setEditKnownHostButtonsState(false);
-                    resetEditKnownHostState();
                     setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
                 }
             });
             document.getElementById('edit-tags').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { tags: document.getElementById('edit-tags').value } });
-                if (editingServerName) {
+                if (activeEditorName()) {
                     renderEditPolicyOverrides();
                 }
             });
@@ -1005,13 +1039,16 @@ const manageAdapterState = managePageInteraction.adapterState;
                 setEditFieldInvalidState('edit-user', false);
                 maybeClearEditValidationError();
             });
+            document.getElementById('edit-trust-host-key').addEventListener('change', () => {
+                managePageInteraction.dispatch({ type: 'editorOptionChanged', patch: { trustHostKey: document.getElementById('edit-trust-host-key').checked } });
+            });
             document.getElementById('edit-check-known-host').addEventListener('click', () => {
-                if (editingServerName) {
+                if (activeEditorName()) {
                     checkEditKnownHostStatus();
                 }
             });
             document.getElementById('edit-clear-known-host').addEventListener('click', () => {
-                if (editingServerName) {
+                if (activeEditorName()) {
                     clearEditKnownHost();
                 }
             });
@@ -1045,7 +1082,7 @@ const manageAdapterState = managePageInteraction.adapterState;
                 }
                 const editModal = document.getElementById('edit-modal');
                 if (editModal && editModal.classList.contains('active')) {
-                    if (editSaveInProgress) {
+                    if (managePageInteraction.getView().commands.inFlight.some((key) => key.startsWith('saveEditor:'))) {
                         return;
                     }
                     closeEditModal();

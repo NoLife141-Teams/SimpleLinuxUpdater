@@ -1,4 +1,9 @@
 // Manage page scheduled-policy override helpers. Loaded before manage.js.
+            function currentEditingServerName() {
+                const editor = window.managePageInteraction?.getView().editor;
+                return editor?.open ? String(editor.originalName || '') : '';
+            }
+
             function parseTagsInput(raw) {
                 return String(raw || '')
                     .split(',')
@@ -13,7 +18,8 @@
                 const targetServers = Array.isArray(policy?.target_servers) ? policy.target_servers : [];
                 const loweredTags = tags.map((tag) => String(tag || '').trim().toLowerCase()).filter(Boolean);
                 if (excludeTags.some((tag) => loweredTags.includes(String(tag || '').trim().toLowerCase()))) return false;
-                const editingServerKey = String(editingServerName || '').trim().toLowerCase();
+                const editingServerName = currentEditingServerName();
+                const editingServerKey = editingServerName.trim().toLowerCase();
                 if (editingServerKey && targetServers.some((name) => String(name || '').trim().toLowerCase() === editingServerKey)) return true;
                 if (targetTag && loweredTags.includes(targetTag)) return true;
                 if (includeTags.some((tag) => loweredTags.includes(String(tag || '').trim().toLowerCase()))) return true;
@@ -29,7 +35,7 @@
                 if (!policiesRes.ok) {
                     throw new Error(await parseErrorResponse(policiesRes, 'Failed to load scheduled policies.'));
                 }
-                if (!editingServerName || editingServerName !== requestedServerName) {
+                if (currentEditingServerName() !== requestedServerName) {
                     return;
                 }
                 const policiesData = await policiesRes.json().catch(() => ({}));
@@ -40,11 +46,11 @@
                     if (!res.ok) {
                         throw new Error(await parseErrorResponse(res, 'Failed to load policy overrides.'));
                     }
-                    if (!editingServerName || editingServerName !== requestedServerName) {
+                    if (currentEditingServerName() !== requestedServerName) {
                         return;
                     }
                     const data = await res.json().catch(() => ({}));
-                    if (!editingServerName || editingServerName !== requestedServerName) {
+                    if (currentEditingServerName() !== requestedServerName) {
                         return;
                     }
                     const match = Array.isArray(data.items)
@@ -52,7 +58,7 @@
                         : null;
                     nextOverrideStates.set(String(policy.id), !!match?.disabled);
                 }));
-                if (!editingServerName || editingServerName !== requestedServerName) {
+                if (currentEditingServerName() !== requestedServerName) {
                     return;
                 }
                 editUpdatePolicies = nextPolicies;

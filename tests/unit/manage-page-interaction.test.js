@@ -157,3 +157,98 @@ test("Manage adapter owns no accepted inventory cache or paging state", () => {
     assert.doesNotMatch(source, /(?:^|[^\w.])sortDir\s*=/m);
     assert.doesNotMatch(source, /(?:^|[^\w.])page\s*=/m);
 });
+
+test("server command eligibility is owned at the Manage Page Interaction seam", () => {
+    const store = createStore();
+    const invalidCreate = store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: { name: "", host: "", user: "" }
+    });
+    assert.equal(invalidCreate[0].type, "commandRejected");
+    assert.deepEqual(invalidCreate[0].invalidFields, ["name", "host", "user"]);
+
+    const validCreate = store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: { name: " alpha ", host: " host ", port: "2222", user: " root ", tags: ["prod", "prod"], hasKeyFile: true, trustHostKey: true }
+    }).find(effect => effect.type === "executeCommand");
+    assert.deepEqual(validCreate.plan.payload, {
+        name: "alpha",
+        host: "host",
+        port: 2222,
+        user: "root",
+        tags: ["prod"],
+        trustHostKey: true,
+        uploadKey: true
+    });
+    assert.equal(store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: { name: "beta", host: "host", user: "root" }
+    })[0].type, "commandRejected");
+    store.dispatch({ type: "commandCompleted", plan: validCreate.plan });
+
+    const deletion = store.dispatch({
+        type: "commandRequested",
+        command: "deleteServer",
+        payload: { serverName: "alpha" }
+    }).find(effect => effect.type === "executeCommand");
+    assert.equal(deletion.plan.key, "deleteServer:alpha");
+    assert.equal(store.dispatch({
+        type: "commandRequested",
+        command: "uploadServerKey",
+        payload: { serverName: "alpha" }
+    })[0].type, "commandRejected");
+});
+
+test("host-key responses require the active request, editor session, host, and port", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "old.example", port: 22, user: "root" }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    const sessionID = store.getView().editor.sessionID;
+    const first = store.dispatch({ type: "snapshotRequested", stream: "hostKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({
+        type: "hostKeyReceived",
+        requestID: first.requestID,
+        sessionID,
+        host: "old.example",
+        port: 22,
+        hostKey: { fingerprint: "SHA256:old", alreadyTrusted: true }
+    });
+    assert.equal(store.getView().editor.hostKey.fingerprint, "SHA256:old");
+
+    store.dispatch({ type: "editorChanged", patch: { host: "new.example" } });
+    const second = store.dispatch({ type: "snapshotRequested", stream: "hostKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({
+        type: "hostKeyReceived",
+        requestID: first.requestID,
+        sessionID,
+        host: "old.example",
+        port: 22,
+        hostKey: { fingerprint: "SHA256:stale", alreadyTrusted: true }
+    });
+    assert.equal(store.getView().editor.hostKey, null);
+    store.dispatch({
+        type: "hostKeyReceived",
+        requestID: second.requestID,
+        sessionID,
+        host: "new.example",
+        port: 22,
+        hostKey: { fingerprint: "SHA256:new", alreadyTrusted: false }
+    });
+    assert.equal(store.getView().editor.hostKey.fingerprint, "SHA256:new");
+});
+
+test("Manage adapter owns no accepted editor, host-key, or save state", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/manage.js"), "utf8");
+    for (const legacy of ["editingServerName", "editSaveInProgress", "editKnownHostState"]) {
+        assert.doesNotMatch(source, new RegExp(`\\b${legacy}\\b`));
+    }
+    assert.doesNotMatch(source, /manageAdapterState\.(?:hostKeyModalPromise|hostKeyModalResolvers|editKnownHostCheckPromise)/);
+});

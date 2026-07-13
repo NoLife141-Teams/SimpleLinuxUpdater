@@ -86,13 +86,17 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.LoadPostUpdateCheckConfig = loadPostUpdateCheckConfigFromEnv
 	}
 	if d.LoadScheduledJobBehavior == nil {
-		d.LoadScheduledJobBehavior = loadScheduledJobBehavior
+		d.LoadScheduledJobBehavior = func(jobID string) scheduledJobBehavior {
+			return defaultScheduledRunLifecycle().LoadJobBehavior(jobID)
+		}
 	}
 	if d.SaveServerFacts == nil {
 		d.SaveServerFacts = (healthpkg.SQLiteObservation{DB: getDB}).AcceptCollectedFacts
 	}
 	if d.UpdateScheduledDiscoveryMeta == nil {
-		d.UpdateScheduledDiscoveryMeta = updateScheduledJobDiscoveryMeta
+		d.UpdateScheduledDiscoveryMeta = func(jobID string, discovery PackageDiscoveryOutcome) {
+			defaultScheduledRunLifecycle().UpdateJobDiscovery(jobID, discovery)
+		}
 	}
 	if d.UpdatePolicyRun == nil {
 		d.UpdatePolicyRun = updateUpdatePolicyRun

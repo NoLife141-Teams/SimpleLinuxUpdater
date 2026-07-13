@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -10,11 +11,13 @@ import (
 	"time"
 
 	healthpkg "debian-updater/internal/health"
+	jobspkg "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
+	scheduledrunspkg "debian-updater/internal/scheduledruns"
 	updatespkg "debian-updater/internal/updates"
 )
 
-func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server, status string) (AppDeps, UpdatePolicy, UpdatePolicyRun, *JobManager) {
+func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server, status string) (scheduledrunspkg.Deps, UpdatePolicy, UpdatePolicyRun, *JobManager) {
 	t.Helper()
 	dbFile := filepath.Join(t.TempDir(), dbName)
 	prepareUpdatePolicyTestState(t, dbFile)
@@ -63,10 +66,10 @@ func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server
 		StartScheduledRunReconciliation: func(int64, string) {},
 	}
 	deps = deps.withDefaults()
-	return deps, policy, run, jm
+	return scheduledRunLifecycleDepsFromApp(deps), policy, run, jm
 }
 
-func getScheduledLifecycleRun(t *testing.T, deps AppDeps, runID int64) UpdatePolicyRun {
+func getScheduledLifecycleRun(t *testing.T, deps scheduledrunspkg.Deps, runID int64) UpdatePolicyRun {
 	t.Helper()
 	run, err := deps.PolicyRepository.GetRun(runID)
 	if err != nil {
@@ -79,7 +82,7 @@ func TestScheduledRunLifecycleHandleScheduledRunDuplicateNoops(t *testing.T) {
 	server := Server{Name: "srv-duplicate", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
 	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-duplicate.db", server, "idle")
 
-	result := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+	result := scheduledrunspkg.New(deps).HandleScheduledRun(PolicyScheduledRunRequest{
 		Policy:          policy,
 		Server:          server,
 		ScheduledForUTC: run.ScheduledForUTC,
@@ -97,7 +100,7 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 	deps, policy, _, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-skipped-candidate.db", server, "idle")
 	scheduledForUTC := "2026-07-05T14:01:00Z"
 
-	result := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+	result := scheduledrunspkg.New(deps).HandleScheduledRun(PolicyScheduledRunRequest{
 		Policy:          policy,
 		Server:          server,
 		ScheduledForUTC: scheduledForUTC,
@@ -106,7 +109,7 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 	if !result.Handled || !result.Inserted || result.Status != updatePolicyRunSkipped {
 		t.Fatalf("HandleScheduledRun skipped = %+v, want inserted skipped run", result)
 	}
-	run, err := deps.PolicyRepository.FindRun(policy.ID, server.Name, scheduledForUTC)
+	run, err := defaultPolicyRepository().FindRun(policy.ID, server.Name, scheduledForUTC)
 	if err != nil {
 		t.Fatalf("FindRun(skipped) unexpected error: %v", err)
 	}
@@ -121,7 +124,7 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 		t.Fatalf("skipped audits = %+v, want one ignored audit", audits.Items)
 	}
 
-	duplicate := newScheduledRunLifecycle(deps).HandleScheduledRun(PolicyScheduledRunRequest{
+	duplicate := scheduledrunspkg.New(deps).HandleScheduledRun(PolicyScheduledRunRequest{
 		Policy:          policy,
 		Server:          server,
 		ScheduledForUTC: scheduledForUTC,
@@ -148,7 +151,7 @@ func TestScheduledRunLifecycleExclusiveMaintenanceSkip(t *testing.T) {
 	}
 	defer exclusive.Close()
 
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 	current := getScheduledLifecycleRun(t, deps, run.ID)
 	if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
@@ -168,7 +171,7 @@ func TestScheduledRunLifecycleMissingAndBusyServer(t *testing.T) {
 		deps.ServerState.SetStatusMap(map[string]*ServerStatus{})
 		deps.ServerState.Unlock()
 
-		newScheduledRunLifecycle(deps).Execute(run, policy, server)
+		scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 		current := getScheduledLifecycleRun(t, deps, run.ID)
 		if current.Status != updatePolicyRunFailed || current.Reason != updatePolicyRunReasonMissing {
@@ -182,7 +185,7 @@ func TestScheduledRunLifecycleMissingAndBusyServer(t *testing.T) {
 	t.Run("busy server", func(t *testing.T) {
 		deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-busy.db", server, "updating")
 
-		newScheduledRunLifecycle(deps).Execute(run, policy, server)
+		scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 		current := getScheduledLifecycleRun(t, deps, run.ID)
 		if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonBusy {
@@ -214,7 +217,7 @@ func TestScheduledRunLifecycleUpdateJobCreationSuccessLoadsRetryOnce(t *testing.
 		reconciledJobID = jobID
 	}
 
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 	current := getScheduledLifecycleRun(t, deps, run.ID)
 	if current.Status != updatePolicyRunRunning {
@@ -267,7 +270,7 @@ func TestScheduledRunLifecycleScanJobCreationSuccessLoadsRetryOnce(t *testing.T)
 		runnerJobID = jobID
 	}
 
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 	current := getScheduledLifecycleRun(t, deps, run.ID)
 	if current.Status != updatePolicyRunRunning {
@@ -296,7 +299,7 @@ func TestScheduledRunLifecycleJobCreationFailureRollsBackStatus(t *testing.T) {
 	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-create-fails.db", server, "idle")
 	deps.CurrentJobManager = func() *JobManager { return nil }
 
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 	current := getScheduledLifecycleRun(t, deps, run.ID)
 	if current.Status != updatePolicyRunFailed || current.Reason != updatePolicyRunReasonPersistence {
@@ -304,6 +307,82 @@ func TestScheduledRunLifecycleJobCreationFailureRollsBackStatus(t *testing.T) {
 	}
 	if current.Summary != "Failed to create scheduled update job" {
 		t.Fatalf("summary = %q, want update creation failure", current.Summary)
+	}
+	status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "idle" || status.Logs != "previous logs" {
+		t.Fatalf("runtime status = %+v, want previous idle snapshot", status)
+	}
+}
+
+func TestScheduledRunLifecycleScanJobSetupFailuresRollBackStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		manager     func() *JobManager
+		wantSummary string
+	}{
+		{
+			name:        "missing job manager",
+			manager:     func() *JobManager { return nil },
+			wantSummary: "Job manager unavailable",
+		},
+		{
+			name: "job creation fails",
+			manager: func() *JobManager {
+				return jobspkg.NewManager(nil, jobspkg.ManagerOptions{})
+			},
+			wantSummary: "Failed to create scheduled scan job",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := Server{Name: "srv-scan-setup-fails", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-setup-fails.db", server, "idle")
+			policy.ExecutionMode = updatePolicyExecutionScanOnly
+			run.ExecutionMode = updatePolicyExecutionScanOnly
+			deps.CurrentJobManager = tt.manager
+
+			scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+
+			current := getScheduledLifecycleRun(t, deps, run.ID)
+			if current.Status != updatePolicyRunFailed || current.Reason != updatePolicyRunReasonPersistence || current.Summary != tt.wantSummary {
+				t.Fatalf("run = status %q reason %q summary %q, want failed/persistence/%q", current.Status, current.Reason, current.Summary, tt.wantSummary)
+			}
+			status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+			if status == nil || status.Status != "idle" || status.Logs != "previous logs" {
+				t.Fatalf("runtime status = %+v, want previous idle snapshot", status)
+			}
+		})
+	}
+}
+
+func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
+	server := Server{Name: "srv-scan-worker-fails", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
+	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-worker-fails.db", server, "idle")
+	policy.ExecutionMode = updatePolicyExecutionScanOnly
+	run.ExecutionMode = updatePolicyExecutionScanOnly
+	deps.UpdateService = NewUpdateService(UpdateServiceDeps{
+		ServerState:       deps.ServerState,
+		CurrentJobManager: func() *JobManager { return jm },
+		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			return nil, errors.New("dial failed")
+		}),
+		AuditWithActor:  func(string, string, string, string, string, string, string, map[string]any) {},
+		JobTimestampNow: deps.JobTimestampNow,
+	})
+	deps.StartJobRunner = func(_ string, run func()) { run() }
+	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
+		job, err := jm.GetJob(jobID)
+		if err != nil {
+			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
+		}
+		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
+	}
+
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+
+	current := getScheduledLifecycleRun(t, deps, run.ID)
+	if current.Status != updatePolicyRunFailed || current.Summary != "Scheduled scan SSH connection failed" {
+		t.Fatalf("run = status %q summary %q, want failed scan SSH outcome", current.Status, current.Summary)
 	}
 	status := deps.ServerState.CurrentStatusSnapshot(server.Name)
 	if status == nil || status.Status != "idle" || status.Logs != "previous logs" {
@@ -356,10 +435,10 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
 		}
-		newScheduledRunLifecycle(deps).updatePolicyRunFromJobRecord(runID, job)
+		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
 	}
 
-	newScheduledRunLifecycle(deps).Execute(run, policy, server)
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
 	current := getScheduledLifecycleRun(t, deps, run.ID)
 	if current.Status != updatePolicyRunSucceeded {
@@ -377,7 +456,7 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testing.T) {
 	server := Server{Name: "srv-reconcile", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
 	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-reconcile.db", server, "idle")
-	lifecycle := newScheduledRunLifecycle(deps)
+	lifecycle := scheduledrunspkg.New(deps)
 
 	tests := []struct {
 		name       string
@@ -395,7 +474,7 @@ func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			meta := lifecycle.buildScheduledJobMeta(policy, run.ScheduledForUTC)
+			meta := updatespkg.BuildScheduledJobMeta(policy, run.ScheduledForUTC)
 			if tt.jobStatus == jobStatusSucceeded {
 				meta.Discovery = &scheduledJobDiscovery{
 					PendingPackageCount:  1,
@@ -404,7 +483,7 @@ func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testin
 					PendingUpdates:       []PendingUpdate{{Package: "openssl", Security: true}},
 				}
 			}
-			lifecycle.updatePolicyRunFromJobRecord(run.ID, JobRecord{
+			lifecycle.ReconcileJob(run.ID, JobRecord{
 				ID:         "job-" + strings.ReplaceAll(tt.name, " ", "-"),
 				Status:     tt.jobStatus,
 				Summary:    "job summary",
@@ -443,8 +522,8 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			server := Server{Name: "srv-scan-audit-" + tt.name, Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
 			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-audit-"+tt.name+".db", server, "idle")
-			lifecycle := newScheduledRunLifecycle(deps)
-			meta := lifecycle.buildScheduledJobMeta(policy, run.ScheduledForUTC)
+			lifecycle := scheduledrunspkg.New(deps)
+			meta := updatespkg.BuildScheduledJobMeta(policy, run.ScheduledForUTC)
 			if tt.jobStatus == jobStatusSucceeded {
 				meta.Discovery = &scheduledJobDiscovery{
 					PendingPackageCount:  2,
@@ -465,7 +544,7 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 				MetaJSON:   marshalJobJSON(meta),
 			}
 
-			lifecycle.updatePolicyRunFromJobRecord(run.ID, job)
+			lifecycle.ReconcileJob(run.ID, job)
 
 			audits, err := deps.AuditService.List(AuditListFilter{Action: tt.auditAction, TargetName: server.Name})
 			if err != nil {
@@ -480,7 +559,7 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 			if tt.errorText != "" && !strings.Contains(audits.Items[0].MetaJSON, tt.errorText) {
 				t.Fatalf("failure audit meta = %s, want error text %q", audits.Items[0].MetaJSON, tt.errorText)
 			}
-			snapshots, err := (healthpkg.SQLiteObservation{DB: deps.DB}).History("0000", "9999", server.Name)
+			snapshots, err := (healthpkg.SQLiteObservation{DB: getDB}).History("0000", "9999", server.Name)
 			if err != nil {
 				t.Fatalf("ListHealthSnapshots() unexpected error: %v", err)
 			}
@@ -491,7 +570,7 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 				t.Fatalf("health snapshot counts = %+v, want discovery counts", snapshots[0])
 			}
 
-			lifecycle.updatePolicyRunFromJobRecord(run.ID, job)
+			lifecycle.ReconcileJob(run.ID, job)
 			audits, err = deps.AuditService.List(AuditListFilter{Action: tt.auditAction, TargetName: server.Name})
 			if err != nil {
 				t.Fatalf("List(%s) after duplicate unexpected error: %v", tt.auditAction, err)
@@ -500,5 +579,72 @@ func TestScheduledRunLifecycleReconcileScheduledScanTerminalAudits(t *testing.T)
 				t.Fatalf("audit total after duplicate reconcile = %d, want 1", audits.Total)
 			}
 		})
+	}
+}
+
+func TestScheduledRunLifecycleLoadsScheduledJobBehavior(t *testing.T) {
+	server := Server{Name: "srv-job-behavior", Host: "example.org", Port: 22, User: "root"}
+	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-job-behavior.db", server, "idle")
+	lifecycle := scheduledrunspkg.New(deps)
+	policy.ExecutionMode = updatePolicyExecutionAutoApply
+	policy.PackageScope = updatePolicyPackageScopeSecurity
+	policy.ApprovalTimeoutMinutes = 45
+	meta := updatespkg.BuildScheduledJobMeta(policy, run.ScheduledForUTC)
+	job, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "system",
+		Status:     jobStatusQueued,
+		MetaJSON:   marshalJobJSON(meta),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() unexpected error: %v", err)
+	}
+	behavior := lifecycle.LoadJobBehavior(job.ID)
+	if behavior.ApprovalTimeout != 45*time.Minute || behavior.AutoApproveScope != "security" {
+		t.Fatalf("LoadJobBehavior() = %+v, want 45m/security", behavior)
+	}
+
+	malformed, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "system",
+		Status:     jobStatusQueued,
+		MetaJSON:   "{not-json",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(malformed) unexpected error: %v", err)
+	}
+	behavior = lifecycle.LoadJobBehavior(malformed.ID)
+	if behavior.ApprovalTimeout != 30*time.Minute || behavior.AutoApproveScope != "" {
+		t.Fatalf("LoadJobBehavior(malformed) = %+v, want safe defaults", behavior)
+	}
+}
+
+func TestScheduledRunLifecycleWatchJobStopsForTerminalOrUnavailableJobs(t *testing.T) {
+	server := Server{Name: "srv-watch-job", Host: "example.org", Port: 22, User: "root"}
+	deps, _, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-watch-job.db", server, "idle")
+	job, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindScheduledScan,
+		ServerName: server.Name,
+		Actor:      "system",
+		Status:     jobStatusSucceeded,
+		Summary:    "already complete",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() unexpected error: %v", err)
+	}
+	lifecycle := scheduledrunspkg.New(deps)
+	started := time.Now()
+	lifecycle.WatchJob(run.ID, job.ID)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("WatchJob(terminal) took %s, want immediate return", elapsed)
+	}
+
+	deps.CurrentJobManager = func() *JobManager { return nil }
+	started = time.Now()
+	scheduledrunspkg.New(deps).WatchJob(run.ID, "missing")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("WatchJob(unavailable) took %s, want immediate return", elapsed)
 	}
 }

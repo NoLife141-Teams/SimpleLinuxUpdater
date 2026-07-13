@@ -237,7 +237,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.StartScheduledRunReconciliation == nil {
 		deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
-			newScheduledRunLifecycle(deps).watchUpdatePolicyRunForJob(runID, jobID)
+			startTrackedActionRunner(func() {
+				scheduledRunLifecycleFromComposedApp(deps).WatchJob(runID, jobID)
+			})
 		}
 	}
 	recordAudit := func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) {
@@ -263,7 +265,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 			MarkInterruptedRuns: deps.PolicyRepository.MarkInterruptedRuns,
 			HandleScheduledRun: func(req policypkg.ScheduledRunRequest) policypkg.ScheduledRunResult {
-				return newScheduledRunLifecycle(deps).HandleScheduledRun(req)
+				return scheduledRunLifecycleFromComposedApp(deps).HandleScheduledRun(req)
 			},
 		})
 	}
@@ -292,11 +294,11 @@ func (c *runtimeComposition) Compose() AppDeps {
 			AuditWithActor:          recordAudit,
 			SaveServerFacts:         factsRepo.AcceptCollectedFacts,
 			UpdateScheduledDiscoveryMeta: func(jobID string, discovery PackageDiscoveryOutcome) {
-				newScheduledRunLifecycle(deps).updateScheduledJobDiscoveryMeta(jobID, discovery)
+				scheduledRunLifecycleFromComposedApp(deps).UpdateJobDiscovery(jobID, discovery)
 			},
 			UpdatePolicyRun: deps.PolicyRepository.UpdateRun,
 			LoadScheduledJobBehavior: func(jobID string) scheduledJobBehavior {
-				return newScheduledRunLifecycle(deps).loadScheduledJobBehavior(jobID)
+				return scheduledRunLifecycleFromComposedApp(deps).LoadJobBehavior(jobID)
 			},
 		})
 	}

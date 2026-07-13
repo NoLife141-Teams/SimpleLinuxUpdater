@@ -2,8 +2,7 @@ const managePageInteraction = window.ManagePageInteraction.createStore();
 window.managePageInteraction = managePageInteraction;
 const manageAdapterState = managePageInteraction.adapterState;
 [
-    "auditEvents", "auditPage", "auditPageSize", "auditTotal", "editUpdatePolicies",
-    "editPolicyOverrideStates", "auditFetchHadError"
+    "auditEvents", "auditPage", "auditPageSize", "auditTotal", "auditFetchHadError"
 ].forEach((key) => Object.defineProperty(globalThis, key, {
     configurable: true,
     get: () => manageAdapterState[key],
@@ -22,6 +21,34 @@ function commandExecution(command, payload = {}) {
     return managePageInteraction.dispatch({ type: 'commandRequested', command, payload })
         .find((effect) => effect.type === 'executeCommand');
 }
+
+async function executeManageEffects(effects) {
+    const refreshStreams = new Set();
+    for (const effect of effects || []) {
+        if (effect.type === 'announce') window.notifyApp(effect.message || 'Manage action completed.');
+        if (effect.type === 'refresh') (effect.streams || []).forEach(stream => refreshStreams.add(stream));
+    }
+    const refreshes = [];
+    if (refreshStreams.has('inventory')) refreshes.push(fetchManageServers());
+    if (refreshStreams.has('globalKey')) refreshes.push(fetchGlobalKeyStatus());
+    if (refreshStreams.has('audit')) refreshes.push(fetchAuditEvents({ silent: true }));
+    await Promise.all(refreshes);
+}
+
+async function settleCommand(type, plan, message) {
+    const effects = managePageInteraction.dispatch({ type, plan, message });
+    await executeManageEffects(effects);
+}
+
+const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
+    store: managePageInteraction,
+    escapeHTML: escapeHtml,
+    requestJSON: async (url, options, fallbackMessage) => {
+        const response = await fetch(url, options);
+        if (!response.ok) throw new Error(await parseErrorResponse(response, fallbackMessage));
+        return response.json().catch(() => ({}));
+    }
+});
 
 	        function escapeHtml(value) {
 	            return String(value ?? "")
@@ -665,8 +692,8 @@ function commandExecution(command, payload = {}) {
 	                checkEditKnownHostStatus();
                 document.getElementById('edit-policy-overrides').innerHTML = '<div class="subtle">Loading matching policies...</div>';
                 try {
-                    await fetchEditPolicyContext(name);
-                    renderEditPolicyOverrides();
+                    await managePolicyOverrides.fetchContext(name);
+                    managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
                 } catch (err) {
                     document.getElementById('edit-policy-overrides').innerHTML = `<div class="subtle">${escapeHtml(err.message || 'Failed to load scheduled policies.')}</div>`;
                 }
@@ -681,8 +708,6 @@ function commandExecution(command, payload = {}) {
                 setEditSaveButtonState(false);
                 setEditKnownHostButtonsState(false);
                 managePageInteraction.dispatch({ type: 'editorClosed' });
-                editUpdatePolicies = [];
-                editPolicyOverrideStates = new Map();
                 const overrides = document.getElementById('edit-policy-overrides');
                 if (overrides) {
                     overrides.innerHTML = '';
@@ -918,7 +943,11 @@ function commandExecution(command, payload = {}) {
                 }
                 let overrideSaveError = null;
                 try {
-                    await saveEditPolicyOverrides(newName);
+                    const outcome = await managePolicyOverrides.save(newName, accepted.policyOverrides);
+                    if (outcome.status === 'partial' || outcome.status === 'failure') {
+                        const failures = outcome.failures.map(failure => `${failure.policyID}: ${failure.error}`).join('; ');
+                        throw new Error(`Failed to save scheduled update overrides for policy IDs ${failures}`);
+                    }
                 } catch (err) {
                     overrideSaveError = err;
                 }
@@ -1031,8 +1060,12 @@ function commandExecution(command, payload = {}) {
             document.getElementById('edit-tags').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { tags: document.getElementById('edit-tags').value } });
                 if (activeEditorName()) {
-                    renderEditPolicyOverrides();
+                    managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
                 }
+            });
+            document.getElementById('edit-policy-overrides').addEventListener('change', (event) => {
+                const checkbox = event.target.closest('input[data-policy-id]');
+                if (checkbox) managePolicyOverrides.change(checkbox.dataset.policyId, checkbox.checked);
             });
             document.getElementById('edit-user').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { user: document.getElementById('edit-user').value } });
@@ -1104,15 +1137,12 @@ function commandExecution(command, payload = {}) {
             const res = await fetch('/api/keys/global', { method: 'POST', body: form });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to upload global key.' });
-                window.notifyApp(data.error || 'Failed to upload global key.');
+                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to upload global key.');
                 return;
             }
-            managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key saved.' });
-            window.notifyApp('Global key saved.');
+            await settleCommand('commandCompleted', execution.plan, 'Global key saved.');
             input.value = '';
             resetFileInputLabel(input);
-            fetchGlobalKeyStatus();
         }
 
         async function clearGlobalKey() {
@@ -1125,13 +1155,10 @@ function commandExecution(command, payload = {}) {
             const res = await fetch('/api/keys/global', { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                managePageInteraction.dispatch({ type: 'commandFailed', plan: execution.plan, message: data.error || 'Failed to clear global key.' });
-                window.notifyApp(data.error || 'Failed to clear global key.');
+                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear global key.');
                 return;
             }
-            managePageInteraction.dispatch({ type: 'commandCompleted', plan: execution.plan, message: 'Global key cleared.' });
-            window.notifyApp('Global key cleared.');
-            fetchGlobalKeyStatus();
+            await settleCommand('commandCompleted', execution.plan, 'Global key cleared.');
         }
 
         async function fetchGlobalKeyStatus() {

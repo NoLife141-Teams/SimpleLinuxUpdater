@@ -252,3 +252,93 @@ test("Manage adapter owns no accepted editor, host-key, or save state", () => {
     }
     assert.doesNotMatch(source, /manageAdapterState\.(?:hostKeyModalPromise|hostKeyModalResolvers|editKnownHostCheckPromise)/);
 });
+
+test("policy visibility and override choices follow the accepted editor draft", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "host", user: "root", tags: ["dev"] }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    const sessionID = store.getView().editor.sessionID;
+    const request = store.dispatch({ type: "snapshotRequested", stream: "policyContext" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({
+        type: "policyContextReceived",
+        requestID: request.requestID,
+        sessionID,
+        context: {
+            policies: [
+                { id: 1, name: "Production", include_tags: ["prod"] },
+                { id: 2, name: "Named", target_servers: ["alpha"] }
+            ],
+            overrides: { 1: false, 2: true }
+        }
+    });
+    assert.deepEqual(store.getView().editor.policyContext.visiblePolicies.map(policy => policy.name), ["Named"]);
+
+    store.dispatch({ type: "editorChanged", patch: { tags: "prod" } });
+    assert.deepEqual(store.getView().editor.policyContext.visiblePolicies.map(policy => policy.name), ["Production", "Named"]);
+    store.dispatch({ type: "policyOverrideChanged", policyID: "1", disabled: true });
+
+    const save = store.dispatch({ type: "commandRequested", command: "saveEditor" })
+        .find(effect => effect.type === "executeCommand");
+    assert.deepEqual(save.plan.payload.policyOverrides, [
+        { policyID: "1", disabled: true },
+        { policyID: "2", disabled: true }
+    ]);
+});
+
+test("policy override batch outcomes preserve successes and expose partial failure", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "host", user: "root", tags: ["prod"] }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    const sessionID = store.getView().editor.sessionID;
+    store.dispatch({
+        type: "policyContextReceived",
+        sessionID,
+        context: {
+            policies: [{ id: 1, include_tags: ["prod"] }, { id: 2, include_tags: ["prod"] }],
+            overrides: { 1: false, 2: false }
+        }
+    });
+    store.dispatch({
+        type: "policyOverrideBatchCompleted",
+        sessionID,
+        results: [
+            { policyID: "1", disabled: true, ok: true },
+            { policyID: "2", disabled: true, ok: false, error: "offline" }
+        ]
+    });
+
+    const context = store.getView().editor.policyContext;
+    assert.equal(context.overrides["1"], true);
+    assert.equal(context.overrides["2"], false);
+    assert.equal(context.outcome.status, "partial");
+    assert.deepEqual(context.outcome.failures, [{ policyID: "2", error: "offline" }]);
+});
+
+test("successful commands emit one transport-neutral refresh plan", () => {
+    const store = createStore();
+    const execution = store.dispatch({ type: "commandRequested", command: "globalKeyUpload" })
+        .find(effect => effect.type === "executeCommand");
+    const effects = store.dispatch({ type: "commandCompleted", plan: execution.plan, message: "saved" });
+    assert.deepEqual(effects.find(effect => effect.type === "refresh"), {
+        type: "refresh",
+        streams: ["inventory", "globalKey", "audit"]
+    });
+    assert.equal(store.getView().commands.inFlight.length, 0);
+});
+
+test("Manage adapters own no accepted policy or Global SSH Credential decision state", () => {
+    const manageSource = fs.readFileSync(path.join(__dirname, "../../static/js/manage.js"), "utf8");
+    const policyAdapterSource = fs.readFileSync(path.join(__dirname, "../../static/js/manage-policy-overrides.js"), "utf8");
+    for (const legacy of ["editUpdatePolicies", "editPolicyOverrideStates", "manageGlobalKeyAvailable"]) {
+        assert.doesNotMatch(manageSource, new RegExp(`\\b${legacy}\\b`));
+        assert.doesNotMatch(policyAdapterSource, new RegExp(`\\b${legacy}\\b`));
+    }
+    assert.doesNotMatch(policyAdapterSource, /serverMatchesPolicyTags|includeTags\.some|excludeTags\.some/);
+});

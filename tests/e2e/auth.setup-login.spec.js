@@ -1071,8 +1071,9 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.sessionClearCount || 0).toBe(1);
   });
 
-  test('manage typed confirmations gate destructive host and audit actions', async ({ page }) => {
+  test('manage typed confirmations gate destructive host and audit actions', async ({ page, context }) => {
     const state = {};
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:8080' });
     await ensureAuthenticatedSession(page);
     await stubManageApi(page, state);
 
@@ -1084,6 +1085,23 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#audit-detail-modal')).toContainText('"scope": "security"');
     await expect(page.locator('#audit-detail-modal')).toContainText('req-55');
     await expect(page.locator('#audit-detail-report')).toHaveAttribute('href', '/api/reports/audit/55');
+    await page.locator('#audit-detail-copy').click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe([
+      'Audit #55',
+      'Actor: admin',
+      'Status: success',
+      'Action: server.delete',
+      'Target: server: demo-host',
+      'Time: 2026-05-17 08:00:00 America/Toronto',
+      'Client IP: 127.0.0.1',
+      'Request ID: req-55',
+      'Message: Deleted server',
+      'Metadata:',
+      '{',
+      '  "scope": "security",',
+      '  "count": 2',
+      '}',
+    ].join('\n'));
     await page.locator('#audit-detail-close').click();
 
     await page.locator('#audit-action-preset').selectOption('server.delete');

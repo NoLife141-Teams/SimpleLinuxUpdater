@@ -17,6 +17,9 @@ This runbook now covers the newer release-smoke surfaces that must be exercised 
 - Backup integrity verification through `/api/backup/verify` before any restore attempt.
 - Safe bulk-action review modal on the Status dashboard before bulk update, approve, cancel, autoremove, or facts refresh actions.
 - Host health trend snapshots in Observability through `/api/observability/health-trends`, including 7-day/30-day windows and optional host filtering.
+- Global SSH credential status, upload/clear controls, and effective-auth fallback for servers without per-server credentials.
+- Backup maintenance coordination, restored-runtime handoff, and session invalidation in an isolated restore-validation runtime.
+- Deterministic frontend interaction tests for Status, Manage, Admin, scheduled policies, and Observability.
 
 ## Safety Rules
 
@@ -26,6 +29,9 @@ This runbook now covers the newer release-smoke surfaces that must be exercised 
 - Do not run backup restore, delete, prune, clear-key, clear-password, sudoers, autoremove, update approval, or host-key clear steps against production data.
 - Computer Use must ask for action-time confirmation before destructive UI actions, even during an approved release smoke.
 - Computer Use must ask for action-time confirmation before typing sensitive credentials into the app UI, including SSH passwords, sudo passwords, private keys, backup passphrases, and metrics tokens.
+- App-provided typed confirmations do not replace Computer Use action-time confirmation.
+- Computer Use must ask for action-time confirmation before generating or rotating a metrics token and before sending a test notification to an external webhook.
+- Before uploading a private key or backup archive, obtain confirmation unless the initial request explicitly approved that specific file and destination.
 - Computer Use must not submit the final successful password-change action. Cover password-change behavior with existing automated tests, or hand the browser to the user for that final submit.
 - If the host cannot be reached, the host is not disposable, or update approval is not confirmed safe, stop the affected live step and record the exact blocked reason.
 
@@ -141,6 +147,11 @@ Record each item as pass, fail, or skipped with the exact reason.
 ### Manage Servers
 
 - [ ] Manage renders add-server form, global key panel, server table, and activity history.
+- [ ] Global key status clearly reports whether a key is saved.
+- [ ] Uploading an invalid, non-secret disposable key file is rejected without replacing the current global key.
+- [ ] Uploading a valid disposable global key updates the saved status without revealing key material.
+- [ ] A server with no per-server password or key is shown as using the global key in effective-auth grouping/status.
+- [ ] Global key clear requires typing `CLEAR GLOBAL KEY`, only runs against disposable data, and updates effective-auth state.
 - [ ] Missing required fields are rejected before a server is saved.
 - [ ] Duplicate server name or duplicate host is rejected.
 - [ ] Add a disposable UI-only server such as `cu-demo-local`.
@@ -187,7 +198,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Invalid webhook URL is rejected without navigation.
 - [ ] Enable notification hooks with a disposable HTTPS webhook URL and selected event types.
 - [ ] Save persists enabled state, URL, selected event types, and last delivery status.
-- [ ] Test notification sends only to the disposable webhook target or stubbed test endpoint.
+- [ ] After action-time confirmation, test notification sends only to the disposable webhook target or stubbed test endpoint.
 - [ ] Last delivery status renders event type, status code/result, and timestamp without secrets.
 
 ### Backup, Metrics, Observability
@@ -229,6 +240,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Confirm fingerprint against the release owner or target console.
 - [ ] Trust host key and verify it is written to `.tmp-cu-release/live/known_hosts`.
 - [ ] Clear host key is skipped unless intentionally tested against this disposable target.
+- [ ] If the target is intended to exercise global-key fallback, upload only its release-owned disposable key, leave per-server password/key empty, and verify the target shows global-key effective auth.
 
 ### Real Server Actions
 
@@ -276,6 +288,23 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Optional restore is performed only in the separate restore-validation runtime.
 - [ ] Metrics token generate/authorized scrape/disable flow passes without recording the token.
 
+## Optional Restore-Validation Checklist
+
+Run this only in the separate restore-validation runtime. Record skipped with the exact reason when restore validation is outside the release scope.
+
+- [ ] Confirm `.tmp-cu-release/restore/servers.db` and `.tmp-cu-release/restore/known_hosts` are disposable and distinct from the live runtime.
+- [ ] Select the backup exported by the live disposable-host pass only after the required file-upload confirmation.
+- [ ] Verify the archive with its temporary passphrase before restore; verification succeeds without changing the restore runtime.
+- [ ] Wrong-passphrase verification fails clearly and leaves the restore runtime unchanged.
+- [ ] Before restore, record a non-secret baseline that distinguishes the restore runtime from the backup contents.
+- [ ] Immediately before submission, obtain destructive-action confirmation, then satisfy the app's typed `RESTORE` confirmation.
+- [ ] While restore is active, a second browser tab or `/api/maintenance` shows backup-restore maintenance state when the operation lasts long enough to observe it.
+- [ ] Concurrent protected requests are paused with a clear maintenance response instead of observing partially restored state.
+- [ ] Successful restore redirects to `/login` when sessions were invalidated.
+- [ ] Login with the restored admin credential succeeds, and the expected servers, settings, policies, audit/job history, and optional `known_hosts` state are present.
+- [ ] Maintenance mode clears after success or failure; normal pages and API requests become available again.
+- [ ] Restore outcome and audit/job metadata identify success or an actionable failure without exposing secrets.
+
 ## Automated Final Gate
 
 Run these from the release commit and record pass/fail output. If a tool is not installed, install/use the repo-standard pinned version or record the exact blocker.
@@ -291,10 +320,12 @@ Run these from the release commit and record pass/fail output. If a tool is not 
 - [ ] `go test -covermode=atomic -coverprofile=coverage.out ./...`
 - [ ] `go tool cover -func=coverage.out | tail -n 1`
 - [ ] `go build -o webserver .`
+- [ ] `npm ci`
+- [ ] `npm run test:unit`
 - [ ] `npm audit --audit-level=moderate`
 - [ ] `npm run test:e2e`
 - [ ] Remove generated `coverage.out` before committing release-prep changes, unless the release owner explicitly asks to keep it.
-- [ ] Release-commit CI is green for `test (unit)`, `test (race)`, `test (cover)`, `ui-e2e`, `quality`, and `npm-audit`.
+- [ ] Release-commit CI is green for `test (unit)`, `test (race)`, `test (cover)`, `frontend-unit`, `ui-e2e`, `quality`, and `npm-audit`.
 
 ## Smoke Result Template
 
@@ -328,14 +359,17 @@ Copy this result into the release PR or release notes. Do not include secrets.
 - Status dashboard:
 - Pending updates drawer:
 - Manage Servers:
+- Global SSH credential:
 - Server actions:
 - Admin:
 - Backup/restore:
+- Restore validation/maintenance coordination:
 - Metrics:
 - Observability/audit/reports/health trends:
 - Notifications:
 - Policy preview/calendar:
 - Bulk action review:
+- Frontend unit tests:
 - Automated final gate:
 - CI gate:
 

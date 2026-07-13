@@ -471,6 +471,29 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             managePageInteraction.dispatch({ type: 'auditDetailSelected', id: '' });
         }
 
+        async function copyAuditDetail() {
+            const fieldText = (id) => document.getElementById(id).textContent.trim();
+            const text = [
+                fieldText('audit-detail-title'),
+                `Actor: ${fieldText('audit-detail-actor')}`,
+                `Status: ${fieldText('audit-detail-status')}`,
+                `Action: ${fieldText('audit-detail-action')}`,
+                `Target: ${fieldText('audit-detail-target')}`,
+                `Time: ${fieldText('audit-detail-time')}`,
+                `Client IP: ${fieldText('audit-detail-client-ip')}`,
+                `Request ID: ${fieldText('audit-detail-request-id')}`,
+                `Message: ${fieldText('audit-detail-message')}`,
+                'Metadata:',
+                fieldText('audit-detail-meta'),
+            ].join('\n');
+            try {
+                await navigator.clipboard.writeText(text);
+                window.notifyApp('Audit details copied.');
+            } catch (_) {
+                window.notifyApp('Failed to copy audit details. Copy them manually from the dialog.');
+            }
+        }
+
         function renderAuditTable() {
             const tbody = document.querySelector('#audit-table tbody');
             if (!tbody) return;
@@ -1082,6 +1105,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             });
             document.getElementById('hostkey-modal-cancel').addEventListener('click', () => closeHostKeyModal(false));
         document.getElementById('hostkey-modal-trust').addEventListener('click', () => closeHostKeyModal(true));
+        document.getElementById('audit-detail-copy').addEventListener('click', copyAuditDetail);
         document.getElementById('audit-detail-close').addEventListener('click', closeAuditDetailDrawer);
         document.getElementById('audit-detail-modal').addEventListener('click', (e) => {
             if (e.target && e.target.id === 'audit-detail-modal') {

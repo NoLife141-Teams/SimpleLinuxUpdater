@@ -46,7 +46,7 @@ func TestDashboardProjectionCollectionCollectsTypedUpdateHistory(t *testing.T) {
 		t.Fatalf("collectUpdateHistory() error = %v", err)
 	}
 
-	srvA := got["srv-a"]
+	srvA := got["srv-a"].projection
 	if srvA.lastSuccess == nil || srvA.lastSuccess.Message != "newest" || srvA.lastSuccess.DurationMS != 300 {
 		t.Fatalf("srv-a last success = %+v, want newest success", srvA.lastSuccess)
 	}
@@ -151,23 +151,23 @@ func TestDashboardProjectionCollectionCollectsTypedServerAndRuntimeFacts(t *test
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
-	if got.window != "24h" || got.from != now.Add(-24*time.Hour).Format(time.RFC3339) || got.to != now.Format(time.RFC3339) || !got.now.Equal(now) {
-		t.Fatalf("collection window/time = %q/%q/%q/%v, want one fixed 24h observation", got.window, got.from, got.to, got.now)
-	}
-	if got.timezoneName != "UTC" || got.loc != time.UTC {
-		t.Fatalf("collection timezone = %q/%v, want UTC", got.timezoneName, got.loc)
+	if got.window != "24h" || got.from != now.Add(-24*time.Hour).Format(time.RFC3339) || got.to != now.Format(time.RFC3339) || got.generatedAt != now.Format(time.RFC3339) {
+		t.Fatalf("collection window/time = %q/%q/%q/%q, want one fixed 24h observation", got.window, got.from, got.to, got.generatedAt)
 	}
 	if len(got.servers) != 1 {
 		t.Fatalf("server inputs = %d, want 1", len(got.servers))
 	}
 	server := got.servers[0]
-	if server.server.Name != "srv-a" || server.status == nil || server.status.Status != "updating" || server.fact.ServerName != "srv-a" {
+	if server.server.Name != "srv-a" || server.status == nil || server.status.Status != "updating" || server.health.Source != "facts" {
 		t.Fatalf("server facts = %+v, want typed server, runtime, and health facts", server)
 	}
 	if server.nextRun.PolicyName != "nightly" || server.nextRun.ScheduledForDisplay != "display:"+scheduledFor || !server.noRun.Active {
 		t.Fatalf("schedule facts = %+v/%+v, want typed policy schedule and no-run facts", server.nextRun, server.noRun)
 	}
-	if server.timelineSource.currentPhase != "apt_update" || server.timelineSource.state != "active" || server.timelineSource.summary != "Refreshing package metadata" {
-		t.Fatalf("timeline source = %+v, want typed active apt-update facts", server.timelineSource)
+	if server.timeline.CurrentPhase != "apt_update" || server.timeline.State != "active" || server.timeline.Summary != "Refreshing package metadata" {
+		t.Fatalf("timeline = %+v, want typed active apt-update facts", server.timeline)
+	}
+	if server.triageTime.factsState != "fresh" || server.triageTime.factsCollectedAtDisplay == "" {
+		t.Fatalf("triage time = %+v, want collected fresh display facts", server.triageTime)
 	}
 }

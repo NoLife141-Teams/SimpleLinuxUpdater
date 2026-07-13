@@ -20,6 +20,11 @@ type dashboardHealthOverlayFacts struct {
 	results     []updates.PrecheckResult
 }
 
+type dashboardCollectedUpdateHistory struct {
+	projection    dashboardUpdateHistoryProjection
+	healthOverlay dashboardHealthOverlayFacts
+}
+
 func newDashboardProjectionCollector(deps ServiceDeps) dashboardProjectionCollector {
 	return dashboardProjectionCollector{deps: deps.withDefaults()}
 }
@@ -62,20 +67,17 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	}
 
 	input := dashboardProjectionInput{
-		window:       window,
-		from:         fromFormatted,
-		to:           toFormatted,
-		generatedAt:  toFormatted,
-		now:          now,
-		loc:          loc,
-		timezoneName: timezoneName,
-		servers:      make([]dashboardServerProjectionInput, 0, len(serversSnapshot)),
+		window:      window,
+		from:        fromFormatted,
+		to:          toFormatted,
+		generatedAt: toFormatted,
+		servers:     make([]dashboardServerProjectionInput, 0, len(serversSnapshot)),
 	}
 	for _, server := range serversSnapshot {
 		status := statusByName[server.Name]
 		agg := updateByServer[server.Name]
 		if agg == nil {
-			agg = &dashboardUpdateHistoryProjection{}
+			agg = &dashboardCollectedUpdateHistory{}
 		}
 		schedule := scheduleProjection.Servers[server.Name]
 		var latestUpdateJob *jobs.Record
@@ -83,18 +85,64 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 			jobCopy := job
 			latestUpdateJob = &jobCopy
 		}
+		health := c.collectHealth(facts[server.Name], agg.healthOverlay)
+		timelineSource := dashboardTimelineSourceFor(status, latestUpdateJob)
+		timeline := buildDashboardTimeline(timelineSource, c.deps, loc, timezoneName)
 		input.servers = append(input.servers, dashboardServerProjectionInput{
 			server:         server,
 			status:         status,
-			fact:           facts[server.Name],
+			health:         health,
 			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
 			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
-			timelineSource: dashboardTimelineSourceFor(status, latestUpdateJob),
-			updateHistory:  *agg,
+			timeline:       timeline,
+			triageTime:     c.collectTriageTime(health, agg.projection.lastSuccess, timeline, now, loc, timezoneName),
+			updateHistory:  agg.projection,
 			commandHistory: commandHistory[server.Name],
 		})
 	}
 	return input, nil
+}
+
+func (c dashboardProjectionCollector) collectHealth(fact updates.ServerFactsRecord, overlay dashboardHealthOverlayFacts) DashboardHealthInfo {
+	health := DashboardHealthInfo{
+		DiskStatus:    "unknown",
+		AptStatus:     "unknown",
+		OSPrettyName:  fact.OSPrettyName,
+		UptimeSeconds: fact.UptimeSeconds,
+		CollectedAt:   fact.CollectedAt,
+		Source:        "facts",
+	}
+	if fact.ServerName != "" {
+		health.RebootRequired = fact.RebootRequired
+		health.DiskStatus = fact.DiskStatus
+		health.DiskFreeKB = fact.DiskFreeKB
+		health.DiskTotalKB = fact.DiskTotalKB
+		health.DiskDetails = fact.DiskDetails
+		health.AptStatus = fact.AptStatus
+		health.AptDetails = fact.AptDetails
+	} else {
+		health.Source = "unknown"
+	}
+	if overlay.accepted {
+		UpdateHealthFromResults(&health, overlay.results, "audit", overlay.collectedAt, c.deps)
+	}
+	return health
+}
+
+func (c dashboardProjectionCollector) collectTriageTime(health DashboardHealthInfo, lastUpdate *DashboardUpdateHistory, timeline DashboardTimelineInfo, now time.Time, loc *time.Location, timezoneName string) dashboardTriageTimeFacts {
+	lastCheckAt := strings.TrimSpace(health.CollectedAt)
+	if lastCheckAt == "" && lastUpdate != nil {
+		lastCheckAt = strings.TrimSpace(lastUpdate.FinishedAt)
+	}
+	if lastCheckAt == "" {
+		lastCheckAt = strings.TrimSpace(timeline.UpdatedAt)
+	}
+	return dashboardTriageTimeFacts{
+		factsState:              factsFreshnessState(health, now, c.deps),
+		factsCollectedAtDisplay: formatDashboardTimestamp(health.CollectedAt, c.deps, loc, timezoneName),
+		lastCheckAt:             lastCheckAt,
+		lastCheckDisplay:        formatDashboardTimestamp(lastCheckAt, c.deps, loc, timezoneName),
+	}
 }
 
 func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs.Record, error) {
@@ -156,8 +204,8 @@ func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs
 	return result, nil
 }
 
-func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardUpdateHistoryProjection, error) {
-	updateByServer := map[string]*dashboardUpdateHistoryProjection{}
+func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardCollectedUpdateHistory, error) {
+	updateByServer := map[string]*dashboardCollectedUpdateHistory{}
 	rows, err := c.deps.DB().Query(
 		`SELECT created_at, target_name, status, message, meta_json
 		   FROM audit_events
@@ -179,7 +227,7 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 		}
 		agg := updateByServer[targetName]
 		if agg == nil {
-			agg = &dashboardUpdateHistoryProjection{}
+			agg = &dashboardCollectedUpdateHistory{}
 			updateByServer[targetName] = agg
 		}
 		meta := map[string]any{}
@@ -191,8 +239,8 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 		}
 		duration, hasDuration := MetaDurationMS(meta)
 		if hasDuration {
-			agg.durationSum += duration
-			agg.samples++
+			agg.projection.durationSum += duration
+			agg.projection.samples++
 		}
 		display, _ := c.deps.FormatTimestamp(createdAt, loc, timezoneName)
 		item := &DashboardUpdateHistory{
@@ -204,12 +252,12 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 		}
 		if item.Status == "failure" {
 			item.FailureCause = FailureCauseFromMeta(meta, metaValid)
-			if agg.lastFailure == nil {
-				agg.lastFailure = item
+			if agg.projection.lastFailure == nil {
+				agg.projection.lastFailure = item
 			}
 		}
-		if item.Status == "success" && agg.lastSuccess == nil {
-			agg.lastSuccess = item
+		if item.Status == "success" && agg.projection.lastSuccess == nil {
+			agg.projection.lastSuccess = item
 		}
 		if !agg.healthOverlay.accepted && metaValid {
 			results := PrecheckResultsFromMeta(meta, "precheck_results")

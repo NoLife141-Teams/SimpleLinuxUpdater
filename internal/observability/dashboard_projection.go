@@ -2,41 +2,28 @@ package observability
 
 import (
 	"sort"
-	"time"
 
 	"debian-updater/internal/servers"
-	"debian-updater/internal/updates"
 )
 
-type dashboardProjection struct {
-	ctx dashboardProjectionContext
-}
-
-type dashboardProjectionContext struct {
-	now          time.Time
-	deps         ServiceDeps
-	loc          *time.Location
-	timezoneName string
-}
+type dashboardProjection struct{}
 
 type dashboardProjectionInput struct {
-	window       string
-	from         string
-	to           string
-	generatedAt  string
-	now          time.Time
-	loc          *time.Location
-	timezoneName string
-	servers      []dashboardServerProjectionInput
+	window      string
+	from        string
+	to          string
+	generatedAt string
+	servers     []dashboardServerProjectionInput
 }
 
 type dashboardServerProjectionInput struct {
 	server         servers.Server
 	status         *servers.ServerStatus
-	fact           updates.ServerFactsRecord
+	health         DashboardHealthInfo
 	nextRun        DashboardScheduleInfo
 	noRun          DashboardNoRunInfo
-	timelineSource dashboardTimelineSourceFacts
+	timeline       DashboardTimelineInfo
+	triageTime     dashboardTriageTimeFacts
 	updateHistory  dashboardUpdateHistoryProjection
 	commandHistory []DashboardCommandHistoryItem
 }
@@ -49,17 +36,22 @@ type dashboardTimelineSourceFacts struct {
 	updatedAt    string
 }
 
-type dashboardUpdateHistoryProjection struct {
-	lastSuccess   *DashboardUpdateHistory
-	lastFailure   *DashboardUpdateHistory
-	healthOverlay dashboardHealthOverlayFacts
-	durationSum   float64
-	samples       int
+type dashboardTriageTimeFacts struct {
+	factsState              string
+	factsCollectedAtDisplay string
+	lastCheckAt             string
+	lastCheckDisplay        string
 }
 
-func newDashboardProjection(ctx dashboardProjectionContext) dashboardProjection {
-	ctx.deps = ctx.deps.withDefaults()
-	return dashboardProjection{ctx: ctx}
+type dashboardUpdateHistoryProjection struct {
+	lastSuccess *DashboardUpdateHistory
+	lastFailure *DashboardUpdateHistory
+	durationSum float64
+	samples     int
+}
+
+func newDashboardProjection() dashboardProjection {
+	return dashboardProjection{}
 }
 
 func (p dashboardProjection) Project(input dashboardProjectionInput) DashboardSummaryResponse {
@@ -81,13 +73,13 @@ func (p dashboardProjection) Project(input dashboardProjectionInput) DashboardSu
 }
 
 func (p dashboardProjection) projectServer(input dashboardServerProjectionInput) DashboardServerSummary {
-	health := p.projectHealth(input.fact, input.updateHistory)
+	health := input.health
 	nextRun := input.nextRun
 	if nextRun.State == "" {
 		nextRun = defaultScheduleInfo()
 	}
 	risk := DashboardRiskFromStatus(input.status)
-	timeline := buildDashboardTimeline(input.timelineSource, p.ctx.deps, p.ctx.loc, p.ctx.timezoneName)
+	timeline := input.timeline
 
 	lastUpdate := input.updateHistory.lastSuccess
 	durationSamples := input.updateHistory.samples
@@ -95,7 +87,7 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 	if durationSamples > 0 {
 		avgDurationMS = input.updateHistory.durationSum / float64(durationSamples)
 	}
-	triage := buildApprovalTriage(input.status, health, risk, timeline, lastUpdate, p.ctx.now, p.ctx.deps, p.ctx.loc, p.ctx.timezoneName)
+	triage := buildApprovalTriage(input.status, health, risk, timeline, input.triageTime)
 	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage)
 	triage = mirrorApprovalTriageActions(triage, actions)
 
@@ -114,32 +106,6 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 		ApprovalTriage:   triage,
 		CommandHistory:   input.commandHistory,
 	}
-}
-
-func (p dashboardProjection) projectHealth(fact updates.ServerFactsRecord, history dashboardUpdateHistoryProjection) DashboardHealthInfo {
-	health := DashboardHealthInfo{
-		DiskStatus:    "unknown",
-		AptStatus:     "unknown",
-		OSPrettyName:  fact.OSPrettyName,
-		UptimeSeconds: fact.UptimeSeconds,
-		CollectedAt:   fact.CollectedAt,
-		Source:        "facts",
-	}
-	if fact.ServerName != "" {
-		health.RebootRequired = fact.RebootRequired
-		health.DiskStatus = fact.DiskStatus
-		health.DiskFreeKB = fact.DiskFreeKB
-		health.DiskTotalKB = fact.DiskTotalKB
-		health.DiskDetails = fact.DiskDetails
-		health.AptStatus = fact.AptStatus
-		health.AptDetails = fact.AptDetails
-	} else {
-		health.Source = "unknown"
-	}
-	if history.healthOverlay.accepted {
-		UpdateHealthFromResults(&health, history.healthOverlay.results, "audit", history.healthOverlay.collectedAt, p.ctx.deps)
-	}
-	return health
 }
 
 func dashboardFleetRollup(servers []DashboardServerSummary) map[string]any {

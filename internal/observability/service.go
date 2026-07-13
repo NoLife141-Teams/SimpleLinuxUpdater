@@ -931,20 +931,11 @@ func dashboardActionEnabled(actions map[string]DashboardActionInfo, key string) 
 	return ok && action.Enabled
 }
 
-func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, lastUpdate *DashboardUpdateHistory, now time.Time, deps ServiceDeps, loc *time.Location, timezoneName string) DashboardApprovalTriageInfo {
-	deps = deps.withDefaults()
+func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInfo, risk DashboardRiskInfo, timeline DashboardTimelineInfo, timeFacts dashboardTriageTimeFacts) DashboardApprovalTriageInfo {
 	statusValue := ""
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
 	}
-	lastCheckAt := strings.TrimSpace(health.CollectedAt)
-	if lastCheckAt == "" && lastUpdate != nil {
-		lastCheckAt = strings.TrimSpace(lastUpdate.FinishedAt)
-	}
-	if lastCheckAt == "" {
-		lastCheckAt = strings.TrimSpace(timeline.UpdatedAt)
-	}
-	factsState := factsFreshnessState(health, now, deps)
 	eligible := statusValue == "pending_approval" || risk.PendingPackages > 0 || risk.SecurityUpdates > 0 || len(risk.CVEs) > 0
 	canActOnApproval := statusValue == "pending_approval"
 	standardPackages := risk.PendingPackages
@@ -994,11 +985,11 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 		RiskLevel:                  risk.Level,
 		RiskLabel:                  risk.Summary,
 		RiskOrder:                  dashboardRiskOrder(risk.Level),
-		FactsState:                 factsState,
+		FactsState:                 timeFacts.factsState,
 		FactsCollectedAt:           health.CollectedAt,
-		FactsCollectedAtDisplay:    formatDashboardTimestamp(health.CollectedAt, deps, loc, timezoneName),
-		LastCheckAt:                lastCheckAt,
-		LastCheckDisplay:           formatDashboardTimestamp(lastCheckAt, deps, loc, timezoneName),
+		FactsCollectedAtDisplay:    timeFacts.factsCollectedAtDisplay,
+		LastCheckAt:                timeFacts.lastCheckAt,
+		LastCheckDisplay:           timeFacts.lastCheckDisplay,
 		CanApproveAll:              availability.CanApproveAll,
 		CanApproveSecurity:         availability.CanApproveSecurity,
 		CanApproveKeptBackSecurity: availability.CanApproveKeptBackSecurity,
@@ -1016,12 +1007,7 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}
-	projection := newDashboardProjection(dashboardProjectionContext{
-		now:          projectionInput.now,
-		deps:         deps,
-		loc:          projectionInput.loc,
-		timezoneName: projectionInput.timezoneName,
-	})
+	projection := newDashboardProjection()
 	return projection.Project(projectionInput), nil
 }
 

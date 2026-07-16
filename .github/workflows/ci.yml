@@ -172,3 +172,46 @@ jobs:
 
       - name: Run Playwright auth E2E
         run: npm run test:e2e
+
+  ci-required:
+    if: always()
+    needs:
+      - changes
+      - test
+      - quality
+      - npm-audit
+      - frontend-unit
+      - ui-e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required CI results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          GO_REQUIRED: ${{ github.event_name == 'push' || needs.changes.outputs.go == 'true' }}
+          TEST_RESULT: ${{ needs.test.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          NPM_AUDIT_RESULT: ${{ needs.npm-audit.result }}
+          FRONTEND_UNIT_RESULT: ${{ needs.frontend-unit.result }}
+          UI_E2E_RESULT: ${{ needs.ui-e2e.result }}
+        run: |
+          printf '%s\n' \
+            "changes=$CHANGES_RESULT" \
+            "go_required=$GO_REQUIRED" \
+            "test=$TEST_RESULT" \
+            "quality=$QUALITY_RESULT" \
+            "npm_audit=$NPM_AUDIT_RESULT" \
+            "frontend_unit=$FRONTEND_UNIT_RESULT" \
+            "ui_e2e=$UI_E2E_RESULT"
+
+          test "$CHANGES_RESULT" = success
+          test "$NPM_AUDIT_RESULT" = success
+          test "$FRONTEND_UNIT_RESULT" = success
+          test "$UI_E2E_RESULT" = success
+
+          if [ "$GO_REQUIRED" = true ]; then
+            test "$TEST_RESULT" = success
+            test "$QUALITY_RESULT" = success
+          else
+            test "$TEST_RESULT" = skipped
+            test "$QUALITY_RESULT" = skipped
+          fi

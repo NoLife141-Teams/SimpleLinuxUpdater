@@ -73,6 +73,7 @@ const postcheckBlockOnAptHealthEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_APT_HEAL
 const postcheckBlockOnFailedUnitsEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_FAILED_UNITS"
 const postcheckRebootRequiredWarningEnv = "DEBIAN_UPDATER_POSTCHECK_REBOOT_REQUIRED_WARNING"
 const postcheckCustomCmdEnv = "DEBIAN_UPDATER_POSTCHECK_CMD"
+const devAllowBrowserAnnotationsEnv = "DEBIAN_UPDATER_DEV_ALLOW_BROWSER_ANNOTATIONS"
 
 var aptUpdateCmd = updatespkg.AptUpdateCmd
 var aptUpgradeCmd = updatespkg.AptUpgradeCmd
@@ -88,6 +89,7 @@ const sqliteBusyTimeoutMS = 5000
 const updateCompleteAction = "update.complete"
 const serverFactsRefreshAction = "server.facts.refresh"
 const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'"
+const browserAnnotationsContentSecurityPolicy = defaultContentSecurityPolicy + "; style-src-elem 'self' https://fonts.googleapis.com 'unsafe-inline'"
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
@@ -1475,11 +1477,12 @@ func startPendingUpdateCVEEnrichment(server Server, updates []PendingUpdate, par
 }
 
 func securityHeadersMiddleware() gin.HandlerFunc {
+	contentSecurityPolicy := contentSecurityPolicyFromEnv()
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("X-Frame-Options", "DENY")
-		c.Header("Content-Security-Policy", defaultContentSecurityPolicy)
+		c.Header("Content-Security-Policy", contentSecurityPolicy)
 		if c.Request != nil && c.Request.TLS != nil {
 			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		} else {
@@ -1495,6 +1498,13 @@ func securityHeadersMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func contentSecurityPolicyFromEnv() string {
+	if parseBoolEnvWithDefault(devAllowBrowserAnnotationsEnv, false) {
+		return browserAnnotationsContentSecurityPolicy
+	}
+	return defaultContentSecurityPolicy
 }
 
 func trustedProxiesFromEnv() []string {

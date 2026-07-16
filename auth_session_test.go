@@ -123,6 +123,43 @@ func assertSecurityHeaders(t *testing.T, h http.Header, wantHSTS bool) {
 	}
 }
 
+func TestContentSecurityPolicyFromEnvAllowsBrowserAnnotationStylesOnlyWhenEnabled(t *testing.T) {
+	t.Run("strict by default", func(t *testing.T) {
+		t.Setenv(devAllowBrowserAnnotationsEnv, "")
+		if got := contentSecurityPolicyFromEnv(); got != defaultContentSecurityPolicy {
+			t.Fatalf("contentSecurityPolicyFromEnv() = %q, want %q", got, defaultContentSecurityPolicy)
+		}
+	})
+
+	t.Run("allows injected style elements when explicitly enabled", func(t *testing.T) {
+		t.Setenv(devAllowBrowserAnnotationsEnv, "true")
+		got := contentSecurityPolicyFromEnv()
+		if got != browserAnnotationsContentSecurityPolicy {
+			t.Fatalf("contentSecurityPolicyFromEnv() = %q, want %q", got, browserAnnotationsContentSecurityPolicy)
+		}
+		if strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
+			t.Fatalf("contentSecurityPolicyFromEnv() unexpectedly relaxes script-src: %q", got)
+		}
+	})
+}
+
+func TestSecurityHeadersMiddlewareAllowsBrowserAnnotationStyleElementsWhenEnabled(t *testing.T) {
+	t.Setenv(devAllowBrowserAnnotationsEnv, "true")
+
+	router := gin.New()
+	router.Use(securityHeadersMiddleware())
+	router.GET("/", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := recorder.Header().Get("Content-Security-Policy"); got != browserAnnotationsContentSecurityPolicy {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, browserAnnotationsContentSecurityPolicy)
+	}
+}
+
 func TestBackupRestoreBarrierMiddlewareBlocksReadsAndSerializesBackupRoutes(t *testing.T) {
 	newCoordinator := func(t *testing.T) *maintenancepkg.Coordinator {
 		t.Helper()

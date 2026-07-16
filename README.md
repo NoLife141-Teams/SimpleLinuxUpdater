@@ -128,6 +128,7 @@ Frontend CSP policy:
 - UI pages run with strict CSP (`script-src 'self'`, `style-src 'self' https://fonts.googleapis.com`, `font-src 'self' https://fonts.gstatic.com`).
 - Inline `<script>`, inline `<style>`, inline `on*=` handlers, and inline `style=` attributes are prohibited.
 - CI tests fail if these inline patterns are reintroduced in the main UI templates.
+- For local Codex in-app-browser testing only, set `DEBIAN_UPDATER_DEV_ALLOW_BROWSER_ANNOTATIONS=true` before startup. This permits injected inline `<style>` elements through `style-src-elem`; scripts and the default production policy remain strict. Do not enable it on a remotely exposed deployment.
 
 ## Contributing
 

@@ -5,6 +5,7 @@
 ## Table of contents
 
 - [Authentication and sessions](#authentication-and-sessions)
+- [Codex browser annotations](#codex-browser-annotations)
 - [Metrics API token](#metrics-api-token)
 - [Backup and restore](#backup-and-restore)
 - [Storage paths](#storage-paths)
@@ -34,6 +35,17 @@ Environment variables:
 - `DEBIAN_UPDATER_TRUSTED_PROXIES` (optional comma-separated proxy IPs/CIDRs; unset/`none` trusts no proxies)
 
 When `DEBIAN_UPDATER_TRUSTED_PROXIES` is configured, Gin honors forwarded client IP headers from those proxies. This affects audit `client_ip` values and in-memory auth/metrics rate limiting.
+
+## Codex browser annotations
+
+SimpleLinuxUpdater's strict Content Security Policy blocks inline `<style>` elements by default. The Codex in-app browser injects its annotation overlay stylesheet as an inline shadow-root style, so local annotation mode requires an explicit development exception:
+
+```bash
+export DEBIAN_UPDATER_DEV_ALLOW_BROWSER_ANNOTATIONS=true
+./webserver
+```
+
+The exception adds `style-src-elem 'unsafe-inline'` while leaving `script-src` strict. It is disabled by default and should not be enabled when the UI is exposed beyond a trusted local development environment.
 
 ## Metrics API token
 

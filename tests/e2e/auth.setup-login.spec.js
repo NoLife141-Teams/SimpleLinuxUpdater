@@ -1166,6 +1166,43 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
+  test('status metrics stay compact without secondary descriptions', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    for (const viewport of [{ width: 1920, height: 1080 }, { width: 1216, height: 879 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/');
+
+      const metricState = await page.locator('.metric-strip').evaluate(element => ({
+        height: element.getBoundingClientRect().height,
+        timelineGap: Math.round(document.querySelector('.timeline-workspace').getBoundingClientRect().top
+          - element.getBoundingClientRect().bottom),
+        rowTops: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => Math.round(item.getBoundingClientRect().top)),
+        labelTops: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => Math.round(item.querySelector('span').getBoundingClientRect().top)),
+        numberTops: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => Math.round(item.querySelector('strong').getBoundingClientRect().top)),
+        visibleDescriptions: [...element.querySelectorAll('small')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => item.textContent.trim()),
+        visibleLegacyMetrics: [...element.querySelectorAll('.metric-hidden')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .map(item => item.textContent.trim()),
+      }));
+
+      expect(metricState.visibleDescriptions).toEqual([]);
+      expect(metricState.visibleLegacyMetrics).toEqual([]);
+      expect(new Set(metricState.rowTops).size).toBe(1);
+      expect(new Set(metricState.labelTops).size).toBe(1);
+      expect(new Set(metricState.numberTops).size).toBe(1);
+      expect(metricState.timelineGap).toBeLessThanOrEqual(24);
+      expect(metricState.height).toBeLessThan(300);
+    }
+  });
+
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     const pages = [

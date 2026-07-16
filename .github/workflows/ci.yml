@@ -8,20 +8,40 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Detect Go and workflow changes
+        id: filter
+        uses: dorny/paths-filter@6852f92c20ea7fd3b0c25de3b5112db3a98da050 # v3
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/workflows/**'
+
   test:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: unit
-            cmd: go test -count=1 ./...
           - name: race
             cmd: go test -race -count=1 ./...
           - name: cover
@@ -44,6 +64,8 @@ jobs:
         run: go tool cover -func=coverage.out | tail -n 1
 
   quality:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

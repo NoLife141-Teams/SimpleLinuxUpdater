@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { project, projectBulkReview } = require("../../static/js/dashboard-projection-consumption.js");
+const { project, projectBulkReview, presentationFacts } = require("../../static/js/dashboard-projection-consumption.js");
 
 function statusView(overrides = {}) {
     const servers = overrides.servers || [{ name: "alpha", status: "pending_approval", pending_updates: [{ security: true, cves: ["CVE-1"] }], has_key: true }];
@@ -59,6 +59,13 @@ test("unknown data stays explicit and optional extras degrade independently", ()
     assert.equal(view.selectedHost.risk.label, "Normal");
     assert.deepEqual(view.panels.recentActivity, []);
     assert.equal(view.summaries.policyCount, null);
+});
+
+test("kernel facts distinguish the running kernel from a newer installed kernel", () => {
+    assert.equal(presentationFacts.kernelVersions("6.8.0-60-generic", "6.8.0-62-generic"), "6.8.0-60-generic → 6.8.0-62-generic");
+    assert.equal(presentationFacts.kernelVersions("6.8.0-62-generic", "6.8.0-62-generic"), "6.8.0-62-generic");
+    assert.equal(presentationFacts.kernelVersions("", "6.8.0-62-generic"), "Unknown → 6.8.0-62-generic");
+    assert.equal(presentationFacts.kernelVersions("", ""), "Facts not collected");
 });
 
 test("fleet and attention projections use deterministic membership and ranking", () => {

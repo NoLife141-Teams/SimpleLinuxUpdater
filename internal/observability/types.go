@@ -87,17 +87,19 @@ type DashboardNoRunInfo struct {
 }
 
 type DashboardHealthInfo struct {
-	RebootRequired *bool  `json:"reboot_required"`
-	DiskStatus     string `json:"disk_status"`
-	DiskFreeKB     int64  `json:"disk_free_kb"`
-	DiskTotalKB    int64  `json:"disk_total_kb"`
-	DiskDetails    string `json:"disk_details"`
-	AptStatus      string `json:"apt_status"`
-	AptDetails     string `json:"apt_details"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	CollectedAt    string `json:"collected_at"`
-	Source         string `json:"source"`
+	RebootRequired               *bool  `json:"reboot_required"`
+	DiskStatus                   string `json:"disk_status"`
+	DiskFreeKB                   int64  `json:"disk_free_kb"`
+	DiskTotalKB                  int64  `json:"disk_total_kb"`
+	DiskDetails                  string `json:"disk_details"`
+	AptStatus                    string `json:"apt_status"`
+	AptDetails                   string `json:"apt_details"`
+	OSPrettyName                 string `json:"os_pretty_name"`
+	RunningKernelVersion         string `json:"running_kernel_version"`
+	LatestInstalledKernelVersion string `json:"latest_installed_kernel_version"`
+	UptimeSeconds                int64  `json:"uptime_seconds"`
+	CollectedAt                  string `json:"collected_at"`
+	Source                       string `json:"source"`
 }
 
 type DashboardRiskInfo struct {

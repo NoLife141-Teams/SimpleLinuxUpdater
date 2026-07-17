@@ -868,6 +868,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const lastUpdate = intelligence?.last_update;
             const lastFailed = intelligence?.last_failed_update;
             const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
+	            const kernelText = dashboardConsumption.presentationFacts.kernelVersions(health.running_kernel_version, health.latest_installed_kernel_version);
 	            const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
 		            const canRunUpdate = canRunUpdateAction(server);
 		            const canRunAutoremove = canRunAutoremoveAction(server);
@@ -918,6 +919,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <dl class="host-facts host-facts-primary">
                     <div><dt>Packages</dt><dd>${escapeHtml(packageSummary)}</dd></div>
                     <div><dt>OS</dt><dd>${escapeHtml(health.os_pretty_name || "Facts not collected")}</dd></div>
+                    <div><dt>Kernel</dt><dd>${escapeHtml(kernelText)}</dd></div>
                     <div><dt>Reboot</dt><dd>${escapeHtml(rebootText)}</dd></div>
                     <div><dt>Disk</dt><dd>${escapeHtml(`${health.disk_status || "unknown"} · ${formatDiskCapacity(health.disk_free_kb, health.disk_total_kb)}`)}</dd></div>
                     <div><dt>APT</dt><dd>${escapeHtml(health.apt_status || "unknown")}</dd></div>

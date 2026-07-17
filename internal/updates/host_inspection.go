@@ -11,13 +11,15 @@ import (
 )
 
 const (
-	inspectionOutputMaxLen  = 240
-	precheckMinFreeKB       = int64(1024 * 1024)
-	precheckDiskSpaceCmd    = "df -Pk /var / | awk 'NR>1 {print $2, $4}'"
-	postcheckFailedUnitsCmd = "systemctl --failed --no-legend --plain"
-	postcheckRebootCmd      = "sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\""
-	hostFactsOSCmd          = "sh -c '. /etc/os-release 2>/dev/null; printf \"%s\\n\" \"${PRETTY_NAME:-unknown}\"'"
-	hostFactsUptimeCmd      = "cat /proc/uptime"
+	inspectionOutputMaxLen            = 240
+	precheckMinFreeKB                 = int64(1024 * 1024)
+	precheckDiskSpaceCmd              = "df -Pk /var / | awk 'NR>1 {print $2, $4}'"
+	postcheckFailedUnitsCmd           = "systemctl --failed --no-legend --plain"
+	postcheckRebootCmd                = "sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\""
+	hostFactsOSCmd                    = "sh -c '. /etc/os-release 2>/dev/null; printf \"%s\\n\" \"${PRETTY_NAME:-unknown}\"'"
+	hostFactsRunningKernelCmd         = "uname -r"
+	hostFactsLatestInstalledKernelCmd = "sh -c \"find /boot -maxdepth 1 -type f -name 'vmlinuz-*' -print 2>/dev/null | sed 's#^.*/vmlinuz-##' | sort -V | tail -n 1\""
+	hostFactsUptimeCmd                = "cat /proc/uptime"
 )
 
 var (
@@ -260,6 +262,12 @@ func (s *productionHostMaintenanceSession) collectServerFacts(ctx context.Contex
 		switch kind {
 		case health.ProbeOS:
 			stdout, stderr, err := s.runInspectionCommand(ctx, hostFactsOSCmd)
+			return health.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
+		case health.ProbeRunningKernel:
+			stdout, stderr, err := s.runInspectionCommand(ctx, hostFactsRunningKernelCmd)
+			return health.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
+		case health.ProbeLatestInstalledKernel:
+			stdout, stderr, err := s.runInspectionCommand(ctx, hostFactsLatestInstalledKernelCmd)
 			return health.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
 		case health.ProbeUptime:
 			stdout, stderr, err := s.runInspectionCommand(ctx, hostFactsUptimeCmd)

@@ -127,6 +127,15 @@
         return { label, effectiveKey, usesGlobalKey };
     }
 
+    function kernelVersions(runningVersion, latestInstalledVersion) {
+        const running = text(runningVersion);
+        const latest = text(latestInstalledVersion);
+        if (running && latest && running !== latest) return `${running} → ${latest}`;
+        if (running) return running;
+        if (latest) return `Unknown → ${latest}`;
+        return "Facts not collected";
+    }
+
     function failureTimestamp(intelligence, timeline) {
         const candidates = [
             record(intelligence.last_failed_update).finished_at,
@@ -424,7 +433,8 @@
 
     const presentationFacts = Object.freeze({
         approvalCounts: interactionApprovalCounts,
-        authFacts
+        authFacts,
+        kernelVersions
     });
 
     return Object.freeze({ project, projectBulkReview, presentationFacts });

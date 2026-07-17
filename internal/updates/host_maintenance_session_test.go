@@ -182,17 +182,22 @@ func TestProductionHostMaintenanceSessionCVEQueriesPreserveLimitAndFailure(t *te
 func TestProductionHostMaintenanceSessionOwnsHostFactProbing(t *testing.T) {
 	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{
 		"sh -c '. /etc/os-release 2>/dev/null; printf \"%s\\n\" \"${PRETTY_NAME:-unknown}\"'": {stdout: "Ubuntu 24.04 LTS\n"},
-		"cat /proc/uptime":   {stdout: "3600.50 100.00\n"},
-		precheckDiskSpaceCmd: {stdout: "41943040 2097152\n10485760 3145728\n"},
-		precheckDpkgAuditCmd: {},
-		precheckAptCheckCmd:  {},
-		postcheckRebootCmd:   {stdout: "required\n"},
+		hostFactsRunningKernelCmd:         {stdout: "6.8.0-60-generic\n"},
+		hostFactsLatestInstalledKernelCmd: {stdout: "6.8.0-62-generic\n"},
+		"cat /proc/uptime":                {stdout: "3600.50 100.00\n"},
+		precheckDiskSpaceCmd:              {stdout: "41943040 2097152\n10485760 3145728\n"},
+		precheckDpkgAuditCmd:              {},
+		precheckAptCheckCmd:               {},
+		postcheckRebootCmd:                {stdout: "required\n"},
 	}}
 	session := newInspectionSession(t, conn)
 
 	facts := session.CollectServerFacts(context.Background())
 	if facts.ServerName != "srv" || facts.OSPrettyName != "Ubuntu 24.04 LTS" || facts.UptimeSeconds != 3600 {
 		t.Fatalf("CollectServerFacts() identity = %+v", facts)
+	}
+	if facts.RunningKernelVersion != "6.8.0-60-generic" || facts.LatestInstalledKernelVersion != "6.8.0-62-generic" {
+		t.Fatalf("CollectServerFacts() kernel versions = %+v", facts)
 	}
 	if facts.DiskStatus != "ok" || facts.DiskFreeKB != 2097152 || facts.DiskTotalKB != 41943040 {
 		t.Fatalf("CollectServerFacts() disk = %+v", facts)

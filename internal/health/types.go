@@ -2,18 +2,20 @@ package health
 
 // CollectedFacts is the transport-neutral health knowledge collected from a Server.
 type CollectedFacts struct {
-	ServerName     string `json:"server_name"`
-	CollectedAt    string `json:"collected_at"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	DiskStatus     string `json:"disk_status"`
-	DiskFreeKB     int64  `json:"disk_free_kb"`
-	DiskTotalKB    int64  `json:"disk_total_kb"`
-	DiskDetails    string `json:"disk_details"`
-	AptStatus      string `json:"apt_status"`
-	AptDetails     string `json:"apt_details"`
-	RebootRequired *bool  `json:"reboot_required"`
-	RawJSON        string `json:"raw_json,omitempty"`
+	ServerName                   string `json:"server_name"`
+	CollectedAt                  string `json:"collected_at"`
+	OSPrettyName                 string `json:"os_pretty_name"`
+	RunningKernelVersion         string `json:"running_kernel_version"`
+	LatestInstalledKernelVersion string `json:"latest_installed_kernel_version"`
+	UptimeSeconds                int64  `json:"uptime_seconds"`
+	DiskStatus                   string `json:"disk_status"`
+	DiskFreeKB                   int64  `json:"disk_free_kb"`
+	DiskTotalKB                  int64  `json:"disk_total_kb"`
+	DiskDetails                  string `json:"disk_details"`
+	AptStatus                    string `json:"apt_status"`
+	AptDetails                   string `json:"apt_details"`
+	RebootRequired               *bool  `json:"reboot_required"`
+	RawJSON                      string `json:"raw_json,omitempty"`
 }
 
 // Snapshot is one accepted, time-ordered health observation.

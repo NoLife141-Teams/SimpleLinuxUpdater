@@ -19,18 +19,20 @@ func TestObservationSchemaAndRoundTrip(t *testing.T) {
 	}
 	rebootRequired := true
 	record := CollectedFacts{
-		ServerName:     "srv-a",
-		CollectedAt:    "2026-05-18T12:00:00Z",
-		OSPrettyName:   "Ubuntu 24.04",
-		UptimeSeconds:  42,
-		DiskStatus:     "ok",
-		DiskFreeKB:     1234,
-		DiskTotalKB:    5678,
-		DiskDetails:    "disk ok",
-		AptStatus:      "ok",
-		AptDetails:     "apt ok",
-		RebootRequired: &rebootRequired,
-		RawJSON:        `{"source":"test"}`,
+		ServerName:                   "srv-a",
+		CollectedAt:                  "2026-05-18T12:00:00Z",
+		OSPrettyName:                 "Ubuntu 24.04",
+		RunningKernelVersion:         "6.8.0-60-generic",
+		LatestInstalledKernelVersion: "6.8.0-62-generic",
+		UptimeSeconds:                42,
+		DiskStatus:                   "ok",
+		DiskFreeKB:                   1234,
+		DiskTotalKB:                  5678,
+		DiskDetails:                  "disk ok",
+		AptStatus:                    "ok",
+		AptDetails:                   "apt ok",
+		RebootRequired:               &rebootRequired,
+		RawJSON:                      `{"source":"test"}`,
 	}
 	if err := repo.AcceptCollectedFacts(record); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -40,7 +42,7 @@ func TestObservationSchemaAndRoundTrip(t *testing.T) {
 		t.Fatalf("Latest() error = %v", err)
 	}
 	got := loaded["srv-a"]
-	if got.ServerName != record.ServerName || got.OSPrettyName != record.OSPrettyName || got.RawJSON != record.RawJSON || got.DiskTotalKB != record.DiskTotalKB {
+	if got.ServerName != record.ServerName || got.OSPrettyName != record.OSPrettyName || got.RunningKernelVersion != record.RunningKernelVersion || got.LatestInstalledKernelVersion != record.LatestInstalledKernelVersion || got.RawJSON != record.RawJSON || got.DiskTotalKB != record.DiskTotalKB {
 		t.Fatalf("loaded record = %+v, want %+v", got, record)
 	}
 	if got.RebootRequired == nil || !*got.RebootRequired {

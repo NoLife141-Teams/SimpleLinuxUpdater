@@ -69,6 +69,8 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 			server_name TEXT PRIMARY KEY,
 			collected_at TEXT NOT NULL,
 			os_pretty_name TEXT NOT NULL DEFAULT '',
+			running_kernel_version TEXT NOT NULL DEFAULT '',
+			latest_installed_kernel_version TEXT NOT NULL DEFAULT '',
 			uptime_seconds INTEGER NOT NULL DEFAULT 0,
 			disk_status TEXT NOT NULL DEFAULT 'unknown',
 			disk_free_kb INTEGER NOT NULL DEFAULT 0,
@@ -86,6 +88,12 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 		return err
 	}
 	if err := ensureColumn(db, "server_facts", "disk_total_kb", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "server_facts", "running_kernel_version", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "server_facts", "latest_installed_kernel_version", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`
@@ -234,13 +242,16 @@ func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
 	defer tx.Rollback()
 	_, err = tx.Exec(`
 		INSERT INTO server_facts (
-			server_name, collected_at, os_pretty_name, uptime_seconds,
+			server_name, collected_at, os_pretty_name, running_kernel_version,
+			latest_installed_kernel_version, uptime_seconds,
 			disk_status, disk_free_kb, disk_total_kb, disk_details, apt_status, apt_details,
 			reboot_required, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(server_name) DO UPDATE SET
 			collected_at = excluded.collected_at,
 			os_pretty_name = excluded.os_pretty_name,
+			running_kernel_version = excluded.running_kernel_version,
+			latest_installed_kernel_version = excluded.latest_installed_kernel_version,
 			uptime_seconds = excluded.uptime_seconds,
 			disk_status = excluded.disk_status,
 			disk_free_kb = excluded.disk_free_kb,
@@ -254,6 +265,8 @@ func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
 		record.ServerName,
 		record.CollectedAt,
 		record.OSPrettyName,
+		record.RunningKernelVersion,
+		record.LatestInstalledKernelVersion,
 		record.UptimeSeconds,
 		record.DiskStatus,
 		record.DiskFreeKB,
@@ -282,7 +295,8 @@ func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 		return nil, errors.New("database is not initialized")
 	}
 	rows, err := db.Query(`
-		SELECT server_name, collected_at, os_pretty_name, uptime_seconds,
+		SELECT server_name, collected_at, os_pretty_name, running_kernel_version,
+		       latest_installed_kernel_version, uptime_seconds,
 		       disk_status, disk_free_kb, disk_total_kb, disk_details, apt_status, apt_details,
 		       reboot_required, raw_json
 		  FROM server_facts
@@ -299,6 +313,8 @@ func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 			&record.ServerName,
 			&record.CollectedAt,
 			&record.OSPrettyName,
+			&record.RunningKernelVersion,
+			&record.LatestInstalledKernelVersion,
 			&record.UptimeSeconds,
 			&record.DiskStatus,
 			&record.DiskFreeKB,

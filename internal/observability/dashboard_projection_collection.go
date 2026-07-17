@@ -105,12 +105,14 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 
 func (c dashboardProjectionCollector) collectHealth(fact updates.ServerFactsRecord, overlay dashboardHealthOverlayFacts) DashboardHealthInfo {
 	health := DashboardHealthInfo{
-		DiskStatus:    "unknown",
-		AptStatus:     "unknown",
-		OSPrettyName:  fact.OSPrettyName,
-		UptimeSeconds: fact.UptimeSeconds,
-		CollectedAt:   fact.CollectedAt,
-		Source:        "facts",
+		DiskStatus:                   "unknown",
+		AptStatus:                    "unknown",
+		OSPrettyName:                 fact.OSPrettyName,
+		RunningKernelVersion:         fact.RunningKernelVersion,
+		LatestInstalledKernelVersion: fact.LatestInstalledKernelVersion,
+		UptimeSeconds:                fact.UptimeSeconds,
+		CollectedAt:                  fact.CollectedAt,
+		Source:                       "facts",
 	}
 	if fact.ServerName != "" {
 		health.RebootRequired = fact.RebootRequired

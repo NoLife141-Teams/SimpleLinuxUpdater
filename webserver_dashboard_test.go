@@ -44,17 +44,19 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 
 	rebootRequired := false
 	if err := saveServerFacts(serverFactsRecord{
-		ServerName:     server.Name,
-		CollectedAt:    now.Add(-2 * time.Hour).Format(time.RFC3339),
-		OSPrettyName:   "Debian GNU/Linux 12",
-		UptimeSeconds:  86400,
-		DiskStatus:     "ok",
-		DiskFreeKB:     4 * 1024 * 1024,
-		DiskDetails:    "Enough free disk space.",
-		AptStatus:      "ok",
-		AptDetails:     "APT health checks passed.",
-		RebootRequired: &rebootRequired,
-		RawJSON:        "{}",
+		ServerName:                   server.Name,
+		CollectedAt:                  now.Add(-2 * time.Hour).Format(time.RFC3339),
+		OSPrettyName:                 "Debian GNU/Linux 12",
+		RunningKernelVersion:         "6.1.0-31-amd64",
+		LatestInstalledKernelVersion: "6.1.0-32-amd64",
+		UptimeSeconds:                86400,
+		DiskStatus:                   "ok",
+		DiskFreeKB:                   4 * 1024 * 1024,
+		DiskDetails:                  "Enough free disk space.",
+		AptStatus:                    "ok",
+		AptDetails:                   "APT health checks passed.",
+		RebootRequired:               &rebootRequired,
+		RawJSON:                      "{}",
 	}); err != nil {
 		t.Fatalf("saveServerFacts() error = %v", err)
 	}
@@ -118,6 +120,9 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 	}
 	if got.Health.OSPrettyName != "Debian GNU/Linux 12" || got.Health.UptimeSeconds != 86400 {
 		t.Fatalf("facts = %+v, want saved OS/uptime facts", got.Health)
+	}
+	if got.Health.RunningKernelVersion != "6.1.0-31-amd64" || got.Health.LatestInstalledKernelVersion != "6.1.0-32-amd64" {
+		t.Fatalf("kernel facts = %+v, want saved running/latest versions", got.Health)
 	}
 	if len(got.CommandHistory) == 0 {
 		t.Fatalf("CommandHistory empty, want recent server command")

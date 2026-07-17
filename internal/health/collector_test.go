@@ -16,6 +16,10 @@ func TestCollectorCapturesPartialHostHealthObservation(t *testing.T) {
 			switch kind {
 			case ProbeOS:
 				return ProbeResult{Output: "Ubuntu 24.04 LTS\n"}
+			case ProbeRunningKernel:
+				return ProbeResult{Output: "6.8.0-60-generic\n"}
+			case ProbeLatestInstalledKernel:
+				return ProbeResult{Output: "6.8.0-62-generic\n"}
 			case ProbeUptime:
 				return ProbeResult{Output: "90061.25 1.0"}
 			case ProbeDisk:
@@ -37,6 +41,9 @@ func TestCollectorCapturesPartialHostHealthObservation(t *testing.T) {
 	}
 	if got.OSPrettyName != "Ubuntu 24.04 LTS" || got.UptimeSeconds != 90061 {
 		t.Fatalf("host facts = %+v", got)
+	}
+	if got.RunningKernelVersion != "6.8.0-60-generic" || got.LatestInstalledKernelVersion != "6.8.0-62-generic" {
+		t.Fatalf("kernel facts = %+v", got)
 	}
 	if got.DiskStatus != "ok" || got.DiskFreeKB != 16*1024*1024 || got.DiskTotalKB != 64*1024*1024 {
 		t.Fatalf("disk facts = %+v", got)

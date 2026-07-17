@@ -11,11 +11,13 @@ import (
 type ProbeKind string
 
 const (
-	ProbeOS     ProbeKind = "os"
-	ProbeUptime ProbeKind = "uptime"
-	ProbeDisk   ProbeKind = "disk"
-	ProbeAPT    ProbeKind = "apt"
-	ProbeReboot ProbeKind = "reboot"
+	ProbeOS                    ProbeKind = "os"
+	ProbeRunningKernel         ProbeKind = "running_kernel"
+	ProbeLatestInstalledKernel ProbeKind = "latest_installed_kernel"
+	ProbeUptime                ProbeKind = "uptime"
+	ProbeDisk                  ProbeKind = "disk"
+	ProbeAPT                   ProbeKind = "apt"
+	ProbeReboot                ProbeKind = "reboot"
 )
 
 type ProbeResult struct {
@@ -59,6 +61,14 @@ func (c Collector) Capture(ctx context.Context, serverName string) CollectedFact
 			facts.OSPrettyName = value
 		}
 	}
+	runningKernelResult := probe(ProbeRunningKernel)
+	if runningKernelResult.Err == nil {
+		facts.RunningKernelVersion = truncateObservation(strings.TrimSpace(runningKernelResult.Output), 160)
+	}
+	latestInstalledKernelResult := probe(ProbeLatestInstalledKernel)
+	if latestInstalledKernelResult.Err == nil {
+		facts.LatestInstalledKernelVersion = truncateObservation(strings.TrimSpace(latestInstalledKernelResult.Output), 160)
+	}
 	uptimeResult := probe(ProbeUptime)
 	if uptimeResult.Err == nil {
 		fields := strings.Fields(uptimeResult.Output)
@@ -79,11 +89,13 @@ func (c Collector) Capture(ctx context.Context, serverName string) CollectedFact
 	rebootResult := probe(ProbeReboot)
 	facts.RebootRequired = rebootResult.RebootRequired
 	raw, err := json.Marshal(map[string]any{
-		"os":     probeSummary(osResult),
-		"uptime": probeSummary(uptimeResult),
-		"disk":   probeSummary(diskResult),
-		"apt":    probeSummary(aptResult),
-		"reboot": probeSummary(rebootResult),
+		"os":                      probeSummary(osResult),
+		"running_kernel":          probeSummary(runningKernelResult),
+		"latest_installed_kernel": probeSummary(latestInstalledKernelResult),
+		"uptime":                  probeSummary(uptimeResult),
+		"disk":                    probeSummary(diskResult),
+		"apt":                     probeSummary(aptResult),
+		"reboot":                  probeSummary(rebootResult),
 	})
 	if err == nil {
 		facts.RawJSON = string(raw)

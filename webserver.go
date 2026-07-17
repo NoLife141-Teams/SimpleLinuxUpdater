@@ -900,12 +900,14 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	audit(c, serverFactsRefreshAction, "server", name, "success", "Host facts refreshed", map[string]any{
-		"collected_at":    record.CollectedAt,
-		"disk_status":     record.DiskStatus,
-		"apt_status":      record.AptStatus,
-		"reboot_required": record.RebootRequired,
-		"uptime_seconds":  record.UptimeSeconds,
-		"os_pretty_name":  record.OSPrettyName,
+		"collected_at":                    record.CollectedAt,
+		"disk_status":                     record.DiskStatus,
+		"apt_status":                      record.AptStatus,
+		"reboot_required":                 record.RebootRequired,
+		"uptime_seconds":                  record.UptimeSeconds,
+		"os_pretty_name":                  record.OSPrettyName,
+		"running_kernel_version":          record.RunningKernelVersion,
+		"latest_installed_kernel_version": record.LatestInstalledKernelVersion,
 	})
 	c.JSON(http.StatusOK, record)
 }

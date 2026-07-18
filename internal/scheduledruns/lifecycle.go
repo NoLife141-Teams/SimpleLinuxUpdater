@@ -3,6 +3,7 @@ package scheduledruns
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -76,35 +77,46 @@ func (l *Lifecycle) HandleScheduledRun(req policies.ScheduledRunRequest) policie
 	if !inserted {
 		return result
 	}
+	var status, jobID string
+	var executionErr error
 	if req.Admitted {
-		l.executeAdmitted(run, req.Policy, req.Server)
+		status, jobID, executionErr = l.executeAdmitted(run, req.Policy, req.Server)
 	} else {
-		l.ExecuteRun(run, req.Policy, req.Server)
+		status, jobID, executionErr = l.executeRun(run, req.Policy, req.Server)
 	}
+	if strings.TrimSpace(status) != "" {
+		result.Status = status
+	}
+	result.JobID = jobID
+	result.Err = executionErr
 	return result
 }
 
 func (l *Lifecycle) ExecuteRun(run policies.Run, policy policies.Policy, server servers.Server) {
+	_, _, _ = l.executeRun(run, policy, server)
+}
+
+func (l *Lifecycle) executeRun(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	if l == nil {
-		return
+		return "", "", errors.New("scheduled run lifecycle is unavailable")
 	}
 	if l.deps.MaintenanceCoordinator != nil {
 		lease, decision := l.deps.MaintenanceCoordinator.TryShared(maintenance.WorkScheduled)
 		if !decision.Allowed {
 			l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
-			return
+			return policies.RunSkipped, "", nil
 		}
 		defer lease.Close()
 	}
-	l.executeAdmitted(run, policy, server)
+	return l.executeAdmitted(run, policy, server)
 }
 
-func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) {
+func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	switch policy.ExecutionMode {
 	case policies.ExecutionScanOnly:
-		l.runScan(run, policy, server)
+		return l.runScan(run, policy, server)
 	default:
-		l.runUpdate(run, policy, server)
+		return l.runUpdate(run, policy, server)
 	}
 }
 
@@ -181,7 +193,7 @@ func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Pol
 	})
 }
 
-func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server servers.Server) {
+func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
 	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
@@ -194,7 +206,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 			summary = "Server busy; scheduled update skipped"
 		}
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -205,7 +217,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
 		})
-		return
+		return status, "", updateErr
 	}
 
 	retryPolicy := l.deps.LoadRetryPolicy()
@@ -219,7 +231,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -231,7 +243,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 			"scheduled_for_utc": run.ScheduledForUTC,
 			"error":             err.Error(),
 		})
-		return
+		return status, "", errors.Join(err, updateErr)
 	}
 
 	runningStatus := policies.RunRunning
@@ -244,7 +256,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		StartedAt: &startedAt,
 	}); err != nil {
 		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, "update", err)
-		return
+		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled update running state: %w", err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
@@ -265,9 +277,10 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		})
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
+	return policies.RunRunning, job.ID, nil
 }
 
-func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server servers.Server) {
+func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
 	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
 	if err != nil {
@@ -280,7 +293,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			summary = "Server busy; scheduled scan skipped"
 		}
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -291,7 +304,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
 		})
-		return
+		return status, "", updateErr
 	}
 
 	retryPolicy := l.deps.LoadRetryPolicy()
@@ -302,7 +315,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		reason := policies.RunReasonPersistence
 		summary := "Job manager unavailable"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -315,7 +328,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			"error":             "job manager unavailable",
 		})
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
-		return
+		return status, "", errors.Join(errors.New("job manager unavailable"), updateErr)
 	}
 	job, err := jm.CreateJob(jobs.CreateParams{
 		Kind:            jobs.KindScheduledScan,
@@ -333,7 +346,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
 		finishedAt := l.deps.JobTimestampNow()
-		_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 			Status:     &status,
 			Reason:     &reason,
 			Summary:    &summary,
@@ -346,7 +359,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			"error":             err.Error(),
 		})
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
-		return
+		return status, "", errors.Join(err, updateErr)
 	}
 
 	runningStatus := policies.RunRunning
@@ -359,7 +372,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		StartedAt: &startedAt,
 	}); err != nil {
 		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, "scan", err)
-		return
+		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled scan running state: %w", err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
@@ -383,6 +396,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		})
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
+	return policies.RunRunning, job.ID, nil
 }
 
 func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {

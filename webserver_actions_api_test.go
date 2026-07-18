@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -20,6 +22,44 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+func TestServerFactsRefreshPropagatesRequestCancellation(t *testing.T) {
+	server := Server{Name: "srv-cancelled-facts", Host: "example.org", Port: 22, User: "root"}
+	state := newServerState()
+	var openContextErr error
+	updateDeps := testUpdateServiceDeps(t)
+	updateDeps.ServerState = state
+	updateDeps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(ctx context.Context, _ HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		openContextErr = ctx.Err()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return &HostMaintenanceSessionFuncs{
+			CollectServerFactsFunc: func(context.Context) serverFactsRecord { return serverFactsRecord{ServerName: server.Name} },
+		}, nil
+	})
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "cancelled-facts.db"), AppDeps{
+		ServerState:   state,
+		UpdateService: NewUpdateService(updateDeps),
+	})
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	})
+	cookie := app.authenticate(t)
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/servers/"+server.Name+"/facts/refresh", nil).WithContext(requestContext)
+	request.AddCookie(cookie)
+	markSameOriginAuthRequest(request)
+	app.Handler.ServeHTTP(recorder, request)
+
+	if !errors.Is(openContextErr, context.Canceled) {
+		t.Fatalf("SSH open context error = %v, want request cancellation", openContextErr)
+	}
+}
 
 func newActionAPITestApp(t *testing.T, dbFile string) (*testApp, *http.Cookie) {
 	t.Helper()

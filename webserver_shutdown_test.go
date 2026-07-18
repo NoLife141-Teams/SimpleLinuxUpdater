@@ -36,3 +36,34 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 		t.Fatal("application shutdown did not finish after the action runner completed")
 	}
 }
+
+func TestShutdownApplicationContinuesWaitingAfterRunnerGracePeriod(t *testing.T) {
+	waitForUpdateRunners()
+	originalTimeout := actionRunnerShutdownTimeout
+	actionRunnerShutdownTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { actionRunnerShutdownTimeout = originalTimeout })
+
+	releaseRunner := make(chan struct{})
+	startTrackedActionRunner(func() {
+		<-releaseRunner
+	})
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		shutdownApplication(nil, nil)
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("application shutdown returned while an action runner was still active")
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	close(releaseRunner)
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("application shutdown did not finish after the runner completed")
+	}
+}

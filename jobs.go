@@ -187,12 +187,17 @@ func startJobRunnerWithManager(current func() *JobManager, jobID string, run fun
 	}
 	startTrackedActionRunner(func() {
 		jm := current()
-		if jm != nil && strings.TrimSpace(jobID) != "" {
+		if strings.TrimSpace(jobID) != "" {
+			if jm == nil {
+				log.Printf("failed to start job %q: job manager is unavailable", jobID)
+				return
+			}
 			status := jobStatusRunning
 			if err := jm.Transition(jobID, JobTransitionIntent{
 				Status: &status,
 			}); err != nil {
 				log.Printf("failed to mark job %q running: %v", jobID, err)
+				return
 			}
 		}
 		defer func() {

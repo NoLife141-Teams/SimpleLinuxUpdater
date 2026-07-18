@@ -3,6 +3,7 @@ package scheduledruns_test
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,12 @@ func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing
 	})
 	if !result.Handled || !result.Inserted {
 		t.Fatalf("HandleScheduledRun() = %+v, want inserted run", result)
+	}
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "database unavailable") {
+		t.Fatalf("HandleScheduledRun() error = %v, want running-state persistence error", result.Err)
+	}
+	if result.Status != policies.RunFailed {
+		t.Fatalf("HandleScheduledRun() status = %q, want %q", result.Status, policies.RunFailed)
 	}
 	if runnerStarted {
 		t.Fatal("scheduled update runner started without a persisted running state")

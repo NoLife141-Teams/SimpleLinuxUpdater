@@ -63,7 +63,6 @@ const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
 const serverShutdownTimeout = 10 * time.Second
-const actionRunnerShutdownTimeout = 30 * time.Second
 const notificationShutdownTimeout = 10 * time.Second
 const retryMaxAttemptsEnv = "DEBIAN_UPDATER_RETRY_MAX_ATTEMPTS"
 const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
@@ -93,6 +92,8 @@ const updateCompleteAction = "update.complete"
 const serverFactsRefreshAction = "server.facts.refresh"
 const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'"
 const browserAnnotationsContentSecurityPolicy = defaultContentSecurityPolicy + "; style-src-elem 'self' https://fonts.googleapis.com 'unsafe-inline'"
+
+var actionRunnerShutdownTimeout = 30 * time.Second
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
@@ -196,7 +197,8 @@ func shutdownApplication(server *http.Server, closeNotifications func(context.Co
 
 	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
 	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
-		log.Printf("Failed to wait for action runners cleanly: %v", err)
+		log.Printf("Action runners exceeded the shutdown grace period; continuing to wait: %v", err)
+		waitForUpdateRunners()
 	}
 	cancelRunners()
 
@@ -886,9 +888,9 @@ func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 	return false, true
 }
 
-func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
+func refreshServerFactsWithUpdateDeps(ctx context.Context, server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
 	deps = updateServiceDepsWithDefaults(deps)
-	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+	session, err := deps.HostMaintenanceSessions.Open(ctx, HostMaintenanceSessionRequest{
 		Server:         server,
 		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
 		DialOperation:  "facts_refresh.ssh_dial",
@@ -898,7 +900,7 @@ func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (se
 		return serverFactsRecord{}, err
 	}
 	defer session.Close()
-	record := session.CollectServerFacts(context.Background())
+	record := session.CollectServerFacts(ctx)
 	if err := deps.SaveServerFacts(record); err != nil {
 		return serverFactsRecord{}, err
 	}
@@ -934,7 +936,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
 
-	record, err := refreshServerFactsWithUpdateDeps(server, updateServiceEnsureDeps(deps.UpdateService))
+	record, err := refreshServerFactsWithUpdateDeps(c.Request.Context(), server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh failed", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh host facts: %v", err)})

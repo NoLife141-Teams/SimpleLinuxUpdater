@@ -2,6 +2,7 @@ package audit
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,33 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestSanitizeMetaRedactsNestedSecrets(t *testing.T) {
+	raw := SanitizeMeta(map[string]any{
+		"request": map[string]any{
+			"username": "admin",
+			"password": "nested-password",
+		},
+		"attempts": []any{
+			map[string]any{"token": "nested-token", "status": "failed"},
+		},
+		"typed": []struct {
+			Password string `json:"password"`
+			Status   string `json:"status"`
+		}{{Password: "typed-password", Status: "ok"}},
+	})
+	var sanitized map[string]any
+	if err := json.Unmarshal([]byte(raw), &sanitized); err != nil {
+		t.Fatalf("SanitizeMeta() returned invalid JSON: %v", err)
+	}
+	if strings.Contains(raw, "nested-password") || strings.Contains(raw, "nested-token") || strings.Contains(raw, "typed-password") {
+		t.Fatalf("SanitizeMeta() retained nested secret: %s", raw)
+	}
+	request, ok := sanitized["request"].(map[string]any)
+	if !ok || request["username"] != "admin" {
+		t.Fatalf("SanitizeMeta() removed safe nested metadata: %s", raw)
+	}
+}
 
 func TestServiceRecordSanitizesTruncatesAndNotifies(t *testing.T) {
 	db := newTestDB(t)
@@ -146,6 +174,15 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 	if result.PageSize != 200 {
 		t.Fatalf("PageSize = %d, want 200 cap", result.PageSize)
+	}
+
+	maxInt := int(^uint(0) >> 1)
+	result, err = svc.List(ListFilter{Page: maxInt, PageSize: 200})
+	if err != nil {
+		t.Fatalf("List(overflowing page) error = %v", err)
+	}
+	if len(result.Items) != 0 || result.Total != len(seed) || result.Page != maxInt {
+		t.Fatalf("overflowing page result = %+v, want empty page with preserved metadata", result)
 	}
 }
 

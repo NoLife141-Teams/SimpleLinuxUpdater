@@ -37,6 +37,7 @@ const (
 	MaxExtractedBytes     = MaxUploadBytes
 	MaxExportRequestBytes = 1024 * 1024
 	MinPassphraseLength   = 12
+	rollbackTimeout       = 30 * time.Second
 	ScryptN               = 32768
 	ScryptR               = 8
 	ScryptP               = 1
@@ -1040,19 +1041,21 @@ func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, resto
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
 	rollback := func(cause error) error {
+		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancelRollback()
 		errs := []error{cause}
 		if restoreErr := RestoreSnapshots(snaps, s.deps.EnsurePrivateDirForFile); restoreErr != nil {
 			errs = append(errs, fmt.Errorf("rollback restore snapshots: %w", restoreErr))
 		}
-		if prepareErr := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); prepareErr != nil {
+		if prepareErr := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); prepareErr != nil {
 			errs = append(errs, fmt.Errorf("rollback prepare restored persistence replacement: %w", prepareErr))
 		}
 		if restoreHandoff != nil {
-			if handoffErr := restoreHandoff(ctx); handoffErr != nil {
+			if handoffErr := restoreHandoff(rollbackCtx); handoffErr != nil {
 				errs = append(errs, fmt.Errorf("rollback maintenance handoff: %w", handoffErr))
 			}
 		}
-		if reloadErr := s.deps.RestoredRuntime.ReloadRestoredState(ctx); reloadErr != nil {
+		if reloadErr := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); reloadErr != nil {
 			errs = append(errs, fmt.Errorf("rollback reload runtime state after reset: %w", reloadErr))
 		}
 		return errors.Join(errs...)

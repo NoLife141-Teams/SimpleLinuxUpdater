@@ -237,12 +237,15 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 	runningStatus := policies.RunRunning
 	startedAt := l.deps.JobTimestampNow()
 	summary := "Scheduled update started"
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+	if err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
 		StartedAt: &startedAt,
-	})
+	}); err != nil {
+		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, "update", err)
+		return
+	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
@@ -349,12 +352,15 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 	runningStatus := policies.RunRunning
 	startedAt := l.deps.JobTimestampNow()
 	summary := "Scheduled scan started"
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+	if err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
 		StartedAt: &startedAt,
-	})
+	}); err != nil {
+		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, "scan", err)
+		return
+	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
@@ -422,13 +428,47 @@ func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
 		reason := status
 		update.Reason = &reason
 	}
-	_ = l.deps.PolicyRepository.UpdateRun(runID, update)
+	if err := l.deps.PolicyRepository.UpdateRun(runID, update); err != nil {
+		log.Printf("failed to reconcile scheduled run %d from job %q: %v", runID, job.ID, err)
+		return
+	}
 	if previousErr == nil && previous.Status == status && previous.FinishedAt != "" {
 		return
 	}
 	if hasMeta {
 		l.recordScheduledScanTerminalAudit(job, meta)
 	}
+}
+
+func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy policies.Policy, server servers.Server, job jobs.Record, preStartStatus *servers.ServerStatus, operation string, persistenceErr error) {
+	l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+	jobStatus := jobs.StatusFailed
+	jobSummary := "Scheduled " + operation + " was not started because its run state could not be persisted"
+	errorClass := policies.RunReasonPersistence
+	if jm := l.deps.CurrentJobManager(); jm != nil {
+		if err := jm.Transition(job.ID, jobs.Intent{Status: &jobStatus, Summary: &jobSummary, ErrorClass: &errorClass}); err != nil {
+			log.Printf("failed to mark scheduled job %q failed after run persistence error: %v", job.ID, err)
+		}
+	}
+	runStatus := policies.RunFailed
+	reason := policies.RunReasonPersistence
+	finishedAt := l.deps.JobTimestampNow()
+	if err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		Status:     &runStatus,
+		Reason:     &reason,
+		Summary:    &jobSummary,
+		JobID:      &job.ID,
+		FinishedAt: &finishedAt,
+	}); err != nil {
+		log.Printf("failed to mark scheduled run %d failed after start persistence error: %v", run.ID, err)
+	}
+	_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", jobSummary, map[string]any{
+		"policy_id":         policy.ID,
+		"policy_name":       policy.Name,
+		"scheduled_for_utc": run.ScheduledForUTC,
+		"job_id":            job.ID,
+		"error":             persistenceErr.Error(),
+	})
 }
 
 func (l *Lifecycle) recordScheduledScanTerminalAudit(job jobs.Record, meta updates.ScheduledJobMeta) {

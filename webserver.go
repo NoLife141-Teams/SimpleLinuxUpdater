@@ -62,6 +62,9 @@ const maxUploadedKeyRequestBytes = maxUploadedKeyBytes + 1024*1024
 const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
+const serverShutdownTimeout = 10 * time.Second
+const actionRunnerShutdownTimeout = 30 * time.Second
+const notificationShutdownTimeout = 10 * time.Second
 const retryMaxAttemptsEnv = "DEBIAN_UPDATER_RETRY_MAX_ATTEMPTS"
 const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
 const retryMaxDelayMSEnv = "DEBIAN_UPDATER_RETRY_MAX_DELAY_MS"
@@ -166,6 +169,44 @@ func startTrackedActionRunner(run func()) {
 
 func waitForUpdateRunners() {
 	updateRunnerWG.Wait()
+}
+
+func waitForUpdateRunnersContext(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		waitForUpdateRunners()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func shutdownApplication(server *http.Server, closeNotifications func(context.Context) error) {
+	if server != nil {
+		serverCtx, cancelServer := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Failed to shutdown web server cleanly: %v", err)
+		}
+		cancelServer()
+	}
+
+	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
+	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
+		log.Printf("Failed to wait for action runners cleanly: %v", err)
+	}
+	cancelRunners()
+
+	if closeNotifications != nil {
+		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), notificationShutdownTimeout)
+		if err := closeNotifications(deliveryCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("Failed to drain notification delivery cleanly: %v", err)
+		}
+		cancelDelivery()
+	}
 }
 
 func dbPath() string {
@@ -2115,21 +2156,19 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()
-		serverCtx, cancelServer := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Failed to shutdown web server cleanly: %v", err)
-		}
-		cancelServer()
-		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancelDelivery()
-		if err := closeNotificationDelivery(deliveryCtx, deps.NotificationService); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Failed to drain notification delivery cleanly: %v", err)
-		}
+		shutdownApplication(server, func(deliveryCtx context.Context) error {
+			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
+		})
+		close(shutdownDone)
 	}()
 	log.Println("Starting web server on :8080")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to run web server: %v", err)
+	}
+	if shutdownCtx.Err() != nil {
+		<-shutdownDone
 	}
 }

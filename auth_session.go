@@ -709,7 +709,8 @@ func handleAuthLogin(c *gin.Context) {
 		return
 	}
 	key := fmt.Sprintf("%s:login", rateLimitClientIP(c))
-	if limiter := loginRateLimiterForContext(c); limiter != nil && !limiter.Allow(key) {
+	limiter := loginRateLimiterForContext(c)
+	if limiter != nil && !limiter.Allow(key) {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many login attempts"})
 		return
 	}
@@ -740,6 +741,9 @@ func handleAuthLogin(c *gin.Context) {
 	})
 	switch outcome.Kind {
 	case authLoginSucceeded:
+		if limiter != nil {
+			limiter.Reset(key)
+		}
 		c.Set("actor", outcome.Username)
 	case authLoginSetupRequired:
 		c.JSON(http.StatusConflict, gin.H{"error": "setup required", "setup_required": true})

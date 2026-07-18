@@ -2,16 +2,37 @@ package scheduledruns_test
 
 import (
 	"database/sql"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"debian-updater/internal/audit"
+	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/scheduledruns"
 	"debian-updater/internal/servers"
+	"debian-updater/internal/updates"
 
 	_ "modernc.org/sqlite"
 )
+
+type failingRunUpdateRepository struct {
+	delegate *policies.SQLiteRepository
+	err      error
+}
+
+func (r failingRunUpdateRepository) CreateRun(run policies.Run) (policies.Run, bool, error) {
+	return r.delegate.CreateRun(run)
+}
+
+func (r failingRunUpdateRepository) GetRun(id int64) (policies.Run, error) {
+	return r.delegate.GetRun(id)
+}
+
+func (r failingRunUpdateRepository) UpdateRun(int64, policies.RunUpdate) error {
+	return r.err
+}
 
 func TestLifecycleHandlesSkippedCandidateIdempotently(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
@@ -74,5 +95,79 @@ func TestLifecycleHandlesSkippedCandidateIdempotently(t *testing.T) {
 	}
 	if listed.Total != 1 || listed.Items[0].Status != "ignored" {
 		t.Fatalf("audit events = %+v, want one ignored skip", listed.Items)
+	}
+}
+
+func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	for name, ensure := range map[string]func(*sql.DB) error{
+		"audit":    audit.EnsureSchema,
+		"jobs":     jobs.EnsureSchema,
+		"policies": policies.EnsureSchema,
+	} {
+		if err := ensure(db); err != nil {
+			t.Fatalf("%s schema error = %v", name, err)
+		}
+	}
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	policyRepository := policies.NewSQLiteRepository(policies.SQLiteRepositoryDeps{
+		DB:        func() *sql.DB { return db },
+		NowString: func() string { return now.Format(time.RFC3339Nano) },
+	})
+	jobManager := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		Now:   func() time.Time { return now },
+		NewID: func() string { return "scheduled-job" },
+	})
+	server := servers.Server{Name: "srv-update", Host: "example.org", Port: 22, User: "root"}
+	serverList := []servers.Server{server}
+	statusMap := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	}
+	state := servers.NewState(&sync.Mutex{}, &serverList, &statusMap, nil)
+	runnerStarted := false
+	lifecycle := scheduledruns.New(scheduledruns.Deps{
+		AuditService:                    audit.NewService(audit.ServiceOptions{DB: func() *sql.DB { return db }, Now: func() time.Time { return now }}),
+		CurrentJobManager:               func() *jobs.Manager { return jobManager },
+		JobTimestampNow:                 func() string { return now.Format(time.RFC3339Nano) },
+		LoadRetryPolicy:                 func() updates.RetryPolicy { return updates.RetryPolicy{} },
+		PolicyRepository:                failingRunUpdateRepository{delegate: policyRepository, err: errors.New("database unavailable")},
+		ServerState:                     state,
+		StartJobRunner:                  func(string, func()) { runnerStarted = true },
+		UpdateService:                   &updates.Service{},
+		StartScheduledRunReconciliation: func(int64, string) {},
+	})
+
+	result := lifecycle.HandleScheduledRun(policies.ScheduledRunRequest{
+		Policy: policies.Policy{
+			ID:            52,
+			Name:          "nightly updates",
+			ExecutionMode: policies.ExecutionAutoApply,
+			PackageScope:  policies.PackageScopeFull,
+			UpgradeMode:   policies.UpgradeModeStandard,
+		},
+		Server:          server,
+		ScheduledForUTC: now.Format(time.RFC3339Nano),
+		Admitted:        true,
+	})
+	if !result.Handled || !result.Inserted {
+		t.Fatalf("HandleScheduledRun() = %+v, want inserted run", result)
+	}
+	if runnerStarted {
+		t.Fatal("scheduled update runner started without a persisted running state")
+	}
+	if got := state.CurrentStatusSnapshot(server.Name); got == nil || got.Status != "idle" {
+		t.Fatalf("server status = %+v, want restored idle status", got)
+	}
+	job, err := jobManager.GetJob("scheduled-job")
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if job.Status != jobs.StatusFailed {
+		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusFailed)
 	}
 }

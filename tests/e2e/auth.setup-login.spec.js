@@ -539,6 +539,13 @@ test.describe.serial('setup and login flows', () => {
     });
     await page.route('**/api/hostkeys/scan', route => {
       const hostKeyState = state.hostKeyState || 'trusted';
+      if (hostKeyState === 'error') {
+        return route.fulfill({
+          status: 502,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'remote host unavailable' }),
+        });
+      }
       return fulfillJson(route, {
         host: 'demo-host.example.test',
         port: 22,
@@ -1248,6 +1255,14 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.clearKnownHostCount || 0).toBe(1);
     await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
     await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
+
+    state.hostKeyState = 'error';
+    await page.locator('#edit-check-known-host').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Check failed');
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
+    await acceptTypedConfirm(page, page.locator('#edit-clear-known-host'), 'demo-host.example.test:22');
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(2);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
   });
 
   test('status metrics stay compact without secondary descriptions', async ({ page }) => {

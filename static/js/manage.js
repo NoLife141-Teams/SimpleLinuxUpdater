@@ -779,7 +779,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             trustButton.hidden = currentState !== 'missing' && currentState !== 'changed';
             trustButton.disabled = busy;
             trustButton.textContent = currentState === 'changed' ? 'Replace Host Key' : 'Trust Host Key';
-            removeButton.disabled = busy || (currentState !== 'trusted' && currentState !== 'changed');
+            const canRemoveLocalEntry = !!host && (currentState === 'trusted' || currentState === 'changed' || currentState === 'error');
+            removeButton.disabled = busy || !canRemoveLocalEntry;
             removeButton.textContent = 'Remove Host Key';
         }
 

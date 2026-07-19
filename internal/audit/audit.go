@@ -410,7 +410,9 @@ func SanitizeMeta(meta map[string]any) string {
 		return "{}"
 	}
 	var normalized map[string]any
-	if err := json.Unmarshal(normalizedJSON, &normalized); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(normalizedJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&normalized); err != nil {
 		return "{}"
 	}
 	redacted := sanitizeMetaMap(normalized)

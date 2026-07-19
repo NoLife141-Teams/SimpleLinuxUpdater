@@ -40,6 +40,20 @@ func TestSanitizeMetaRedactsNestedSecrets(t *testing.T) {
 	}
 }
 
+func TestSanitizeMetaPreservesLargeIntegers(t *testing.T) {
+	const aboveJavaScriptSafeInteger int64 = 9007199254740993
+	raw := SanitizeMeta(map[string]any{
+		"event_id": aboveJavaScriptSafeInteger,
+		"nested":   map[string]any{"counter": uint64(18446744073709551615)},
+	})
+	if !strings.Contains(raw, `"event_id":9007199254740993`) {
+		t.Fatalf("SanitizeMeta() rounded large signed integer: %s", raw)
+	}
+	if !strings.Contains(raw, `"counter":18446744073709551615`) {
+		t.Fatalf("SanitizeMeta() rounded large unsigned integer: %s", raw)
+	}
+}
+
 func TestServiceRecordSanitizesTruncatesAndNotifies(t *testing.T) {
 	db := newTestDB(t)
 

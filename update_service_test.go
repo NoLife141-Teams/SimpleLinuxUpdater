@@ -89,6 +89,30 @@ func TestUpdateServiceUsesInjectedHostMaintenanceSession(t *testing.T) {
 	}
 }
 
+func TestRefreshServerFactsDoesNotPersistAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	saved := false
+	deps := testUpdateServiceDeps(t)
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		CollectServerFactsFunc: func(context.Context) serverFactsRecord {
+			cancel()
+			return serverFactsRecord{ServerName: "srv-cancelled", RunningKernelVersion: "unknown"}
+		},
+	})
+	deps.SaveServerFacts = func(serverFactsRecord) error {
+		saved = true
+		return nil
+	}
+
+	_, err := refreshServerFactsWithUpdateDeps(ctx, Server{Name: "srv-cancelled"}, deps)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("refreshServerFactsWithUpdateDeps() error = %v, want context canceled", err)
+	}
+	if saved {
+		t.Fatal("facts collected after cancellation were persisted")
+	}
+}
+
 func TestUpdateServiceSetupSSHAuthFailureSetsRuntimeError(t *testing.T) {
 	server := Server{Name: "srv-auth-fail", Host: "127.0.0.1", Port: 22, User: "root"}
 	mu.Lock()

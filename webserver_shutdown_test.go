@@ -37,35 +37,47 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 	}
 }
 
-func TestShutdownApplicationContinuesWaitingAfterRunnerGracePeriod(t *testing.T) {
+func TestShutdownApplicationHonorsRunnerGracePeriod(t *testing.T) {
 	waitForUpdateRunners()
 	originalTimeout := actionRunnerShutdownTimeout
 	actionRunnerShutdownTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { actionRunnerShutdownTimeout = originalTimeout })
 
 	releaseRunner := make(chan struct{})
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(releaseRunner)
+		}
+		waitForUpdateRunners()
+	})
 	startTrackedActionRunner(func() {
 		<-releaseRunner
 	})
 
+	notificationsClosed := make(chan struct{})
 	shutdownDone := make(chan struct{})
 	go func() {
-		shutdownApplication(nil, nil, nil)
+		shutdownApplication(nil, nil, func(context.Context) error {
+			close(notificationsClosed)
+			return nil
+		})
 		close(shutdownDone)
 	}()
 
 	select {
 	case <-shutdownDone:
-		t.Fatal("application shutdown returned while an action runner was still active")
-	case <-time.After(75 * time.Millisecond):
-	}
-
-	close(releaseRunner)
-	select {
-	case <-shutdownDone:
 	case <-time.After(time.Second):
-		t.Fatal("application shutdown did not finish after the runner completed")
+		t.Fatal("application shutdown exceeded the action runner grace period")
 	}
+	select {
+	case <-notificationsClosed:
+	default:
+		t.Fatal("notification shutdown was not attempted after the runner grace period")
+	}
+	released = true
+	close(releaseRunner)
+	waitForUpdateRunners()
 }
 
 func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing.T) {

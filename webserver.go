@@ -158,34 +158,64 @@ func getDialSSHConnection() func(Server, *ssh.ClientConfig) (sshConnection, erro
 	return dialSSHConnection
 }
 
-var updateRunnerWG sync.WaitGroup
+type actionRunnerTracker struct {
+	mu     sync.Mutex
+	active int
+	idle   chan struct{}
+}
 
-func startTrackedActionRunner(run func()) {
-	updateRunnerWG.Add(1)
+func newActionRunnerTracker() *actionRunnerTracker {
+	idle := make(chan struct{})
+	close(idle)
+	return &actionRunnerTracker{idle: idle}
+}
+
+func (t *actionRunnerTracker) start(run func()) {
+	t.mu.Lock()
+	if t.active == 0 {
+		t.idle = make(chan struct{})
+	}
+	t.active++
+	t.mu.Unlock()
 	go func() {
-		defer updateRunnerWG.Done()
+		defer t.done()
 		run()
 	}()
 }
 
+func (t *actionRunnerTracker) done() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.active--
+	if t.active == 0 {
+		close(t.idle)
+	}
+}
+
+func (t *actionRunnerTracker) wait(ctx context.Context) error {
+	t.mu.Lock()
+	idle := t.idle
+	t.mu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+var updateRunners = newActionRunnerTracker()
+
+func startTrackedActionRunner(run func()) {
+	updateRunners.start(run)
+}
+
 func waitForUpdateRunners() {
-	updateRunnerWG.Wait()
+	_ = updateRunners.wait(context.Background())
 }
 
 func waitForUpdateRunnersContext(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		waitForUpdateRunners()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		err := ctx.Err()
-		<-done
-		return err
-	}
+	return updateRunners.wait(ctx)
 }
 
 func shutdownApplication(server *http.Server, waitForScheduler func(), closeNotifications func(context.Context) error) {
@@ -202,7 +232,7 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), closeNoti
 
 	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
 	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
-		log.Printf("Action runners exceeded the shutdown grace period and were drained before shutdown continued: %v", err)
+		log.Printf("Action runners exceeded the shutdown grace period; continuing shutdown: %v", err)
 	}
 	cancelRunners()
 
@@ -905,6 +935,9 @@ func refreshServerFactsWithUpdateDeps(ctx context.Context, server Server, deps U
 	}
 	defer session.Close()
 	record := session.CollectServerFacts(ctx)
+	if err := ctx.Err(); err != nil {
+		return serverFactsRecord{}, err
+	}
 	if err := deps.SaveServerFacts(record); err != nil {
 		return serverFactsRecord{}, err
 	}

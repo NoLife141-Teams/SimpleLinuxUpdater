@@ -459,7 +459,6 @@ func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
 }
 
 func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy policies.Policy, server servers.Server, job jobs.Record, preStartStatus *servers.ServerStatus, operation string, persistenceErr error) {
-	l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 	jobStatus := jobs.StatusFailed
 	jobSummary := "Scheduled " + operation + " was not started because its run state could not be persisted"
 	errorClass := policies.RunReasonPersistence
@@ -468,6 +467,7 @@ func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy po
 			log.Printf("failed to mark scheduled job %q failed after run persistence error: %v", job.ID, err)
 		}
 	}
+	l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 	runStatus := policies.RunFailed
 	reason := policies.RunReasonPersistence
 	finishedAt := l.deps.JobTimestampNow()

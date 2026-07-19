@@ -120,16 +120,27 @@ func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing
 		DB:        func() *sql.DB { return db },
 		NowString: func() string { return now.Format(time.RFC3339Nano) },
 	})
-	jobManager := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
-		Now:   func() time.Time { return now },
-		NewID: func() string { return "scheduled-job" },
-	})
 	server := servers.Server{Name: "srv-update", Host: "example.org", Port: 22, User: "root"}
 	serverList := []servers.Server{server}
 	statusMap := map[string]*servers.ServerStatus{
 		server.Name: {Name: server.Name, Status: "idle"},
 	}
 	state := servers.NewState(&sync.Mutex{}, &serverList, &statusMap, nil)
+	jobManager := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		Now:   func() time.Time { return now },
+		NewID: func() string { return "scheduled-job" },
+		SyncRuntime: func(record jobs.Record) {
+			if record.Status != jobs.StatusFailed {
+				return
+			}
+			status := state.CurrentStatusSnapshot(record.ServerName)
+			if status == nil {
+				return
+			}
+			status.Status = "error"
+			state.RestoreStatusSnapshot(record.ServerName, status)
+		},
+	})
 	runnerStarted := false
 	lifecycle := scheduledruns.New(scheduledruns.Deps{
 		AuditService:                    audit.NewService(audit.ServiceOptions{DB: func() *sql.DB { return db }, Now: func() time.Time { return now }}),

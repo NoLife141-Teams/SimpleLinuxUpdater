@@ -138,7 +138,7 @@ func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing
 		LoadRetryPolicy:                 func() updates.RetryPolicy { return updates.RetryPolicy{} },
 		PolicyRepository:                failingRunUpdateRepository{delegate: policyRepository, err: errors.New("database unavailable")},
 		ServerState:                     state,
-		StartJobRunner:                  func(string, func()) { runnerStarted = true },
+		StartJobRunner:                  func(string, func(), ...func()) { runnerStarted = true },
 		UpdateService:                   &updates.Service{},
 		StartScheduledRunReconciliation: func(int64, string) {},
 	})

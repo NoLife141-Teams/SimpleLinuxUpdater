@@ -54,7 +54,7 @@ type AppDeps struct {
 	Now                             func() time.Time
 	JobTimestampNow                 func() string
 	LoadRetryPolicy                 func() RetryPolicy
-	StartJobRunner                  func(string, func())
+	StartJobRunner                  func(string, func(), ...func())
 	StartScheduledRunReconciliation func(int64, string)
 	NotifyDashboardEvent            func(string)
 	DashboardEventBroker            *events.Broker

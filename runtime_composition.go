@@ -231,8 +231,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.StartJobRunner == nil {
-		deps.StartJobRunner = func(jobID string, run func()) {
-			startJobRunnerWithManager(deps.CurrentJobManager, jobID, run)
+		deps.StartJobRunner = func(jobID string, run func(), onAdmissionFailure ...func()) {
+			startJobRunnerWithManager(deps.CurrentJobManager, jobID, run, onAdmissionFailure...)
 		}
 	}
 	if deps.StartScheduledRunReconciliation == nil {

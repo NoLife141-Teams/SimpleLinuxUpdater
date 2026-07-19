@@ -20,13 +20,14 @@ type lifecycleAuditRecord struct {
 }
 
 type lifecycleTestHarness struct {
-	state       *serverpkg.State
-	updateSvc   *UpdateService
-	jobManager  *JobManager
-	db          *sql.DB
-	auditEvents []lifecycleAuditRecord
-	runnerJobID string
-	runnerRun   func()
+	state                  *serverpkg.State
+	updateSvc              *UpdateService
+	jobManager             *JobManager
+	db                     *sql.DB
+	auditEvents            []lifecycleAuditRecord
+	runnerJobID            string
+	runnerRun              func()
+	runnerAdmissionFailure func()
 }
 
 func newLifecycleTestHarness(t *testing.T, server Server, status *ServerStatus) *lifecycleTestHarness {
@@ -70,9 +71,12 @@ func (h *lifecycleTestHarness) lifecycle() *serverActionLifecycle {
 		serverState:       h.state,
 		updateService:     h.updateSvc,
 		currentJobManager: func() *JobManager { return h.jobManager },
-		startJobRunner: func(_ func() *JobManager, jobID string, run func()) {
+		startJobRunner: func(_ func() *JobManager, jobID string, run func(), onAdmissionFailure ...func()) {
 			h.runnerJobID = jobID
 			h.runnerRun = run
+			if len(onAdmissionFailure) > 0 {
+				h.runnerAdmissionFailure = onAdmissionFailure[0]
+			}
 		},
 		loadRetryPolicy: func() RetryPolicy {
 			return RetryPolicy{MaxAttempts: 2, BaseDelay: time.Second, MaxDelay: 3 * time.Second, JitterPct: 0}
@@ -164,6 +168,23 @@ func TestServerActionLifecycleStartJobFailureRollsBackRuntimeState(t *testing.T)
 	if result.statusCode != http.StatusInternalServerError || result.body["error"] != "Failed to create update job" {
 		t.Fatalf("job failure result = %+v, want failed create update job", result)
 	}
+	restored := h.state.CurrentStatusSnapshot(server.Name)
+	if restored == nil || restored.Status != "idle" || restored.Logs != "ready" || len(restored.Upgradable) != 1 {
+		t.Fatalf("restored status = %+v, want original idle snapshot", restored)
+	}
+}
+
+func TestServerActionLifecycleRunnerAdmissionFailureRollsBackRuntimeState(t *testing.T) {
+	server := Server{Name: "srv-runner-fail", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	original := &ServerStatus{Name: server.Name, Status: "idle", Logs: "ready", Upgradable: []string{"openssl"}}
+	h := newLifecycleTestHarness(t, server, original)
+
+	result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+	if result.statusCode != http.StatusOK || h.runnerAdmissionFailure == nil {
+		t.Fatalf("StartUpdate result = %+v, admission rollback configured? %t", result, h.runnerAdmissionFailure != nil)
+	}
+
+	h.runnerAdmissionFailure()
 	restored := h.state.CurrentStatusSnapshot(server.Name)
 	if restored == nil || restored.Status != "idle" || restored.Logs != "ready" || len(restored.Upgradable) != 1 {
 		t.Fatalf("restored status = %+v, want original idle snapshot", restored)

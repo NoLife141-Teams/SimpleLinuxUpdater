@@ -177,19 +177,27 @@ func markInterruptedServerStateIdle(state *serverpkg.State, serverNames []string
 	}
 }
 
-func startJobRunner(jobID string, run func()) {
-	startJobRunnerWithManager(currentJobManager, jobID, run)
+func startJobRunner(jobID string, run func(), onAdmissionFailure ...func()) {
+	startJobRunnerWithManager(currentJobManager, jobID, run, onAdmissionFailure...)
 }
 
-func startJobRunnerWithManager(current func() *JobManager, jobID string, run func()) {
+func startJobRunnerWithManager(current func() *JobManager, jobID string, run func(), onAdmissionFailure ...func()) {
 	if current == nil {
 		current = currentJobManager
 	}
 	startTrackedActionRunner(func() {
+		restoreRuntime := func() {
+			for _, restore := range onAdmissionFailure {
+				if restore != nil {
+					restore()
+				}
+			}
+		}
 		jm := current()
 		if strings.TrimSpace(jobID) != "" {
 			if jm == nil {
 				log.Printf("failed to start job %q: job manager is unavailable", jobID)
+				restoreRuntime()
 				return
 			}
 			status := jobStatusRunning
@@ -197,6 +205,19 @@ func startJobRunnerWithManager(current func() *JobManager, jobID string, run fun
 				Status: &status,
 			}); err != nil {
 				log.Printf("failed to mark job %q running: %v", jobID, err)
+				failedStatus := jobStatusFailed
+				phase := jobPhaseComplete
+				summary := "Runner admission failed"
+				errorClass := "persistence"
+				if terminalErr := jm.Transition(jobID, JobTransitionIntent{
+					Status:     &failedStatus,
+					Phase:      &phase,
+					Summary:    &summary,
+					ErrorClass: &errorClass,
+				}); terminalErr != nil {
+					log.Printf("failed to terminalize job %q after runner admission failure: %v", jobID, terminalErr)
+				}
+				restoreRuntime()
 				return
 			}
 		}

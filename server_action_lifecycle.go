@@ -16,7 +16,7 @@ type serverActionLifecycle struct {
 	serverState       *serverpkg.State
 	updateService     *UpdateService
 	currentJobManager func() *JobManager
-	startJobRunner    func(func() *JobManager, string, func())
+	startJobRunner    func(func() *JobManager, string, func(), ...func())
 	loadRetryPolicy   func() RetryPolicy
 	audit             func(action, targetType, targetName, status, message string, meta map[string]any)
 }
@@ -182,6 +182,8 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
 		spec.runWithJob(l.updateService, server, actor, clientIP, policy, job.ID, sudoPassword)
+	}, func() {
+		l.serverState.RestoreStatusSnapshot(name, preStartStatus)
 	})
 	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	return serverActionLifecycleResult{

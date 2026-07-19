@@ -24,7 +24,7 @@ type Deps struct {
 	MaintenanceCoordinator          *maintenance.Coordinator
 	PolicyRepository                RunRepository
 	ServerState                     *servers.State
-	StartJobRunner                  func(string, func())
+	StartJobRunner                  func(string, func(), ...func())
 	StartScheduledRunReconciliation func(int64, string)
 	UpdateService                   *updates.Service
 }
@@ -275,6 +275,8 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 			Policy:   retryPolicy,
 			JobID:    job.ID,
 		})
+	}, func() {
+		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil
@@ -394,6 +396,8 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			Policy:          policy,
 			RetryPolicy:     retryPolicy,
 		})
+	}, func() {
+		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil

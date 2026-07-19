@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=operator-shell-20260713a">
-    <link rel="stylesheet" href="/static/css/index.css?v=independent-dashboard-columns-20260713">
+    <link rel="stylesheet" href="/static/css/index.css?v=single-progress-ring-20260717">
 </head>
 <body class="status-page">
     <div class="dashboard-shell">
@@ -202,13 +202,7 @@
                                     <col data-col-key="select" class="col-select">
                                     <col data-col-key="name" class="col-name">
                                     <col data-col-key="status" class="col-status">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase col-terminal">
-                                    <col class="col-summary">
+                                    <col class="col-progress">
                                     <col data-col-key="actions" class="col-actions">
                                 </colgroup>
                                 <thead>
@@ -227,13 +221,7 @@
                                                 <span class="sort-indicator" aria-hidden="true"></span>
                                             </button>
                                         </th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Pending approval" title="Pending approval">Approval</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Pre-checks" title="Pre-checks">Prechecks</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="APT update" title="APT update">APT update</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Upgrade" title="Upgrade">Upgrade</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Post-checks" title="Post-checks">Verify</span></th>
-                                        <th class="phase-header phase-terminal"><span class="col-title" aria-label="Done / Error" title="Done / Error">Done/Error</span></th>
-                                        <th><span class="col-title">Window</span></th>
+                                        <th class="progress-header"><span class="col-title">Progress</span></th>
                                         <th class="actions-col resizable">
                                             <span class="col-title">Actions</span>
                                             <span class="col-resize-handle" data-col-key="actions" aria-hidden="true"></span>
@@ -472,6 +460,6 @@
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/index-bulk-actions.js?v=frontend-modules-20260626a"></script>
-    <script src="/static/js/index.js?v=kernel-facts-20260716a"></script>
+    <script src="/static/js/index.js?v=single-progress-ring-20260717"></script>
 </body>
 </html>

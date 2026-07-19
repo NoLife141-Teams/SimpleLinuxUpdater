@@ -1203,6 +1203,52 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
+  test('desktop bulk action labels remain fully visible', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1565, height: 875 });
+    await page.goto('/');
+
+    const labelLayout = await page.locator('.rail-bulk .bulk-actions').evaluate(element =>
+      ['bulk-approve', 'bulk-approve-security', 'bulk-approve-kept-security'].map(id => element.querySelector(`#${id}`)).map(button => ({
+        id: button.id,
+        clientWidth: button.clientWidth,
+        scrollWidth: button.scrollWidth,
+        clientHeight: button.clientHeight,
+        scrollHeight: button.scrollHeight,
+        textOverflow: getComputedStyle(button).textOverflow,
+      })),
+    );
+
+    expect(labelLayout).not.toEqual([]);
+    for (const button of labelLayout) {
+      expect(button.scrollWidth, `${button.id} must not clip horizontally`).toBeLessThanOrEqual(button.clientWidth);
+      expect(button.scrollHeight, `${button.id} must not clip vertically`).toBeLessThanOrEqual(button.clientHeight);
+      expect(button.textOverflow, `${button.id} must not use an ellipsis`).not.toBe('ellipsis');
+    }
+  });
+
+  test('maintenance timeline uses one compact progress ring per server', async ({ page }) => {
+    const servers = [makeServer('ring-host', 'updating', [], { tags: ['test'] })];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1565, height: 875 });
+    await page.goto('/');
+
+    const row = page.locator('#servers-table tbody tr[data-name="ring-host"]');
+    await expect(row.locator('.timeline-progress-ring')).toHaveCount(1);
+    await expect(row.locator('.timeline-progress-ring')).toContainText('32%');
+    await expect(row.locator('.timeline-progress-copy')).toContainText('Pre-checks');
+    await expect(row.locator('.timeline-dot')).toHaveCount(0);
+    await expect(page.locator('#servers-table thead')).toContainText('Progress');
+
+    const ringSize = await row.locator('.timeline-progress-ring').evaluate(element => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }));
+    expect(ringSize.width).toBeLessThanOrEqual(44);
+    expect(ringSize.height).toBeLessThanOrEqual(44);
+  });
+
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     const pages = [

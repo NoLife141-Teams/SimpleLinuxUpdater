@@ -225,7 +225,7 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanHostKey() unexpected error: %v", err)
 	}
-	if scanned.Host != "example.com" || scanned.Port != 2222 || scanned.KnownHostsLine == "" || scanned.AlreadyTrusted {
+	if scanned.Host != "example.com" || scanned.Port != 2222 || scanned.KnownHostsLine == "" || scanned.AlreadyTrusted || scanned.HostEntryExists {
 		t.Fatalf("ScanHostKey() = %+v, want trimmed untrusted result", scanned)
 	}
 	trusted, err := svc.TrustHostKey("example.com", 2222, scanned.FingerprintSHA256)
@@ -241,6 +241,23 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 	}
 	if !trusted.AlreadyTrusted {
 		t.Fatalf("TrustHostKey(duplicate) = %+v, want already trusted", trusted)
+	}
+	trustedScan, err := svc.ScanHostKey("example.com", 2222)
+	if err != nil {
+		t.Fatalf("ScanHostKey(trusted) unexpected error: %v", err)
+	}
+	if !trustedScan.AlreadyTrusted || !trustedScan.HostEntryExists {
+		t.Fatalf("ScanHostKey(trusted) = %+v, want matching host entry", trustedScan)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte("[example.com]:2222 ssh-ed25519 AAAAold\n"), 0600); err != nil {
+		t.Fatalf("WriteFile(changed host key) error = %v", err)
+	}
+	changedScan, err := svc.ScanHostKey("example.com", 2222)
+	if err != nil {
+		t.Fatalf("ScanHostKey(changed) unexpected error: %v", err)
+	}
+	if changedScan.AlreadyTrusted || !changedScan.HostEntryExists {
+		t.Fatalf("ScanHostKey(changed) = %+v, want mismatched existing host entry", changedScan)
 	}
 	if _, err := svc.TrustHostKey("example.com", 2222, "SHA256:not-real"); !errors.Is(err, ErrFingerprintMismatch) {
 		t.Fatalf("TrustHostKey(mismatch) error = %v, want %v", err, ErrFingerprintMismatch)

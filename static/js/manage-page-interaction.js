@@ -53,7 +53,7 @@
         let filters = defaultFilters();
         let sort = { key: "name", direction: "asc" };
         let page = 1;
-        let editor = { sessionID: 0, open: false, originalName: "", draft: null, options: { trustHostKey: true }, hostKey: null, policyContext: emptyPolicyContext() };
+        let editor = { sessionID: 0, open: false, originalName: "", draft: null, hostKey: null, policyContext: emptyPolicyContext() };
         let audit = { query: { targetName: "", action: "", status: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
@@ -177,7 +177,7 @@
                 const draft = normalizedServerDraft(command === "createServer" ? payload : editor.draft);
                 const errors = [!String(draft.name || "").trim() && "name", !String(draft.host || "").trim() && "host", !String(draft.user || "").trim() && "user"].filter(Boolean);
                 if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
-                return { enabled: true, key, scope, command, payload: { ...draft, trustHostKey: command === "createServer" ? !!payload.trustHostKey : !!editor.options.trustHostKey, ...(command === "createServer" ? { uploadKey: !!payload.hasKeyFile } : { originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() }) } };
+                return { enabled: true, key, scope, command, payload: { ...draft, ...(command === "createServer" ? { trustHostKey: !!payload.trustHostKey, uploadKey: !!payload.hasKeyFile } : { originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() }) } };
             }
             if (command === "trustHostKey") {
                 const hostKey = editor.hostKey;
@@ -197,9 +197,8 @@
                 case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
-                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, options: { trustHostKey: true }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
+                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
                 case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];
-                case "editorOptionChanged": if (editor.open) editor.options = { ...editor.options, ...(input.patch || {}) }; return [effect("render", { area: "editor" })];
                 case "editorIdentityAccepted": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.originalName = String(input.name || editor.originalName); return [effect("render", { area: "editor" })];
                 case "editorClosed": invalidateEditorStreams(); editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];
                 case "hostKeyReceived": if (editor.open && input.sessionID === editor.sessionID && input.host === String(editor.draft.host || "").trim() && normalizePort(input.port) === normalizePort(editor.draft.port)) editor.hostKey = { ...clone(input.hostKey), host: String(input.host), port: normalizePort(input.port) }; return received("hostKey", input.requestID, input.hostKey);

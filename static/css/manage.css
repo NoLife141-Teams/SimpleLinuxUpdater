@@ -74,8 +74,124 @@
     background: rgba(255, 255, 255, 0.025);
 }
 
-#global-key-status {
-    min-height: 22px;
+.global-key-head-meta {
+    display: grid;
+    justify-items: end;
+    gap: 7px;
+    max-width: none;
+    text-align: right;
+}
+
+.global-key-head-meta .workspace-note {
+    max-width: none;
+    white-space: nowrap;
+}
+
+.global-key-state,
+.known-host-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.global-key-state::before,
+.known-host-state::before {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    content: "";
+}
+
+.global-key-state.is-configured,
+.known-host-state.is-trusted {
+    border-color: rgba(var(--success-rgb), 0.3);
+    background: rgba(var(--success-rgb), 0.09);
+    color: var(--success);
+}
+
+.global-key-state.is-missing,
+.known-host-state.is-missing,
+.known-host-state.is-stale {
+    border-color: rgba(var(--warning-rgb), 0.3);
+    background: rgba(var(--warning-rgb), 0.09);
+    color: var(--warning);
+}
+
+.global-key-state.is-error,
+.known-host-state.is-changed,
+.known-host-state.is-error {
+    border-color: rgba(var(--danger-rgb), 0.3);
+    background: rgba(var(--danger-rgb), 0.09);
+    color: var(--danger);
+}
+
+.known-host-section-head,
+.known-host-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+}
+
+.known-host-section-head .eyebrow {
+    flex: initial;
+}
+
+.known-host-facts {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.45fr) minmax(0, 1fr);
+    gap: 8px;
+    width: 100%;
+    margin: 0;
+}
+
+.known-host-facts > div {
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.known-host-facts dt {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.known-host-facts dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+}
+
+.known-host-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+}
+
+#edit-hostkey-status {
+    width: 100%;
+    min-height: 20px;
+}
+
+#edit-modal .modal > .modal-actions {
+    margin-top: 12px;
 }
 
 #manage-servers-table .pill,
@@ -151,6 +267,32 @@
     .action-right,
     .form-actions button,
     .form-actions .file-btn {
+        width: 100%;
+    }
+}
+
+@media (max-width: 640px) {
+    .global-key-panel .workspace-head {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .global-key-head-meta {
+        justify-items: start;
+        max-width: none;
+        text-align: left;
+    }
+
+    .global-key-head-meta .workspace-note {
+        font-size: 12px;
+    }
+
+    .known-host-facts {
+        grid-template-columns: 1fr;
+    }
+
+    .known-host-actions,
+    .known-host-actions button {
         width: 100%;
     }
 }

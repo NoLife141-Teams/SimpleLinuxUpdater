@@ -530,11 +530,38 @@ test.describe.serial('setup and login flows', () => {
       return route.fallback();
     });
     await page.route('**/api/keys/global', async route => {
-      if (route.request().method() === 'DELETE') {
+        if (route.request().method() === 'DELETE') {
         state.clearGlobalKeyCount = (state.clearGlobalKeyCount || 0) + 1;
+        state.hasGlobalKey = false;
         return fulfillJson(route, { ok: true });
       }
-      return fulfillJson(route, { has_key: true });
+      return fulfillJson(route, { has_key: state.hasGlobalKey ?? true, private_key: 'DO-NOT-RENDER-PRIVATE-KEY' });
+    });
+    await page.route('**/api/hostkeys/scan', route => {
+      const hostKeyState = state.hostKeyState || 'trusted';
+      return fulfillJson(route, {
+        host: 'demo-host.example.test',
+        port: 22,
+        algorithm: 'ssh-ed25519',
+        fingerprint_sha256: hostKeyState === 'changed' ? 'SHA256:new' : 'SHA256:trusted',
+        already_trusted: hostKeyState === 'trusted',
+        host_entry_exists: hostKeyState === 'trusted' || hostKeyState === 'changed',
+      });
+    });
+    await page.route('**/api/hostkeys/trust', async route => {
+      state.trustHostKeyCount = (state.trustHostKeyCount || 0) + 1;
+      state.hostKeyState = 'trusted';
+      return fulfillJson(route, {
+        host: 'demo-host.example.test',
+        port: 22,
+        fingerprint_sha256: 'SHA256:trusted',
+        already_trusted: false,
+      });
+    });
+    await page.route('**/api/hostkeys/clear', async route => {
+      state.clearKnownHostCount = (state.clearKnownHostCount || 0) + 1;
+      state.hostKeyState = 'missing';
+      return fulfillJson(route, { removed_entries: 1 });
     });
     await page.route('**/api/audit-events/prune', async route => {
       state.auditPruneCount = (state.auditPruneCount || 0) + 1;
@@ -1085,6 +1112,11 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/manage');
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
+    await expect(page.locator('#global-key-status')).toHaveText('Configured');
+    await expect(page.locator('#global-key-status')).toHaveClass(/is-configured/);
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
+    await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
+    await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
     await page.locator('#audit-table button[data-audit-detail="55"]').click();
     await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
@@ -1135,6 +1167,10 @@ test.describe.serial('setup and login flows', () => {
 
     await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
+    await expect(page.locator('#global-key-status')).toHaveText('Not configured');
+    await expect(page.locator('#global-key-status')).toHaveClass(/is-missing/);
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global Key');
+    await expect(clearGlobalKeyButton).toBeDisabled();
   });
 
   test('manage policy override list follows live tag edits', async ({ page }) => {
@@ -1146,6 +1182,10 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await expect(page.locator('#edit-trust-host-key')).toHaveCount(0);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+    await expect(page.locator('#edit-trust-known-host')).toBeHidden();
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
     const overrides = page.locator('#edit-policy-overrides');
     await expect(overrides).toContainText('Disable "Prod security"');
 
@@ -1170,6 +1210,44 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="Demo-Host"]').click();
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
+  });
+
+  test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {
+    const state = { hostKeyState: 'missing' };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
+    await expect(page.locator('#edit-known-host-fingerprint')).toHaveText('SHA256:trusted');
+    await expect(page.locator('#edit-trust-known-host')).toHaveText('Trust Host Key');
+    await expect(page.locator('#edit-trust-known-host')).toBeVisible();
+    await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
+
+    await page.locator('#edit-trust-known-host').click();
+    await expect(page.locator('#hostkey-title')).toHaveText('Trust SSH Host Key');
+    await page.locator('#hostkey-modal-trust').click();
+    await expect.poll(() => state.trustHostKeyCount || 0).toBe(1);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+    await expect(page.locator('#edit-trust-known-host')).toBeHidden();
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
+
+    state.hostKeyState = 'changed';
+    await page.locator('#edit-check-known-host').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Key changed');
+    await expect(page.locator('#edit-trust-known-host')).toHaveText('Replace Host Key');
+    await page.locator('#edit-trust-known-host').click();
+    await expect(page.locator('#hostkey-title')).toHaveText('Replace SSH Host Key');
+    await page.locator('#hostkey-modal-trust').click();
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(1);
+    await expect.poll(() => state.trustHostKeyCount || 0).toBe(2);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+
+    await acceptTypedConfirm(page, page.locator('#edit-clear-known-host'), 'demo-host.example.test:22');
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(2);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
+    await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
   });
 
   test('status metrics stay compact without secondary descriptions', async ({ page }) => {

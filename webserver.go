@@ -1808,6 +1808,7 @@ func serverInventoryHostKeyScanBody(result serverpkg.CommandResult) gin.H {
 		"fingerprint_sha256": scan.FingerprintSHA256,
 		"known_hosts_line":   scan.KnownHostsLine,
 		"already_trusted":    scan.AlreadyTrusted,
+		"host_entry_exists":  scan.HostEntryExists,
 	}
 }
 

@@ -299,6 +299,43 @@ func KnownHostLineExists(deps KnownHostsDeps, line string) (bool, error) {
 	return strings.Contains("\n"+string(data)+"\n", "\n"+cleanLine+"\n"), nil
 }
 
+func KnownHostEntryExists(deps KnownHostsDeps, host string, port int) (bool, error) {
+	token := KnownHostsHostToken(host, port)
+	if strings.TrimSpace(token) == "" {
+		return false, errors.New("host is required")
+	}
+	path, err := KnownHostsWritePath(deps)
+	if err != nil {
+		return false, err
+	}
+	knownHostsMu := deps.knownHostsMu()
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read known_hosts: %w", err)
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		for _, hostToken := range strings.Split(fields[0], ",") {
+			if strings.TrimSpace(hostToken) == token {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, error) {
 	token := KnownHostsHostToken(host, port)
 	if strings.TrimSpace(token) == "" {

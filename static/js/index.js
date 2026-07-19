@@ -292,13 +292,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            };
 	        }
 
+        function timelineDisplayLabel(timeline, options = {}) {
+            const state = String(timeline?.state || "idle").toLowerCase();
+            const terminalLabel = state === "done" ? "Done" : (state === "error" ? "Error" : "");
+            if (terminalLabel) {
+                return options.lastRunPrefix ? `Last run: ${terminalLabel}` : terminalLabel;
+            }
+            return timeline?.current_label || "Idle";
+        }
+
         function timelineProgressRing(timeline) {
             const state = String(timeline?.state || "idle").toLowerCase();
             const numericProgress = Number(timeline?.progress_pct || 0);
             const rawProgress = Number.isFinite(numericProgress) ? numericProgress : 0;
             const pct = state === "done" ? 100 : Math.max(0, Math.min(100, rawProgress));
             const roundedPct = Math.round(pct);
-            const label = timeline?.current_label || "Idle";
+            const label = timelineDisplayLabel(timeline);
             const summary = timeline?.summary || "No maintenance activity";
             const updatedAt = timeline?.updated_at_display || timeline?.updated_at || "";
             const centerLabel = state === "done" ? "✓" : (state === "error" ? "!" : `${roundedPct}%`);
@@ -893,7 +902,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(statusLabel(server.status))}</span>
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
-                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timeline.current_label || "Idle")}</span>
+                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
@@ -1684,6 +1693,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        : "None";
 	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
 	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
+	                    const timelineLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
 	                    const approvalCounts = presentation.approvalCounts;
 	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
 	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
@@ -1751,7 +1761,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td class="timeline-progress-col">
                             ${timelineProgressRing(timeline)}
                             <div class="timeline-progress-copy">
-                                <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
+                                <strong>${escapeHtml(timelineLabel)}</strong>
                                 <span>${escapeHtml(timelineSummary)}</span>
                                 ${failureReasonHtml}
                                 ${driftReasonHtml}

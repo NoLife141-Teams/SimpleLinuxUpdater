@@ -1403,7 +1403,7 @@ body.status-page .modal {
     margin-top: 14px;
 }
 
-.bulk-review-modal {
+body.status-page .bulk-review-modal {
     width: min(960px, calc(100vw - 32px));
 }
 
@@ -1422,7 +1422,7 @@ body.status-page .modal {
     background: rgba(255, 255, 255, 0.025);
 }
 
-.bulk-review-table {
+body.status-page .bulk-review-table {
     width: 100%;
     min-width: 0;
     margin-top: 10px;
@@ -1450,12 +1450,7 @@ body.status-page .modal {
 
 .bulk-review-table th:first-child,
 .bulk-review-table td:first-child {
-    width: 30%;
-}
-
-.bulk-review-table th:nth-child(2),
-.bulk-review-table td:nth-child(2) {
-    width: 28%;
+    width: 34%;
 }
 
 .bulk-review-row-ready td:last-child {
@@ -1532,7 +1527,7 @@ body.status-page table {
 }
 
 @media (max-width: 1180px) {
-    .dashboard-head,
+    body.status-page .dashboard-head,
     .dashboard-grid {
         grid-template-columns: 1fr;
     }
@@ -1637,9 +1632,6 @@ body.status-page .metric-strip {
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
 }
 
-.rail-bulk:has(.bulk-hint:not(.warning)) .inline-btn:disabled {
-    opacity: 0.28;
-}
 body.status-page .head-meta {
     align-self: start;
 }
@@ -1785,10 +1777,12 @@ body.status-page .head-meta {
     grid-column: 1 / -1;
 }
 
+.rail-bulk #bulk-update,
 .rail-bulk #bulk-autoremove,
 .rail-bulk #bulk-approve,
 .rail-bulk #bulk-approve-security,
 .rail-bulk #bulk-approve-kept-security,
+.rail-bulk #bulk-cancel,
 .rail-bulk .facts-refresh-action {
     grid-column: 1 / -1;
 }
@@ -1818,7 +1812,10 @@ body.status-page .head-meta {
 
 .fleet-rail .bulk-actions .inline-btn:disabled {
     cursor: not-allowed;
-    opacity: 0.48;
+    border-color: rgba(var(--border-rgb), 0.52);
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--faint);
+    opacity: 1;
     transform: none;
     box-shadow: none;
 }
@@ -1833,6 +1830,11 @@ body.status-page .head-meta {
     min-width: 0;
 }
 
+#fleet-status-filters .filter-pill:last-child:nth-child(odd),
+#fleet-tag-list .filter-pill:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
+
 .rail-controls .controls input,
 .rail-controls .controls select,
 .fleet-rail .bulk-actions .inline-btn {
@@ -1841,8 +1843,11 @@ body.status-page .head-meta {
 }
 
 .fleet-rail .bulk-actions .inline-btn {
-    min-height: 30px;
+    height: 34px;
+    min-height: 34px;
     padding: 4px 7px;
+    font-size: 13px;
+    white-space: nowrap;
 }
 
 .rail-auth {
@@ -2015,7 +2020,7 @@ body.status-page .timeline-column .metric-item small {
     gap: 7px;
 }
 
-.maintenance-table {
+body.status-page .maintenance-table {
     min-width: 0;
 }
 
@@ -2072,6 +2077,7 @@ body.status-page .timeline-column .metric-item small {
     height: 40px;
     flex: 0 0 40px;
     border-radius: 999px;
+    contain: paint;
     isolation: isolate;
 }
 
@@ -2167,6 +2173,11 @@ body.status-page .timeline-column .metric-item small {
     font-size: 9px;
     font-weight: 850;
     letter-spacing: -0.04em;
+}
+
+.timeline-progress-ring.phase-done .timeline-progress-value {
+    font-size: 14px;
+    line-height: 1;
 }
 
 .timeline-progress-copy {
@@ -2283,8 +2294,14 @@ body.status-page .timeline-column .metric-item small {
     overflow-y: visible;
 }
 
-.triage-wrap table {
-    min-width: 0;
+body.status-page .triage-wrap table {
+    min-width: 1160px;
+}
+
+.triage-table th {
+    line-height: 1.2;
+    overflow-wrap: normal;
+    white-space: normal;
 }
 
 .triage-table td {
@@ -2490,6 +2507,14 @@ body.status-page .timeline-column .metric-item small {
 
 .operations-grid-secondary {
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.35fr);
+    margin-top: 0;
+}
+
+.maintenance-scroll-hint,
+.triage-scroll-hint {
+    display: none;
+    margin: 6px 2px 0;
+    font-size: 11px;
 }
 
 .operations-grid-secondary .ops-panel-wide {
@@ -2573,6 +2598,16 @@ body.status-page .timeline-column .metric-item small {
     }
 }
 
+@media (max-width: 1600px) and (min-width: 981px) {
+    .timeline-column .operations-grid-secondary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .triage-scroll-hint {
+        display: block;
+    }
+}
+
 @media (max-width: 1280px) {
     .variant-c-layout {
         grid-template-columns: minmax(186px, 208px) minmax(0, 1fr);
@@ -2607,13 +2642,18 @@ body.status-page .table-wrap {
         overflow-x: auto;
     }
 
-    .maintenance-table,
-    .triage-wrap table {
+    body.status-page .maintenance-table,
+    body.status-page .triage-wrap table {
         width: max-content;
     }
 
-    .maintenance-table { min-width: 820px; }
-    .triage-wrap table { min-width: 1120px; }
+    body.status-page .maintenance-table { min-width: 820px; }
+    body.status-page .triage-wrap table { min-width: 1160px; }
+
+    .maintenance-scroll-hint,
+    .triage-scroll-hint {
+        display: block;
+    }
 
     .maintenance-table th,
     .maintenance-table td,
@@ -2680,6 +2720,7 @@ body.status-page .table-wrap {
     .fleet-rail,
     .timeline-workspace,
     .approval-triage-panel,
+    .timeline-column .operations-grid-secondary,
     .context-panel {
         grid-column: 1;
         grid-row: auto;
@@ -2708,6 +2749,10 @@ body.status-page .table-wrap {
 
     .context-panel {
         order: 6;
+    }
+
+    .timeline-column .operations-grid-secondary {
+        order: 7;
     }
 
     .rail-controls .controls,

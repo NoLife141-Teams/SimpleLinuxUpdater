@@ -177,7 +177,7 @@ test.describe.serial('setup and login flows', () => {
           security_updates: securityUpdates,
           cves,
         },
-        timeline: makeTimeline(server.status),
+        timeline: makeTimeline(server.timeline_status || server.status),
         approval_triage: {
           eligible: server.status === 'pending_approval' || pendingUpdates.length > 0,
           pending_packages: pendingUpdates.length,
@@ -703,10 +703,16 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#bulk-approve-security').click();
     await expect(page.locator('#bulk-review-modal')).toBeVisible();
     await expect(page.locator('#bulk-review-modal')).toContainText('demo-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('Server key');
+    await expect(page.locator('#bulk-review-modal')).not.toContainText('Server key');
     await expect(page.locator('#bulk-review-modal')).toContainText('standard security update');
     await expect(page.locator('#bulk-review-modal')).toContainText('runner-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('Password');
+    await expect(page.locator('#bulk-review-modal')).not.toContainText('Password');
+    await expect(page.locator('#bulk-review-modal th')).toHaveText([
+      'Server',
+      'Planned action',
+      'Server',
+      'Why skipped',
+    ]);
     await expect(page.locator('#bulk-review-modal')).toContainText('Not waiting for approval');
     await expect.poll(() => state.approveSecurity || 0).toBe(0);
     await page.locator('#bulk-review-confirm').click();
@@ -1203,32 +1209,43 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
-  test('desktop bulk action labels remain fully visible', async ({ page }) => {
+  test('desktop bulk actions share one width and keep labels fully visible', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await page.setViewportSize({ width: 1565, height: 875 });
     await page.goto('/');
 
     const labelLayout = await page.locator('.rail-bulk .bulk-actions').evaluate(element =>
-      ['bulk-approve', 'bulk-approve-security', 'bulk-approve-kept-security'].map(id => element.querySelector(`#${id}`)).map(button => ({
+      ['bulk-update', 'bulk-approve', 'bulk-approve-security', 'bulk-approve-kept-security', 'bulk-cancel', 'bulk-autoremove'].map(id => element.querySelector(`#${id}`)).map(button => ({
         id: button.id,
         clientWidth: button.clientWidth,
         scrollWidth: button.scrollWidth,
         clientHeight: button.clientHeight,
         scrollHeight: button.scrollHeight,
+        backgroundColor: getComputedStyle(button).backgroundColor,
+        borderColor: getComputedStyle(button).borderColor,
+        opacity: getComputedStyle(button).opacity,
         textOverflow: getComputedStyle(button).textOverflow,
       })),
     );
 
     expect(labelLayout).not.toEqual([]);
+    expect(new Set(labelLayout.map(button => button.clientWidth)).size, 'bulk actions must share one width').toBe(1);
+    expect(new Set(labelLayout.map(button => button.clientHeight)).size, 'bulk actions must share one height').toBe(1);
+    expect(new Set(labelLayout.map(button => button.backgroundColor)).size, 'disabled bulk actions must share one neutral background').toBe(1);
+    expect(new Set(labelLayout.map(button => button.borderColor)).size, 'disabled bulk actions must share one neutral border').toBe(1);
     for (const button of labelLayout) {
       expect(button.scrollWidth, `${button.id} must not clip horizontally`).toBeLessThanOrEqual(button.clientWidth);
       expect(button.scrollHeight, `${button.id} must not clip vertically`).toBeLessThanOrEqual(button.clientHeight);
+      expect(button.opacity, `${button.id} must keep its disabled label legible`).toBe('1');
       expect(button.textOverflow, `${button.id} must not use an ellipsis`).not.toBe('ellipsis');
     }
   });
 
   test('maintenance timeline uses one compact progress ring per server', async ({ page }) => {
-    const servers = [makeServer('ring-host', 'updating', [], { tags: ['test'] })];
+    const servers = [
+      makeServer('ring-host', 'updating', [], { tags: ['test'] }),
+      makeServer('done-host', 'idle', [], { tags: ['test'], timeline_status: 'done' }),
+    ];
     await stubDashboardApi(page, () => servers);
     await ensureAuthenticatedSession(page);
     await page.setViewportSize({ width: 1565, height: 875 });
@@ -1239,7 +1256,11 @@ test.describe.serial('setup and login flows', () => {
     await expect(row.locator('.timeline-progress-ring')).toContainText('32%');
     await expect(row.locator('.timeline-progress-copy')).toContainText('Pre-checks');
     await expect(row.locator('.timeline-dot')).toHaveCount(0);
-    await expect(page.locator('#servers-table thead')).toContainText('Progress');
+    await expect(page.locator('#servers-table thead')).toContainText('Maintenance');
+    await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).toContainText('Last run: Done');
+    await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).not.toContainText('Done / Error');
+    const operationsNestedInTimeline = await page.locator('.operations-grid-secondary').evaluate(element => element.parentElement.classList.contains('timeline-column'));
+    expect(operationsNestedInTimeline).toBe(true);
 
     const ringSize = await row.locator('.timeline-progress-ring').evaluate(element => ({
       width: element.getBoundingClientRect().width,
@@ -1247,6 +1268,51 @@ test.describe.serial('setup and login flows', () => {
     }));
     expect(ringSize.width).toBeLessThanOrEqual(44);
     expect(ringSize.height).toBeLessThanOrEqual(44);
+
+    const overflowSamples = await row.locator('.timeline-progress-ring').evaluate(async element => {
+      const tableWrap = element.closest('.table-wrap');
+      const samples = [];
+      for (let frame = 0; frame < 12; frame += 1) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        samples.push({
+          clientHeight: tableWrap.clientHeight,
+          scrollHeight: tableWrap.scrollHeight,
+        });
+      }
+      return samples;
+    });
+    for (const sample of overflowSamples) {
+      expect(sample.scrollHeight, 'the orbit must not create transient vertical overflow').toBe(sample.clientHeight);
+    }
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.reload();
+    const responsiveTable = await page.locator('.timeline-workspace .table-wrap').evaluate(element => {
+      const logs = element.querySelector('tbody tr[data-name="ring-host"] .timeline-actions button:last-child').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return { logsRight: logs.right, visibleRight: bounds.right };
+    });
+    expect(responsiveTable.logsRight, 'maintenance actions must be visible without horizontal scrolling at 1440px').toBeLessThanOrEqual(responsiveTable.visibleRight + 1);
+
+    const triageHeaders = await page.locator('#approval-triage-table th').evaluateAll(headers => headers.map(header => ({
+      clientWidth: header.clientWidth,
+      scrollWidth: header.scrollWidth,
+      clientHeight: header.clientHeight,
+      scrollHeight: header.scrollHeight,
+    })));
+    for (const header of triageHeaders) {
+      expect(header.scrollWidth, 'approval header must not overlap horizontally').toBeLessThanOrEqual(header.clientWidth);
+      expect(header.scrollHeight, 'approval header must not clip vertically').toBeLessThanOrEqual(header.clientHeight);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload();
+    const mobileHead = await page.locator('.dashboard-head').evaluate(element => {
+      const description = element.querySelector('.muted').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return { descriptionWidth: description.width, headWidth: bounds.width };
+    });
+    expect(mobileHead.descriptionWidth, 'mobile dashboard description must use the available row').toBeGreaterThan(mobileHead.headWidth * 0.8);
   });
 
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {

@@ -182,11 +182,13 @@ func waitForUpdateRunnersContext(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		err := ctx.Err()
+		<-done
+		return err
 	}
 }
 
-func shutdownApplication(server *http.Server, closeNotifications func(context.Context) error) {
+func shutdownApplication(server *http.Server, waitForScheduler func(), closeNotifications func(context.Context) error) {
 	if server != nil {
 		serverCtx, cancelServer := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -194,11 +196,13 @@ func shutdownApplication(server *http.Server, closeNotifications func(context.Co
 		}
 		cancelServer()
 	}
+	if waitForScheduler != nil {
+		waitForScheduler()
+	}
 
 	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
 	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
-		log.Printf("Action runners exceeded the shutdown grace period; continuing to wait: %v", err)
-		waitForUpdateRunners()
+		log.Printf("Action runners exceeded the shutdown grace period and were drained before shutdown continued: %v", err)
 	}
 	cancelRunners()
 
@@ -2162,7 +2166,7 @@ func main() {
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()
-		shutdownApplication(server, func(deliveryCtx context.Context) error {
+		shutdownApplication(server, deps.PolicyService.WaitScheduler, func(deliveryCtx context.Context) error {
 			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
 		})
 		close(shutdownDone)

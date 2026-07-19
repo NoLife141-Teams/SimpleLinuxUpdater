@@ -73,6 +73,8 @@ type ScheduledRunResult struct {
 type Service struct {
 	deps          ServiceDeps
 	schedulerOnce sync.Once
+	schedulerMu   sync.Mutex
+	schedulerDone chan struct{}
 	tickMu        sync.Mutex
 	missedTickMu  sync.Mutex
 	missedTicks   map[string]time.Time
@@ -119,6 +121,10 @@ func (s *Service) StartScheduler(ctx context.Context, options SchedulerOptions) 
 	deps := s.EnsureDeps()
 	options = options.WithDefaults()
 	s.schedulerOnce.Do(func() {
+		done := make(chan struct{})
+		s.schedulerMu.Lock()
+		s.schedulerDone = done
+		s.schedulerMu.Unlock()
 		if deps.MarkInterruptedRuns != nil {
 			if err := deps.MarkInterruptedRuns(); err != nil {
 				deps.Logf("failed to mark interrupted policy runs: %v", err)
@@ -128,6 +134,7 @@ func (s *Service) StartScheduler(ctx context.Context, options SchedulerOptions) 
 			deps.Logf("scheduled policy tick failed: %v", err)
 		}
 		go func() {
+			defer close(done)
 			ticker := time.NewTicker(options.TickInterval)
 			defer ticker.Stop()
 			for {
@@ -142,6 +149,18 @@ func (s *Service) StartScheduler(ctx context.Context, options SchedulerOptions) 
 			}
 		}()
 	})
+}
+
+func (s *Service) WaitScheduler() {
+	if s == nil {
+		return
+	}
+	s.schedulerMu.Lock()
+	done := s.schedulerDone
+	s.schedulerMu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 func (s *Service) NormalizePolicy(policy *Policy) error {

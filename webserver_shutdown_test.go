@@ -16,7 +16,7 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 	notificationsClosed := make(chan struct{})
 	shutdownDone := make(chan struct{})
 	go func() {
-		shutdownApplication(nil, func(context.Context) error {
+		shutdownApplication(nil, nil, func(context.Context) error {
 			close(notificationsClosed)
 			return nil
 		})
@@ -50,7 +50,7 @@ func TestShutdownApplicationContinuesWaitingAfterRunnerGracePeriod(t *testing.T)
 
 	shutdownDone := make(chan struct{})
 	go func() {
-		shutdownApplication(nil, nil)
+		shutdownApplication(nil, nil, nil)
 		close(shutdownDone)
 	}()
 
@@ -60,6 +60,52 @@ func TestShutdownApplicationContinuesWaitingAfterRunnerGracePeriod(t *testing.T)
 	case <-time.After(75 * time.Millisecond):
 	}
 
+	close(releaseRunner)
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("application shutdown did not finish after the runner completed")
+	}
+}
+
+func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing.T) {
+	waitForUpdateRunners()
+	allowAdmission := make(chan struct{})
+	releaseRunner := make(chan struct{})
+	schedulerJoined := make(chan struct{})
+	notificationsClosed := make(chan struct{})
+	shutdownDone := make(chan struct{})
+
+	go func() {
+		shutdownApplication(nil, func() {
+			<-allowAdmission
+			startTrackedActionRunner(func() {
+				<-releaseRunner
+			})
+			close(schedulerJoined)
+		}, func(context.Context) error {
+			close(notificationsClosed)
+			return nil
+		})
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-notificationsClosed:
+		t.Fatal("notification delivery closed before the scheduler joined")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(allowAdmission)
+	select {
+	case <-schedulerJoined:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not join")
+	}
+	select {
+	case <-notificationsClosed:
+		t.Fatal("notification delivery closed before the scheduler-admitted runner finished")
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(releaseRunner)
 	select {
 	case <-shutdownDone:

@@ -277,6 +277,106 @@ func AppendKnownHostLine(deps KnownHostsDeps, line string) (bool, error) {
 	return true, nil
 }
 
+func ReplaceKnownHostLine(deps KnownHostsDeps, host string, port int, line string) (bool, error) {
+	token := KnownHostsHostToken(host, port)
+	if strings.TrimSpace(token) == "" {
+		return false, errors.New("host is required")
+	}
+	cleanLine := strings.TrimSpace(line)
+	if cleanLine == "" {
+		return false, errors.New("empty known_hosts line")
+	}
+	path, err := KnownHostsWritePath(deps)
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return false, fmt.Errorf("create known_hosts dir: %w", err)
+	}
+	knownHostsMu := deps.knownHostsMu()
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read known_hosts: %w", err)
+	}
+	if strings.Contains("\n"+string(data)+"\n", "\n"+cleanLine+"\n") {
+		return true, nil
+	}
+
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	updatedLines := make([]string, 0, len(lines)+1)
+	for _, existingLine := range lines {
+		trimmed := strings.TrimSpace(existingLine)
+		if trimmed == "" {
+			if len(updatedLines) > 0 {
+				updatedLines = append(updatedLines, existingLine)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			updatedLines = append(updatedLines, existingLine)
+			continue
+		}
+		fields := strings.Fields(existingLine)
+		if len(fields) == 0 {
+			updatedLines = append(updatedLines, existingLine)
+			continue
+		}
+		hostTokens := strings.Split(fields[0], ",")
+		keptHostTokens := make([]string, 0, len(hostTokens))
+		for _, hostToken := range hostTokens {
+			trimmedToken := strings.TrimSpace(hostToken)
+			if trimmedToken != "" && trimmedToken != token {
+				keptHostTokens = append(keptHostTokens, trimmedToken)
+			}
+		}
+		if len(keptHostTokens) == 0 {
+			continue
+		}
+		if len(keptHostTokens) != len(hostTokens) {
+			fields[0] = strings.Join(keptHostTokens, ",")
+			existingLine = strings.Join(fields, " ")
+		}
+		updatedLines = append(updatedLines, existingLine)
+	}
+	updatedLines = append(updatedLines, cleanLine)
+	updated := strings.TrimRight(strings.Join(updatedLines, "\n"), "\n") + "\n"
+	if err := writeKnownHostsAtomically(path, []byte(updated)); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func writeKnownHostsAtomically(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".known_hosts-*")
+	if err != nil {
+		return fmt.Errorf("create temporary known_hosts: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set temporary known_hosts permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary known_hosts: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temporary known_hosts: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary known_hosts: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace known_hosts: %w", err)
+	}
+	return nil
+}
+
 func KnownHostLineExists(deps KnownHostsDeps, line string) (bool, error) {
 	cleanLine := strings.TrimSpace(line)
 	if cleanLine == "" {
@@ -465,11 +565,11 @@ func TrustHostKey(deps KnownHostsDeps, host string, port int, expectedFingerprin
 		return "", "", false, ErrFingerprintMismatch
 	}
 	line := BuildKnownHostsLine(host, port, key)
-	added, err := AppendKnownHostLine(deps, line)
+	alreadyTrusted, err := ReplaceKnownHostLine(deps, host, port, line)
 	if err != nil {
 		return "", "", false, err
 	}
-	return fingerprint, line, !added, nil
+	return fingerprint, line, alreadyTrusted, nil
 }
 
 func BuildAuthMethods(server Server) ([]ssh.AuthMethod, error) {

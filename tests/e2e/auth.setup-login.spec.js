@@ -1240,12 +1240,12 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#edit-trust-known-host').click();
     await expect(page.locator('#hostkey-title')).toHaveText('Replace SSH Host Key');
     await page.locator('#hostkey-modal-trust').click();
-    await expect.poll(() => state.clearKnownHostCount || 0).toBe(1);
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(0);
     await expect.poll(() => state.trustHostKeyCount || 0).toBe(2);
     await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
 
     await acceptTypedConfirm(page, page.locator('#edit-clear-known-host'), 'demo-host.example.test:22');
-    await expect.poll(() => state.clearKnownHostCount || 0).toBe(2);
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(1);
     await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
     await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
   });

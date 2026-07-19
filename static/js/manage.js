@@ -166,9 +166,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 hooks.onTrusting(scanned);
             }
             const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
-            if (replacing) {
-                await clearKnownHost(scanned.host, scanned.port);
-            }
             const trusted = await trustHostKey(scanned.host, scanned.port, scanned.fingerprint_sha256);
             return { alreadyTrusted: !!trusted?.already_trusted, replaced: replacing, scanned, trusted };
         }
@@ -930,7 +927,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 const replacing = !!currentKey.hostEntryExists;
                 setEditHostKeyStatus(replacing ? 'Replacing the saved known_hosts entry…' : 'Saving the host key to known_hosts…');
                 try {
-                    if (replacing) await clearKnownHost(host, port);
                     const trusted = await trustHostKey(host, port, currentKey.fingerprint);
                     const trustedKey = {
                         ...currentKey,

@@ -205,6 +205,15 @@ func TestProductionHostMaintenanceSessionOwnsHostFactProbing(t *testing.T) {
 	if facts.AptStatus != "ok" || facts.RebootRequired == nil || !*facts.RebootRequired {
 		t.Fatalf("CollectServerFacts() health = %+v", facts)
 	}
+	diskProbeCount := 0
+	for _, command := range conn.commands {
+		if command == precheckDiskSpaceCmd {
+			diskProbeCount++
+		}
+	}
+	if diskProbeCount != 1 {
+		t.Fatalf("disk probe executions = %d, want 1", diskProbeCount)
+	}
 }
 
 func TestProductionHostMaintenanceSessionPreUpdateFailuresAreSafeAndOrdered(t *testing.T) {

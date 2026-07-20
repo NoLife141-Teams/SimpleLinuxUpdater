@@ -311,12 +311,15 @@ func (s *Service) List(filter ListFilter) (ListResult, error) {
 	if pageSize > 200 {
 		pageSize = 200
 	}
-	offset := (page - 1) * pageSize
-
 	total, err := s.repo.Count(filter)
 	if err != nil {
 		return ListResult{}, &ListError{Stage: "count", Err: err}
 	}
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/pageSize {
+		return ListResult{Items: []Event{}, Page: page, PageSize: pageSize, Total: total}, nil
+	}
+	offset := (page - 1) * pageSize
 
 	items, err := s.repo.List(filter, pageSize, offset)
 	if err != nil {
@@ -402,27 +405,17 @@ func SanitizeMeta(meta map[string]any) string {
 	if meta == nil {
 		return "{}"
 	}
-	redacted := make(map[string]any, len(meta))
-	for k, v := range meta {
-		key := strings.ToLower(strings.TrimSpace(k))
-		isPrecheckField := strings.HasPrefix(key, "precheck")
-		isPassField := key == "pass" || strings.HasPrefix(key, "pass_") || strings.HasSuffix(key, "_pass")
-		if (isPassField || strings.Contains(key, "password") || strings.Contains(key, "secret") || strings.Contains(key, "token")) && !isPrecheckField {
-			continue
-		}
-		if !isPrecheckField && (key == "api_key" ||
-			key == "access_key" ||
-			key == "secret_key" ||
-			key == "private_key" ||
-			key == "ssh_key" ||
-			key == "key" ||
-			strings.HasPrefix(key, "key_") ||
-			strings.HasSuffix(key, "_key") ||
-			strings.HasSuffix(key, "_secret")) {
-			continue
-		}
-		redacted[k] = v
+	normalizedJSON, err := json.Marshal(meta)
+	if err != nil {
+		return "{}"
 	}
+	var normalized map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(normalizedJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&normalized); err != nil {
+		return "{}"
+	}
+	redacted := sanitizeMetaMap(normalized)
 	raw, err := json.Marshal(redacted)
 	if err != nil {
 		return "{}"
@@ -461,6 +454,53 @@ func SanitizeMeta(meta map[string]any) string {
 		return best
 	}
 	return string(raw)
+}
+
+func sanitizeMetaMap(meta map[string]any) map[string]any {
+	redacted := make(map[string]any, len(meta))
+	for key, value := range meta {
+		if sensitiveMetaKey(key) {
+			continue
+		}
+		redacted[key] = sanitizeMetaValue(value)
+	}
+	return redacted
+}
+
+func sanitizeMetaValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return sanitizeMetaMap(typed)
+	case []any:
+		redacted := make([]any, len(typed))
+		for i, item := range typed {
+			redacted[i] = sanitizeMetaValue(item)
+		}
+		return redacted
+	default:
+		return typed
+	}
+}
+
+func sensitiveMetaKey(rawKey string) bool {
+	key := strings.ToLower(strings.TrimSpace(rawKey))
+	if strings.HasPrefix(key, "precheck") {
+		return false
+	}
+	isPassField := key == "pass" || strings.HasPrefix(key, "pass_") || strings.HasSuffix(key, "_pass")
+	return isPassField ||
+		strings.Contains(key, "password") ||
+		strings.Contains(key, "secret") ||
+		strings.Contains(key, "token") ||
+		key == "api_key" ||
+		key == "access_key" ||
+		key == "secret_key" ||
+		key == "private_key" ||
+		key == "ssh_key" ||
+		key == "key" ||
+		strings.HasPrefix(key, "key_") ||
+		strings.HasSuffix(key, "_key") ||
+		strings.HasSuffix(key, "_secret")
 }
 
 func appendJSONBlock(buf *bytes.Buffer, title, raw string) {

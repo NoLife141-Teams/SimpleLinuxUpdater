@@ -45,6 +45,52 @@ func TestProcessDueSlotCanonicalizesFallBackOverlapOnce(t *testing.T) {
 	}
 }
 
+func TestWaitSchedulerJoinsActivePolicyTick(t *testing.T) {
+	secondTickStarted := make(chan struct{})
+	releaseSecondTick := make(chan struct{})
+	listCalls := 0
+	service := NewService(ServiceDeps{
+		ListPolicies: func() ([]Policy, error) {
+			listCalls++
+			if listCalls == 2 {
+				close(secondTickStarted)
+				<-releaseSecondTick
+			}
+			return nil, nil
+		},
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return nil, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		SnapshotServers:     func() []servers.Server { return nil },
+		HandleScheduledRun:  func(ScheduledRunRequest) ScheduledRunResult { return ScheduledRunResult{} },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	service.StartScheduler(ctx, SchedulerOptions{TickInterval: 5 * time.Millisecond})
+	select {
+	case <-secondTickStarted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("scheduler did not start its second policy tick")
+	}
+	cancel()
+
+	waitDone := make(chan struct{})
+	go func() {
+		service.WaitScheduler()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatal("WaitScheduler returned before the active policy tick completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseSecondTick)
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("WaitScheduler did not return after the active policy tick completed")
+	}
+}
+
 func testServiceDeps() ServiceDeps {
 	return ServiceDeps{
 		ListPolicies: func() ([]Policy, error) {

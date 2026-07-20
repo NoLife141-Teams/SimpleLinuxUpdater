@@ -27,7 +27,7 @@ func TestScheduledRunLifecycleDepsExposeExactLifecycleKnowledge(t *testing.T) {
 		"MaintenanceCoordinator":          reflect.TypeOf((*maintenancepkg.Coordinator)(nil)),
 		"PolicyRepository":                reflect.TypeOf((*scheduledrunspkg.RunRepository)(nil)).Elem(),
 		"ServerState":                     reflect.TypeOf((*serverpkg.State)(nil)),
-		"StartJobRunner":                  reflect.TypeOf((func(string, func()))(nil)),
+		"StartJobRunner":                  reflect.TypeOf((func(string, func(), ...func()))(nil)),
 		"StartScheduledRunReconciliation": reflect.TypeOf((func(int64, string))(nil)),
 		"UpdateService":                   reflect.TypeOf((*updatespkg.Service)(nil)),
 	}

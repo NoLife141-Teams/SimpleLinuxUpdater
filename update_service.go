@@ -68,7 +68,9 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 		d.CurrentJobManager = currentJobManager
 	}
 	if d.StartJobRunner == nil {
-		d.StartJobRunner = startJobRunner
+		d.StartJobRunner = func(jobID string, run func()) {
+			startJobRunner(jobID, run)
+		}
 	}
 	if d.AuditWithActor == nil {
 		d.AuditWithActor = auditWithActor

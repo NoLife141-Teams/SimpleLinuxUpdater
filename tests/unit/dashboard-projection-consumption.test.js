@@ -122,3 +122,15 @@ test("dashboard adapter cannot restore removed presentation derivation entry poi
     assert.doesNotMatch(source, /dashboardSummary\?\.fleet/);
     assert.match(source, /dashboardConsumption\.project/);
 });
+
+test("group rows span every rendered status table column", () => {
+    const root = path.resolve(__dirname, "../..");
+    const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
+    const source = fs.readFileSync(path.join(root, "static/js/index.js"), "utf8");
+    const colgroup = template.match(/<colgroup>([\s\S]*?)<\/colgroup>/)?.[1] || "";
+    const renderedColumnCount = (colgroup.match(/<col\b/g) || []).length;
+    const groupColspan = Number(source.match(/groupRow\.innerHTML\s*=\s*`<td colspan="(\d+)">/)?.[1]);
+
+    assert.ok(renderedColumnCount > 0, "status table must declare its rendered columns");
+    assert.equal(groupColspan, renderedColumnCount);
+});

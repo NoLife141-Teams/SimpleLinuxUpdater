@@ -468,6 +468,12 @@ func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) 
 	} else {
 		log.Printf("hostkey.scan trusted-check failed for %s:%d: %v", host, port, trustedErr)
 	}
+	hostEntryExists := alreadyTrusted
+	if exists, existsErr := KnownHostEntryExists(s.deps.KnownHosts, host, port); existsErr == nil {
+		hostEntryExists = exists
+	} else {
+		log.Printf("hostkey.scan entry-check failed for %s:%d: %v", host, port, existsErr)
+	}
 	return HostKeyScanResult{
 		Host:              host,
 		Port:              port,
@@ -475,6 +481,7 @@ func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) 
 		FingerprintSHA256: ssh.FingerprintSHA256(key),
 		KnownHostsLine:    line,
 		AlreadyTrusted:    alreadyTrusted,
+		HostEntryExists:   hostEntryExists,
 	}, nil
 }
 

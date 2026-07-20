@@ -68,6 +68,57 @@ func TestBackupRestoreRollbackUsesSameRestoredRuntimeInterface(t *testing.T) {
 	}
 }
 
+func TestBackupRestoreRollbackRecoversRuntimeAfterRequestCancellation(t *testing.T) {
+	preserveServerState(t)
+	preserveDBState(t)
+	preserveSessionState(t)
+	preserveEncryptionState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "cancelled-restore.db"))
+
+	if err := saveServers(); err != nil {
+		t.Fatalf("save initial Servers: %v", err)
+	}
+	backupKey := append([]byte(nil), getEncryptionKey()...)
+	restoredDB := buildBackupDatabaseDataWithKey(t, backupKey, Server{Name: "replacement", Host: "example.org", Port: 22, User: "root"}, "")
+	config, err := json.Marshal(map[string]string{"encryption_key": base64.StdEncoding.EncodeToString(backupKey)})
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	prepareCalls := 0
+	reloadCalls := 0
+	rollbackReloadHadLiveContext := false
+	service := NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+		RestoredRuntime: restoredRuntimeAdapter{
+			prepare: func() { prepareCalls++ },
+			reload: func(reloadCtx context.Context) error {
+				reloadCalls++
+				if reloadCalls == 1 {
+					cancel()
+					return ctx.Err()
+				}
+				rollbackReloadHadLiveContext = reloadCtx.Err() == nil
+				return nil
+			},
+		},
+	})
+
+	err = service.ApplyFiles(ctx, map[string][]byte{"servers.db": restoredDB, "config.json": config})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ApplyFiles() error = %v, want context canceled", err)
+	}
+	if prepareCalls != 2 {
+		t.Fatalf("restored-runtime prepare calls = %d, want forward and rollback", prepareCalls)
+	}
+	if reloadCalls != 2 {
+		t.Fatalf("restored-runtime reload calls = %d, want forward and rollback", reloadCalls)
+	}
+	if !rollbackReloadHadLiveContext {
+		t.Fatal("rollback runtime reload inherited the cancelled request context")
+	}
+}
+
 func buildBackupDatabaseDataWithKey(t *testing.T, key []byte, server Server, backupGlobalKey string) []byte {
 	t.Helper()
 	dbFile := filepath.Join(t.TempDir(), "backup-source.db")

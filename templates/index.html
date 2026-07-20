@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=operator-shell-20260713a">
-    <link rel="stylesheet" href="/static/css/index.css?v=independent-dashboard-columns-20260713">
+    <link rel="stylesheet" href="/static/css/index.css?v=status-bulk-review-20260719">
 </head>
 <body class="status-page">
     <div class="dashboard-shell">
@@ -67,12 +67,12 @@
 	                    <div class="rail-label">Bulk actions</div>
 	                    <div class="bulk-actions">
 	                        <label class="select-page"><input type="checkbox" id="select-all" aria-label="Select all visible hosts on this page"> Select page</label>
-	                        <button class="inline-btn primary-action" type="button" id="bulk-update">Update</button>
-	                        <button class="inline-btn" type="button" id="bulk-approve">Approve standard</button>
-                            <button class="inline-btn btn-security" type="button" id="bulk-approve-security">Approve standard security</button>
-                            <button class="inline-btn btn-security" type="button" id="bulk-approve-kept-security">Approve kept-back security</button>
-	                        <button class="inline-btn danger-action" type="button" id="bulk-cancel">Cancel</button>
-	                        <button class="inline-btn" type="button" id="bulk-autoremove">Autoremove</button>
+	                        <button class="inline-btn primary-action" type="button" id="bulk-update" disabled>Update</button>
+	                        <button class="inline-btn" type="button" id="bulk-approve" disabled>Approve standard</button>
+                            <button class="inline-btn btn-security" type="button" id="bulk-approve-security" disabled>Approve standard security</button>
+                            <button class="inline-btn btn-security" type="button" id="bulk-approve-kept-security" disabled>Approve kept-back security</button>
+	                        <button class="inline-btn danger-action" type="button" id="bulk-cancel" disabled>Cancel</button>
+	                        <button class="inline-btn" type="button" id="bulk-autoremove" disabled>Autoremove</button>
 	                        <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
 	                        <p class="bulk-hint" id="bulk-action-hint">No hosts selected</p>
 	                    </div>
@@ -195,6 +195,7 @@
                                 </div>
                             </div>
                         </div>
+                        <p class="table-scroll-hint maintenance-scroll-hint">Scroll horizontally to see every maintenance action.</p>
                     <div class="table-shell">
                         <div class="table-wrap">
                             <table id="servers-table" class="maintenance-table">
@@ -202,13 +203,7 @@
                                     <col data-col-key="select" class="col-select">
                                     <col data-col-key="name" class="col-name">
                                     <col data-col-key="status" class="col-status">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase">
-                                    <col class="col-phase col-terminal">
-                                    <col class="col-summary">
+                                    <col class="col-progress">
                                     <col data-col-key="actions" class="col-actions">
                                 </colgroup>
                                 <thead>
@@ -227,13 +222,7 @@
                                                 <span class="sort-indicator" aria-hidden="true"></span>
                                             </button>
                                         </th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Pending approval" title="Pending approval">Approval</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Pre-checks" title="Pre-checks">Prechecks</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="APT update" title="APT update">APT update</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Upgrade" title="Upgrade">Upgrade</span></th>
-                                        <th class="phase-header"><span class="col-title" aria-label="Post-checks" title="Post-checks">Verify</span></th>
-                                        <th class="phase-header phase-terminal"><span class="col-title" aria-label="Done / Error" title="Done / Error">Done/Error</span></th>
-                                        <th><span class="col-title">Window</span></th>
+                                        <th class="progress-header"><span class="col-title">Maintenance</span></th>
                                         <th class="actions-col resizable">
                                             <span class="col-title">Actions</span>
                                             <span class="col-resize-handle" data-col-key="actions" aria-hidden="true"></span>
@@ -272,6 +261,50 @@
                                 <tbody id="approval-triage-body"></tbody>
                             </table>
                         </div>
+                        <p class="table-scroll-hint triage-scroll-hint">Scroll horizontally to see every approval detail and action.</p>
+                    </section>
+
+                    <section class="operations-grid operations-grid-secondary fade-in" aria-label="Operational panels">
+                        <article class="ops-panel ops-panel-wide">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Audit trail</div>
+                                    <h2>Audit trail</h2>
+                                </div>
+                                <span class="mini-badge" id="observability-summary-label">7d --</span>
+                            </div>
+                            <div id="recent-activity" class="activity-list"></div>
+                        </article>
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Groups</div>
+                                    <h2>Tag summary</h2>
+                                </div>
+                                <span class="mini-badge" id="policy-summary-label">Policies --</span>
+                            </div>
+                            <div id="tag-summary" class="chip-list"></div>
+                        </article>
+                        <article class="ops-panel">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Failures</div>
+                                    <h2>Needs attention</h2>
+                                </div>
+                                <span class="mini-badge danger" id="failed-hosts-count">0</span>
+                            </div>
+                            <div id="failed-hosts-panel" class="mini-list"></div>
+                        </article>
+                        <article class="ops-panel ops-panel-wide">
+                            <div class="panel-head">
+                                <div>
+                                    <div class="eyebrow">Selected host</div>
+                                    <h2>Command history</h2>
+                                </div>
+                                <span class="mini-badge" id="command-history-count">0</span>
+                            </div>
+                            <div id="command-history-panel" class="activity-list"></div>
+                        </article>
                     </section>
                 </section>
 
@@ -329,48 +362,6 @@
                 </aside>
             </section>
 
-            <section class="operations-grid operations-grid-secondary fade-in" aria-label="Operational panels">
-                <article class="ops-panel ops-panel-wide">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Audit trail</div>
-                            <h2>Audit trail</h2>
-                        </div>
-                        <span class="mini-badge" id="observability-summary-label">7d --</span>
-                    </div>
-                    <div id="recent-activity" class="activity-list"></div>
-                </article>
-                <article class="ops-panel">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Groups</div>
-                            <h2>Tag summary</h2>
-                        </div>
-                        <span class="mini-badge" id="policy-summary-label">Policies --</span>
-                    </div>
-                    <div id="tag-summary" class="chip-list"></div>
-                </article>
-                <article class="ops-panel">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Failures</div>
-                            <h2>Needs attention</h2>
-                        </div>
-                        <span class="mini-badge danger" id="failed-hosts-count">0</span>
-                    </div>
-                    <div id="failed-hosts-panel" class="mini-list"></div>
-                </article>
-                <article class="ops-panel ops-panel-wide">
-                    <div class="panel-head">
-                        <div>
-                            <div class="eyebrow">Selected host</div>
-                            <h2>Command history</h2>
-                        </div>
-                        <span class="mini-badge" id="command-history-count">0</span>
-                    </div>
-                    <div id="command-history-panel" class="activity-list"></div>
-                </article>
-            </section>
         </main>
     </div>
 
@@ -430,9 +421,8 @@
                     <table class="bulk-review-table">
                         <thead>
                             <tr>
-                                <th>Host</th>
-                                <th>Auth</th>
-                                <th>Readiness</th>
+                                <th>Server</th>
+                                <th>Planned action</th>
                             </tr>
                         </thead>
                         <tbody id="bulk-review-eligible"></tbody>
@@ -443,9 +433,8 @@
                     <table class="bulk-review-table">
                         <thead>
                             <tr>
-                                <th>Host</th>
-                                <th>Auth</th>
-                                <th>Reason</th>
+                                <th>Server</th>
+                                <th>Why skipped</th>
                             </tr>
                         </thead>
                         <tbody id="bulk-review-skipped"></tbody>
@@ -471,7 +460,7 @@
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/index-bulk-actions.js?v=frontend-modules-20260626a"></script>
-    <script src="/static/js/index.js?v=kernel-facts-20260716a"></script>
+    <script src="/static/js/index-bulk-actions.js?v=bulk-review-clarity-20260719"></script>
+    <script src="/static/js/index.js?v=status-visual-audit-20260719"></script>
 </body>
 </html>

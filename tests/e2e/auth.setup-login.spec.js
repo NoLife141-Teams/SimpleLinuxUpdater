@@ -177,7 +177,7 @@ test.describe.serial('setup and login flows', () => {
           security_updates: securityUpdates,
           cves,
         },
-        timeline: makeTimeline(server.status),
+        timeline: makeTimeline(server.timeline_status || server.status),
         approval_triage: {
           eligible: server.status === 'pending_approval' || pendingUpdates.length > 0,
           pending_packages: pendingUpdates.length,
@@ -530,11 +530,45 @@ test.describe.serial('setup and login flows', () => {
       return route.fallback();
     });
     await page.route('**/api/keys/global', async route => {
-      if (route.request().method() === 'DELETE') {
+        if (route.request().method() === 'DELETE') {
         state.clearGlobalKeyCount = (state.clearGlobalKeyCount || 0) + 1;
+        state.hasGlobalKey = false;
         return fulfillJson(route, { ok: true });
       }
-      return fulfillJson(route, { has_key: true });
+      return fulfillJson(route, { has_key: state.hasGlobalKey ?? true, private_key: 'DO-NOT-RENDER-PRIVATE-KEY' });
+    });
+    await page.route('**/api/hostkeys/scan', route => {
+      const hostKeyState = state.hostKeyState || 'trusted';
+      if (hostKeyState === 'error') {
+        return route.fulfill({
+          status: 502,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'remote host unavailable' }),
+        });
+      }
+      return fulfillJson(route, {
+        host: 'demo-host.example.test',
+        port: 22,
+        algorithm: 'ssh-ed25519',
+        fingerprint_sha256: hostKeyState === 'changed' ? 'SHA256:new' : 'SHA256:trusted',
+        already_trusted: hostKeyState === 'trusted',
+        host_entry_exists: hostKeyState === 'trusted' || hostKeyState === 'changed',
+      });
+    });
+    await page.route('**/api/hostkeys/trust', async route => {
+      state.trustHostKeyCount = (state.trustHostKeyCount || 0) + 1;
+      state.hostKeyState = 'trusted';
+      return fulfillJson(route, {
+        host: 'demo-host.example.test',
+        port: 22,
+        fingerprint_sha256: 'SHA256:trusted',
+        already_trusted: false,
+      });
+    });
+    await page.route('**/api/hostkeys/clear', async route => {
+      state.clearKnownHostCount = (state.clearKnownHostCount || 0) + 1;
+      state.hostKeyState = 'missing';
+      return fulfillJson(route, { removed_entries: 1 });
     });
     await page.route('**/api/audit-events/prune', async route => {
       state.auditPruneCount = (state.auditPruneCount || 0) + 1;
@@ -703,10 +737,16 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#bulk-approve-security').click();
     await expect(page.locator('#bulk-review-modal')).toBeVisible();
     await expect(page.locator('#bulk-review-modal')).toContainText('demo-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('Server key');
+    await expect(page.locator('#bulk-review-modal')).not.toContainText('Server key');
     await expect(page.locator('#bulk-review-modal')).toContainText('standard security update');
     await expect(page.locator('#bulk-review-modal')).toContainText('runner-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('Password');
+    await expect(page.locator('#bulk-review-modal')).not.toContainText('Password');
+    await expect(page.locator('#bulk-review-modal th')).toHaveText([
+      'Server',
+      'Planned action',
+      'Server',
+      'Why skipped',
+    ]);
     await expect(page.locator('#bulk-review-modal')).toContainText('Not waiting for approval');
     await expect.poll(() => state.approveSecurity || 0).toBe(0);
     await page.locator('#bulk-review-confirm').click();
@@ -1079,6 +1119,11 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/manage');
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
+    await expect(page.locator('#global-key-status')).toHaveText('Configured');
+    await expect(page.locator('#global-key-status')).toHaveClass(/is-configured/);
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
+    await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
+    await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
     await page.locator('#audit-table button[data-audit-detail="55"]').click();
     await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
@@ -1129,6 +1174,10 @@ test.describe.serial('setup and login flows', () => {
 
     await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
+    await expect(page.locator('#global-key-status')).toHaveText('Not configured');
+    await expect(page.locator('#global-key-status')).toHaveClass(/is-missing/);
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global Key');
+    await expect(clearGlobalKeyButton).toBeDisabled();
   });
 
   test('manage policy override list follows live tag edits', async ({ page }) => {
@@ -1140,6 +1189,10 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await expect(page.locator('#edit-trust-host-key')).toHaveCount(0);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+    await expect(page.locator('#edit-trust-known-host')).toBeHidden();
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
     const overrides = page.locator('#edit-policy-overrides');
     await expect(overrides).toContainText('Disable "Prod security"');
 
@@ -1164,6 +1217,52 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="Demo-Host"]').click();
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
+  });
+
+  test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {
+    const state = { hostKeyState: 'missing' };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
+    await expect(page.locator('#edit-known-host-fingerprint')).toHaveText('SHA256:trusted');
+    await expect(page.locator('#edit-trust-known-host')).toHaveText('Trust Host Key');
+    await expect(page.locator('#edit-trust-known-host')).toBeVisible();
+    await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
+
+    await page.locator('#edit-trust-known-host').click();
+    await expect(page.locator('#hostkey-title')).toHaveText('Trust SSH Host Key');
+    await page.locator('#hostkey-modal-trust').click();
+    await expect.poll(() => state.trustHostKeyCount || 0).toBe(1);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+    await expect(page.locator('#edit-trust-known-host')).toBeHidden();
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
+
+    state.hostKeyState = 'changed';
+    await page.locator('#edit-check-known-host').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Key changed');
+    await expect(page.locator('#edit-trust-known-host')).toHaveText('Replace Host Key');
+    await page.locator('#edit-trust-known-host').click();
+    await expect(page.locator('#hostkey-title')).toHaveText('Replace SSH Host Key');
+    await page.locator('#hostkey-modal-trust').click();
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(0);
+    await expect.poll(() => state.trustHostKeyCount || 0).toBe(2);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Trusted');
+
+    await acceptTypedConfirm(page, page.locator('#edit-clear-known-host'), 'demo-host.example.test:22');
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(1);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
+    await expect(page.locator('#edit-clear-known-host')).toBeDisabled();
+
+    state.hostKeyState = 'error';
+    await page.locator('#edit-check-known-host').click();
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Check failed');
+    await expect(page.locator('#edit-clear-known-host')).toBeEnabled();
+    await acceptTypedConfirm(page, page.locator('#edit-clear-known-host'), 'demo-host.example.test:22');
+    await expect.poll(() => state.clearKnownHostCount || 0).toBe(2);
+    await expect(page.locator('#edit-known-host-state')).toHaveText('Not trusted');
   });
 
   test('status metrics stay compact without secondary descriptions', async ({ page }) => {
@@ -1201,6 +1300,112 @@ test.describe.serial('setup and login flows', () => {
       expect(metricState.timelineGap).toBeLessThanOrEqual(24);
       expect(metricState.height).toBeLessThan(300);
     }
+  });
+
+  test('desktop bulk actions share one width and keep labels fully visible', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1565, height: 875 });
+    await page.goto('/');
+
+    const labelLayout = await page.locator('.rail-bulk .bulk-actions').evaluate(element =>
+      ['bulk-update', 'bulk-approve', 'bulk-approve-security', 'bulk-approve-kept-security', 'bulk-cancel', 'bulk-autoremove'].map(id => element.querySelector(`#${id}`)).map(button => ({
+        id: button.id,
+        clientWidth: button.clientWidth,
+        scrollWidth: button.scrollWidth,
+        clientHeight: button.clientHeight,
+        scrollHeight: button.scrollHeight,
+        backgroundColor: getComputedStyle(button).backgroundColor,
+        borderColor: getComputedStyle(button).borderColor,
+        opacity: getComputedStyle(button).opacity,
+        textOverflow: getComputedStyle(button).textOverflow,
+      })),
+    );
+
+    expect(labelLayout).not.toEqual([]);
+    expect(new Set(labelLayout.map(button => button.clientWidth)).size, 'bulk actions must share one width').toBe(1);
+    expect(new Set(labelLayout.map(button => button.clientHeight)).size, 'bulk actions must share one height').toBe(1);
+    expect(new Set(labelLayout.map(button => button.backgroundColor)).size, 'disabled bulk actions must share one neutral background').toBe(1);
+    expect(new Set(labelLayout.map(button => button.borderColor)).size, 'disabled bulk actions must share one neutral border').toBe(1);
+    for (const button of labelLayout) {
+      expect(button.scrollWidth, `${button.id} must not clip horizontally`).toBeLessThanOrEqual(button.clientWidth);
+      expect(button.scrollHeight, `${button.id} must not clip vertically`).toBeLessThanOrEqual(button.clientHeight);
+      expect(button.opacity, `${button.id} must keep its disabled label legible`).toBe('1');
+      expect(button.textOverflow, `${button.id} must not use an ellipsis`).not.toBe('ellipsis');
+    }
+  });
+
+  test('maintenance timeline uses one compact progress ring per server', async ({ page }) => {
+    const servers = [
+      makeServer('ring-host', 'updating', [], { tags: ['test'] }),
+      makeServer('done-host', 'idle', [], { tags: ['test'], timeline_status: 'done' }),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1565, height: 875 });
+    await page.goto('/');
+
+    const row = page.locator('#servers-table tbody tr[data-name="ring-host"]');
+    await expect(row.locator('.timeline-progress-ring')).toHaveCount(1);
+    await expect(row.locator('.timeline-progress-ring')).toContainText('32%');
+    await expect(row.locator('.timeline-progress-copy')).toContainText('Pre-checks');
+    await expect(row.locator('.timeline-dot')).toHaveCount(0);
+    await expect(page.locator('#servers-table thead')).toContainText('Maintenance');
+    await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).toContainText('Last run: Done');
+    await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).not.toContainText('Done / Error');
+    const operationsNestedInTimeline = await page.locator('.operations-grid-secondary').evaluate(element => element.parentElement.classList.contains('timeline-column'));
+    expect(operationsNestedInTimeline).toBe(true);
+
+    const ringSize = await row.locator('.timeline-progress-ring').evaluate(element => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }));
+    expect(ringSize.width).toBeLessThanOrEqual(44);
+    expect(ringSize.height).toBeLessThanOrEqual(44);
+
+    const overflowSamples = await row.locator('.timeline-progress-ring').evaluate(async element => {
+      const tableWrap = element.closest('.table-wrap');
+      const samples = [];
+      for (let frame = 0; frame < 12; frame += 1) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        samples.push({
+          clientHeight: tableWrap.clientHeight,
+          scrollHeight: tableWrap.scrollHeight,
+        });
+      }
+      return samples;
+    });
+    for (const sample of overflowSamples) {
+      expect(sample.scrollHeight, 'the orbit must not create transient vertical overflow').toBe(sample.clientHeight);
+    }
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.reload();
+    const responsiveTable = await page.locator('.timeline-workspace .table-wrap').evaluate(element => {
+      const logs = element.querySelector('tbody tr[data-name="ring-host"] .timeline-actions button:last-child').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return { logsRight: logs.right, visibleRight: bounds.right };
+    });
+    expect(responsiveTable.logsRight, 'maintenance actions must be visible without horizontal scrolling at 1440px').toBeLessThanOrEqual(responsiveTable.visibleRight + 1);
+
+    const triageHeaders = await page.locator('#approval-triage-table th').evaluateAll(headers => headers.map(header => ({
+      clientWidth: header.clientWidth,
+      scrollWidth: header.scrollWidth,
+      clientHeight: header.clientHeight,
+      scrollHeight: header.scrollHeight,
+    })));
+    for (const header of triageHeaders) {
+      expect(header.scrollWidth, 'approval header must not overlap horizontally').toBeLessThanOrEqual(header.clientWidth);
+      expect(header.scrollHeight, 'approval header must not clip vertically').toBeLessThanOrEqual(header.clientHeight);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload();
+    const mobileHead = await page.locator('.dashboard-head').evaluate(element => {
+      const description = element.querySelector('.muted').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return { descriptionWidth: description.width, headWidth: bounds.width };
+    });
+    expect(mobileHead.descriptionWidth, 'mobile dashboard description must use the available row').toBeGreaterThan(mobileHead.headWidth * 0.8);
   });
 
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {

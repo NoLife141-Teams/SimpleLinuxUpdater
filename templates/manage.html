@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=operator-shell-20260713a">
-    <link rel="stylesheet" href="/static/css/manage.css?v=vscode-dark-20260601b">
+    <link rel="stylesheet" href="/static/css/manage.css?v=edit-modal-spacing-20260719">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -33,15 +33,17 @@
                             <div class="eyebrow">Global key</div>
                             <h2>Shared SSH access</h2>
                         </div>
-                        <p class="muted workspace-note">Use one SSH key for servers without a per-host key.</p>
+                        <div class="global-key-head-meta">
+                            <div id="global-key-status" class="global-key-state is-checking" role="status" aria-live="polite" aria-atomic="true">Checking…</div>
+                            <p class="muted workspace-note">Use one SSH key for servers without a per-host key.</p>
+                        </div>
                     </div>
                     <div class="key-actions">
                         <input class="file-input" type="file" id="global-key-file">
                         <label class="file-btn" for="global-key-file">Choose global key</label>
-                        <button class="primary-action" id="upload-global-key-btn" type="button">Upload Global Key</button>
-                        <button class="btn-danger" id="clear-global-key-btn" type="button">Clear Global Key</button>
+                        <button class="primary-action" id="upload-global-key-btn" type="button" disabled>Add Global Key</button>
+                        <button class="btn-danger" id="clear-global-key-btn" type="button" disabled title="No global key is configured">Clear Global Key</button>
                     </div>
-                    <div id="global-key-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
                 </article>
 
                 <article class="workspace add-server-panel">
@@ -263,9 +265,6 @@
                     <label for="edit-pass">Password</label>
                     <input type="password" id="edit-pass" placeholder="New password">
                 </div>
-                <div class="field full-width">
-                    <label class="checkbox-inline"><input type="checkbox" id="edit-trust-host-key" checked> Trust SSH host key on save when missing (confirm fingerprint)</label>
-                </div>
                 <div class="field">
                     <label>&nbsp;</label>
                     <button class="btn-danger" id="edit-clear-password" type="button">Clear Password</button>
@@ -283,12 +282,22 @@
                     <button class="btn-danger" id="edit-clear-key" type="button">Clear Key</button>
                 </div>
                 <div class="known-host-section full-width">
-                    <div class="eyebrow">Known host management</div>
-                    <p class="muted">Checks and clears known_hosts for the current host and SSH port in this form.</p>
-                    <button class="btn-ghost" id="edit-check-known-host" type="button">Check Known Host</button>
-                    <button class="btn-danger" id="edit-clear-known-host" type="button">Clear Known Host</button>
+                    <div class="known-host-section-head">
+                        <div class="eyebrow">Known host management</div>
+                        <div id="edit-known-host-state" class="known-host-state is-checking" role="status" aria-live="polite" aria-atomic="true">Checking…</div>
+                    </div>
+                    <p class="muted">Verify the remote SSH fingerprint before trusting it for this host and port.</p>
+                    <dl class="known-host-facts">
+                        <div><dt>Target</dt><dd id="edit-known-host-target">—</dd></div>
+                        <div><dt>Fingerprint</dt><dd id="edit-known-host-fingerprint">Not checked</dd></div>
+                    </dl>
+                    <div class="known-host-actions">
+                        <button class="btn-ghost" id="edit-check-known-host" type="button">Refresh status</button>
+                        <button class="primary-action" id="edit-trust-known-host" type="button" hidden>Trust Host Key</button>
+                        <button class="btn-danger" id="edit-clear-known-host" type="button" disabled>Remove Host Key</button>
+                    </div>
+                    <div id="edit-hostkey-status" class="muted" aria-live="polite" aria-atomic="true"></div>
                 </div>
-                <div id="edit-hostkey-status" class="muted full-width" role="status" aria-live="polite" aria-atomic="true"></div>
                 <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>
             </div>
             <div class="modal-actions">
@@ -343,9 +352,9 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=manage-interaction-20260713a"></script>
+    <script src="/static/js/manage-page-interaction.js?v=known-host-status-20260719"></script>
     <script src="/static/js/manage-modals.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=manage-interaction-20260713a"></script>
+    <script src="/static/js/manage.js?v=known-host-error-remove-20260719"></script>
 </body>
 </html>

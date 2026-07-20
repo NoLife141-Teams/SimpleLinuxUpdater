@@ -62,6 +62,8 @@ const maxUploadedKeyRequestBytes = maxUploadedKeyBytes + 1024*1024
 const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
+const serverShutdownTimeout = 10 * time.Second
+const notificationShutdownTimeout = 10 * time.Second
 const retryMaxAttemptsEnv = "DEBIAN_UPDATER_RETRY_MAX_ATTEMPTS"
 const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
 const retryMaxDelayMSEnv = "DEBIAN_UPDATER_RETRY_MAX_DELAY_MS"
@@ -90,6 +92,8 @@ const updateCompleteAction = "update.complete"
 const serverFactsRefreshAction = "server.facts.refresh"
 const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'"
 const browserAnnotationsContentSecurityPolicy = defaultContentSecurityPolicy + "; style-src-elem 'self' https://fonts.googleapis.com 'unsafe-inline'"
+
+var actionRunnerShutdownTimeout = 30 * time.Second
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
@@ -154,18 +158,91 @@ func getDialSSHConnection() func(Server, *ssh.ClientConfig) (sshConnection, erro
 	return dialSSHConnection
 }
 
-var updateRunnerWG sync.WaitGroup
+type actionRunnerTracker struct {
+	mu     sync.Mutex
+	active int
+	idle   chan struct{}
+}
 
-func startTrackedActionRunner(run func()) {
-	updateRunnerWG.Add(1)
+func newActionRunnerTracker() *actionRunnerTracker {
+	idle := make(chan struct{})
+	close(idle)
+	return &actionRunnerTracker{idle: idle}
+}
+
+func (t *actionRunnerTracker) start(run func()) {
+	t.mu.Lock()
+	if t.active == 0 {
+		t.idle = make(chan struct{})
+	}
+	t.active++
+	t.mu.Unlock()
 	go func() {
-		defer updateRunnerWG.Done()
+		defer t.done()
 		run()
 	}()
 }
 
+func (t *actionRunnerTracker) done() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.active--
+	if t.active == 0 {
+		close(t.idle)
+	}
+}
+
+func (t *actionRunnerTracker) wait(ctx context.Context) error {
+	t.mu.Lock()
+	idle := t.idle
+	t.mu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+var updateRunners = newActionRunnerTracker()
+
+func startTrackedActionRunner(run func()) {
+	updateRunners.start(run)
+}
+
 func waitForUpdateRunners() {
-	updateRunnerWG.Wait()
+	_ = updateRunners.wait(context.Background())
+}
+
+func waitForUpdateRunnersContext(ctx context.Context) error {
+	return updateRunners.wait(ctx)
+}
+
+func shutdownApplication(server *http.Server, waitForScheduler func(), closeNotifications func(context.Context) error) {
+	if server != nil {
+		serverCtx, cancelServer := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Failed to shutdown web server cleanly: %v", err)
+		}
+		cancelServer()
+	}
+	if waitForScheduler != nil {
+		waitForScheduler()
+	}
+
+	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
+	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
+		log.Printf("Action runners exceeded the shutdown grace period; continuing shutdown: %v", err)
+	}
+	cancelRunners()
+
+	if closeNotifications != nil {
+		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), notificationShutdownTimeout)
+		if err := closeNotifications(deliveryCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("Failed to drain notification delivery cleanly: %v", err)
+		}
+		cancelDelivery()
+	}
 }
 
 func dbPath() string {
@@ -845,9 +922,9 @@ func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 	return false, true
 }
 
-func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
+func refreshServerFactsWithUpdateDeps(ctx context.Context, server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
 	deps = updateServiceDepsWithDefaults(deps)
-	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+	session, err := deps.HostMaintenanceSessions.Open(ctx, HostMaintenanceSessionRequest{
 		Server:         server,
 		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
 		DialOperation:  "facts_refresh.ssh_dial",
@@ -857,7 +934,10 @@ func refreshServerFactsWithUpdateDeps(server Server, deps UpdateServiceDeps) (se
 		return serverFactsRecord{}, err
 	}
 	defer session.Close()
-	record := session.CollectServerFacts(context.Background())
+	record := session.CollectServerFacts(ctx)
+	if err := ctx.Err(); err != nil {
+		return serverFactsRecord{}, err
+	}
 	if err := deps.SaveServerFacts(record); err != nil {
 		return serverFactsRecord{}, err
 	}
@@ -893,7 +973,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
 
-	record, err := refreshServerFactsWithUpdateDeps(server, updateServiceEnsureDeps(deps.UpdateService))
+	record, err := refreshServerFactsWithUpdateDeps(c.Request.Context(), server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh failed", map[string]any{"error": err.Error()})
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh host facts: %v", err)})
@@ -1765,6 +1845,7 @@ func serverInventoryHostKeyScanBody(result serverpkg.CommandResult) gin.H {
 		"fingerprint_sha256": scan.FingerprintSHA256,
 		"known_hosts_line":   scan.KnownHostsLine,
 		"already_trusted":    scan.AlreadyTrusted,
+		"host_entry_exists":  scan.HostEntryExists,
 	}
 }
 
@@ -2115,21 +2196,19 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()
-		serverCtx, cancelServer := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Failed to shutdown web server cleanly: %v", err)
-		}
-		cancelServer()
-		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancelDelivery()
-		if err := closeNotificationDelivery(deliveryCtx, deps.NotificationService); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Failed to drain notification delivery cleanly: %v", err)
-		}
+		shutdownApplication(server, deps.PolicyService.WaitScheduler, func(deliveryCtx context.Context) error {
+			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
+		})
+		close(shutdownDone)
 	}()
 	log.Println("Starting web server on :8080")
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to run web server: %v", err)
+	}
+	if shutdownCtx.Err() != nil {
+		<-shutdownDone
 	}
 }

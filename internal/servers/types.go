@@ -101,6 +101,7 @@ type HostKeyScanResult struct {
 	FingerprintSHA256 string
 	KnownHostsLine    string
 	AlreadyTrusted    bool
+	HostEntryExists   bool
 }
 
 type HostKeyTrustResult struct {

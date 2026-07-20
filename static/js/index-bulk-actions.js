@@ -121,7 +121,7 @@
                 const row = document.createElement("tr");
                 row.className = "muted";
                 const cell = document.createElement("td");
-                cell.colSpan = 3;
+                cell.colSpan = 2;
                 cell.textContent = emptyText;
                 row.appendChild(cell);
                 body.appendChild(row);
@@ -130,7 +130,7 @@
             items.forEach(item => {
                 const row = document.createElement("tr");
                 row.className = skipped ? "bulk-review-row-skipped" : "bulk-review-row-ready";
-                [item.name, item.auth, skipped ? item.reason : item.readiness].forEach(value => {
+                [item.name, skipped ? item.reason : item.readiness].forEach(value => {
                     const cell = document.createElement("td");
                     cell.textContent = value || "-";
                     row.appendChild(cell);

@@ -61,6 +61,10 @@ func (s *productionHostMaintenanceSession) runUpdatePrechecks(ctx context.Contex
 
 func (s *productionHostMaintenanceSession) checkDiskSpace(ctx context.Context) PrecheckResult {
 	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDiskSpaceCmd)
+	return diskSpaceCheckResult(stdout, stderr, err)
+}
+
+func diskSpaceCheckResult(stdout, stderr string, err error) PrecheckResult {
 	output := compactInspectionOutput(stdout, stderr)
 	if err != nil {
 		return PrecheckResult{Name: "disk_space", Details: boundedInspectionDetail("Failed to read free disk space: %v", err), Output: output}
@@ -274,7 +278,7 @@ func (s *productionHostMaintenanceSession) collectServerFacts(ctx context.Contex
 			return health.ProbeResult{Output: stdout, Stderr: stderr, Err: err}
 		case health.ProbeDisk:
 			stdout, stderr, err := s.runInspectionCommand(ctx, precheckDiskSpaceCmd)
-			check := s.checkDiskSpace(ctx)
+			check := diskSpaceCheckResult(stdout, stderr, err)
 			result := health.ProbeResult{Output: stdout, Stderr: stderr, Status: inspectionHealthStatus(check), Details: check.Details, Err: err}
 			if freeKB, totalKB, ok := inspectionDiskFreeTotalKB(stdout); ok {
 				result.FreeKB, result.TotalKB = freeKB, totalKB

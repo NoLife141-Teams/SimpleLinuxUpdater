@@ -198,7 +198,7 @@ func (c *CommandService) ScanHostKey(host string, port int) CommandResult {
 			TargetName: host,
 			Status:     "success",
 			Message:    "Host key scanned",
-			Meta:       map[string]any{"port": port, "algorithm": result.Algorithm, "already_trusted": result.AlreadyTrusted},
+			Meta:       map[string]any{"port": port, "algorithm": result.Algorithm, "already_trusted": result.AlreadyTrusted, "host_entry_exists": result.HostEntryExists},
 		},
 	}
 }

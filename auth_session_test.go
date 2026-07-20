@@ -898,6 +898,26 @@ func TestAuthSetupLoginLogoutAndGate(t *testing.T) {
 	})
 }
 
+func TestSuccessfulLoginResetsRateLimitBucket(t *testing.T) {
+	limiter := NewAuthRateLimiter(time.Minute, 1)
+	t.Cleanup(limiter.Stop)
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "login-rate-reset.db"), AppDeps{
+		LoginRateLimiter: limiter,
+	})
+	app.authenticate(t)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"username":"admin","password":"`+testPasswordStrong+`"}`))
+		markSameOriginAuthRequest(req)
+		req.Header.Set("Content-Type", "application/json")
+		app.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("successful login attempt %d status = %d, want %d (body=%s)", attempt, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+}
+
 func TestAuthenticatedHTMLRoutesSetNoStoreHeaders(t *testing.T) {
 	preserveDBState(t)
 	preserveSessionState(t)

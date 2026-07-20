@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -225,7 +226,7 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanHostKey() unexpected error: %v", err)
 	}
-	if scanned.Host != "example.com" || scanned.Port != 2222 || scanned.KnownHostsLine == "" || scanned.AlreadyTrusted {
+	if scanned.Host != "example.com" || scanned.Port != 2222 || scanned.KnownHostsLine == "" || scanned.AlreadyTrusted || scanned.HostEntryExists {
 		t.Fatalf("ScanHostKey() = %+v, want trimmed untrusted result", scanned)
 	}
 	trusted, err := svc.TrustHostKey("example.com", 2222, scanned.FingerprintSHA256)
@@ -242,8 +243,46 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 	if !trusted.AlreadyTrusted {
 		t.Fatalf("TrustHostKey(duplicate) = %+v, want already trusted", trusted)
 	}
+	trustedScan, err := svc.ScanHostKey("example.com", 2222)
+	if err != nil {
+		t.Fatalf("ScanHostKey(trusted) unexpected error: %v", err)
+	}
+	if !trustedScan.AlreadyTrusted || !trustedScan.HostEntryExists {
+		t.Fatalf("ScanHostKey(trusted) = %+v, want matching host entry", trustedScan)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte("[example.com]:2222 ssh-ed25519 AAAAold\n"), 0600); err != nil {
+		t.Fatalf("WriteFile(changed host key) error = %v", err)
+	}
+	changedScan, err := svc.ScanHostKey("example.com", 2222)
+	if err != nil {
+		t.Fatalf("ScanHostKey(changed) unexpected error: %v", err)
+	}
+	if changedScan.AlreadyTrusted || !changedScan.HostEntryExists {
+		t.Fatalf("ScanHostKey(changed) = %+v, want mismatched existing host entry", changedScan)
+	}
 	if _, err := svc.TrustHostKey("example.com", 2222, "SHA256:not-real"); !errors.Is(err, ErrFingerprintMismatch) {
 		t.Fatalf("TrustHostKey(mismatch) error = %v, want %v", err, ErrFingerprintMismatch)
+	}
+	raw, err := os.ReadFile(knownHostsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(after mismatch) error = %v", err)
+	}
+	if string(raw) != "[example.com]:2222 ssh-ed25519 AAAAold\n" {
+		t.Fatalf("known_hosts after rejected replacement = %q, want original entry", raw)
+	}
+	replaced, err := svc.TrustHostKey("example.com", 2222, changedScan.FingerprintSHA256)
+	if err != nil {
+		t.Fatalf("TrustHostKey(replacement) unexpected error: %v", err)
+	}
+	if replaced.AlreadyTrusted {
+		t.Fatalf("TrustHostKey(replacement) = %+v, want replaced entry", replaced)
+	}
+	raw, err = os.ReadFile(knownHostsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(after replacement) error = %v", err)
+	}
+	if strings.Contains(string(raw), "AAAAold") || !strings.Contains(string(raw), replaced.KnownHostsLine) {
+		t.Fatalf("known_hosts after replacement = %q, want only new host key", raw)
 	}
 	cleared, err := svc.ClearKnownHost("example.com", 2222)
 	if err != nil {
@@ -252,7 +291,7 @@ func TestKnownHostsScanTrustClearAndGlobalKeyFallback(t *testing.T) {
 	if cleared.RemovedEntries != 1 {
 		t.Fatalf("ClearKnownHost() removed = %d, want 1", cleared.RemovedEntries)
 	}
-	raw, err := os.ReadFile(knownHostsPath)
+	raw, err = os.ReadFile(knownHostsPath)
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}

@@ -62,7 +62,7 @@ func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server
 		LoadRetryPolicy: func() RetryPolicy {
 			return RetryPolicy{MaxAttempts: 4, BaseDelay: time.Second, MaxDelay: 5 * time.Second, JitterPct: 7}
 		},
-		StartJobRunner:                  func(string, func()) {},
+		StartJobRunner:                  func(string, func(), ...func()) {},
 		StartScheduledRunReconciliation: func(int64, string) {},
 	}
 	deps = deps.withDefaults()
@@ -209,7 +209,7 @@ func TestScheduledRunLifecycleUpdateJobCreationSuccessLoadsRetryOnce(t *testing.
 		atomic.AddInt32(&retryLoads, 1)
 		return RetryPolicy{MaxAttempts: 3, BaseDelay: 2 * time.Second, MaxDelay: 9 * time.Second, JitterPct: 11}
 	}
-	deps.StartJobRunner = func(jobID string, run func()) {
+	deps.StartJobRunner = func(jobID string, run func(), _ ...func()) {
 		runnerJobID = jobID
 	}
 	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
@@ -266,7 +266,7 @@ func TestScheduledRunLifecycleScanJobCreationSuccessLoadsRetryOnce(t *testing.T)
 		atomic.AddInt32(&retryLoads, 1)
 		return RetryPolicy{MaxAttempts: 2, BaseDelay: time.Second, MaxDelay: 3 * time.Second, JitterPct: 5}
 	}
-	deps.StartJobRunner = func(jobID string, run func()) {
+	deps.StartJobRunner = func(jobID string, run func(), _ ...func()) {
 		runnerJobID = jobID
 	}
 
@@ -369,7 +369,7 @@ func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
 		AuditWithActor:  func(string, string, string, string, string, string, string, map[string]any) {},
 		JobTimestampNow: deps.JobTimestampNow,
 	})
-	deps.StartJobRunner = func(_ string, run func()) { run() }
+	deps.StartJobRunner = func(_ string, run func(), _ ...func()) { run() }
 	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
 		job, err := jm.GetJob(jobID)
 		if err != nil {
@@ -427,7 +427,7 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 		AuditWithActor:  func(string, string, string, string, string, string, string, map[string]any) {},
 		JobTimestampNow: deps.JobTimestampNow,
 	})
-	deps.StartJobRunner = func(_ string, run func()) {
+	deps.StartJobRunner = func(_ string, run func(), _ ...func()) {
 		run()
 	}
 	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {

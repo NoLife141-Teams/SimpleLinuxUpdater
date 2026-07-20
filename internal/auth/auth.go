@@ -172,6 +172,15 @@ func (l *RateLimiter) Allow(key string) bool {
 	return true
 }
 
+func (l *RateLimiter) Reset(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	delete(l.buckets, key)
+	l.mu.Unlock()
+}
+
 func (l *RateLimiter) Limited(key string) bool {
 	now := time.Now()
 	l.mu.Lock()

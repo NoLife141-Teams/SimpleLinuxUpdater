@@ -292,25 +292,32 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            };
 	        }
 
-        function timelinePhaseMap(server) {
-            const phases = Array.isArray(getServerTimeline(server)?.phases) ? getServerTimeline(server).phases : [];
-            return new Map(phases.map(phase => [phase.key, phase]));
+        function timelineDisplayLabel(timeline, options = {}) {
+            const state = String(timeline?.state || "idle").toLowerCase();
+            const terminalLabel = state === "done" ? "Done" : (state === "error" ? "Error" : "");
+            if (terminalLabel) {
+                return options.lastRunPrefix ? `Last run: ${terminalLabel}` : terminalLabel;
+            }
+            return timeline?.current_label || "Idle";
         }
 
-	        function timelinePhaseCell(server, key) {
-	            const phase = timelinePhaseMap(server).get(key) || { state: "pending", progress_pct: 0 };
-	            const state = String(phase.state || "pending").toLowerCase();
-	            const pct = Math.max(0, Math.min(100, Number(phase.progress_pct || 0)));
-	            const label = phase.label || key;
-	            const summary = phase.summary || "";
-	            const updatedAt = phase.updated_at_display || phase.updated_at || "";
-	            const aria = [label, state, summary, updatedAt].filter(Boolean).join(" · ");
-	            return `
-                <span class="timeline-dot phase-${escapeHtml(state)}" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-phase-label="${escapeHtml(label)}" data-phase-state="${escapeHtml(state)}" data-phase-summary="${escapeHtml(summary)}" data-phase-time="${escapeHtml(updatedAt)}" data-phase-progress="${escapeHtml(String(pct))}">
-	                    <span class="${progressClass(pct)}"></span>
-	                </span>
-	            `;
-	        }
+        function timelineProgressRing(timeline) {
+            const state = String(timeline?.state || "idle").toLowerCase();
+            const numericProgress = Number(timeline?.progress_pct || 0);
+            const rawProgress = Number.isFinite(numericProgress) ? numericProgress : 0;
+            const pct = state === "done" ? 100 : Math.max(0, Math.min(100, rawProgress));
+            const roundedPct = Math.round(pct);
+            const label = timelineDisplayLabel(timeline);
+            const summary = timeline?.summary || "No maintenance activity";
+            const updatedAt = timeline?.updated_at_display || timeline?.updated_at || "";
+            const centerLabel = state === "done" ? "✓" : (state === "error" ? "!" : `${roundedPct}%`);
+            const aria = [label, state, `${roundedPct}%`, summary, updatedAt].filter(Boolean).join(" · ");
+            return `
+                <span class="timeline-progress-ring phase-${escapeHtml(state)} ${progressClass(pct)}" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-phase-label="${escapeHtml(label)}" data-phase-state="${escapeHtml(state)}" data-phase-summary="${escapeHtml(summary)}" data-phase-time="${escapeHtml(updatedAt)}" data-phase-progress="${escapeHtml(String(roundedPct))}">
+                    <span class="timeline-progress-value" aria-hidden="true">${escapeHtml(centerLabel)}</span>
+                </span>
+            `;
+        }
 
         function hasEffectiveKey(server) {
             return !!serverPresentation(server)?.auth.effectiveKey;
@@ -895,7 +902,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(statusLabel(server.status))}</span>
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
-                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timeline.current_label || "Idle")}</span>
+                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
@@ -1655,7 +1662,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (group.key) {
                     const groupRow = document.createElement('tr');
                     groupRow.className = 'group-row';
-                    groupRow.innerHTML = `<td colspan="11">${escapeHtml(group.key)}</td>`;
+                    groupRow.innerHTML = `<td colspan="5">${escapeHtml(group.key)}</td>`;
                     tbody.appendChild(groupRow);
                 }
                 group.items.forEach(presentation => {
@@ -1686,6 +1693,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        : "None";
 	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
 	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
+	                    const timelineLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
 	                    const approvalCounts = presentation.approvalCounts;
 	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
 	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
@@ -1749,21 +1757,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         </td>
                         <td class="status-col">
                             <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
-                            <span class="stage-progress" aria-label="${escapeHtml(`${timeline.current_label || "Idle"} ${timeline.progress_pct || 0}%`)}"><span class="${progressClass(timeline.progress_pct)}"></span></span>
                         </td>
-                        <td class="phase-col">${timelinePhaseCell(server, "pending_approval")}</td>
-                        <td class="phase-col">${timelinePhaseCell(server, "prechecks")}</td>
-                        <td class="phase-col">${timelinePhaseCell(server, "apt_update")}</td>
-                        <td class="phase-col">${timelinePhaseCell(server, "upgrade")}</td>
-                        <td class="phase-col">${timelinePhaseCell(server, "postchecks")}</td>
-                        <td class="phase-col">${timelinePhaseCell(server, "done_error")}</td>
-	                        <td class="timeline-summary-col">
-	                            <strong>${escapeHtml(timeline.current_label || "Idle")}</strong>
-	                            <span>${escapeHtml(timelineSummary)}</span>
-	                            ${failureReasonHtml}
-	                            ${driftReasonHtml}
-	                            <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
-	                        </td>
+                        <td class="timeline-progress-col">
+                            ${timelineProgressRing(timeline)}
+                            <div class="timeline-progress-copy">
+                                <strong>${escapeHtml(timelineLabel)}</strong>
+                                <span>${escapeHtml(timelineSummary)}</span>
+                                ${failureReasonHtml}
+                                ${driftReasonHtml}
+                                <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                            </div>
+                        </td>
                         <td class="actions-col">${actionButtons}</td>
                     `;
                     tbody.appendChild(row);
@@ -1905,9 +1909,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         });
 	        tbodyHover.addEventListener('mouseover', (e) => {
-	            const phaseDot = e.target.closest('.timeline-dot');
-	            if (phaseDot) {
-	                showPhaseTooltip(phaseDot);
+	            const progressRing = e.target.closest('.timeline-progress-ring');
+	            if (progressRing) {
+	                showPhaseTooltip(progressRing);
 	            }
 	            const row = e.target.closest('tr[data-name]');
 	            if (!row) return;
@@ -1915,20 +1919,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            applyHoverClass();
 	        });
 	        tbodyHover.addEventListener('mouseout', (e) => {
-	            const phaseDot = e.target.closest('.timeline-dot');
-	            if (phaseDot && !phaseDot.contains(e.relatedTarget)) {
+	            const progressRing = e.target.closest('.timeline-progress-ring');
+	            if (progressRing && !progressRing.contains(e.relatedTarget)) {
 	                hidePhaseTooltip();
 	            }
 	        });
 	        tbodyHover.addEventListener('focusin', (e) => {
-	            const phaseDot = e.target.closest('.timeline-dot');
-	            if (phaseDot) {
-	                showPhaseTooltip(phaseDot);
+	            const progressRing = e.target.closest('.timeline-progress-ring');
+	            if (progressRing) {
+	                showPhaseTooltip(progressRing);
 	            }
 	        });
 	        tbodyHover.addEventListener('focusout', (e) => {
-	            const phaseDot = e.target.closest('.timeline-dot');
-	            if (phaseDot && !phaseDot.contains(e.relatedTarget)) {
+	            const progressRing = e.target.closest('.timeline-progress-ring');
+	            if (progressRing && !progressRing.contains(e.relatedTarget)) {
 	                hidePhaseTooltip();
 	            }
 	        });

@@ -59,15 +59,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 return parsed;
             }
 
-            function isEditKnownHostTrusted(host, port) {
-                const normalizedHost = String(host || '').trim();
-                const normalizedPort = normalizePort(port, 22);
-                const hostKey = managePageInteraction.getView().editor.hostKey;
-                return !!hostKey?.alreadyTrusted &&
-                    hostKey.host === normalizedHost &&
-                    hostKey.port === normalizedPort;
-            }
-
         async function scanHostKey(host, port) {
             const res = await fetch('/api/hostkeys/scan', {
                 method: 'POST',
@@ -105,12 +96,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
 
         function hostKeyPromptText(scanned) {
+            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
             return (
                 `Host: ${scanned.host}\n` +
                 `Port: ${scanned.port}\n` +
                 `Algorithm: ${scanned.algorithm}\n` +
                 `Fingerprint: ${scanned.fingerprint_sha256}\n\n` +
-                `Add this key to known_hosts?`
+                `${replacing ? 'Replace the saved key' : 'Add this key'} in known_hosts?`
             );
         }
 
@@ -131,16 +123,19 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         function confirmHostKeyWithModal(scanned) {
             const modal = document.getElementById('hostkey-modal');
             const details = document.getElementById('hostkey-modal-details');
+            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
             if (!modal || !details) {
                 return window.confirmAction(
                     `Verify SSH host key before trusting:\n\n${hostKeyPromptText(scanned)}`,
-                    { confirmLabel: "Trust key" }
+                    { confirmLabel: replacing ? "Replace key" : "Trust key" }
                 );
             }
             if (hostKeyModalPromise) {
                 return Promise.resolve(false);
 	            }
 	            details.textContent = hostKeyPromptText(scanned);
+	            document.getElementById('hostkey-title').textContent = replacing ? 'Replace SSH Host Key' : 'Trust SSH Host Key';
+	            document.getElementById('hostkey-modal-trust').textContent = replacing ? 'Replace Key' : 'Trust Key';
 	            modal.classList.add('active');
 	            activateModalFocus(modal, document.getElementById('hostkey-modal-cancel'));
 	            hostKeyModalPromise = new Promise((resolve) => {
@@ -170,8 +165,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             if (typeof hooks.onTrusting === 'function') {
                 hooks.onTrusting(scanned);
             }
+            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
             const trusted = await trustHostKey(scanned.host, scanned.port, scanned.fingerprint_sha256);
-            return { alreadyTrusted: !!trusted?.already_trusted, scanned, trusted };
+            return { alreadyTrusted: !!trusted?.already_trusted, replaced: replacing, scanned, trusted };
         }
 
         function saveWindowScroll() {
@@ -700,7 +696,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             document.getElementById('edit-user').value = current.user || '';
             document.getElementById('edit-tags').value = (current.tags || []).join(', ');
             document.getElementById('edit-pass').value = '';
-            document.getElementById('edit-trust-host-key').checked = true;
             const keyInput = document.getElementById('edit-key');
             if (keyInput) {
                 keyInput.value = '';
@@ -709,7 +704,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 setEditHostKeyStatus('');
                 clearEditValidationState();
                 setEditSaveButtonState(false);
-                setEditKnownHostButtonsState(false);
+	            renderEditKnownHostState('checking');
 	                const editModal = document.getElementById('edit-modal');
 	                editModal.classList.add('active');
 	                activateModalFocus(editModal, document.getElementById('edit-name'));
@@ -727,10 +722,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
 	                const editModal = document.getElementById('edit-modal');
 	                editModal.classList.remove('active');
 	                releaseModalFocus(editModal);
-	                setEditHostKeyStatus('');
+                setEditHostKeyStatus('');
                 clearEditValidationState();
                 setEditSaveButtonState(false);
-                setEditKnownHostButtonsState(false);
                 managePageInteraction.dispatch({ type: 'editorClosed' });
                 const overrides = document.getElementById('edit-policy-overrides');
                 if (overrides) {
@@ -742,6 +736,52 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const el = document.getElementById('edit-hostkey-status');
             if (!el) return;
             el.textContent = String(message || '').trim();
+        }
+
+        function editKnownHostStateFromKey(hostKey) {
+            if (hostKey?.alreadyTrusted) return 'trusted';
+            if (hostKey?.hostEntryExists) return 'changed';
+            if (hostKey?.checked || hostKey?.fingerprint) return 'missing';
+            return 'stale';
+        }
+
+        function renderEditKnownHostState(state, hostKey = null) {
+            const badge = document.getElementById('edit-known-host-state');
+            const target = document.getElementById('edit-known-host-target');
+            const fingerprint = document.getElementById('edit-known-host-fingerprint');
+            const refreshButton = document.getElementById('edit-check-known-host');
+            const trustButton = document.getElementById('edit-trust-known-host');
+            const removeButton = document.getElementById('edit-clear-known-host');
+            if (!badge || !target || !fingerprint || !refreshButton || !trustButton || !removeButton) return;
+
+            const labels = {
+                checking: 'Checking…',
+                trusted: 'Trusted',
+                missing: 'Not trusted',
+                changed: 'Key changed',
+                stale: 'Needs refresh',
+                error: 'Check failed'
+            };
+            const currentState = Object.hasOwn(labels, state) ? state : 'error';
+            const editor = managePageInteraction.getView().editor;
+            const host = String(hostKey?.host || editor.draft?.host || '').trim();
+            const port = normalizePort(hostKey?.port || editor.draft?.port, 22);
+            const knownFingerprint = String(hostKey?.fingerprint || '').trim();
+
+            badge.className = `known-host-state is-${currentState}`;
+            badge.textContent = labels[currentState];
+            target.textContent = host ? `${host}:${port}` : 'Host required';
+            fingerprint.textContent = knownFingerprint || 'Not checked';
+
+            const busy = currentState === 'checking';
+            refreshButton.disabled = busy;
+            refreshButton.textContent = busy ? 'Checking…' : 'Refresh status';
+            trustButton.hidden = currentState !== 'missing' && currentState !== 'changed';
+            trustButton.disabled = busy;
+            trustButton.textContent = currentState === 'changed' ? 'Replace Host Key' : 'Trust Host Key';
+            const canRemoveLocalEntry = !!host && (currentState === 'trusted' || currentState === 'changed' || currentState === 'error');
+            removeButton.disabled = busy || !canRemoveLocalEntry;
+            removeButton.textContent = 'Remove Host Key';
         }
 
             function setEditValidationError(message) {
@@ -790,19 +830,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 }
             }
 
-            function setEditKnownHostButtonsState(isBusy, checkLabel, clearLabel) {
-                const checkBtn = document.getElementById('edit-check-known-host');
-                const clearBtn = document.getElementById('edit-clear-known-host');
-                if (checkBtn) {
-                    checkBtn.disabled = !!isBusy;
-                    checkBtn.textContent = isBusy ? (checkLabel || 'Checking...') : 'Check Known Host';
-                }
-                if (clearBtn) {
-                    clearBtn.disabled = !!isBusy;
-                    clearBtn.textContent = isBusy ? (clearLabel || 'Clearing...') : 'Clear Known Host';
-                }
-            }
-
             async function checkEditKnownHostStatus() {
                 if (!activeEditorName()) return;
                 const editor = managePageInteraction.getView().editor;
@@ -817,31 +844,39 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (!request) return editKnownHostCheckPromise;
                 const sessionID = managePageInteraction.getView().editor.sessionID;
                 const currentCheck = (async () => {
-                    setEditKnownHostButtonsState(true, 'Checking...', 'Clear Known Host');
-                    setEditHostKeyStatus('Checking known_hosts entry...');
+                    renderEditKnownHostState('checking');
+                    setEditHostKeyStatus('Scanning the remote SSH host key…');
                     try {
                         const scanned = await scanHostKey(host, port);
                         const currentEditor = managePageInteraction.getView().editor;
                         if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
                             return;
                         }
-                        managePageInteraction.dispatch({ type: 'hostKeyReceived', requestID: request.requestID, sessionID, host, port, hostKey: { fingerprint: scanned?.fingerprint_sha256 || '', alreadyTrusted: !!scanned?.already_trusted } });
-                        if (scanned?.already_trusted) {
-                            setEditHostKeyStatus(`Known host saved for ${host}:${port} (${scanned.fingerprint_sha256}).`);
-                        } else {
-                            setEditHostKeyStatus(`Known host not saved for ${host}:${port} (${scanned.fingerprint_sha256}).`);
-                        }
+                        const hostKey = {
+                            host,
+                            port,
+                            checked: true,
+                            fingerprint: scanned?.fingerprint_sha256 || '',
+                            algorithm: scanned?.algorithm || '',
+                            alreadyTrusted: !!scanned?.already_trusted,
+                            hostEntryExists: !!scanned?.host_entry_exists
+                        };
+                        managePageInteraction.dispatch({ type: 'hostKeyReceived', requestID: request.requestID, sessionID, host, port, hostKey });
+                        const state = editKnownHostStateFromKey(hostKey);
+                        renderEditKnownHostState(state, hostKey);
+                        setEditHostKeyStatus(state === 'trusted'
+                            ? 'The scanned fingerprint matches the saved known_hosts entry.'
+                            : state === 'changed'
+                                ? 'The remote fingerprint differs from the saved known_hosts entry. Verify it before replacing the key.'
+                                : 'No known_hosts entry exists for this host and port.');
                     } catch (err) {
                         const currentEditor = managePageInteraction.getView().editor;
                         if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
                             return;
                         }
                         managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'hostKey', requestID: request.requestID, error: err?.message });
-                        setEditHostKeyStatus(`Known host check failed: ${err.message || 'unknown error'}`);
-                    } finally {
-                        if (editKnownHostCheckPromise === currentCheck) {
-                            setEditKnownHostButtonsState(false);
-                        }
+                        renderEditKnownHostState('error');
+                        setEditHostKeyStatus(`Unable to check the remote host key: ${err.message || 'unknown error'}`);
                     }
                 })();
                 editKnownHostCheckPromise = currentCheck;
@@ -850,8 +885,65 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 } finally {
                     if (editKnownHostCheckPromise === currentCheck) {
                         editKnownHostCheckPromise = null;
-                        setEditKnownHostButtonsState(false);
                     }
+                }
+            }
+
+            async function trustEditKnownHost() {
+                if (!activeEditorName()) return;
+                const editor = managePageInteraction.getView().editor;
+                const host = String(editor.draft?.host || '').trim();
+                const port = normalizePort(editor.draft?.port, 22);
+                if (!host) {
+                    window.notifyApp('Host is required.');
+                    return;
+                }
+                if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
+                let currentKey = managePageInteraction.getView().editor.hostKey;
+                if (!currentKey?.fingerprint || currentKey.host !== host || currentKey.port !== port) {
+                    await checkEditKnownHostStatus();
+                    currentKey = managePageInteraction.getView().editor.hostKey;
+                }
+                if (!currentKey?.fingerprint || currentKey.alreadyTrusted) {
+                    renderEditKnownHostState(editKnownHostStateFromKey(currentKey), currentKey);
+                    return;
+                }
+
+                const scanned = {
+                    host,
+                    port,
+                    algorithm: currentKey.algorithm || 'unknown',
+                    fingerprint_sha256: currentKey.fingerprint,
+                    already_trusted: !!currentKey.alreadyTrusted,
+                    host_entry_exists: !!currentKey.hostEntryExists
+                };
+                if (!(await confirmHostKeyWithModal(scanned))) return;
+
+                const execution = commandExecution('trustHostKey', { serverName: activeEditorName(), host, port });
+                if (!execution) {
+                    window.notifyApp('Known host action is already in progress.');
+                    return;
+                }
+                renderEditKnownHostState('checking', currentKey);
+                const replacing = !!currentKey.hostEntryExists;
+                setEditHostKeyStatus(replacing ? 'Replacing the saved known_hosts entry…' : 'Saving the host key to known_hosts…');
+                try {
+                    const trusted = await trustHostKey(host, port, currentKey.fingerprint);
+                    const trustedKey = {
+                        ...currentKey,
+                        fingerprint: trusted?.fingerprint_sha256 || currentKey.fingerprint,
+                        alreadyTrusted: true,
+                        hostEntryExists: true
+                    };
+                    managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: editor.sessionID, host, port, hostKey: trustedKey });
+                    await settleCommand('commandCompleted', execution.plan, replacing ? 'Known host key replaced.' : 'Known host key trusted.', { announce: false });
+                    renderEditKnownHostState('trusted', trustedKey);
+                    setEditHostKeyStatus('The scanned fingerprint matches the saved known_hosts entry.');
+                } catch (err) {
+                    await settleCommand('commandFailed', execution.plan, err.message || 'Failed to trust host key.', { announce: false });
+                    renderEditKnownHostState('error', currentKey);
+                    setEditHostKeyStatus(`Unable to save the host key: ${err.message || 'unknown error'}`);
+                    window.notifyApp(err.message || 'Failed to trust host key.');
                 }
             }
 
@@ -872,21 +964,32 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     window.notifyApp('Known host action is already in progress.');
                     return;
                 }
-                setEditKnownHostButtonsState(true, 'Check Known Host', 'Clearing...');
+                const currentKey = managePageInteraction.getView().editor.hostKey;
+                renderEditKnownHostState('checking', currentKey);
+                setEditHostKeyStatus('Removing the known_hosts entry…');
                 try {
                     const result = await clearKnownHost(host, port);
-                    managePageInteraction.dispatch({ type: 'hostKeyCleared', sessionID: managePageInteraction.getView().editor.sessionID, host, port });
+                    const clearedKey = {
+                        ...(currentKey || {}),
+                        host,
+                        port,
+                        checked: true,
+                        alreadyTrusted: false,
+                        hostEntryExists: false
+                    };
+                    managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: managePageInteraction.getView().editor.sessionID, host, port, hostKey: clearedKey });
                     await settleCommand('commandCompleted', execution.plan, 'Known host entry cleared.', { announce: false });
+                    renderEditKnownHostState('missing', clearedKey);
                     if (Number(result?.removed_entries || 0) > 0) {
-                        setEditHostKeyStatus(`Known host entry cleared for ${host}:${port}.`);
+                        setEditHostKeyStatus('The known_hosts entry was removed.');
                     } else {
-                        setEditHostKeyStatus(`Known host entry not found for ${host}:${port}.`);
+                        setEditHostKeyStatus('No known_hosts entry existed for this host and port.');
                     }
                 } catch (err) {
                     await settleCommand('commandFailed', execution.plan, err.message || 'Failed to clear known host entry.', { announce: false });
+                    renderEditKnownHostState('error', currentKey);
+                    setEditHostKeyStatus(`Unable to remove the known_hosts entry: ${err.message || 'unknown error'}`);
                     window.notifyApp(err.message || 'Failed to clear known host entry.');
-                } finally {
-                    setEditKnownHostButtonsState(false);
                 }
             }
 
@@ -917,8 +1020,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             setEditSaveButtonState(true, 'Saving...');
             try {
                 const accepted = execution.plan.payload;
-                const targetHost = accepted.host;
-                const targetPort = accepted.port;
                 const res = await fetch(`/api/servers/${encodeURIComponent(originalName)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -926,43 +1027,6 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
                 managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
-                if (accepted.trustHostKey) {
-                    if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
-                    if (isEditKnownHostTrusted(targetHost, targetPort)) {
-                        setEditHostKeyStatus('Host key already saved in known_hosts.');
-                    } else {
-                        try {
-                            const trustResult = await trustHostKeyFlow(targetHost, targetPort, {
-                                onScanning: () => {
-                                    setEditHostKeyStatus('Checking known_hosts entry...');
-                                },
-                                onScanned: () => {
-                                    setEditHostKeyStatus('Host key scanned. Waiting confirmation...');
-                                },
-                                onAlreadyTrusted: () => {
-                                    setEditHostKeyStatus('Host key already saved in known_hosts.');
-                                },
-                                onTrusting: () => {
-                                    setEditHostKeyStatus('Saving host key to known_hosts...');
-                                }
-                            });
-                            const scannedFp = trustResult?.scanned?.fingerprint_sha256 || trustResult?.trusted?.fingerprint_sha256 || '';
-                            managePageInteraction.dispatch({
-                                type: 'hostKeyReceived',
-                                sessionID: managePageInteraction.getView().editor.sessionID,
-                                host: targetHost,
-                                port: targetPort,
-                                hostKey: { fingerprint: scannedFp, alreadyTrusted: true }
-                            });
-                            if (!trustResult?.alreadyTrusted) {
-                                setEditHostKeyStatus('Host key trusted.');
-                            }
-                        } catch (err) {
-                            window.notifyApp(`Server saved, but host key was not trusted: ${err.message || 'unknown error'}`);
-                            setEditHostKeyStatus('');
-                        }
-                    }
-                }
                 let overrideSaveError = null;
                 try {
                     const outcome = await managePolicyOverrides.save(accepted.name, accepted.policyOverrides);
@@ -1063,16 +1127,16 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 maybeClearEditValidationError();
                 if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
-                    setEditKnownHostButtonsState(false);
-                    setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
+                    renderEditKnownHostState('stale');
+                    setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
                 }
             });
             document.getElementById('edit-port').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
                 if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
-                    setEditKnownHostButtonsState(false);
-                    setEditHostKeyStatus('Host/port changed. Click "Check Known Host" to refresh status.');
+                    renderEditKnownHostState('stale');
+                    setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
                 }
             });
             document.getElementById('edit-tags').addEventListener('input', () => {
@@ -1090,12 +1154,14 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 setEditFieldInvalidState('edit-user', false);
                 maybeClearEditValidationError();
             });
-            document.getElementById('edit-trust-host-key').addEventListener('change', () => {
-                managePageInteraction.dispatch({ type: 'editorOptionChanged', patch: { trustHostKey: document.getElementById('edit-trust-host-key').checked } });
-            });
             document.getElementById('edit-check-known-host').addEventListener('click', () => {
                 if (activeEditorName()) {
                     checkEditKnownHostStatus();
+                }
+            });
+            document.getElementById('edit-trust-known-host').addEventListener('click', () => {
+                if (activeEditorName()) {
+                    trustEditKnownHost();
                 }
             });
             document.getElementById('edit-clear-known-host').addEventListener('click', () => {
@@ -1180,31 +1246,53 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await settleCommand('commandCompleted', execution.plan, 'Global key cleared.');
         }
 
-        async function performGlobalKeyRequest(request, status) {
+        function renderGlobalKeyState(state, detail = '') {
+            const status = document.getElementById('global-key-status');
+            const uploadButton = document.getElementById('upload-global-key-btn');
+            const clearButton = document.getElementById('clear-global-key-btn');
+            if (!status || !uploadButton || !clearButton) return;
+
+            const states = {
+                checking: { label: 'Checking…', className: 'is-checking', hasKey: null },
+                configured: { label: 'Configured', className: 'is-configured', hasKey: true },
+                missing: { label: 'Not configured', className: 'is-missing', hasKey: false },
+                error: { label: 'Error', className: 'is-error', hasKey: null }
+            };
+            const current = states[state] || states.error;
+            status.className = `global-key-state ${current.className}`;
+            status.textContent = current.label;
+            status.title = detail || current.label;
+
+            uploadButton.textContent = current.hasKey ? 'Replace Global Key' : 'Add Global Key';
+            uploadButton.disabled = state === 'checking';
+            clearButton.disabled = current.hasKey !== true;
+            clearButton.title = current.hasKey ? 'Remove the configured global SSH key' : 'No global key is configured';
+        }
+
+        async function performGlobalKeyRequest(request) {
             try {
                 const res = await fetch('/api/keys/global');
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
                 const data = await res.json();
                 const effects = managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: !!data.has_key });
-                status.textContent = managePageInteraction.getView().globalKeyAvailable ? 'Global key: saved' : 'Global key: not set';
+                renderGlobalKeyState(managePageInteraction.getView().globalKeyAvailable ? 'configured' : 'missing');
                 if (managePageInteraction.getView().inventory.allItems.length > 0) renderTable();
                 const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
-                if (followup) await performGlobalKeyRequest(followup, status);
+                if (followup) await performGlobalKeyRequest(followup);
             } catch (err) {
                 const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
-                status.textContent = `Global key status: ${err.message || 'unknown'}`;
+                renderGlobalKeyState('error', err.message || 'Unable to check the global key status');
                 const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
-                if (followup) await performGlobalKeyRequest(followup, status);
+                if (followup) await performGlobalKeyRequest(followup);
             }
         }
 
         async function fetchGlobalKeyStatus() {
-            const status = document.getElementById('global-key-status');
-            if (!status) return;
             const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'globalKey' })
                 .find((effect) => effect.type === 'fetchSnapshot');
             if (!request) return;
-            await performGlobalKeyRequest(request, status);
+            renderGlobalKeyState('checking');
+            await performGlobalKeyRequest(request);
         }
 
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());

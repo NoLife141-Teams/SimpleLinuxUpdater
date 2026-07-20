@@ -1403,7 +1403,7 @@ body.status-page .modal {
     margin-top: 14px;
 }
 
-.bulk-review-modal {
+body.status-page .bulk-review-modal {
     width: min(960px, calc(100vw - 32px));
 }
 
@@ -1422,7 +1422,7 @@ body.status-page .modal {
     background: rgba(255, 255, 255, 0.025);
 }
 
-.bulk-review-table {
+body.status-page .bulk-review-table {
     width: 100%;
     min-width: 0;
     margin-top: 10px;
@@ -1450,12 +1450,7 @@ body.status-page .modal {
 
 .bulk-review-table th:first-child,
 .bulk-review-table td:first-child {
-    width: 30%;
-}
-
-.bulk-review-table th:nth-child(2),
-.bulk-review-table td:nth-child(2) {
-    width: 28%;
+    width: 34%;
 }
 
 .bulk-review-row-ready td:last-child {
@@ -1497,6 +1492,12 @@ body.status-page .fade-in {
     }
 }
 
+@keyframes timelineRingOrbit {
+    to {
+        transform: rotate(1turn);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
 body.status-page *,
 body.status-page *::before,
@@ -1526,7 +1527,7 @@ body.status-page table {
 }
 
 @media (max-width: 1180px) {
-    .dashboard-head,
+    body.status-page .dashboard-head,
     .dashboard-grid {
         grid-template-columns: 1fr;
     }
@@ -1631,9 +1632,6 @@ body.status-page .metric-strip {
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
 }
 
-.rail-bulk:has(.bulk-hint:not(.warning)) .inline-btn:disabled {
-    opacity: 0.28;
-}
 body.status-page .head-meta {
     align-self: start;
 }
@@ -1779,17 +1777,21 @@ body.status-page .head-meta {
     grid-column: 1 / -1;
 }
 
+.rail-bulk #bulk-update,
 .rail-bulk #bulk-autoremove,
+.rail-bulk #bulk-approve,
 .rail-bulk #bulk-approve-security,
 .rail-bulk #bulk-approve-kept-security,
+.rail-bulk #bulk-cancel,
 .rail-bulk .facts-refresh-action {
     grid-column: 1 / -1;
 }
 
 .rail-bulk .inline-btn {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    line-height: 1.2;
+    text-overflow: clip;
+    white-space: normal;
 }
 
 .rail-bulk .facts-refresh-action.refreshing {
@@ -1810,7 +1812,10 @@ body.status-page .head-meta {
 
 .fleet-rail .bulk-actions .inline-btn:disabled {
     cursor: not-allowed;
-    opacity: 0.48;
+    border-color: rgba(var(--border-rgb), 0.52);
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--faint);
+    opacity: 1;
     transform: none;
     box-shadow: none;
 }
@@ -1825,6 +1830,11 @@ body.status-page .head-meta {
     min-width: 0;
 }
 
+#fleet-status-filters .filter-pill:last-child:nth-child(odd),
+#fleet-tag-list .filter-pill:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
+
 .rail-controls .controls input,
 .rail-controls .controls select,
 .fleet-rail .bulk-actions .inline-btn {
@@ -1833,8 +1843,11 @@ body.status-page .head-meta {
 }
 
 .fleet-rail .bulk-actions .inline-btn {
-    min-height: 30px;
+    height: 34px;
+    min-height: 34px;
     padding: 4px 7px;
+    font-size: 13px;
+    white-space: nowrap;
 }
 
 .rail-auth {
@@ -2007,7 +2020,7 @@ body.status-page .timeline-column .metric-item small {
     gap: 7px;
 }
 
-.maintenance-table {
+body.status-page .maintenance-table {
     min-width: 0;
 }
 
@@ -2033,9 +2046,7 @@ body.status-page .timeline-column .metric-item small {
 .col-select { width: 36px; }
 .col-name { width: 136px; }
 .col-status { width: 108px; }
-.col-phase { width: 80px; }
-.col-terminal { width: 92px; }
-.col-summary { width: 190px; }
+.col-progress { width: 300px; }
 .col-actions { width: 262px; }
 
 .server-subline {
@@ -2049,55 +2060,25 @@ body.status-page .timeline-column .metric-item small {
     white-space: nowrap;
 }
 
-.stage-progress {
-    display: block;
-    width: 100%;
-    height: 4px;
-    margin-top: 4px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: rgba(var(--border-rgb), 0.32);
+.timeline-progress-col {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
 }
 
-.stage-progress span {
-    display: block;
-    width: var(--progress-value, 0%);
-    height: 100%;
-    border-radius: inherit;
-    background: linear-gradient(90deg, var(--accent), var(--phase-blue));
-}
-
-.phase-col {
-    text-align: center;
-}
-
-.timeline-dot {
+.timeline-progress-ring {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 23px;
-    height: 23px;
-    border: 1px solid rgba(var(--border-rgb), 0.7);
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.03);
-}
-
-.timeline-dot::before {
-    content: "";
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: currentcolor;
-    opacity: 0.72;
-}
-
-.timeline-dot > span {
-    position: absolute;
-    inset: 3px;
-    border-radius: inherit;
-    background: conic-gradient(currentcolor var(--progress-value, 0%), transparent 0);
-    opacity: 0.48;
+    contain: paint;
+    isolation: isolate;
 }
 
 .progress-0 { --progress-value: 0%; }
@@ -2156,31 +2137,74 @@ body.status-page .timeline-column .metric-item small {
     color: var(--faint);
 }
 
-.timeline-summary-col {
+.timeline-progress-ring {
+    border: 0;
+    background: conic-gradient(from -90deg, currentcolor var(--progress-value, 0%), rgba(var(--border-rgb), 0.34) 0);
+    box-shadow: 0 0 0 1px rgba(var(--border-rgb), 0.32), inset 0 0 12px rgba(0, 0, 0, 0.18);
+}
+
+.timeline-progress-ring::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: 4px;
+    border-radius: inherit;
+    background: rgb(var(--panel-rgb));
+    box-shadow: inset 0 0 0 1px rgba(var(--border-rgb), 0.2);
+}
+
+.timeline-progress-ring.phase-active::after {
+    content: "";
+    position: absolute;
+    inset: -2px;
+    border-radius: inherit;
+    background: conic-gradient(from 0deg, transparent 0 78%, rgba(var(--phase-blue-rgb), 0.82) 88%, transparent 96%);
+    opacity: 0.72;
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+    animation: timelineRingOrbit 1.8s linear infinite;
+}
+
+.timeline-progress-value {
+    position: relative;
+    z-index: 1;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 850;
+    letter-spacing: -0.04em;
+}
+
+.timeline-progress-ring.phase-done .timeline-progress-value {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.timeline-progress-copy {
     display: grid;
     gap: 2px;
     min-width: 0;
 }
 
-.timeline-summary-col strong,
-.timeline-summary-col span {
+.timeline-progress-copy strong,
+.timeline-progress-copy span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.timeline-summary-col strong {
+.timeline-progress-copy strong {
     color: var(--text);
     font-size: 12px;
 }
 
-.timeline-summary-col span {
+.timeline-progress-copy span {
     color: var(--muted);
     font-size: 11px;
 }
 
-.timeline-summary-col span:first-of-type {
+.timeline-progress-copy span:first-of-type {
     display: -webkit-box;
     white-space: normal;
     -webkit-box-orient: vertical;
@@ -2212,25 +2236,6 @@ body.status-page .timeline-column .metric-item small {
     color: var(--muted);
     font-size: 11px;
     line-height: 1.35;
-}
-
-.maintenance-table .phase-header {
-    padding-inline: 4px;
-    text-align: center;
-}
-
-.maintenance-table .phase-header .col-title {
-    display: block;
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    text-overflow: clip;
-    white-space: nowrap;
-}
-
-.maintenance-table .phase-header.phase-terminal .col-title {
-    font-size: 9px;
 }
 
 .timeline-actions,
@@ -2289,8 +2294,14 @@ body.status-page .timeline-column .metric-item small {
     overflow-y: visible;
 }
 
-.triage-wrap table {
-    min-width: 0;
+body.status-page .triage-wrap table {
+    min-width: 1160px;
+}
+
+.triage-table th {
+    line-height: 1.2;
+    overflow-wrap: normal;
+    white-space: normal;
 }
 
 .triage-table td {
@@ -2363,13 +2374,13 @@ body.status-page .timeline-column .metric-item small {
 .triage-table th:nth-child(5),
 .triage-table td:nth-child(5),
 .triage-table th:nth-child(6),
-.triage-table td:nth-child(6) { width: 7%; }
+.triage-table td:nth-child(6) { width: 8%; }
 .triage-table th:nth-child(7),
 .triage-table td:nth-child(7) { width: 12%; }
 .triage-table th:nth-child(8),
 .triage-table td:nth-child(8) { width: 10%; }
 .triage-table th:nth-child(9),
-.triage-table td:nth-child(9) { width: 26%; }
+.triage-table td:nth-child(9) { width: 24%; }
 
 .facts-pill,
 .stage-chip {
@@ -2496,6 +2507,14 @@ body.status-page .timeline-column .metric-item small {
 
 .operations-grid-secondary {
     grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.35fr);
+    margin-top: 0;
+}
+
+.maintenance-scroll-hint,
+.triage-scroll-hint {
+    display: none;
+    margin: 6px 2px 0;
+    font-size: 11px;
 }
 
 .operations-grid-secondary .ops-panel-wide {
@@ -2534,6 +2553,28 @@ body.status-page .timeline-column .metric-item small {
 @media (min-width: 1800px) {
     .variant-c-layout {
         grid-template-columns: 224px minmax(980px, 1fr) minmax(320px, 340px);
+    }
+}
+
+@media (max-width: 1500px) {
+    .variant-c-layout {
+        grid-template-columns: minmax(196px, 220px) minmax(0, 1fr);
+    }
+
+    .timeline-column {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .fleet-rail {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .context-panel {
+        position: static;
+        grid-column: 1 / -1;
+        grid-row: 2;
     }
 }
 
@@ -2579,6 +2620,16 @@ body.status-page .timeline-column .metric-item small {
     }
 }
 
+@media (max-width: 1600px) and (min-width: 981px) {
+    .timeline-column .operations-grid-secondary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .triage-scroll-hint {
+        display: block;
+    }
+}
+
 @media (max-width: 1280px) {
     .variant-c-layout {
         grid-template-columns: minmax(186px, 208px) minmax(0, 1fr);
@@ -2613,13 +2664,18 @@ body.status-page .table-wrap {
         overflow-x: auto;
     }
 
-    .maintenance-table,
-    .triage-wrap table {
+    body.status-page .maintenance-table,
+    body.status-page .triage-wrap table {
         width: max-content;
     }
 
-    .maintenance-table { min-width: 1180px; }
-    .triage-wrap table { min-width: 1120px; }
+    body.status-page .maintenance-table { min-width: 820px; }
+    body.status-page .triage-wrap table { min-width: 1160px; }
+
+    .maintenance-scroll-hint,
+    .triage-scroll-hint {
+        display: block;
+    }
 
     .maintenance-table th,
     .maintenance-table td,
@@ -2633,25 +2689,6 @@ body.status-page .table-wrap {
         letter-spacing: 0.08em;
     }
 
-    .maintenance-table th:nth-child(n+4):nth-child(-n+9) .col-title {
-        font-size: 0;
-    }
-
-    .maintenance-table .phase-header.phase-terminal .col-title {
-        font-size: 0;
-    }
-
-    .maintenance-table th:nth-child(n+4):nth-child(-n+9) .col-title::after {
-        font-size: 10px;
-    }
-
-    .maintenance-table th:nth-child(4) .col-title::after { content: "Approval"; }
-    .maintenance-table th:nth-child(5) .col-title::after { content: "Checks"; }
-    .maintenance-table th:nth-child(6) .col-title::after { content: "APT"; }
-    .maintenance-table th:nth-child(7) .col-title::after { content: "Upgrade"; }
-    .maintenance-table th:nth-child(8) .col-title::after { content: "Verify"; }
-    .maintenance-table th:nth-child(9) .col-title::after { content: "Done/Error"; }
-
     th.resizable {
         padding-right: 7px;
     }
@@ -2663,23 +2700,18 @@ body.status-page .table-wrap {
     .col-select { width: 32px; }
     .col-name { width: 124px; }
     .col-status { width: 108px; }
-    .col-phase { width: 68px; }
-    .col-terminal { width: 78px; }
-    .col-summary { width: 150px; }
+    .col-progress { width: 260px; }
     .col-actions { width: 262px; }
 
-    .timeline-dot {
-        width: 24px;
-        height: 24px;
+    .timeline-progress-col {
+        grid-template-columns: 36px minmax(0, 1fr);
+        gap: 8px;
     }
 
-    .timeline-dot::before {
-        width: 8px;
-        height: 8px;
-    }
-
-    .timeline-summary-col span:nth-of-type(1) {
-        display: none;
+    .timeline-progress-ring {
+        width: 36px;
+        height: 36px;
+        flex-basis: 36px;
     }
 
     .timeline-actions,
@@ -2710,6 +2742,7 @@ body.status-page .table-wrap {
     .fleet-rail,
     .timeline-workspace,
     .approval-triage-panel,
+    .timeline-column .operations-grid-secondary,
     .context-panel {
         grid-column: 1;
         grid-row: auto;
@@ -2738,6 +2771,10 @@ body.status-page .table-wrap {
 
     .context-panel {
         order: 6;
+    }
+
+    .timeline-column .operations-grid-secondary {
+        order: 7;
     }
 
     .rail-controls .controls,

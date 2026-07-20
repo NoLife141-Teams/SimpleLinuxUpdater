@@ -2374,13 +2374,13 @@ body.status-page .triage-wrap table {
 .triage-table th:nth-child(5),
 .triage-table td:nth-child(5),
 .triage-table th:nth-child(6),
-.triage-table td:nth-child(6) { width: 7%; }
+.triage-table td:nth-child(6) { width: 8%; }
 .triage-table th:nth-child(7),
 .triage-table td:nth-child(7) { width: 12%; }
 .triage-table th:nth-child(8),
 .triage-table td:nth-child(8) { width: 10%; }
 .triage-table th:nth-child(9),
-.triage-table td:nth-child(9) { width: 26%; }
+.triage-table td:nth-child(9) { width: 24%; }
 
 .facts-pill,
 .stage-chip {
@@ -2553,6 +2553,28 @@ body.status-page .triage-wrap table {
 @media (min-width: 1800px) {
     .variant-c-layout {
         grid-template-columns: 224px minmax(980px, 1fr) minmax(320px, 340px);
+    }
+}
+
+@media (max-width: 1500px) {
+    .variant-c-layout {
+        grid-template-columns: minmax(196px, 220px) minmax(0, 1fr);
+    }
+
+    .timeline-column {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .fleet-rail {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .context-panel {
+        position: static;
+        grid-column: 1 / -1;
+        grid-row: 2;
     }
 }
 

@@ -6,6 +6,34 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-07-20
+
+### Added
+
+- Add interactive single-host and bulk maintenance actions to the Status dashboard, with eligibility checks, review screens, typed confirmations, and deterministic frontend interaction state.
+- Add running and latest-installed kernel facts so operators can identify reboot drift directly from host health details.
+- Add Global SSH Credential status and fallback handling, richer known-host trust management, audit-detail copying, and development-only browser annotation support.
+- Add explicit application-level interaction and lifecycle components for Status, Manage, Admin, Observability, scheduled policies, authentication, backups, notifications, jobs, server inventory, host health, and runtime composition.
+
+### Changed
+
+- Redesign the operator application shell and Status/Manage surfaces for denser maintenance visibility, clearer progress animation, responsive action layouts, and consistent accessible controls.
+- Separate Dashboard Projection collection from presentation consumption and move package discovery, host inspection, scheduling, action admission, and runtime status decisions behind focused services.
+- Strengthen CI with frontend unit coverage, complete Playwright coverage, reduced redundant Go jobs, and updated GitHub Actions dependencies.
+- Upgrade `modernc.org/sqlite`, `golang.org/x/crypto`, and the container build toolchain baseline used by this release.
+
+### Fixed
+
+- Prevent failed runner admission, scheduled-run persistence errors, shutdown races, approval waits, and panicking runners from leaving jobs or hosts stuck in active states.
+- Preserve prior runtime status when work never starts, bound action-runner shutdown, and avoid persisting incomplete host facts after request cancellation.
+- Make known-host replacement atomic, keep stale-key removal available while remote scans fail, and preserve large integer values in audit metadata.
+- Fix backup-restore rollback and admin refresh races, scheduler drain ordering, job/runtime synchronization, and action-conflict handling.
+- Fix transient dashboard overflow, clipped maintenance actions, inconsistent bulk-button states, approval-table header overlap, and multiple Manage-page status and modal layout defects.
+
+### Validation
+
+- Complete the automated release gate, Docker runtime check, and disposable-host smoke documented in [the v0.3.0 release smoke result](docs/release-v0.3.0-smoke.md).
+
 ## [v0.2.9] - 2026-06-22
 
 ### Added

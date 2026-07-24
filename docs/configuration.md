@@ -9,6 +9,7 @@
 - [Metrics API token](#metrics-api-token)
 - [Backup and restore](#backup-and-restore)
 - [Storage paths](#storage-paths)
+- [Job log storage and retention](#job-log-storage-and-retention)
 - [Retry policy](#retry-policy)
 - [Post-update checks](#post-update-checks)
 - [Known hosts handling](#known-hosts-handling)
@@ -110,6 +111,25 @@ export DEBIAN_UPDATER_DB_PATH=/var/lib/simplelinuxupdater/servers.db
 ```
 
 On first run, the app may import legacy `servers.json` if it exists, then uses SQLite going forward.
+
+## Job log storage and retention
+
+Job output is stored as ordered SQLite fragments with its stream (`stdout`, `stderr`, or compatibility `combined`) and raw terminal control characters such as carriage returns. `jobs.logs_text` remains a compatibility preview and is bounded to 32 KiB; detailed logs are available through authenticated job reports and `GET /api/jobs/:id/logs`.
+
+Defaults:
+
+- Detailed logs for completed jobs are retained for 30 days.
+- Each job may persist up to 2 MiB of detailed logs.
+- When the size limit is reached, the first 64 KiB and newest output are kept, with an explicit marker replacing the removed middle.
+- Active jobs are never expired or purged.
+- Expiration removes detailed log content but preserves the job record, status, summary, metadata, and timestamps.
+
+Environment variables:
+
+- `DEBIAN_UPDATER_JOB_LOG_RETENTION_DAYS` (default `30`, allowed `1..3650`)
+- `DEBIAN_UPDATER_JOB_LOG_MAX_BYTES` (default `2097152`, allowed `131072..1073741824`)
+
+Invalid values are logged and fall back to the defaults. Retention runs during startup and then daily; it does not run `VACUUM`.
 
 ## Retry policy
 

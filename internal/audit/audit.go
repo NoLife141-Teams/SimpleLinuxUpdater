@@ -397,7 +397,15 @@ func (s *Service) BuildJobMarkdownReport(job jobs.Record) string {
 	}
 	appendJSONBlock(&buf, "Retry Policy", job.RetryPolicyJSON)
 	appendJSONBlock(&buf, "Metadata", job.MetaJSON)
-	fmt.Fprintf(&buf, "\n## Logs\n\n```text\n%s\n```\n", strings.TrimSpace(job.LogsText))
+	fmt.Fprintf(&buf, "\n## Logs\n\n")
+	if job.LogsExpired {
+		fmt.Fprintf(&buf, "Logs expired after the configured retention period.\n")
+		return buf.String()
+	}
+	if job.LogsTruncated {
+		fmt.Fprintf(&buf, "> Warning: the middle of this job log was truncated because it exceeded the configured size limit.\n\n")
+	}
+	fmt.Fprintf(&buf, "```text\n%s\n```\n", strings.TrimSpace(job.LogsText))
 	return buf.String()
 }
 

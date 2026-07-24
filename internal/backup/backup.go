@@ -823,6 +823,9 @@ func (s *Service) ValidateDatabaseData(ctx context.Context, data []byte, encrypt
 	if err := s.deps.EnsureSchema(db); err != nil {
 		return fmt.Errorf("validate restored database schema: %w", err)
 	}
+	if err := requireRestoredDatabaseTables(ctx, db, "jobs", "job_log_chunks"); err != nil {
+		return err
+	}
 
 	rows, err := db.QueryContext(ctx, "SELECT name, pass_enc, key_enc FROM servers ORDER BY name")
 	if err != nil {
@@ -894,6 +897,9 @@ func (s *Service) ReencryptDatabaseData(ctx context.Context, data []byte, fromKe
 	}
 	if err := s.deps.EnsureSchema(db); err != nil {
 		return nil, fmt.Errorf("prepare restored database rewrap schema: %w", err)
+	}
+	if err := requireRestoredDatabaseTables(ctx, db, "jobs", "job_log_chunks"); err != nil {
+		return nil, err
 	}
 
 	tx, err := db.BeginTx(ctx, nil)

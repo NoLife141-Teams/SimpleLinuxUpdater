@@ -310,6 +310,15 @@ func TestServiceMarkdownReports(t *testing.T) {
 			t.Fatalf("job report missing %q:\n%s", want, jobBody)
 		}
 	}
+
+	truncatedBody := svc.BuildJobMarkdownReport(jobs.Record{ID: "truncated", LogsText: "head\ntail", LogsTruncated: true})
+	if !strings.Contains(truncatedBody, "middle of this job log was truncated") || !strings.Contains(truncatedBody, "head\ntail") {
+		t.Fatalf("truncated job report missing warning/logs:\n%s", truncatedBody)
+	}
+	expiredBody := svc.BuildJobMarkdownReport(jobs.Record{ID: "expired", LogsExpired: true, LogsText: "must not render"})
+	if !strings.Contains(expiredBody, "Logs expired") || strings.Contains(expiredBody, "must not render") {
+		t.Fatalf("expired job report body:\n%s", expiredBody)
+	}
 }
 
 type guardedPruneRepository struct {

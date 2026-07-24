@@ -80,6 +80,9 @@ func (deps AppDeps) initializeJobManager() error {
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return err
 	}
+	if _, err := jm.PurgeExpiredLogs(); err != nil {
+		return err
+	}
 	deps.SetCurrentJobManager(jm)
 	return nil
 }

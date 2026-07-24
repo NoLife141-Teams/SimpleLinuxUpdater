@@ -334,6 +334,25 @@ func TestBackendContractReportsAndPolicies(t *testing.T) {
 		if jobDetail["id"] != job.ID || jobDetail["summary"] != "Contract job" || detail["report_url"] != "/api/reports/jobs/"+job.ID {
 			t.Fatalf("job detail response = %+v, want id/summary/report_url", detail)
 		}
+
+		logsRec := performContractRequest(app.Handler, http.MethodGet, "/api/jobs/"+job.ID+"/logs?after_seq=0&limit=1", nil, sessionCookie, false)
+		if logsRec.Code != http.StatusOK {
+			t.Fatalf("GET /api/jobs/:id/logs status = %d, want %d (body=%s)", logsRec.Code, http.StatusOK, logsRec.Body.String())
+		}
+		logs := decodeContractJSON(t, logsRec)
+		for _, key := range []string{"job_id", "fragments", "next_sequence", "has_more", "expired", "truncated", "retention_days"} {
+			if _, ok := logs[key]; !ok {
+				t.Fatalf("job logs missing key %q in %+v", key, logs)
+			}
+		}
+		if logs["job_id"] != job.ID || logs["retention_days"] != float64(30) {
+			t.Fatalf("job logs response = %+v", logs)
+		}
+
+		invalidLogsRec := performContractRequest(app.Handler, http.MethodGet, "/api/jobs/"+job.ID+"/logs?after_seq=-1", nil, sessionCookie, false)
+		if invalidLogsRec.Code != http.StatusBadRequest {
+			t.Fatalf("GET invalid job logs status = %d, want %d", invalidLogsRec.Code, http.StatusBadRequest)
+		}
 	})
 
 	t.Run("policy list create settings and runs", func(t *testing.T) {

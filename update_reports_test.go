@@ -81,3 +81,37 @@ func TestMarkdownReportEndpoints(t *testing.T) {
 		t.Fatalf("job detail = %+v, want persisted job and report url", detail)
 	}
 }
+
+func TestJobReportReconstructsLogsBeyondCompatibilityPreview(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "full-job-report.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	fullLogs := strings.Repeat("begin-", 7000) + "\nFULL-LOG-TAIL"
+	job, err := currentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: "srv-full-report",
+		Actor:      "admin",
+		Status:     jobStatusSucceeded,
+		LogsText:   fullLogs,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+	preview, err := currentJobManager().GetJob(job.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if len(preview.LogsText) > 32*1024 || strings.Contains(preview.LogsText, fullLogs) {
+		t.Fatalf("compatibility preview is not bounded: %d bytes", len(preview.LogsText))
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/reports/jobs/"+job.ID, nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("job report status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "FULL-LOG-TAIL") || len(rec.Body.String()) <= len(preview.LogsText) {
+		t.Fatalf("job report did not reconstruct detailed chunks: report=%d preview=%d", rec.Body.Len(), len(preview.LogsText))
+	}
+}

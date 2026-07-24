@@ -6,8 +6,25 @@ import (
 	"sync"
 	"testing"
 
+	internaljobs "debian-updater/internal/jobs"
 	serverpkg "debian-updater/internal/servers"
 )
+
+func TestLoadJobLogConfigFromEnv(t *testing.T) {
+	t.Setenv(jobLogRetentionDaysEnv, "45")
+	t.Setenv(jobLogMaxBytesEnv, "4194304")
+	config := loadJobLogConfigFromEnv()
+	if config.RetentionDays != 45 || config.MaxBytes != 4194304 {
+		t.Fatalf("job log config = %+v", config)
+	}
+
+	t.Setenv(jobLogRetentionDaysEnv, "0")
+	t.Setenv(jobLogMaxBytesEnv, "1024")
+	config = loadJobLogConfigFromEnv()
+	if config.RetentionDays != internaljobs.DefaultLogRetentionDays || config.MaxBytes != internaljobs.DefaultLogMaxBytes {
+		t.Fatalf("invalid job log config fallback = %+v", config)
+	}
+}
 
 func TestJobRuntimeStatusSyncFromRecord(t *testing.T) {
 	newIsolatedTestApp(t)

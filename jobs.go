@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +51,10 @@ const (
 	jobPhaseComplete     = internaljobs.PhaseComplete
 
 	jobTimestampLayout = internaljobs.TimestampLayout
+
+	jobLogRetentionDaysEnv = "DEBIAN_UPDATER_JOB_LOG_RETENTION_DAYS"
+	jobLogMaxBytesEnv      = "DEBIAN_UPDATER_JOB_LOG_MAX_BYTES"
+	jobLogPruneInterval    = 24 * time.Hour
 )
 
 type JobRecord = internaljobs.Record
@@ -81,13 +88,17 @@ func newJobManagerWithNotify(db *sql.DB, notify func(string)) *JobManager {
 }
 
 func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.State, _ func() bool) *JobManager {
+	return newJobManagerWithRuntimeConfig(db, notify, state, loadJobLogConfigFromEnv(), time.Now)
+}
+
+func newJobManagerWithRuntimeConfig(db *sql.DB, notify func(string), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
 	if notify == nil {
 		notify = notifyDashboardEvent
 	}
 	if state == nil {
 		state = globalServerState()
 	}
-	return internaljobs.NewManager(internaljobs.NewSQLiteRepository(db), internaljobs.ManagerOptions{
+	return internaljobs.NewManager(internaljobs.NewSQLiteRepositoryWithLogConfig(db, config), internaljobs.ManagerOptions{
 		Notify: notify,
 		SyncRuntime: func(record JobRecord) {
 			syncServerStateFromJobRecord(state, record)
@@ -95,6 +106,7 @@ func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.
 		SyncInterruptedServer: func(serverNames []string) {
 			markInterruptedServerStateIdle(state, serverNames)
 		},
+		Now: now,
 	})
 }
 
@@ -103,12 +115,60 @@ func initializeJobManager() error {
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return err
 	}
+	if _, err := jm.PurgeExpiredLogs(); err != nil {
+		return err
+	}
 	setCurrentJobManager(jm)
 	return nil
 }
 
 func ensureJobSchema(db *sql.DB) error {
-	return internaljobs.EnsureSchema(db)
+	return internaljobs.EnsureSchemaConfigured(db, loadJobLogConfigFromEnv())
+}
+
+func loadJobLogConfigFromEnv() internaljobs.LogConfig {
+	config := internaljobs.DefaultLogConfig()
+	if raw := strings.TrimSpace(os.Getenv(jobLogRetentionDaysEnv)); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 3650 {
+			log.Printf("Invalid %s=%q, must be an integer in [1,3650], using default %d", jobLogRetentionDaysEnv, raw, config.RetentionDays)
+		} else {
+			config.RetentionDays = value
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(jobLogMaxBytesEnv)); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < internaljobs.MinLogMaxBytes || value > internaljobs.MaxLogMaxBytes {
+			log.Printf("Invalid %s=%q, must be an integer in [%d,%d], using default %d", jobLogMaxBytesEnv, raw, internaljobs.MinLogMaxBytes, internaljobs.MaxLogMaxBytes, config.MaxBytes)
+		} else {
+			config.MaxBytes = value
+		}
+	}
+	return config
+}
+
+func startJobLogPruner(ctx context.Context, current func() *JobManager) {
+	if current == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(jobLogPruneInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				manager := current()
+				if manager == nil {
+					continue
+				}
+				if _, err := manager.PurgeExpiredLogs(); err != nil {
+					log.Printf("job log prune failed: %v", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func marshalJobJSON(v any) string {

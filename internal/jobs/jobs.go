@@ -382,16 +382,7 @@ func (m *Manager) AppendActiveLogFragments(id string, fragments []LogFragment) (
 	if repo, ok := m.repo.(structuredLogRepository); ok {
 		result, appendErr := repo.appendActiveLogFragments(id, fragments, m.timestampNow())
 		updated, err = result.Updated, appendErr
-		if err == nil && updated && m.opts.NotifyLog != nil && strings.TrimSpace(result.ServerName) != "" {
-			for _, chunk := range result.Chunks {
-				m.opts.NotifyLog(LogEvent{
-					ServerName: result.ServerName,
-					JobID:      id,
-					Sequence:   chunk.Sequence,
-					Stream:     chunk.Stream,
-					Data:       chunk.Data,
-				})
-			}
+		if err == nil && updated && m.notifyLogResult(id, result) {
 			return true, nil
 		}
 	} else {
@@ -529,7 +520,13 @@ func (m *Manager) transition(id string, intent Intent, activeOnly bool) (bool, e
 	if alreadyApplied {
 		return false, nil
 	}
-	updated, err := m.repo.ApplyTransition(next, current.Revision, activeOnly)
+	var logResult logAppendResult
+	var updated bool
+	if repo, ok := m.repo.(structuredTransitionRepository); ok {
+		updated, logResult, err = repo.applyTransitionWithLogResult(next, current.Revision, activeOnly)
+	} else {
+		updated, err = m.repo.ApplyTransition(next, current.Revision, activeOnly)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -542,6 +539,7 @@ func (m *Manager) transition(id string, intent Intent, activeOnly bool) (bool, e
 	if activeOnly || (intent.Kind != IntentResumeAfterApproval && intent.Kind != IntentCancel) {
 		m.syncRuntime(id)
 	}
+	m.notifyLogResult(id, logResult)
 	m.notify("job.update")
 	return true, nil
 }
@@ -647,6 +645,33 @@ func (m *Manager) syncRuntime(id string) {
 	m.opts.SyncRuntime(record)
 }
 
+func (m *Manager) notifyLogResult(id string, result logAppendResult) bool {
+	if m == nil || m.opts.NotifyLog == nil || strings.TrimSpace(result.ServerName) == "" {
+		return false
+	}
+	if result.Reset {
+		m.opts.NotifyLog(LogEvent{
+			ServerName: result.ServerName,
+			JobID:      id,
+			Reset:      true,
+		})
+		return true
+	}
+	if len(result.Chunks) == 0 {
+		return false
+	}
+	for _, chunk := range result.Chunks {
+		m.opts.NotifyLog(LogEvent{
+			ServerName: result.ServerName,
+			JobID:      id,
+			Sequence:   chunk.Sequence,
+			Stream:     chunk.Stream,
+			Data:       chunk.Data,
+		})
+	}
+	return true
+}
+
 func (m *Manager) notify(reason string) {
 	if m != nil && m.opts.Notify != nil {
 		m.opts.Notify(reason)
@@ -690,7 +715,7 @@ func (r *SQLiteRepository) Create(record Record) error {
 	if err != nil {
 		return err
 	}
-	if err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -748,19 +773,24 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 	if err != nil {
 		return err
 	}
-	if err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
+	updated, _, err := r.applyTransitionWithLogResult(record, expectedRevision, activeOnly)
+	return updated, err
+}
+
+func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedRevision int64, activeOnly bool) (bool, logAppendResult, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(record.ID) == "" {
-		return false, nil
+		return false, logAppendResult{}, nil
 	}
 	tx, err := r.db.Begin()
 	if err != nil {
-		return false, err
+		return false, logAppendResult{}, err
 	}
 	defer tx.Rollback()
 	query := `UPDATE jobs SET status=?, phase=?, summary=?, error_class=?, meta_json=?,
@@ -773,28 +803,36 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 	}
 	result, err := tx.Exec(query, args...)
 	if err != nil {
-		return false, err
+		return false, logAppendResult{}, err
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		rowsAffected = 1
 	}
 	if rowsAffected == 0 {
-		return false, nil
+		return false, logAppendResult{}, nil
 	}
+	var write logWriteResult
 	if record.logReplacement != nil {
-		if err := r.replaceLogSnapshotTx(tx, record.ID, *record.logReplacement, LogStreamCombined, record.UpdatedAt); err != nil {
-			return false, err
+		write, err = r.replaceLogSnapshotTx(tx, record.ID, *record.logReplacement, LogStreamCombined, record.UpdatedAt)
+		if err != nil {
+			return false, logAppendResult{}, err
 		}
 	} else if record.logAppend != "" {
-		if _, err := r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt); err != nil {
-			return false, err
+		write, err = r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt)
+		if err != nil {
+			return false, logAppendResult{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return false, logAppendResult{}, err
 	}
-	return true, nil
+	return true, logAppendResult{
+		ServerName: record.ServerName,
+		Chunks:     write.Chunks,
+		Updated:    true,
+		Reset:      write.Reset,
+	}, nil
 }
 
 func (r *SQLiteRepository) AppendActiveLog(id, logText, updatedAt string) (bool, error) {

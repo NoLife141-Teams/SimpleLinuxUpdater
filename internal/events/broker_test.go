@@ -39,7 +39,7 @@ func TestBrokerPublishDefaultsBlankReason(t *testing.T) {
 	}
 }
 
-func TestBrokerPublishDoesNotBlockFullSubscriber(t *testing.T) {
+func TestBrokerPublishDisconnectsFullSubscriberWithoutBlocking(t *testing.T) {
 	broker := NewBroker()
 	ch := broker.Subscribe()
 	defer broker.Unsubscribe(ch)
@@ -58,6 +58,14 @@ func TestBrokerPublishDoesNotBlockFullSubscriber(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("publish blocked on full subscriber channel")
+	}
+
+	received := 0
+	for range ch {
+		received++
+	}
+	if received != cap(ch) {
+		t.Fatalf("buffered events before disconnect = %d, want %d", received, cap(ch))
 	}
 }
 

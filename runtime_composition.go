@@ -163,6 +163,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 					Sequence:   logEvent.Sequence,
 					Stream:     logEvent.Stream,
 					Data:       logEvent.Data,
+					Reset:      logEvent.Reset,
 				})
 			}
 		}

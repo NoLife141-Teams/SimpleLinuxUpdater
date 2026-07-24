@@ -119,6 +119,7 @@ func notifyDashboardLogEvent(logEvent jobsPkg.LogEvent) {
 		Sequence:   logEvent.Sequence,
 		Stream:     logEvent.Stream,
 		Data:       logEvent.Data,
+		Reset:      logEvent.Reset,
 	})
 }
 
@@ -869,7 +870,10 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 	defer heartbeat.Stop()
 	for {
 		select {
-		case event := <-dashboardEvents:
+		case event, ok := <-dashboardEvents:
+			if !ok {
+				return
+			}
 			payload, err := json.Marshal(event)
 			if err != nil {
 				continue

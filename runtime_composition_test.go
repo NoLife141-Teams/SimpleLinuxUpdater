@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"debian-updater/internal/events"
+	internaljobs "debian-updater/internal/jobs"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
@@ -154,6 +155,31 @@ func TestRuntimeCompositionDefaultsDashboardNotificationToBroker(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("dashboard event was not published through composed notify callback")
+	}
+}
+
+func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
+	broker := events.NewBroker()
+	deps := newRuntimeComposition(AppDeps{
+		DashboardEventBroker: broker,
+	}).Compose()
+
+	ch := broker.Subscribe()
+	t.Cleanup(func() { broker.Unsubscribe(ch) })
+
+	deps.NotifyDashboardLogEvent(internaljobs.LogEvent{
+		ServerName: "alpha",
+		JobID:      "job-1",
+		Reset:      true,
+	})
+
+	select {
+	case got := <-ch:
+		if got.Reason != "job.log" || got.ServerName != "alpha" || got.JobID != "job-1" || !got.Reset {
+			t.Fatalf("dashboard log reset event = %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("dashboard log reset was not published through composed notify callback")
 	}
 }
 

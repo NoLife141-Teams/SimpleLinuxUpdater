@@ -12,6 +12,7 @@ type Event struct {
 	Sequence   int64  `json:"sequence,omitempty"`
 	Stream     string `json:"stream,omitempty"`
 	Data       string `json:"data,omitempty"`
+	Reset      bool   `json:"reset,omitempty"`
 }
 
 type Broker struct {
@@ -33,8 +34,10 @@ func (b *Broker) Subscribe() chan Event {
 
 func (b *Broker) Unsubscribe(ch chan Event) {
 	b.mu.Lock()
-	delete(b.clients, ch)
-	close(ch)
+	if _, ok := b.clients[ch]; ok {
+		delete(b.clients, ch)
+		close(ch)
+	}
 	b.mu.Unlock()
 }
 
@@ -53,6 +56,8 @@ func (b *Broker) PublishEvent(event Event) {
 		select {
 		case ch <- event:
 		default:
+			delete(b.clients, ch)
+			close(ch)
 		}
 	}
 }

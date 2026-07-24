@@ -158,6 +158,62 @@ test("a stale server snapshot cannot restore a superseded job", () => {
     assert.equal(store.getView().jobLogs.alpha.rawText, "new\n");
 });
 
+test("a stale blank job snapshot cannot discard an accepted live job", () => {
+    const store = createStore();
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", logs: "starting" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-new", sequence: 1, stream: "stdout", data: "live\n" }
+    });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", logs: "stale preview" }]
+    });
+
+    assert.equal(store.getView().jobLogs.alpha.jobId, "job-new");
+    assert.equal(store.getView().jobLogs.alpha.rawText, "live\n");
+});
+
+test("a log reset discards stale fragments and recovers the retained representation", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", sequence: 1, stream: "stdout", data: "discarded\n" }
+    });
+    const resetEffects = store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", reset: true }
+    });
+    assert.deepEqual(resetEffects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [0]);
+    assert.equal(store.getView().jobLogs.alpha.rawText, "");
+
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 1, stream: "stdout", data: "head\n" },
+                { sequence: 2, stream: "system", data: "\n[... job log middle truncated ...]\n" },
+                { sequence: 5, stream: "stdout", data: "tail\n" }
+            ],
+            truncated: true,
+            has_more: false
+        }
+    });
+    const log = store.getView().jobLogs.alpha;
+    assert.equal(log.rawText, "head\n\n[... job log middle truncated ...]\ntail\n");
+    assert.equal(log.truncated, true);
+});
+
 test("terminal projection replaces carriage-return progress without adding percent lines", () => {
     const store = createStore();
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "updating" }] });
@@ -205,6 +261,34 @@ test("polling fallback refreshes the compatible bounded preview", () => {
     });
     assert.equal(store.getView().jobLogs.alpha.rawText, "new polling preview");
     assert.equal(store.getServer("alpha").logs, "new polling preview");
+});
+
+test("polling keeps recovered drawer logs and requests incremental updates", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "preview" }]
+    });
+    store.dispatch({ type: "drawerOpened", name: "alpha", tab: "logs" });
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 1, stream: "stdout", data: "full one\n" },
+                { sequence: 2, stream: "stdout", data: "full two\n" }
+            ],
+            has_more: false
+        }
+    });
+
+    const effects = store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "new bounded preview" }]
+    });
+    assert.equal(store.getView().jobLogs.alpha.rawText, "full one\nfull two\n");
+    assert.deepEqual(effects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [2]);
 });
 
 test("canonical and legacy dashboard action data produce the same action view", () => {

@@ -262,6 +262,7 @@
                 terminal: createTerminalState(),
                 previewOnly: !!preview,
                 recovering: false,
+                resetPending: false,
                 pending: {},
                 expired: false,
                 truncated: false,
@@ -280,6 +281,16 @@
             state.fragments = [];
             state.terminal = createTerminalState();
             state.previewOnly = false;
+        }
+
+        function resetAcceptedLogState(state) {
+            state.lastSequence = 0;
+            state.fragments = [];
+            state.terminal = createTerminalState();
+            state.previewOnly = false;
+            state.pending = {};
+            state.expired = false;
+            state.truncated = false;
         }
 
         function acceptLogFragment(state, fragment) {
@@ -334,7 +345,11 @@
                 const preview = String(server.logs || "");
                 const current = jobLogsByServer.get(serverName);
                 if (!jobId) {
-                    if (!jobLogTransportLive || !current || current.jobId) {
+                    if (jobLogTransportLive && current?.jobId) {
+                        updateServerLogProjection(serverName, current);
+                        return;
+                    }
+                    if (!current || current.jobId || !jobLogTransportLive) {
                         jobLogsByServer.set(serverName, createJobLogState("", preview, current?.supersededJobIds || []));
                     }
                 } else if (current && current.jobId !== jobId && jobLogTransportLive && current.supersededJobIds.includes(jobId)) {
@@ -350,7 +365,17 @@
                         effects.push(...logRecoveryEffect(serverName, next));
                     }
                 } else if (!jobLogTransportLive) {
-                    jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
+                    const drawerNeedsFullLogs = drawer.open
+                        && drawer.tab === "logs"
+                        && drawer.serverName === serverName;
+                    if (drawerNeedsFullLogs) {
+                        if (current.previewOnly && !current.recovering) {
+                            jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
+                        }
+                        effects.push(...logRecoveryEffect(serverName, jobLogsByServer.get(serverName)));
+                    } else {
+                        jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
+                    }
                 }
                 const accepted = jobLogsByServer.get(serverName);
                 if (accepted) updateServerLogProjection(serverName, accepted);
@@ -547,7 +572,9 @@
             const serverName = String(event.server_name || "");
             const jobId = String(event.job_id || "");
             const sequence = Number(event.sequence || 0);
-            if (!serverName || !jobId || !serversByName.has(serverName) || !Number.isSafeInteger(sequence) || sequence < 1) {
+            const reset = !!event.reset;
+            if (!serverName || !jobId || !serversByName.has(serverName)
+                || (!reset && (!Number.isSafeInteger(sequence) || sequence < 1))) {
                 return [];
             }
             let state = jobLogsByServer.get(serverName);
@@ -558,6 +585,19 @@
                     : [];
                 state = createJobLogState(jobId, "", superseded);
                 jobLogsByServer.set(serverName, state);
+            }
+            if (reset) {
+                const recoveryInFlight = state.recovering;
+                resetAcceptedLogState(state);
+                state.recovering = recoveryInFlight;
+                state.resetPending = recoveryInFlight;
+                updateServerLogProjection(serverName, state);
+                return recoveryInFlight
+                    ? drawerLogEffects(serverName)
+                    : [
+                        ...drawerLogEffects(serverName),
+                        ...logRecoveryEffect(serverName, state)
+                    ];
             }
             if (sequence <= state.lastSequence || Object.hasOwn(state.pending, sequence)) return [];
             const fragment = {
@@ -579,6 +619,14 @@
             const jobId = String(event.jobId || "");
             const state = jobLogsByServer.get(serverName);
             if (!state || state.jobId !== jobId) return [];
+            if (state.resetPending) {
+                state.recovering = false;
+                state.resetPending = false;
+                return [
+                    ...drawerLogEffects(serverName),
+                    ...logRecoveryEffect(serverName, state)
+                ];
+            }
             state.recovering = false;
             const page = event.page && typeof event.page === "object" ? event.page : {};
             state.expired = !!page.expired;
@@ -661,7 +709,10 @@
                 return receiveJobLogRecovery(event);
             } else if (event.type === "jobLogRecoveryFailed") {
                 const state = jobLogsByServer.get(String(event.serverName || ""));
-                if (state && state.jobId === String(event.jobId || "")) state.recovering = false;
+                if (state && state.jobId === String(event.jobId || "")) {
+                    state.recovering = false;
+                    state.resetPending = false;
+                }
                 return [];
             } else if (event.type === "jobLogTransportChanged") {
                 jobLogTransportLive = !!event.live;
@@ -812,7 +863,10 @@
             } else if (event.type === "drawerTabChanged") {
                 const tab = event.tab === "pending" && hasPendingUpdates(serversByName.get(drawer.serverName)) ? "pending" : "logs";
                 drawer = { ...drawer, tab };
-                return stateEffects();
+                return [
+                    ...stateEffects(),
+                    ...(tab === "logs" ? logRecoveryEffect(drawer.serverName, jobLogsByServer.get(drawer.serverName)) : [])
+                ];
             } else if (event.type === "drawerLogFollowChanged") {
                 drawer = { ...drawer, logFollow: !!event.value };
                 return stateEffects({ render: false });

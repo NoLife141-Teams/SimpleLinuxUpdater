@@ -81,7 +81,11 @@ type Record struct {
 	UpdatedAt       string `json:"updated_at"`
 	StartedAt       string `json:"started_at"`
 	FinishedAt      string `json:"finished_at"`
+	LogsExpired     bool   `json:"logs_expired"`
+	LogsTruncated   bool   `json:"logs_truncated"`
 	Revision        int64  `json:"-"`
+	logReplacement  *string
+	logAppend       string
 }
 
 type Intent struct {
@@ -122,7 +126,8 @@ type Repository interface {
 }
 
 type SQLiteRepository struct {
-	db *sql.DB
+	db        *sql.DB
+	logConfig LogConfig
 }
 
 type ManagerOptions struct {
@@ -139,7 +144,7 @@ type Manager struct {
 }
 
 func NewSQLiteRepository(db *sql.DB) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+	return NewSQLiteRepositoryWithLogConfig(db, DefaultLogConfig())
 }
 
 func NewManager(repo Repository, opts ManagerOptions) *Manager {
@@ -149,10 +154,17 @@ func NewManager(repo Repository, opts ManagerOptions) *Manager {
 	if opts.NewID == nil {
 		opts.NewID = NewID
 	}
+	if sqliteRepo, ok := repo.(*SQLiteRepository); ok {
+		sqliteRepo.configureLogClock(opts.Now)
+	}
 	return &Manager{repo: repo, opts: opts}
 }
 
 func EnsureSchema(db *sql.DB) error {
+	return EnsureSchemaConfigured(db, DefaultLogConfig())
+}
+
+func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY,
@@ -173,12 +185,19 @@ func EnsureSchema(db *sql.DB) error {
 			updated_at TEXT NOT NULL,
 			started_at TEXT NOT NULL DEFAULT '',
 			finished_at TEXT NOT NULL DEFAULT '',
+			logs_expired INTEGER NOT NULL DEFAULT 0,
+			logs_truncated INTEGER NOT NULL DEFAULT 0,
+			log_next_sequence INTEGER NOT NULL DEFAULT 1,
+			log_source_bytes INTEGER NOT NULL DEFAULT 0,
 			revision INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return err
 	}
 	if err := ensureRevisionColumn(db); err != nil {
+		return err
+	}
+	if err := EnsureSchemaWithLogConfig(db, logConfig); err != nil {
 		return err
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_server_created_at ON jobs (server_name, created_at DESC)"); err != nil {
@@ -346,12 +365,82 @@ func (m *Manager) AppendActiveLog(id, logText string) (bool, error) {
 	if m == nil || m.repo == nil || strings.TrimSpace(id) == "" || logText == "" {
 		return false, nil
 	}
-	updated, err := m.repo.AppendActiveLog(id, logText, m.timestampNow())
+	return m.AppendActiveLogFragments(id, []LogFragment{{Stream: LogStreamCombined, Data: logText}})
+}
+
+func (m *Manager) AppendActiveLogStream(id, stream, data string) (bool, error) {
+	return m.AppendActiveLogFragments(id, []LogFragment{{Stream: stream, Data: data}})
+}
+
+func (m *Manager) AppendActiveLogFragments(id string, fragments []LogFragment) (bool, error) {
+	if m == nil || m.repo == nil || strings.TrimSpace(id) == "" || len(fragments) == 0 {
+		return false, nil
+	}
+	var updated bool
+	var err error
+	if repo, ok := m.repo.(structuredLogRepository); ok {
+		updated, err = repo.AppendActiveLogFragments(id, fragments, m.timestampNow())
+	} else {
+		var combined strings.Builder
+		for _, fragment := range fragments {
+			combined.WriteString(fragment.Data)
+		}
+		updated, err = m.repo.AppendActiveLog(id, combined.String(), m.timestampNow())
+	}
 	if err != nil || !updated {
 		return updated, err
 	}
 	m.notify("job.log")
 	return true, nil
+}
+
+func (m *Manager) GetJobWithLogs(id string) (Record, error) {
+	record, err := m.GetJob(id)
+	if err != nil {
+		return Record{}, err
+	}
+	if repo, ok := m.repo.(structuredLogRepository); ok {
+		logs, expired, truncated, err := repo.ReadFullLog(id)
+		if err != nil {
+			return Record{}, err
+		}
+		record.LogsText = logs
+		record.LogsExpired = expired
+		record.LogsTruncated = truncated
+	}
+	return record, nil
+}
+
+func (m *Manager) ReadLogPage(id string, afterSequence int64, limit int) (LogPage, error) {
+	if m == nil || m.repo == nil {
+		return LogPage{}, errors.New("job manager is not initialized")
+	}
+	if repo, ok := m.repo.(structuredLogRepository); ok {
+		return repo.ReadLogPage(id, afterSequence, limit)
+	}
+	record, err := m.repo.Get(id)
+	if err != nil {
+		return LogPage{}, err
+	}
+	fragments := []LogChunk{}
+	if afterSequence < 1 && record.LogsText != "" {
+		fragments = append(fragments, LogChunk{Sequence: 1, Stream: LogStreamCombined, Data: record.LogsText, CreatedAt: record.UpdatedAt})
+	}
+	next := afterSequence
+	if len(fragments) > 0 {
+		next = fragments[len(fragments)-1].Sequence
+	}
+	return LogPage{JobID: id, Fragments: fragments, NextSequence: next, RetentionDays: DefaultLogRetentionDays}, nil
+}
+
+func (m *Manager) PurgeExpiredLogs() (int64, error) {
+	if m == nil || m.repo == nil {
+		return 0, nil
+	}
+	if repo, ok := m.repo.(structuredLogRepository); ok {
+		return repo.PurgeExpiredLogs()
+	}
+	return 0, nil
 }
 
 func (m *Manager) GetJob(id string) (Record, error) {
@@ -467,9 +556,11 @@ func (m *Manager) applyIntent(current Record, intent Intent) (Record, bool, erro
 	}
 	if intent.LogsText != nil {
 		next.LogsText = *intent.LogsText
+		next.logReplacement = intent.LogsText
 	}
 	if intent.AppendLog != "" {
 		next.LogsText += intent.AppendLog
+		next.logAppend = intent.AppendLog
 	}
 	if intent.ErrorClass != nil {
 		next.ErrorClass = strings.TrimSpace(*intent.ErrorClass)
@@ -552,11 +643,17 @@ func (r *SQLiteRepository) Create(record Record) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
-	_, err := r.db.Exec(`
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
+			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?)
 	`,
 		record.ID,
 		record.Kind,
@@ -567,7 +664,6 @@ func (r *SQLiteRepository) Create(record Record) error {
 		record.Status,
 		record.Phase,
 		record.Summary,
-		record.LogsText,
 		record.ErrorClass,
 		record.RetryPolicyJSON,
 		record.MetaJSON,
@@ -577,18 +673,29 @@ func (r *SQLiteRepository) Create(record Record) error {
 		record.FinishedAt,
 		record.Revision,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *SQLiteRepository) Upsert(record Record) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
-	_, err := r.db.Exec(`
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind = excluded.kind,
 			parent_job_id = excluded.parent_job_id,
@@ -598,7 +705,6 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 			status = excluded.status,
 			phase = excluded.phase,
 			summary = excluded.summary,
-			logs_text = excluded.logs_text,
 			error_class = excluded.error_class,
 			retry_policy_json = excluded.retry_policy_json,
 			meta_json = excluded.meta_json,
@@ -616,7 +722,6 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.Status,
 		record.Phase,
 		record.Summary,
-		record.LogsText,
 		record.ErrorClass,
 		record.RetryPolicyJSON,
 		record.MetaJSON,
@@ -626,22 +731,33 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.FinishedAt,
 		record.Revision,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(record.ID) == "" {
 		return false, nil
 	}
-	query := `UPDATE jobs SET status=?, phase=?, summary=?, logs_text=?, error_class=?, meta_json=?,
+	tx, err := r.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	query := `UPDATE jobs SET status=?, phase=?, summary=?, error_class=?, meta_json=?,
 		updated_at=?, started_at=?, finished_at=?, revision=? WHERE id=? AND revision=?`
-	args := []any{record.Status, record.Phase, record.Summary, record.LogsText, record.ErrorClass, record.MetaJSON,
+	args := []any{record.Status, record.Phase, record.Summary, record.ErrorClass, record.MetaJSON,
 		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.ID, expectedRevision}
 	if activeOnly {
 		query += " AND status IN (?, ?, ?)"
 		args = append(args, StatusQueued, StatusRunning, StatusWaitingApproval)
 	}
-	result, err := r.db.Exec(query, args...)
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return false, err
 	}
@@ -649,29 +765,26 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 	if err != nil {
 		rowsAffected = 1
 	}
-	return rowsAffected > 0, nil
+	if rowsAffected == 0 {
+		return false, nil
+	}
+	if record.logReplacement != nil {
+		if err := r.replaceLogSnapshotTx(tx, record.ID, *record.logReplacement, LogStreamCombined, record.UpdatedAt); err != nil {
+			return false, err
+		}
+	} else if record.logAppend != "" {
+		if err := r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *SQLiteRepository) AppendActiveLog(id, logText, updatedAt string) (bool, error) {
-	if r == nil || r.db == nil || strings.TrimSpace(id) == "" || logText == "" {
-		return false, nil
-	}
-	result, err := r.db.Exec(`
-		UPDATE jobs
-		   SET logs_text = logs_text || ?,
-		       updated_at = ?,
-		       revision = revision + 1
-		 WHERE id = ?
-		   AND status IN (?, ?, ?)
-	`, logText, updatedAt, id, StatusQueued, StatusRunning, StatusWaitingApproval)
-	if err != nil {
-		return false, err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		rowsAffected = 1
-	}
-	return rowsAffected > 0, nil
+	return r.AppendActiveLogFragments(id, []LogFragment{{Stream: LogStreamCombined, Data: logText}}, updatedAt)
 }
 
 func (r *SQLiteRepository) Get(id string) (Record, error) {
@@ -681,7 +794,8 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	var record Record
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
+		       logs_expired, logs_truncated, revision
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(
@@ -702,6 +816,8 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 		&record.UpdatedAt,
 		&record.StartedAt,
 		&record.FinishedAt,
+		&record.LogsExpired,
+		&record.LogsTruncated,
 		&record.Revision,
 	)
 	return record, err
@@ -714,7 +830,8 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	var record Record
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
+		       logs_expired, logs_truncated, revision
 		  FROM jobs
 		 WHERE server_name = ?
 		   AND kind = ?
@@ -739,6 +856,8 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 		&record.UpdatedAt,
 		&record.StartedAt,
 		&record.FinishedAt,
+		&record.LogsExpired,
+		&record.LogsTruncated,
 		&record.Revision,
 	)
 	if err == sql.ErrNoRows {

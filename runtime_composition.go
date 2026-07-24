@@ -85,6 +85,9 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return fmt.Errorf("interrupt unfinished restored jobs: %w", err)
 	}
+	if _, err := jm.PurgeExpiredLogs(); err != nil {
+		return fmt.Errorf("purge restored expired job logs: %w", err)
+	}
 	deps.SetCurrentJobManager(jm)
 	if deps.ServerInventoryService == nil || deps.ServerState == nil {
 		return fmt.Errorf("reload restored Server inventory: runtime dependency is unavailable")
@@ -194,7 +197,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntime(db, notify, deps.ServerState, nil)
+			return newJobManagerWithRuntimeConfig(db, notify, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
 		}
 	}
 	if deps.CurrentJobManager == nil {

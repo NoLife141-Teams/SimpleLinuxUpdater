@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Add ordered SQLite job-log fragments with stdout/stderr preservation, bounded compatibility previews, authenticated pagination, automatic retention, explicit expiration/truncation reporting, and backup/restore validation.
+
 ## [v0.3.0] - 2026-07-20
 
 ### Added

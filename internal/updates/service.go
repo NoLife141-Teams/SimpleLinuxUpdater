@@ -126,7 +126,8 @@ const (
 type liveCommandLogSink struct {
 	mu         sync.Mutex
 	runner     *withActorRunner
-	pending    strings.Builder
+	pending    []HostCommandOutput
+	pendingLen int
 	lastFlush  time.Time
 	hasFlushed bool
 	received   bool
@@ -144,12 +145,17 @@ func (s *liveCommandLogSink) Handle(output HostCommandOutput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.received {
-		s.pending.WriteByte('\n')
+		output.Data = "\n" + output.Data
 		s.received = true
 	}
-	s.pending.WriteString(output.Data)
+	if len(s.pending) > 0 && s.pending[len(s.pending)-1].Stream == output.Stream {
+		s.pending[len(s.pending)-1].Data += output.Data
+	} else {
+		s.pending = append(s.pending, output)
+	}
+	s.pendingLen += len(output.Data)
 	now := s.runner.deps().Now()
-	if !s.hasFlushed || now.Sub(s.lastFlush) >= liveCommandLogFlushInterval || s.pending.Len() >= liveCommandLogFlushBytes {
+	if !s.hasFlushed || now.Sub(s.lastFlush) >= liveCommandLogFlushInterval || s.pendingLen >= liveCommandLogFlushBytes {
 		s.stopTimerLocked()
 		s.flushLocked(now)
 		return
@@ -200,11 +206,12 @@ func (s *liveCommandLogSink) stopTimerLocked() {
 }
 
 func (s *liveCommandLogSink) flushLocked(now time.Time) {
-	if s.pending.Len() == 0 {
+	if len(s.pending) == 0 {
 		return
 	}
-	s.runner.appendLiveStatusLog(s.pending.String())
-	s.pending.Reset()
+	s.runner.appendLiveStatusLogs(s.pending)
+	s.pending = nil
+	s.pendingLen = 0
 	s.lastFlush = now
 	s.hasFlushed = true
 }
@@ -244,10 +251,23 @@ func (r *withActorRunner) appendStatusLog(line string) {
 	})
 }
 
-func (r *withActorRunner) appendLiveStatusLog(line string) {
-	if line == "" {
+func (r *withActorRunner) appendLiveStatusLogs(outputs []HostCommandOutput) {
+	if len(outputs) == 0 {
 		return
 	}
+	var combined strings.Builder
+	fragments := make([]jobs.LogFragment, 0, len(outputs))
+	for _, output := range outputs {
+		if output.Data == "" {
+			continue
+		}
+		combined.WriteString(output.Data)
+		fragments = append(fragments, jobs.LogFragment{Stream: string(output.Stream), Data: output.Data})
+	}
+	if len(fragments) == 0 {
+		return
+	}
+	line := combined.String()
 	deps := r.deps()
 	if deps.ServerState == nil {
 		return
@@ -265,7 +285,7 @@ func (r *withActorRunner) appendLiveStatusLog(line string) {
 	if jm == nil || strings.TrimSpace(r.jobID) == "" {
 		return
 	}
-	if _, err := jm.AppendActiveLog(r.jobID, line); err != nil {
+	if _, err := jm.AppendActiveLogFragments(r.jobID, fragments); err != nil {
 		deps.Logf("failed to append live logs to job %q: %v", r.jobID, err)
 	}
 }

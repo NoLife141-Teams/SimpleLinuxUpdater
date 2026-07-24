@@ -31,6 +31,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPost, "/api/metrics/token"},
 		{http.MethodDelete, "/api/metrics/token"},
 		{http.MethodGet, "/api/backup/status"},
+		{http.MethodGet, "/api/jobs/:id/logs"},
 		{http.MethodGet, "/api/dashboard/events"},
 		{http.MethodGet, "/api/app-settings/timezone"},
 		{http.MethodPut, "/api/app-settings/timezone"},

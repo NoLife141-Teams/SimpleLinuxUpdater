@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"debian-updater/internal/jobs"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -252,7 +254,7 @@ func TestVerifyArchiveValidatesWithoutApplying(t *testing.T) {
 		DecryptSecretWithKey: func(string, []byte) (string, error) {
 			return "", nil
 		},
-		EnsureSchema: func(*sql.DB) error { return nil },
+		EnsureSchema: jobs.EnsureSchema,
 		RestoredRuntime: testRestoredRuntime{reload: func(context.Context) error {
 			applied = true
 			return nil
@@ -344,7 +346,7 @@ func TestValidateDatabaseDataRejectsUndecryptableGlobalSSHCredential(t *testing.
 	}
 
 	service := NewService(ServiceDeps{
-		EnsureSchema: func(*sql.DB) error { return nil },
+		EnsureSchema: jobs.EnsureSchema,
 		DecryptSecretWithKey: func(encrypted string, _ []byte) (string, error) {
 			if encrypted == "invalid-ciphertext" {
 				return "", errors.New("authentication failed")

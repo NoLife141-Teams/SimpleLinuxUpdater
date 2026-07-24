@@ -42,7 +42,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - `internal/updates.Service` owns update, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
 - `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
-- `internal/jobs.Manager` owns persisted job creation, update, recovery, runtime-status sync callbacks, and dashboard notifications after successful writes.
+- `internal/jobs.Manager` owns persisted job creation, update, recovery, structured job-log fragments, bounded compatibility previews, log retention, runtime-status sync callbacks, and dashboard notifications after successful writes.
 - `internal/maintenance.Coordinator` owns shared admission, exclusive backup leases, durable/public maintenance state, startup recovery, and restore handoff.
 - `internal/apptime.Module` owns the accepted application timezone interpretation, compatible timestamp display, and canonical local wall-clock resolution including DST gaps and overlaps.
 - `internal/backup` owns archive validation, file replacement, rollback, runtime reload, and session invalidation; it invokes the active exclusive lease at restore handoff boundaries.
@@ -57,7 +57,7 @@ SQLite table ownership:
 - `internal/auth`: `auth_users`, `sessions`, and `sessions_expiry_idx`.
 - `internal/audit`: `audit_events` and audit indexes.
 - `internal/health`: `server_facts`, `server_health_snapshots`, and their indexes.
-- `internal/jobs`: `jobs` and job indexes.
+- `internal/jobs`: `jobs`, `job_log_chunks`, and job/log indexes.
 - `internal/policies`: `update_policies`, `update_policy_overrides`, `update_policy_runs`, and policy-run indexes.
 - Shared main/app schema: `settings`, used by maintenance state, global SSH key storage, policy settings, app timezone/blackout settings, and metrics token state.
 
@@ -108,6 +108,8 @@ Markdown reports are generated for:
 
 - audit events at `/api/reports/audit/:id`;
 - persisted jobs at `/api/reports/jobs/:id`.
+
+Detailed job output is read from ordered `job_log_chunks`; reports surface expiration and truncation explicitly. Authenticated clients can page fragments with `GET /api/jobs/:id/logs?after_seq=N&limit=N`. The legacy `jobs.logs_text` field remains a bounded compatibility preview.
 
 The observability dashboard and `/metrics` endpoint derive summaries from `update.complete` audit events and related persisted runtime data:
 

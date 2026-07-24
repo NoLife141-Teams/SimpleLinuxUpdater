@@ -222,10 +222,16 @@ func insertDemoJobs(tx *sql.Tx, now time.Time) error {
 			finished = formatJobTimestamp(row.finished)
 		}
 		if _, err := tx.Exec(`INSERT INTO jobs
-			(id, kind, server_name, actor, status, phase, summary, logs_text, created_at, updated_at, started_at, finished_at)
-			VALUES (?, ?, ?, 'demo', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				(id, kind, server_name, actor, status, phase, summary, logs_text, created_at, updated_at, started_at, finished_at, log_next_sequence, log_source_bytes)
+				VALUES (?, ?, ?, 'demo', ?, ?, ?, ?, ?, ?, ?, ?, 2, ?)`,
 			row.id, jobKindUpdate, row.server, row.status, row.phase, row.summary, row.logs,
-			formatJobTimestamp(row.started.Add(-1*time.Minute)), formatJobTimestamp(now), formatJobTimestamp(row.started), finished); err != nil {
+			formatJobTimestamp(row.started.Add(-1*time.Minute)), formatJobTimestamp(now), formatJobTimestamp(row.started), finished, len(row.logs)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+				INSERT INTO job_log_chunks (job_id, sequence, stream, data, created_at)
+				VALUES (?, 1, 'combined', ?, ?)
+			`, row.id, []byte(row.logs), formatJobTimestamp(now)); err != nil {
 			return err
 		}
 	}

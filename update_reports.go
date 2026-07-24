@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -52,7 +53,7 @@ func handleJobReportWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
 		return
 	}
-	job, err := jm.GetJob(c.Param("id"))
+	job, err := jm.GetJobWithLogs(c.Param("id"))
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
@@ -62,6 +63,43 @@ func handleJobReportWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	writeMarkdownDownload(c, markdownReportFilename("job", job.ID), deps.AuditService.BuildJobMarkdownReport(job))
+}
+
+func handleJobLogsWithDeps(c *gin.Context, deps AppDeps) {
+	deps = deps.withDefaults()
+	jm := deps.CurrentJobManager()
+	if jm == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "job manager unavailable"})
+		return
+	}
+	afterSequence := int64(0)
+	if raw := strings.TrimSpace(c.Query("after_seq")); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "after_seq must be a non-negative integer"})
+			return
+		}
+		afterSequence = value
+	}
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 500 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be an integer in [1,500]"})
+			return
+		}
+		limit = value
+	}
+	page, err := jm.ReadLogPage(c.Param("id"), afterSequence, limit)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load job logs"})
+		return
+	}
+	c.JSON(http.StatusOK, page)
 }
 
 func handleJobDetailWithDeps(c *gin.Context, deps AppDeps) {

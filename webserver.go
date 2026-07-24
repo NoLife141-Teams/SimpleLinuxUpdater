@@ -1831,6 +1831,9 @@ func registerPolicyAuditObservabilityRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/jobs/:id", func(c *gin.Context) {
 		handleJobDetailWithDeps(c, deps)
 	})
+	r.GET("/api/jobs/:id/logs", func(c *gin.Context) {
+		handleJobLogsWithDeps(c, deps)
+	})
 	r.GET("/api/observability/summary", func(c *gin.Context) {
 		handleObservabilitySummaryWithService(c, deps.ObservabilityService, deps.Now)
 	})
@@ -2251,6 +2254,7 @@ func main() {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startAuditPruner(shutdownCtx)
+	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
 	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})
 	defer StopAuthRateLimiters()
 	server := &http.Server{

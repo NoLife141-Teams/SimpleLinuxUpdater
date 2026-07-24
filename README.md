@@ -77,6 +77,11 @@ Environment variables for auth/session:
 - `DEBIAN_UPDATER_SESSION_COOKIE_SECURE`: optional boolean (`true|false`, default `false`), enables secure-only session cookies; set `true` behind HTTPS.
 - `DEBIAN_UPDATER_SESSION_IDLE_TIMEOUT_HOURS`: optional integer idle timeout in hours; `0` or unset keeps default behavior.
 
+Environment variables for job logs:
+
+- `DEBIAN_UPDATER_JOB_LOG_RETENTION_DAYS`: completed-job log retention in days (default `30`, allowed `1..3650`). Expiration removes detailed log content while preserving job status, summary, metadata, and timestamps.
+- `DEBIAN_UPDATER_JOB_LOG_MAX_BYTES`: maximum detailed log bytes persisted per job (default `2097152`, allowed `131072..1073741824`). Oversized logs retain their first 64 KiB and newest output with an explicit truncation marker.
+
 Programmatic auth note:
 
 - `POST /api/auth/setup`, `POST /api/auth/login`, and `POST /api/auth/logout` require same-origin host checks:

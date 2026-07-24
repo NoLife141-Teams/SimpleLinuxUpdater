@@ -21,6 +21,7 @@ const appTimezoneLocalDisplayLabel = "Server local time"
 
 var errAppTimezoneValidation = errors.New("app timezone validation")
 var detectSystemTimezoneNameFunc = detectSystemTimezoneName
+var defaultAppLocationFunc = func() *time.Location { return time.Local }
 var offsetTimezonePattern = regexp.MustCompile(`^([+-])(\d{2}):(\d{2})$`)
 var appTimezoneMetadataPaths = []string{"/etc/timezone", "/etc/TZ"}
 var appTimezoneLocaltimePath = "/etc/localtime"
@@ -49,8 +50,8 @@ func isAppTimezoneValidationError(err error) bool {
 }
 
 func defaultAppLocation() *time.Location {
-	if time.Local != nil {
-		return time.Local
+	if loc := defaultAppLocationFunc(); loc != nil {
+		return loc
 	}
 	return time.UTC
 }

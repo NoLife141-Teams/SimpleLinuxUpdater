@@ -41,6 +41,15 @@ func prepareUpdatePolicyTestState(t *testing.T, dbFile string) {
 	}
 }
 
+func useDefaultAppLocation(t *testing.T, loc *time.Location) {
+	t.Helper()
+	original := defaultAppLocationFunc
+	defaultAppLocationFunc = func() *time.Location { return loc }
+	t.Cleanup(func() {
+		defaultAppLocationFunc = original
+	})
+}
+
 func seedUpdatePolicyTestInventory(t *testing.T, app *testApp, seededServers []Server, seededStatusMap map[string]*ServerStatus) {
 	t.Helper()
 	if app == nil || app.Deps.ServerState == nil {
@@ -802,15 +811,12 @@ func TestSaveAppTimezoneLocalAcceptsDetectedOffsetTimezone(t *testing.T) {
 	prepareUpdatePolicyTestState(t, dbFile)
 
 	origDetect := detectSystemTimezoneNameFunc
-	oldLocal := time.Local
 	detectSystemTimezoneNameFunc = func() (string, error) {
 		return "+02:00", nil
 	}
 	t.Cleanup(func() {
 		detectSystemTimezoneNameFunc = origDetect
-		time.Local = oldLocal
 	})
-	time.Local = time.FixedZone("XST", 2*60*60)
 
 	name, err := saveAppTimezone("Local")
 	if err != nil {
@@ -822,7 +828,6 @@ func TestSaveAppTimezoneLocalAcceptsDetectedOffsetTimezone(t *testing.T) {
 	detectSystemTimezoneNameFunc = func() (string, error) {
 		return "", os.ErrNotExist
 	}
-	time.Local = time.UTC
 
 	loc, currentName, err := loadCurrentAppTimezone()
 	if err != nil {
@@ -900,11 +905,9 @@ func TestDefaultAppTimezoneNameFallbackDoesNotExposeLocal(t *testing.T) {
 	detectSystemTimezoneNameFunc = func() (string, error) {
 		return "", os.ErrNotExist
 	}
-	oldLocal := time.Local
-	time.Local = time.FixedZone("XST", 2*60*60)
+	useDefaultAppLocation(t, time.FixedZone("XST", 2*60*60))
 	t.Cleanup(func() {
 		detectSystemTimezoneNameFunc = origDetect
-		time.Local = oldLocal
 	})
 
 	if got := defaultAppTimezoneName(); got != "+02:00" {
@@ -920,11 +923,9 @@ func TestLoadCurrentAppTimezoneFallbackKeepsLocationAndNameAligned(t *testing.T)
 	detectSystemTimezoneNameFunc = func() (string, error) {
 		return "", os.ErrNotExist
 	}
-	oldLocal := time.Local
-	time.Local = time.FixedZone("XST", 2*60*60)
+	useDefaultAppLocation(t, time.FixedZone("XST", 2*60*60))
 	t.Cleanup(func() {
 		detectSystemTimezoneNameFunc = origDetect
-		time.Local = oldLocal
 	})
 
 	loc, name, err := loadCurrentAppTimezone()
@@ -974,11 +975,7 @@ func TestLoadCurrentAppTimezoneSkipsFallbackDetectionWhenConfigured(t *testing.T
 
 func TestDetectSystemTimezoneNamePrefersLocaltimeOverMetadata(t *testing.T) {
 	t.Setenv("TZ", "")
-	oldLocal := time.Local
-	time.Local = time.FixedZone("Local", 0)
-	t.Cleanup(func() {
-		time.Local = oldLocal
-	})
+	useDefaultAppLocation(t, time.FixedZone("Local", 0))
 
 	tempDir := t.TempDir()
 	zoneinfoRoot := filepath.Join(tempDir, "zoneinfo")
@@ -1053,11 +1050,9 @@ func TestSaveAppTimezoneLocalFallsBackWhenNameUnresolved(t *testing.T) {
 	detectSystemTimezoneNameFunc = func() (string, error) {
 		return "", os.ErrNotExist
 	}
-	oldLocal := time.Local
-	time.Local = time.FixedZone("XST", 2*60*60)
+	useDefaultAppLocation(t, time.FixedZone("XST", 2*60*60))
 	t.Cleanup(func() {
 		detectSystemTimezoneNameFunc = origDetect
-		time.Local = oldLocal
 	})
 
 	name, err := saveAppTimezone("Local")
@@ -1273,15 +1268,15 @@ func TestUpdatePolicyOverrideRejectsUnknownServer(t *testing.T) {
 }
 
 func TestCanonicalScheduledForUTCUsesFirstFallbackOccurrence(t *testing.T) {
-	oldLocal := time.Local
+	dbFile := filepath.Join(t.TempDir(), "update-policy-fallback-occurrence.db")
+	prepareUpdatePolicyTestState(t, dbFile)
+	if _, err := saveAppTimezone("America/Toronto"); err != nil {
+		t.Fatalf("saveAppTimezone(America/Toronto) unexpected error: %v", err)
+	}
 	loc, err := time.LoadLocation("America/Toronto")
 	if err != nil {
 		t.Fatalf("LoadLocation() unexpected error: %v", err)
 	}
-	time.Local = loc
-	t.Cleanup(func() {
-		time.Local = oldLocal
-	})
 
 	firstOccurrence := time.Date(2026, time.November, 1, 1, 30, 0, 0, loc)
 	secondParsed, err := time.Parse("2006-01-02 15:04 -0700 MST", "2026-11-01 01:30 -0500 EST")
@@ -1310,12 +1305,6 @@ func TestProcessDueUpdatePoliciesUsesConfiguredAppTimezone(t *testing.T) {
 		t.Fatalf("write known_hosts: %v", err)
 	}
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
-
-	oldLocal := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() {
-		time.Local = oldLocal
-	})
 
 	if _, err := saveAppTimezone("America/Toronto"); err != nil {
 		t.Fatalf("saveAppTimezone() unexpected error: %v", err)

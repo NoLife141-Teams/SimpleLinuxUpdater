@@ -74,11 +74,27 @@ const (
 	ReplayRetryableOutputErrors HostCommandReplayPolicy = "retryable_output_errors"
 )
 
+type HostCommandOutputStream string
+
+const (
+	HostCommandStdout HostCommandOutputStream = "stdout"
+	HostCommandStderr HostCommandOutputStream = "stderr"
+)
+
+type HostCommandOutput struct {
+	Stream HostCommandOutputStream
+	Data   string
+}
+
+type HostCommandOutputHandler func(HostCommandOutput)
+
 type HostCommandRequest struct {
-	Operation    string
-	Command      string
-	Stdin        func() io.Reader
-	ReplayPolicy HostCommandReplayPolicy
+	Operation         string
+	Command           string
+	Stdin             func() io.Reader
+	ReplayPolicy      HostCommandReplayPolicy
+	OnOutput          HostCommandOutputHandler
+	OnAttemptComplete func()
 }
 
 type HostCommandResult struct {
@@ -200,13 +216,14 @@ func (s *HostMaintenanceSessionFuncs) Close() error {
 }
 
 type ProductionHostMaintenanceSessionDeps struct {
-	BuildAuthMethods  func(servers.Server) ([]ssh.AuthMethod, error)
-	HostKeyCallback   func() (ssh.HostKeyCallback, error)
-	DialSSH           func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
-	RunCommand        func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error)
-	SSHConnectTimeout time.Duration
-	Sleep             func(time.Duration)
-	Logf              func(string, ...any)
+	BuildAuthMethods    func(servers.Server) ([]ssh.AuthMethod, error)
+	HostKeyCallback     func() (ssh.HostKeyCallback, error)
+	DialSSH             func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
+	RunCommand          func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error)
+	RunStreamingCommand func(context.Context, SSHConnection, string, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error)
+	SSHConnectTimeout   time.Duration
+	Sleep               func(time.Duration)
+	Logf                func(string, ...any)
 }
 
 type productionHostMaintenanceSessionFactory struct {
@@ -376,7 +393,14 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 		if req.Stdin != nil {
 			stdin = req.Stdin()
 		}
-		stdout, stderr, runErr = s.deps.RunCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout)
+		if req.OnOutput != nil && s.deps.RunStreamingCommand != nil {
+			stdout, stderr, runErr = s.deps.RunStreamingCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout, req.OnOutput)
+		} else {
+			stdout, stderr, runErr = s.deps.RunCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout)
+		}
+		if req.OnAttemptComplete != nil {
+			req.OnAttemptComplete()
+		}
 		if req.ReplayPolicy == ReplayRetryableOutputErrors {
 			return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
 		}

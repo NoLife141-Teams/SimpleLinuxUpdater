@@ -411,6 +411,128 @@ func TestProductionHostMaintenanceSessionDeadlineInterruptsRetryBackoff(t *testi
 	}
 }
 
+func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testing.T) {
+	conn := &maintenanceTestConnection{}
+	fallbackCalls := 0
+	streamingCalls := 0
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+			fallbackCalls++
+			return "fallback", "", nil
+		},
+		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
+			streamingCalls++
+			onOutput(HostCommandOutput{Stream: HostCommandStdout, Data: "unpacking\n"})
+			onOutput(HostCommandOutput{Stream: HostCommandStderr, Data: "configuration warning\n"})
+			return "unpacking\n", "configuration warning\n", nil
+		},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         servers.Server{User: "root"},
+		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
+		CommandTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	var outputs []HostCommandOutput
+	attemptCompletions := 0
+	result, err := session.RunCommand(context.Background(), HostCommandRequest{
+		Operation: "test.stream",
+		Command:   "apt-get -y upgrade",
+		OnOutput: func(output HostCommandOutput) {
+			outputs = append(outputs, output)
+		},
+		OnAttemptComplete: func() {
+			attemptCompletions++
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunCommand() error = %v", err)
+	}
+	if fallbackCalls != 0 || streamingCalls != 1 {
+		t.Fatalf("fallback calls=%d streaming calls=%d, want 0/1", fallbackCalls, streamingCalls)
+	}
+	if result.Stdout != "unpacking\n" || result.Stderr != "configuration warning\n" {
+		t.Fatalf("RunCommand() result = %+v", result)
+	}
+	want := []HostCommandOutput{
+		{Stream: HostCommandStdout, Data: "unpacking\n"},
+		{Stream: HostCommandStderr, Data: "configuration warning\n"},
+	}
+	if !reflect.DeepEqual(outputs, want) {
+		t.Fatalf("streamed outputs = %#v, want %#v", outputs, want)
+	}
+	if attemptCompletions != 1 {
+		t.Fatalf("attempt completions = %d, want 1", attemptCompletions)
+	}
+}
+
+func TestProductionHostMaintenanceSessionCompletesStreamAttemptBeforeRetryNotification(t *testing.T) {
+	first := &maintenanceTestConnection{}
+	second := &maintenanceTestConnection{}
+	connections := []SSHConnection{first, second}
+	dials := 0
+	attempts := 0
+	var events []string
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+			conn := connections[dials]
+			dials++
+			return conn, nil
+		},
+		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+			return "", "", errors.New("unexpected fallback command")
+		},
+		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
+			attempts++
+			output := fmt.Sprintf("attempt-%d\n", attempts)
+			onOutput(HostCommandOutput{Stream: HostCommandStdout, Data: output})
+			events = append(events, "output:"+strings.TrimSpace(output))
+			if attempts == 1 {
+				return output, "", RetryableTaggedError{Err: errors.New("temporary transport failure")}
+			}
+			return output, "", nil
+		},
+		Sleep: func(time.Duration) {},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         servers.Server{User: "root"},
+		RetryPolicy:    RetryPolicy{MaxAttempts: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		CommandTimeout: time.Minute,
+		OnRetry: func(HostRetryEvent) {
+			events = append(events, "retry")
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	_, err = session.RunCommand(context.Background(), HostCommandRequest{
+		Operation: "test.stream-retry",
+		Command:   "apt-get -y upgrade",
+		OnOutput:  func(HostCommandOutput) {},
+		OnAttemptComplete: func() {
+			events = append(events, "flush")
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunCommand() error = %v", err)
+	}
+	want := []string{"output:attempt-1", "flush", "retry", "output:attempt-2", "flush"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("attempt event order = %#v, want %#v", events, want)
+	}
+}
+
 func TestProductionHostMaintenanceSessionInspectionHonorsCancelledContext(t *testing.T) {
 	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{}}
 	session := newInspectionSession(t, conn)

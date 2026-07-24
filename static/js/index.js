@@ -205,7 +205,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (!text) {
                 return `<div class="log-line log-line-info">No logs yet.</div>`;
             }
-            const lines = text.split(/\r?\n/);
+            const lines = statusFormatting.logLines(text);
             return lines.map(line => {
                 const klass = classifyLogLine(line);
                 const classAttr = klass ? ` log-line-${klass}` : "";
@@ -332,8 +332,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getLatestLogLines(server, limit = 5) {
-            const lines = String(server?.logs || "")
-                .split(/\r?\n/)
+            const lines = statusFormatting.logLines(server?.logs)
                 .map(line => line.trim())
                 .filter(Boolean);
             return lines.slice(-limit);
@@ -1106,6 +1105,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             EventSourceType: window.EventSource,
             onServersPoll: () => fetchServers(false, "poll"),
             onExtrasPoll: () => fetchDashboardExtras("poll"),
+            onJobLogEvent: () => {
+                requestStatusRefresh(["servers"], "immediate", "sse-job-log");
+            },
             onDashboardEvent: () => {
                 requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
                 fetchDashboardExtras("sse", false);

@@ -789,6 +789,34 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
   });
 
+  test('APT upgrade log drawer renders carriage-return progress during refresh', async ({ page }) => {
+    let servers = [
+      makeServer('apt-live-host', 'upgrading', [], {
+        logs: 'Running apt upgrade...\rReading database ... 25%\rReading database ... 50%',
+      }),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="logs"]').click();
+    const logs = page.locator('#drawer-logs');
+    await expect(logs.locator('.log-line')).toHaveText([
+      'Running apt upgrade...',
+      'Reading database ... 25%',
+      'Reading database ... 50%',
+    ]);
+
+    servers = [
+      makeServer('apt-live-host', 'upgrading', [], {
+        logs: 'Running apt upgrade...\rReading database ... 25%\rReading database ... 50%\rUnpacking openssl',
+      }),
+    ];
+    await page.evaluate(() => window.fetchServers(true, 'apt-live-output'));
+
+    await expect(logs.locator('.log-line').last()).toHaveText('Unpacking openssl');
+    await expect.poll(() => logs.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+  });
+
   test('bulk action review gates typed confirmations, partial failures, and safe non-typed actions', async ({ page }) => {
     const servers = [
       makeServer('idle-host', 'idle', [], { has_key: true }),

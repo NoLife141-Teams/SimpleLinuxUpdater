@@ -557,7 +557,59 @@ func loadPostUpdateCheckConfigFromEnv() PostUpdateCheckConfig {
 	return cfg
 }
 
+type sshCommandOutputGate struct {
+	mu       sync.Mutex
+	closed   bool
+	onOutput updatespkg.HostCommandOutputHandler
+}
+
+func newSSHCommandOutputGate(onOutput updatespkg.HostCommandOutputHandler) *sshCommandOutputGate {
+	return &sshCommandOutputGate{onOutput: onOutput}
+}
+
+func (g *sshCommandOutputGate) emit(output updatespkg.HostCommandOutput) {
+	if g == nil || g.onOutput == nil || output.Data == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.closed {
+		g.onOutput(output)
+	}
+}
+
+func (g *sshCommandOutputGate) close() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+}
+
+type sshCommandOutputWriter struct {
+	bytes.Buffer
+	stream   updatespkg.HostCommandOutputStream
+	onOutput updatespkg.HostCommandOutputHandler
+}
+
+func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	if n > 0 && w.onOutput != nil {
+		w.onOutput(updatespkg.HostCommandOutput{Stream: w.stream, Data: string(p[:n])})
+	}
+	return n, err
+}
+
+func (w *sshCommandOutputWriter) WriteString(value string) (int, error) {
+	return w.Write([]byte(value))
+}
+
 func runSSHCommandNoTimeout(client sshConnection, cmd string, stdin io.Reader) (string, string, error) {
+	return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, nil)
+}
+
+func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")
 	}
@@ -566,7 +618,10 @@ func runSSHCommandNoTimeout(client sshConnection, cmd string, stdin io.Reader) (
 		return "", "", err
 	}
 	defer session.Close()
-	var stdout, stderr bytes.Buffer
+	gate := newSSHCommandOutputGate(onOutput)
+	defer gate.close()
+	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
+	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit}
 	session.SetStdout(&stdout)
 	session.SetStderr(&stderr)
 	if stdin != nil {
@@ -577,8 +632,12 @@ func runSSHCommandNoTimeout(client sshConnection, cmd string, stdin io.Reader) (
 }
 
 func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
+}
+
+func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if timeout <= 0 {
-		return runSSHCommandNoTimeout(client, cmd, stdin)
+		return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, onOutput)
 	}
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")
@@ -625,7 +684,10 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 		}
 	}
 
-	var stdout, stderr bytes.Buffer
+	gate := newSSHCommandOutputGate(onOutput)
+	defer gate.close()
+	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
+	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit}
 	session.SetStdout(&stdout)
 	session.SetStderr(&stderr)
 	if stdin != nil {
@@ -664,9 +726,15 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 }
 
 func runSSHCommandWithContext(ctx context.Context, client sshConnection, cmd string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+	return runSSHCommandWithContextStreaming(ctx, client, cmd, stdin, timeout, nil)
+}
+
+func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
+	gate := newSSHCommandOutputGate(onOutput)
+	defer gate.close()
 	type commandResult struct {
 		stdout string
 		stderr string
@@ -674,7 +742,7 @@ func runSSHCommandWithContext(ctx context.Context, client sshConnection, cmd str
 	}
 	resultCh := make(chan commandResult, 1)
 	go func() {
-		stdout, stderr, err := runSSHCommandWithTimeout(client, cmd, stdin, timeout)
+		stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, gate.emit)
 		resultCh <- commandResult{stdout: stdout, stderr: stderr, err: err}
 	}()
 	select {

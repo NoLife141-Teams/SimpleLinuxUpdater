@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"debian-updater/internal/jobs"
@@ -117,6 +118,97 @@ type withActorRunner struct {
 	retryLogFormats      map[string]string
 }
 
+const (
+	liveCommandLogFlushInterval = 250 * time.Millisecond
+	liveCommandLogFlushBytes    = 16 * 1024
+)
+
+type liveCommandLogSink struct {
+	mu         sync.Mutex
+	runner     *withActorRunner
+	pending    strings.Builder
+	lastFlush  time.Time
+	hasFlushed bool
+	received   bool
+	timer      *time.Timer
+}
+
+func newLiveCommandLogSink(runner *withActorRunner) *liveCommandLogSink {
+	return &liveCommandLogSink{runner: runner}
+}
+
+func (s *liveCommandLogSink) Handle(output HostCommandOutput) {
+	if s == nil || s.runner == nil || output.Data == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.received {
+		s.pending.WriteByte('\n')
+		s.received = true
+	}
+	s.pending.WriteString(output.Data)
+	now := s.runner.deps().Now()
+	if !s.hasFlushed || now.Sub(s.lastFlush) >= liveCommandLogFlushInterval || s.pending.Len() >= liveCommandLogFlushBytes {
+		s.stopTimerLocked()
+		s.flushLocked(now)
+		return
+	}
+	s.scheduleFlushLocked(liveCommandLogFlushInterval - now.Sub(s.lastFlush))
+}
+
+func (s *liveCommandLogSink) Flush() {
+	if s == nil || s.runner == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopTimerLocked()
+	s.flushLocked(s.runner.deps().Now())
+}
+
+func (s *liveCommandLogSink) Received() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.received
+}
+
+func (s *liveCommandLogSink) scheduleFlushLocked(delay time.Duration) {
+	if s.timer != nil {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	s.timer = time.AfterFunc(delay, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.timer = nil
+		s.flushLocked(s.runner.deps().Now())
+	})
+}
+
+func (s *liveCommandLogSink) stopTimerLocked() {
+	if s.timer == nil {
+		return
+	}
+	s.timer.Stop()
+	s.timer = nil
+}
+
+func (s *liveCommandLogSink) flushLocked(now time.Time) {
+	if s.pending.Len() == 0 {
+		return
+	}
+	s.runner.appendLiveStatusLog(s.pending.String())
+	s.pending.Reset()
+	s.lastFlush = now
+	s.hasFlushed = true
+}
+
 func (r *withActorRunner) deps() ServiceDeps {
 	if r != nil && r.service != nil {
 		return r.service.EnsureDeps()
@@ -150,6 +242,32 @@ func (r *withActorRunner) appendStatusLog(line string) {
 	_ = r.withStatus(func(status *servers.ServerStatus) {
 		status.Logs += line
 	})
+}
+
+func (r *withActorRunner) appendLiveStatusLog(line string) {
+	if line == "" {
+		return
+	}
+	deps := r.deps()
+	if deps.ServerState == nil {
+		return
+	}
+	deps.ServerState.Lock()
+	status := deps.ServerState.StatusMap()[r.server.Name]
+	if status == nil {
+		deps.ServerState.Unlock()
+		return
+	}
+	status.Logs += line
+	deps.ServerState.Unlock()
+
+	jm := r.currentJobManager()
+	if jm == nil || strings.TrimSpace(r.jobID) == "" {
+		return
+	}
+	if _, err := jm.AppendActiveLog(r.jobID, line); err != nil {
+		deps.Logf("failed to append live logs to job %q: %v", r.jobID, err)
+	}
 }
 
 func (r *withActorRunner) setErrorLogs(logs string) {
@@ -690,14 +808,21 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			upgradeCmd := approvalRun.Command
 			r.appendStatusLog(approvalRun.RunnerCommandLog)
 			r.retryLogFormats["update.apt_upgrade"] = "\napt upgrade attempt %d/%d failed: %v; retrying in %s"
+			liveOutput := newLiveCommandLogSink(r)
 			commandResult, err = r.session.RunCommand(context.Background(), HostCommandRequest{
-				Operation:    "update.apt_upgrade",
-				Command:      upgradeCmd,
-				ReplayPolicy: ReplayRetryableOutputErrors,
+				Operation:         "update.apt_upgrade",
+				Command:           upgradeCmd,
+				ReplayPolicy:      ReplayRetryableOutputErrors,
+				OnOutput:          liveOutput.Handle,
+				OnAttemptComplete: liveOutput.Flush,
 			})
+			liveOutput.Flush()
 			r.aptUpgradeAttempts += commandResult.Attempts
 			stdout, stderr = commandResult.Stdout, commandResult.Stderr
-			logs = r.currentLogs() + "\n" + stdout + stderr
+			logs = r.currentLogs()
+			if !liveOutput.Received() {
+				logs += "\n" + stdout + stderr
+			}
 			if err != nil {
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)

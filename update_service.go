@@ -121,12 +121,13 @@ func newHostMaintenanceSessionFactory(
 	dial func(serverpkg.Server, *ssh.ClientConfig) (sshConnection, error),
 ) HostMaintenanceSessionFactory {
 	return updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
-		BuildAuthMethods:  buildAuth,
-		HostKeyCallback:   hostKeyCallback,
-		DialSSH:           dial,
-		RunCommand:        runSSHCommandWithContext,
-		SSHConnectTimeout: sshConnectTimeout,
-		Logf:              log.Printf,
+		BuildAuthMethods:    buildAuth,
+		HostKeyCallback:     hostKeyCallback,
+		DialSSH:             dial,
+		RunCommand:          runSSHCommandWithContext,
+		RunStreamingCommand: runSSHCommandWithContextStreaming,
+		SSHConnectTimeout:   sshConnectTimeout,
+		Logf:                log.Printf,
 	})
 }
 

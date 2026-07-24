@@ -47,13 +47,14 @@ func TestServiceDepsExposeHostMaintenanceSessionInsteadOfRawSSHOrchestration(t *
 func TestProductionHostMaintenanceSessionDepsExposePrimitiveTransportOnly(t *testing.T) {
 	typeInfo := reflect.TypeOf(ProductionHostMaintenanceSessionDeps{})
 	want := map[string]reflect.Type{
-		"BuildAuthMethods":  reflect.TypeOf((func(servers.Server) ([]ssh.AuthMethod, error))(nil)),
-		"HostKeyCallback":   reflect.TypeOf((func() (ssh.HostKeyCallback, error))(nil)),
-		"DialSSH":           reflect.TypeOf((func(servers.Server, *ssh.ClientConfig) (SSHConnection, error))(nil)),
-		"RunCommand":        reflect.TypeOf((func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error))(nil)),
-		"SSHConnectTimeout": reflect.TypeOf(time.Duration(0)),
-		"Sleep":             reflect.TypeOf((func(time.Duration))(nil)),
-		"Logf":              reflect.TypeOf((func(string, ...any))(nil)),
+		"BuildAuthMethods":    reflect.TypeOf((func(servers.Server) ([]ssh.AuthMethod, error))(nil)),
+		"HostKeyCallback":     reflect.TypeOf((func() (ssh.HostKeyCallback, error))(nil)),
+		"DialSSH":             reflect.TypeOf((func(servers.Server, *ssh.ClientConfig) (SSHConnection, error))(nil)),
+		"RunCommand":          reflect.TypeOf((func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error))(nil)),
+		"RunStreamingCommand": reflect.TypeOf((func(context.Context, SSHConnection, string, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error))(nil)),
+		"SSHConnectTimeout":   reflect.TypeOf(time.Duration(0)),
+		"Sleep":               reflect.TypeOf((func(time.Duration))(nil)),
+		"Logf":                reflect.TypeOf((func(string, ...any))(nil)),
 	}
 	if typeInfo.NumField() != len(want) {
 		t.Fatalf("ProductionHostMaintenanceSessionDeps has %d fields, want the %d-field primitive allowlist", typeInfo.NumField(), len(want))

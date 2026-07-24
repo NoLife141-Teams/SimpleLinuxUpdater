@@ -225,6 +225,76 @@ func TestJobManagerTransitionActiveCompareAndSet(t *testing.T) {
 	}
 }
 
+func TestJobManagerAppendActiveLogPersistsDeltaAndUsesLightweightNotification(t *testing.T) {
+	db := openJobTestDB(t)
+	var notifications []string
+	var synced []Record
+	now := time.Date(2026, 5, 17, 14, 30, 0, 0, time.UTC)
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		Notify: func(reason string) {
+			notifications = append(notifications, reason)
+		},
+		SyncRuntime: func(record Record) {
+			synced = append(synced, record)
+		},
+		Now: func() time.Time { return now },
+	})
+	active, err := manager.CreateJob(CreateParams{
+		Kind:     KindUpdate,
+		Actor:    "admin",
+		Status:   StatusRunning,
+		LogsText: "before\n",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(active) error = %v", err)
+	}
+	finished, err := manager.CreateJob(CreateParams{
+		Kind:     KindUpdate,
+		Actor:    "admin",
+		Status:   StatusSucceeded,
+		LogsText: "complete\n",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(finished) error = %v", err)
+	}
+	notifications = nil
+
+	updated, err := manager.AppendActiveLog(active.ID, "live output\n")
+	if err != nil {
+		t.Fatalf("AppendActiveLog(active) error = %v", err)
+	}
+	if !updated {
+		t.Fatal("AppendActiveLog(active) updated = false, want true")
+	}
+	record, err := manager.GetJob(active.ID)
+	if err != nil {
+		t.Fatalf("GetJob(active) error = %v", err)
+	}
+	if record.LogsText != "before\nlive output\n" || record.Revision != active.Revision+1 {
+		t.Fatalf("active job after append = %+v", record)
+	}
+	if record.UpdatedAt != FormatTimestamp(now) {
+		t.Fatalf("active job updated_at = %q, want %q", record.UpdatedAt, FormatTimestamp(now))
+	}
+	if !reflect.DeepEqual(notifications, []string{"job.log"}) {
+		t.Fatalf("notifications = %v, want one job.log", notifications)
+	}
+	if len(synced) != 0 {
+		t.Fatalf("runtime syncs = %+v, want none for persistence-only log append", synced)
+	}
+
+	updated, err = manager.AppendActiveLog(finished.ID, "late output\n")
+	if err != nil {
+		t.Fatalf("AppendActiveLog(finished) error = %v", err)
+	}
+	if updated {
+		t.Fatal("AppendActiveLog(finished) updated = true, want false")
+	}
+	if !reflect.DeepEqual(notifications, []string{"job.log"}) {
+		t.Fatalf("terminal append notifications = %v, want unchanged", notifications)
+	}
+}
+
 func TestJobManagerLookupLatestActiveJob(t *testing.T) {
 	db := openJobTestDB(t)
 	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
@@ -335,6 +405,10 @@ func (r *failingRepository) Upsert(Record) error {
 }
 
 func (r *failingRepository) ApplyTransition(Record, int64, bool) (bool, error) {
+	return false, r.err
+}
+
+func (r *failingRepository) AppendActiveLog(string, string, string) (bool, error) {
 	return false, r.err
 }
 

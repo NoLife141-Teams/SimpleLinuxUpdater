@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	updatespkg "debian-updater/internal/updates"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -63,6 +65,91 @@ func (c *slowSSHConnection) NewSession() (sshSessionRunner, error) {
 }
 
 func (c *slowSSHConnection) Close() error { return nil }
+
+type streamingSSHConnection struct {
+	release chan struct{}
+}
+
+type streamingSSHSession struct {
+	conn   *streamingSSHConnection
+	stdout io.Writer
+	stderr io.Writer
+}
+
+func (s *streamingSSHSession) SetStdin(io.Reader) {}
+
+func (s *streamingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
+
+func (s *streamingSSHSession) SetStderr(w io.Writer) { s.stderr = w }
+
+func (s *streamingSSHSession) Run(string) error {
+	_, _ = io.WriteString(s.stdout, "Unpacking openssl\n")
+	_, _ = io.WriteString(s.stderr, "debconf: delaying configuration\n")
+	<-s.conn.release
+	return nil
+}
+
+func (s *streamingSSHSession) Close() error { return nil }
+
+func (c *streamingSSHConnection) NewSession() (sshSessionRunner, error) {
+	return &streamingSSHSession{conn: c}, nil
+}
+
+func (c *streamingSSHConnection) Close() error { return nil }
+
+func TestRunSSHCommandWithContextStreamsOutputBeforeCompletion(t *testing.T) {
+	conn := &streamingSSHConnection{release: make(chan struct{})}
+	outputs := make(chan updatespkg.HostCommandOutput, 2)
+	type commandResult struct {
+		stdout string
+		stderr string
+		err    error
+	}
+	resultCh := make(chan commandResult, 1)
+	go func() {
+		stdout, stderr, err := runSSHCommandWithContextStreaming(
+			context.Background(),
+			conn,
+			"apt-get -y upgrade",
+			nil,
+			time.Minute,
+			func(output updatespkg.HostCommandOutput) {
+				outputs <- output
+			},
+		)
+		resultCh <- commandResult{stdout: stdout, stderr: stderr, err: err}
+	}()
+
+	var streamed []updatespkg.HostCommandOutput
+	for len(streamed) < 2 {
+		select {
+		case output := <-outputs:
+			streamed = append(streamed, output)
+		case <-time.After(time.Second):
+			t.Fatal("command output was not streamed before completion")
+		}
+	}
+	select {
+	case result := <-resultCh:
+		t.Fatalf("command completed before release: %+v", result)
+	default:
+	}
+
+	close(conn.release)
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("runSSHCommandWithContextStreaming() error = %v", result.err)
+	}
+	if result.stdout != "Unpacking openssl\n" || result.stderr != "debconf: delaying configuration\n" {
+		t.Fatalf("buffered result = %+v", result)
+	}
+	if streamed[0].Stream != updatespkg.HostCommandStdout || streamed[0].Data != result.stdout {
+		t.Fatalf("first streamed output = %+v, want stdout %q", streamed[0], result.stdout)
+	}
+	if streamed[1].Stream != updatespkg.HostCommandStderr || streamed[1].Data != result.stderr {
+		t.Fatalf("second streamed output = %+v, want stderr %q", streamed[1], result.stderr)
+	}
+}
 
 func setupTimeoutRunnerEnv(t *testing.T, dbName string) {
 	t.Helper()

@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,215 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunUpdateJobPublishesAptUpgradeOutputBeforeCommandCompletes(t *testing.T) {
+	server := servers.Server{Name: "srv-live-output", Host: "127.0.0.1", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "live-output-jobs.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	notifications := make(chan string, 64)
+	jobID := "live-output-job"
+	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		NewID: func() string { return jobID },
+		Notify: func(reason string) {
+			notifications <- reason
+		},
+	})
+	if _, err := jm.CreateJob(jobs.CreateParams{
+		Kind:       jobs.KindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		Status:     jobs.StatusRunning,
+	}); err != nil {
+		t.Fatalf("create update job: %v", err)
+	}
+	<-notifications
+	outputSent := make(chan struct{})
+	releaseUpgrade := make(chan struct{})
+	runDone := make(chan struct{})
+	const liveLine = "Unpacking openssl (3.0.0)\n"
+
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				if req.Operation != "update.apt_upgrade" {
+					return HostCommandResult{Attempts: 1}, nil
+				}
+				if req.OnOutput == nil {
+					return HostCommandResult{}, errors.New("apt upgrade output callback is missing")
+				}
+				if req.OnAttemptComplete == nil {
+					return HostCommandResult{}, errors.New("apt upgrade attempt completion callback is missing")
+				}
+			drainNotifications:
+				for {
+					select {
+					case <-notifications:
+					default:
+						break drainNotifications
+					}
+				}
+				req.OnOutput(HostCommandOutput{Stream: HostCommandStdout, Data: liveLine})
+				close(outputSent)
+				<-releaseUpgrade
+				req.OnAttemptComplete()
+				return HostCommandResult{Stdout: liveLine, Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{AllPassed: true}
+			},
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{
+					Outcome: newPackageDiscoveryOutcome(
+						[]servers.PendingUpdate{{Package: "openssl", Raw: "Inst openssl"}},
+						[]string{"openssl"},
+						servers.UpgradePlan{StandardPackageCount: 1, FullUpgradePackageCount: 1},
+					),
+					Attempts: 1,
+				}, nil
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return jm },
+		LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig {
+			return PostUpdateCheckConfig{Enabled: false}
+		},
+		LoadScheduledJobBehavior: func(string) ScheduledJobBehavior {
+			return ScheduledJobBehavior{ApprovalTimeout: time.Minute, AutoApproveScope: ApprovalScopeAll}
+		},
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+		SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+		AuditWithActor:               func(_, _, _, _, _, _, _ string, _ map[string]any) {},
+	})
+
+	go func() {
+		defer close(runDone)
+		service.RunUpdateJob(UpdateRunRequest{
+			Server: server,
+			Actor:  "tester",
+			JobID:  jobID,
+			Policy: RetryPolicy{MaxAttempts: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		})
+	}()
+
+	select {
+	case <-outputSent:
+	case <-time.After(time.Second):
+		t.Fatal("apt upgrade did not emit output")
+	}
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || !strings.Contains(status.Logs, liveLine) {
+		t.Fatalf("logs before command completion = %q, want live line %q", status.Logs, liveLine)
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("get live update job: %v", err)
+	}
+	if !strings.Contains(job.LogsText, liveLine) {
+		t.Fatalf("persisted logs before command completion = %q, want live line %q", job.LogsText, liveLine)
+	}
+	select {
+	case reason := <-notifications:
+		if reason != "job.log" {
+			t.Fatalf("live output notification = %q, want job.log", reason)
+		}
+	default:
+		t.Fatal("live output did not publish a dashboard job update")
+	}
+	select {
+	case <-runDone:
+		t.Fatal("update completed before the apt upgrade command was released")
+	default:
+	}
+
+	close(releaseUpgrade)
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("update did not finish after releasing apt upgrade")
+	}
+	status = state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "done" {
+		t.Fatalf("final status = %+v, want done", status)
+	}
+	if got := strings.Count(status.Logs, liveLine); got != 1 {
+		t.Fatalf("final live line count = %d, want 1 in logs %q", got, status.Logs)
+	}
+	job, err = jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("get completed update job: %v", err)
+	}
+	if job.Status != jobs.StatusSucceeded || strings.Count(job.LogsText, liveLine) != 1 {
+		t.Fatalf("completed job = %+v, want succeeded with one live line", job)
+	}
+}
+
+func TestLiveCommandLogSinkBatchesRapidOutput(t *testing.T) {
+	server := servers.Server{Name: "srv-live-batch"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "upgrading", Logs: "Running apt upgrade..."},
+	}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	service := NewService(ServiceDeps{
+		ServerState:       state,
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		Now:               func() time.Time { return now },
+	})
+	sink := newLiveCommandLogSink(&withActorRunner{service: service, server: server})
+
+	sink.Handle(HostCommandOutput{Stream: HostCommandStdout, Data: "first\n"})
+	if got := state.CurrentStatusLogs(server.Name); !strings.HasSuffix(got, "\nfirst\n") {
+		t.Fatalf("first output was not flushed immediately: %q", got)
+	}
+
+	sink.Handle(HostCommandOutput{Stream: HostCommandStdout, Data: "second\n"})
+	if got := state.CurrentStatusLogs(server.Name); strings.Contains(got, "second") {
+		t.Fatalf("rapid output was not batched: %q", got)
+	}
+
+	now = now.Add(liveCommandLogFlushInterval)
+	sink.Handle(HostCommandOutput{Stream: HostCommandStderr, Data: "third\n"})
+	if got := state.CurrentStatusLogs(server.Name); !strings.HasSuffix(got, "second\nthird\n") {
+		t.Fatalf("batched output was not flushed after interval: %q", got)
+	}
+}
+
+func TestLiveCommandLogSinkFlushesTrailingOutputWithoutAnotherChunk(t *testing.T) {
+	server := servers.Server{Name: "srv-live-trailing"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "upgrading", Logs: "Running apt upgrade..."},
+	}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	service := NewService(ServiceDeps{
+		ServerState:       state,
+		CurrentJobManager: func() *jobs.Manager { return nil },
+	})
+	sink := newLiveCommandLogSink(&withActorRunner{service: service, server: server})
+	sink.Handle(HostCommandOutput{Stream: HostCommandStdout, Data: "first\n"})
+	sink.Handle(HostCommandOutput{Stream: HostCommandStdout, Data: "trailing\n"})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(state.CurrentStatusLogs(server.Name), "trailing\n") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("trailing output was not flushed after %s: %q", liveCommandLogFlushInterval, state.CurrentStatusLogs(server.Name))
 }
 
 func TestRunUpdateJobGuardsRemovalApprovalsInRunner(t *testing.T) {

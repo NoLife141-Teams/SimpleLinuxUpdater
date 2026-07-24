@@ -48,5 +48,9 @@
         return String(value || "unknown").replace(/_/g, " ");
     }
 
-    return Object.freeze({ duration, diskFree, diskCapacity, uptime, statusLabel });
+    function logLines(value) {
+        return String(value || "").split(/\r\n|\r|\n/);
+    }
+
+    return Object.freeze({ duration, diskFree, diskCapacity, uptime, statusLabel, logLines });
 }));

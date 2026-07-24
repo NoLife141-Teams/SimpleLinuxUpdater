@@ -114,6 +114,7 @@ type Repository interface {
 	Create(record Record) error
 	Upsert(record Record) error
 	ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error)
+	AppendActiveLog(id, logText, updatedAt string) (bool, error)
 	Get(id string) (Record, error)
 	FindLatestActiveByServerAndKind(serverName, kind string) (*Record, error)
 	ListUnfinishedServerNames() ([]string, error)
@@ -339,6 +340,18 @@ func (m *Manager) TransitionActive(id string, intent Intent) (bool, error) {
 func (m *Manager) Transition(id string, intent Intent) error {
 	_, err := m.transition(id, intent, false)
 	return err
+}
+
+func (m *Manager) AppendActiveLog(id, logText string) (bool, error) {
+	if m == nil || m.repo == nil || strings.TrimSpace(id) == "" || logText == "" {
+		return false, nil
+	}
+	updated, err := m.repo.AppendActiveLog(id, logText, m.timestampNow())
+	if err != nil || !updated {
+		return updated, err
+	}
+	m.notify("job.log")
+	return true, nil
 }
 
 func (m *Manager) GetJob(id string) (Record, error) {
@@ -629,6 +642,28 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 		args = append(args, StatusQueued, StatusRunning, StatusWaitingApproval)
 	}
 	result, err := r.db.Exec(query, args...)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		rowsAffected = 1
+	}
+	return rowsAffected > 0, nil
+}
+
+func (r *SQLiteRepository) AppendActiveLog(id, logText, updatedAt string) (bool, error) {
+	if r == nil || r.db == nil || strings.TrimSpace(id) == "" || logText == "" {
+		return false, nil
+	}
+	result, err := r.db.Exec(`
+		UPDATE jobs
+		   SET logs_text = logs_text || ?,
+		       updated_at = ?,
+		       revision = revision + 1
+		 WHERE id = ?
+		   AND status IN (?, ?, ?)
+	`, logText, updatedAt, id, StatusQueued, StatusRunning, StatusWaitingApproval)
 	if err != nil {
 		return false, err
 	}

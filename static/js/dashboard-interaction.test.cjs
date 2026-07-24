@@ -14,6 +14,7 @@ test("Status formatting presents shared operator values consistently", () => {
     assert.equal(StatusFormatting.diskCapacity(16 * 1024 * 1024, 64 * 1024 * 1024), "16 GiB free of 64 GiB total");
     assert.equal(StatusFormatting.uptime(90061), "1d");
     assert.equal(StatusFormatting.statusLabel("pending_approval"), "pending approval");
+    assert.deepEqual(StatusFormatting.logLines("Reading 25%\rReading 50%\nDone"), ["Reading 25%", "Reading 50%", "Done"]);
 });
 
 test("Status transport falls back to polling without dashboard events", () => {
@@ -28,6 +29,40 @@ test("Status transport falls back to polling without dashboard events", () => {
     controller.start();
     assert.equal(controller.isLive(), false);
     assert.deepEqual(intervals.slice(-2).map(item => item.ms), [5000, 30000]);
+});
+
+test("Status transport routes live job logs without triggering full dashboard refreshes", () => {
+    const listeners = new Map();
+    class EventSourceStub {
+        constructor() {
+            EventSourceStub.instance = this;
+        }
+        addEventListener(name, handler) {
+            listeners.set(name, handler);
+        }
+        close() {}
+    }
+    const timers = {
+        setInterval() { return 1; },
+        clearInterval() {},
+        setTimeout() { return 1; },
+        clearTimeout() {}
+    };
+    const logReasons = [];
+    const dashboardReasons = [];
+    const controller = StatusTransport.createController({
+        timers,
+        EventSourceType: EventSourceStub,
+        onJobLogEvent: reason => logReasons.push(reason),
+        onDashboardEvent: reason => dashboardReasons.push(reason)
+    });
+    controller.start();
+
+    listeners.get("dashboard")({ data: JSON.stringify({ reason: "job.log" }) });
+    listeners.get("dashboard")({ data: JSON.stringify({ reason: "job.update" }) });
+
+    assert.deepEqual(logReasons, ["job.log"]);
+    assert.deepEqual(dashboardReasons, ["job.update"]);
 });
 
 test("Status table and action adapters preserve operator preferences and decision facts", () => {

@@ -31,6 +31,15 @@
             }, delay);
         }
 
+        function dashboardEventReason(event) {
+            try {
+                const payload = JSON.parse(String(event?.data || ""));
+                return String(payload?.reason || "changed");
+            } catch (_) {
+                return "changed";
+            }
+        }
+
         function connect() {
             if (!EventSourceType) {
                 configurePolling(5000, 30000);
@@ -45,7 +54,14 @@
                 configurePolling(10000, 60000);
                 options.onConnectionChanged?.(true);
             });
-            candidate.addEventListener("dashboard", () => options.onDashboardEvent?.());
+            candidate.addEventListener("dashboard", event => {
+                const reason = dashboardEventReason(event);
+                if (reason === "job.log") {
+                    options.onJobLogEvent?.(reason);
+                    return;
+                }
+                options.onDashboardEvent?.(reason);
+            });
             candidate.addEventListener("error", () => {
                 if (source === candidate) source = null;
                 candidate.close();

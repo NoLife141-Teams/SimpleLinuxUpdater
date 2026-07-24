@@ -14,8 +14,8 @@ func TestBrokerPublishDeliversToSubscriber(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != "updated" {
-			t.Fatalf("published reason = %q, want updated", got)
+		if got.Reason != "updated" {
+			t.Fatalf("published reason = %q, want updated", got.Reason)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for published event")
@@ -31,8 +31,8 @@ func TestBrokerPublishDefaultsBlankReason(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != "changed" {
-			t.Fatalf("blank published reason = %q, want changed", got)
+		if got.Reason != "changed" {
+			t.Fatalf("blank published reason = %q, want changed", got.Reason)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for default event")
@@ -86,14 +86,39 @@ func TestBrokerPublishDeliversToMultipleSubscribers(t *testing.T) {
 
 	broker.Publish("refresh")
 
-	for name, ch := range map[string]chan string{"first": first, "second": second} {
+	for name, ch := range map[string]chan Event{"first": first, "second": second} {
 		select {
 		case got := <-ch:
-			if got != "refresh" {
-				t.Fatalf("%s subscriber reason = %q, want refresh", name, got)
+			if got.Reason != "refresh" {
+				t.Fatalf("%s subscriber reason = %q, want refresh", name, got.Reason)
 			}
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for %s subscriber", name)
 		}
+	}
+}
+
+func TestBrokerPublishEventPreservesStructuredJobLog(t *testing.T) {
+	broker := NewBroker()
+	ch := broker.Subscribe()
+	defer broker.Unsubscribe(ch)
+
+	want := Event{
+		Reason:     "job.log",
+		ServerName: "alpha",
+		JobID:      "job-1",
+		Sequence:   7,
+		Stream:     "stderr",
+		Data:       "warning\n",
+	}
+	broker.PublishEvent(want)
+
+	select {
+	case got := <-ch:
+		if got != want {
+			t.Fatalf("published event = %+v, want %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for structured event")
 	}
 }

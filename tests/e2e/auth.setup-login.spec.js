@@ -790,9 +790,13 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('APT upgrade log drawer renders carriage-return progress during refresh', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.EventSource = undefined;
+    });
     let servers = [
       makeServer('apt-live-host', 'upgrading', [], {
-        logs: 'Running apt upgrade...\rReading database ... 25%\rReading database ... 50%',
+        job_id: 'job-polling',
+        logs: 'Running apt upgrade...\nReading database ... 25%\rReading database ... 50%',
       }),
     ];
     await stubDashboardApi(page, () => servers);
@@ -802,19 +806,134 @@ test.describe.serial('setup and login flows', () => {
     const logs = page.locator('#drawer-logs');
     await expect(logs.locator('.log-line')).toHaveText([
       'Running apt upgrade...',
-      'Reading database ... 25%',
       'Reading database ... 50%',
     ]);
 
     servers = [
       makeServer('apt-live-host', 'upgrading', [], {
-        logs: 'Running apt upgrade...\rReading database ... 25%\rReading database ... 50%\rUnpacking openssl',
+        job_id: 'job-polling',
+        logs: 'Running apt upgrade...\nReading database ... 25%\rReading database ... 50%\rUnpacking openssl',
       }),
     ];
     await page.evaluate(() => window.fetchServers(true, 'apt-live-output'));
 
     await expect(logs.locator('.log-line').last()).toHaveText('Unpacking openssl');
     await expect.poll(() => logs.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+  });
+
+  test('structured SSE job logs preserve drawer scroll and avoid server refetches', async ({ page }) => {
+    await page.addInitScript(() => {
+      class TestEventSource {
+        constructor() {
+          this.listeners = new Map();
+          window.__statusEventSource = this;
+          setTimeout(() => this.emit('open', {}), 0);
+        }
+        addEventListener(name, handler) {
+          if (!this.listeners.has(name)) this.listeners.set(name, []);
+          this.listeners.get(name).push(handler);
+        }
+        emit(name, event) {
+          (this.listeners.get(name) || []).forEach(handler => handler(event));
+        }
+        close() {}
+      }
+      window.EventSource = TestEventSource;
+    });
+    const servers = [
+      makeServer('stream-host', 'idle', [], {
+        job_id: 'job-live',
+        logs: '',
+      }),
+    ];
+    let serverRequests = 0;
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/servers') serverRequests += 1;
+    });
+    await stubDashboardApi(page, () => servers);
+    await page.route('**/api/jobs/job-live/logs*', route => {
+      const afterSequence = Number(new URL(route.request().url()).searchParams.get('after_seq') || 0);
+      return fulfillJson(route, {
+        job_id: 'job-live',
+        fragments: [],
+        next_sequence: afterSequence,
+        has_more: false,
+        expired: false,
+        truncated: false,
+        retention_days: 30,
+      });
+    });
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="logs"]').click();
+    const logs = page.locator('#drawer-logs');
+    await expect(logs).toHaveAttribute('role', 'log');
+    await expect(logs).toHaveAttribute('aria-live', 'polite');
+    await expect.poll(() => page.evaluate(() => !!window.__statusEventSource)).toBe(true);
+    const requestsBeforeLogs = serverRequests;
+
+    const initialData = Array.from({ length: 100 }, (_, index) => `line-${index + 1}`).join('\n') + '\nReading 10%\rReading 50%\r';
+    await page.evaluate(payload => {
+      window.__statusEventSource.emit('dashboard', { data: JSON.stringify(payload) });
+    }, {
+      reason: 'job.log',
+      server_name: 'stream-host',
+      job_id: 'job-live',
+      sequence: 1,
+      stream: 'stdout',
+      data: initialData,
+    });
+    await expect(logs.locator('.log-line').last()).toHaveText('Reading 50%');
+    await expect.poll(() => logs.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+
+    await logs.evaluate(element => {
+      element.scrollTop = 120;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    const pausedScrollTop = await logs.evaluate(element => element.scrollTop);
+    await page.evaluate(payload => {
+      window.__statusEventSource.emit('dashboard', { data: JSON.stringify(payload) });
+    }, {
+      reason: 'job.log',
+      server_name: 'stream-host',
+      job_id: 'job-live',
+      sequence: 2,
+      stream: 'stderr',
+      data: 'warning while paused\n',
+    });
+    await expect.poll(() => logs.evaluate(element => element.scrollTop)).toBe(pausedScrollTop);
+    await expect.poll(() => page.evaluate(() => window.statusPageInteraction.getView().jobLogs['stream-host'].rawText.includes('warning while paused'))).toBe(true);
+
+    await logs.evaluate(element => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    await page.evaluate(payload => {
+      window.__statusEventSource.emit('dashboard', { data: JSON.stringify(payload) });
+    }, {
+      reason: 'job.log',
+      server_name: 'stream-host',
+      job_id: 'job-live',
+      sequence: 3,
+      stream: 'stdout',
+      data: 'followed tail\n',
+    });
+    await expect.poll(() => logs.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+
+    await page.locator('#status-drawer-close').click();
+    await page.evaluate(payload => {
+      window.__statusEventSource.emit('dashboard', { data: JSON.stringify(payload) });
+    }, {
+      reason: 'job.log',
+      server_name: 'stream-host',
+      job_id: 'job-live',
+      sequence: 4,
+      stream: 'stdout',
+      data: '<b>escaped while closed</b>\n',
+    });
+    await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="logs"]').click();
+    await expect(logs).toContainText('<b>escaped while closed</b>');
+    await expect(logs.locator('b')).toHaveCount(0);
+    expect(serverRequests).toBe(requestsBeforeLogs);
   });
 
   test('bulk action review gates typed confirmations, partial failures, and safe non-typed actions', async ({ page }) => {

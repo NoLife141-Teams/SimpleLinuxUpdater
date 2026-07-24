@@ -129,6 +129,7 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.StartJobRunner == nil ||
 		deps.StartScheduledRunReconciliation == nil ||
 		deps.NotifyDashboardEvent == nil ||
+		deps.NotifyDashboardLogEvent == nil ||
 		deps.DashboardEventBroker == nil ||
 		deps.ApplicationTime == nil {
 		t.Fatalf("runtime composition did not populate complete core defaults: %+v", deps)
@@ -148,8 +149,8 @@ func TestRuntimeCompositionDefaultsDashboardNotificationToBroker(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if got != "runtime-composed" {
-			t.Fatalf("dashboard event = %q, want runtime-composed", got)
+		if got.Reason != "runtime-composed" {
+			t.Fatalf("dashboard event = %q, want runtime-composed", got.Reason)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("dashboard event was not published through composed notify callback")

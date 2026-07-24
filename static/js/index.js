@@ -80,8 +80,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     persistDashboardFilters(effect.value);
                 } else if (effect.type === "fetchSnapshot") {
                     tasks.push(executeStatusSnapshotFetch(effect));
+                } else if (effect.type === "fetchJobLogs") {
+                    tasks.push(executeJobLogFetch(effect));
                 } else if (effect.type === "render" && effect.scope === "serverState") {
                     renderServerState();
+                } else if (effect.type === "renderDrawerLogs") {
+                    renderDrawerLogs(effect.serverName);
                 } else if (effect.type === "renderSyncState") {
                     renderSyncState();
                 } else if (effect.type === "cancelInteractionRelease") {
@@ -1069,6 +1073,32 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
 	        }
 
+        async function executeJobLogFetch(effect) {
+            const jobId = String(effect.jobId || "");
+            const serverName = String(effect.serverName || "");
+            const afterSequence = Math.max(0, Number(effect.afterSequence || 0));
+            try {
+                const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?after_seq=${encodeURIComponent(afterSequence)}&limit=200`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const page = await response.json();
+                await dispatchStatusInteraction({
+                    type: "jobLogRecoveryReceived",
+                    serverName,
+                    jobId,
+                    afterSequence,
+                    page
+                });
+            } catch (err) {
+                console.error(`Unable to recover job logs for ${serverName}:`, err);
+                await dispatchStatusInteraction({
+                    type: "jobLogRecoveryFailed",
+                    serverName,
+                    jobId,
+                    error: err?.message || String(err)
+                });
+            }
+        }
+
         async function fetchGlobalKeyStatus() {
             try {
                 const response = await fetch('/api/keys/global');
@@ -1105,14 +1135,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
             EventSourceType: window.EventSource,
             onServersPoll: () => fetchServers(false, "poll"),
             onExtrasPoll: () => fetchDashboardExtras("poll"),
-            onJobLogEvent: () => {
-                requestStatusRefresh(["servers"], "immediate", "sse-job-log");
+            onJobLogEvent: event => {
+                dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
             onDashboardEvent: () => {
                 requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
                 fetchDashboardExtras("sse", false);
             },
-            onConnectionChanged: () => renderSyncState()
+            onReconnect: () => dispatchStatusInteraction({ type: "jobLogReconnect" }),
+            onConnectionChanged: live => {
+                dispatchStatusInteraction({ type: "jobLogTransportChanged", live });
+                renderSyncState();
+            }
         });
 
 	        function updateRefreshAllFactsState() {
@@ -1499,6 +1533,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderDrawer();
         }
 
+        function renderDrawerLogs(serverName = "") {
+            const drawerState = getStatusView().drawer;
+            if (!drawerState.open || drawerState.tab !== "logs" || (serverName && drawerState.serverName !== serverName)) return;
+            const server = getServerByName(drawerState.serverName);
+            if (!server) return;
+            const logsEl = document.getElementById('drawer-logs');
+            const logsHint = document.getElementById('drawer-logs-hint');
+            const previousScrollTop = logsEl.scrollTop;
+            const sameServer = logsEl.dataset.serverName === drawerState.serverName;
+            const follow = !sameServer || (drawerState.logFollow && isNearBottom(logsEl));
+            logsEl.innerHTML = formatLogsHtml(server.logs || "");
+            logsEl.dataset.serverName = drawerState.serverName;
+            if (follow) {
+                logsEl.scrollTop = logsEl.scrollHeight;
+            } else {
+                logsEl.scrollTop = previousScrollTop;
+            }
+            drawerLogScrollTop = logsEl.scrollTop;
+            if (drawerState.logFollow !== follow) {
+                dispatchStatusInteraction({ type: "drawerLogFollowChanged", value: follow });
+            }
+            logsHint.textContent = follow ? "Live auto-scroll" : "Auto-scroll paused";
+        }
+
 	        function renderDrawer() {
             const drawerState = getStatusView().drawer;
             const drawer = document.getElementById('status-drawer');
@@ -1571,13 +1629,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
             pendingPanel.classList.toggle('active', drawerState.tab === "pending");
 
             if (drawerState.tab === "logs") {
-                logsEl.innerHTML = formatLogsHtml(server.logs || "");
-                if (drawerState.logFollow) {
-                    logsEl.scrollTop = logsEl.scrollHeight;
-                } else {
+                if (!isNearBottom(logsEl) && !drawerState.logFollow) {
                     logsEl.scrollTop = drawerLogScrollTop;
                 }
-                logsHint.textContent = drawerState.logFollow ? "Live auto-scroll" : "Auto-scroll paused";
+                renderDrawerLogs(server.name);
             }
 
             if (drawerState.tab === "pending") {
@@ -1793,7 +1848,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
         function getServerByName(name) {
-            return allServers.find(server => server.name === name);
+            return statusInteraction.getServer(name);
         }
 
 	        function selectServer(name) {
@@ -1803,8 +1858,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         async function copyLogs(name = "") {
             name = name || getStatusView().drawer.serverName;
+            const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(server?.logs || "");
+            const logs = String(view.jobLogs?.[name]?.rawText ?? server?.logs ?? "");
             try {
                 await navigator.clipboard.writeText(logs);
             } catch (_) {
@@ -1819,8 +1875,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function downloadLogs(name = "") {
             name = name || getStatusView().drawer.serverName;
+            const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(server?.logs || "");
+            const logs = String(view.jobLogs?.[name]?.rawText ?? server?.logs ?? "");
             const blob = new Blob([logs], { type: 'text/plain;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');

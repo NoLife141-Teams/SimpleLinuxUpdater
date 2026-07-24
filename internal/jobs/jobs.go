@@ -132,6 +132,7 @@ type SQLiteRepository struct {
 
 type ManagerOptions struct {
 	Notify                func(string)
+	NotifyLog             func(LogEvent)
 	SyncRuntime           func(Record)
 	SyncInterruptedServer func([]string)
 	Now                   func() time.Time
@@ -379,7 +380,20 @@ func (m *Manager) AppendActiveLogFragments(id string, fragments []LogFragment) (
 	var updated bool
 	var err error
 	if repo, ok := m.repo.(structuredLogRepository); ok {
-		updated, err = repo.AppendActiveLogFragments(id, fragments, m.timestampNow())
+		result, appendErr := repo.appendActiveLogFragments(id, fragments, m.timestampNow())
+		updated, err = result.Updated, appendErr
+		if err == nil && updated && m.opts.NotifyLog != nil && strings.TrimSpace(result.ServerName) != "" {
+			for _, chunk := range result.Chunks {
+				m.opts.NotifyLog(LogEvent{
+					ServerName: result.ServerName,
+					JobID:      id,
+					Sequence:   chunk.Sequence,
+					Stream:     chunk.Stream,
+					Data:       chunk.Data,
+				})
+			}
+			return true, nil
+		}
 	} else {
 		var combined strings.Builder
 		for _, fragment := range fragments {
@@ -773,7 +787,7 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 			return false, err
 		}
 	} else if record.logAppend != "" {
-		if err := r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt); err != nil {
+		if _, err := r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt); err != nil {
 			return false, err
 		}
 	}

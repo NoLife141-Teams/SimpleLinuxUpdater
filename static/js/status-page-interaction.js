@@ -205,10 +205,157 @@
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
         let bulkAction = null;
+        let jobLogsByServer = new Map();
+        let jobLogTransportLive = false;
+
+        function createTerminalState() {
+            return { lines: [], current: "", currentStream: "", pendingCR: false };
+        }
+
+        function appendTerminalData(terminal, stream, data) {
+            const normalizedStream = String(stream || "combined");
+            const text = String(data || "");
+            let index = 0;
+            while (index < text.length) {
+                const char = text[index];
+                if (terminal.pendingCR) {
+                    terminal.pendingCR = false;
+                    if (char === "\n") {
+                        terminal.lines.push({ text: terminal.current, stream: terminal.currentStream || normalizedStream });
+                        terminal.current = "";
+                        terminal.currentStream = "";
+                        index += 1;
+                        continue;
+                    }
+                    terminal.current = "";
+                    terminal.currentStream = "";
+                }
+                if (char === "\r") {
+                    terminal.pendingCR = true;
+                } else if (char === "\n") {
+                    terminal.lines.push({ text: terminal.current, stream: terminal.currentStream || normalizedStream });
+                    terminal.current = "";
+                    terminal.currentStream = "";
+                } else {
+                    if (!terminal.current) terminal.currentStream = normalizedStream;
+                    terminal.current += char;
+                }
+                index += 1;
+            }
+        }
+
+        function terminalText(terminal) {
+            const committed = terminal.lines.map(line => line.text);
+            if (terminal.current || terminal.pendingCR) committed.push(terminal.current);
+            return committed.join("\n");
+        }
+
+        function rawLogText(state) {
+            return state.fragments.map(fragment => fragment.data).join("");
+        }
+
+        function createJobLogState(jobId = "", preview = "", supersededJobIds = []) {
+            const state = {
+                jobId: String(jobId || ""),
+                lastSequence: 0,
+                fragments: [],
+                terminal: createTerminalState(),
+                previewOnly: !!preview,
+                recovering: false,
+                pending: {},
+                expired: false,
+                truncated: false,
+                supersededJobIds: Array.from(new Set(supersededJobIds.map(String)))
+            };
+            if (preview) {
+                const data = String(preview);
+                state.fragments.push({ sequence: 0, stream: "combined", data });
+                appendTerminalData(state.terminal, "combined", data);
+            }
+            return state;
+        }
+
+        function resetPreviewState(state) {
+            if (!state.previewOnly) return;
+            state.fragments = [];
+            state.terminal = createTerminalState();
+            state.previewOnly = false;
+        }
+
+        function acceptLogFragment(state, fragment) {
+            const sequence = Number(fragment.sequence || 0);
+            if (!Number.isSafeInteger(sequence) || sequence <= state.lastSequence) return false;
+            resetPreviewState(state);
+            const accepted = {
+                sequence,
+                stream: String(fragment.stream || "combined"),
+                data: String(fragment.data || "")
+            };
+            state.fragments.push(accepted);
+            appendTerminalData(state.terminal, accepted.stream, accepted.data);
+            state.lastSequence = sequence;
+            return true;
+        }
+
+        function updateServerLogProjection(serverName, state) {
+            const server = serversByName.get(serverName);
+            if (!server) return;
+            if (state.jobId || Object.hasOwn(server, "job_id")) server.job_id = state.jobId;
+            if (state.fragments.length > 0 || Object.hasOwn(server, "logs")) server.logs = terminalText(state.terminal);
+        }
+
+        function logRecoveryEffect(serverName, state) {
+            if (!state || !state.jobId || state.recovering) return [];
+            state.recovering = true;
+            return [{
+                type: "fetchJobLogs",
+                serverName,
+                jobId: state.jobId,
+                afterSequence: state.lastSequence
+            }];
+        }
+
+        function shouldRecoverServer(serverName, server) {
+            return transientBlockingStatuses.has(String(server && server.status || "").toLowerCase())
+                || (drawer.open && drawer.serverName === serverName);
+        }
 
         function replaceServers(items) {
             servers = normalizeNamedItems(items);
             serversByName = new Map(servers.map(server => [server.name, server]));
+            const effects = [];
+            const retainedNames = new Set(servers.map(server => server.name));
+            Array.from(jobLogsByServer.keys()).forEach(name => {
+                if (!retainedNames.has(name)) jobLogsByServer.delete(name);
+            });
+            servers.forEach(server => {
+                const serverName = server.name;
+                const jobId = String(server.job_id || "");
+                const preview = String(server.logs || "");
+                const current = jobLogsByServer.get(serverName);
+                if (!jobId) {
+                    if (!jobLogTransportLive || !current || current.jobId) {
+                        jobLogsByServer.set(serverName, createJobLogState("", preview, current?.supersededJobIds || []));
+                    }
+                } else if (current && current.jobId !== jobId && jobLogTransportLive && current.supersededJobIds.includes(jobId)) {
+                    updateServerLogProjection(serverName, current);
+                    return;
+                } else if (!current || current.jobId !== jobId) {
+                    const superseded = current
+                        ? [...current.supersededJobIds, ...(current.jobId ? [current.jobId] : [])]
+                        : [];
+                    const next = createJobLogState(jobId, preview, superseded);
+                    jobLogsByServer.set(serverName, next);
+                    if (jobLogTransportLive && shouldRecoverServer(serverName, server)) {
+                        effects.push(...logRecoveryEffect(serverName, next));
+                    }
+                } else if (!jobLogTransportLive) {
+                    jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
+                }
+                const accepted = jobLogsByServer.get(serverName);
+                if (accepted) updateServerLogProjection(serverName, accepted);
+            });
+            return effects;
         }
 
         function replaceDashboard(snapshot) {
@@ -390,6 +537,95 @@
             reconcileNavigation();
         }
 
+        function drawerLogEffects(serverName) {
+            return drawer.open && drawer.tab === "logs" && drawer.serverName === serverName
+                ? [{ type: "renderDrawerLogs", serverName }]
+                : [];
+        }
+
+        function receiveJobLogEvent(event) {
+            const serverName = String(event.server_name || "");
+            const jobId = String(event.job_id || "");
+            const sequence = Number(event.sequence || 0);
+            if (!serverName || !jobId || !serversByName.has(serverName) || !Number.isSafeInteger(sequence) || sequence < 1) {
+                return [];
+            }
+            let state = jobLogsByServer.get(serverName);
+            if (state && state.supersededJobIds.includes(jobId)) return [];
+            if (!state || state.jobId !== jobId) {
+                const superseded = state
+                    ? [...state.supersededJobIds, ...(state.jobId ? [state.jobId] : [])]
+                    : [];
+                state = createJobLogState(jobId, "", superseded);
+                jobLogsByServer.set(serverName, state);
+            }
+            if (sequence <= state.lastSequence || Object.hasOwn(state.pending, sequence)) return [];
+            const fragment = {
+                sequence,
+                stream: String(event.stream || "combined"),
+                data: String(event.data || "")
+            };
+            if (state.recovering || sequence !== state.lastSequence + 1) {
+                state.pending[sequence] = fragment;
+                return logRecoveryEffect(serverName, state);
+            }
+            if (!acceptLogFragment(state, fragment)) return [];
+            updateServerLogProjection(serverName, state);
+            return drawerLogEffects(serverName);
+        }
+
+        function receiveJobLogRecovery(event) {
+            const serverName = String(event.serverName || "");
+            const jobId = String(event.jobId || "");
+            const state = jobLogsByServer.get(serverName);
+            if (!state || state.jobId !== jobId) return [];
+            state.recovering = false;
+            const page = event.page && typeof event.page === "object" ? event.page : {};
+            state.expired = !!page.expired;
+            state.truncated = !!page.truncated;
+            const fragments = Array.isArray(page.fragments)
+                ? page.fragments
+                    .filter(fragment => fragment && typeof fragment === "object")
+                    .sort((left, right) => Number(left.sequence || 0) - Number(right.sequence || 0))
+                : [];
+            fragments.forEach(fragment => acceptLogFragment(state, fragment));
+            updateServerLogProjection(serverName, state);
+            if (page.has_more) {
+                return [
+                    ...drawerLogEffects(serverName),
+                    ...logRecoveryEffect(serverName, state)
+                ];
+            }
+            Object.keys(state.pending)
+                .map(Number)
+                .sort((left, right) => left - right)
+                .forEach(sequence => {
+                    const fragment = state.pending[sequence];
+                    delete state.pending[sequence];
+                    acceptLogFragment(state, fragment);
+                });
+            updateServerLogProjection(serverName, state);
+            return drawerLogEffects(serverName);
+        }
+
+        function recoverVisibleJobLogs() {
+            const effects = [];
+            jobLogsByServer.forEach((state, serverName) => {
+                if (shouldRecoverServer(serverName, serversByName.get(serverName))) {
+                    effects.push(...logRecoveryEffect(serverName, state));
+                }
+            });
+            return effects;
+        }
+
+        function recoverKnownJobLogs() {
+            const effects = [];
+            jobLogsByServer.forEach((state, serverName) => {
+                effects.push(...logRecoveryEffect(serverName, state));
+            });
+            return effects;
+        }
+
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
             if (event.type === "serversSnapshotReceived") {
@@ -397,12 +633,13 @@
                 const stream = streams.servers;
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
                 const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
-                replaceServers(event.servers);
+                const logEffects = replaceServers(event.servers);
                 const persistenceChanged = reconcileNavigation();
                 return [
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
-                    ...(requestId ? finishRefresh("servers", requestId) : [])
+                    ...(requestId ? finishRefresh("servers", requestId) : []),
+                    ...logEffects
                 ];
             } else if (event.type === "dashboardSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
@@ -418,6 +655,19 @@
                 ];
             } else if (event.type === "snapshotFailed") {
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
+            } else if (event.type === "jobLogReceived") {
+                return receiveJobLogEvent(event.event || event);
+            } else if (event.type === "jobLogRecoveryReceived") {
+                return receiveJobLogRecovery(event);
+            } else if (event.type === "jobLogRecoveryFailed") {
+                const state = jobLogsByServer.get(String(event.serverName || ""));
+                if (state && state.jobId === String(event.jobId || "")) state.recovering = false;
+                return [];
+            } else if (event.type === "jobLogTransportChanged") {
+                jobLogTransportLive = !!event.live;
+                return jobLogTransportLive ? recoverVisibleJobLogs() : [];
+            } else if (event.type === "jobLogReconnect") {
+                return recoverKnownJobLogs();
             } else if (event.type === "refreshRequested") {
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
                 return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
@@ -552,7 +802,10 @@
                         logFollow: drawer.serverName === name ? drawer.logFollow : true
                     };
                 }
-                return stateEffects();
+                return [
+                    ...stateEffects(),
+                    ...logRecoveryEffect(name, jobLogsByServer.get(name))
+                ];
             } else if (event.type === "drawerClosed") {
                 drawer = { ...drawer, open: false };
                 return stateEffects();
@@ -745,6 +998,16 @@
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
                 drawer: cloneValue(drawer),
+                jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
+                    jobId: state.jobId,
+                    lastSequence: state.lastSequence,
+                    fragments: cloneValue(state.fragments),
+                    rawText: rawLogText(state),
+                    displayText: terminalText(state.terminal),
+                    expired: state.expired,
+                    truncated: state.truncated,
+                    recovering: state.recovering
+                }])),
                 sync: {
                     streams: cloneValue(streams),
                     interactionDepth: interaction.depth,

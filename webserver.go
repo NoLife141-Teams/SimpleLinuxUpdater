@@ -605,10 +605,6 @@ func (w *sshCommandOutputWriter) WriteString(value string) (int, error) {
 	return w.Write([]byte(value))
 }
 
-func runSSHCommandNoTimeout(client sshConnection, cmd string, stdin io.Reader) (string, string, error) {
-	return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, nil)
-}
-
 func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")

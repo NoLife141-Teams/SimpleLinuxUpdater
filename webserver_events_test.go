@@ -95,7 +95,7 @@ func TestDashboardEventsRouteUsesInjectedBroker(t *testing.T) {
 		Data:       "Reading 40%\r",
 	})
 	readDashboardEventUntil(t, reader, "event: dashboard")
-	readDashboardEventUntil(t, reader, `"reason":"job.log","server_name":"demo-host","job_id":"job-1","sequence":4,"stream":"stdout","data":"Reading 40%\\r"`)
+	readDashboardEventUntil(t, reader, `"reason":"job.log","server_name":"demo-host","job_id":"job-1","sequence":4,"stream":"stdout","data":"Reading 40%\r"`)
 }
 
 func TestDashboardEventsNilBrokerReturnsUnavailable(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
+	internaljobs "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
 	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
@@ -151,6 +152,22 @@ func (c *runtimeComposition) Compose() AppDeps {
 			}
 		}
 	}
+	if deps.NotifyDashboardLogEvent == nil {
+		broker := deps.DashboardEventBroker
+		deps.NotifyDashboardLogEvent = func(logEvent internaljobs.LogEvent) {
+			if broker != nil {
+				broker.PublishEvent(events.Event{
+					Reason:     "job.log",
+					ServerName: logEvent.ServerName,
+					JobID:      logEvent.JobID,
+					Sequence:   logEvent.Sequence,
+					Stream:     logEvent.Stream,
+					Data:       logEvent.Data,
+					Reset:      logEvent.Reset,
+				})
+			}
+		}
+	}
 	if deps.NotificationService == nil {
 		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
 			DB: deps.DB,
@@ -196,8 +213,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
+		notifyLog := deps.NotifyDashboardLogEvent
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntimeConfig(db, notify, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
+			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
 		}
 	}
 	if deps.CurrentJobManager == nil {

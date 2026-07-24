@@ -33,6 +33,7 @@ import (
 	authpkg "debian-updater/internal/auth"
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
+	jobsPkg "debian-updater/internal/jobs"
 	observabilitypkg "debian-updater/internal/observability"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
@@ -105,6 +106,21 @@ func notifyDashboardEvent(reason string) {
 	if dashboardEventBroker != nil {
 		dashboardEventBroker.Publish(reason)
 	}
+}
+
+func notifyDashboardLogEvent(logEvent jobsPkg.LogEvent) {
+	if dashboardEventBroker == nil {
+		return
+	}
+	dashboardEventBroker.PublishEvent(events.Event{
+		Reason:     "job.log",
+		ServerName: logEvent.ServerName,
+		JobID:      logEvent.JobID,
+		Sequence:   logEvent.Sequence,
+		Stream:     logEvent.Stream,
+		Data:       logEvent.Data,
+		Reset:      logEvent.Reset,
+	})
 }
 
 type serverFactsRecord = updatespkg.ServerFactsRecord
@@ -854,9 +870,16 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 	defer heartbeat.Stop()
 	for {
 		select {
-		case reason := <-dashboardEvents:
+		case event, ok := <-dashboardEvents:
+			if !ok {
+				return
+			}
+			payload, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
 			fmt.Fprintf(c.Writer, "event: dashboard\n")
-			fmt.Fprintf(c.Writer, "data: {\"reason\":%q}\n\n", reason)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
 			flusher.Flush()
 		case <-heartbeat.C:
 			fmt.Fprintf(c.Writer, ": keepalive\n\n")
@@ -1954,7 +1977,11 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 	r.GET("/api/servers", func(c *gin.Context) {
 		serverState()
-		c.JSON(http.StatusOK, inventoryService.ListStatuses())
+		statuses := inventoryService.ListStatuses()
+		for i := range statuses {
+			statuses[i].Logs = jobsPkg.BoundedLogPreview(statuses[i].Logs)
+		}
+		c.JSON(http.StatusOK, statuses)
 	})
 
 	r.POST("/api/servers", func(c *gin.Context) {

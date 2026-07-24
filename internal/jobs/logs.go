@@ -45,6 +45,15 @@ type LogFragment struct {
 	Data   string
 }
 
+type LogEvent struct {
+	ServerName string `json:"server_name"`
+	JobID      string `json:"job_id"`
+	Sequence   int64  `json:"sequence"`
+	Stream     string `json:"stream"`
+	Data       string `json:"data"`
+	Reset      bool   `json:"reset,omitempty"`
+}
+
 type LogPage struct {
 	JobID         string     `json:"job_id"`
 	Fragments     []LogChunk `json:"fragments"`
@@ -55,12 +64,28 @@ type LogPage struct {
 	RetentionDays int        `json:"retention_days"`
 }
 
+type logAppendResult struct {
+	ServerName string
+	Chunks     []LogChunk
+	Updated    bool
+	Reset      bool
+}
+
+type logWriteResult struct {
+	Chunks []LogChunk
+	Reset  bool
+}
+
 type structuredLogRepository interface {
-	AppendActiveLogFragments(id string, fragments []LogFragment, updatedAt string) (bool, error)
+	appendActiveLogFragments(id string, fragments []LogFragment, updatedAt string) (logAppendResult, error)
 	ReadLogPage(id string, afterSequence int64, limit int) (LogPage, error)
 	ReadFullLog(id string) (string, bool, bool, error)
 	PurgeExpiredLogs() (int64, error)
 	LogRetentionDays() int
+}
+
+type structuredTransitionRepository interface {
+	applyTransitionWithLogResult(record Record, expectedRevision int64, activeOnly bool) (bool, logAppendResult, error)
 }
 
 func DefaultLogConfig() LogConfig {
@@ -220,7 +245,7 @@ func (r *SQLiteRepository) migrateLegacyLogs() error {
 		if err != nil {
 			return err
 		}
-		if err := r.replaceLogSnapshotTx(tx, item.id, item.data, LogStreamCombined, FormatTimestamp(config.Now())); err != nil {
+		if _, err := r.replaceLogSnapshotTx(tx, item.id, item.data, LogStreamCombined, FormatTimestamp(config.Now())); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -231,24 +256,25 @@ func (r *SQLiteRepository) migrateLegacyLogs() error {
 	return nil
 }
 
-func (r *SQLiteRepository) AppendActiveLogFragments(id string, fragments []LogFragment, updatedAt string) (bool, error) {
+func (r *SQLiteRepository) appendActiveLogFragments(id string, fragments []LogFragment, updatedAt string) (logAppendResult, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(id) == "" || len(fragments) == 0 {
-		return false, nil
+		return logAppendResult{}, nil
 	}
 	tx, err := r.db.Begin()
 	if err != nil {
-		return false, err
+		return logAppendResult{}, err
 	}
 	defer tx.Rollback()
-	var status string
-	if err := tx.QueryRow("SELECT status FROM jobs WHERE id = ?", id).Scan(&status); err != nil {
-		return false, err
+	var status, serverName string
+	if err := tx.QueryRow("SELECT status, server_name FROM jobs WHERE id = ?", id).Scan(&status, &serverName); err != nil {
+		return logAppendResult{}, err
 	}
 	if isTerminalStatus(status) {
-		return false, nil
+		return logAppendResult{}, nil
 	}
-	if err := r.appendFragmentsTx(tx, id, fragments, updatedAt); err != nil {
-		return false, err
+	write, err := r.appendFragmentsTx(tx, id, fragments, updatedAt)
+	if err != nil {
+		return logAppendResult{}, err
 	}
 	result, err := tx.Exec(`
 		UPDATE jobs
@@ -256,22 +282,32 @@ func (r *SQLiteRepository) AppendActiveLogFragments(id string, fragments []LogFr
 		 WHERE id = ? AND status IN (?, ?, ?)
 	`, updatedAt, id, StatusQueued, StatusRunning, StatusWaitingApproval)
 	if err != nil {
-		return false, err
+		return logAppendResult{}, err
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return false, err
+		return logAppendResult{}, err
 	}
 	if rowsAffected == 0 {
-		return false, nil
+		return logAppendResult{}, nil
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return logAppendResult{}, err
 	}
-	return true, nil
+	return logAppendResult{
+		ServerName: serverName,
+		Chunks:     write.Chunks,
+		Updated:    true,
+		Reset:      write.Reset,
+	}, nil
 }
 
-func (r *SQLiteRepository) appendFragmentsTx(tx *sql.Tx, id string, fragments []LogFragment, createdAt string) error {
+func (r *SQLiteRepository) AppendActiveLogFragments(id string, fragments []LogFragment, updatedAt string) (bool, error) {
+	result, err := r.appendActiveLogFragments(id, fragments, updatedAt)
+	return result.Updated, err
+}
+
+func (r *SQLiteRepository) appendFragmentsTx(tx *sql.Tx, id string, fragments []LogFragment, createdAt string) (logWriteResult, error) {
 	var nextSequence int64
 	var sourceBytes int64
 	var expired int
@@ -280,11 +316,12 @@ func (r *SQLiteRepository) appendFragmentsTx(tx *sql.Tx, id string, fragments []
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(&nextSequence, &sourceBytes, &expired); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	if expired != 0 {
-		return nil
+		return logWriteResult{}, nil
 	}
+	chunks := make([]LogChunk, 0, len(fragments))
 	for _, fragment := range fragments {
 		if fragment.Data == "" {
 			continue
@@ -295,8 +332,14 @@ func (r *SQLiteRepository) appendFragmentsTx(tx *sql.Tx, id string, fragments []
 				INSERT INTO job_log_chunks (job_id, sequence, stream, data, created_at)
 				VALUES (?, ?, ?, ?, ?)
 			`, id, nextSequence, stream, []byte(part), createdAt); err != nil {
-				return err
+				return logWriteResult{}, err
 			}
+			chunks = append(chunks, LogChunk{
+				Sequence:  nextSequence,
+				Stream:    stream,
+				Data:      part,
+				CreatedAt: createdAt,
+			})
 			nextSequence++
 		}
 		sourceBytes += int64(len(fragment.Data))
@@ -306,15 +349,25 @@ func (r *SQLiteRepository) appendFragmentsTx(tx *sql.Tx, id string, fragments []
 		   SET log_next_sequence = ?, log_source_bytes = ?
 		 WHERE id = ?
 	`, nextSequence, sourceBytes, id); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	if err := r.enforceLogLimitTx(tx, id); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
-	return r.updateLogPreviewTx(tx, id)
+	if err := r.updateLogPreviewTx(tx, id); err != nil {
+		return logWriteResult{}, err
+	}
+	var truncated int
+	if err := tx.QueryRow("SELECT logs_truncated FROM jobs WHERE id = ?", id).Scan(&truncated); err != nil {
+		return logWriteResult{}, err
+	}
+	if truncated != 0 {
+		return logWriteResult{Reset: true}, nil
+	}
+	return logWriteResult{Chunks: chunks}, nil
 }
 
-func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, createdAt string) error {
+func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, createdAt string) (logWriteResult, error) {
 	var nextSequence int64
 	var sourceBytes int
 	var truncated int
@@ -323,7 +376,7 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(&nextSequence, &sourceBytes, &truncated); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	rows, err := tx.Query(`
 		SELECT stream, CAST(data AS TEXT)
@@ -332,7 +385,7 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		 ORDER BY sequence
 	`, id)
 	if err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	var retained, head, tail strings.Builder
 	afterMarker := false
@@ -340,7 +393,7 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		var chunkStream, chunkData string
 		if err := rows.Scan(&chunkStream, &chunkData); err != nil {
 			_ = rows.Close()
-			return err
+			return logWriteResult{}, err
 		}
 		retained.WriteString(chunkData)
 		if chunkStream == LogStreamSystem && chunkData == LogTruncationMarker {
@@ -354,12 +407,12 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		}
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	if truncated == 0 && retained.Len() > 0 && strings.HasPrefix(data, retained.String()) {
 		delta := data[retained.Len():]
 		if delta == "" {
-			return nil
+			return logWriteResult{}, nil
 		}
 		return r.appendFragmentsTx(tx, id, []LogFragment{{Stream: stream, Data: delta}}, createdAt)
 	}
@@ -368,12 +421,12 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		(len(tail.String()) == 0 || strings.HasSuffix(data[:sourceBytes], tail.String())) {
 		delta := data[sourceBytes:]
 		if delta == "" {
-			return nil
+			return logWriteResult{}, nil
 		}
 		return r.appendFragmentsTx(tx, id, []LogFragment{{Stream: stream, Data: delta}}, createdAt)
 	}
 	if _, err := tx.Exec("DELETE FROM job_log_chunks WHERE job_id = ?", id); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
 	if _, err := tx.Exec(`
 		UPDATE jobs
@@ -381,9 +434,15 @@ func (r *SQLiteRepository) replaceLogSnapshotTx(tx *sql.Tx, id, data, stream, cr
 		       log_next_sequence = ?
 		 WHERE id = ?
 	`, nextSequence, id); err != nil {
-		return err
+		return logWriteResult{}, err
 	}
-	return r.appendFragmentsTx(tx, id, []LogFragment{{Stream: stream, Data: data}}, createdAt)
+	write, err := r.appendFragmentsTx(tx, id, []LogFragment{{Stream: stream, Data: data}}, createdAt)
+	if err != nil {
+		return logWriteResult{}, err
+	}
+	write.Reset = true
+	write.Chunks = nil
+	return write, nil
 }
 
 type persistedLogChunk struct {
@@ -534,12 +593,12 @@ func (r *SQLiteRepository) updateLogPreviewTx(tx *sql.Tx, id string) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	preview := boundedLogPreview(full.String())
+	preview := BoundedLogPreview(full.String())
 	_, err = tx.Exec("UPDATE jobs SET logs_text = ? WHERE id = ?", preview, id)
 	return err
 }
 
-func boundedLogPreview(data string) string {
+func BoundedLogPreview(data string) string {
 	if len(data) <= LogPreviewMaxBytes {
 		return data
 	}

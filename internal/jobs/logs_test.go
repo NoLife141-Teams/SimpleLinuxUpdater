@@ -69,6 +69,57 @@ func TestSQLiteJobLogsAppendOrderedStreamsAndPagination(t *testing.T) {
 	}
 }
 
+func TestSQLiteJobLogsNotifyWithPersistedStructuredFragments(t *testing.T) {
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := EnsureSchemaConfigured(db, LogConfig{Now: func() time.Time { return now }}); err != nil {
+		t.Fatalf("EnsureSchemaConfigured() error = %v", err)
+	}
+	var events []LogEvent
+	manager := NewManager(NewSQLiteRepositoryWithLogConfig(db, LogConfig{Now: func() time.Time { return now }}), ManagerOptions{
+		Now:       func() time.Time { return now },
+		NotifyLog: func(event LogEvent) { events = append(events, event) },
+	})
+	job, err := manager.CreateJob(CreateParams{
+		Kind:       KindUpdate,
+		ServerName: "alpha",
+		Actor:      "admin",
+		Status:     StatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob() error = %v", err)
+	}
+	if _, err := manager.AppendActiveLogFragments(job.ID, []LogFragment{
+		{Stream: LogStreamStdout, Data: "Reading 20%\r"},
+		{Stream: LogStreamStderr, Data: "warning\n"},
+	}); err != nil {
+		t.Fatalf("AppendActiveLogFragments() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("structured events = %+v, want two", events)
+	}
+	if events[0].ServerName != "alpha" || events[0].JobID != job.ID || events[0].Sequence <= 0 ||
+		events[0].Stream != LogStreamStdout || events[0].Data != "Reading 20%\r" {
+		t.Fatalf("first structured event = %+v", events[0])
+	}
+	if events[1].Sequence != events[0].Sequence+1 || events[1].Stream != LogStreamStderr || events[1].Data != "warning\n" {
+		t.Fatalf("second structured event = %+v", events[1])
+	}
+
+	events = nil
+	fullSnapshot := "Reading 20%\rwarning\ncomplete\n"
+	if err := manager.Transition(job.ID, Intent{Kind: IntentAdvance, LogsText: &fullSnapshot}); err != nil {
+		t.Fatalf("Transition(full log snapshot) error = %v", err)
+	}
+	if len(events) != 1 || events[0].Sequence != 3 || events[0].Stream != LogStreamCombined || events[0].Data != "complete\n" {
+		t.Fatalf("transition structured events = %+v, want appended completion fragment", events)
+	}
+}
+
 func TestSQLiteJobLogsTruncateMiddleAndBoundPreview(t *testing.T) {
 	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
 	maxBytes := MinLogMaxBytes
@@ -77,7 +128,16 @@ func TestSQLiteJobLogsTruncateMiddleAndBoundPreview(t *testing.T) {
 		MaxBytes:      maxBytes,
 		Now:           func() time.Time { return now },
 	})
-	job, err := manager.CreateJob(CreateParams{Kind: KindUpdate, Actor: "admin", Status: StatusRunning})
+	var events []LogEvent
+	manager.opts.NotifyLog = func(event LogEvent) {
+		events = append(events, event)
+	}
+	job, err := manager.CreateJob(CreateParams{
+		Kind:       KindUpdate,
+		ServerName: "alpha",
+		Actor:      "admin",
+		Status:     StatusRunning,
+	})
 	if err != nil {
 		t.Fatalf("CreateJob() error = %v", err)
 	}
@@ -86,6 +146,9 @@ func TestSQLiteJobLogsTruncateMiddleAndBoundPreview(t *testing.T) {
 	tail := strings.Repeat("T", 64*1024)
 	if _, err := manager.AppendActiveLogStream(job.ID, LogStreamStdout, head+middle+tail); err != nil {
 		t.Fatalf("AppendActiveLogStream() error = %v", err)
+	}
+	if len(events) != 1 || !events[0].Reset || events[0].Data != "" {
+		t.Fatalf("truncation events = %+v, want one reset event", events)
 	}
 	full, err := manager.GetJobWithLogs(job.ID)
 	if err != nil {
@@ -108,8 +171,12 @@ func TestSQLiteJobLogsTruncateMiddleAndBoundPreview(t *testing.T) {
 	if len(preview.LogsText) > LogPreviewMaxBytes {
 		t.Fatalf("logs_text preview bytes = %d, max = %d", len(preview.LogsText), LogPreviewMaxBytes)
 	}
+	events = nil
 	if _, err := manager.AppendActiveLogStream(job.ID, LogStreamStderr, "LATEST\r"); err != nil {
 		t.Fatalf("append after truncation: %v", err)
+	}
+	if len(events) != 1 || !events[0].Reset {
+		t.Fatalf("post-truncation events = %+v, want one reset event", events)
 	}
 	full, err = manager.GetJobWithLogs(job.ID)
 	if err != nil {

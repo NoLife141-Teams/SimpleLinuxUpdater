@@ -50,6 +50,7 @@ func (s Server) MarshalJSON() ([]byte, error) {
 
 type ServerStatus struct {
 	Name                    string          `json:"name"`
+	JobID                   string          `json:"job_id,omitempty"`
 	Host                    string          `json:"host"`
 	Port                    int             `json:"port"`
 	User                    string          `json:"user"`

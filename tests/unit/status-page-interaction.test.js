@@ -20,6 +20,277 @@ test("snapshot intake clones adapter-owned data", () => {
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
 });
 
+test("structured job logs recover gaps once and ignore duplicate sequences", () => {
+    const store = createStore();
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    const snapshotEffects = store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "preview" }]
+    });
+    assert.deepEqual(snapshotEffects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [0]);
+
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 1, stream: "stdout", data: "one\n" },
+                { sequence: 2, stream: "stderr", data: "two\n" }
+            ],
+            has_more: false
+        }
+    });
+    assert.deepEqual(store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", sequence: 2, stream: "stderr", data: "duplicate\n" }
+    }), []);
+
+    const gapEffects = store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", sequence: 4, stream: "stdout", data: "four\n" }
+    });
+    assert.deepEqual(gapEffects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [2]);
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 3, stream: "stdout", data: "three\n" },
+                { sequence: 4, stream: "stdout", data: "four\n" }
+            ],
+            has_more: false
+        }
+    });
+
+    const log = store.getView().jobLogs.alpha;
+    assert.equal(log.lastSequence, 4);
+    assert.equal(log.rawText, "one\ntwo\nthree\nfour\n");
+    assert.deepEqual(log.fragments.map(fragment => [fragment.sequence, fragment.stream]), [
+        [1, "stdout"],
+        [2, "stderr"],
+        [3, "stdout"],
+        [4, "stdout"]
+    ]);
+});
+
+test("slow interleaved clients recover one job without blocking another", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "alpha", status: "updating" },
+            { name: "beta", status: "upgrading" }
+        ]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-a", sequence: 1, stream: "stdout", data: "a1\n" }
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "beta", job_id: "job-b", sequence: 1, stream: "stdout", data: "b1\n" }
+    });
+    const alphaGap = store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-a", sequence: 3, stream: "stdout", data: "a3\n" }
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "beta", job_id: "job-b", sequence: 2, stream: "stderr", data: "b2\n" }
+    });
+
+    assert.deepEqual(alphaGap.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.jobId), ["job-a"]);
+    assert.equal(store.getView().jobLogs.beta.rawText, "b1\nb2\n");
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-a",
+        page: {
+            fragments: [
+                { sequence: 2, stream: "stderr", data: "a2\n" },
+                { sequence: 3, stream: "stdout", data: "a3\n" }
+            ],
+            has_more: false
+        }
+    });
+    assert.equal(store.getView().jobLogs.alpha.rawText, "a1\na2\na3\n");
+    assert.equal(store.getView().jobLogs.beta.rawText, "b1\nb2\n");
+});
+
+test("new job logs supersede old job events for the same server", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "updating" }] });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-old", sequence: 1, stream: "stdout", data: "old\n" }
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-new", sequence: 1, stream: "stdout", data: "new\n" }
+    });
+    assert.deepEqual(store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-old", sequence: 2, stream: "stderr", data: "late old\n" }
+    }), []);
+    assert.equal(store.getView().jobLogs.alpha.jobId, "job-new");
+    assert.equal(store.getView().jobLogs.alpha.rawText, "new\n");
+});
+
+test("a stale server snapshot cannot restore a superseded job", () => {
+    const store = createStore();
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-old", logs: "old preview" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-new", sequence: 1, stream: "stdout", data: "new\n" }
+    });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-old", logs: "stale preview" }]
+    });
+
+    assert.equal(store.getView().jobLogs.alpha.jobId, "job-new");
+    assert.equal(store.getView().jobLogs.alpha.rawText, "new\n");
+});
+
+test("a stale blank job snapshot cannot discard an accepted live job", () => {
+    const store = createStore();
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", logs: "starting" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-new", sequence: 1, stream: "stdout", data: "live\n" }
+    });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", logs: "stale preview" }]
+    });
+
+    assert.equal(store.getView().jobLogs.alpha.jobId, "job-new");
+    assert.equal(store.getView().jobLogs.alpha.rawText, "live\n");
+});
+
+test("a log reset discards stale fragments and recovers the retained representation", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", sequence: 1, stream: "stdout", data: "discarded\n" }
+    });
+    const resetEffects = store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", reset: true }
+    });
+    assert.deepEqual(resetEffects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [0]);
+    assert.equal(store.getView().jobLogs.alpha.rawText, "");
+
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 1, stream: "stdout", data: "head\n" },
+                { sequence: 2, stream: "system", data: "\n[... job log middle truncated ...]\n" },
+                { sequence: 5, stream: "stdout", data: "tail\n" }
+            ],
+            truncated: true,
+            has_more: false
+        }
+    });
+    const log = store.getView().jobLogs.alpha;
+    assert.equal(log.rawText, "head\n\n[... job log middle truncated ...]\ntail\n");
+    assert.equal(log.truncated, true);
+});
+
+test("terminal projection replaces carriage-return progress without adding percent lines", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "updating" }] });
+    [
+        { sequence: 1, data: "Reading 10%\r" },
+        { sequence: 2, data: "Reading 50%\r" },
+        { sequence: 3, data: "Reading 100%\nDone\n" }
+    ].forEach(fragment => store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", stream: "stdout", ...fragment }
+    }));
+
+    const log = store.getView().jobLogs.alpha;
+    assert.equal(log.rawText, "Reading 10%\rReading 50%\rReading 100%\nDone\n");
+    assert.equal(log.displayText, "Reading 100%\nDone");
+    assert.equal(store.getServer("alpha").logs, "Reading 100%\nDone");
+});
+
+test("reconnect recovers active and open drawer logs from the last accepted sequence", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "" }]
+    });
+    store.dispatch({
+        type: "jobLogReceived",
+        event: { server_name: "alpha", job_id: "job-1", sequence: 1, stream: "stdout", data: "one\n" }
+    });
+    const effects = store.dispatch({ type: "jobLogReconnect" });
+    assert.deepEqual(effects.filter(effect => effect.type === "fetchJobLogs").map(effect => ({
+        jobId: effect.jobId,
+        afterSequence: effect.afterSequence
+    })), [{ jobId: "job-1", afterSequence: 1 }]);
+});
+
+test("polling fallback refreshes the compatible bounded preview", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "first preview" }]
+    });
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "new polling preview" }]
+    });
+    assert.equal(store.getView().jobLogs.alpha.rawText, "new polling preview");
+    assert.equal(store.getServer("alpha").logs, "new polling preview");
+});
+
+test("polling keeps recovered drawer logs and requests incremental updates", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "preview" }]
+    });
+    store.dispatch({ type: "drawerOpened", name: "alpha", tab: "logs" });
+    store.dispatch({
+        type: "jobLogRecoveryReceived",
+        serverName: "alpha",
+        jobId: "job-1",
+        page: {
+            fragments: [
+                { sequence: 1, stream: "stdout", data: "full one\n" },
+                { sequence: 2, stream: "stdout", data: "full two\n" }
+            ],
+            has_more: false
+        }
+    });
+
+    const effects = store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "new bounded preview" }]
+    });
+    assert.equal(store.getView().jobLogs.alpha.rawText, "full one\nfull two\n");
+    assert.deepEqual(effects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [2]);
+});
+
 test("canonical and legacy dashboard action data produce the same action view", () => {
     const canonicalStore = createStore();
     canonicalStore.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "pending_approval" }] });
@@ -358,4 +629,5 @@ test("browser adapters do not restore superseded action globals or DOM-derived b
         "isSingleHostActionInFlight",
         "row-select:checked"
     ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain deleted`));
+    assert.equal(adapterSource.includes("jobLogsByServer"), false, "accepted job log state belongs to Status Page Interaction");
 });

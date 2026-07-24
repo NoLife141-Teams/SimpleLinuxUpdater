@@ -85,6 +85,17 @@ func TestDashboardEventsRouteUsesInjectedBroker(t *testing.T) {
 	broker.Publish("injected")
 	readDashboardEventUntil(t, reader, "event: dashboard")
 	readDashboardEventUntil(t, reader, `data: {"reason":"injected"}`)
+
+	broker.PublishEvent(events.Event{
+		Reason:     "job.log",
+		ServerName: "demo-host",
+		JobID:      "job-1",
+		Sequence:   4,
+		Stream:     "stdout",
+		Data:       "Reading 40%\r",
+	})
+	readDashboardEventUntil(t, reader, "event: dashboard")
+	readDashboardEventUntil(t, reader, `"reason":"job.log","server_name":"demo-host","job_id":"job-1","sequence":4,"stream":"stdout","data":"Reading 40%\r"`)
 }
 
 func TestDashboardEventsNilBrokerReturnsUnavailable(t *testing.T) {

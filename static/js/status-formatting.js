@@ -49,7 +49,32 @@
     }
 
     function logLines(value) {
-        return String(value || "").split(/\r\n|\r|\n/);
+        const lines = [];
+        let current = "";
+        let pendingCR = false;
+        const text = String(value || "");
+        for (let index = 0; index < text.length; index += 1) {
+            const char = text[index];
+            if (pendingCR) {
+                pendingCR = false;
+                if (char === "\n") {
+                    lines.push(current);
+                    current = "";
+                    continue;
+                }
+                current = "";
+            }
+            if (char === "\r") {
+                pendingCR = true;
+            } else if (char === "\n") {
+                lines.push(current);
+                current = "";
+            } else {
+                current += char;
+            }
+        }
+        if (current || pendingCR || lines.length === 0) lines.push(current);
+        return lines;
     }
 
     return Object.freeze({ duration, diskFree, diskCapacity, uptime, statusLabel, logLines });

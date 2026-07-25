@@ -31,12 +31,14 @@
             }, delay);
         }
 
-        function dashboardEventReason(event) {
+        function dashboardEventPayload(event) {
             try {
                 const payload = JSON.parse(String(event?.data || ""));
-                return String(payload?.reason || "changed");
+                return payload && typeof payload === "object"
+                    ? { ...payload, reason: String(payload.reason || "changed") }
+                    : { reason: "changed" };
             } catch (_) {
-                return "changed";
+                return { reason: "changed" };
             }
         }
 
@@ -53,14 +55,15 @@
                 reconnectDelay = 1000;
                 configurePolling(10000, 60000);
                 options.onConnectionChanged?.(true);
+                options.onReconnect?.();
             });
             candidate.addEventListener("dashboard", event => {
-                const reason = dashboardEventReason(event);
-                if (reason === "job.log") {
-                    options.onJobLogEvent?.(reason);
+                const payload = dashboardEventPayload(event);
+                if (payload.reason === "job.log") {
+                    options.onJobLogEvent?.(payload);
                     return;
                 }
-                options.onDashboardEvent?.(reason);
+                options.onDashboardEvent?.(payload.reason, payload);
             });
             candidate.addEventListener("error", () => {
                 if (source === candidate) source = null;

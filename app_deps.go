@@ -8,6 +8,7 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
+	internaljobs "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
@@ -57,6 +58,7 @@ type AppDeps struct {
 	StartJobRunner                  func(string, func(), ...func())
 	StartScheduledRunReconciliation func(int64, string)
 	NotifyDashboardEvent            func(string)
+	NotifyDashboardLogEvent         func(internaljobs.LogEvent)
 	DashboardEventBroker            *events.Broker
 }
 

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	jobsPkg "debian-updater/internal/jobs"
 	runtimepkg "debian-updater/internal/runtime"
 
 	"golang.org/x/crypto/ssh"
@@ -89,6 +90,48 @@ func TestAPIServersReturnsEmptyArrayOnFreshInstall(t *testing.T) {
 	}
 	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
 		t.Fatalf("GET /api/servers body = %s, want []", got)
+	}
+}
+
+func TestAPIServersBoundsCompatibleLogPreview(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "bounded-server-logs.db")
+	app, sessionCookie := newActionAPITestApp(t, dbFile)
+	longLogs := strings.Repeat("progress\n", jobsPkg.LogPreviewMaxBytes)
+	state := globalServerState()
+	state.Lock()
+	state.SetServers([]Server{{Name: "srv-preview", Host: "192.0.2.50", Port: 22, User: "root"}})
+	state.SetStatusMap(map[string]*ServerStatus{
+		"srv-preview": {
+			Name:   "srv-preview",
+			JobID:  "job-preview",
+			Status: "updating",
+			Logs:   longLogs,
+		},
+	})
+	state.Unlock()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	req.AddCookie(sessionCookie)
+	app.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/servers status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var statuses []ServerStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &statuses); err != nil {
+		t.Fatalf("unmarshal server list: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("server list = %+v, want one", statuses)
+	}
+	if got := len(statuses[0].Logs); got > jobsPkg.LogPreviewMaxBytes {
+		t.Fatalf("wire log preview bytes = %d, max = %d", got, jobsPkg.LogPreviewMaxBytes)
+	}
+	if statuses[0].JobID != "job-preview" {
+		t.Fatalf("wire job_id = %q, want job-preview", statuses[0].JobID)
+	}
+	if runtimeLogs := state.CurrentStatusLogs("srv-preview"); runtimeLogs != longLogs {
+		t.Fatalf("wire preview mutated runtime logs: got %d bytes, want %d", len(runtimeLogs), len(longLogs))
 	}
 }
 

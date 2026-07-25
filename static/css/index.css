@@ -1225,8 +1225,49 @@ th.resizing .col-resize-handle::before {
     min-width: 0;
 }
 
-.pending-table {
-    min-width: 100%;
+.pending-updates {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.pending-updates > .table-wrap {
+    overflow-x: hidden;
+}
+
+body.status-page .pending-table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+}
+
+body.status-page .pending-table th:first-child {
+    width: 25%;
+}
+
+body.status-page .pending-table th:nth-child(2) {
+    width: 36%;
+}
+
+body.status-page .pending-table th:nth-child(3) {
+    width: 39%;
+}
+
+body.status-page .pending-table th,
+body.status-page .pending-table td {
+    padding-inline: 8px;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.pending-table .pending-badge {
+    max-width: 100%;
+    min-height: 24px;
+    height: auto;
+    padding-block: 4px;
+    line-height: 1.25;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .pending-badges,
@@ -1234,6 +1275,58 @@ th.resizing .col-resize-handle::before {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+}
+
+@media (max-width: 560px) {
+    body.status-page .pending-table,
+    body.status-page .pending-table tbody,
+    body.status-page .pending-table tr,
+    body.status-page .pending-table td {
+        display: block;
+        width: 100%;
+    }
+
+    body.status-page .pending-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    body.status-page .pending-table tr {
+        padding: 7px 8px;
+        border-bottom: 1px solid rgba(var(--border-rgb), 0.11);
+    }
+
+    body.status-page .pending-table td {
+        padding: 5px 0;
+        border-bottom: 0;
+    }
+
+    body.status-page .pending-table td::before {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 850;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+    }
+
+    body.status-page .pending-table td:first-child::before {
+        content: "Package";
+    }
+
+    body.status-page .pending-table td:nth-child(2)::before {
+        content: "Version";
+    }
+
+    body.status-page .pending-table td:nth-child(3)::before {
+        content: "Risk";
+    }
 }
 
 .drawer-empty,

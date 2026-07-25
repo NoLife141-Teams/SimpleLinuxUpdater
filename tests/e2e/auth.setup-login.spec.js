@@ -775,6 +775,18 @@ test.describe.serial('setup and login flows', () => {
     await expect(pendingPanel).toHaveClass(/active/);
     await expect(pendingPanel.locator('tbody tr')).toHaveCount(80);
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+    const pendingTableLayout = await pendingPanel.locator('.table-wrap').evaluate(element => {
+      const riskHeader = element.querySelector('th:last-child').getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        riskRight: riskHeader.right,
+        visibleRight: bounds.right,
+      };
+    });
+    expect(pendingTableLayout.scrollWidth, 'pending updates must fit without horizontal scrolling').toBeLessThanOrEqual(pendingTableLayout.clientWidth + 1);
+    expect(pendingTableLayout.riskRight, 'the Risk column must remain visible inside the drawer').toBeLessThanOrEqual(pendingTableLayout.visibleRight + 1);
 
     await pendingPanel.evaluate(el => { el.scrollTop = 520; });
     const beforeRefresh = await pendingPanel.evaluate(el => el.scrollTop);
@@ -787,6 +799,18 @@ test.describe.serial('setup and login flows', () => {
     await page.evaluate(() => window.fetchServers());
 
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobilePendingLayout = await pendingPanel.locator('.table-wrap').evaluate(element => {
+      const cells = Array.from(element.querySelectorAll('tbody tr:first-child td'));
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        labels: cells.map(cell => getComputedStyle(cell, '::before').content.replaceAll('"', '')),
+      };
+    });
+    expect(mobilePendingLayout.scrollWidth, 'mobile pending updates must fit without horizontal scrolling').toBeLessThanOrEqual(mobilePendingLayout.clientWidth + 1);
+    expect(mobilePendingLayout.labels).toEqual(['Package', 'Version', 'Risk']);
   });
 
   test('APT upgrade log drawer renders carriage-return progress during refresh', async ({ page }) => {

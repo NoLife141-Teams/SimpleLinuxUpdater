@@ -67,14 +67,14 @@ func (c *slowSSHConnection) NewSession() (sshSessionRunner, error) {
 func (c *slowSSHConnection) Close() error { return nil }
 
 type streamingSSHConnection struct {
-	release chan struct{}
+	release      chan struct{}
+	ptyRequested bool
 }
 
 type streamingSSHSession struct {
-	conn         *streamingSSHConnection
-	stdout       io.Writer
-	stderr       io.Writer
-	ptyRequested bool
+	conn   *streamingSSHConnection
+	stdout io.Writer
+	stderr io.Writer
 }
 
 func (s *streamingSSHSession) SetStdin(io.Reader) {}
@@ -83,21 +83,12 @@ func (s *streamingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
 
 func (s *streamingSSHSession) SetStderr(w io.Writer) { s.stderr = w }
 
-func (s *streamingSSHSession) RequestPty(term string, height, width int, modes ssh.TerminalModes) error {
-	if term != "xterm" || height != 40 || width != 120 {
-		return errors.New("unexpected PTY dimensions")
-	}
-	if modes[ssh.ECHO] != 0 {
-		return errors.New("PTY input echo must be disabled")
-	}
-	s.ptyRequested = true
+func (s *streamingSSHSession) RequestPty(string, int, int, ssh.TerminalModes) error {
+	s.conn.ptyRequested = true
 	return nil
 }
 
 func (s *streamingSSHSession) Run(string) error {
-	if !s.ptyRequested {
-		return errors.New("streaming command started without a PTY")
-	}
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 	var copies sync.WaitGroup
@@ -169,6 +160,9 @@ func TestRunSSHCommandWithContextStreamsOutputBeforeCompletion(t *testing.T) {
 	result := <-resultCh
 	if result.err != nil {
 		t.Fatalf("runSSHCommandWithContextStreaming() error = %v", result.err)
+	}
+	if conn.ptyRequested {
+		t.Fatal("streaming command requested a PTY and cannot preserve stdout/stderr attribution")
 	}
 	if result.stdout != "Unpacking openssl\n" || result.stderr != "debconf: delaying configuration\n" {
 		t.Fatalf("buffered result = %+v", result)

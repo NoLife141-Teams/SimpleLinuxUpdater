@@ -34,6 +34,8 @@ func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
 		"Still affected after the available update",
 		"advisory_url",
 		"Coverage unknown",
+		"official_installed_unverified",
+		"Installed provenance unverified",
 	} {
 		if !strings.Contains(source, contract) {
 			t.Errorf("pending-update CVE presentation contract %q is missing", contract)

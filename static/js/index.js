@@ -423,6 +423,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const candidateVersion = escapeHtml(update.candidate_version || "?");
                 const source = escapeHtml(update.source || "");
                 const state = String(update.cve_state || "").toLowerCase();
+                const coverage = String(update.cve_coverage || "").toLowerCase();
                 const cves = Array.isArray(update.cves) ? update.cves : [];
                 const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
                 const fixedFindings = findings.filter(finding => finding.disposition === "fixed_by_candidate");
@@ -447,6 +448,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     } else {
                         badges.push(`<span class="pending-badge">No confirmed CVE</span>`);
                     }
+                    if (coverage === "official_installed_unverified") {
+                        badges.push(`<span class="pending-badge">Installed provenance unverified</span>`);
+                    }
                 } else {
                     badges.push(pendingStateBadge(state));
                 }
@@ -461,6 +465,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td>
                             <div class="pending-badges">${badges.join("")}</div>
                             ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
+                            ${state === "ready" && coverage === "official_installed_unverified" ? `<p class="pending-note">OSV results use official distribution data, but APT no longer exposes the origin of the installed version.</p>` : ""}
                             ${vulnerabilityFindingsHtml(update)}
                         </td>
                     </tr>

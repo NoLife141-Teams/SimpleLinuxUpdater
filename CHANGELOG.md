@@ -9,7 +9,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 ### Added
 
 - Add ordered SQLite job-log fragments with stdout/stderr preservation, bounded compatibility previews, authenticated pagination, automatic retention, explicit expiration/truncation reporting, and backup/restore validation.
-- Add distribution-verified CVE assessment through OSV for Debian 12/13 and Ubuntu 22.04/24.04/26.04, including source-package identity, cached version queries, official advisory links, and explicit unknown coverage for unverified installed provenance or third-party candidate repositories.
+- Add distribution-verified CVE assessment through OSV for Debian 12/13 and Ubuntu 22.04/24.04/26.04, including source-package identity, cached version queries, official advisory links, explicit unknown coverage for third-party origins, and a visible provenance warning when APT no longer exposes the installed version's origin.
 
 ### Changed
 

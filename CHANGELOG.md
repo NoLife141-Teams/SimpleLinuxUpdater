@@ -15,6 +15,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 - Replace changelog-based CVE badges with confirmed installed-version findings split between vulnerabilities fixed by the available update and vulnerabilities that remain affected afterward.
 
+### Fixed
+
+- Require the selected APT index's local `InRelease` file to validate against the Debian or Ubuntu archive keyring before reporting official CVE coverage.
+
 ## [v0.3.0] - 2026-07-20
 
 ### Added

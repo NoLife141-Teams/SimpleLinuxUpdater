@@ -140,7 +140,7 @@ Possible causes:
 - The application cannot reach `https://api.osv.dev`
 - OSV returned an invalid or incomplete response
 
-A `Coverage unknown` state is different from `unavailable`: it means an explicit installed or candidate origin is third-party or unsupported, so SimpleLinuxUpdater deliberately makes no vulnerability claim. When APT no longer exposes the origin of an older installed version but the candidate is official, the OSV assessment still runs and is labelled `Installed provenance unverified`.
+A `Coverage unknown` state is different from `unavailable`: it means an explicit installed or candidate origin is third-party or unsupported, or its local APT `InRelease` metadata could not be validated with the distribution archive keyring, so SimpleLinuxUpdater deliberately makes no vulnerability claim. Check that `gpgv` and the distribution archive keyring package are installed and that `/var/lib/apt/lists` contains current metadata. When APT no longer exposes the origin of an older installed version but the candidate is signed by the official archive, the OSV assessment still runs and is labelled `Installed provenance unverified`.
 
 ## Database and file permissions
 

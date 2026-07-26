@@ -196,7 +196,7 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 		},
 		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
 			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}}, map[string]*servers.ServerStatus{
-				"srv-a": {Name: "srv-a", Status: "pending_approval", PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}}}},
+				"srv-a": {Name: "srv-a", Status: "pending_approval", PendingUpdates: []servers.PendingUpdate{{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}, CVEFindings: []servers.VulnerabilityFinding{{ID: "CVE-2026-1", Disposition: "still_affected"}}}}},
 			}
 		},
 		HostHealthObservation: testHealthReader(func() (map[string]health.CollectedFacts, error) {

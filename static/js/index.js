@@ -21,6 +21,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
+	        let expandedCVEFindings = new Set();
 	        let activePhaseTooltipTarget = null;
 	        let bulkReviewResolve = null;
         let drawerLogScrollTop = 0;
@@ -222,9 +223,59 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const normalized = String(state || "").toLowerCase();
             if (normalized === "pending") return `<span class="pending-badge">Scanning CVEs...</span>`;
             if (normalized === "unavailable") return `<span class="pending-badge">CVE lookup unavailable</span>`;
+            if (normalized === "unsupported") return `<span class="pending-badge">Coverage unknown</span>`;
             if (normalized === "skipped") return `<span class="pending-badge">CVE lookup skipped</span>`;
             if (normalized === "ready") return "";
             return `<span class="pending-badge">Unknown state</span>`;
+        }
+
+        function vulnerabilityFindingListHtml(findings, title, tone) {
+            if (!findings.length) return "";
+            const items = findings.map(finding => {
+                const id = escapeHtml(finding.id || "Unknown CVE");
+                const url = String(finding.advisory_url || "").trim();
+                const idHtml = url
+                    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>`
+                    : id;
+                const fixedVersion = String(finding.fixed_by_version || "").trim();
+                return `<li>${idHtml}${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
+            }).join("");
+            return `
+                <section class="cve-finding-group cve-finding-${tone}">
+                    <h5>${escapeHtml(title)}</h5>
+                    <ul>${items}</ul>
+                </section>
+            `;
+        }
+
+        function cveFindingsDisclosureKey(server, update) {
+            return JSON.stringify([
+                String(server?.name || ""),
+                String(update?.install_package || update?.package || ""),
+                String(update?.candidate_version || "")
+            ]);
+        }
+
+        function vulnerabilityFindingsHtml(update, disclosureKey) {
+            const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
+            if (!findings.length) return "";
+            const fixed = findings.filter(finding => finding.disposition === "fixed_by_candidate");
+            const remaining = findings.filter(finding => finding.disposition === "still_affected");
+            const source = escapeHtml(update.cve_source || findings[0]?.source || "Official distribution data");
+            const scannedAt = update.cve_scanned_at
+                ? ` · scanned ${escapeHtml(update.cve_scanned_at)}`
+                : "";
+            const open = expandedCVEFindings.has(disclosureKey);
+            return `
+                <details class="cve-findings" data-cve-disclosure-key="${escapeHtml(disclosureKey)}" ${open ? "open" : ""}>
+                    <summary>View ${findings.length} confirmed CVE${findings.length > 1 ? "s" : ""}</summary>
+                    <div class="cve-findings-content">
+                        ${vulnerabilityFindingListHtml(fixed, "Fixed by the available update", "fixed")}
+                        ${vulnerabilityFindingListHtml(remaining, "Still affected after the available update", "remaining")}
+                        <p class="cve-findings-source">${source}${scannedAt}</p>
+                    </div>
+                </details>
+            `;
         }
 
         function hasPendingUpdates(server) {
@@ -378,11 +429,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
             const rows = updates.map(update => {
                 const pkg = escapeHtml(update.package || "unknown");
+                const cveDisclosureKey = cveFindingsDisclosureKey(server, update);
                 const currentVersion = escapeHtml(update.current_version || "?");
                 const candidateVersion = escapeHtml(update.candidate_version || "?");
                 const source = escapeHtml(update.source || "");
                 const state = String(update.cve_state || "").toLowerCase();
+                const coverage = String(update.cve_coverage || "").toLowerCase();
                 const cves = Array.isArray(update.cves) ? update.cves : [];
+                const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
+                const fixedFindings = findings.filter(finding => finding.disposition === "fixed_by_candidate");
+                const remainingFindings = findings.filter(finding => finding.disposition === "still_affected");
 
                 const badges = [];
                 if (update.security) badges.push(`<span class="pending-badge pending-badge-security">Security</span>`);
@@ -391,13 +447,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     badges.push(`<span class="pending-badge">Requires full-upgrade</span>`);
                 }
                 if (state === "ready") {
-                    if (cves.length > 0) {
-                        badges.push(`<span class="pending-badge pending-badge-cve">${cves.length} CVE${cves.length > 1 ? "s" : ""}</span>`);
-                        cves.slice(0, 3).forEach((cve) => {
-                            badges.push(`<span class="pending-badge">${escapeHtml(cve)}</span>`);
-                        });
+                    if (findings.length > 0) {
+                        if (fixedFindings.length) {
+                            badges.push(`<span class="pending-badge pending-badge-cve">${fixedFindings.length} fixed by update</span>`);
+                        }
+                        if (remainingFindings.length) {
+                            badges.push(`<span class="pending-badge pending-badge-cve-remaining">${remainingFindings.length} still vulnerable</span>`);
+                        }
+                    } else if (cves.length > 0) {
+                        badges.push(`<span class="pending-badge">Legacy CVE data — rescan required</span>`);
                     } else {
-                        badges.push(`<span class="pending-badge">No CVE found</span>`);
+                        badges.push(`<span class="pending-badge">No confirmed CVE</span>`);
+                    }
+                    if (coverage === "official_installed_unverified") {
+                        badges.push(`<span class="pending-badge">Installed provenance unverified</span>`);
                     }
                 } else {
                     badges.push(pendingStateBadge(state));
@@ -410,7 +473,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             ${source ? `<div class="subtle">${source}</div>` : ""}
                         </td>
                         <td>${currentVersion} &rarr; ${candidateVersion}</td>
-                        <td><div class="pending-badges">${badges.join("")}</div></td>
+                        <td>
+                            <div class="pending-badges">${badges.join("")}</div>
+                            ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
+                            ${state === "ready" && coverage === "official_installed_unverified" ? `<p class="pending-note">OSV results use official distribution data, but APT no longer exposes the origin of the installed version.</p>` : ""}
+                            ${vulnerabilityFindingsHtml(update, cveDisclosureKey)}
+                        </td>
                     </tr>
                 `;
             }).join("");
@@ -426,6 +494,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <span class="pending-badge">${stateCounts.ready || 0} ready</span>
                         <span class="pending-badge">${stateCounts.pending || 0} scanning</span>
                         <span class="pending-badge">${stateCounts.unavailable || 0} unavailable</span>
+                        <span class="pending-badge">${stateCounts.unsupported || 0} unknown coverage</span>
                         <span class="pending-badge">${stateCounts.skipped || 0} skipped</span>
                     </div>
                     ${hasPending ? `<p class="pending-note">CVE scan in progress; list will update automatically.</p>` : ""}
@@ -2433,6 +2502,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
+        drawerPendingElement.addEventListener('toggle', (event) => {
+            const details = event.target;
+            if (!details?.matches?.('details.cve-findings')) return;
+            const disclosureKey = details.dataset.cveDisclosureKey;
+            if (!disclosureKey) return;
+            if (details.open) {
+                expandedCVEFindings.add(disclosureKey);
+            } else {
+                expandedCVEFindings.delete(disclosureKey);
+            }
+        }, true);
 
         document.addEventListener('pointerdown', (event) => {
             if (isServerActionControl(event.target)) {

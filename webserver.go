@@ -604,13 +604,13 @@ func (g *sshCommandOutputGate) close() {
 }
 
 type sshCommandOutputWriter struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	stream   updatespkg.HostCommandOutputStream
 	onOutput updatespkg.HostCommandOutputHandler
 }
 
 func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
-	n, err := w.Buffer.Write(p)
+	n, err := w.buffer.Write(p)
 	if n > 0 && w.onOutput != nil {
 		w.onOutput(updatespkg.HostCommandOutput{Stream: w.stream, Data: string(p[:n])})
 	}
@@ -619,6 +619,10 @@ func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
 
 func (w *sshCommandOutputWriter) WriteString(value string) (int, error) {
 	return w.Write([]byte(value))
+}
+
+func (w *sshCommandOutputWriter) String() string {
+	return w.buffer.String()
 }
 
 func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
@@ -1359,6 +1363,7 @@ func clonePendingUpdates(src []PendingUpdate) []PendingUpdate {
 	for i, update := range src {
 		dst[i] = update
 		dst[i].CVEs = append([]string(nil), update.CVEs...)
+		dst[i].CVEFindings = append([]VulnerabilityFinding(nil), update.CVEFindings...)
 	}
 	return dst
 }

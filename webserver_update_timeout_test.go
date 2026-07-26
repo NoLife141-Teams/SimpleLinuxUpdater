@@ -67,7 +67,8 @@ func (c *slowSSHConnection) NewSession() (sshSessionRunner, error) {
 func (c *slowSSHConnection) Close() error { return nil }
 
 type streamingSSHConnection struct {
-	release chan struct{}
+	release      chan struct{}
+	ptyRequested bool
 }
 
 type streamingSSHSession struct {
@@ -82,10 +83,30 @@ func (s *streamingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
 
 func (s *streamingSSHSession) SetStderr(w io.Writer) { s.stderr = w }
 
+func (s *streamingSSHSession) RequestPty(string, int, int, ssh.TerminalModes) error {
+	s.conn.ptyRequested = true
+	return nil
+}
+
 func (s *streamingSSHSession) Run(string) error {
-	_, _ = io.WriteString(s.stdout, "Unpacking openssl\n")
-	_, _ = io.WriteString(s.stderr, "debconf: delaying configuration\n")
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+	var copies sync.WaitGroup
+	copies.Add(2)
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(s.stdout, stdoutReader)
+	}()
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(s.stderr, stderrReader)
+	}()
+	_, _ = io.WriteString(stdoutWriter, "Unpacking openssl\n")
+	_, _ = io.WriteString(stderrWriter, "debconf: delaying configuration\n")
 	<-s.conn.release
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	copies.Wait()
 	return nil
 }
 
@@ -140,14 +161,21 @@ func TestRunSSHCommandWithContextStreamsOutputBeforeCompletion(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("runSSHCommandWithContextStreaming() error = %v", result.err)
 	}
+	if conn.ptyRequested {
+		t.Fatal("streaming command requested a PTY and cannot preserve stdout/stderr attribution")
+	}
 	if result.stdout != "Unpacking openssl\n" || result.stderr != "debconf: delaying configuration\n" {
 		t.Fatalf("buffered result = %+v", result)
 	}
-	if streamed[0].Stream != updatespkg.HostCommandStdout || streamed[0].Data != result.stdout {
-		t.Fatalf("first streamed output = %+v, want stdout %q", streamed[0], result.stdout)
+	streamedBySource := make(map[updatespkg.HostCommandOutputStream]string, len(streamed))
+	for _, output := range streamed {
+		streamedBySource[output.Stream] += output.Data
 	}
-	if streamed[1].Stream != updatespkg.HostCommandStderr || streamed[1].Data != result.stderr {
-		t.Fatalf("second streamed output = %+v, want stderr %q", streamed[1], result.stderr)
+	if streamedBySource[updatespkg.HostCommandStdout] != result.stdout {
+		t.Fatalf("streamed stdout = %q, want %q", streamedBySource[updatespkg.HostCommandStdout], result.stdout)
+	}
+	if streamedBySource[updatespkg.HostCommandStderr] != result.stderr {
+		t.Fatalf("streamed stderr = %q, want %q", streamedBySource[updatespkg.HostCommandStderr], result.stderr)
 	}
 }
 

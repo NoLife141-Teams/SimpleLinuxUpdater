@@ -61,6 +61,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.HostMaintenanceSessions == nil {
 		d.HostMaintenanceSessions = hostMaintenanceUnavailableFactory()
 	}
+	if d.VulnerabilityScanner == nil {
+		d.VulnerabilityScanner = unavailableVulnerabilityScanner{}
+	}
 	if d.IsPostcheckFailureBlocking == nil {
 		d.IsPostcheckFailureBlocking = func(string, PostUpdateCheckConfig) bool { return true }
 	}
@@ -1137,28 +1140,48 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			summary := "Looking up package CVEs"
 			_ = jm.Transition(jobID, jobs.Intent{Phase: &phase, Summary: &summary})
 		}
-		for _, pkg := range packages {
-			if !s.serverPendingApproval(server.Name) {
-				if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
-					status := jobs.StatusCancelled
-					phase := jobs.PhaseComplete
-					summary := "Parent update no longer pending approval"
-					_ = jm.Transition(jobID, jobs.Intent{
-						Status:  &status,
-						Phase:   &phase,
-						Summary: &summary,
-					})
+		if !s.serverPendingApproval(server.Name) {
+			if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
+				status := jobs.StatusCancelled
+				phase := jobs.PhaseComplete
+				summary := "Parent update no longer pending approval"
+				_ = jm.Transition(jobID, jobs.Intent{
+					Status:  &status,
+					Phase:   &phase,
+					Summary: &summary,
+				})
+			}
+			return
+		}
+		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(context.Background(), cveSession, updates)
+		if scanErr != nil {
+			deps.Logf("official vulnerability scan failed for server %q: %v", server.Name, scanErr)
+			for _, pkg := range packages {
+				if !s.updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
+					return
 				}
-				return
 			}
-			cves, queryErr := cveSession.QueryPackageCVEs(context.Background(), pkg)
-			state := "ready"
-			if queryErr != nil {
-				deps.Logf("CVE lookup failed for server %q package %q: %v", server.Name, pkg, queryErr)
-				state = "unavailable"
-				cves = []string{}
+			if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
+				status := jobs.StatusFailed
+				phase := jobs.PhaseComplete
+				summary := "Official vulnerability data unavailable"
+				errorClass := "vulnerability_data"
+				meta := jobs.MarshalJSON(map[string]any{"error": scanErr.Error()})
+				_ = jm.Transition(jobID, jobs.Intent{
+					Status:     &status,
+					Phase:      &phase,
+					Summary:    &summary,
+					ErrorClass: &errorClass,
+					MetaJSON:   &meta,
+				})
 			}
-			if !s.updatePendingPackageCVEState(server.Name, pkg, state, cves) {
+			return
+		}
+		for _, update := range scannedUpdates {
+			if update.CVEState == "skipped" {
+				continue
+			}
+			if !s.updatePendingPackageVulnerabilityAssessment(server.Name, update) {
 				if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 					status := jobs.StatusCancelled
 					phase := jobs.PhaseComplete
@@ -1212,10 +1235,43 @@ func (s *Service) updatePendingPackageCVEState(serverName, pkg, state string, cv
 		}
 		status.PendingUpdates[i].CVEState = state
 		status.PendingUpdates[i].CVEs = append([]string(nil), cves...)
+		status.PendingUpdates[i].CVEFindings = []servers.VulnerabilityFinding{}
+		status.PendingUpdates[i].CVECoverage = ""
+		status.PendingUpdates[i].CVESource = ""
+		status.PendingUpdates[i].CVEScannedAt = ""
 		updated = true
 	}
 	if updated {
 		SortPendingUpdates(status.PendingUpdates)
 	}
 	return true
+}
+
+func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string, update servers.PendingUpdate) bool {
+	deps := s.EnsureDeps()
+	if deps.ServerState == nil {
+		return false
+	}
+	updateSelector := pendingUpdatePackageSelector(update)
+	if updateSelector == "" {
+		return false
+	}
+	deps.ServerState.Lock()
+	defer deps.ServerState.Unlock()
+	status := deps.ServerState.StatusMap()[serverName]
+	if status == nil || status.Status != "pending_approval" {
+		return false
+	}
+	updated := false
+	for i := range status.PendingUpdates {
+		if pendingUpdatePackageSelector(status.PendingUpdates[i]) != updateSelector {
+			continue
+		}
+		status.PendingUpdates[i] = servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0]
+		updated = true
+	}
+	if updated {
+		SortPendingUpdates(status.PendingUpdates)
+	}
+	return updated
 }

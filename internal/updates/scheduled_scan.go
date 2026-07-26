@@ -7,6 +7,7 @@ import (
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
+	"debian-updater/internal/servers"
 )
 
 func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) ScheduledJobMeta {
@@ -129,18 +130,19 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 
-	for i := range discovery.PendingUpdates {
-		if discovery.PendingUpdates[i].CVEState != "pending" {
-			continue
-		}
-		cves, lookupErr := session.QueryPackageCVEs(context.Background(), discovery.PendingUpdates[i].Package)
-		if lookupErr != nil {
+	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(context.Background(), session, discovery.PendingUpdates)
+	if scanErr != nil {
+		deps.Logf("scheduled official vulnerability scan failed for server %q: %v", req.Server.Name, scanErr)
+		for i := range discovery.PendingUpdates {
+			if discovery.PendingUpdates[i].CVEState != "pending" {
+				continue
+			}
 			discovery.PendingUpdates[i].CVEState = "unavailable"
 			discovery.PendingUpdates[i].CVEs = []string{}
-			continue
+			discovery.PendingUpdates[i].CVEFindings = []servers.VulnerabilityFinding{}
 		}
-		discovery.PendingUpdates[i].CVEState = "ready"
-		discovery.PendingUpdates[i].CVEs = append([]string(nil), cves...)
+	} else {
+		discovery.PendingUpdates = scannedUpdates
 	}
 	SortPendingUpdates(discovery.PendingUpdates)
 	result := discovery.Clone()

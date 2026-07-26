@@ -9,6 +9,15 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 ### Added
 
 - Add ordered SQLite job-log fragments with stdout/stderr preservation, bounded compatibility previews, authenticated pagination, automatic retention, explicit expiration/truncation reporting, and backup/restore validation.
+- Add distribution-verified CVE assessment through OSV for Debian 12/13 and Ubuntu 22.04/24.04/26.04, including source-package identity, cached version queries, official advisory links, explicit unknown coverage for third-party origins, and a visible provenance warning when APT no longer exposes the installed version's origin.
+
+### Changed
+
+- Replace changelog-based CVE badges with confirmed installed-version findings split between vulnerabilities fixed by the available update and vulnerabilities that remain affected afterward.
+
+### Fixed
+
+- Require the selected APT index's local `InRelease` file to validate against the Debian or Ubuntu archive keyring before reporting official CVE coverage.
 
 ## [v0.3.0] - 2026-07-20
 

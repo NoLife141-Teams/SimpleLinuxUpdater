@@ -67,17 +67,32 @@ type ServerStatus struct {
 }
 
 type PendingUpdate struct {
-	Package          string   `json:"package"`
-	InstallPackage   string   `json:"install_package,omitempty"`
-	CurrentVersion   string   `json:"current_version,omitempty"`
-	CandidateVersion string   `json:"candidate_version,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	Security         bool     `json:"security"`
-	KeptBack         bool     `json:"kept_back"`
-	RequiresFull     bool     `json:"requires_full_upgrade"`
-	CVEs             []string `json:"cves"`
-	CVEState         string   `json:"cve_state"`
-	Raw              string   `json:"raw"`
+	Package                string                 `json:"package"`
+	InstallPackage         string                 `json:"install_package,omitempty"`
+	CurrentVersion         string                 `json:"current_version,omitempty"`
+	CandidateVersion       string                 `json:"candidate_version,omitempty"`
+	Source                 string                 `json:"source,omitempty"`
+	SourcePackage          string                 `json:"source_package,omitempty"`
+	InstalledSourceVersion string                 `json:"installed_source_version,omitempty"`
+	CandidateSourceVersion string                 `json:"candidate_source_version,omitempty"`
+	Security               bool                   `json:"security"`
+	KeptBack               bool                   `json:"kept_back"`
+	RequiresFull           bool                   `json:"requires_full_upgrade"`
+	CVEs                   []string               `json:"cves"`
+	CVEFindings            []VulnerabilityFinding `json:"cve_findings"`
+	CVEState               string                 `json:"cve_state"`
+	CVECoverage            string                 `json:"cve_coverage,omitempty"`
+	CVESource              string                 `json:"cve_source,omitempty"`
+	CVEScannedAt           string                 `json:"cve_scanned_at,omitempty"`
+	Raw                    string                 `json:"raw"`
+}
+
+type VulnerabilityFinding struct {
+	ID             string `json:"id"`
+	Disposition    string `json:"disposition"`
+	AdvisoryURL    string `json:"advisory_url,omitempty"`
+	Source         string `json:"source,omitempty"`
+	FixedByVersion string `json:"fixed_by_version,omitempty"`
 }
 
 type UpgradePlan struct {
@@ -385,6 +400,7 @@ func ClonePendingUpdates(src []PendingUpdate) []PendingUpdate {
 	for i, update := range src {
 		dst[i] = update
 		dst[i].CVEs = append([]string(nil), update.CVEs...)
+		dst[i].CVEFindings = append([]VulnerabilityFinding(nil), update.CVEFindings...)
 	}
 	return dst
 }

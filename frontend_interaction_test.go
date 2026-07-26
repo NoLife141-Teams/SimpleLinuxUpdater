@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,51 @@ func TestFrontendInteractionContracts(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("frontend interaction contracts failed: %v\n%s", err, output)
+	}
+}
+
+func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
+	contents, err := os.ReadFile("static/js/index.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, contract := range []string{
+		"cve_findings",
+		"fixed_by_candidate",
+		"still_affected",
+		"Fixed by the available update",
+		"Still affected after the available update",
+		"advisory_url",
+		"Coverage unknown",
+		"official_installed_unverified",
+		"Installed provenance unverified",
+		"expandedCVEFindings",
+		"data-cve-disclosure-key",
+		"details.cve-findings",
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("pending-update CVE presentation contract %q is missing", contract)
+		}
+	}
+	if strings.Contains(source, "cves.slice(0, 3)") {
+		t.Error("pending-update CVE presentation still hides confirmed findings after the first three")
+	}
+}
+
+func TestStatusPageModalsRenderAboveDrawer(t *testing.T) {
+	contents, err := os.ReadFile("static/css/index.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	drawerLayer := regexp.MustCompile(`(?s)\.side-drawer\s*\{[^}]*z-index:\s*90\s*;`)
+	modalLayer := regexp.MustCompile(`(?s)\.modal-backdrop\s*\{[^}]*z-index:\s*100\s*;`)
+	if !drawerLayer.MatchString(source) {
+		t.Fatal("status drawer must retain its documented layer")
+	}
+	if !modalLayer.MatchString(source) {
+		t.Fatal("status-page modal backdrops must render above the drawer")
 	}
 }
 

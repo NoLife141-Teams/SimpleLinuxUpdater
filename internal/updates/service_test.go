@@ -91,6 +91,49 @@ func TestServiceApproveCancelUsesInjectedServerState(t *testing.T) {
 	}
 }
 
+func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
+	state, statuses := testState()
+	statuses["srv"].PendingUpdates = []servers.PendingUpdate{
+		{Package: "openssl", InstallPackage: "openssl:amd64", CVEState: "pending"},
+		{Package: "openssl", InstallPackage: "openssl:i386", CVEState: "pending"},
+	}
+	service := NewService(ServiceDeps{ServerState: state})
+
+	for _, update := range []servers.PendingUpdate{
+		{
+			Package:        "openssl",
+			InstallPackage: "openssl:amd64",
+			CVEState:       "ready",
+			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1001"}},
+		},
+		{
+			Package:        "openssl",
+			InstallPackage: "openssl:i386",
+			CVEState:       "ready",
+			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1002"}},
+		},
+	} {
+		if !service.updatePendingPackageVulnerabilityAssessment("srv", update) {
+			t.Fatalf("updatePendingPackageVulnerabilityAssessment(%q) = false", update.InstallPackage)
+		}
+	}
+
+	got := map[string]string{}
+	for _, update := range statuses["srv"].PendingUpdates {
+		if len(update.CVEFindings) != 1 {
+			t.Fatalf("pending update = %+v, want one finding", update)
+		}
+		got[update.InstallPackage] = update.CVEFindings[0].ID
+	}
+	want := map[string]string{
+		"openssl:amd64": "CVE-2026-1001",
+		"openssl:i386":  "CVE-2026-1002",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("multiarch findings = %#v, want %#v", got, want)
+	}
+}
+
 func TestHostMaintenanceSessionFuncsDefaultQueryPackageCVEsIsSafeNoop(t *testing.T) {
 	session := &HostMaintenanceSessionFuncs{}
 	cves, err := session.QueryPackageCVEs(context.Background(), "openssl")
@@ -814,6 +857,23 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 		t.Fatalf("create scheduled scan job: %v", err)
 	}
 	deps := ServiceDeps{
+		VulnerabilityScanner: VulnerabilityScannerFunc(func(_ context.Context, _ HostMaintenanceSession, updates []servers.PendingUpdate) ([]servers.PendingUpdate, error) {
+			scanned := servers.ClonePendingUpdates(updates)
+			for i := range scanned {
+				if scanned[i].Package == "linux-image-amd64" {
+					scanned[i].CVEState = "unavailable"
+					scanned[i].CVEs = []string{}
+					continue
+				}
+				scanned[i].CVEState = "ready"
+				scanned[i].CVEs = []string{"CVE-2026-0001"}
+				scanned[i].CVEFindings = []servers.VulnerabilityFinding{{
+					ID:          "CVE-2026-0001",
+					Disposition: VulnerabilityDispositionFixedByCandidate,
+				}}
+			}
+			return scanned, nil
+		}),
 		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
 			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
 				return HostCommandResult{Attempts: 1}, nil
@@ -837,12 +897,6 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 					FullUpgradeRemovedPackages: nil,
 				}
 				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(pending, upgradable, plan), Attempts: 1}, nil
-			},
-			QueryPackageCVEsFunc: func(_ context.Context, pkg string) ([]string, error) {
-				if pkg == "linux-image-amd64" {
-					return nil, errors.New("changelog unavailable")
-				}
-				return []string{"CVE-2026-0001"}, nil
 			},
 		}),
 		CurrentJobManager: func() *jobs.Manager { return jm },

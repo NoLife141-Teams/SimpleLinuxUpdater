@@ -136,6 +136,16 @@ func demoUpdate(pkg string, security bool, cves ...string) PendingUpdate {
 	if security {
 		source = "ubuntu-security"
 	}
+	findings := make([]VulnerabilityFinding, 0, len(cves))
+	for _, cveID := range cves {
+		findings = append(findings, VulnerabilityFinding{
+			ID:             cveID,
+			Disposition:    "fixed_by_candidate",
+			AdvisoryURL:    "https://ubuntu.com/security/" + cveID,
+			Source:         "Ubuntu CVE Tracker via OSV",
+			FixedByVersion: "1.0.1",
+		})
+	}
 	return PendingUpdate{
 		Package:          pkg,
 		CurrentVersion:   "1.0.0",
@@ -143,7 +153,10 @@ func demoUpdate(pkg string, security bool, cves ...string) PendingUpdate {
 		Source:           source,
 		Security:         security,
 		CVEs:             append([]string(nil), cves...),
+		CVEFindings:      findings,
 		CVEState:         "ready",
+		CVECoverage:      "official",
+		CVESource:        "Ubuntu CVE Tracker via OSV",
 		Raw:              "Inst " + pkg,
 	}
 }

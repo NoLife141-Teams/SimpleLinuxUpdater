@@ -92,7 +92,7 @@ func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) 
 					Name:   "srv-z",
 					Status: "pending_approval",
 					PendingUpdates: []servers.PendingUpdate{
-						{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}},
+						{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-1"}, CVEFindings: []servers.VulnerabilityFinding{{ID: "CVE-2026-1", Disposition: "still_affected"}}},
 					},
 				},
 				health:     testCollectedHealth("srv-z", now.Add(-time.Hour).Format(time.RFC3339), "ok", "ok"),

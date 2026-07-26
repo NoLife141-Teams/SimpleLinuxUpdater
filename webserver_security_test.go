@@ -26,6 +26,32 @@ import (
 
 func preserveServerState(t *testing.T) {
 	t.Helper()
+	restoreScanner := replaceApplicationVulnerabilityScanner(VulnerabilityScannerFunc(func(ctx context.Context, session HostMaintenanceSession, updates []PendingUpdate) ([]PendingUpdate, error) {
+		scanned := clonePendingUpdates(updates)
+		for i := range scanned {
+			if scanned[i].CVEState != "pending" {
+				continue
+			}
+			cves, err := session.QueryPackageCVEs(ctx, scanned[i].Package)
+			if err != nil {
+				scanned[i].CVEState = "unavailable"
+				scanned[i].CVEs = []string{}
+				scanned[i].CVEFindings = []VulnerabilityFinding{}
+				continue
+			}
+			scanned[i].CVEState = "ready"
+			scanned[i].CVEs = append([]string(nil), cves...)
+			scanned[i].CVEFindings = make([]VulnerabilityFinding, 0, len(cves))
+			for _, cveID := range cves {
+				scanned[i].CVEFindings = append(scanned[i].CVEFindings, VulnerabilityFinding{
+					ID:          cveID,
+					Disposition: "fixed_by_candidate",
+				})
+			}
+		}
+		return scanned, nil
+	}))
+	t.Cleanup(restoreScanner)
 	mu.Lock()
 	origServers := cloneServers(servers)
 	origStatusMap := cloneStatusMap(statusMap)

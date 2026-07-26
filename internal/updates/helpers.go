@@ -864,7 +864,10 @@ func PreparePendingUpdatesForCVE(updates []servers.PendingUpdate) []servers.Pend
 		if prepared[i].CVEs == nil {
 			prepared[i].CVEs = []string{}
 		}
-		if i < CVELookupMaxPackages && strings.TrimSpace(prepared[i].Package) != "" {
+		if prepared[i].CVEFindings == nil {
+			prepared[i].CVEFindings = []servers.VulnerabilityFinding{}
+		}
+		if strings.TrimSpace(prepared[i].Package) != "" {
 			prepared[i].CVEState = "pending"
 		} else {
 			prepared[i].CVEState = "skipped"

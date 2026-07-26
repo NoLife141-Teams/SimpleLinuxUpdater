@@ -460,7 +460,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td>${currentVersion} &rarr; ${candidateVersion}</td>
                         <td>
                             <div class="pending-badges">${badges.join("")}</div>
-                            ${state === "unsupported" ? `<p class="pending-note">Third-party or unsupported repository; no vulnerability claim is made.</p>` : ""}
+                            ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
                             ${vulnerabilityFindingsHtml(update)}
                         </td>
                     </tr>

@@ -91,6 +91,49 @@ func TestServiceApproveCancelUsesInjectedServerState(t *testing.T) {
 	}
 }
 
+func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
+	state, statuses := testState()
+	statuses["srv"].PendingUpdates = []servers.PendingUpdate{
+		{Package: "openssl", InstallPackage: "openssl:amd64", CVEState: "pending"},
+		{Package: "openssl", InstallPackage: "openssl:i386", CVEState: "pending"},
+	}
+	service := NewService(ServiceDeps{ServerState: state})
+
+	for _, update := range []servers.PendingUpdate{
+		{
+			Package:        "openssl",
+			InstallPackage: "openssl:amd64",
+			CVEState:       "ready",
+			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1001"}},
+		},
+		{
+			Package:        "openssl",
+			InstallPackage: "openssl:i386",
+			CVEState:       "ready",
+			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1002"}},
+		},
+	} {
+		if !service.updatePendingPackageVulnerabilityAssessment("srv", update) {
+			t.Fatalf("updatePendingPackageVulnerabilityAssessment(%q) = false", update.InstallPackage)
+		}
+	}
+
+	got := map[string]string{}
+	for _, update := range statuses["srv"].PendingUpdates {
+		if len(update.CVEFindings) != 1 {
+			t.Fatalf("pending update = %+v, want one finding", update)
+		}
+		got[update.InstallPackage] = update.CVEFindings[0].ID
+	}
+	want := map[string]string{
+		"openssl:amd64": "CVE-2026-1001",
+		"openssl:i386":  "CVE-2026-1002",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("multiarch findings = %#v, want %#v", got, want)
+	}
+}
+
 func TestHostMaintenanceSessionFuncsDefaultQueryPackageCVEsIsSafeNoop(t *testing.T) {
 	session := &HostMaintenanceSessionFuncs{}
 	cves, err := session.QueryPackageCVEs(context.Background(), "openssl")

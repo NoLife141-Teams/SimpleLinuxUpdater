@@ -1252,6 +1252,10 @@ func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string,
 	if deps.ServerState == nil {
 		return false
 	}
+	updateSelector := pendingUpdatePackageSelector(update)
+	if updateSelector == "" {
+		return false
+	}
 	deps.ServerState.Lock()
 	defer deps.ServerState.Unlock()
 	status := deps.ServerState.StatusMap()[serverName]
@@ -1260,7 +1264,7 @@ func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string,
 	}
 	updated := false
 	for i := range status.PendingUpdates {
-		if status.PendingUpdates[i].Package != update.Package {
+		if pendingUpdatePackageSelector(status.PendingUpdates[i]) != updateSelector {
 			continue
 		}
 		status.PendingUpdates[i] = servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0]

@@ -140,7 +140,7 @@ Possible causes:
 - The application cannot reach `https://api.osv.dev`
 - OSV returned an invalid or incomplete response
 
-A `Coverage unknown` state is different from `unavailable`: it means the package candidate comes from a third-party or unsupported repository, so SimpleLinuxUpdater deliberately makes no vulnerability claim.
+A `Coverage unknown` state is different from `unavailable`: it means the installed package provenance or candidate repository could not be tied to an official supported distribution source, so SimpleLinuxUpdater deliberately makes no vulnerability claim.
 
 ## Database and file permissions
 

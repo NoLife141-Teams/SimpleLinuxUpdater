@@ -49,6 +49,22 @@ func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
 	}
 }
 
+func TestStatusPageModalsRenderAboveDrawer(t *testing.T) {
+	contents, err := os.ReadFile("static/css/index.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	drawerLayer := regexp.MustCompile(`(?s)\.side-drawer\s*\{[^}]*z-index:\s*90\s*;`)
+	modalLayer := regexp.MustCompile(`(?s)\.modal-backdrop\s*\{[^}]*z-index:\s*100\s*;`)
+	if !drawerLayer.MatchString(source) {
+		t.Fatal("status drawer must retain its documented layer")
+	}
+	if !modalLayer.MatchString(source) {
+		t.Fatal("status-page modal backdrops must render above the drawer")
+	}
+}
+
 func TestOperatorWorkflowsDoNotUseNativeBrowserDialogs(t *testing.T) {
 	nativeDialog := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])(?:window\.)?(?:alert|confirm)\s*\(`)
 	for _, path := range []string{"static/js/index.js", "static/js/index-bulk-actions.js", "static/js/manage.js", "static/js/admin.js"} {

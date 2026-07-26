@@ -1454,10 +1454,17 @@ pre {
 .modal-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 80;
     display: none;
     background: rgba(0, 0, 0, 0.48);
     backdrop-filter: blur(6px);
+}
+
+.drawer-backdrop {
+    z-index: 80;
+}
+
+.modal-backdrop {
+    z-index: 100;
 }
 
 .drawer-backdrop.open,

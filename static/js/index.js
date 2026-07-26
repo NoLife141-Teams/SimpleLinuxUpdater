@@ -21,6 +21,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
+	        let expandedCVEFindings = new Set();
 	        let activePhaseTooltipTarget = null;
 	        let bulkReviewResolve = null;
         let drawerLogScrollTop = 0;
@@ -247,7 +248,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             `;
         }
 
-        function vulnerabilityFindingsHtml(update) {
+        function cveFindingsDisclosureKey(server, update) {
+            return JSON.stringify([
+                String(server?.name || ""),
+                String(update?.install_package || update?.package || ""),
+                String(update?.candidate_version || "")
+            ]);
+        }
+
+        function vulnerabilityFindingsHtml(update, disclosureKey) {
             const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
             if (!findings.length) return "";
             const fixed = findings.filter(finding => finding.disposition === "fixed_by_candidate");
@@ -256,8 +265,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const scannedAt = update.cve_scanned_at
                 ? ` · scanned ${escapeHtml(update.cve_scanned_at)}`
                 : "";
+            const open = expandedCVEFindings.has(disclosureKey);
             return `
-                <details class="cve-findings">
+                <details class="cve-findings" data-cve-disclosure-key="${escapeHtml(disclosureKey)}" ${open ? "open" : ""}>
                     <summary>View ${findings.length} confirmed CVE${findings.length > 1 ? "s" : ""}</summary>
                     <div class="cve-findings-content">
                         ${vulnerabilityFindingListHtml(fixed, "Fixed by the available update", "fixed")}
@@ -419,6 +429,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
             const rows = updates.map(update => {
                 const pkg = escapeHtml(update.package || "unknown");
+                const cveDisclosureKey = cveFindingsDisclosureKey(server, update);
                 const currentVersion = escapeHtml(update.current_version || "?");
                 const candidateVersion = escapeHtml(update.candidate_version || "?");
                 const source = escapeHtml(update.source || "");
@@ -466,7 +477,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             <div class="pending-badges">${badges.join("")}</div>
                             ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
                             ${state === "ready" && coverage === "official_installed_unverified" ? `<p class="pending-note">OSV results use official distribution data, but APT no longer exposes the origin of the installed version.</p>` : ""}
-                            ${vulnerabilityFindingsHtml(update)}
+                            ${vulnerabilityFindingsHtml(update, cveDisclosureKey)}
                         </td>
                     </tr>
                 `;
@@ -2491,6 +2502,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
+        drawerPendingElement.addEventListener('toggle', (event) => {
+            const details = event.target;
+            if (!details?.matches?.('details.cve-findings')) return;
+            const disclosureKey = details.dataset.cveDisclosureKey;
+            if (!disclosureKey) return;
+            if (details.open) {
+                expandedCVEFindings.add(disclosureKey);
+            } else {
+                expandedCVEFindings.delete(disclosureKey);
+            }
+        }, true);
 
         document.addEventListener('pointerdown', (event) => {
             if (isServerActionControl(event.target)) {

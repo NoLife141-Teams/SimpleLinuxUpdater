@@ -25,7 +25,6 @@ const (
 	MinSSHCommandTimeout     = 1 * time.Second
 	MaxSSHCommandTimeout     = 30 * time.Minute
 
-	CVELookupMaxPackages      = 25
 	CVELookupMaxPerPackage    = 12
 	CVELookupCommandTimeout   = 20 * time.Second
 	ApprovalPollInterval      = 200 * time.Millisecond
@@ -134,6 +133,7 @@ type ScheduledJobMeta struct {
 type ServiceDeps struct {
 	ServerState                  *servers.State
 	HostMaintenanceSessions      HostMaintenanceSessionFactory
+	VulnerabilityScanner         VulnerabilityScanner
 	CurrentJobManager            func() *jobs.Manager
 	StartJobRunner               func(string, func())
 	AuditWithActor               func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any)

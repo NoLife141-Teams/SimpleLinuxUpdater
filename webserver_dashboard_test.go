@@ -34,7 +34,7 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 			User:   server.User,
 			Status: "pending_approval",
 			PendingUpdates: []PendingUpdate{
-				{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-0001"}, CVEState: "ready"},
+				{Package: "openssl", Security: true, CVEs: []string{"CVE-2026-0001"}, CVEFindings: []VulnerabilityFinding{{ID: "CVE-2026-0001", Disposition: "still_affected"}}, CVEState: "ready"},
 				{Package: "bash", Security: false, CVEState: "ready"},
 			},
 			Tags: server.Tags,

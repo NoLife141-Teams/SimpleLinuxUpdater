@@ -814,6 +814,23 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 		t.Fatalf("create scheduled scan job: %v", err)
 	}
 	deps := ServiceDeps{
+		VulnerabilityScanner: VulnerabilityScannerFunc(func(_ context.Context, _ HostMaintenanceSession, updates []servers.PendingUpdate) ([]servers.PendingUpdate, error) {
+			scanned := servers.ClonePendingUpdates(updates)
+			for i := range scanned {
+				if scanned[i].Package == "linux-image-amd64" {
+					scanned[i].CVEState = "unavailable"
+					scanned[i].CVEs = []string{}
+					continue
+				}
+				scanned[i].CVEState = "ready"
+				scanned[i].CVEs = []string{"CVE-2026-0001"}
+				scanned[i].CVEFindings = []servers.VulnerabilityFinding{{
+					ID:          "CVE-2026-0001",
+					Disposition: VulnerabilityDispositionFixedByCandidate,
+				}}
+			}
+			return scanned, nil
+		}),
 		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
 			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
 				return HostCommandResult{Attempts: 1}, nil
@@ -837,12 +854,6 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 					FullUpgradeRemovedPackages: nil,
 				}
 				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(pending, upgradable, plan), Attempts: 1}, nil
-			},
-			QueryPackageCVEsFunc: func(_ context.Context, pkg string) ([]string, error) {
-				if pkg == "linux-image-amd64" {
-					return nil, errors.New("changelog unavailable")
-				}
-				return []string{"CVE-2026-0001"}, nil
 			},
 		}),
 		CurrentJobManager: func() *jobs.Manager { return jm },

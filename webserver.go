@@ -1359,6 +1359,7 @@ func clonePendingUpdates(src []PendingUpdate) []PendingUpdate {
 	for i, update := range src {
 		dst[i] = update
 		dst[i].CVEs = append([]string(nil), update.CVEs...)
+		dst[i].CVEFindings = append([]VulnerabilityFinding(nil), update.CVEFindings...)
 	}
 	return dst
 }

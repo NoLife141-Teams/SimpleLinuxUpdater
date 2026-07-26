@@ -22,6 +22,30 @@ func testHostMaintenanceFactory(session *HostMaintenanceSessionFuncs) HostMainte
 func testUpdateServiceDeps(t *testing.T) UpdateServiceDeps {
 	t.Helper()
 	return UpdateServiceDeps{
+		VulnerabilityScanner: VulnerabilityScannerFunc(func(ctx context.Context, session HostMaintenanceSession, updates []PendingUpdate) ([]PendingUpdate, error) {
+			scanned := clonePendingUpdates(updates)
+			for i := range scanned {
+				if scanned[i].CVEState != "pending" {
+					continue
+				}
+				cves, err := session.QueryPackageCVEs(ctx, scanned[i].Package)
+				if err != nil {
+					scanned[i].CVEState = "unavailable"
+					scanned[i].CVEs = []string{}
+					continue
+				}
+				scanned[i].CVEState = "ready"
+				scanned[i].CVEs = append([]string(nil), cves...)
+				scanned[i].CVEFindings = make([]VulnerabilityFinding, 0, len(cves))
+				for _, cveID := range cves {
+					scanned[i].CVEFindings = append(scanned[i].CVEFindings, VulnerabilityFinding{
+						ID:          cveID,
+						Disposition: "fixed_by_candidate",
+					})
+				}
+			}
+			return scanned, nil
+		}),
 		HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
 			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
 				t.Fatalf("RunCommand test hook must be overridden")
@@ -291,5 +315,9 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 	}
 	if meta.Discovery == nil || len(meta.Discovery.PendingUpdates) != 1 || !strings.Contains(strings.Join(meta.Discovery.PendingUpdates[0].CVEs, ","), "CVE-2026-0001") {
 		t.Fatalf("job discovery = %+v, want CVE result", meta.Discovery)
+	}
+	findings := meta.Discovery.PendingUpdates[0].CVEFindings
+	if len(findings) != 1 || findings[0].ID != "CVE-2026-0001" || findings[0].Disposition != "fixed_by_candidate" {
+		t.Fatalf("job discovery findings = %+v, want confirmed fixable CVE", findings)
 	}
 }

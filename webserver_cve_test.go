@@ -547,18 +547,23 @@ func TestCloneStatusMapDeepCopiesPendingUpdates(t *testing.T) {
 		"srv": {
 			Name: "srv",
 			PendingUpdates: []PendingUpdate{{
-				Package:  "openssl",
-				CVEs:     []string{"CVE-2026-0001"},
-				CVEState: "ready",
+				Package:     "openssl",
+				CVEs:        []string{"CVE-2026-0001"},
+				CVEFindings: []VulnerabilityFinding{{ID: "CVE-2026-0001", Disposition: "fixed_by_candidate"}},
+				CVEState:    "ready",
 			}},
 		},
 	}
 	cloned := cloneStatusMap(src)
 	src["srv"].PendingUpdates[0].CVEs[0] = "CVE-CHANGED"
+	src["srv"].PendingUpdates[0].CVEFindings[0].ID = "CVE-CHANGED"
 
 	got := cloned["srv"].PendingUpdates[0].CVEs[0]
 	if got != "CVE-2026-0001" {
 		t.Fatalf("cloned CVE mutated = %q, want original", got)
+	}
+	if got := cloned["srv"].PendingUpdates[0].CVEFindings[0].ID; got != "CVE-2026-0001" {
+		t.Fatalf("cloned CVE finding mutated = %q, want original", got)
 	}
 }
 

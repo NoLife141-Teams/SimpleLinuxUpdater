@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	"sync"
 	"time"
 
 	healthpkg "debian-updater/internal/health"
@@ -32,8 +34,38 @@ type HostCommandResult = updatespkg.HostCommandResult
 type HostOperationRequest = updatespkg.HostOperationRequest
 type HostPackageDiscoveryResult = updatespkg.HostPackageDiscoveryResult
 type HostMaintenanceError = updatespkg.HostMaintenanceError
+type VulnerabilityScanner = updatespkg.VulnerabilityScanner
+type VulnerabilityScannerFunc = updatespkg.VulnerabilityScannerFunc
 
 const HostMaintenanceStageAuth = updatespkg.HostMaintenanceStageAuth
+
+var (
+	defaultVulnerabilityScannerMu sync.Mutex
+	defaultVulnerabilityScanner   VulnerabilityScanner
+)
+
+func applicationVulnerabilityScanner() VulnerabilityScanner {
+	defaultVulnerabilityScannerMu.Lock()
+	defer defaultVulnerabilityScannerMu.Unlock()
+	if defaultVulnerabilityScanner == nil {
+		defaultVulnerabilityScanner = updatespkg.NewOSVVulnerabilityScanner(updatespkg.OSVVulnerabilityScannerDeps{
+			HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		})
+	}
+	return defaultVulnerabilityScanner
+}
+
+func replaceApplicationVulnerabilityScanner(scanner VulnerabilityScanner) func() {
+	defaultVulnerabilityScannerMu.Lock()
+	previous := defaultVulnerabilityScanner
+	defaultVulnerabilityScanner = scanner
+	defaultVulnerabilityScannerMu.Unlock()
+	return func() {
+		defaultVulnerabilityScannerMu.Lock()
+		defaultVulnerabilityScanner = previous
+		defaultVulnerabilityScannerMu.Unlock()
+	}
+}
 
 func NewUpdateService(deps UpdateServiceDeps) *UpdateService {
 	return updatespkg.NewService(updateServiceDepsWithDefaults(deps))
@@ -63,6 +95,9 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 			server.Key = resolved.Key
 			return serverpkg.BuildAuthMethods(server)
 		}, getHostKeyCallback, getDialSSHConnection())
+	}
+	if d.VulnerabilityScanner == nil {
+		d.VulnerabilityScanner = applicationVulnerabilityScanner()
 	}
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,30 @@ func TestFrontendInteractionContracts(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("frontend interaction contracts failed: %v\n%s", err, output)
+	}
+}
+
+func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
+	contents, err := os.ReadFile("static/js/index.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(contents)
+	for _, contract := range []string{
+		"cve_findings",
+		"fixed_by_candidate",
+		"still_affected",
+		"Fixed by the available update",
+		"Still affected after the available update",
+		"advisory_url",
+		"Coverage unknown",
+	} {
+		if !strings.Contains(source, contract) {
+			t.Errorf("pending-update CVE presentation contract %q is missing", contract)
+		}
+	}
+	if strings.Contains(source, "cves.slice(0, 3)") {
+		t.Error("pending-update CVE presentation still hides confirmed findings after the first three")
 	}
 }
 

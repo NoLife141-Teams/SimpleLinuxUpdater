@@ -480,8 +480,8 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 		if update.Security {
 			risk.SecurityUpdates++
 		}
-		for _, cve := range update.CVEs {
-			cve = strings.TrimSpace(cve)
+		for _, finding := range update.CVEFindings {
+			cve := strings.TrimSpace(finding.ID)
 			if cve == "" {
 				continue
 			}

@@ -136,8 +136,11 @@ Symptom: CVE state becomes `unavailable`.
 Possible causes:
 
 - SSH dial failure in the enrichment goroutine
-- Timeout running `apt-get changelog <package>`
-- Package changelog is not available on the host
+- Failure collecting `/etc/os-release`, `dpkg-query`, or APT candidate metadata
+- The application cannot reach `https://api.osv.dev`
+- OSV returned an invalid or incomplete response
+
+A `Coverage unknown` state is different from `unavailable`: it means the package candidate comes from a third-party or unsupported repository, so SimpleLinuxUpdater deliberately makes no vulnerability claim.
 
 ## Database and file permissions
 

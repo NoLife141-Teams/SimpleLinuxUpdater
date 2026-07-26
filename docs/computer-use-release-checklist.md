@@ -135,8 +135,9 @@ Record each item as pass, fail, or skipped with the exact reason.
 ### Pending Updates Drawer
 
 - [ ] Open a `pending_approval` server from the Status table.
-- [ ] Pending updates tab shows package, current version, candidate version, source, security marker, and CVE state.
-- [ ] Package count, security count, ready, scanning, unavailable, and skipped badges render when present.
+- [ ] Pending updates tab shows package, current version, candidate version, source, security marker, and distribution-verified CVE state.
+- [ ] Confirmed CVEs expand into separate “fixed by update” and “still affected” groups with official advisory links.
+- [ ] Package count, security count, ready, scanning, unavailable, unknown-coverage, and skipped badges render when present.
 - [ ] Long pending-update lists scroll inside the drawer without scrolling the dashboard behind it.
 - [ ] Switching between Logs and Pending updates keeps both tabs usable.
 - [ ] Approve all, standard security, kept-back security, full upgrade, and cancel controls are visible or disabled with a useful reason according to the seeded state.

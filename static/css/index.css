@@ -1277,6 +1277,67 @@ body.status-page .pending-table td {
     gap: 6px;
 }
 
+.pending-badge-cve-remaining {
+    border-color: rgba(var(--danger-rgb), 0.36);
+    color: var(--danger);
+}
+
+.cve-findings {
+    margin-top: 9px;
+    border: 1px solid rgba(var(--border-rgb), 0.16);
+    border-radius: 10px;
+    background: var(--card-alt);
+}
+
+.cve-findings summary {
+    padding: 8px 10px;
+    color: var(--accent);
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.cve-findings-content {
+    display: grid;
+    gap: 10px;
+    padding: 0 10px 10px;
+}
+
+.cve-finding-group {
+    padding-left: 9px;
+    border-left: 3px solid rgba(var(--accent-rgb), 0.45);
+}
+
+.cve-finding-remaining {
+    border-left-color: rgba(var(--danger-rgb), 0.65);
+}
+
+.cve-finding-group h5 {
+    margin: 0 0 5px;
+    font-size: 0.78rem;
+}
+
+.cve-finding-group ul {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding-left: 18px;
+}
+
+.cve-finding-group li {
+    font-size: 0.78rem;
+}
+
+.cve-finding-group li small {
+    display: block;
+    color: var(--subtle);
+}
+
+.cve-findings-source {
+    margin: 0;
+    color: var(--subtle);
+    font-size: 0.72rem;
+}
+
 @media (max-width: 560px) {
     body.status-page .pending-table,
     body.status-page .pending-table tbody,

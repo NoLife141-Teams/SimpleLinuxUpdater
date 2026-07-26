@@ -432,16 +432,17 @@ func TestRetryHelpersNeverReplayContextTermination(t *testing.T) {
 	}
 }
 
-func TestPreparePendingUpdatesForCVELimitsAndSorts(t *testing.T) {
-	updates := make([]servers.PendingUpdate, 0, CVELookupMaxPackages+1)
-	for i := 0; i < CVELookupMaxPackages+1; i++ {
+func TestPreparePendingUpdatesForCVEScansEveryNamedPackageAndSorts(t *testing.T) {
+	const packageCount = 75
+	updates := make([]servers.PendingUpdate, 0, packageCount)
+	for i := 0; i < packageCount; i++ {
 		updates = append(updates, servers.PendingUpdate{Package: strings.Repeat("a", i+1), Security: i%2 == 0})
 	}
 	prepared := PreparePendingUpdatesForCVE(updates)
 	if prepared[0].CVEState != "pending" {
 		t.Fatalf("first CVE state = %q, want pending", prepared[0].CVEState)
 	}
-	if prepared[len(prepared)-1].CVEState != "skipped" {
-		t.Fatalf("last CVE state = %q, want skipped", prepared[len(prepared)-1].CVEState)
+	if prepared[len(prepared)-1].CVEState != "pending" {
+		t.Fatalf("last CVE state = %q, want pending", prepared[len(prepared)-1].CVEState)
 	}
 }

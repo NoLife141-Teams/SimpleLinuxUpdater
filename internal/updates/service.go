@@ -1019,18 +1019,31 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, stdin func() io.Reader, successSuffix string) {
 	r.retryLogFormats[opName] = retryLogFormat
 	replayPolicy := ReplayRetryableErrors
+	var liveOutput *liveCommandLogSink
 	if cmd == AptAutoremoveCmd {
 		replayPolicy = ReplayRetryableOutputErrors
+		liveOutput = newLiveCommandLogSink(r)
 	}
-	result, err := r.session.RunCommand(context.Background(), HostCommandRequest{
+	request := HostCommandRequest{
 		Operation:    opName,
 		Command:      cmd,
 		Stdin:        stdin,
 		ReplayPolicy: replayPolicy,
-	})
+	}
+	if liveOutput != nil {
+		request.OnOutput = liveOutput.Handle
+		request.OnAttemptComplete = liveOutput.Flush
+	}
+	result, err := r.session.RunCommand(context.Background(), request)
+	if liveOutput != nil {
+		liveOutput.Flush()
+	}
 	r.commandAttempts += result.Attempts
 	stdout, stderr := result.Stdout, result.Stderr
-	logs := r.currentLogs() + "\n" + stdout + stderr
+	logs := r.currentLogs()
+	if liveOutput == nil || !liveOutput.Received() {
+		logs += "\n" + stdout + stderr
+	}
 	if err != nil {
 		r.markErrorClass(err)
 		logs += fmt.Sprintf("\nError: %v", err)

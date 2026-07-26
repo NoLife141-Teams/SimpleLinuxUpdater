@@ -140,8 +140,11 @@ type realSSHSession struct {
 func (s *realSSHSession) SetStdin(r io.Reader)  { s.session.Stdin = r }
 func (s *realSSHSession) SetStdout(w io.Writer) { s.session.Stdout = w }
 func (s *realSSHSession) SetStderr(w io.Writer) { s.session.Stderr = w }
-func (s *realSSHSession) Run(cmd string) error  { return s.session.Run(cmd) }
-func (s *realSSHSession) Close() error          { return s.session.Close() }
+func (s *realSSHSession) RequestPty(term string, height, width int, modes ssh.TerminalModes) error {
+	return s.session.RequestPty(term, height, width, modes)
+}
+func (s *realSSHSession) Run(cmd string) error { return s.session.Run(cmd) }
+func (s *realSSHSession) Close() error         { return s.session.Close() }
 
 type realSSHConnection struct {
 	client *ssh.Client
@@ -609,6 +612,25 @@ type sshCommandOutputWriter struct {
 	onOutput updatespkg.HostCommandOutputHandler
 }
 
+type sshPTYRequester interface {
+	RequestPty(string, int, int, ssh.TerminalModes) error
+}
+
+func requestStreamingPTY(session sshSessionRunner, onOutput updatespkg.HostCommandOutputHandler) error {
+	if session == nil || onOutput == nil {
+		return nil
+	}
+	requester, ok := session.(sshPTYRequester)
+	if !ok {
+		return nil
+	}
+	return requester.RequestPty("xterm", 40, 120, ssh.TerminalModes{
+		ssh.ECHO:          0,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	})
+}
+
 func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
 	n, err := w.Buffer.Write(p)
 	if n > 0 && w.onOutput != nil {
@@ -630,6 +652,9 @@ func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.
 		return "", "", err
 	}
 	defer session.Close()
+	if err := requestStreamingPTY(session, onOutput); err != nil {
+		log.Printf("Live SSH output PTY unavailable; falling back to non-interactive streaming: %v", err)
+	}
 	gate := newSSHCommandOutputGate(onOutput)
 	defer gate.close()
 	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
@@ -696,6 +721,9 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 		}
 	}
 
+	if err := requestStreamingPTY(session, onOutput); err != nil {
+		log.Printf("Live SSH output PTY unavailable; falling back to non-interactive streaming: %v", err)
+	}
 	gate := newSSHCommandOutputGate(onOutput)
 	defer gate.close()
 	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}

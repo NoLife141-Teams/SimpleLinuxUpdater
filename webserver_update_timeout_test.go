@@ -71,9 +71,10 @@ type streamingSSHConnection struct {
 }
 
 type streamingSSHSession struct {
-	conn   *streamingSSHConnection
-	stdout io.Writer
-	stderr io.Writer
+	conn         *streamingSSHConnection
+	stdout       io.Writer
+	stderr       io.Writer
+	ptyRequested bool
 }
 
 func (s *streamingSSHSession) SetStdin(io.Reader) {}
@@ -82,7 +83,21 @@ func (s *streamingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
 
 func (s *streamingSSHSession) SetStderr(w io.Writer) { s.stderr = w }
 
+func (s *streamingSSHSession) RequestPty(term string, height, width int, modes ssh.TerminalModes) error {
+	if term != "xterm" || height != 40 || width != 120 {
+		return errors.New("unexpected PTY dimensions")
+	}
+	if modes[ssh.ECHO] != 0 {
+		return errors.New("PTY input echo must be disabled")
+	}
+	s.ptyRequested = true
+	return nil
+}
+
 func (s *streamingSSHSession) Run(string) error {
+	if !s.ptyRequested {
+		return errors.New("streaming command started without a PTY")
+	}
 	_, _ = io.WriteString(s.stdout, "Unpacking openssl\n")
 	_, _ = io.WriteString(s.stderr, "debconf: delaying configuration\n")
 	<-s.conn.release

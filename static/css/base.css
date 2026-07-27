@@ -42,8 +42,8 @@
     --shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
     --radius: 8px;
     --radius-sm: 7px;
-    --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", Consolas, "SFMono-Regular", Monaco, monospace;
     --sans: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: var(--sans);
 }
 
 *,

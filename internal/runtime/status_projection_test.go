@@ -250,6 +250,7 @@ func TestTimelineProjectionFromServerStatus(t *testing.T) {
 
 func TestDashboardTimelineJobForStatus(t *testing.T) {
 	runningJob := jobs.Record{ID: "job-running", Status: jobs.StatusRunning, Phase: jobs.PhaseAptUpdate}
+	waitingJob := jobs.Record{ID: "job-waiting", Status: jobs.StatusWaitingApproval, Phase: jobs.PhaseApprovalWait}
 	failedJob := jobs.Record{ID: "job-failed", Status: jobs.StatusFailed, Phase: jobs.PhasePostchecks}
 	doneJob := jobs.Record{ID: "job-done", Status: jobs.StatusSucceeded, Phase: jobs.PhaseComplete}
 	unknownJob := jobs.Record{ID: "job-unknown", Status: "custom"}
@@ -263,6 +264,8 @@ func TestDashboardTimelineJobForStatus(t *testing.T) {
 		{"empty job id", StatusIdle, &jobs.Record{Status: jobs.StatusRunning}, nil},
 		{"idle server keeps active job", StatusIdle, &runningJob, &runningJob},
 		{"active server drops stale terminal job", StatusUpdating, &failedJob, nil},
+		{"waiting server drops stale running job", StatusPendingApproval, &runningJob, nil},
+		{"waiting server keeps waiting job", StatusPendingApproval, &waitingJob, &waitingJob},
 		{"terminal mismatch drops job", StatusError, &doneJob, nil},
 		{"terminal match keeps job", StatusError, &failedJob, &failedJob},
 		{"idle job is ignored", StatusIdle, &unknownJob, nil},

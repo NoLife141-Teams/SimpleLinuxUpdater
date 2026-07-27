@@ -23,7 +23,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        let expandedMiniLists = new Set();
 	        let expandedCVEFindings = new Set();
 	        let activePhaseTooltipTarget = null;
-	        let bulkReviewResolve = null;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -32,6 +31,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let suppressSortClickUntil = 0;
         let actionInteractionReleaseTimer = null;
         const actionInteractionDeferMs = 350;
+        const cancelledStatusRefreshDelayMs = 500;
         const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
         const defaultColumnWidths = Object.freeze({
             name: 140,
@@ -941,6 +941,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
             const canApproveAll = !!triage.can_approve_all;
             const canApproveSecurity = !!triage.can_approve_security;
+            const canCancel = !!triage.can_cancel;
             const health = intelligence?.health || {};
             const nextRun = intelligence?.next_run || {};
             const noRun = intelligence?.no_run || {};
@@ -979,7 +980,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard securityurity (${approvalCounts.security ?? 0})</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${approvalCounts.security ?? 0})</button>` : ""}
+                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>` : ""}
                     ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>` : ""}
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
@@ -1520,6 +1522,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		            return !!serverPresentation(server)?.busy;
 		        }
 
+		        function serverBusyActionLabel(server) {
+		            switch (String(server?.status || "").trim().toLowerCase()) {
+		            case "updating":
+		            case "upgrading":
+		                return "Updating…";
+		            case "autoremove":
+		                return "Autoremoving…";
+		            case "sudoers":
+		                return "Configuring…";
+		            case "facts_refresh":
+		                return "Refreshing…";
+		            default:
+		                return "Working…";
+		            }
+		        }
+
 	        async function runSingleHostAction(name, actionKey, actionLabel, work, refreshStreams = ["servers"]) {
 	            const plan = statusInteraction.planAction(name, actionKey, { actionLabel });
 	            if (!plan.enabled) return false;
@@ -1804,6 +1822,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         row.classList.add('row-hover');
                     }
 	                    const isBusy = isServerActionBusy(server);
+	                    const busyActionLabel = serverBusyActionLabel(server);
                     const safeNameHtml = escapeHtml(server.name);
                     const safeStatusText = escapeHtml(statusLabel(server.status));
                     const safeStatus = safeStatusClass(server.status);
@@ -1825,6 +1844,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
 	                    const canApproveAll = !!triage.can_approve_all;
 	                    const canApproveSecurity = !!triage.can_approve_security;
+	                    const canCancel = !!triage.can_cancel;
 	                    const canUpdate = presentation.canRunUpdate;
 	                    const failureReason = presentation.failureReason;
 	                    const driftReason = presentation.driftReason;
@@ -1844,6 +1864,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     const fullApprovalButton = triage.can_approve_full
                         ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
                         : "";
+                    const cancelButton = `<button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>`;
                     const actionButtons = server.status === 'pending_approval'
 	                        ? `
 	                            <div class="actions-grid timeline-actions">
@@ -1851,13 +1872,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>${securityApprovalLabel}</button>
 	                                ${keptBackSecurityButton}
 	                                ${fullApprovalButton}
+	                                ${cancelButton}
                                 <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                             </div>
                           `
                         : isBusy
                             ? `
                                 <div class="actions-grid timeline-actions">
-                                    <button type="button" class="btn-ghost action-span" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+                                    <button type="button" disabled aria-disabled="true" title="${escapeHtml(busyActionLabel)}">${escapeHtml(busyActionLabel)}</button>
+                                    <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                                 </div>
                               `
 		                        : driftReason
@@ -2436,21 +2459,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     return;
                 }
             }
-            const bulkReviewBackdrop = document.getElementById('bulk-review-modal');
-            if (bulkReviewBackdrop && bulkReviewBackdrop.classList.contains('active')) {
-                if (e.key === 'Tab') {
-                    if (trapBulkReviewModalFocus(e)) {
-                        e.stopImmediatePropagation();
-                    }
-                    return;
-                }
-                if (e.key === 'Escape') {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    closeBulkReviewModal(false);
-                    return;
-                }
-            }
             if (e.key === 'Tab' && trapDrawerFocus(e)) {
                 e.stopImmediatePropagation();
                 return;
@@ -2651,9 +2659,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
 	        async function cancelUpgrade(name) {
-	            await runSingleHostAction(name, "cancel", "cancel", () => (
+	            const cancelled = await runSingleHostAction(name, "cancel", "cancel", () => (
 	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')
 	            ));
+	            if (cancelled) {
+	                // The runner clears the short-lived cancelled state after its
+	                // approval poll. Refresh once more so the UI does not wait
+	                // for the regular 5–10 second transport poll to show Idle.
+	                window.setTimeout(() => fetchServers(true, "cancelled-settled"), cancelledStatusRefreshDelayMs);
+	            }
 	        }
 
 	        async function refreshHostFacts(name) {

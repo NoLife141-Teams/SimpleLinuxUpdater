@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=operator-shell-20260713a">
-    <link rel="stylesheet" href="/static/css/index.css?v=modal-layering-20260726">
+    <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
+    <link rel="stylesheet" href="/static/css/index.css?v=status-action-labels-20260727">
 </head>
 <body class="status-page">
     <div class="dashboard-shell">
@@ -412,48 +412,10 @@
             </div>
         </form>
     </div>
-    <div class="modal-backdrop" id="bulk-review-modal">
-        <div class="modal bulk-review-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-review-title" aria-describedby="bulk-review-summary">
-            <h3 id="bulk-review-title">Review Bulk Action</h3>
-            <p class="muted" id="bulk-review-summary"></p>
-            <div class="bulk-review-grid">
-                <div class="bulk-review-panel">
-                    <div class="table-shell-label" id="bulk-review-eligible-label">Eligible hosts</div>
-                    <table class="bulk-review-table">
-                        <thead>
-                            <tr>
-                                <th>Server</th>
-                                <th>Planned action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="bulk-review-eligible"></tbody>
-                    </table>
-                </div>
-                <div class="bulk-review-panel">
-                    <div class="table-shell-label" id="bulk-review-skipped-label">Skipped hosts</div>
-                    <table class="bulk-review-table">
-                        <thead>
-                            <tr>
-                                <th>Server</th>
-                                <th>Why skipped</th>
-                            </tr>
-                        </thead>
-                        <tbody id="bulk-review-skipped"></tbody>
-                    </table>
-                </div>
-            </div>
-            <p class="bulk-review-warning" id="bulk-review-warning"></p>
-            <div class="modal-actions">
-                <button class="btn-ghost inline-btn" type="button" id="bulk-review-cancel">Cancel</button>
-                <button class="primary-action inline-btn" type="button" id="bulk-review-confirm">Run Bulk Action</button>
-            </div>
-        </div>
-    </div>
-
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/dashboard-projection-consumption.js?v=kernel-facts-20260716a"></script>
+    <script src="/static/js/dashboard-projection-consumption.js?v=bulk-actions-direct-20260727"></script>
     <script src="/static/js/status-page-interaction.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=job-log-stream-20260724"></script>
@@ -461,7 +423,7 @@
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/index-bulk-actions.js?v=bulk-review-clarity-20260719"></script>
-    <script src="/static/js/index.js?v=cve-disclosure-state-20260726"></script>
+    <script src="/static/js/index-bulk-actions.js?v=bulk-actions-direct-20260727"></script>
+    <script src="/static/js/index.js?v=status-action-labels-20260727"></script>
 </body>
 </html>

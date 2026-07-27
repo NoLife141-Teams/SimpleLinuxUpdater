@@ -1,4 +1,4 @@
-// Dashboard bulk action and review modal helpers. Loaded before index.js.
+// Dashboard bulk actions. Loaded before index.js.
         function bulkDashboardActionKey(actionPath) {
             if (actionPath === "update") return "update";
             if (actionPath === "approve") return "approve_all";
@@ -78,93 +78,13 @@
 	            scheduleSelectPageStateUpdate();
 	        }
 
-        function bulkActionWarning(actionPath) {
-            if (actionPath === "approve") {
-                return "Kept-back and full-upgrade-only packages are not included.";
-            }
-            if (actionPath === "approve-security") {
-                return "Only standard security updates are included.";
-            }
-            if (actionPath === "approve-security-kept-back") {
-                return "Kept-back security approvals use targeted apt install; package removals are confirmed from the previewed plan.";
-            }
-            if (actionPath === "cancel") {
-                return "This cancels approval for each eligible host.";
-            }
-            return "";
-        }
-
-        function bulkActionConfirmationText(actionPath) {
-            if (actionPath === "update") return "BULK UPDATE";
-            if (actionPath === "approve") return "BULK APPROVE";
-            if (actionPath === "approve-security") return "BULK APPROVE SECURITY";
-            if (actionPath === "approve-security-kept-back") return "BULK APPROVE KEPT SECURITY";
-            return "";
-        }
-
         function buildBulkActionPlan(actionPath, actionLabel) {
             const actionKey = bulkDashboardActionKey(actionPath);
             const plan = statusInteraction.planBulkAction(actionKey, { actionLabel });
             return {
                 ...plan,
-                actionPath,
-                confirmationText: bulkActionConfirmationText(actionPath),
-                warning: bulkActionWarning(actionPath)
+                actionPath
             };
-        }
-
-        function fillBulkReviewRows(id, items, emptyText, skipped = false) {
-            const body = document.getElementById(id);
-            if (!body) return;
-            body.innerHTML = "";
-            if (!items.length) {
-                const row = document.createElement("tr");
-                row.className = "muted";
-                const cell = document.createElement("td");
-                cell.colSpan = 2;
-                cell.textContent = emptyText;
-                row.appendChild(cell);
-                body.appendChild(row);
-                return;
-            }
-            items.forEach(item => {
-                const row = document.createElement("tr");
-                row.className = skipped ? "bulk-review-row-skipped" : "bulk-review-row-ready";
-                [item.name, skipped ? item.reason : item.readiness].forEach(value => {
-                    const cell = document.createElement("td");
-                    cell.textContent = value || "-";
-                    row.appendChild(cell);
-                });
-                body.appendChild(row);
-            });
-        }
-
-        function closeBulkReviewModal(result) {
-            const modal = document.getElementById("bulk-review-modal");
-            modal.classList.remove("active");
-            if (bulkReviewResolve) {
-                const resolve = bulkReviewResolve;
-                bulkReviewResolve = null;
-                resolve(!!result);
-            }
-        }
-
-        function requestBulkActionReview(plan) {
-            const modal = document.getElementById("bulk-review-modal");
-            const review = window.DashboardProjectionConsumption.projectBulkReview(plan);
-            document.getElementById("bulk-review-title").textContent = review.title;
-            document.getElementById("bulk-review-summary").textContent = review.summary;
-            document.getElementById("bulk-review-eligible-label").textContent = review.eligibleLabel;
-            document.getElementById("bulk-review-skipped-label").textContent = review.skippedLabel;
-            fillBulkReviewRows("bulk-review-eligible", review.eligible, "No eligible hosts.");
-            fillBulkReviewRows("bulk-review-skipped", review.skipped, "No skipped hosts.", true);
-            document.getElementById("bulk-review-warning").textContent = review.warning;
-            document.getElementById("bulk-review-confirm").disabled = !review.canConfirm;
-            modal.classList.add("active");
-            document.getElementById("bulk-review-confirm").focus({ preventScroll: true });
-            return new Promise(resolve => {
-                bulkReviewResolve = resolve;
-            });
         }
 
         function bulkActionRequestOptions(actionPath, name) {
@@ -177,12 +97,6 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(body)
             };
-        }
-
-        async function confirmBulkAction(plan) {
-            if (!plan.confirmationText) return true;
-            const message = `Bulk ${plan.actionLabel} will run on ${pluralize(plan.eligibleNames.length, "eligible visible host")}.`;
-            return window.confirmTypedAction(message, plan.confirmationText);
         }
 
 	        async function runBulkAction(actionPath, actionLabel) {
@@ -198,13 +112,6 @@
                 window.notifyApp(`No visible selected hosts can run bulk ${actionLabel}.`);
                 return;
             }
-            if (!(await requestBulkActionReview(plan))) {
-                return;
-            }
-            if (!(await confirmBulkAction(plan))) {
-                return;
-            }
-
 	            await dispatchStatusInteraction({ type: "actionStarted", plan });
 	            if (!getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
 	            try {
@@ -271,44 +178,9 @@
         document.getElementById('bulk-autoremove').addEventListener('click', async () => {
             await runBulkAction('autoremove', 'apt autoremove');
         });
-        document.getElementById('bulk-review-cancel').addEventListener('click', () => closeBulkReviewModal(false));
-        document.getElementById('bulk-review-confirm').addEventListener('click', () => closeBulkReviewModal(true));
-        document.getElementById('bulk-review-modal').addEventListener('click', (e) => {
-            if (e.target && e.target.id === 'bulk-review-modal') {
-                closeBulkReviewModal(false);
-            }
-        });
         document.getElementById('refresh-all-facts').addEventListener('click', async () => {
             await refreshSelectedHostFacts();
         });
-
-        function trapBulkReviewModalFocus(event) {
-            const backdrop = document.getElementById('bulk-review-modal');
-            if (!backdrop || !backdrop.classList.contains('active')) return false;
-            const focusable = passwordModalFocusableElements(backdrop);
-            if (!focusable.length) {
-                event.preventDefault();
-                return true;
-            }
-            const first = focusable[0];
-            const last = focusable[focusable.length - 1];
-            if (!backdrop.contains(document.activeElement)) {
-                event.preventDefault();
-                first.focus({ preventScroll: true });
-                return true;
-            }
-            if (event.shiftKey && document.activeElement === first) {
-                event.preventDefault();
-                last.focus({ preventScroll: true });
-                return true;
-            }
-            if (!event.shiftKey && document.activeElement === last) {
-                event.preventDefault();
-                first.focus({ preventScroll: true });
-                return true;
-            }
-            return false;
-        }
 
         async function refreshSelectedHostFacts() {
             if (getStatusView().actions.bulk) return;
@@ -323,9 +195,6 @@
 	                window.notifyApp("No visible selected hosts can refresh facts right now.");
 	                return;
 	            }
-            if (!(await requestBulkActionReview(plan))) {
-                return;
-            }
 	            await dispatchStatusInteraction({ type: "actionStarted", plan });
 	            if (!getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
 	            const failures = [];

@@ -114,15 +114,15 @@ test.describe.serial('setup and login flows', () => {
 
   function makeTimeline(status) {
     const phases = [
-      ['pending_approval', 'Pending approval'],
       ['prechecks', 'Pre-checks'],
       ['apt_update', 'APT update'],
+      ['pending_approval', 'Pending approval'],
       ['upgrade', 'Upgrade'],
       ['postchecks', 'Post-checks'],
       ['done_error', 'Done / Error'],
     ];
     const statusMap = {
-      pending_approval: ['pending_approval', 'waiting', 12],
+      pending_approval: ['pending_approval', 'waiting', 60],
       updating: ['prechecks', 'active', 32],
       upgrading: ['upgrade', 'active', 72],
       done: ['done_error', 'done', 100],
@@ -735,33 +735,9 @@ test.describe.serial('setup and login flows', () => {
 
     await page.locator('#select-all').check();
     await page.locator('#bulk-approve-security').click();
-    await expect(page.locator('#bulk-review-modal')).toBeVisible();
-    await expect(page.locator('#bulk-review-modal')).toContainText('demo-host');
-    await expect(page.locator('#bulk-review-modal')).not.toContainText('Server key');
-    await expect(page.locator('#bulk-review-modal')).toContainText('standard security update');
-    await expect(page.locator('#bulk-review-modal')).toContainText('runner-host');
-    await expect(page.locator('#bulk-review-modal')).not.toContainText('Password');
-    await expect(page.locator('#bulk-review-modal th')).toHaveText([
-      'Server',
-      'Planned action',
-      'Server',
-      'Why skipped',
-    ]);
-    await expect(page.locator('#bulk-review-modal')).toContainText('Not waiting for approval');
-    await expect.poll(() => state.approveSecurity || 0).toBe(0);
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
-    await page.locator('#typed-confirm-input').fill('WRONG');
-    await expect(page.locator('#typed-confirm-submit')).toBeDisabled();
-    await page.locator('#typed-confirm-cancel').click();
-    await expect.poll(() => state.approveSecurity || 0).toBe(0);
-    await page.locator('#bulk-approve-security').click();
-    await expect(page.locator('#bulk-review-modal')).toBeVisible();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
-    await page.locator('#typed-confirm-input').fill('BULK APPROVE SECURITY');
-    await page.locator('#typed-confirm-submit').click();
     await expect.poll(() => state.approveSecurity || 0).toBe(1);
+    await expect(page.locator('#bulk-review-modal')).toHaveCount(0);
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
 
     await page.locator('#approval-triage-table button[data-action="approve-all"][data-name="demo-host"]').click();
     await page.locator('#approval-triage-table button[data-action="approve-security"][data-name="demo-host"]').click();
@@ -770,21 +746,37 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.approveSecurity || 0).toBe(2);
     await expect.poll(() => state.cancel || 0).toBe(1);
 
+    await page.setViewportSize({ width: 1697, height: 825 });
     await page.locator('#servers-table tbody button[data-action="open-drawer"][data-tab="pending"]').click();
     const pendingPanel = page.locator('#drawer-panel-pending');
     await expect(pendingPanel).toHaveClass(/active/);
     await expect(pendingPanel.locator('tbody tr')).toHaveCount(80);
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
-    const pendingTableLayout = await pendingPanel.locator('.table-wrap').evaluate(element => {
-      const riskHeader = element.querySelector('th:last-child').getBoundingClientRect();
-      const bounds = element.getBoundingClientRect();
+    const pendingTableLayout = await pendingPanel.evaluate(panel => {
+      const approvalActions = document.querySelector('#status-drawer-approval-actions');
+      const heading = panel.querySelector('.pending-updates > h4');
+      const summary = panel.querySelector('.pending-summary');
+      const wrap = panel.querySelector('.pending-updates > .table-wrap');
+      const riskHeader = wrap.querySelector('th:last-child').getBoundingClientRect();
+      const approvalRect = approvalActions.getBoundingClientRect();
+      const headingRect = heading.getBoundingClientRect();
+      const summaryRect = summary.getBoundingClientRect();
+      const wrapRect = wrap.getBoundingClientRect();
       return {
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
+        approvalToHeadingGap: headingRect.top - approvalRect.bottom,
+        headingToSummaryGap: summaryRect.top - headingRect.bottom,
+        gapAbove: wrapRect.top - summaryRect.bottom,
+        clientWidth: wrap.clientWidth,
+        scrollWidth: wrap.scrollWidth,
         riskRight: riskHeader.right,
-        visibleRight: bounds.right,
+        visibleRight: wrapRect.right,
       };
     });
+    expect(
+      Math.abs(pendingTableLayout.approvalToHeadingGap - pendingTableLayout.headingToSummaryGap),
+      'approval controls, pending heading, and summary must use the same vertical spacing',
+    ).toBeLessThanOrEqual(1);
+    expect(pendingTableLayout.gapAbove, 'pending table must be separated from its summary').toBeGreaterThanOrEqual(9);
     expect(pendingTableLayout.scrollWidth, 'pending updates must fit without horizontal scrolling').toBeLessThanOrEqual(pendingTableLayout.clientWidth + 1);
     expect(pendingTableLayout.riskRight, 'the Risk column must remain visible inside the drawer').toBeLessThanOrEqual(pendingTableLayout.visibleRight + 1);
 
@@ -811,6 +803,27 @@ test.describe.serial('setup and login flows', () => {
     });
     expect(mobilePendingLayout.scrollWidth, 'mobile pending updates must fit without horizontal scrolling').toBeLessThanOrEqual(mobilePendingLayout.clientWidth + 1);
     expect(mobilePendingLayout.labels).toEqual(['Package', 'Version', 'Risk']);
+  });
+
+  test('cancelled approval refreshes to idle after the short cancellation state', async ({ page }) => {
+    let servers = [makeServer('cancelled-host', 'pending_approval', makePendingUpdates(1), { has_key: true })];
+    let cancellationCompletedAt = 0;
+    await stubDashboardApi(page, () => servers);
+    await page.route('**/api/cancel/cancelled-host', async route => {
+      await fulfillJson(route, { ok: true });
+      setTimeout(() => {
+        servers = [makeServer('cancelled-host', 'idle', [], { has_key: true })];
+        cancellationCompletedAt = Date.now();
+      }, 200);
+    });
+    await ensureAuthenticatedSession(page);
+
+    await page.locator('#approval-triage-table button[data-action="cancel-upgrade"][data-name="cancelled-host"]').click();
+    await expect.poll(() => cancellationCompletedAt).toBeGreaterThan(0);
+    await expect.poll(
+      () => page.locator('#servers-table tbody tr[data-name="cancelled-host"] .status-pill').textContent(),
+      { timeout: 1500 },
+    ).toBe('idle');
   });
 
   test('APT upgrade log drawer renders carriage-return progress during refresh', async ({ page }) => {
@@ -960,7 +973,7 @@ test.describe.serial('setup and login flows', () => {
     expect(serverRequests).toBe(requestsBeforeLogs);
   });
 
-  test('bulk action review gates typed confirmations, partial failures, and safe non-typed actions', async ({ page }) => {
+  test('bulk actions execute immediately, skip ineligible hosts, and report partial failures', async ({ page }) => {
     const servers = [
       makeServer('idle-host', 'idle', [], { has_key: true }),
       makeServer('ok-sec-host', 'pending_approval', makePendingUpdates(3), {
@@ -1026,53 +1039,23 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
     await page.locator('#auth-filter').selectOption('key');
     await page.locator('#bulk-update').click();
-    await expect(page.locator('#bulk-review-modal')).toContainText('ok-sec-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('Hidden by current filter or page');
-    await page.locator('#bulk-review-cancel').click();
-    await expect.poll(() => state.updateIdle || 0).toBe(0);
+    await expect.poll(() => state.updateIdle || 0).toBe(1);
+    await expect(page.locator('#bulk-review-modal')).toHaveCount(0);
+    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
     await page.locator('#auth-filter').selectOption('');
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').uncheck();
-
-    await page.locator('#bulk-update').click();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
-    await page.locator('#typed-confirm-input').fill('BULK UPDATE');
-    await page.locator('#typed-confirm-submit').click();
-    await expect.poll(() => state.updateIdle || 0).toBe(1);
 
     await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
     await page.locator('#bulk-approve').click();
-    await expect(page.locator('#bulk-review-modal')).toBeVisible();
-    await page.locator('#bulk-review-cancel').click();
-    await expect(page.locator('#bulk-review-modal')).not.toBeVisible();
-    await expect.poll(() => state.approveStandard || 0).toBe(0);
-    await page.locator('#bulk-approve').click();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
-    await page.locator('#typed-confirm-input').fill('WRONG');
-    await expect(page.locator('#typed-confirm-submit')).toBeDisabled();
-    await page.locator('#typed-confirm-cancel').click();
-    await expect.poll(() => state.approveStandard || 0).toBe(0);
+    await expect.poll(() => state.approveStandard || 0).toBe(1);
 
     await page.locator('#bulk-approve-kept-security').click();
-    await expect(page.locator('#bulk-review-modal')).toContainText('Package removals will be confirmed');
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).toBeVisible();
-    await page.locator('#typed-confirm-input').fill('BULK APPROVE KEPT SECURITY');
-    await page.locator('#typed-confirm-submit').click();
     await expect.poll(() => state.approveKept || 0).toBe(1);
 
     await page.locator('#servers-table tbody tr[data-name="fail-sec-host"] .row-select').check();
     await page.locator('#servers-table tbody tr[data-name="no-sec-host"] .row-select').check();
     await page.locator('#bulk-approve-security').click();
-    await expect(page.locator('#bulk-review-modal')).toContainText('ok-sec-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('fail-sec-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('no-sec-host');
-    await expect(page.locator('#bulk-review-modal')).toContainText('No standard security updates eligible');
-    await page.locator('#bulk-review-confirm').click();
-    await page.locator('#typed-confirm-input').fill('BULK APPROVE SECURITY');
-    await page.locator('#typed-confirm-submit').click();
     await expect.poll(() => state.approveSecurityOk || 0).toBe(1);
     await expect.poll(() => state.approveSecurityFail || 0).toBe(1);
     await expect.poll(() => state.approveSecuritySkipped || 0).toBe(0);
@@ -1083,21 +1066,14 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#servers-table tbody tr[data-name="fail-sec-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="no-sec-host"] .row-select').uncheck();
     await page.locator('#bulk-cancel').click();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
     await expect.poll(() => state.cancelOk || 0).toBe(1);
 
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').check();
     await page.locator('#bulk-autoremove').click();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
     await expect.poll(() => state.autoremoveIdle || 0).toBe(1);
 
     await page.locator('#refresh-all-facts').click();
-    await expect(page.locator('#bulk-review-modal')).toBeVisible();
-    await page.locator('#bulk-review-confirm').click();
-    await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
     await expect.poll(() => state.refreshIdle || 0).toBe(1);
   });
 
@@ -1523,6 +1499,43 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#servers-table thead')).toContainText('Maintenance');
     await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).toContainText('Last run: Done');
     await expect(page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-copy')).not.toContainText('Done / Error');
+    const doneRingColor = await page.locator('#servers-table tbody tr[data-name="done-host"] .timeline-progress-ring').evaluate(element => getComputedStyle(element).color);
+    expect(doneRingColor, 'completed maintenance must use the success color').toBe('rgb(137, 209, 133)');
+
+    const badgeLayout = await page.evaluate(() => {
+      const labels = [
+        document.querySelector('#policy-summary-label'),
+        document.querySelector('#failed-hosts-count'),
+      ];
+      labels[0].textContent = 'Policies 0';
+      labels[1].textContent = '14';
+      return labels.map(element => ({
+        whiteSpace: getComputedStyle(element).whiteSpace,
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      }));
+    });
+    for (const badge of badgeLayout) {
+      expect(badge.whiteSpace, 'summary badges must keep their value on one line').toBe('nowrap');
+      expect(badge.scrollWidth, 'summary badges must not clip horizontally').toBeLessThanOrEqual(badge.clientWidth);
+      expect(badge.scrollHeight, 'summary badges must not stack value characters').toBeLessThanOrEqual(badge.clientHeight);
+    }
+
+    const busyActions = row.locator('.timeline-actions');
+    await expect(busyActions.getByRole('button', { name: 'Updating…' })).toBeDisabled();
+    await expect(busyActions.getByRole('button', { name: 'Logs' })).toBeEnabled();
+    const busyActionLayout = await busyActions.evaluate(element => {
+      const buttons = Array.from(element.querySelectorAll('button'));
+      return {
+        containerWidth: element.getBoundingClientRect().width,
+        buttonWidths: buttons.map(button => button.getBoundingClientRect().width),
+      };
+    });
+    expect(busyActionLayout.buttonWidths).toHaveLength(2);
+    expect(Math.abs(busyActionLayout.buttonWidths[0] - busyActionLayout.buttonWidths[1])).toBeLessThanOrEqual(1);
+    expect(busyActionLayout.buttonWidths[1], 'Logs must keep its compact grid width while updating').toBeLessThan(busyActionLayout.containerWidth / 2);
     const operationsNestedInTimeline = await page.locator('.operations-grid-secondary').evaluate(element => element.parentElement.classList.contains('timeline-column'));
     expect(operationsNestedInTimeline).toBe(true);
 
@@ -1579,6 +1592,40 @@ test.describe.serial('setup and login flows', () => {
     expect(mobileHead.descriptionWidth, 'mobile dashboard description must use the available row').toBeGreaterThan(mobileHead.headWidth * 0.8);
   });
 
+  test('pending approval actions keep cancel and complete labels visible', async ({ page }) => {
+    const servers = [makeServer('approval-host', 'pending_approval', makePendingUpdates(15))];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 1922, height: 1176 });
+    await page.goto('/');
+
+    const row = page.locator('#servers-table tbody tr[data-name="approval-host"]');
+    await expect(row.locator('.timeline-progress-ring')).toContainText('60%');
+    await expect(row.locator('button[data-action="cancel-upgrade"]')).toHaveText('Cancel');
+    await expect(row.locator('button[data-action="approve-security"]')).toHaveText('Standard security (5)');
+    const selectedActions = page.locator('#selected-host-panel .inspector-actions-primary');
+    await expect(selectedActions.locator('button[data-action="cancel-upgrade"]')).toHaveText('Cancel');
+    await expect(selectedActions.locator('button[data-action="approve-security"]')).toHaveText('Standard security (5)');
+
+    const labelLayout = await page.locator([
+      '#servers-table tbody tr[data-name="approval-host"] .timeline-actions button[data-action="approve-security"]',
+      '#selected-host-panel .inspector-actions-primary button[data-action="approve-security"]',
+      '#fleet-tag-list button[aria-label="Show hosts tagged untagged"] span',
+    ].join(', ')).evaluateAll(elements => elements.map(element => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      textOverflow: getComputedStyle(element).textOverflow,
+    })));
+    expect(labelLayout).toHaveLength(3);
+    for (const label of labelLayout) {
+      expect(label.scrollWidth, 'action and tag labels must not clip horizontally').toBeLessThanOrEqual(label.clientWidth);
+      expect(label.scrollHeight, 'action and tag labels must not clip vertically').toBeLessThanOrEqual(label.clientHeight);
+      expect(label.textOverflow, 'action and tag labels must not use an ellipsis').not.toBe('ellipsis');
+    }
+  });
+
   test('operator pages share one responsive and accessible application shell', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     const pages = [
@@ -1599,6 +1646,8 @@ test.describe.serial('setup and login flows', () => {
       let expectedHeaderHeight = 0;
       for (const [route, currentHref, pageLabel] of pages) {
         await page.goto(route);
+        const pageFontFamily = await page.locator('body').evaluate(element => getComputedStyle(element).fontFamily);
+        expect(pageFontFamily, `${route} must use the global Segoe UI font stack`).toContain('Segoe UI');
         const shell = page.locator('.app-header');
         await expect(shell).toHaveCount(1);
         await expect(shell).toHaveAttribute('aria-label', `${pageLabel} application shell`);

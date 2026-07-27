@@ -244,11 +244,11 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 	if got.NextRun.State != "none" || got.NoRun.Active {
 		t.Fatalf("schedule/no-run = %+v/%+v, want no scheduled run and inactive blackout", got.NextRun, got.NoRun)
 	}
-	if got.Timeline.CurrentPhase != "pending_approval" || got.Timeline.State != "waiting" || got.Timeline.ProgressPct != 12 {
-		t.Fatalf("timeline = %+v, want pending approval waiting at default progress", got.Timeline)
+	if got.Timeline.CurrentPhase != "pending_approval" || got.Timeline.State != "waiting" || got.Timeline.ProgressPct != 60 {
+		t.Fatalf("timeline = %+v, want pending approval waiting after package discovery", got.Timeline)
 	}
-	if len(got.Timeline.Phases) != 6 || got.Timeline.Phases[0].Key != "pending_approval" || got.Timeline.Phases[0].State != "waiting" {
-		t.Fatalf("timeline phases = %+v, want fixed pending approval first phase", got.Timeline.Phases)
+	if len(got.Timeline.Phases) != 6 || got.Timeline.Phases[2].Key != "pending_approval" || got.Timeline.Phases[2].State != "waiting" {
+		t.Fatalf("timeline phases = %+v, want pending approval after package discovery", got.Timeline.Phases)
 	}
 	if !got.ApprovalTriage.Eligible || got.ApprovalTriage.PendingPackages != 1 || got.ApprovalTriage.SecurityUpdates != 1 || got.ApprovalTriage.CVECount != 1 {
 		t.Fatalf("approval triage = %+v, want eligible one-package critical queue", got.ApprovalTriage)

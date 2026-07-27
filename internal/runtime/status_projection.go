@@ -258,6 +258,12 @@ func DashboardTimelineJobForStatus(status string, job *jobs.Record) *jobs.Record
 	if jobProjection.State == TimelineStateIdle {
 		return nil
 	}
+	// A host awaiting operator approval must not briefly display progress from a
+	// stale running job. The runtime waiting state is authoritative until the
+	// matching job has also persisted its waiting-for-approval transition.
+	if serverProjection.State == TimelineStateWaiting && jobProjection.State != TimelineStateWaiting {
+		return nil
+	}
 	if ActiveTimelineState(serverProjection.State) && !ActiveTimelineState(jobProjection.State) {
 		return nil
 	}

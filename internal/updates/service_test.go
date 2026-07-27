@@ -449,6 +449,137 @@ func TestRunUpdateJobPublishesAptUpgradeOutputBeforeCommandCompletes(t *testing.
 	}
 }
 
+func TestRunAutoremoveJobPublishesOutputBeforeCommandCompletes(t *testing.T) {
+	server := servers.Server{Name: "srv-live-autoremove", Host: "127.0.0.1", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "live-autoremove-jobs.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	notifications := make(chan string, 64)
+	jobID := "live-autoremove-job"
+	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		NewID: func() string { return jobID },
+		Notify: func(reason string) {
+			notifications <- reason
+		},
+	})
+	if _, err := jm.CreateJob(jobs.CreateParams{
+		Kind:       jobs.KindAutoremove,
+		ServerName: server.Name,
+		Actor:      "tester",
+		Status:     jobs.StatusRunning,
+	}); err != nil {
+		t.Fatalf("create autoremove job: %v", err)
+	}
+	<-notifications
+	outputSent := make(chan struct{})
+	releaseAutoremove := make(chan struct{})
+	runDone := make(chan struct{})
+	const liveLine = "Removing linux-image-old (1.0)\n"
+
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				if req.Operation != "autoremove.command" {
+					return HostCommandResult{}, errors.New("unexpected autoremove operation")
+				}
+				if req.OnOutput == nil {
+					return HostCommandResult{}, errors.New("autoremove output callback is missing")
+				}
+				if req.OnAttemptComplete == nil {
+					return HostCommandResult{}, errors.New("autoremove attempt completion callback is missing")
+				}
+			drainNotifications:
+				for {
+					select {
+					case <-notifications:
+					default:
+						break drainNotifications
+					}
+				}
+				req.OnOutput(HostCommandOutput{Stream: HostCommandStdout, Data: liveLine})
+				close(outputSent)
+				<-releaseAutoremove
+				req.OnAttemptComplete()
+				return HostCommandResult{Stdout: liveLine, Attempts: 1}, nil
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return jm },
+		AuditWithActor:    func(_, _, _, _, _, _, _ string, _ map[string]any) {},
+	})
+
+	go func() {
+		defer close(runDone)
+		service.RunAutoremoveJob(AutoremoveRunRequest{
+			Server: server,
+			Actor:  "tester",
+			JobID:  jobID,
+			Policy: RetryPolicy{MaxAttempts: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		})
+	}()
+
+	select {
+	case <-outputSent:
+	case <-time.After(time.Second):
+		t.Fatal("apt autoremove did not emit output")
+	}
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || !strings.Contains(status.Logs, liveLine) {
+		t.Fatalf("logs before command completion = %q, want live line %q", status.Logs, liveLine)
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("get live autoremove job: %v", err)
+	}
+	if !strings.Contains(job.LogsText, liveLine) {
+		t.Fatalf("persisted logs before command completion = %q, want live line %q", job.LogsText, liveLine)
+	}
+	select {
+	case reason := <-notifications:
+		if reason != "job.log" {
+			t.Fatalf("live output notification = %q, want job.log", reason)
+		}
+	default:
+		t.Fatal("live autoremove output did not publish a dashboard job update")
+	}
+	select {
+	case <-runDone:
+		t.Fatal("autoremove completed before the command was released")
+	default:
+	}
+
+	close(releaseAutoremove)
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("autoremove did not finish after releasing the command")
+	}
+	status = state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "done" {
+		t.Fatalf("final status = %+v, want done", status)
+	}
+	if got := strings.Count(status.Logs, liveLine); got != 1 {
+		t.Fatalf("final live line count = %d, want 1 in logs %q", got, status.Logs)
+	}
+	job, err = jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("get completed autoremove job: %v", err)
+	}
+	if job.Status != jobs.StatusSucceeded || strings.Count(job.LogsText, liveLine) != 1 {
+		t.Fatalf("completed job = %+v, want succeeded with one live line", job)
+	}
+}
+
 func TestLiveCommandLogSinkBatchesRapidOutput(t *testing.T) {
 	server := servers.Server{Name: "srv-live-batch"}
 	inventory := []servers.Server{server}

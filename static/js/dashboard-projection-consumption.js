@@ -406,23 +406,6 @@
         });
     }
 
-    function projectBulkReview(planValue) {
-        const plan = record(planValue);
-        const eligible = clone(list(plan.eligibleHosts));
-        const skipped = clone(list(plan.skippedHosts));
-        const actionLabel = text(plan.actionLabel, "action");
-        return deepFreeze({
-            title: `Review bulk ${actionLabel}`,
-            summary: `${eligible.length} eligible visible host${eligible.length === 1 ? "" : "s"} will run. ${skipped.length} host${skipped.length === 1 ? "" : "s"} will be skipped.`,
-            eligibleLabel: `Eligible hosts (${eligible.length})`,
-            skippedLabel: `Skipped hosts (${skipped.length})`,
-            eligible,
-            skipped,
-            warning: text(plan.warning),
-            canConfirm: eligible.length > 0
-        });
-    }
-
     function interactionApprovalCounts(server) {
         const counts = pendingApprovalCounts(server);
         return {
@@ -437,5 +420,5 @@
         kernelVersions
     });
 
-    return Object.freeze({ project, projectBulkReview, presentationFacts });
+    return Object.freeze({ project, presentationFacts });
 }));

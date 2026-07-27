@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { project, projectBulkReview, presentationFacts } = require("../../static/js/dashboard-projection-consumption.js");
+const { project, presentationFacts } = require("../../static/js/dashboard-projection-consumption.js");
 
 function statusView(overrides = {}) {
     const servers = overrides.servers || [{ name: "alpha", status: "pending_approval", pending_updates: [{ security: true, cves: ["CVE-1"] }], has_key: true }];
@@ -105,13 +105,6 @@ test("schedule, activity, and command history retain raw timestamps", () => {
     assert.equal(view.panels.commandHistory[0].created_at, "2026-07-10T03:00:00Z");
     assert.deepEqual(view.panels.recentActivity.map(item => item.action), ["newer-audit", "older-audit"]);
     assert.equal(view.panels.recentActivity[0].createdAt, "2026-07-10T04:00:00Z");
-});
-
-test("bulk review projection owns labels and rows without planning commands", () => {
-    const review = projectBulkReview({ actionLabel: "update", eligibleHosts: [{ name: "alpha" }], skippedHosts: [{ name: "beta", reason: "busy" }], warning: "Review" });
-    assert.equal(review.title, "Review bulk update");
-    assert.equal(review.summary, "1 eligible visible host will run. 1 host will be skipped.");
-    assert.equal(review.canConfirm, true);
 });
 
 test("dashboard adapter cannot restore removed presentation derivation entry points", () => {

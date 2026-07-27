@@ -553,9 +553,9 @@ var dashboardTimelinePhases = []struct {
 	label    string
 	progress int
 }{
-	{key: "pending_approval", label: "Pending approval", progress: 12},
 	{key: "prechecks", label: "Pre-checks", progress: 32},
 	{key: "apt_update", label: "APT update", progress: 52},
+	{key: "pending_approval", label: "Pending approval", progress: 60},
 	{key: "upgrade", label: "Upgrade", progress: 72},
 	{key: "postchecks", label: "Post-checks", progress: 88},
 	{key: "done_error", label: "Done / Error", progress: 100},

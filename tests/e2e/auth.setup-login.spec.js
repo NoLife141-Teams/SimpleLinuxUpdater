@@ -1194,6 +1194,31 @@ test.describe.serial('setup and login flows', () => {
     });
   });
 
+  test('admin timezone picker searches by city and saves the canonical timezone', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+
+    await page.goto('/admin');
+    const picker = page.locator('#app-timezone-input');
+    await expect(picker).toContainText('Toronto');
+    await expect(picker).toContainText('America/Toronto');
+
+    await picker.click();
+    await expect(page.locator('#app-timezone-popover')).toBeVisible();
+    await page.locator('#app-timezone-search').fill('paris');
+    const paris = page.locator('#app-timezone-options [role="option"][data-value="Europe/Paris"]');
+    await expect(paris).toContainText('Paris');
+    await expect(paris).toContainText('Europe/Paris');
+    await paris.click();
+
+    await expect(picker).toContainText('Paris');
+    await expect(page.locator('#app-timezone-popover')).toBeHidden();
+    await page.locator('#app-timezone-save').click();
+    await expect.poll(() => state.timezoneSave).toEqual({ timezone: 'Europe/Paris' });
+    await expect(page.locator('#app-timezone-status')).toContainText('App timezone saved');
+  });
+
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

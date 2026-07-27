@@ -15,6 +15,7 @@ const scheduledPolicyAdministration = Object.freeze({
     }
 });
 let scheduledPolicyPreviewTimer = 0;
+let appTimezonePicker = null;
 
 function adminPageView() {
     return adminPageInteraction.getView();
@@ -64,30 +65,22 @@ function browserSupportedTimezones() {
     }
 }
 
-function timezoneOptionLabel(timezone) {
-    if (timezone === "Local") return "Local system timezone";
-    if (timezone === "UTC") return "UTC";
-    if (/^[+-]\d{2}:\d{2}$/.test(timezone)) return `Fixed UTC offset ${timezone}`;
-    return timezone.replace(/_/g, " ");
-}
-
 function ensureTimezoneSelectHasValue(value) {
-    const select = document.getElementById("app-timezone-input");
-    if (!select) return;
     const timezone = String(value || "").trim();
-    if (!timezone) return;
-    const exists = Array.from(select.options || []).some((option) => option.value === timezone);
-    if (exists) return;
-    const option = document.createElement("option");
-    option.value = timezone;
-    option.textContent = `${timezoneOptionLabel(timezone)} (saved)`;
-    select.appendChild(option);
+    if (appTimezonePicker) appTimezonePicker.setValue(timezone);
 }
 
 function populateTimezonePicker() {
-    const select = document.getElementById("app-timezone-input");
-    if (!select) return;
-    const currentValue = select.value || adminPageView().timezone.draft || "";
+    const trigger = document.getElementById("app-timezone-input");
+    if (!trigger || !window.AdminTimezonePicker) return;
+    const currentValue = trigger.value || adminPageView().timezone.draft || "";
+    const browserTimezone = (() => {
+        try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+        } catch (_) {
+            return "";
+        }
+    })();
     const combined = [
         "",
         "Local",
@@ -96,41 +89,32 @@ function populateTimezonePicker() {
         ...ianaTimezoneOptions,
         ...fixedOffsetTimezoneOptions
     ];
-    const seen = new Set();
-    const options = [];
-    combined.forEach((timezone) => {
-        const value = String(timezone || "").trim();
-        if (seen.has(value)) return;
-        seen.add(value);
-        options.push(value);
+    const suggested = [
+        currentValue,
+        browserTimezone,
+        "UTC",
+        "America/Toronto",
+        "America/New_York",
+        "America/Chicago",
+        "America/Denver",
+        "America/Los_Angeles",
+        "Europe/London",
+        "Europe/Paris"
+    ].filter(Boolean);
+    const options = window.AdminTimezonePicker.buildOptions(combined, { suggested });
+    appTimezonePicker = window.AdminTimezonePicker.createPicker({
+        trigger,
+        popover: document.getElementById("app-timezone-popover"),
+        search: document.getElementById("app-timezone-search"),
+        listbox: document.getElementById("app-timezone-options"),
+        empty: document.getElementById("app-timezone-empty"),
+        options
     });
-    const priority = new Map([
-        ["Local", 0],
-        ["UTC", 1],
-        ["America/Toronto", 2],
-        ["America/New_York", 3],
-        ["America/Chicago", 4],
-        ["America/Denver", 5],
-        ["America/Los_Angeles", 6],
-        ["Europe/London", 7],
-        ["Europe/Paris", 8]
-    ]);
-    options.sort((a, b) => {
-        if (a === "") return -1;
-        if (b === "") return 1;
-        const aRank = priority.has(a) ? priority.get(a) : 100;
-        const bRank = priority.has(b) ? priority.get(b) : 100;
-        if (aRank !== bRank) return aRank - bRank;
-        return a.localeCompare(b);
-    });
-    select.innerHTML = options.map((timezone) => (
-        `<option value="${escapeHtml(timezone)}">${escapeHtml(timezone === "" ? "System default timezone" : timezoneOptionLabel(timezone))}</option>`
-    )).join("");
-    ensureTimezoneSelectHasValue(currentValue);
-    select.value = currentValue;
+    if (!appTimezonePicker) return;
+    appTimezonePicker.setValue(currentValue);
     const note = document.getElementById("app-timezone-picker-note");
     if (note) {
-        note.innerHTML = `Pick from ${options.length} IANA/fixed timezone choices, including <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.`;
+        note.textContent = `Search ${options.length} choices by city, region, timezone name, or UTC offset. Fixed offsets do not follow daylight-saving changes.`;
     }
 }
 
@@ -146,9 +130,9 @@ function renderScheduledTimezone(payload) {
         timezoneLabel.textContent = timezone;
     }
     const timezoneInput = document.getElementById("app-timezone-input");
-    if (timezoneInput && document.activeElement !== timezoneInput) {
+    const timezonePickerRoot = document.getElementById("app-timezone-picker");
+    if (timezoneInput && !timezonePickerRoot?.contains(document.activeElement)) {
         ensureTimezoneSelectHasValue(timezoneSelection);
-        timezoneInput.value = timezoneSelection;
     }
     updatePolicySummary();
     renderScheduledPolicies();
@@ -316,7 +300,7 @@ async function saveAppTimezoneSettings() {
         setAppTimezoneFeedback("", "");
         const input = document.getElementById("app-timezone-input");
         const button = document.getElementById("app-timezone-save");
-        const timezone = input ? input.value.trim() : "";
+        const timezone = appTimezonePicker ? appTimezonePicker.getValue() : (input ? input.value.trim() : "");
         adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone });
         plan = beginAdminCommand("saveTimezone");
         if (!plan) return;

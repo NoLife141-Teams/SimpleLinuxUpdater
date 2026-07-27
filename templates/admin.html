@@ -34,8 +34,50 @@
                 </div>
                 <div class="admin-block">
                     <label for="app-timezone-input" class="form-label">Global app timezone</label>
-                    <select id="app-timezone-input"></select>
-                    <div class="table-secondary" id="app-timezone-picker-note">Pick an IANA timezone such as <code>America/Toronto</code>, <code>Europe/Paris</code>, <code>UTC</code>, or <code>Local</code>.</div>
+                    <div class="timezone-picker" id="app-timezone-picker">
+                        <button
+                            class="timezone-picker-trigger"
+                            id="app-timezone-input"
+                            type="button"
+                            value=""
+                            aria-haspopup="listbox"
+                            aria-expanded="false"
+                            aria-controls="app-timezone-options"
+                        >
+                            <span class="timezone-picker-trigger-copy">
+                                <span class="timezone-picker-trigger-label">System default timezone</span>
+                                <span class="timezone-picker-trigger-detail">Uses the server timezone configuration</span>
+                            </span>
+                            <span class="timezone-picker-chevron" aria-hidden="true"></span>
+                        </button>
+                        <div class="timezone-picker-popover" id="app-timezone-popover" hidden>
+                            <div class="timezone-picker-search-wrap">
+                                <span class="timezone-picker-search-icon" aria-hidden="true"></span>
+                                <input
+                                    id="app-timezone-search"
+                                    class="timezone-picker-search"
+                                    type="search"
+                                    placeholder="Search city, region, or UTC offset"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    role="combobox"
+                                    aria-label="Search timezones"
+                                    aria-autocomplete="list"
+                                    aria-expanded="false"
+                                    aria-controls="app-timezone-options"
+                                >
+                                <kbd>Esc</kbd>
+                            </div>
+                            <div
+                                class="timezone-picker-options"
+                                id="app-timezone-options"
+                                role="listbox"
+                                aria-label="Available timezones"
+                            ></div>
+                            <div class="timezone-picker-empty" id="app-timezone-empty" hidden>No matching timezone.</div>
+                        </div>
+                    </div>
+                    <div class="table-secondary" id="app-timezone-picker-note">Search by city, region, timezone name, or UTC offset.</div>
                     <div class="policy-actions app-time-actions">
                         <button class="primary-action" type="button" id="app-timezone-save">Save Timezone</button>
                     </div>
@@ -483,8 +525,9 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
+    <script src="/static/js/admin-timezone-picker.js?v=searchable-timezone-picker-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
     <script src="/static/js/admin-page-interaction.js?v=admin-page-interaction-20260710a"></script>
-    <script src="/static/js/admin.js?v=quality-pass-20260711b"></script>
+    <script src="/static/js/admin.js?v=searchable-timezone-picker-20260727a"></script>
 </body>
 </html>

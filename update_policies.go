@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
 
@@ -402,29 +404,166 @@ func handleUpdatePolicyDeleteWithDeps(c *gin.Context, deps AppDeps) {
 
 func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
-	rawLimit := strings.TrimSpace(c.DefaultQuery("limit", strconv.Itoa(defaultUpdatePolicyRunsLimit)))
-	limit, err := strconv.Atoi(rawLimit)
-	if err != nil || limit <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive integer"})
+	rawPage := strings.TrimSpace(c.DefaultQuery("page", "1"))
+	page, err := strconv.Atoi(rawPage)
+	if err != nil || page <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page must be a positive integer"})
 		return
 	}
-	if limit > maxUpdatePolicyRunsLimit {
-		limit = maxUpdatePolicyRunsLimit
+	rawPageSize := strings.TrimSpace(c.Query("page_size"))
+	sizeParameter := "page_size"
+	if rawPageSize == "" {
+		rawPageSize = strings.TrimSpace(c.Query("limit"))
+		sizeParameter = "limit"
 	}
-	runs, err := deps.PolicyRepository.ListRuns(limit)
+	if rawPageSize == "" {
+		rawPageSize = strconv.Itoa(policypkg.DefaultRunsPageSize)
+		sizeParameter = "page_size"
+	}
+	pageSize, err := strconv.Atoi(rawPageSize)
+	if err != nil || pageSize <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": sizeParameter + " must be a positive integer"})
+		return
+	}
+	if pageSize > maxUpdatePolicyRunsLimit {
+		pageSize = maxUpdatePolicyRunsLimit
+	}
+	outcome := strings.TrimSpace(c.Query("outcome"))
+	if outcome != "" && !validPolicyRunOutcome(outcome) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "outcome is not a recognized scheduled run status"})
+		return
+	}
+	interpretation := deps.ApplicationTime.Current()
+	fromUTC, err := parsePolicyRunHistoryDate(c.Query("from"), interpretation.Location, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from must use YYYY-MM-DD"})
+		return
+	}
+	toUTC, err := parsePolicyRunHistoryDate(c.Query("to"), interpretation.Location, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "to must use YYYY-MM-DD"})
+		return
+	}
+	if fromUTC != "" && toUTC != "" && fromUTC >= toUTC {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from must not be after to"})
+		return
+	}
+	result, err := deps.PolicyRepository.QueryRuns(policypkg.RunQuery{
+		Policy:         c.Query("policy"),
+		Server:         c.Query("server"),
+		Outcome:        outcome,
+		FromUTC:        fromUTC,
+		ToUTCExclusive: toUTC,
+		Page:           page,
+		PageSize:       pageSize,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load policy runs"})
 		return
 	}
-	interpretation := deps.ApplicationTime.Current()
-	for i := range runs {
-		runs[i].ScheduledForDisplay, _ = interpretation.Format(runs[i].ScheduledForUTC, jobTimestampLayout)
+	for i := range result.Items {
+		enrichPolicyRunHistoryItem(&result.Items[i], interpretation)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"items":             runs,
+		"items":             result.Items,
+		"page":              result.Page,
+		"page_size":         result.PageSize,
+		"total":             result.Total,
+		"total_pages":       result.TotalPages,
 		"timezone":          interpretation.DisplayName,
 		"resolved_timezone": interpretation.ResolvedName,
 	})
+}
+
+func validPolicyRunOutcome(value string) bool {
+	switch value {
+	case updatePolicyRunQueued, updatePolicyRunRunning, updatePolicyRunWaitingApproval,
+		updatePolicyRunSucceeded, updatePolicyRunFailed, updatePolicyRunSkipped,
+		updatePolicyRunCancelled, updatePolicyRunInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func parsePolicyRunHistoryDate(raw string, loc *time.Location, inclusiveEnd bool) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, loc)
+	if err != nil {
+		return "", err
+	}
+	if inclusiveEnd {
+		parsed = parsed.AddDate(0, 0, 1)
+	}
+	return parsed.UTC().Format(jobTimestampLayout), nil
+}
+
+func enrichPolicyRunHistoryItem(run *UpdatePolicyRun, interpretation apptimepkg.Interpretation) {
+	if run == nil {
+		return
+	}
+	run.ScheduledForDisplay, _ = interpretation.Format(run.ScheduledForUTC, jobTimestampLayout)
+	if strings.TrimSpace(run.StartedAt) != "" {
+		run.StartedAtDisplay, _ = interpretation.Format(run.StartedAt, jobTimestampLayout)
+	}
+	if strings.TrimSpace(run.FinishedAt) != "" {
+		run.FinishedAtDisplay, _ = interpretation.Format(run.FinishedAt, jobTimestampLayout)
+	}
+	started, startedErr := parseAppTimestamp(run.StartedAt)
+	finished, finishedErr := parseAppTimestamp(run.FinishedAt)
+	if startedErr == nil && finishedErr == nil && !finished.Before(started) {
+		duration := finished.Sub(started).Milliseconds()
+		run.DurationMilliseconds = &duration
+	}
+	if validTerminalPolicyRunOutcome(run.Status) {
+		run.TerminalOutcome = run.Status
+	}
+	if run.Status == updatePolicyRunSkipped {
+		run.ExactSkipReason = strings.TrimSpace(run.Reason)
+	}
+	if jobID := strings.TrimSpace(run.JobID); jobID != "" {
+		escaped := url.PathEscape(jobID)
+		run.JobDetailURL = "/api/jobs/" + escaped
+		run.ReportURL = "/api/reports/jobs/" + escaped
+	}
+	auditQuery := url.Values{
+		"audit_target": {run.ServerName},
+	}
+	if action := policyRunAuditAction(run.Status); action != "" {
+		auditQuery.Set("audit_action", action)
+	}
+	run.AuditURL = "/manage?" + auditQuery.Encode() + "#audit-trail"
+}
+
+func validTerminalPolicyRunOutcome(value string) bool {
+	switch value {
+	case updatePolicyRunSucceeded, updatePolicyRunFailed, updatePolicyRunSkipped,
+		updatePolicyRunCancelled, updatePolicyRunInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func policyRunAuditAction(status string) string {
+	switch status {
+	case updatePolicyRunSucceeded:
+		return "schedule.run.completed"
+	case updatePolicyRunFailed, updatePolicyRunInterrupted:
+		return "schedule.run.failed"
+	case updatePolicyRunSkipped:
+		return "schedule.run.skipped"
+	case updatePolicyRunQueued, updatePolicyRunRunning, updatePolicyRunWaitingApproval:
+		return "schedule.run.started"
+	default:
+		return ""
+	}
 }
 
 func handleUpdatePolicyCalendarWithDeps(c *gin.Context, deps AppDeps) {

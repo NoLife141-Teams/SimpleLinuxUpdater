@@ -677,6 +677,108 @@ func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
 	}
 }
 
+func TestUpdatePolicyRunsHistoryFiltersPaginationAndInvestigationProjection(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "update-policy-runs-history.db")
+	app := newUpdatePolicyTestApp(t, dbFile)
+	fixtures := []UpdatePolicyRun{
+		{
+			PolicyID: 1, PolicyName: "Nightly security", ServerName: "srv-web-01",
+			ScheduledForUTC: "2026-01-04T03:00:00.000000000Z", ExecutionMode: updatePolicyExecutionScanOnly,
+			PackageScope: updatePolicyPackageScopeSecurity, Status: updatePolicyRunSkipped,
+			Reason: updatePolicyRunReasonBusy, Summary: "Server already has an active operation",
+			JobID: "job-history-1", StartedAt: "2026-01-04T03:00:00.000000000Z",
+			FinishedAt: "2026-01-04T03:01:30.000000000Z",
+		},
+		{
+			PolicyID: 1, PolicyName: "Nightly security", ServerName: "srv-web-02",
+			ScheduledForUTC: "2026-01-03T03:00:00.000000000Z", ExecutionMode: updatePolicyExecutionScanOnly,
+			PackageScope: updatePolicyPackageScopeSecurity, Status: updatePolicyRunSkipped,
+			Reason: updatePolicyRunReasonBlackout, Summary: "Blocked by no-run window",
+		},
+		{
+			PolicyID: 1, PolicyName: "Nightly security", ServerName: "srv-web-03",
+			ScheduledForUTC: "2026-01-08T06:00:00.000000000Z", ExecutionMode: updatePolicyExecutionScanOnly,
+			PackageScope: updatePolicyPackageScopeSecurity, Status: updatePolicyRunSkipped,
+			Reason: updatePolicyRunReasonBusy,
+		},
+		{
+			PolicyID: 2, PolicyName: "Database maintenance", ServerName: "srv-db-01",
+			ScheduledForUTC: "2026-01-02T03:00:00.000000000Z", ExecutionMode: updatePolicyExecutionAutoApply,
+			PackageScope: updatePolicyPackageScopeFull, Status: updatePolicyRunFailed,
+		},
+	}
+	for index, fixture := range fixtures {
+		if _, inserted, err := createUpdatePolicyRun(fixture); err != nil || !inserted {
+			t.Fatalf("createUpdatePolicyRun(%d) = inserted %t err %v", index, inserted, err)
+		}
+	}
+	handler, sessionCookie := authenticateUpdatePolicyTestApp(t, app)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?policy=nightly&server=web&outcome=skipped&from=2026-01-01&to=2026-01-05&page=1&page_size=1", nil)
+	req.AddCookie(sessionCookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Items      []UpdatePolicyRun `json:"items"`
+		Page       int               `json:"page"`
+		PageSize   int               `json:"page_size"`
+		Total      int               `json:"total"`
+		TotalPages int               `json:"total_pages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal history response: %v", err)
+	}
+	if response.Page != 1 || response.PageSize != 1 || response.Total != 2 || response.TotalPages != 2 {
+		t.Fatalf("history metadata = %+v, want page=1 pageSize=1 total=2 totalPages=2", response)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("history items = %d, want 1", len(response.Items))
+	}
+	item := response.Items[0]
+	if item.TerminalOutcome != updatePolicyRunSkipped || item.ExactSkipReason != updatePolicyRunReasonBusy {
+		t.Fatalf("history outcome = %+v, want skipped with exact busy reason", item)
+	}
+	if item.DurationMilliseconds == nil || *item.DurationMilliseconds != 90000 {
+		t.Fatalf("history duration = %v, want 90000ms", item.DurationMilliseconds)
+	}
+	if item.StartedAtDisplay == "" || item.FinishedAtDisplay == "" || item.ScheduledForDisplay == "" {
+		t.Fatalf("history display timestamps missing: %+v", item)
+	}
+	if item.JobDetailURL != "/api/jobs/job-history-1" || item.ReportURL != "/api/reports/jobs/job-history-1" {
+		t.Fatalf("history job links = (%q, %q), want existing detail/report links", item.JobDetailURL, item.ReportURL)
+	}
+	if !strings.Contains(item.AuditURL, "/manage?") || !strings.Contains(item.AuditURL, "schedule.run.skipped") || !strings.HasSuffix(item.AuditURL, "#audit-trail") {
+		t.Fatalf("history audit URL = %q, want filtered audit link", item.AuditURL)
+	}
+
+	secondRec := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?policy=nightly&server=web&outcome=skipped&from=2026-01-01&to=2026-01-05&page=2&page_size=1", nil)
+	secondReq.AddCookie(sessionCookie)
+	handler.ServeHTTP(secondRec, secondReq)
+	var secondResponse struct {
+		Items []UpdatePolicyRun `json:"items"`
+	}
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &secondResponse); err != nil {
+		t.Fatalf("unmarshal second history page: %v", err)
+	}
+	if len(secondResponse.Items) != 1 || secondResponse.Items[0].ExactSkipReason != updatePolicyRunReasonBlackout {
+		t.Fatalf("second history page = %+v, want older blackout skip", secondResponse.Items)
+	}
+
+	for _, rawQuery := range []string{"outcome=unknown", "from=not-a-date", "page=zero"} {
+		invalidRec := httptest.NewRecorder()
+		invalidReq := httptest.NewRequest(http.MethodGet, "/api/update-policies/runs?"+rawQuery, nil)
+		invalidReq.AddCookie(sessionCookie)
+		handler.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid history query %q status = %d, want %d", rawQuery, invalidRec.Code, http.StatusBadRequest)
+		}
+	}
+}
+
 func TestAppTimezoneAPIAndScheduledSettingsMirror(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "app-timezone-api.db")
 	app := newUpdatePolicyTestApp(t, dbFile)

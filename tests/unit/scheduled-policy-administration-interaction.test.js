@@ -233,6 +233,58 @@ test("scheduled snapshots expose freshness, retain accepted data, and reject sup
     assert.equal(store.getView().snapshots.calendar.status, "failed");
 });
 
+test("scheduled run queries normalize filters, paginate, and supersede stale responses", () => {
+    const store = createStore();
+    const first = store.dispatch({ type: "snapshotRequested", stream: "runs" })
+        .find(effect => effect.type === "fetchSnapshot");
+    assert.deepEqual(first.query, {
+        policy: "", server: "", outcome: "", from: "", to: "", page: 1, pageSize: 25
+    });
+
+    store.dispatch({
+        type: "runQueryChanged",
+        patch: { policy: "  Nightly  ", server: " web ", outcome: "skipped", from: "2026-01-01", to: "2026-01-31", page: 9 }
+    });
+    const second = store.dispatch({ type: "runQueryApplied" })
+        .find(effect => effect.type === "fetchSnapshot");
+    assert.equal(second.requestId > first.requestId, true);
+    assert.deepEqual(second.query, {
+        policy: "Nightly", server: "web", outcome: "skipped", from: "2026-01-01", to: "2026-01-31", page: 1, pageSize: 25
+    });
+
+    store.dispatch({
+        type: "snapshotReceived",
+        stream: "runs",
+        requestId: first.requestId,
+        data: { items: [{ id: 99 }], page: 1, page_size: 25, total: 1, total_pages: 1 }
+    });
+    assert.deepEqual(store.getView().runs, []);
+
+    store.dispatch({
+        type: "snapshotReceived",
+        stream: "runs",
+        requestId: second.requestId,
+        data: { items: [{ id: 7 }], page: 1, page_size: 25, total: 31, total_pages: 2 }
+    });
+    assert.deepEqual(store.getView().runs.map(run => run.id), [7]);
+    assert.deepEqual(store.getView().runHistory, {
+        query: { policy: "Nightly", server: "web", outcome: "skipped", from: "2026-01-01", to: "2026-01-31", page: 1, pageSize: 25 },
+        items: [{ id: 7 }],
+        page: 1,
+        pageSize: 25,
+        total: 31,
+        totalPages: 2
+    });
+
+    const next = store.dispatch({ type: "runPageRequested", page: 2 })
+        .find(effect => effect.type === "fetchSnapshot");
+    assert.equal(next.query.page, 2);
+    store.dispatch({ type: "runQueryReset" });
+    assert.deepEqual(store.getView().runHistory.query, {
+        policy: "", server: "", outcome: "", from: "", to: "", page: 1, pageSize: 25
+    });
+});
+
 test("selected job detail is logical module state and closes without touching adapter concerns", () => {
     const store = createStore();
     const first = store.dispatch({ type: "jobSelected", jobID: "job-7" }).find(effect => effect.type === "fetchSnapshot");

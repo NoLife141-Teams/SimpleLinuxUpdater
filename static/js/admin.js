@@ -2311,47 +2311,95 @@ function renderMaintenanceCalendar(calendar) {
     }).join("");
 }
 
-function renderScheduledRuns(items) {
+function formatRunDuration(milliseconds) {
+    const totalSeconds = Math.max(0, Math.round(Number(milliseconds) / 1000));
+    if (!Number.isFinite(totalSeconds)) return "Not finished";
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours) return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+function scheduledRunTimestamp(run, field, displayField) {
+    const raw = String(run?.[field] || "").trim();
+    if (!raw) return null;
+    const resolvedTimezone = window.getAppTimezoneResolved ? window.getAppTimezoneResolved() : "";
+    const options = { includeUTC: true };
+    if (!resolvedTimezone && String(run?.[displayField] || "").trim()) {
+        options.preformattedPrimary = run[displayField];
+    }
+    return window.formatAppTimestamp
+        ? window.formatAppTimestamp(raw, options)
+        : { primary: raw, secondary: "", title: raw };
+}
+
+function renderScheduledRuns() {
     const tbody = document.querySelector("#scheduled-runs-table tbody");
     if (!tbody) return;
-    const runs = Array.isArray(items) ? items : [];
+    const history = scheduledPolicyView().runHistory || {};
+    const runs = Array.isArray(history.items) ? history.items : [];
+    const query = history.query || {};
+    const total = Number(history.total) || 0;
+    const page = Number(history.page) || 1;
+    const totalPages = Number(history.totalPages) || 0;
+    const resultSummary = document.getElementById("scheduled-runs-result-summary");
+    const pageInfo = document.getElementById("scheduled-runs-page-info");
+    const previous = document.getElementById("scheduled-runs-prev");
+    const next = document.getElementById("scheduled-runs-next");
+    if (resultSummary) resultSummary.textContent = `${total} matching run${total === 1 ? "" : "s"}.`;
+    if (pageInfo) pageInfo.textContent = totalPages ? `Page ${page} of ${totalPages}` : "Page 1 of 1";
+    if (previous) previous.disabled = page <= 1;
+    if (next) next.disabled = totalPages === 0 || page >= totalPages;
     tbody.innerHTML = "";
     if (!runs.length) {
         const row = document.createElement("tr");
-        row.innerHTML = '<td colspan="7" class="subtle">No scheduled runs recorded yet.</td>';
+        const hasFilters = [query.policy, query.server, query.outcome, query.from, query.to].some(Boolean);
+        row.innerHTML = `<td colspan="6" class="subtle" data-label="Result">${hasFilters ? "No scheduled runs match these filters." : "No scheduled runs recorded yet."}</td>`;
         tbody.appendChild(row);
         renderAdminWorkspace();
         return;
     }
     runs.forEach((run) => {
         const row = document.createElement("tr");
-        const jobValue = run.job_id ? `<code>${escapeHtml(run.job_id)}</code>` : '<span class="subtle">-</span>';
-        const statusToken = safeRunStatusClassToken(run.status);
-        const resolvedTimezone = window.getAppTimezoneResolved ? window.getAppTimezoneResolved() : "";
-        const scheduledOptions = { includeUTC: true };
-        if (!resolvedTimezone && String(run.scheduled_for_display || "").trim()) {
-            scheduledOptions.preformattedPrimary = run.scheduled_for_display;
-        }
-        const scheduled = window.formatAppTimestamp
-            ? window.formatAppTimestamp(run.scheduled_for_utc, scheduledOptions)
-            : { primary: run.scheduled_for_utc || "", secondary: "", title: run.scheduled_for_utc || "" };
+        const outcome = run.terminal_outcome || run.status || "unknown";
+        const statusToken = safeRunStatusClassToken(outcome);
+        const scheduled = scheduledRunTimestamp(run, "scheduled_for_utc", "scheduled_for_display") || { primary: "-", secondary: "", title: "" };
+        const started = scheduledRunTimestamp(run, "started_at", "started_at_display");
+        const finished = scheduledRunTimestamp(run, "finished_at", "finished_at_display");
+        const duration = run.duration_ms === undefined || run.duration_ms === null ? "Not finished" : formatRunDuration(run.duration_ms);
+        const jobDetailURL = run.job_detail_url || (run.job_id ? `/api/jobs/${encodeURIComponent(run.job_id)}` : "");
+        const reportURL = run.report_url || (run.job_id ? `/api/reports/jobs/${encodeURIComponent(run.job_id)}` : "");
+        const auditURL = run.audit_url || "";
         row.innerHTML = `
-            <td title="${escapeHtml(scheduled.title || "")}">
+            <td data-label="Scheduled" title="${escapeHtml(scheduled.title || "")}">
                 <div>${escapeHtml(scheduled.primary || "")}</div>
                 ${scheduled.secondary ? `<div class="table-secondary">${escapeHtml(scheduled.secondary)}</div>` : ""}
             </td>
-            <td>${escapeHtml(run.policy_name || "")}</td>
-            <td>${escapeHtml(run.server_name || "")}</td>
-            <td><span class="status-chip status-${statusToken}">${escapeHtml(run.status || "unknown")}</span></td>
-            <td>${escapeHtml(run.summary || run.reason || "")}</td>
-            <td>${jobValue}</td>
-            <td>
-                ${run.job_id ? `
-                    <div class="table-actions">
-                        <button class="inline-btn btn-ghost" type="button" data-action="job-detail" data-job-id="${escapeHtml(String(run.job_id))}">Details</button>
-                        <a class="inline-btn btn-ghost" href="/api/reports/jobs/${encodeURIComponent(run.job_id)}">Report</a>
-                    </div>
-                ` : '<span class="subtle">-</span>'}
+            <td data-label="Policy &amp; server">
+                <strong>${escapeHtml(run.policy_name || "-")}</strong>
+                <div class="table-secondary">${escapeHtml(run.server_name || "-")}</div>
+            </td>
+            <td data-label="Lifecycle">
+                <div class="run-lifecycle">
+                    <span><strong>Started:</strong> ${escapeHtml(started?.primary || "Not started")}</span>
+                    <span><strong>Finished:</strong> ${escapeHtml(finished?.primary || "Not finished")}</span>
+                    <span><strong>Duration:</strong> ${escapeHtml(duration)}</span>
+                </div>
+            </td>
+            <td data-label="Outcome">
+                <span class="status-chip status-${statusToken}">${escapeHtml(outcome)}</span>
+                ${run.exact_skip_reason ? `<div class="run-skip-reason">Reason: ${escapeHtml(run.exact_skip_reason)}</div>` : ""}
+            </td>
+            <td data-label="Summary">${escapeHtml(run.summary || run.reason || "-")}</td>
+            <td data-label="Investigate">
+                <div class="run-investigation-links">
+                    ${jobDetailURL ? `<button class="inline-btn btn-ghost" type="button" data-action="job-detail" data-job-id="${escapeHtml(String(run.job_id))}">Job details</button>` : ""}
+                    ${reportURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(reportURL)}">Report</a>` : ""}
+                    ${auditURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(auditURL)}">Audit trail</a>` : ""}
+                    ${!jobDetailURL && !reportURL && !auditURL ? '<span class="subtle">No linked details</span>' : ""}
+                </div>
             </td>
         `;
         tbody.appendChild(row);
@@ -2403,16 +2451,28 @@ async function fetchScheduledRuns(request) {
     request = request || scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "runs" })
         .find((effect) => effect.type === "fetchSnapshot");
     if (!request) return;
-    const res = await fetch("/api/update-policies/runs?limit=50");
+    const query = request.query || scheduledPolicyView().runHistory?.query || {};
+    const params = new URLSearchParams({
+        page: String(query.page || 1),
+        page_size: String(query.pageSize || 25)
+    });
+    if (query.policy) params.set("policy", query.policy);
+    if (query.server) params.set("server", query.server);
+    if (query.outcome) params.set("outcome", query.outcome);
+    if (query.from) params.set("from", query.from);
+    if (query.to) params.set("to", query.to);
+    const res = await fetch(`/api/update-policies/runs?${params.toString()}`);
     if (!res.ok) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled runs."));
     }
     const data = await res.json().catch(() => ({}));
     const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "runs", requestId: request.requestId, receivedAt: new Date().toISOString(), data });
+    const accepted = followUp.some(effect => effect.type === "render" && effect.area === "runs");
+    if (!accepted) return;
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
-    renderScheduledRuns(scheduledPolicyView().runs);
+    renderScheduledRuns();
     await runScheduledEffects(followUp);
 }
 
@@ -2459,7 +2519,8 @@ async function runScheduledEffects(effects) {
             if (effect.stream === "runs") await fetchScheduledRuns(effect);
             if (effect.stream === "calendar") await fetchMaintenanceCalendar(effect);
         } catch (err) {
-            scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: effect.stream, requestId: effect.requestId, error: err.message || "Failed to refresh scheduled policy data." });
+            const failureEffects = scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: effect.stream, requestId: effect.requestId, error: err.message || "Failed to refresh scheduled policy data." });
+            if (!failureEffects.length) continue;
             renderAdminWorkspace();
             firstError = firstError || err;
         }
@@ -2812,6 +2873,38 @@ document.getElementById("maintenance-calendar-policy").addEventListener("change"
 });
 document.querySelector("#scheduled-policy-table tbody").addEventListener("click", handleScheduledPolicyTableClick);
 document.querySelector("#scheduled-runs-table tbody").addEventListener("click", handleScheduledRunsTableClick);
+document.getElementById("scheduled-runs-filter").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    scheduledPolicyAdministration.dispatch({
+        type: "runQueryChanged",
+        patch: {
+            policy: document.getElementById("scheduled-runs-policy-filter").value,
+            server: document.getElementById("scheduled-runs-server-filter").value,
+            outcome: document.getElementById("scheduled-runs-outcome-filter").value,
+            from: document.getElementById("scheduled-runs-from-filter").value,
+            to: document.getElementById("scheduled-runs-to-filter").value
+        }
+    });
+    renderScheduledRuns();
+    renderAdminWorkspace();
+    await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "runQueryApplied" }));
+});
+document.getElementById("scheduled-runs-reset").addEventListener("click", async () => {
+    ["scheduled-runs-policy-filter", "scheduled-runs-server-filter", "scheduled-runs-from-filter", "scheduled-runs-to-filter"].forEach((id) => {
+        document.getElementById(id).value = "";
+    });
+    document.getElementById("scheduled-runs-outcome-filter").value = "";
+    renderAdminWorkspace();
+    await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "runQueryReset" }));
+});
+document.getElementById("scheduled-runs-prev").addEventListener("click", async () => {
+    const page = scheduledPolicyView().runHistory?.page || 1;
+    await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "runPageRequested", page: page - 1 }));
+});
+document.getElementById("scheduled-runs-next").addEventListener("click", async () => {
+    const page = scheduledPolicyView().runHistory?.page || 1;
+    await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "runPageRequested", page: page + 1 }));
+});
 document.getElementById("policy-blackout-add").addEventListener("click", () => addBlackoutRow("policy"));
 document.getElementById("global-blackout-add").addEventListener("click", () => addBlackoutRow("global"));
 document.getElementById("policy-blackouts-json-apply").addEventListener("click", () => applyBlackoutJson("policy", "Policy no-run windows"));

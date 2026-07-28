@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=policy-conflicts-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=scheduled-run-history-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -543,22 +543,53 @@
                 </div>
             </div>
             <div class="admin-section-content" id="admin-section-scheduled-runs-content" data-admin-section-content="scheduled-runs">
-            <div class="table-wrap">
-                <table id="scheduled-runs-table">
-                    <thead>
-                        <tr>
-                            <th>Scheduled</th>
-                            <th>Policy</th>
-                            <th>Server</th>
-                            <th>Status</th>
-                            <th>Summary</th>
-                            <th>Job</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
+                <form class="scheduled-runs-filter" id="scheduled-runs-filter" role="search" aria-label="Filter scheduled run history">
+                    <label><span>Policy</span><input type="search" id="scheduled-runs-policy-filter" autocomplete="off" placeholder="Policy name"></label>
+                    <label><span>Server</span><input type="search" id="scheduled-runs-server-filter" autocomplete="off" placeholder="Server name"></label>
+                    <label>
+                        <span>Outcome</span>
+                        <select id="scheduled-runs-outcome-filter">
+                            <option value="">All outcomes</option>
+                            <option value="queued">Queued</option>
+                            <option value="running">Running</option>
+                            <option value="waiting_approval">Waiting approval</option>
+                            <option value="succeeded">Succeeded</option>
+                            <option value="failed">Failed</option>
+                            <option value="skipped">Skipped</option>
+                            <option value="cancelled">Cancelled</option>
+                            <option value="interrupted">Interrupted</option>
+                        </select>
+                    </label>
+                    <label><span>From</span><input type="date" id="scheduled-runs-from-filter"></label>
+                    <label><span>Through</span><input type="date" id="scheduled-runs-to-filter"></label>
+                    <div class="scheduled-runs-filter-actions">
+                        <button class="btn-primary inline-btn" type="submit">Apply filters</button>
+                        <button class="btn-ghost inline-btn" id="scheduled-runs-reset" type="button">Reset</button>
+                    </div>
+                </form>
+                <div class="scheduled-runs-results-bar">
+                    <span id="scheduled-runs-result-summary" role="status" aria-live="polite">Run history unavailable.</span>
+                    <div class="scheduled-runs-pagination" aria-label="Scheduled run history pages">
+                        <button class="btn-ghost inline-btn" id="scheduled-runs-prev" type="button">Previous</button>
+                        <span id="scheduled-runs-page-info">Page 1</span>
+                        <button class="btn-ghost inline-btn" id="scheduled-runs-next" type="button">Next</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table id="scheduled-runs-table">
+                        <thead>
+                            <tr>
+                                <th>Scheduled</th>
+                                <th>Policy &amp; server</th>
+                                <th>Lifecycle</th>
+                                <th>Outcome</th>
+                                <th>Summary</th>
+                                <th>Investigate</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
         </section>
 
@@ -719,8 +750,8 @@
     <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=policy-conflicts-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
     <script src="/static/js/admin-page-interaction.js?v=policy-conflicts-20260728a"></script>
-    <script src="/static/js/admin.js?v=policy-conflicts-20260728a"></script>
+    <script src="/static/js/admin.js?v=scheduled-run-history-20260728a"></script>
 </body>
 </html>

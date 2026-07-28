@@ -458,17 +458,60 @@ test.describe.serial('setup and login flows', () => {
     }));
     await page.route('**/api/update-policies/runs?*', route => {
       state.scheduledRunsLoadCount = (state.scheduledRunsLoadCount || 0) + 1;
+      const requestURL = new URL(route.request().url());
+      const query = Object.fromEntries(requestURL.searchParams.entries());
+      state.scheduledRunsQueries = [...(state.scheduledRunsQueries || []), query];
+      const filtered = query.policy || query.server || query.outcome || query.from || query.to;
+      const pageNumber = Number(query.page || 1);
+      const item = filtered ? {
+        id: 8,
+        policy_name: 'Nightly security',
+        server_name: 'srv-web-02',
+        status: 'skipped',
+        terminal_outcome: 'skipped',
+        reason: 'busy',
+        exact_skip_reason: 'busy',
+        summary: 'Server already has an active operation',
+        scheduled_for_utc: '2026-05-18T06:00:00Z',
+        started_at: '2026-05-18T06:00:00Z',
+        finished_at: '2026-05-18T06:00:30Z',
+        duration_ms: 30000,
+        audit_url: '/manage?audit_action=schedule.run.skipped&audit_target=srv-web-02#audit-trail',
+      } : pageNumber === 2 ? {
+        id: 6,
+        policy_name: 'Older policy',
+        server_name: 'srv-web-09',
+        status: 'failed',
+        terminal_outcome: 'failed',
+        summary: 'Upgrade failed',
+        scheduled_for_utc: '2026-05-16T06:00:00Z',
+        started_at: '2026-05-16T06:00:00Z',
+        finished_at: '2026-05-16T06:02:00Z',
+        duration_ms: 120000,
+        audit_url: '/manage?audit_action=schedule.run.failed&audit_target=srv-web-09#audit-trail',
+      } : {
+        id: 7,
+        policy_name: 'Nightly security',
+        server_name: 'srv-web-01',
+        status: 'succeeded',
+        terminal_outcome: 'succeeded',
+        summary: 'completed',
+        job_id: 'job-report-1',
+        scheduled_for_utc: '2026-05-17T06:00:00Z',
+        started_at: '2026-05-17T06:00:00Z',
+        finished_at: '2026-05-17T06:01:30Z',
+        duration_ms: 90000,
+        job_detail_url: '/api/jobs/job-report-1',
+        report_url: '/api/reports/jobs/job-report-1',
+        audit_url: '/manage?audit_action=schedule.run.completed&audit_target=srv-web-01#audit-trail',
+      };
       return fulfillJson(route, {
         timezone: 'America/Toronto',
-        items: [{
-          id: 7,
-          policy_name: 'Nightly security',
-          server_name: 'srv-web-01',
-          status: 'succeeded',
-          summary: 'completed',
-          job_id: 'job-report-1',
-          scheduled_for_utc: '2026-05-17T06:00:00Z',
-        }],
+        items: [item],
+        page: pageNumber,
+        page_size: Number(query.page_size || 25),
+        total: filtered ? 1 : 26,
+        total_pages: filtered ? 1 : 2,
       });
     });
     await page.route('**/api/update-policies/calendar?*', route => {
@@ -1297,6 +1340,61 @@ test.describe.serial('setup and login flows', () => {
       execution_mode: 'approval_required',
       approval_timeout_minutes: 90,
     });
+  });
+
+  test('admin scheduled run history filters, paginates, and exposes existing investigation details', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
+    await expect(page.locator('#scheduled-runs-result-summary')).toHaveText('26 matching runs.');
+    await expect(page.locator('#scheduled-runs-table')).toContainText('1m 30s');
+    await expect(page.locator('#scheduled-runs-table')).toContainText('Job details');
+    await expect(page.locator('#scheduled-runs-table a', { hasText: 'Audit trail' })).toHaveAttribute('href', /audit_action=schedule\.run\.completed/);
+
+    await page.locator('#scheduled-runs-policy-filter').fill('Nightly');
+    await page.locator('#scheduled-runs-server-filter').fill('web');
+    await page.locator('#scheduled-runs-outcome-filter').selectOption('skipped');
+    await page.locator('#scheduled-runs-from-filter').fill('2026-05-01');
+    await page.locator('#scheduled-runs-to-filter').fill('2026-05-31');
+    await page.locator('#scheduled-runs-filter').getByRole('button', { name: 'Apply filters' }).click();
+
+    await expect(page.locator('#scheduled-runs-result-summary')).toHaveText('1 matching run.');
+    await expect(page.locator('#scheduled-runs-table')).toContainText('Reason: busy');
+    await expect.poll(() => state.scheduledRunsQueries.at(-1)).toMatchObject({
+      policy: 'Nightly',
+      server: 'web',
+      outcome: 'skipped',
+      from: '2026-05-01',
+      to: '2026-05-31',
+      page: '1',
+      page_size: '25',
+    });
+
+    await page.locator('#scheduled-runs-reset').click();
+    await expect(page.locator('#scheduled-runs-result-summary')).toHaveText('26 matching runs.');
+    await page.locator('#scheduled-runs-next').click();
+    await expect(page.locator('#scheduled-runs-page-info')).toHaveText('Page 2 of 2');
+    await expect(page.locator('#scheduled-runs-table')).toContainText('Older policy');
+    await expect.poll(() => state.scheduledRunsQueries.at(-1)?.page).toBe('2');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      bodyWidth: document.body.scrollWidth,
+      cellDisplay: getComputedStyle(document.querySelector('#scheduled-runs-table tbody td')).display,
+      filterColumns: getComputedStyle(document.querySelector('.scheduled-runs-filter')).gridTemplateColumns,
+    }));
+    expect(mobileLayout.bodyWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
+    expect(mobileLayout.cellDisplay).toBe('grid');
+    expect(mobileLayout.filterColumns.trim().split(/\s+/)).toHaveLength(1);
+
+    await page.locator('#scheduled-runs-table a', { hasText: 'Audit trail' }).click();
+    await expect(page).toHaveURL(/\/manage\?audit_action=schedule\.run\.failed&audit_target=srv-web-09#audit-trail$/);
+    await expect(page.locator('#audit-target-filter')).toHaveValue('srv-web-09');
+    await expect(page.locator('#audit-action-filter')).toHaveValue('schedule.run.failed');
   });
 
   test('admin policy preview explains canonical DST, no-run, and empty-target outcomes', async ({ page }) => {

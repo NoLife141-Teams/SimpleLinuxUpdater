@@ -25,6 +25,7 @@ type Repository interface {
 	GetRun(id int64) (Run, error)
 	UpdateRun(id int64, update RunUpdate) error
 	ListRuns(limit int) ([]Run, error)
+	QueryRuns(query RunQuery) (RunPage, error)
 	MarkInterruptedRuns() error
 	LoadGlobalBlackouts() ([]BlackoutWindow, error)
 	SaveGlobalBlackouts(windows []BlackoutWindow) ([]BlackoutWindow, error)
@@ -804,6 +805,90 @@ func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+func (r *SQLiteRepository) QueryRuns(query RunQuery) (RunPage, error) {
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	if query.PageSize <= 0 {
+		query.PageSize = DefaultRunsPageSize
+	}
+	if query.PageSize > MaxRunsLimit {
+		query.PageSize = MaxRunsLimit
+	}
+
+	where := make([]string, 0, 5)
+	args := make([]any, 0, 7)
+	if policy := strings.TrimSpace(query.Policy); policy != "" {
+		where = append(where, "LOWER(policy_name) LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeRunQueryLike(strings.ToLower(policy))+"%")
+	}
+	if server := strings.TrimSpace(query.Server); server != "" {
+		where = append(where, "LOWER(server_name) LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeRunQueryLike(strings.ToLower(server))+"%")
+	}
+	if outcome := strings.TrimSpace(query.Outcome); outcome != "" {
+		where = append(where, "status = ?")
+		args = append(args, outcome)
+	}
+	if from := strings.TrimSpace(query.FromUTC); from != "" {
+		where = append(where, "scheduled_for_utc >= ?")
+		args = append(args, from)
+	}
+	if to := strings.TrimSpace(query.ToUTCExclusive); to != "" {
+		where = append(where, "scheduled_for_utc < ?")
+		args = append(args, to)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var total int
+	if err := r.database().QueryRow("SELECT COUNT(*) FROM update_policy_runs"+whereSQL, args...).Scan(&total); err != nil {
+		return RunPage{}, err
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + query.PageSize - 1) / query.PageSize
+	}
+
+	pageArgs := append(append([]any{}, args...), query.PageSize, (query.Page-1)*query.PageSize)
+	rows, err := r.database().Query(`
+		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+		  FROM update_policy_runs`+whereSQL+`
+		 ORDER BY scheduled_for_utc DESC, id DESC
+		 LIMIT ? OFFSET ?
+	`, pageArgs...)
+	if err != nil {
+		return RunPage{}, err
+	}
+	defer rows.Close()
+	items := make([]Run, 0, query.PageSize)
+	for rows.Next() {
+		run, err := scanRunRow(rows)
+		if err != nil {
+			return RunPage{}, err
+		}
+		items = append(items, run)
+	}
+	if err := rows.Err(); err != nil {
+		return RunPage{}, err
+	}
+	return RunPage{
+		Items:      items,
+		Page:       query.Page,
+		PageSize:   query.PageSize,
+		Total:      total,
+		TotalPages: totalPages,
+	}, nil
+}
+
+func escapeRunQueryLike(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 func (r *SQLiteRepository) MarkInterruptedRuns() error {

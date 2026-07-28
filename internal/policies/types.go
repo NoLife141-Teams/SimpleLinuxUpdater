@@ -42,6 +42,7 @@ const (
 	DefaultApprovalTimeoutMinutes = 720
 	DefaultRunsLimit              = 100
 	MaxRunsLimit                  = 200
+	DefaultRunsPageSize           = 25
 	DefaultSchedulerTickInterval  = time.Minute
 	DefaultTimestampLayout        = "2006-01-02T15:04:05.000000000Z"
 
@@ -156,24 +157,50 @@ type Override struct {
 }
 
 type Run struct {
-	ID                  int64  `json:"id"`
-	PolicyID            int64  `json:"policy_id"`
-	PolicyName          string `json:"policy_name"`
-	ServerName          string `json:"server_name"`
-	ScheduledForUTC     string `json:"scheduled_for_utc"`
-	ScheduledForDisplay string `json:"scheduled_for_display,omitempty"`
-	ExecutionMode       string `json:"execution_mode"`
-	PackageScope        string `json:"package_scope"`
-	UpgradeMode         string `json:"upgrade_mode"`
-	Status              string `json:"status"`
-	Reason              string `json:"reason"`
-	Summary             string `json:"summary"`
-	JobID               string `json:"job_id"`
-	ResultJSON          string `json:"result_json"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
-	StartedAt           string `json:"started_at"`
-	FinishedAt          string `json:"finished_at"`
+	ID                   int64  `json:"id"`
+	PolicyID             int64  `json:"policy_id"`
+	PolicyName           string `json:"policy_name"`
+	ServerName           string `json:"server_name"`
+	ScheduledForUTC      string `json:"scheduled_for_utc"`
+	ScheduledForDisplay  string `json:"scheduled_for_display,omitempty"`
+	ExecutionMode        string `json:"execution_mode"`
+	PackageScope         string `json:"package_scope"`
+	UpgradeMode          string `json:"upgrade_mode"`
+	Status               string `json:"status"`
+	TerminalOutcome      string `json:"terminal_outcome,omitempty"`
+	Reason               string `json:"reason"`
+	ExactSkipReason      string `json:"exact_skip_reason,omitempty"`
+	Summary              string `json:"summary"`
+	JobID                string `json:"job_id"`
+	ResultJSON           string `json:"result_json"`
+	CreatedAt            string `json:"created_at"`
+	UpdatedAt            string `json:"updated_at"`
+	StartedAt            string `json:"started_at"`
+	StartedAtDisplay     string `json:"started_at_display,omitempty"`
+	FinishedAt           string `json:"finished_at"`
+	FinishedAtDisplay    string `json:"finished_at_display,omitempty"`
+	DurationMilliseconds *int64 `json:"duration_ms,omitempty"`
+	JobDetailURL         string `json:"job_detail_url,omitempty"`
+	ReportURL            string `json:"report_url,omitempty"`
+	AuditURL             string `json:"audit_url,omitempty"`
+}
+
+type RunQuery struct {
+	Policy         string
+	Server         string
+	Outcome        string
+	FromUTC        string
+	ToUTCExclusive string
+	Page           int
+	PageSize       int
+}
+
+type RunPage struct {
+	Items      []Run
+	Page       int
+	PageSize   int
+	Total      int
+	TotalPages int
 }
 
 type ScheduleProjectionRequest struct {

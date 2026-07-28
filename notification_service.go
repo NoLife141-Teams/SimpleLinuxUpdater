@@ -19,6 +19,7 @@ type NotificationSettingsUpdate = notificationpkg.SettingsUpdate
 type NotificationSettingsResponse = notificationpkg.SettingsResponse
 type NotificationSettingsValidationError = notificationpkg.ValidationError
 type NotificationDeliveryStatus = notificationpkg.DeliveryStatus
+type NotificationDeliveryDiagnostics = notificationpkg.DeliveryDiagnostics
 
 func NewNotificationService(deps NotificationServiceDeps) *NotificationService {
 	if deps.DB == nil {
@@ -94,6 +95,19 @@ func handleNotificationSettingsUpdate(c *gin.Context, service NotificationDelive
 	c.JSON(http.StatusOK, settings)
 }
 
+func handleNotificationDeliveryDiagnostics(c *gin.Context, service NotificationDeliveryLifecycle) {
+	if service == nil {
+		service = defaultNotificationService()
+	}
+	diagnostics, err := service.DeliveryDiagnostics()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load notification delivery diagnostics"})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, diagnostics)
+}
+
 func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycle) {
 	if service == nil {
 		service = defaultNotificationService()
@@ -101,16 +115,26 @@ func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycl
 	testCtx := c.Request.Context()
 	status, err := service.TestDelivery(testCtx)
 	if err != nil {
-		audit(c, "notifications.test", "settings", "notifications", "failure", "Notification test failed", map[string]any{"error": err.Error()})
+		audit(c, "notifications.test", "settings", "notifications", "failure", "Notification test failed", map[string]any{
+			"outcome":              status.Outcome,
+			"attempts":             status.Attempts,
+			"status_code":          status.StatusCode,
+			"consecutive_failures": status.ConsecutiveFailures,
+		})
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":         "notification test failed",
+			"last_attempt":  status,
 			"last_delivery": status,
 		})
 		return
 	}
 	audit(c, "notifications.test", "settings", "notifications", "success", "Notification test delivered", map[string]any{
-		"attempts":    status.Attempts,
-		"status_code": status.StatusCode,
+		"outcome":              status.Outcome,
+		"attempts":             status.Attempts,
+		"status_code":          status.StatusCode,
+		"duration_ms":          status.DurationMS,
+		"consecutive_failures": status.ConsecutiveFailures,
 	})
-	c.JSON(http.StatusOK, gin.H{"last_delivery": status})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"last_attempt": status, "last_delivery": status})
 }

@@ -170,12 +170,13 @@ func TestAcceptedDeliveryPostsRedactedPayloadAndStoresStatus(t *testing.T) {
 	if err := svc.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	settings, err := svc.Settings()
+	diagnostics, err := svc.DeliveryDiagnostics()
 	if err != nil {
-		t.Fatalf("Settings() error = %v", err)
+		t.Fatalf("DeliveryDiagnostics() error = %v", err)
 	}
-	if settings.LastDelivery == nil || !settings.LastDelivery.Success || settings.LastDelivery.TargetName != "srv-a" {
-		t.Fatalf("last delivery = %+v, want saved success for srv-a", settings.LastDelivery)
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeSucceeded ||
+		diagnostics.LastAttempt.TargetName != "srv-a" {
+		t.Fatalf("last attempt = %+v, want saved success for srv-a", diagnostics.LastAttempt)
 	}
 }
 
@@ -206,12 +207,14 @@ func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	if atomic.LoadInt32(&attempts) != 3 {
 		t.Fatalf("attempts=%d, want three failed attempts", attempts)
 	}
-	settings, err := svc.Settings()
+	diagnostics, err := svc.DeliveryDiagnostics()
 	if err != nil {
-		t.Fatalf("Settings() error = %v", err)
+		t.Fatalf("DeliveryDiagnostics() error = %v", err)
 	}
-	if settings.LastDelivery == nil || settings.LastDelivery.Success || !strings.Contains(settings.LastDelivery.Error, "502") {
-		t.Fatalf("last delivery = %+v, want saved HTTP failure", settings.LastDelivery)
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeFailed ||
+		diagnostics.LastAttempt.ConsecutiveFailures != 3 || diagnostics.LastAttempt.NextRetryAt != "" ||
+		!strings.Contains(diagnostics.LastAttempt.Error, "502") {
+		t.Fatalf("last attempt = %+v, want saved terminal HTTP failure", diagnostics.LastAttempt)
 	}
 	var persistedRaw string
 	if err := svc.deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&persistedRaw); err != nil {
@@ -219,6 +222,103 @@ func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	}
 	if strings.Contains(persistedRaw, "remote-secret-body") {
 		t.Fatalf("remote response body leaked into persistence: %s", persistedRaw)
+	}
+}
+
+func TestDeliveryDiagnosticsExposeRetryOnlyWhileScheduled(t *testing.T) {
+	attempted := make(chan struct{}, 1)
+	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		attempted <- struct{}{}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	svc.deps.Backoff = func(int) time.Duration { return 10 * time.Second }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan struct {
+		status DeliveryStatus
+		err    error
+	}, 1)
+	go func() {
+		status, err := svc.TestDelivery(ctx)
+		result <- struct {
+			status DeliveryStatus
+			err    error
+		}{status: status, err: err}
+	}()
+	<-attempted
+
+	deadline := time.Now().Add(time.Second)
+	var retrying DeliveryDiagnostics
+	for time.Now().Before(deadline) {
+		diagnostics, err := svc.DeliveryDiagnostics()
+		if err != nil {
+			t.Fatalf("DeliveryDiagnostics(retrying) error = %v", err)
+		}
+		if diagnostics.LastAttempt != nil && diagnostics.LastAttempt.Outcome == DeliveryOutcomeRetrying {
+			retrying = diagnostics
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if retrying.LastAttempt == nil || retrying.LastAttempt.NextRetryAt == "" ||
+		retrying.LastAttempt.StatusCode != http.StatusServiceUnavailable ||
+		retrying.LastAttempt.ConsecutiveFailures != 1 {
+		t.Fatalf("retrying diagnostics = %+v, want one failed attempt with a scheduled retry", retrying.LastAttempt)
+	}
+
+	cancel()
+	final := <-result
+	if final.err == nil || final.status.Outcome != DeliveryOutcomeFailed || final.status.NextRetryAt != "" {
+		t.Fatalf("TestDelivery() status=%+v error=%v, want canceled terminal failure without retry", final.status, final.err)
+	}
+	diagnostics, err := svc.DeliveryDiagnostics()
+	if err != nil {
+		t.Fatalf("DeliveryDiagnostics(final) error = %v", err)
+	}
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeFailed ||
+		diagnostics.LastAttempt.NextRetryAt != "" {
+		t.Fatalf("final diagnostics = %+v, want no scheduled retry", diagnostics.LastAttempt)
+	}
+}
+
+func TestDeliveryDiagnosticsUseSharedOutcomeTimestampsAndResetFailures(t *testing.T) {
+	var requests int32
+	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&requests, 1) <= defaultAttempts {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	svc.deps.Backoff = func(int) time.Duration { return 0 }
+
+	if status, err := svc.TestDelivery(context.Background()); err == nil ||
+		status.Outcome != DeliveryOutcomeFailed || status.ConsecutiveFailures != defaultAttempts {
+		t.Fatalf("first TestDelivery() status=%+v error=%v, want terminal failure", status, err)
+	}
+
+	base := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	var ticks int64
+	svc.deps.Now = func() time.Time {
+		tick := atomic.AddInt64(&ticks, 1) - 1
+		return base.Add(time.Duration(tick) * 125 * time.Millisecond)
+	}
+	status, err := svc.TestDelivery(context.Background())
+	if err != nil {
+		t.Fatalf("second TestDelivery() error = %v", err)
+	}
+	if status.Outcome != DeliveryOutcomeSucceeded || !status.Success ||
+		status.ConsecutiveFailures != 0 || status.DurationMS != 125 ||
+		status.AttemptedAt == "" || status.CompletedAt == "" || status.DeliveredAt != status.CompletedAt {
+		t.Fatalf("successful test status = %+v, want shared successful outcome semantics", status)
+	}
+	diagnostics, err := svc.DeliveryDiagnostics()
+	if err != nil {
+		t.Fatalf("DeliveryDiagnostics() error = %v", err)
+	}
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeSucceeded ||
+		diagnostics.LastAttempt.ConsecutiveFailures != 0 {
+		t.Fatalf("diagnostics = %+v, want failure counter reset", diagnostics.LastAttempt)
 	}
 }
 
@@ -292,6 +392,14 @@ func TestWebhookSettingsPreserveReplaceClearAndMigrateLegacySecret(t *testing.T)
 		Enabled:          true,
 		LegacyWebhookURL: legacySecretURL,
 		EventTypes:       []string{EventUpdateComplete},
+		LastDelivery: &DeliveryStatus{
+			EventType:   EventUpdateComplete,
+			Success:     false,
+			Attempts:    3,
+			StatusCode:  http.StatusBadGateway,
+			Error:       "legacy-secret remote response body",
+			DeliveredAt: "2026-07-27T12:00:00Z",
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal legacy settings: %v", err)
@@ -328,6 +436,17 @@ func TestWebhookSettingsPreserveReplaceClearAndMigrateLegacySecret(t *testing.T)
 	if strings.Contains(persistedRaw, legacySecretURL) || strings.Contains(persistedRaw, "legacy-secret") ||
 		strings.Contains(persistedRaw, `"webhook_url":`) || !strings.Contains(persistedRaw, `"webhook_url_enc":`) {
 		t.Fatalf("legacy read did not protect persisted URL: %s", persistedRaw)
+	}
+	diagnostics, err := svc.DeliveryDiagnostics()
+	if err != nil {
+		t.Fatalf("DeliveryDiagnostics(legacy) error = %v", err)
+	}
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeFailed ||
+		diagnostics.LastAttempt.AttemptedAt != "2026-07-27T12:00:00Z" ||
+		diagnostics.LastAttempt.CompletedAt != "2026-07-27T12:00:00Z" ||
+		diagnostics.LastAttempt.ConsecutiveFailures != 1 ||
+		diagnostics.LastAttempt.Error != "Webhook delivery failed." {
+		t.Fatalf("legacy diagnostics = %+v, want compatible safe failure", diagnostics.LastAttempt)
 	}
 
 	preserved, err := svc.SaveSettings(SettingsUpdate{
@@ -526,8 +645,12 @@ func TestDeliveryOutcomeDoesNotOverwriteConcurrentSettings(t *testing.T) {
 	if !settings.WebhookConfigured || settings.WebhookURLMasked != "https://replacement.example.test/••••" || len(settings.EventTypes) != 1 || settings.EventTypes[0] != EventScheduleRunFailed {
 		t.Fatalf("settings = %+v, want concurrent replacement preserved", settings)
 	}
-	if settings.LastDelivery == nil || !settings.LastDelivery.Success {
-		t.Fatalf("last delivery = %+v, want recorded outcome", settings.LastDelivery)
+	diagnostics, err := svc.DeliveryDiagnostics()
+	if err != nil {
+		t.Fatalf("DeliveryDiagnostics() error = %v", err)
+	}
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != DeliveryOutcomeSucceeded {
+		t.Fatalf("last attempt = %+v, want recorded outcome", diagnostics.LastAttempt)
 	}
 }
 

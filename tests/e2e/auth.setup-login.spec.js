@@ -490,7 +490,6 @@ test.describe.serial('setup and login flows', () => {
           webhook_url_intent: state.notificationPayload.webhook_url_intent,
           event_types: state.notificationPayload.event_types,
           supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
-          last_delivery: null,
         });
       }
       state.notificationLoadCount = (state.notificationLoadCount || 0) + 1;
@@ -505,22 +504,47 @@ test.describe.serial('setup and login flows', () => {
         webhook_url_intent: 'preserve',
         event_types: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
         supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
-        last_delivery: null,
+      });
+    });
+    await page.route('**/api/notifications/delivery-diagnostics', async route => {
+      state.notificationDiagnosticsLoadCount = (state.notificationDiagnosticsLoadCount || 0) + 1;
+      if ((state.notificationDiagnosticsFailuresRemaining || 0) > 0) {
+        state.notificationDiagnosticsFailuresRemaining -= 1;
+        return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'delivery diagnostics unavailable' }) });
+      }
+      return fulfillJson(route, {
+        last_attempt: state.notificationDiagnosticsResponse || null,
       });
     });
     await page.route('**/api/notifications/test', async route => {
       state.notificationTestCount = (state.notificationTestCount || 0) + 1;
-      return fulfillJson(route, {
-        last_delivery: {
+      const lastAttempt = state.notificationTestResponse || {
           event_type: 'notification.test',
           action: 'notification.test',
           target_name: 'webhook',
+          outcome: 'succeeded',
           success: true,
           attempts: 1,
           status_code: 202,
+          attempted_at: '2026-05-17T12:00:00Z',
+          completed_at: '2026-05-17T12:00:00Z',
           delivered_at: '2026-05-17T12:00:00Z',
-        },
-      });
+          duration_ms: 125,
+          consecutive_failures: 0,
+      };
+      state.notificationDiagnosticsResponse = lastAttempt;
+      const body = {
+        last_attempt: lastAttempt,
+        last_delivery: lastAttempt,
+      };
+      if (state.notificationTestFailure) {
+        return route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'notification test failed', ...body }),
+        });
+      }
+      return fulfillJson(route, body);
     });
     await page.route('**/api/metrics/token', route => {
       if (route.request().method() === 'GET') state.metricsLoadCount = (state.metricsLoadCount || 0) + 1;
@@ -1470,7 +1494,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#notification-status')).toContainText('Webhook URL replaced');
     await page.locator('#notification-test').click();
     await expect.poll(() => state.notificationTestCount || 0).toBe(1);
-    await expect(page.locator('#notification-last-delivery')).toContainText('notification.test');
+    await expect(page.locator('#notification-diagnostics-event')).toHaveText('notification.test');
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Succeeded');
 
     await page.locator('#policy-name').fill('Weekend prod');
     await page.locator('#policy-target-tag').fill('');
@@ -1951,6 +1976,114 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#notification-status')).toContainText('Webhook URL cleared');
     await expect(page.locator('#notification-webhook-masked')).toHaveText('Not configured');
     await expect(page.locator('#notification-webhook-clear')).toBeDisabled();
+  });
+
+  test('notification delivery health exposes safe retry diagnostics and independent test outcomes', async ({ page }) => {
+    const state = {
+      notificationConfiguredURL: 'https://hooks.example.test/path?token=stored-secret',
+      notificationDiagnosticsResponse: {
+        event_type: 'update.complete',
+        action: 'update.complete',
+        target_name: 'srv-a',
+        outcome: 'retrying',
+        success: false,
+        attempts: 2,
+        status_code: 503,
+        error: 'webhook returned HTTP 503',
+        attempted_at: '2026-05-17T12:00:00Z',
+        completed_at: '2026-05-17T12:00:00Z',
+        duration_ms: 820,
+        consecutive_failures: 2,
+        next_retry_at: '2026-05-17T12:00:05Z',
+        response_body: 'DO-NOT-RENDER-REMOTE-BODY',
+        headers: { authorization: 'DO-NOT-RENDER-AUTHORIZATION' },
+      },
+    };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin#admin-section-notifications');
+
+    const facts = page.locator('#notification-diagnostics-facts');
+    await expect(facts).toBeVisible();
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Retry scheduled');
+    await expect(page.locator('#notification-diagnostics-http')).toHaveText('HTTP 503');
+    await expect(page.locator('#notification-diagnostics-duration')).toHaveText('820 ms');
+    await expect(page.locator('#notification-diagnostics-failures')).toHaveText('2');
+    await expect(page.locator('#notification-diagnostics-retry-row')).toBeVisible();
+    await expect(page.locator('#notification-diagnostics-message')).toContainText('automatic retry is scheduled');
+    expect(await page.locator('#admin-section-notifications').innerText()).not.toContain('DO-NOT-RENDER');
+    expect(await page.locator('#admin-section-notifications').innerText()).not.toContain('stored-secret');
+
+    state.notificationFailuresRemaining = 1;
+    await page.evaluate(() => window.fetchNotificationSettings());
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'stale');
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Retry scheduled');
+
+    state.notificationDiagnosticsFailuresRemaining = 1;
+    await page.locator('#notification-diagnostics-retry').click();
+    await expect(page.locator('#notification-diagnostics-message')).toContainText('Showing the last successful diagnostics');
+    await expect(page.locator('#notification-diagnostics-http')).toHaveText('HTTP 503');
+
+    state.notificationDiagnosticsResponse = {
+      event_type: 'update.complete',
+      outcome: 'failed',
+      attempts: 3,
+      status_code: 502,
+      error: 'webhook returned HTTP 502',
+      attempted_at: '2026-05-17T12:01:00Z',
+      completed_at: '2026-05-17T12:01:01Z',
+      duration_ms: 1040,
+      consecutive_failures: 3,
+      next_retry_at: '2026-05-17T12:01:05Z',
+    };
+    await page.locator('#notification-diagnostics-retry').click();
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Failed');
+    await expect(page.locator('#notification-diagnostics-retry-row')).toBeHidden();
+    await expect(page.locator('#notification-diagnostics-message')).toContainText('no retry is scheduled');
+
+    state.notificationTestFailure = true;
+    state.notificationTestResponse = {
+      event_type: 'notification.test',
+      action: 'notification.test',
+      target_name: 'webhook',
+      outcome: 'failed',
+      success: false,
+      attempts: 3,
+      status_code: 504,
+      error: 'Webhook delivery timed out.',
+      attempted_at: '2026-05-17T12:02:00Z',
+      completed_at: '2026-05-17T12:02:02Z',
+      duration_ms: 2000,
+      consecutive_failures: 6,
+      request_headers: 'DO-NOT-RENDER-TEST-HEADER',
+      payload: 'DO-NOT-RENDER-TEST-PAYLOAD',
+    };
+    await page.locator('#notification-test').click();
+    await expect(page.locator('#notification-error')).toContainText('Notification test failed');
+    await expect(page.locator('#notification-diagnostics-event')).toHaveText('notification.test');
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Failed');
+    await expect(page.locator('#notification-diagnostics-failures')).toHaveText('6');
+    expect(await page.locator('#admin-section-notifications').innerText()).not.toContain('DO-NOT-RENDER');
+
+    state.notificationTestFailure = false;
+    state.notificationTestResponse = {
+      event_type: 'notification.test',
+      action: 'notification.test',
+      target_name: 'webhook',
+      outcome: 'succeeded',
+      success: true,
+      attempts: 1,
+      status_code: 204,
+      attempted_at: '2026-05-17T12:03:00Z',
+      completed_at: '2026-05-17T12:03:00Z',
+      duration_ms: 95,
+      consecutive_failures: 0,
+    };
+    await page.locator('#notification-test').click();
+    await expect(page.locator('#notification-status')).toContainText('Notification test delivered');
+    await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Succeeded');
+    await expect(page.locator('#notification-diagnostics-failures')).toHaveText('0');
+    await expect(page.locator('#notification-diagnostics-error-row')).toBeHidden();
   });
 
   test('backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence', async ({ page }) => {

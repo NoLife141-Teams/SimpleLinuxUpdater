@@ -5,7 +5,7 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory() {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "account", "activity", "metrics", "backup"];
+    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup"];
     const sectionDefinitions = [
         { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
@@ -74,8 +74,32 @@
             replacementProvided: false,
             replacementValid: true,
             eventTypes: uniqueStrings(data.event_types ?? data.eventTypes),
-            supportedEvents: uniqueStrings(data.supported_events ?? data.supportedEvents),
-            lastDelivery: clone(data.last_delivery ?? data.lastDelivery ?? null)
+            supportedEvents: uniqueStrings(data.supported_events ?? data.supportedEvents)
+        };
+    }
+
+    function normalizeDeliveryDiagnostics(data = {}) {
+        const raw = data.last_attempt ?? data.lastAttempt ?? data.last_delivery ?? data.lastDelivery ?? null;
+        if (!raw || typeof raw !== "object") return { lastAttempt: null };
+        const rawOutcome = String(raw.outcome || "").trim().toLowerCase();
+        const outcome = ["succeeded", "retrying", "failed"].includes(rawOutcome)
+            ? rawOutcome
+            : raw.success ? "succeeded" : "failed";
+        return {
+            lastAttempt: {
+                eventType: String(raw.event_type ?? raw.eventType ?? "").trim(),
+                action: String(raw.action || "").trim(),
+                targetName: String(raw.target_name ?? raw.targetName ?? "").trim(),
+                outcome,
+                attempts: Math.max(0, Number(raw.attempts) || 0),
+                statusCode: Math.max(0, Number(raw.status_code ?? raw.statusCode) || 0),
+                error: String(raw.error || "").trim(),
+                attemptedAt: String(raw.attempted_at ?? raw.attemptedAt ?? raw.delivered_at ?? raw.deliveredAt ?? "").trim(),
+                completedAt: String(raw.completed_at ?? raw.completedAt ?? raw.delivered_at ?? raw.deliveredAt ?? "").trim(),
+                durationMS: Math.max(0, Number(raw.duration_ms ?? raw.durationMS) || 0),
+                consecutiveFailures: outcome === "succeeded" ? 0 : Math.max(1, Number(raw.consecutive_failures ?? raw.consecutiveFailures) || 0),
+                nextRetryAt: outcome === "retrying" ? String(raw.next_retry_at ?? raw.nextRetryAt ?? "").trim() : ""
+            }
         };
     }
 
@@ -213,6 +237,7 @@
         let timezone = { configured: "", resolved: "UTC", draft: "" };
         let acceptedNotifications = normalizeNotifications();
         let notificationDraft = clone(acceptedNotifications);
+        let notificationDiagnostics = normalizeDeliveryDiagnostics();
         let account = {
             sessionCount: 0,
             sessions: [],
@@ -292,6 +317,19 @@
             return true;
         }
 
+        function acceptAuthoritative(stream, receivedAt) {
+            const state = streams[stream];
+            if (!state) return false;
+            state.activeRequestID = null;
+            state.nextRequestID += 1;
+            state.accepted = true;
+            state.freshness = "fresh";
+            state.status = "current";
+            state.error = "";
+            state.lastSuccessfulRefresh = String(receivedAt || state.lastSuccessfulRefresh || "");
+            return true;
+        }
+
         function fail(stream, requestID, error) {
             const state = streams[stream];
             if (!state || (requestID && state.activeRequestID !== requestID)) return [];
@@ -337,6 +375,9 @@
         function applyNotifications(data, preserveDraft = false) {
             acceptedNotifications = normalizeNotifications(data);
             if (!preserveDraft) notificationDraft = clone(acceptedNotifications);
+        }
+        function applyDeliveryDiagnostics(data) {
+            notificationDiagnostics = normalizeDeliveryDiagnostics(data);
         }
         function applyAccount(data = {}) {
             const sessions = (Array.isArray(data.sessions) ? data.sessions : []).map(item => ({
@@ -548,9 +589,9 @@
             feedback[scope] = { message: String(message || ""), error: Boolean(failed) };
             if (plan.command === "saveTimezone" && !failed) applyTimezone(data || plan.payload);
             if (plan.command === "saveNotifications" && !failed) applyNotifications(data || plan.payload);
-            if (plan.command === "testNotification" && data && data.last_delivery) {
-                acceptedNotifications.lastDelivery = clone(data.last_delivery);
-                notificationDraft.lastDelivery = clone(data.last_delivery);
+            if (plan.command === "testNotification" && data && (data.last_attempt || data.last_delivery)) {
+                applyDeliveryDiagnostics(data);
+                acceptAuthoritative("notificationDiagnostics", new Date().toISOString());
             }
             if (plan.command === "changePassword" && !failed) {
                 account = { ...account, passwordChangeOutcome: normalizePasswordChangeOutcome(data) };
@@ -604,6 +645,12 @@
                     }
                     return [];
                 }
+                case "notificationDiagnosticsReceived":
+                    if (accept("notificationDiagnostics", event.requestID, event.receivedAt)) {
+                        applyDeliveryDiagnostics(event.data);
+                        return [effect("render", { area: "notificationDiagnostics" })];
+                    }
+                    return [];
                 case "notificationDraftChanged":
                     notificationDraft = {
                         ...notificationDraft,
@@ -730,6 +777,7 @@
             return clone({
                 timezone: { ...timezone, dirty: timezoneDirty },
                 notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
+                notificationDiagnostics,
                 account: projectAccount(),
                 activity,
                 metrics,

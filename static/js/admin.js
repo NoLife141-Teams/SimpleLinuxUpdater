@@ -169,7 +169,10 @@ function runAdminWorkspaceEffects(effects) {
 async function loadAdminSectionData(sectionID, reason = "first-activation") {
     try {
         if (sectionID === "app-time") await fetchAppTimezoneSettings(true);
-        if (sectionID === "notifications") await fetchNotificationSettings();
+        if (sectionID === "notifications") await Promise.all([
+            fetchNotificationSettings(),
+            fetchNotificationDeliveryDiagnostics()
+        ]);
         if (sectionID === "account-security") await fetchAuthSessionStatus();
         if (sectionID === "recent-activity") await fetchRecentAdminActivity();
         if (sectionID === "backup") await fetchBackupStatus();
@@ -453,18 +456,67 @@ function selectedNotificationEvents() {
         .filter(Boolean);
 }
 
-function renderNotificationLastDelivery(status) {
-    const node = document.getElementById("notification-last-delivery");
-    if (!node) return;
-    if (!status || !status.delivered_at) {
-        node.textContent = "Last delivery: none.";
+function formatNotificationDuration(durationMS) {
+    const milliseconds = Math.max(0, Number(durationMS) || 0);
+    if (milliseconds < 1000) return `${milliseconds} ms`;
+    return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 2 : 1)} s`;
+}
+
+function renderNotificationDiagnostics() {
+    const view = adminPageView();
+    const diagnostics = view.notificationDiagnostics;
+    const stream = view.streams.notificationDiagnostics;
+    const status = diagnostics.lastAttempt;
+    const message = document.getElementById("notification-diagnostics-message");
+    const facts = document.getElementById("notification-diagnostics-facts");
+    const refresh = document.getElementById("notification-diagnostics-retry");
+    const outcome = document.getElementById("notification-diagnostics-outcome");
+    const attempt = document.getElementById("notification-diagnostics-attempt");
+    const event = document.getElementById("notification-diagnostics-event");
+    const http = document.getElementById("notification-diagnostics-http");
+    const duration = document.getElementById("notification-diagnostics-duration");
+    const failures = document.getElementById("notification-diagnostics-failures");
+    const retryRow = document.getElementById("notification-diagnostics-retry-row");
+    const retryAt = document.getElementById("notification-diagnostics-retry-at");
+    const errorRow = document.getElementById("notification-diagnostics-error-row");
+    const error = document.getElementById("notification-diagnostics-error");
+    if (refresh) refresh.disabled = stream.status === "loading";
+    if (!status) {
+        if (facts) facts.hidden = true;
+        if (message) {
+            message.textContent = stream.error
+                ? `Delivery diagnostics unavailable: ${stream.error}`
+                : stream.status === "loading" ? "Loading delivery diagnostics..." : "No delivery attempts recorded.";
+        }
         return;
     }
-    const outcome = status.success ? "success" : "failed";
-    const target = status.target_name ? ` for ${status.target_name}` : "";
-    const code = status.status_code ? ` HTTP ${status.status_code}.` : "";
-    const err = status.error ? ` ${status.error}` : "";
-    node.textContent = `Last delivery: ${outcome} ${status.event_type || status.action || "notification"}${target} at ${status.delivered_at} after ${Number(status.attempts || 0)} attempt(s).${code}${err}`;
+    if (facts) facts.hidden = false;
+    const outcomeLabels = {
+        succeeded: "Succeeded",
+        retrying: "Retry scheduled",
+        failed: "Failed"
+    };
+    if (outcome) {
+        outcome.textContent = outcomeLabels[status.outcome] || "Unknown";
+        outcome.dataset.outcome = status.outcome || "unknown";
+    }
+    if (attempt) attempt.textContent = formatAdminRefreshTime(status.attemptedAt) || "Unavailable";
+    if (event) event.textContent = status.eventType || status.action || "Notification";
+    if (http) http.textContent = status.statusCode ? `HTTP ${status.statusCode}` : "Not applicable";
+    if (duration) duration.textContent = formatNotificationDuration(status.durationMS);
+    if (failures) failures.textContent = String(status.consecutiveFailures || 0);
+    const hasRetry = status.outcome === "retrying" && Boolean(status.nextRetryAt);
+    if (retryRow) retryRow.hidden = !hasRetry;
+    if (retryAt) retryAt.textContent = hasRetry ? formatAdminRefreshTime(status.nextRetryAt) || status.nextRetryAt : "";
+    if (errorRow) errorRow.hidden = !status.error;
+    if (error) error.textContent = status.error || "";
+    if (message) {
+        message.textContent = stream.error
+            ? `Showing the last successful diagnostics. Refresh failed: ${stream.error}`
+            : status.outcome === "retrying" ? "The latest attempt failed and an automatic retry is scheduled."
+                : status.outcome === "succeeded" ? "The latest delivery attempt succeeded."
+                    : "The latest delivery attempt failed and no retry is scheduled.";
+    }
 }
 
 function renderNotificationSettings() {
@@ -489,7 +541,6 @@ function renderNotificationSettings() {
     document.querySelectorAll("[data-notification-event]").forEach((input) => {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
-    renderNotificationLastDelivery(view.lastDelivery);
     renderNotificationDraftState();
     renderAdminWorkspace();
 }
@@ -607,6 +658,38 @@ async function fetchNotificationSettings() {
     }
 }
 
+function applyNotificationDeliveryDiagnostics(payload, requestID = null) {
+    const effects = adminPageInteraction.dispatch({
+        type: "notificationDiagnosticsReceived",
+        requestID,
+        receivedAt: new Date().toISOString(),
+        data: payload
+    });
+    if (effects.length === 0) return false;
+    renderNotificationDiagnostics();
+    return true;
+}
+
+async function fetchNotificationDeliveryDiagnostics() {
+    const requestID = beginAdminSnapshot("notificationDiagnostics");
+    renderNotificationDiagnostics();
+    try {
+        const res = await fetch("/api/notifications/delivery-diagnostics", { cache: "no-store" });
+        if (!res.ok) {
+            const message = await parseErrorResponse(res, "Failed to load delivery diagnostics.");
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notificationDiagnostics", requestID, error: message });
+            renderNotificationDiagnostics();
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        applyNotificationDeliveryDiagnostics(data, requestID);
+    } catch (err) {
+        console.error("Failed to load delivery diagnostics:", err);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notificationDiagnostics", requestID, error: "Failed to load delivery diagnostics." });
+        renderNotificationDiagnostics();
+    }
+}
+
 async function saveNotificationSettings() {
     const button = document.getElementById("notification-save");
     let plan;
@@ -661,12 +744,12 @@ async function sendNotificationTest() {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
             finishAdminCommand(plan, payload, "Notification test failed.", true);
-            renderNotificationLastDelivery(payload.last_delivery);
+            renderNotificationDiagnostics();
             setNotificationFeedback("", await parseErrorResponse(res, "Notification test failed."));
             return;
         }
         finishAdminCommand(plan, payload, "Notification test delivered.");
-        renderNotificationLastDelivery(payload.last_delivery);
+        renderNotificationDiagnostics();
         setNotificationFeedback("Notification test delivered.", "");
     } catch (err) {
         console.error("Failed to send notification test:", err);
@@ -3436,6 +3519,7 @@ document.getElementById("app-timezone-input").addEventListener("input", (event) 
 document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
 document.getElementById("notification-discard").addEventListener("click", discardNotificationDraft);
 document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
+document.getElementById("notification-diagnostics-retry").addEventListener("click", fetchNotificationDeliveryDiagnostics);
 document.getElementById("notification-webhook-url").addEventListener("input", syncNotificationDraftFromDOM);
 document.getElementById("notification-webhook-replace").addEventListener("click", () => setNotificationWebhookIntent("replace"));
 document.getElementById("notification-webhook-clear").addEventListener("click", () => setNotificationWebhookIntent("clear"));

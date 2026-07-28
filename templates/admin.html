@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=secret-safe-webhook-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=webhook-delivery-diagnostics-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -175,7 +175,48 @@
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-failed" data-notification-event="schedule.run.failed"><label for="notification-event-schedule-failed">Failed scheduled runs</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-skipped" data-notification-event="schedule.run.skipped"><label for="notification-event-schedule-skipped">Skipped scheduled runs</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-restore" data-notification-event="backup.restore"><label for="notification-event-backup-restore">Backup restores</label></div>
-                    <p class="muted" id="notification-last-delivery">Last delivery: none.</p>
+                    <div class="notification-diagnostics-head">
+                        <div>
+                            <span class="eyebrow">Delivery lifecycle</span>
+                            <h3>Delivery health</h3>
+                        </div>
+                        <button class="btn-ghost inline-btn" type="button" id="notification-diagnostics-retry">Refresh</button>
+                    </div>
+                    <p class="muted" id="notification-diagnostics-message" role="status" aria-live="polite">Delivery diagnostics load with this section.</p>
+                    <dl class="notification-diagnostics-facts" id="notification-diagnostics-facts" hidden>
+                        <div>
+                            <dt>Outcome</dt>
+                            <dd id="notification-diagnostics-outcome">Unavailable</dd>
+                        </div>
+                        <div>
+                            <dt>Last attempt</dt>
+                            <dd id="notification-diagnostics-attempt">Unavailable</dd>
+                        </div>
+                        <div>
+                            <dt>Event</dt>
+                            <dd id="notification-diagnostics-event">Unavailable</dd>
+                        </div>
+                        <div>
+                            <dt>Remote status</dt>
+                            <dd id="notification-diagnostics-http">Not applicable</dd>
+                        </div>
+                        <div>
+                            <dt>Duration</dt>
+                            <dd id="notification-diagnostics-duration">0 ms</dd>
+                        </div>
+                        <div>
+                            <dt>Consecutive failures</dt>
+                            <dd id="notification-diagnostics-failures">0</dd>
+                        </div>
+                        <div id="notification-diagnostics-retry-row" hidden>
+                            <dt>Next retry</dt>
+                            <dd id="notification-diagnostics-retry-at"></dd>
+                        </div>
+                        <div id="notification-diagnostics-error-row" hidden>
+                            <dt>Safe error</dt>
+                            <dd id="notification-diagnostics-error"></dd>
+                        </div>
+                    </dl>
                 </div>
             </div>
             </div>
@@ -893,7 +934,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=secret-safe-webhook-20260728a"></script>
-    <script src="/static/js/admin.js?v=secret-safe-webhook-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=webhook-delivery-diagnostics-20260728a"></script>
+    <script src="/static/js/admin.js?v=webhook-delivery-diagnostics-20260728a"></script>
 </body>
 </html>

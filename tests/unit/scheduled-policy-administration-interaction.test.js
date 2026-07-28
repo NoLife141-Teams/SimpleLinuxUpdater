@@ -127,6 +127,48 @@ test("preview accepts canonical occurrence facts and invalidates them when the a
     assert.match(store.getView().editor.preview.message, /timezone changed/i);
 });
 
+test("advisory schedule conflicts remain accepted preview facts without blocking policy save", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft() });
+    const request = store.dispatch({ type: "previewRequested" }).find(effect => effect.type === "fetchPreview");
+    const conflict = {
+        policy_id: 7,
+        policy_name: "Competing policy",
+        overlap_kind: "partial",
+        shared_servers: ["srv-prod"],
+        occurrence_windows: [{
+            local_civil_time: "2026-05-18 02:00",
+            timezone: "America/Toronto",
+            window_start_utc: "2026-05-18T06:00:00.000000000Z",
+            window_end_utc: "2026-05-18T06:01:00.000000000Z",
+            draft_admission_outcome: "admitted",
+            competing_admission_outcome: "admitted",
+            effective: true,
+        }],
+    };
+    store.dispatch({
+        type: "previewReceived",
+        requestId: request.requestId,
+        preview: {
+            matched_servers: [{ name: "srv-prod" }],
+            schedule_conflicts: [conflict],
+            validation_errors: [],
+            operational_warnings: [{
+                code: "policy_schedule_overlap",
+                message: "One or more enabled policies target shared servers during the same projected occurrence.",
+            }],
+            informational_facts: [],
+            upcoming_occurrences: [],
+        },
+    });
+
+    assert.deepEqual(store.getView().editor.preview.data.schedule_conflicts, [conflict]);
+    assert.equal(store.getView().editor.valid, true);
+    assert.equal(store.planCommand("savePolicy").enabled, true);
+    conflict.shared_servers.push("mutated");
+    assert.deepEqual(store.getView().editor.preview.data.schedule_conflicts[0].shared_servers, ["srv-prod"]);
+});
+
 test("blackout JSON failures preserve the last accepted policy and global rows", () => {
     const store = createStore();
     store.dispatch({ type: "blackoutRowsReceived", kind: "policy", rows: [{ weekdays: ["monday"], start_time: "01:00", end_time: "02:00" }] });

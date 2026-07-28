@@ -2,10 +2,12 @@ package policies
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	"debian-updater/internal/servers"
 )
 
 func newPreviewResponse() PreviewResponse {
@@ -14,6 +16,7 @@ func newPreviewResponse() PreviewResponse {
 		ExcludedServers:     []PreviewServer{},
 		DisabledByOverride:  []PreviewServer{},
 		UpcomingOccurrences: []PreviewOccurrence{},
+		ScheduleConflicts:   []PreviewConflict{},
 		ValidationErrors:    []PreviewDiagnostic{},
 		OperationalWarnings: []PreviewDiagnostic{},
 		InformationalFacts:  []PreviewDiagnostic{},
@@ -124,6 +127,155 @@ func (s *Service) projectPolicyPreviewOccurrences(policy Policy, matched []Previ
 		})
 		previousOffset = offset
 	}
+}
+
+func (s *Service) projectPolicyPreviewConflicts(
+	policy Policy,
+	matched []PreviewServer,
+	serversSnapshot []servers.Server,
+	overrides map[int64]map[string]bool,
+	globalBlackouts []BlackoutWindow,
+	response *PreviewResponse,
+) error {
+	deps := s.EnsureDeps()
+	if response == nil || deps.ListPolicies == nil || len(matched) == 0 || len(response.UpcomingOccurrences) == 0 {
+		return nil
+	}
+	policyList, err := deps.ListPolicies()
+	if err != nil {
+		return err
+	}
+	draftServers := previewMatchedServerNames(matched)
+	loc, timezoneName := previewTimezone(deps)
+
+	for _, competing := range policyList {
+		if !competing.Enabled || (policy.ID != 0 && competing.ID == policy.ID) {
+			continue
+		}
+		if err := s.NormalizePolicy(&competing); err != nil {
+			continue
+		}
+		competingServers := matchedServerNamesForPolicy(s, competing, serversSnapshot, overrides)
+		sharedServers := intersectServerNames(draftServers, competingServers)
+		if len(sharedServers) == 0 {
+			continue
+		}
+
+		conflict := PreviewConflict{
+			PolicyID:          competing.ID,
+			PolicyName:        competing.Name,
+			OverlapKind:       previewConflictKind(draftServers, competingServers, sharedServers),
+			SharedServers:     sharedServers,
+			OccurrenceWindows: []PreviewConflictWindow{},
+		}
+		for _, occurrence := range response.UpcomingOccurrences {
+			slotUTC, err := time.Parse(deps.TimestampLayout, occurrence.ScheduledForUTC)
+			if err != nil {
+				continue
+			}
+			slotLocal := slotUTC.In(loc).Truncate(time.Minute)
+			if !s.PolicyDueAt(competing, slotLocal) {
+				continue
+			}
+			canonicalSlot, _, ok := s.resolvePolicySlotForDay(
+				competing,
+				time.Date(slotLocal.Year(), slotLocal.Month(), slotLocal.Day(), 0, 0, 0, 0, loc),
+			)
+			if !ok || !canonicalSlot.UTC().Equal(slotUTC.UTC()) {
+				continue
+			}
+
+			competingOutcome := PreviewAdmissionAdmitted
+			if len(applicablePreviewWindows(s, canonicalSlot, globalBlackouts, competing.PolicyBlackouts)) > 0 {
+				competingOutcome = PreviewAdmissionBlockedNoRun
+			}
+			effective := occurrence.AdmissionOutcome == PreviewAdmissionAdmitted &&
+				competingOutcome == PreviewAdmissionAdmitted
+			conflict.OccurrenceWindows = append(conflict.OccurrenceWindows, PreviewConflictWindow{
+				LocalCivilTime:            occurrence.LocalCivilTime,
+				Timezone:                  timezoneName,
+				WindowStartUTC:            slotUTC.UTC().Format(deps.TimestampLayout),
+				WindowEndUTC:              slotUTC.UTC().Add(time.Minute).Format(deps.TimestampLayout),
+				DraftAdmissionOutcome:     occurrence.AdmissionOutcome,
+				CompetingAdmissionOutcome: competingOutcome,
+				Effective:                 effective,
+			})
+		}
+		if len(conflict.OccurrenceWindows) == 0 {
+			continue
+		}
+
+		effective := false
+		suppressedByNoRun := false
+		for _, window := range conflict.OccurrenceWindows {
+			effective = effective || window.Effective
+			suppressedByNoRun = suppressedByNoRun ||
+				window.DraftAdmissionOutcome == PreviewAdmissionBlockedNoRun ||
+				window.CompetingAdmissionOutcome == PreviewAdmissionBlockedNoRun
+		}
+		if effective {
+			addPreviewOperationalWarning(
+				response,
+				"policy_schedule_overlap",
+				"One or more enabled policies target shared servers during the same projected occurrence.",
+			)
+		}
+		if suppressedByNoRun {
+			addPreviewFact(
+				response,
+				"policy_schedule_overlap_suppressed_by_no_run",
+				fmt.Sprintf("At least one projected overlap with %q is suppressed by an applicable no-run window.", competing.Name),
+			)
+		}
+		response.ScheduleConflicts = append(response.ScheduleConflicts, conflict)
+	}
+	sort.Slice(response.ScheduleConflicts, func(i, j int) bool {
+		left := strings.ToLower(response.ScheduleConflicts[i].PolicyName)
+		right := strings.ToLower(response.ScheduleConflicts[j].PolicyName)
+		if left == right {
+			return response.ScheduleConflicts[i].PolicyID < response.ScheduleConflicts[j].PolicyID
+		}
+		return left < right
+	})
+	return nil
+}
+
+func previewMatchedServerNames(items []PreviewServer) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return strings.ToLower(names[i]) < strings.ToLower(names[j])
+	})
+	return names
+}
+
+func intersectServerNames(left, right []string) []string {
+	leftByKey := make(map[string]string, len(left))
+	for _, name := range left {
+		leftByKey[strings.ToLower(strings.TrimSpace(name))] = name
+	}
+	shared := make([]string, 0)
+	for _, name := range right {
+		if canonical, ok := leftByKey[strings.ToLower(strings.TrimSpace(name))]; ok {
+			shared = append(shared, canonical)
+		}
+	}
+	sort.Slice(shared, func(i, j int) bool {
+		return strings.ToLower(shared[i]) < strings.ToLower(shared[j])
+	})
+	return shared
+}
+
+func previewConflictKind(draft, competing, shared []string) string {
+	if len(shared) == len(draft) && len(shared) == len(competing) {
+		return PreviewConflictFull
+	}
+	return PreviewConflictPartial
 }
 
 func previewTimezone(deps ServiceDeps) (*time.Location, string) {

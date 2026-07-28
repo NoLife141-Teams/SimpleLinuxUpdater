@@ -1308,6 +1308,7 @@ test.describe.serial('setup and login flows', () => {
         validation_errors: [],
         operational_warnings: [
           { code: 'no_run_window', message: 'One or more upcoming occurrences are blocked by an applicable no-run window.' },
+          { code: 'policy_schedule_overlap', message: 'One or more enabled policies target shared servers during the same projected occurrence.' },
         ],
         informational_facts: [
           { code: 'dst_nonexistent_skipped', message: '2026-03-08 02:30 does not exist in America/Toronto; the scheduler skips that local occurrence.' },
@@ -1332,6 +1333,32 @@ test.describe.serial('setup and login flows', () => {
           }],
           admission_outcome: 'blocked_no_run',
         }],
+        schedule_conflicts: [{
+          policy_id: 7,
+          policy_name: 'Nightly production',
+          overlap_kind: 'partial',
+          shared_servers: ['srv-web-01'],
+          occurrence_windows: [
+            {
+              local_civil_time: '2026-11-01 01:30',
+              timezone: 'America/Toronto',
+              window_start_utc: '2026-11-01T05:30:00.000000000Z',
+              window_end_utc: '2026-11-01T05:31:00.000000000Z',
+              draft_admission_outcome: 'blocked_no_run',
+              competing_admission_outcome: 'admitted',
+              effective: false,
+            },
+            {
+              local_civil_time: '2026-11-02 01:30',
+              timezone: 'America/Toronto',
+              window_start_utc: '2026-11-02T06:30:00.000000000Z',
+              window_end_utc: '2026-11-02T06:31:00.000000000Z',
+              draft_admission_outcome: 'admitted',
+              competing_admission_outcome: 'admitted',
+              effective: true,
+            },
+          ],
+        }],
       },
     };
     await ensureAuthenticatedSession(page);
@@ -1347,7 +1374,24 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#policy-preview-facts')).toContainText('does not exist');
     await expect(page.locator('#policy-preview-facts')).toContainText('earlier occurrence');
     await expect(page.locator('#policy-preview-warnings')).toContainText('blocked by an applicable no-run window');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('Nightly production');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('Partial target overlap');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('srv-web-01');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('Suppressed by no-run');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('Effective overlap');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('2026-11-02T06:30:00.000000000Z');
+    await expect(page.locator('#policy-save-btn')).toBeEnabled();
     await expect(page.locator('#policy-preview-validation-errors')).toBeEmpty();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileConflictLayout = await page.locator('#policy-preview-conflicts .preview-conflict').evaluate(element => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      conflictScrollWidth: element.scrollWidth,
+      conflictClientWidth: element.clientWidth,
+    }));
+    expect(mobileConflictLayout.bodyWidth).toBeLessThanOrEqual(mobileConflictLayout.viewportWidth);
+    expect(mobileConflictLayout.conflictScrollWidth).toBeLessThanOrEqual(mobileConflictLayout.conflictClientWidth + 1);
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     state.policyPreviewResponse = {
       matched_servers: [],
@@ -1356,6 +1400,7 @@ test.describe.serial('setup and login flows', () => {
       validation_errors: [],
       operational_warnings: [{ code: 'no_matching_servers', message: 'No current server would be targeted by this policy.' }],
       informational_facts: [{ code: 'application_timezone', message: 'Occurrences use the canonical application timezone America/Toronto.' }],
+      schedule_conflicts: [],
       upcoming_occurrences: [{
         local_civil_time: '2026-11-02 01:30',
         timezone: 'America/Toronto',
@@ -1376,6 +1421,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#policy-preview-summary')).toContainText('No current server');
     await expect(page.locator('#policy-preview-occurrences')).toContainText('Expected: no matching servers');
     await expect(page.locator('#policy-preview-warnings')).toContainText('No current server would be targeted');
+    await expect(page.locator('#policy-preview-conflicts')).toContainText('No enabled policy overlap');
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobileLayout = await page.evaluate(() => ({

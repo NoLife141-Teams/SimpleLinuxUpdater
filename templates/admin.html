@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=policy-projection-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=policy-projection-20260728a">
+    <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=policy-conflicts-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -332,6 +332,18 @@
                                         <ol id="policy-preview-occurrences" class="preview-occurrences">
                                             <li class="subtle">Complete the policy fields to project its schedule.</li>
                                         </ol>
+                                    </div>
+                                    <div class="preview-conflict-section" aria-labelledby="policy-preview-conflict-label">
+                                        <div class="preview-occurrence-head">
+                                            <div>
+                                                <span class="table-shell-label" id="policy-preview-conflict-label">Competing policy overlaps</span>
+                                                <p class="muted">Advisory only; existing validation rules remain the save boundary.</p>
+                                            </div>
+                                            <span class="pill pill-muted" id="policy-preview-conflict-count">0 policies</span>
+                                        </div>
+                                        <div id="policy-preview-conflicts" class="preview-conflicts">
+                                            <span class="subtle">No enabled policy overlap is projected.</span>
+                                        </div>
                                     </div>
                                     <div id="policy-preview-validation-errors" class="preview-diagnostics preview-errors"></div>
                                     <div id="policy-preview-warnings" class="preview-diagnostics preview-warnings"></div>
@@ -704,11 +716,11 @@
     </div>
 
     <script src="/static/auth.js"></script>
-    <script src="/static/js/common.js?v=policy-projection-20260728a"></script>
+    <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=policy-projection-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=policy-projection-20260728a"></script>
-    <script src="/static/js/admin.js?v=policy-projection-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=policy-conflicts-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=policy-conflicts-20260728a"></script>
+    <script src="/static/js/admin.js?v=policy-conflicts-20260728a"></script>
 </body>
 </html>

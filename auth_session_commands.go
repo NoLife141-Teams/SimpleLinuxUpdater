@@ -596,11 +596,8 @@ func (m *authSessionCommands) RevokeSession(ctx context.Context, cmd authRevokeS
 	return authRevokeSessionOutcome{Kind: authRevokeSessionSucceeded, Current: cmd.Current}
 }
 
-func (m *authSessionCommands) ClearOtherSessions(ctx context.Context, cmd authClearOtherSessionsCommand) authClearOtherSessionsOutcome {
+func (m *authSessionCommands) ClearOtherSessions(_ context.Context, cmd authClearOtherSessionsCommand) authClearOtherSessionsOutcome {
 	deps := m.deps.withDefaults()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	cmd.Actor = strings.TrimSpace(cmd.Actor)
 	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
 	cmd.CurrentToken = strings.TrimSpace(cmd.CurrentToken)
@@ -621,11 +618,8 @@ func (m *authSessionCommands) ClearOtherSessions(ctx context.Context, cmd authCl
 	return authClearOtherSessionsOutcome{Kind: authClearOtherSessionsSucceeded, DeletedSessions: deleted}
 }
 
-func (m *authSessionCommands) RevealSessionIP(ctx context.Context, cmd authRevealSessionIPCommand) authRevealSessionIPOutcome {
+func (m *authSessionCommands) RevealSessionIP(_ context.Context, cmd authRevealSessionIPCommand) authRevealSessionIPOutcome {
 	deps := m.deps.withDefaults()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	cmd.Actor = strings.TrimSpace(cmd.Actor)
 	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
 	cmd.SessionID = strings.TrimSpace(cmd.SessionID)

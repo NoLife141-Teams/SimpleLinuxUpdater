@@ -296,10 +296,6 @@ func countStoredSessions() (int, error) {
 	return defaultAuthService().CountSessions()
 }
 
-func countStoredSessionsForContext(c *gin.Context) (int, error) {
-	return authServiceForContext(c).CountSessions()
-}
-
 func currentSessionToken(c *gin.Context) (token string) {
 	defer func() {
 		if recover() != nil {

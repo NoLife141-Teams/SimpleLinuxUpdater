@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=scheduled-run-history-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=restore-readiness-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -627,7 +627,43 @@
                     <input class="file-input" type="file" id="backup-restore-file" accept=".slubkp,application/octet-stream">
                     <label class="file-btn" for="backup-restore-file">Choose backup file</label>
                     <input type="password" id="backup-restore-passphrase" aria-label="Backup restore passphrase" placeholder="Backup passphrase">
-                    <button class="btn-ghost" type="button" id="backup-verify-btn">Verify Backup</button>
+                    <button class="btn-ghost" type="button" id="backup-verify-btn">Review Restore Readiness</button>
+                    <div class="backup-review-empty" id="backup-review-empty">Select an archive and review its restore impact before replacement.</div>
+                    <section class="backup-restore-review" id="backup-restore-review" aria-labelledby="backup-review-title" hidden>
+                        <div class="backup-review-head">
+                            <div>
+                                <div class="eyebrow">Read-only verification</div>
+                                <h4 id="backup-review-title">Restore readiness</h4>
+                            </div>
+                            <span class="pill" id="backup-review-readiness">Not reviewed</span>
+                        </div>
+                        <dl class="backup-review-facts">
+                            <div><dt>Archive</dt><dd id="backup-review-archive">-</dd></div>
+                            <div><dt>Created</dt><dd id="backup-review-created">-</dd></div>
+                            <div><dt>Archive size</dt><dd id="backup-review-size">-</dd></div>
+                            <div><dt>Restart</dt><dd id="backup-review-restart">-</dd></div>
+                        </dl>
+                        <div class="backup-review-section">
+                            <h5>Included resources</h5>
+                            <ul id="backup-review-resources"></ul>
+                        </div>
+                        <div class="backup-review-section">
+                            <h5>Archived records</h5>
+                            <dl class="backup-review-counts" id="backup-review-counts"></dl>
+                        </div>
+                        <div class="backup-review-section">
+                            <h5>Replacement impact</h5>
+                            <ul id="backup-review-impact"></ul>
+                        </div>
+                        <div class="backup-review-section backup-review-blockers" id="backup-review-blockers" hidden>
+                            <h5>Blockers</h5>
+                            <ul></ul>
+                        </div>
+                        <div class="backup-review-section backup-review-warnings" id="backup-review-warnings" hidden>
+                            <h5>Warnings</h5>
+                            <ul></ul>
+                        </div>
+                    </section>
                     <button class="btn-danger" type="button" id="backup-restore-btn" data-admin-danger-command="restoreBackup">Restore Backup (Full Replace)</button>
                 </div>
             </div>
@@ -751,7 +787,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=policy-conflicts-20260728a"></script>
-    <script src="/static/js/admin.js?v=scheduled-run-history-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=restore-readiness-20260728a"></script>
+    <script src="/static/js/admin.js?v=restore-readiness-20260728a"></script>
 </body>
 </html>

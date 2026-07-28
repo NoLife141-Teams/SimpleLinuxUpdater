@@ -32,6 +32,10 @@
         return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)]));
     }
 
+    function sameValue(left, right) {
+        return JSON.stringify(left) === JSON.stringify(right);
+    }
+
     function uniqueStrings(values) {
         const seen = new Set();
         return (Array.isArray(values) ? values : []).map(value => String(value || "").trim()).filter(value => value && !seen.has(value) && seen.add(value));
@@ -78,6 +82,40 @@
         };
     }
 
+    function normalizeBackupReview(data = {}) {
+        const archive = data.archive && typeof data.archive === "object" ? data.archive : {};
+        const counts = data.safe_counts && typeof data.safe_counts === "object" ? data.safe_counts : {};
+        const impact = data.impact && typeof data.impact === "object" ? data.impact : {};
+        return {
+            valid: Boolean(data.valid),
+            compatible: Boolean(data.compatible),
+            restoreReady: Boolean(data.restore_ready),
+            archive: {
+                format: String(archive.format || data.format || "").trim(),
+                version: Number(archive.version ?? data.version) || 0,
+                createdAt: String(archive.created_at || data.created_at || "").trim(),
+                sizeBytes: Number(archive.size_bytes ?? data.archive_size_bytes) || 0
+            },
+            resources: clone(Array.isArray(data.resources) ? data.resources : []),
+            missingResources: uniqueStrings(data.missing_resources),
+            safeCounts: {
+                servers: Number(counts.servers) || 0,
+                policies: Number(counts.policies) || 0,
+                jobs: Number(counts.jobs) || 0,
+                sessions: Number(counts.sessions) || 0
+            },
+            impact: {
+                sessionsInvalidated: Boolean(impact.sessions_invalidated),
+                metricsAccessReplaced: Boolean(impact.metrics_access_replaced),
+                maintenanceRequired: Boolean(impact.maintenance_required),
+                downtimeExpected: Boolean(impact.downtime_expected),
+                restartRequired: Boolean(impact.restart_required)
+            },
+            blockers: clone(Array.isArray(data.blockers) ? data.blockers : []),
+            warnings: clone(Array.isArray(data.warnings) ? data.warnings : [])
+        };
+    }
+
     function createStore(options = {}) {
         const scheduled = options.scheduled || null;
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -87,7 +125,16 @@
         let notificationDraft = clone(acceptedNotifications);
         let account = { sessionCount: 0, sessions: [], otherSessionsExpanded: false };
         let metrics = { enabled: false, revealedToken: "" };
-        let backup = { blocked: false, reason: "", status: null, selectedFile: null };
+        let backup = {
+            blocked: false,
+            reason: "",
+            status: null,
+            selectedFile: null,
+            credentialValid: false,
+            credentialRevision: 0,
+            review: null,
+            reviewBinding: null
+        };
         let activeSection = sectionDefinitions[0].id;
         let collapsedSections = [];
         const activatedSections = new Set();
@@ -103,6 +150,15 @@
             return "account";
         }
         function commandKey(command) { return command; }
+        function currentBackupBinding() {
+            return {
+                file: clone(backup.selectedFile),
+                credentialRevision: backup.credentialRevision
+            };
+        }
+        function backupBindingMatches(binding) {
+            return sameValue(binding || null, currentBackupBinding());
+        }
         function scheduledDestructiveInFlight() {
             return Boolean(scheduled && typeof scheduled.getView === "function" && scheduled.getView()?.commands?.destructiveInFlight);
         }
@@ -340,10 +396,17 @@
                     if (backup.blocked) return { enabled: false, command, key, reason: backup.reason || "Backup is unavailable." };
                     if (!payload.passphraseValid || !payload.passwordsMatch) return { enabled: false, command, key, reason: "A valid matching backup passphrase is required." };
                     return { enabled: true, command, key, payload: { includeKnownHosts: Boolean(payload.includeKnownHosts) } };
-                case "verifyBackup": case "restoreBackup":
+                case "verifyBackup":
                     if (backup.blocked) return { enabled: false, command, key, reason: backup.reason || "Backup is unavailable." };
-                    if (!backup.selectedFile || !payload.passphraseValid) return { enabled: false, command, key, reason: !backup.selectedFile ? "Choose a backup file." : "A valid backup passphrase is required." };
-                    return { enabled: true, command, key, payload: { file: clone(backup.selectedFile) } };
+                    if (!backup.selectedFile || !(payload.passphraseValid || backup.credentialValid)) return { enabled: false, command, key, reason: !backup.selectedFile ? "Choose a backup file." : "A valid backup passphrase is required." };
+                    return { enabled: true, command, key, binding: currentBackupBinding(), payload: { file: clone(backup.selectedFile) } };
+                case "restoreBackup":
+                    if (backup.blocked) return { enabled: false, command, key, reason: backup.reason || "Backup is unavailable." };
+                    if (!backup.selectedFile || !(payload.passphraseValid || backup.credentialValid)) return { enabled: false, command, key, reason: !backup.selectedFile ? "Choose a backup file." : "A valid backup passphrase is required." };
+                    if (!backup.review || !backup.review.restoreReady || !backupBindingMatches(backup.reviewBinding)) {
+                        return { enabled: false, command, key, reason: "Verify this exact backup and passphrase before restoring; the restore review is not ready." };
+                    }
+                    return { enabled: true, command, key, binding: currentBackupBinding(), payload: { file: clone(backup.selectedFile) } };
                 default: return { enabled: true, command, key, payload: clone(payload) };
             }
         }
@@ -363,6 +426,22 @@
             if (plan.command === "clearSessions" && !failed) applyAccount(data || {});
             if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {});
             if (plan.command === "disableMetricsToken" && !failed) metrics = { enabled: false, revealedToken: "" };
+            if (plan.command === "verifyBackup") {
+                if (!failed && backupBindingMatches(plan.binding)) {
+                    backup.review = normalizeBackupReview(data || {});
+                    backup.reviewBinding = clone(plan.binding);
+                } else if (!failed) {
+                    feedback.backup = { message: "The restore review response was discarded because the archive or passphrase changed.", error: false };
+                } else if (backupBindingMatches(plan.binding)) {
+                    backup.review = null;
+                    backup.reviewBinding = null;
+                }
+            }
+            if (plan.command === "restoreBackup" && !failed) {
+                backup.selectedFile = null;
+                backup.review = null;
+                backup.reviewBinding = null;
+            }
             const effects = [effect("render", { area: scope })];
             if (plan.command === "saveTimezone" && !failed) effects.push(effect("reconcileSchedule"));
             if (["saveNotifications", "clearSessions", "clearOtherSessions", "revokeSession", "rotateMetricsToken", "disableMetricsToken", "exportBackup", "verifyBackup", "restoreBackup"].includes(plan.command) && !failed) {
@@ -416,7 +495,26 @@
                 case "metricsSnapshotReceived": if (accept("metrics", event.requestID, event.receivedAt)) { applyMetrics(event.data); return [effect("render", { area: "metrics" }), effect("render", { area: "workspace" })]; } return [];
                 case "metricsTokenHidden": metrics.revealedToken = ""; return [effect("render", { area: "metrics" })];
                 case "backupSnapshotReceived": if (accept("backup", event.requestID, event.receivedAt)) { applyBackup(event.data); return [effect("render", { area: "backup" }), effect("render", { area: "workspace" })]; } return [];
-                case "backupFileSelected": backup.selectedFile = event.file ? { name: String(event.file.name || ""), size: Number(event.file.size) || 0 } : null; return [effect("render", { area: "backup" })];
+                case "backupFileSelected":
+                    backup.selectedFile = event.file ? {
+                        name: String(event.file.name || ""),
+                        size: Number(event.file.size) || 0,
+                        lastModified: Number(event.file.lastModified) || 0
+                    } : null;
+                    backup.review = null;
+                    backup.reviewBinding = null;
+                    feedback.backup = { message: backup.selectedFile ? "Verify the selected archive before restoring." : "", error: false };
+                    return [effect("render", { area: "backup" })];
+                case "backupPassphraseChanged":
+                    backup.credentialValid = Boolean(event.valid);
+                    backup.credentialRevision += 1;
+                    backup.review = null;
+                    backup.reviewBinding = null;
+                    feedback.backup = {
+                        message: backup.selectedFile ? "The restore review expired because the passphrase changed. Verify again." : "",
+                        error: false
+                    };
+                    return [effect("render", { area: "backup" })];
                 case "sectionPreferencesRestored":
                     collapsedSections = normalizeSectionIDs(event.collapsedSections);
                     return [effect("render", { area: "workspace" })];

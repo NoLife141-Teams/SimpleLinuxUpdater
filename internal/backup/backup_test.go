@@ -304,8 +304,63 @@ func TestVerifyArchiveValidatesWithoutApplying(t *testing.T) {
 	if !result.DatabaseValid || !result.ConfigValid || !result.KnownHostsIncluded || result.ManifestFileCount != 3 {
 		t.Fatalf("VerifyArchive() result = %+v, want valid archive with known_hosts", result)
 	}
+	if !result.RestoreReady || !result.Compatible || len(result.Blockers) != 0 {
+		t.Fatalf("VerifyArchive() readiness = %+v, want compatible and ready", result)
+	}
+	if result.SafeCounts.Servers != 1 {
+		t.Fatalf("VerifyArchive() safe server count = %d, want 1", result.SafeCounts.Servers)
+	}
+	if !result.Impact.SessionsInvalidated || !result.Impact.MetricsAccessReplaced || !result.Impact.MaintenanceRequired || !result.Impact.DowntimeExpected || result.Impact.RestartRequired {
+		t.Fatalf("VerifyArchive() impact = %+v, want session/metrics/maintenance/downtime without restart", result.Impact)
+	}
 	if applied {
 		t.Fatalf("VerifyArchive() invoked apply/runtime mutation hook")
+	}
+}
+
+func TestVerifyArchiveReturnsStructuredIncompatibleReview(t *testing.T) {
+	raw, err := json.Marshal(Envelope{
+		Format:    FormatName,
+		Version:   FormatVersion + 1,
+		CreatedAt: "2026-05-17T06:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal incompatible envelope: %v", err)
+	}
+	service := NewService(ServiceDeps{Logf: func(string, ...any) {}})
+	result, err := service.VerifyArchive(context.Background(), raw, testPassphrase)
+	if err != nil {
+		t.Fatalf("VerifyArchive(incompatible) error = %v, want structured review", err)
+	}
+	if result.Compatible || result.RestoreReady || result.ArchiveVersion != FormatVersion+1 {
+		t.Fatalf("VerifyArchive(incompatible) = %+v, want incompatible version facts", result)
+	}
+	if len(result.Blockers) != 1 || result.Blockers[0].Code != "unsupported_version" {
+		t.Fatalf("VerifyArchive(incompatible) blockers = %+v, want unsupported_version", result.Blockers)
+	}
+}
+
+func TestVerifyArchiveReportsMissingRequiredResources(t *testing.T) {
+	tarGz, err := BuildTarGz(map[string][]byte{
+		"servers.db": []byte("not-needed-for-missing-resource-review"),
+	})
+	if err != nil {
+		t.Fatalf("BuildTarGz(missing config) error = %v", err)
+	}
+	encrypted, err := EncryptPayload(tarGz, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload(missing config) error = %v", err)
+	}
+	service := NewService(ServiceDeps{Logf: func(string, ...any) {}})
+	result, err := service.VerifyArchive(context.Background(), encrypted, testPassphrase)
+	if err != nil {
+		t.Fatalf("VerifyArchive(missing config) error = %v, want structured review", err)
+	}
+	if result.RestoreReady || len(result.MissingResources) != 1 || result.MissingResources[0] != "config.json" {
+		t.Fatalf("VerifyArchive(missing config) = %+v, want config.json blocker", result)
+	}
+	if len(result.Blockers) != 1 || result.Blockers[0].Code != "missing_required_resource" {
+		t.Fatalf("VerifyArchive(missing config) blockers = %+v, want missing_required_resource", result.Blockers)
 	}
 }
 

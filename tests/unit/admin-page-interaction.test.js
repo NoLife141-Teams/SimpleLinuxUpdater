@@ -208,18 +208,69 @@ test("backup administration owns eligibility but excludes passphrases and file c
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: true, reason: "Maintenance active" } });
     assert.equal(store.planCommand("exportBackup").enabled, false);
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });
-    store.dispatch({ type: "backupFileSelected", file: { name: "safe.slubkp", size: 42, contents: "never-store" } });
+    store.dispatch({ type: "backupFileSelected", file: { name: "safe.slubkp", size: 42, lastModified: 100, contents: "never-store" } });
+    store.dispatch({ type: "backupPassphraseChanged", valid: true });
     const verify = store.planCommand("verifyBackup", { passphraseValid: true });
     assert.equal(verify.enabled, true);
-    assert.deepEqual(verify.payload.file, { name: "safe.slubkp", size: 42 });
+    assert.deepEqual(verify.payload.file, { name: "safe.slubkp", size: 42, lastModified: 100 });
+    assert.equal(store.planCommand("restoreBackup").enabled, false);
+    assert.match(store.planCommand("restoreBackup").reason, /verify/i);
     const viewJSON = JSON.stringify(store.getView());
     assert.equal(viewJSON.includes("never-store"), false);
     assert.equal(JSON.stringify(verify).includes("passphrase"), false);
     assert.equal(JSON.stringify(verify).includes("binary"), false);
     const started = effect(store.dispatch({ type: "commandRequested", command: "verifyBackup", payload: { passphraseValid: true } }), "executeCommand");
     assert.equal(store.dispatch({ type: "commandRequested", command: "verifyBackup", payload: { passphraseValid: true } })[0].type, "commandRejected");
-    store.dispatch({ type: "commandCompleted", plan: started.plan, message: "Backup verified." });
-    assert.equal(store.getView().feedback.backup.message, "Backup verified.");
+
+    store.dispatch({ type: "backupFileSelected", file: { name: "changed.slubkp", size: 84, lastModified: 200 } });
+    store.dispatch({ type: "commandCompleted", plan: started.plan, data: { restore_ready: true, blockers: [] }, message: "Backup verified." });
+    assert.equal(store.getView().backup.review, null);
+    assert.equal(store.planCommand("restoreBackup").enabled, false);
+
+    const currentVerification = effect(store.dispatch({ type: "commandRequested", command: "verifyBackup", payload: { passphraseValid: true } }), "executeCommand");
+    store.dispatch({
+        type: "commandCompleted",
+        plan: currentVerification.plan,
+        data: {
+            restore_ready: true,
+            compatible: true,
+            blockers: [],
+            warnings: [{ code: "sessions_invalidated", message: "Active sessions will be invalidated." }],
+            archive: { format: "simplelinuxupdater-backup", version: 1, size_bytes: 84 },
+            safe_counts: { servers: 2, policies: 1, jobs: 4, sessions: 3 }
+        },
+        message: "Backup verified."
+    });
+    assert.equal(store.getView().backup.review.restoreReady, true);
+    assert.equal(store.planCommand("restoreBackup").enabled, true);
+
+    store.dispatch({ type: "backupPassphraseChanged", valid: true });
+    assert.equal(store.getView().backup.review, null);
+    assert.equal(store.planCommand("restoreBackup").enabled, false);
+    assert.match(store.getView().feedback.backup.message, /review expired/i);
+});
+
+test("incompatible backup reviews keep restore blocked while preserving safe review facts", () => {
+    const store = createStore();
+    store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });
+    store.dispatch({ type: "backupFileSelected", file: { name: "future.slubkp", size: 128, lastModified: 300 } });
+    store.dispatch({ type: "backupPassphraseChanged", valid: true });
+    const verify = effect(store.dispatch({ type: "commandRequested", command: "verifyBackup" }), "executeCommand");
+    store.dispatch({
+        type: "commandCompleted",
+        plan: verify.plan,
+        data: {
+            restore_ready: false,
+            compatible: false,
+            archive: { format: "simplelinuxupdater-backup", version: 99, size_bytes: 128 },
+            blockers: [{ code: "unsupported_version", message: "Backup version 99 is not supported." }],
+            warnings: []
+        }
+    });
+    assert.equal(store.getView().backup.review.archive.version, 99);
+    assert.equal(store.getView().backup.review.blockers[0].code, "unsupported_version");
+    assert.equal(store.planCommand("restoreBackup").enabled, false);
+    assert.match(store.planCommand("restoreBackup").reason, /not ready/i);
 });
 
 test("accepted destructive commands block every competing destructive Admin command", () => {

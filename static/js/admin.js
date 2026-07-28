@@ -61,6 +61,11 @@ function renderAdminDestructiveControls() {
             disabled = !plan.enabled;
             reason = plan.reason || "";
         }
+        if (!locked && command === "restoreBackup") {
+            const plan = adminPageInteraction.planCommand(command);
+            disabled = !plan.enabled;
+            reason = plan.reason || "";
+        }
         if (!locked && ["rotateMetricsToken", "disableMetricsToken"].includes(command) && !view.metrics.enabled) {
             disabled = true;
             reason = "No Metrics API token is configured.";
@@ -1146,6 +1151,83 @@ function deriveDownloadFilename(contentDisposition) {
     return simpleMatch[1].replace(/[\r\n]/g, "");
 }
 
+function formatBackupBytes(value) {
+    const bytes = Math.max(0, Number(value) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ["KB", "MB", "GB"];
+    let amount = bytes;
+    let unit = "B";
+    for (const candidate of units) {
+        amount /= 1024;
+        unit = candidate;
+        if (amount < 1024) break;
+    }
+    return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${unit}`;
+}
+
+function renderBackupIssueList(containerID, issues) {
+    const container = document.getElementById(containerID);
+    const list = container?.querySelector("ul");
+    if (!container || !list) return;
+    const values = Array.isArray(issues) ? issues : [];
+    container.hidden = values.length === 0;
+    list.innerHTML = values.map(issue => `<li>${escapeHtml(issue?.message || "Unknown restore-readiness issue.")}</li>`).join("");
+}
+
+function renderBackupRestoreReview() {
+    const view = adminPageView().backup;
+    const review = view.review;
+    const panel = document.getElementById("backup-restore-review");
+    const empty = document.getElementById("backup-review-empty");
+    if (!panel || !empty) return;
+    panel.hidden = !review;
+    empty.hidden = Boolean(review);
+    if (!review) {
+        empty.textContent = view.selectedFile
+            ? "Review this exact archive and passphrase before replacement."
+            : "Select an archive and review its restore impact before replacement.";
+        renderAdminDestructiveControls();
+        return;
+    }
+
+    const readiness = document.getElementById("backup-review-readiness");
+    readiness.textContent = review.restoreReady ? "Ready for confirmation" : "Blocked";
+    readiness.className = `pill ${review.restoreReady ? "pill-success" : "pill-danger"}`;
+    document.getElementById("backup-review-archive").textContent = `${review.archive.format || "Unknown format"} · version ${review.archive.version || "unknown"}`;
+    document.getElementById("backup-review-created").textContent = formatSessionTime(review.archive.createdAt);
+    document.getElementById("backup-review-size").textContent = formatBackupBytes(review.archive.sizeBytes);
+    document.getElementById("backup-review-restart").textContent = review.impact.restartRequired ? "Required" : "Not required";
+
+    const resources = Array.isArray(review.resources) ? review.resources : [];
+    document.getElementById("backup-review-resources").innerHTML = resources.map(resource => `
+        <li>
+            <strong>${escapeHtml(resource.name || "Unknown resource")}</strong>:
+            ${resource.included ? `included (${escapeHtml(formatBackupBytes(resource.size_bytes))})` : resource.required ? "missing (required)" : "not included (optional)"}
+        </li>
+    `).join("") || "<li>No resource inventory was returned.</li>";
+
+    const counts = review.safeCounts || {};
+    document.getElementById("backup-review-counts").innerHTML = [
+        ["Servers", counts.servers],
+        ["Policies", counts.policies],
+        ["Jobs", counts.jobs],
+        ["Sessions", counts.sessions]
+    ].map(([label, value]) => `<div><dt>${label}</dt><dd>${Number(value) || 0}</dd></div>`).join("");
+
+    const impact = review.impact || {};
+    document.getElementById("backup-review-impact").innerHTML = [
+        impact.sessionsInvalidated ? "All active Admin sessions will be invalidated." : "Admin sessions are not expected to be invalidated.",
+        impact.metricsAccessReplaced ? "The Metrics API credential will be replaced by archived state." : "Metrics API access is not expected to change.",
+        impact.maintenanceRequired ? "Exclusive maintenance mode will be activated." : "Maintenance mode is not required.",
+        impact.downtimeExpected ? "Requests will pause during replacement and runtime reload." : "No request downtime is expected.",
+        impact.restartRequired ? "An application restart is required." : "No application restart is required."
+    ].map(message => `<li>${escapeHtml(message)}</li>`).join("");
+
+    renderBackupIssueList("backup-review-blockers", review.blockers);
+    renderBackupIssueList("backup-review-warnings", review.warnings);
+    renderAdminDestructiveControls();
+}
+
 async function fetchBackupStatus() {
     const status = document.getElementById("backup-status");
     if (!status) return;
@@ -1229,6 +1311,7 @@ async function restoreBackup() {
     const fileInput = document.getElementById("backup-restore-file");
     const restorePassInput = document.getElementById("backup-restore-passphrase");
     let plan;
+    let clearCredential = false;
     try {
         const pass = restorePassInput?.value || "";
         const file = fileInput?.files?.[0];
@@ -1240,23 +1323,33 @@ async function restoreBackup() {
             window.notifyApp("Passphrase must be at least 12 characters.");
             return;
         }
+        const readiness = adminPageInteraction.planCommand("restoreBackup", { passphraseValid: pass.length >= 12 });
+        if (!readiness.enabled) {
+            window.notifyApp(readiness.reason || "Review restore readiness before replacement.");
+            return;
+        }
+        const review = adminPageView().backup.review;
+        const counts = review?.safeCounts || {};
         if (!(await window.confirmTypedAction("Type the confirmation text only after verifying this backup.", "RESTORE", {
             title: "Restore application backup",
             operation: "Replace application data from an encrypted backup",
-            resources: `${file.name}; current database and optional known_hosts`,
-            consequences: "Current application data is replaced and active sessions may be invalidated. Local config.json stays in place.",
+            resources: `${file.name}; ${Number(counts.servers) || 0} servers, ${Number(counts.policies) || 0} policies, ${Number(counts.jobs) || 0} jobs, ${Number(counts.sessions) || 0} archived sessions`,
+            consequences: "Current application data is replaced, all active Admin sessions are invalidated, the Metrics API credential is replaced, and requests pause during exclusive maintenance.",
             reversibility: "Not automatically reversible. Export a current backup first if rollback may be needed.",
             authentication: "The backup passphrase and typed confirmation are both required.",
             confirmLabel: "Restore Backup"
         }))) {
             return;
         }
-        adminPageInteraction.dispatch({ type: "backupFileSelected", file });
         plan = beginAdminCommand("restoreBackup", { passphraseValid: pass.length >= 12 });
-        if (!plan) return;
+        if (!plan) {
+            window.notifyApp(adminPageInteraction.planCommand("restoreBackup", { passphraseValid: pass.length >= 12 }).reason || "Restore review is no longer current.");
+            return;
+        }
         const form = new FormData();
         form.append("file", file);
         form.append("passphrase", pass);
+        clearCredential = true;
         const res = await fetch("/api/backup/restore", {
             method: "POST",
             body: form
@@ -1274,6 +1367,7 @@ async function restoreBackup() {
             fileInput.value = "";
             updateFileLabel(fileInput, "Choose backup file");
         }
+        renderBackupRestoreReview();
         if (payload.sessions_invalidated) {
             window.location.assign("/login");
             return;
@@ -1284,7 +1378,11 @@ async function restoreBackup() {
         finishAdminCommand(plan, null, "Failed to restore backup.", true);
         window.notifyApp("Failed to restore backup.");
     } finally {
-        if (restorePassInput) restorePassInput.value = "";
+        if (clearCredential) {
+            if (restorePassInput) restorePassInput.value = "";
+            adminPageInteraction.dispatch({ type: "backupPassphraseChanged", valid: false });
+            renderBackupRestoreReview();
+        }
     }
 }
 
@@ -1320,14 +1418,16 @@ async function verifyBackup() {
             return;
         }
         const payload = await res.json().catch(() => ({}));
-        finishAdminCommand(plan, payload, "Backup verified.");
-        const files = Number(payload.manifest_files || 0);
-        const knownHosts = payload.known_hosts_included ? "includes known_hosts" : "no known_hosts";
-        const created = payload.created_at ? ` Created ${payload.created_at}.` : "";
-        document.getElementById("backup-status").textContent = `Backup verified: ${files} manifest file(s), ${knownHosts}.${created}`;
+        const message = payload.restore_ready
+            ? "Restore readiness review completed."
+            : "Restore readiness review completed with blockers.";
+        finishAdminCommand(plan, payload, message);
+        renderBackupRestoreReview();
+        window.notifyApp(message);
     } catch (err) {
         console.error("Failed to verify backup:", err);
         finishAdminCommand(plan, null, "Failed to verify backup.", true);
+        renderBackupRestoreReview();
         window.notifyApp("Failed to verify backup.");
     }
 }
@@ -2823,6 +2923,7 @@ document.addEventListener("change", (event) => {
     if (event.target && event.target.id === "backup-restore-file") {
         adminPageInteraction.dispatch({ type: "backupFileSelected", file: event.target.files?.[0] || null });
         updateFileLabel(event.target, "Choose backup file");
+        renderBackupRestoreReview();
     }
 });
 
@@ -2834,6 +2935,10 @@ document.getElementById("metrics-token-copy").addEventListener("click", copyMetr
 document.getElementById("backup-export-btn").addEventListener("click", exportBackup);
 document.getElementById("backup-verify-btn").addEventListener("click", verifyBackup);
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);
+document.getElementById("backup-restore-passphrase").addEventListener("input", (event) => {
+    adminPageInteraction.dispatch({ type: "backupPassphraseChanged", valid: event.target.value.length >= 12 });
+    renderBackupRestoreReview();
+});
 document.getElementById("app-timezone-save").addEventListener("click", saveAppTimezoneSettings);
 document.getElementById("app-timezone-discard").addEventListener("click", discardTimezoneDraft);
 document.getElementById("app-timezone-input").addEventListener("input", (event) => {
@@ -2944,5 +3049,6 @@ resetPolicyForm();
 fetchAuthSessionStatus();
 refreshScheduledUpdateViews();
 updateFileLabel(document.getElementById("backup-restore-file"), "Choose backup file");
+renderBackupRestoreReview();
 renderNotificationDraftState();
 renderGlobalSettingsDraftState();

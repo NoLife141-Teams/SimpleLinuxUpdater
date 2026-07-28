@@ -345,23 +345,46 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 		}
 		return
 	}
-	audit(c, "backup.verify", "backup", "state", "success", "Backup verified", map[string]any{
+	audit(c, "backup.verify", "backup", "state", "success", "Backup restore readiness reviewed", map[string]any{
 		"manifest_files":       result.ManifestFileCount,
 		"known_hosts_included": result.KnownHostsIncluded,
 		"total_bytes":          result.TotalBytes,
+		"compatible":           result.Compatible,
+		"restore_ready":        result.RestoreReady,
+		"blocker_count":        len(result.Blockers),
+		"warning_count":        len(result.Warnings),
+		"server_count":         result.SafeCounts.Servers,
+		"policy_count":         result.SafeCounts.Policies,
+		"job_count":            result.SafeCounts.Jobs,
+		"session_count":        result.SafeCounts.Sessions,
 	})
 	c.JSON(http.StatusOK, gin.H{
-		"message":              "backup verified",
-		"valid":                true,
-		"format":               result.Manifest.Format,
-		"version":              result.Manifest.Version,
-		"created_at":           result.Manifest.CreatedAt,
+		"message":            "backup restore readiness reviewed",
+		"valid":              result.RestoreReady,
+		"compatible":         result.Compatible,
+		"restore_ready":      result.RestoreReady,
+		"format":             result.ArchiveFormat,
+		"version":            result.ArchiveVersion,
+		"created_at":         result.ArchiveCreatedAt,
+		"archive_size_bytes": result.ArchiveSizeBytes,
+		"archive": gin.H{
+			"format":     result.ArchiveFormat,
+			"version":    result.ArchiveVersion,
+			"created_at": result.ArchiveCreatedAt,
+			"size_bytes": result.ArchiveSizeBytes,
+		},
 		"manifest_files":       result.ManifestFileCount,
 		"file_names":           result.FileNames,
 		"total_bytes":          result.TotalBytes,
 		"known_hosts_included": result.KnownHostsIncluded,
 		"database_valid":       result.DatabaseValid,
 		"config_valid":         result.ConfigValid,
+		"resources":            result.Resources,
+		"missing_resources":    result.MissingResources,
+		"safe_counts":          result.SafeCounts,
+		"impact":               result.Impact,
+		"blockers":             result.Blockers,
+		"warnings":             result.Warnings,
 	})
 }
 

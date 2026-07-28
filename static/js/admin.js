@@ -17,9 +17,126 @@ const scheduledPolicyAdministration = Object.freeze({
 let scheduledPolicyPreviewTimer = 0;
 let appTimezonePicker = null;
 let appTimezonePreviewTimer = 0;
+let adminSectionObserver = null;
+let adminSectionNavigationLockUntil = 0;
+
+const adminSectionPreferenceKey = "simplelinuxupdater.admin.collapsed-sections.v1";
 
 function adminPageView() {
     return adminPageInteraction.getView();
+}
+
+function renderAdminWorkspace() {
+    const workspace = adminPageView().workspace;
+    if (!workspace) return;
+    workspace.sections.forEach((section) => {
+        const root = document.querySelector(`[data-admin-section="${section.id}"]`);
+        const link = document.querySelector(`[data-admin-section-link="${section.id}"]`);
+        const navSummary = document.querySelector(`[data-admin-section-nav-summary="${section.id}"]`);
+        const summary = document.querySelector(`[data-admin-section-summary="${section.id}"]`);
+        const toggle = document.querySelector(`[data-admin-section-toggle="${section.id}"]`);
+        const content = document.querySelector(`[data-admin-section-content="${section.id}"]`);
+
+        root?.classList.toggle("is-collapsed", section.collapsed);
+        if (link) {
+            if (workspace.activeSection === section.id) link.setAttribute("aria-current", "location");
+            else link.removeAttribute("aria-current");
+        }
+        if (navSummary) navSummary.textContent = section.summary;
+        if (summary) {
+            summary.textContent = section.summary;
+            summary.hidden = !section.collapsed;
+        }
+        if (toggle) {
+            toggle.setAttribute("aria-expanded", String(!section.collapsed));
+            toggle.setAttribute("aria-label", `${section.collapsed ? "Expand" : "Collapse"} ${section.label}`);
+            const label = toggle.querySelector("[data-admin-section-toggle-label]");
+            if (label) label.textContent = section.collapsed ? "Expand" : "Collapse";
+        }
+        if (content) content.hidden = section.collapsed;
+    });
+}
+
+function runAdminWorkspaceEffects(effects) {
+    (effects || []).forEach((effect) => {
+        if (effect.type === "render" && effect.area === "workspace") {
+            renderAdminWorkspace();
+        }
+        if (effect.type === "persistSectionPreferences") {
+            try {
+                localStorage.setItem(adminSectionPreferenceKey, JSON.stringify(effect.collapsedSections || []));
+            } catch (_) {}
+        }
+        if (effect.type === "focusSection") {
+            const section = document.querySelector(`[data-admin-section="${effect.sectionID}"]`);
+            const heading = document.getElementById(`admin-section-${effect.sectionID}-heading`);
+            section?.scrollIntoView({ behavior: "auto", block: "start" });
+            heading?.focus({ preventScroll: true });
+        }
+    });
+}
+
+function adminSectionIDFromHash() {
+    const prefix = "#admin-section-";
+    return window.location.hash.startsWith(prefix) ? window.location.hash.slice(prefix.length) : "";
+}
+
+function navigateAdminSection(sectionID, updateHistory = false) {
+    const effects = adminPageInteraction.dispatch({ type: "sectionNavigationRequested", sectionID });
+    if (!effects.length) return;
+    adminSectionNavigationLockUntil = Date.now() + 750;
+    if (updateHistory) {
+        history.pushState(null, "", `#admin-section-${sectionID}`);
+    }
+    runAdminWorkspaceEffects(effects);
+}
+
+function initializeAdminWorkspace() {
+    let collapsedSections = [];
+    try {
+        const stored = JSON.parse(localStorage.getItem(adminSectionPreferenceKey) || "[]");
+        if (Array.isArray(stored)) collapsedSections = stored;
+    } catch (_) {}
+    runAdminWorkspaceEffects(adminPageInteraction.dispatch({ type: "sectionPreferencesRestored", collapsedSections }));
+
+    document.getElementById("admin-section-nav")?.addEventListener("click", (event) => {
+        const link = event.target.closest("[data-admin-section-link]");
+        if (!link) return;
+        event.preventDefault();
+        navigateAdminSection(link.dataset.adminSectionLink, true);
+    });
+    document.querySelectorAll("[data-admin-section-toggle]").forEach((toggle) => {
+        toggle.addEventListener("click", () => {
+            runAdminWorkspaceEffects(adminPageInteraction.dispatch({
+                type: "sectionCollapseToggled",
+                sectionID: toggle.dataset.adminSectionToggle
+            }));
+        });
+    });
+    window.addEventListener("hashchange", () => {
+        const sectionID = adminSectionIDFromHash();
+        if (sectionID) navigateAdminSection(sectionID);
+    });
+
+    if ("IntersectionObserver" in window) {
+        adminSectionObserver = new IntersectionObserver((entries) => {
+            if (Date.now() < adminSectionNavigationLockUntil) return;
+            const visible = entries
+                .filter(entry => entry.isIntersecting)
+                .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+            const sectionID = visible?.target?.dataset?.adminSection;
+            if (!sectionID) return;
+            runAdminWorkspaceEffects(adminPageInteraction.dispatch({ type: "sectionActivated", sectionID }));
+        }, { rootMargin: "-150px 0px -55% 0px", threshold: [0.01, 0.25, 0.5] });
+        document.querySelectorAll("[data-admin-section]").forEach(section => adminSectionObserver.observe(section));
+    }
+
+    const deepLinkedSection = adminSectionIDFromHash();
+    if (deepLinkedSection) {
+        window.requestAnimationFrame(() => navigateAdminSection(deepLinkedSection));
+    } else {
+        renderAdminWorkspace();
+    }
 }
 
 function beginAdminCommand(command, payload = {}) {
@@ -169,6 +286,7 @@ function renderScheduledTimezone(payload) {
     updatePolicySummary();
     renderScheduledPolicies();
     renderScheduledRuns(scheduledPolicyView().runs);
+    renderAdminWorkspace();
 }
 
 function applyScheduledTimezone(payload, requestID = null) {
@@ -224,6 +342,7 @@ function renderNotificationSettings() {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
     renderNotificationLastDelivery(view.lastDelivery);
+    renderAdminWorkspace();
 }
 
 function applyNotificationSettings(payload, requestID = null) {
@@ -241,6 +360,7 @@ async function fetchNotificationSettings() {
             const message = await parseErrorResponse(res, "Failed to load notification settings.");
             adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notifications", requestID, error: message });
             setNotificationFeedback("", message);
+            renderAdminWorkspace();
             return;
         }
         const data = await res.json().catch(() => ({}));
@@ -249,6 +369,7 @@ async function fetchNotificationSettings() {
         console.error("Failed to load notification settings:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "notifications", requestID, error: "Failed to load notification settings." });
         setNotificationFeedback("", "Failed to load notification settings.");
+        renderAdminWorkspace();
     }
 }
 
@@ -465,6 +586,7 @@ function renderAuthSessions() {
         showAll.textContent = view.account.otherSessionsExpanded ? "Collapse" : "Show all";
     }
     otherList.classList.toggle("is-expanded", view.account.otherSessionsExpanded);
+    renderAdminWorkspace();
 }
 
 function closeSessionIPRevealModal() {
@@ -545,6 +667,7 @@ async function fetchAuthSessionStatus() {
         if (!res.ok) {
             adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status unavailable." });
             status.textContent = "Session status unavailable.";
+            renderAdminWorkspace();
             return;
         }
         const data = await res.json().catch(() => ({}));
@@ -554,6 +677,7 @@ async function fetchAuthSessionStatus() {
         console.error("Failed to fetch session status:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status request failed." });
         status.textContent = "Session status request failed.";
+        renderAdminWorkspace();
     }
 }
 
@@ -716,15 +840,18 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
         if (!res.ok) {
             adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "metrics", requestID, error: "Metrics token status: unknown" });
             status.textContent = "Metrics token status: unknown";
+            renderAdminWorkspace();
             return;
         }
         const data = await res.json().catch(() => ({}));
         adminPageInteraction.dispatch({ type: "metricsSnapshotReceived", requestID, data });
         status.textContent = data.enabled ? "Metrics API token: enabled" : "Metrics API token: disabled";
+        renderAdminWorkspace();
     } catch (err) {
         console.error("Failed to fetch metrics token status:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "metrics", requestID, error: "Metrics token status: request failed" });
         status.textContent = "Metrics token status: request failed";
+        renderAdminWorkspace();
     }
 }
 
@@ -821,16 +948,19 @@ async function fetchBackupStatus() {
         if (!res.ok) {
             adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "backup", requestID, error: "Backup status: unavailable" });
             status.textContent = "Backup status: unavailable";
+            renderAdminWorkspace();
             return;
         }
         const data = await res.json().catch(() => ({}));
         adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, data });
         const knownHostsState = data.known_hosts_exists ? "present" : "missing";
         status.textContent = `Backup paths: DB=${data.db_path || "-"}, config=${data.config_path || "-"}, known_hosts=${data.known_hosts_path || "-"} (${knownHostsState})`;
+        renderAdminWorkspace();
     } catch (err) {
         console.error("Failed to fetch backup status:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "backup", requestID, error: "Backup status: request failed" });
         status.textContent = "Backup status: request failed";
+        renderAdminWorkspace();
     }
 }
 
@@ -1615,6 +1745,7 @@ function renderScheduledPolicies() {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="5" class="subtle">No scheduled update policies yet.</td>';
         tbody.appendChild(row);
+        renderAdminWorkspace();
         return;
     }
     policies.forEach((policy) => {
@@ -1639,6 +1770,7 @@ function renderScheduledPolicies() {
         `;
         tbody.appendChild(row);
     });
+    renderAdminWorkspace();
 }
 
 function renderMaintenanceCalendarFilter() {
@@ -1752,6 +1884,7 @@ function renderScheduledRuns(items) {
         const row = document.createElement("tr");
         row.innerHTML = '<td colspan="7" class="subtle">No scheduled runs recorded yet.</td>';
         tbody.appendChild(row);
+        renderAdminWorkspace();
         return;
     }
     runs.forEach((run) => {
@@ -1787,6 +1920,7 @@ function renderScheduledRuns(items) {
         `;
         tbody.appendChild(row);
     });
+    renderAdminWorkspace();
 }
 
 function handleScheduledRunsTableClick(event) {
@@ -1889,6 +2023,7 @@ async function runScheduledEffects(effects) {
             if (effect.stream === "calendar") await fetchMaintenanceCalendar(effect);
         } catch (err) {
             scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: effect.stream, requestId: effect.requestId, error: err.message || "Failed to refresh scheduled policy data." });
+            renderAdminWorkspace();
             throw err;
         }
     }
@@ -2258,6 +2393,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 bindPolicyFormInteractions();
+initializeAdminWorkspace();
 populateTimezonePicker();
 resetPolicyForm();
 fetchMetricsTokenStatus();

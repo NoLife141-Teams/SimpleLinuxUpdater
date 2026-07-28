@@ -6,6 +6,16 @@
     "use strict";
 
     const streamNames = ["timezone", "notifications", "account", "metrics", "backup"];
+    const sectionDefinitions = [
+        { id: "app-time", label: "App Time" },
+        { id: "notifications", label: "Notifications" },
+        { id: "account-security", label: "Account Security" },
+        { id: "scheduled-policies", label: "Policies" },
+        { id: "scheduled-runs", label: "Scheduled Runs" },
+        { id: "backup", label: "Backup" },
+        { id: "metrics", label: "Metrics" }
+    ];
+    const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -60,6 +70,8 @@
         let account = { sessionCount: 0, sessions: [], otherSessionsExpanded: false };
         let metrics = { enabled: false, revealedToken: "" };
         let backup = { blocked: false, reason: "", status: null, selectedFile: null };
+        let activeSection = sectionDefinitions[0].id;
+        let collapsedSections = [];
         const feedback = Object.fromEntries(streamNames.map(name => [name, { message: "", error: false }]));
 
         function effect(type, details = {}) { return { type, ...details }; }
@@ -140,6 +152,42 @@
             metrics = { enabled: Boolean(data.enabled ?? data.configured ?? data.has_token), revealedToken: String(data.token ?? metrics.revealedToken ?? "") };
         }
         function applyBackup(data) { backup = { ...backup, ...normalizeBackup(data) }; }
+        function normalizeSectionIDs(values) {
+            const seen = new Set();
+            return (Array.isArray(values) ? values : [])
+                .map(value => String(value || "").trim())
+                .filter(value => sectionIDs.has(value) && !seen.has(value) && seen.add(value));
+        }
+        function countSummary(count, singular, plural = `${singular}s`) {
+            const value = Math.max(0, Number(count) || 0);
+            return `${value} ${value === 1 ? singular : plural}`;
+        }
+        function freshnessSummary(summary, stale) {
+            return stale ? `${summary} · Stale` : summary;
+        }
+        function workspaceView(scheduledView) {
+            const scheduledSnapshots = scheduledView?.snapshots || {};
+            const policyItems = scheduledSnapshots.policies?.data?.items;
+            const runItems = scheduledSnapshots.runs?.data?.items;
+            const summaries = {
+                "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
+                notifications: streams.notifications.accepted ? freshnessSummary(notifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
+                "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
+                "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
+                "scheduled-runs": Array.isArray(runItems) ? freshnessSummary(countSummary(runItems.length, "recent run"), Boolean(scheduledSnapshots.runs?.lastError)) : "Run history unavailable",
+                backup: streams.backup.accepted ? freshnessSummary(backup.blocked ? (backup.reason || "Backup operations blocked") : "Backup operations ready", streams.backup.freshness === "stale") : "Backup status unavailable",
+                metrics: streams.metrics.accepted ? freshnessSummary(metrics.enabled ? "Token enabled" : "Token disabled", streams.metrics.freshness === "stale") : "Metrics token status unavailable"
+            };
+            return {
+                activeSection,
+                collapsedSections: clone(collapsedSections),
+                sections: sectionDefinitions.map(section => ({
+                    ...section,
+                    summary: summaries[section.id],
+                    collapsed: collapsedSections.includes(section.id)
+                }))
+            };
+        }
 
         function planCommand(command, payload = {}) {
             if (String(command).startsWith("scheduled:") && scheduled && typeof scheduled.planCommand === "function") {
@@ -225,6 +273,37 @@
                 case "metricsTokenHidden": metrics.revealedToken = ""; return [effect("render", { area: "metrics" })];
                 case "backupSnapshotReceived": if (accept("backup", event.requestID)) { applyBackup(event.data); return [effect("render", { area: "backup" })]; } return [];
                 case "backupFileSelected": backup.selectedFile = event.file ? { name: String(event.file.name || ""), size: Number(event.file.size) || 0 } : null; return [effect("render", { area: "backup" })];
+                case "sectionPreferencesRestored":
+                    collapsedSections = normalizeSectionIDs(event.collapsedSections);
+                    return [effect("render", { area: "workspace" })];
+                case "sectionNavigationRequested": {
+                    const sectionID = String(event.sectionID || "").trim();
+                    if (!sectionIDs.has(sectionID)) return [];
+                    activeSection = sectionID;
+                    collapsedSections = collapsedSections.filter(value => value !== sectionID);
+                    return [
+                        effect("render", { area: "workspace" }),
+                        effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) }),
+                        effect("focusSection", { sectionID })
+                    ];
+                }
+                case "sectionCollapseToggled": {
+                    const sectionID = String(event.sectionID || "").trim();
+                    if (!sectionIDs.has(sectionID)) return [];
+                    collapsedSections = collapsedSections.includes(sectionID)
+                        ? collapsedSections.filter(value => value !== sectionID)
+                        : [...collapsedSections, sectionID];
+                    return [
+                        effect("render", { area: "workspace" }),
+                        effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) })
+                    ];
+                }
+                case "sectionActivated": {
+                    const sectionID = String(event.sectionID || "").trim();
+                    if (!sectionIDs.has(sectionID) || sectionID === activeSection) return [];
+                    activeSection = sectionID;
+                    return [effect("render", { area: "workspace" })];
+                }
                 case "commandRequested": {
                     const plan = planCommand(event.command, event.payload || event);
                     if (!plan.enabled) return [effect("commandRejected", plan)];
@@ -240,6 +319,7 @@
         }
 
         function getView() {
+            const scheduledView = scheduled && typeof scheduled.getView === "function" ? scheduled.getView() : null;
             return clone({
                 timezone: { ...timezone, dirty: normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured) },
                 notifications,
@@ -249,7 +329,8 @@
                 feedback,
                 streams,
                 commands: { inFlight: Array.from(inFlight.keys()) },
-                scheduled: scheduled && typeof scheduled.getView === "function" ? scheduled.getView() : null
+                scheduled: scheduledView,
+                workspace: workspaceView(scheduledView)
             });
         }
 

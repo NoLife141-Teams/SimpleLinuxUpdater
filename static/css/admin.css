@@ -2,6 +2,135 @@
     max-width: 1800px;
 }
 
+.admin-section-nav {
+    position: sticky;
+    top: 84px;
+    z-index: 24;
+    margin-bottom: 16px;
+    padding: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(var(--panel-rgb), 0.94);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+}
+
+.admin-section-nav-track {
+    display: flex;
+    gap: 4px;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-gutter: stable;
+}
+
+.admin-section-nav a {
+    display: grid;
+    flex: 1 0 140px;
+    gap: 2px;
+    min-width: 0;
+    padding: 9px 11px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--subtle);
+    text-decoration: none;
+    transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.admin-section-nav a:hover {
+    border-color: var(--border);
+    background: rgba(var(--field-rgb), 0.58);
+    color: var(--text);
+}
+
+.admin-section-nav a:focus-visible,
+.admin-section-nav a[aria-current="location"] {
+    border-color: var(--accent);
+    background: rgba(var(--accent-rgb), 0.14);
+    color: var(--accent-text);
+    outline: none;
+}
+
+.admin-section-nav a span {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-section-nav a small {
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-workspace-section {
+    min-width: 0;
+    max-width: 100%;
+    scroll-margin-top: 164px;
+}
+
+.admin-section-content {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.admin-workspace-section.is-collapsed {
+    padding-bottom: 18px;
+}
+
+.admin-section-controls {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.admin-section-summary {
+    max-width: 280px;
+    color: var(--subtle);
+    font-size: 12px;
+    font-weight: 650;
+    text-align: right;
+}
+
+.admin-section-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 94px;
+    justify-content: center;
+}
+
+.admin-section-toggle-icon {
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+    transition: transform 150ms ease;
+}
+
+.admin-section-toggle[aria-expanded="false"] .admin-section-toggle-icon {
+    transform: translateY(2px) rotate(225deg);
+}
+
+.admin-section-content[hidden] {
+    display: none;
+}
+
+.admin-workspace-section > [id$="-heading"]:focus,
+.admin-workspace-section h2:focus {
+    border-radius: 4px;
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}
+
 .app-time-card {
     position: relative;
     z-index: 1;
@@ -669,6 +798,35 @@
     .job-detail-grid,
     .job-detail-panels {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 760px) {
+    .admin-section-nav {
+        top: 8px;
+    }
+
+    .admin-workspace-section {
+        scroll-margin-top: 96px;
+    }
+
+    .admin-section-nav a {
+        flex-basis: 132px;
+    }
+
+    .admin-section-controls {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .admin-workspace-section > .workspace-head,
+    .admin-workspace-section > .table-shell-head {
+        flex-wrap: wrap;
+    }
+
+    .admin-section-summary {
+        max-width: min(62vw, 280px);
+        text-align: left;
     }
 }
 

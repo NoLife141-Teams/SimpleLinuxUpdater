@@ -1283,6 +1283,50 @@ test.describe.serial('setup and login flows', () => {
     await expect(saveTimezone).toBeDisabled();
   });
 
+  test('admin workspace navigation restores disclosure and focuses deep links', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+
+    await page.goto('/admin');
+    const sectionLinks = page.locator('#admin-section-nav [data-admin-section-link]');
+    await expect(sectionLinks).toHaveCount(7);
+    await expect(sectionLinks.first()).toHaveAttribute('aria-current', 'location');
+
+    await page.locator('#admin-section-account-security').scrollIntoViewIfNeeded();
+    await expect(page.locator('[data-admin-section-link="account-security"]')).toHaveAttribute('aria-current', 'location');
+
+    await page.locator('[data-admin-section-link="backup"]').click();
+    await expect(page).toHaveURL(/#admin-section-backup$/);
+    await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
+    await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
+
+    await page.locator('[data-admin-section-toggle="notifications"]').click();
+    await expect(page.locator('[data-admin-section-content="notifications"]')).toBeHidden();
+    await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Webhook');
+    await expect.poll(() => page.evaluate(() => JSON.parse(
+      localStorage.getItem('simplelinuxupdater.admin.collapsed-sections.v1') || '[]',
+    ))).toEqual(['notifications']);
+
+    await page.reload();
+    await expect(page.locator('[data-admin-section-content="notifications"]')).toBeHidden();
+    await expect(page.locator('[data-admin-section-toggle="notifications"]')).toHaveAttribute('aria-expanded', 'false');
+
+    await page.goto('/admin#admin-section-notifications');
+    await expect(page.locator('[data-admin-section-content="notifications"]')).toBeVisible();
+    await expect(page.locator('#admin-section-notifications-heading')).toBeFocused();
+    await expect(page.locator('[data-admin-section-link="notifications"]')).toHaveAttribute('aria-current', 'location');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const layout = await page.evaluate(() => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      navVisible: Boolean(document.querySelector('#admin-section-nav')?.getClientRects().length),
+    }));
+    expect(layout.navVisible).toBe(true);
+    expect(layout.bodyWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  });
+
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

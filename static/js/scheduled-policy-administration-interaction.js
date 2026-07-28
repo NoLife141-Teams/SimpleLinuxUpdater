@@ -188,7 +188,16 @@
     }
 
     function emptyStream() {
-        return { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "", data: null };
+        return {
+            nextRequestId: 1,
+            inFlight: null,
+            queued: null,
+            lastAcceptedRequestId: 0,
+            lastError: "",
+            lastSuccessfulRefresh: "",
+            status: "unavailable",
+            data: null
+        };
     }
 
     function createStore() {
@@ -250,16 +259,19 @@
             const requestId = state.nextRequestId++;
             state.inFlight = requestId;
             state.lastError = "";
+            state.status = "loading";
             return [effect("fetchSnapshot", { stream, requestId, ...cloneValue(payload) })];
         }
 
-        function receiveStream(stream, requestId, data) {
+        function receiveStream(stream, requestId, data, receivedAt) {
             const state = streams[stream];
             if (!state || (requestId && state.inFlight !== requestId)) return [];
             state.data = cloneValue(data);
             state.lastAcceptedRequestId = requestId || state.lastAcceptedRequestId + 1;
             state.inFlight = null;
             state.lastError = "";
+            state.status = "current";
+            state.lastSuccessfulRefresh = String(receivedAt || state.lastSuccessfulRefresh || "");
             const effects = [effect("render", { area: stream })];
             if (state.queued) {
                 const queued = state.queued;
@@ -274,6 +286,7 @@
             if (!state || (requestId && state.inFlight !== requestId)) return [];
             state.inFlight = null;
             state.lastError = String(error || "Failed to refresh.");
+            state.status = state.data === null ? "failed" : "stale";
             const effects = [effect("render", { area: stream }), effect("announce", { scope: stream, message: state.lastError, error: true })];
             if (state.queued) {
                 const queued = state.queued;
@@ -415,7 +428,7 @@
                     timezone = String(input.timezone || timezone || "UTC");
                     return [effect("render", { area: "editor" }), effect("render", { area: "runs" })];
                 case "snapshotRequested": return requestStream(input.stream, input.payload);
-                case "snapshotReceived": return receiveStream(input.stream, input.requestId, input.data);
+                case "snapshotReceived": return receiveStream(input.stream, input.requestId, input.data, input.receivedAt);
                 case "snapshotFailed": return failStream(input.stream, input.requestId, input.error);
                 case "calendarPolicySelected":
                     selectedCalendarPolicyID = String(input.policyID || "").trim();
@@ -450,7 +463,7 @@
                     }
                     if (!error && plan.command === "saveGlobalSettings") acceptedGlobalBlackouts = cloneValue(globalBlackouts);
                     const effects = [effect("announce", { scope: plan.command || "policy", message, error })];
-                    if (!error) effects.push(...["policies", "settings", "runs", "calendar"].flatMap(stream => requestStream(stream)));
+                    if (!error) effects.push(...["policies", "settings", "calendar"].flatMap(stream => requestStream(stream)));
                     return effects;
                 }
                 default: return [];

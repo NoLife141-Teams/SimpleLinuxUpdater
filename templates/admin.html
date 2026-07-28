@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=admin-drafts-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=admin-freshness-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -47,6 +47,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="app-time" hidden>Timezone unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="app-time" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="app-time" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="app-time" aria-expanded="true" aria-controls="admin-section-app-time-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -123,6 +128,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="notifications" hidden>Notification settings unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="notifications" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="notifications" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="notifications" aria-expanded="true" aria-controls="admin-section-notifications-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -165,6 +175,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="account-security" hidden>Session status unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="account-security" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="account-security" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="account-security" aria-expanded="true" aria-controls="admin-section-account-security-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -217,6 +232,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="scheduled-policies" hidden>Policy data unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="scheduled-policies" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="scheduled-policies" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="scheduled-policies" aria-expanded="true" aria-controls="admin-section-scheduled-policies-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -444,7 +464,7 @@
                         <button class="btn-ghost inline-btn" type="button" id="maintenance-calendar-refresh">Refresh</button>
                     </div>
                 </div>
-                <div id="maintenance-calendar-status" class="muted" role="status" aria-live="polite" aria-atomic="true">Loading calendar...</div>
+                <div id="maintenance-calendar-status" class="muted" role="status" aria-live="polite" aria-atomic="true">Calendar loads when this section becomes active.</div>
                 <div id="maintenance-calendar-list" class="calendar-list" aria-live="polite"></div>
             </div>
             <div class="table-shell section-spaced">
@@ -480,6 +500,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="scheduled-runs" hidden>Run history unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="scheduled-runs" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="scheduled-runs" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="scheduled-runs" aria-expanded="true" aria-controls="admin-section-scheduled-runs-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -514,6 +539,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="backup" hidden>Backup status unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="backup" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="backup" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="backup" aria-expanded="true" aria-controls="admin-section-backup-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -550,6 +580,11 @@
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="metrics" hidden>Metrics token status unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="metrics" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="metrics" hidden>Retry</button>
+                    </span>
                     <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="metrics" aria-expanded="true" aria-controls="admin-section-metrics-content">
                         <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
                     </button>
@@ -655,8 +690,8 @@
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=admin-drafts-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=admin-drafts-20260728a"></script>
-    <script src="/static/js/admin.js?v=admin-drafts-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=admin-freshness-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=admin-freshness-20260728a"></script>
+    <script src="/static/js/admin.js?v=admin-freshness-20260728a"></script>
 </body>
 </html>

@@ -99,6 +99,56 @@
     text-align: right;
 }
 
+.admin-section-lifecycle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 750;
+    white-space: nowrap;
+}
+
+.admin-section-lifecycle [data-admin-section-status] {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.admin-section-lifecycle [data-admin-section-status]::before {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: currentColor;
+    content: "";
+}
+
+.admin-section-lifecycle[data-status="loading"] {
+    color: var(--accent-text);
+}
+
+.admin-section-lifecycle[data-status="current"] {
+    color: var(--success);
+}
+
+.admin-section-lifecycle[data-status="stale"] {
+    color: var(--warning);
+}
+
+.admin-section-lifecycle[data-status="failed"] {
+    color: var(--danger);
+}
+
+.admin-section-lifecycle [data-admin-section-refreshed] {
+    color: var(--faint);
+    font-weight: 600;
+}
+
+.admin-section-retry {
+    min-height: 30px;
+    padding: 5px 9px;
+}
+
 .admin-section-toggle {
     display: inline-flex;
     align-items: center;
@@ -869,6 +919,10 @@
     .admin-section-controls {
         width: 100%;
         justify-content: space-between;
+    }
+
+    .admin-section-lifecycle [data-admin-section-refreshed] {
+        display: none;
     }
 
     .admin-workspace-section > .workspace-head,

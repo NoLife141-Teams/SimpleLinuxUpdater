@@ -111,6 +111,42 @@ test("snapshot streams order independently, retain data on failure, and keep cal
     assert.equal(store.getView().selectedCalendarPolicyID, "7");
 });
 
+test("scheduled snapshots expose freshness, retain accepted data, and reject superseded responses", () => {
+    const store = createStore();
+    assert.equal(store.getView().snapshots.runs.status, "unavailable");
+
+    const first = store.dispatch({ type: "snapshotRequested", stream: "runs" }).find(effect => effect.type === "fetchSnapshot");
+    assert.equal(store.getView().snapshots.runs.status, "loading");
+    store.dispatch({
+        type: "snapshotReceived",
+        stream: "runs",
+        requestId: first.requestId,
+        receivedAt: "2026-07-28T03:30:00Z",
+        data: { items: [{ id: 1 }] }
+    });
+    assert.equal(store.getView().snapshots.runs.status, "current");
+    assert.equal(store.getView().snapshots.runs.lastSuccessfulRefresh, "2026-07-28T03:30:00Z");
+
+    const second = store.dispatch({ type: "snapshotRequested", stream: "runs" }).find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "runs", requestId: second.requestId, error: "offline" });
+    assert.equal(store.getView().snapshots.runs.status, "stale");
+    assert.deepEqual(store.getView().runs.map(run => run.id), [1]);
+
+    store.dispatch({
+        type: "snapshotReceived",
+        stream: "runs",
+        requestId: first.requestId,
+        receivedAt: "2026-07-28T03:31:00Z",
+        data: { items: [{ id: 99 }] }
+    });
+    assert.deepEqual(store.getView().runs.map(run => run.id), [1]);
+    assert.equal(store.getView().snapshots.runs.lastSuccessfulRefresh, "2026-07-28T03:30:00Z");
+
+    const calendar = store.dispatch({ type: "snapshotRequested", stream: "calendar" }).find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "calendar", requestId: calendar.requestId, error: "offline" });
+    assert.equal(store.getView().snapshots.calendar.status, "failed");
+});
+
 test("selected job detail is logical module state and closes without touching adapter concerns", () => {
     const store = createStore();
     const first = store.dispatch({ type: "jobSelected", jobID: "job-7" }).find(effect => effect.type === "fetchSnapshot");
@@ -131,7 +167,11 @@ test("command planning prevents competing policy and global-settings mutations",
     const duplicate = store.dispatch({ type: "commandRequested", command: "savePolicy" });
     assert.equal(first.plan.command, "updatePolicy");
     assert.equal(duplicate[0].type, "commandRejected");
-    store.dispatch({ type: "commandCompleted", plan: first.plan, message: "Policy updated." });
+    const refreshes = store.dispatch({ type: "commandCompleted", plan: first.plan, message: "Policy updated." });
+    assert.deepEqual(
+        refreshes.filter(effect => effect.type === "fetchSnapshot").map(effect => effect.stream),
+        ["policies", "settings", "calendar"]
+    );
     store.dispatch({ type: "blackoutRowAdded", kind: "global" });
     store.dispatch({ type: "blackoutWeekdayToggled", kind: "global", index: 0, day: "sun" });
     const global = store.dispatch({ type: "commandRequested", command: "saveGlobalSettings" }).find(effect => effect.type === "executeCommand");

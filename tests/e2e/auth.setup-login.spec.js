@@ -389,6 +389,11 @@ test.describe.serial('setup and login flows', () => {
           last_delivery: null,
         });
       }
+      state.notificationLoadCount = (state.notificationLoadCount || 0) + 1;
+      if ((state.notificationFailuresRemaining || 0) > 0) {
+        state.notificationFailuresRemaining -= 1;
+        return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'notifications unavailable' }) });
+      }
       return fulfillJson(route, {
         enabled: false,
         webhook_url: '',
@@ -411,12 +416,22 @@ test.describe.serial('setup and login flows', () => {
         },
       });
     });
-    await page.route('**/api/metrics/token', route => fulfillJson(route, { enabled: true, token: 'test-token' }));
-    await page.route('**/api/backup/status', route => fulfillJson(route, {
-      db_path: '/tmp/simplelinuxupdater.db',
-      backup_supported: true,
-      known_hosts_path: '/tmp/known_hosts',
-    }));
+    await page.route('**/api/metrics/token', route => {
+      if (route.request().method() === 'GET') state.metricsLoadCount = (state.metricsLoadCount || 0) + 1;
+      return fulfillJson(route, { enabled: true, token: 'test-token' });
+    });
+    await page.route('**/api/backup/status', route => {
+      state.backupLoadCount = (state.backupLoadCount || 0) + 1;
+      if ((state.backupFailuresRemaining || 0) > 0) {
+        state.backupFailuresRemaining -= 1;
+        return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'backup unavailable' }) });
+      }
+      return fulfillJson(route, {
+        db_path: '/tmp/simplelinuxupdater.db',
+        backup_supported: true,
+        known_hosts_path: '/tmp/known_hosts',
+      });
+    });
     await page.route('**/api/backup/restore', async route => {
       state.restoreCount = (state.restoreCount || 0) + 1;
       return fulfillJson(route, { restored: true, sessions_invalidated: false });
@@ -435,19 +450,24 @@ test.describe.serial('setup and login flows', () => {
       resolved_timezone: 'America/Toronto',
       global_blackouts: [],
     }));
-    await page.route('**/api/update-policies/runs?*', route => fulfillJson(route, {
-      timezone: 'America/Toronto',
-      items: [{
-        id: 7,
-        policy_name: 'Nightly security',
-        server_name: 'srv-web-01',
-        status: 'succeeded',
-        summary: 'completed',
-        job_id: 'job-report-1',
-        scheduled_for_utc: '2026-05-17T06:00:00Z',
-      }],
-    }));
-    await page.route('**/api/update-policies/calendar?*', route => fulfillJson(route, {
+    await page.route('**/api/update-policies/runs?*', route => {
+      state.scheduledRunsLoadCount = (state.scheduledRunsLoadCount || 0) + 1;
+      return fulfillJson(route, {
+        timezone: 'America/Toronto',
+        items: [{
+          id: 7,
+          policy_name: 'Nightly security',
+          server_name: 'srv-web-01',
+          status: 'succeeded',
+          summary: 'completed',
+          job_id: 'job-report-1',
+          scheduled_for_utc: '2026-05-17T06:00:00Z',
+        }],
+      });
+    });
+    await page.route('**/api/update-policies/calendar?*', route => {
+      state.calendarLoadCount = (state.calendarLoadCount || 0) + 1;
+      return fulfillJson(route, {
       days: 14,
       start_date: '2026-05-17',
       end_date: '2026-05-30',
@@ -485,7 +505,8 @@ test.describe.serial('setup and login flows', () => {
           }],
         }],
       }],
-    }));
+      });
+    });
     await page.route('**/api/jobs/job-report-1', route => fulfillJson(route, {
       report_url: '/api/reports/jobs/job-report-1',
       job: {
@@ -1171,9 +1192,11 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin');
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('Nightly security');
     await expect(page.locator('#scheduled-policy-table tbody')).toContainText('include web');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
     await expect(page.locator('#maintenance-calendar-list')).toContainText('Nightly security');
     await expect(page.locator('#maintenance-calendar-list')).toContainText('Allowed 02:00');
     await expect(page.locator('#maintenance-calendar-list')).toContainText('global 23:00-03:00 overnight');
+    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
     await expect(page.locator('#scheduled-runs-table a[href="/api/reports/jobs/job-report-1"]')).toBeVisible();
     await page.locator('#scheduled-runs-table button[data-action="job-detail"][data-job-id="job-report-1"]').click();
     await expect(page.locator('#job-detail-modal')).toContainText('Job job-report-1');
@@ -1184,6 +1207,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#job-detail-report')).toHaveAttribute('href', '/api/reports/jobs/job-report-1');
     await page.locator('#job-detail-close').click();
 
+    await page.locator('[data-admin-section-link="notifications"]').click();
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('#notification-enabled').check();
     await page.locator('#notification-webhook-url').fill('https://hooks.example.test/simplelinuxupdater');
     await page.locator('#notification-event-schedule-skipped').uncheck();
@@ -1301,6 +1326,9 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
     await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
 
+    await page.locator('[data-admin-section-link="notifications"]').click();
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
+    await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
     await expect(page.locator('[data-admin-section-content="notifications"]')).toBeHidden();
     await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Webhook');
@@ -1325,6 +1353,54 @@ test.describe.serial('setup and login flows', () => {
     }));
     expect(layout.navVisible).toBe(true);
     expect(layout.bodyWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  });
+
+  test('admin sections load heavy data lazily and recover failed sections with Retry', async ({ page }) => {
+    const state = { backupFailuresRemaining: 1 };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.evaluate(() => {
+      localStorage.setItem('simplelinuxupdater.admin.collapsed-sections.v1', JSON.stringify([
+        'notifications',
+        'scheduled-policies',
+        'scheduled-runs',
+        'backup',
+        'metrics',
+      ]));
+    });
+
+    await page.goto('/admin');
+    await expect.poll(() => ({
+      notifications: state.notificationLoadCount || 0,
+      runs: state.scheduledRunsLoadCount || 0,
+      calendar: state.calendarLoadCount || 0,
+      backup: state.backupLoadCount || 0,
+      metrics: state.metricsLoadCount || 0,
+    })).toEqual({ notifications: 0, runs: 0, calendar: 0, backup: 0, metrics: 0 });
+
+    await page.locator('[data-admin-section-toggle="backup"]').click();
+    const backupLifecycle = page.locator('[data-admin-section-lifecycle="backup"]');
+    await expect.poll(() => state.backupLoadCount || 0).toBe(1);
+    await expect(backupLifecycle).toHaveAttribute('data-status', 'failed');
+    await expect(backupLifecycle.locator('[data-admin-section-status]')).toHaveText('Failed');
+    await expect(backupLifecycle.locator('[data-admin-section-retry]')).toBeVisible();
+
+    await backupLifecycle.locator('[data-admin-section-retry]').click();
+    await expect.poll(() => state.backupLoadCount || 0).toBe(2);
+    await expect(backupLifecycle).toHaveAttribute('data-status', 'current');
+    await expect(backupLifecycle.locator('[data-admin-section-refreshed]')).toContainText('Updated');
+
+    await page.locator('[data-admin-section-toggle="backup"]').click();
+    await page.locator('[data-admin-section-toggle="backup"]').click();
+    await expect.poll(() => state.backupLoadCount || 0).toBe(2);
+
+    await page.goto('/admin#admin-section-metrics');
+    await expect.poll(() => state.metricsLoadCount || 0).toBe(1);
+    await expect(page.locator('[data-admin-section-lifecycle="metrics"]')).toHaveAttribute('data-status', 'current');
+
+    await page.goto('/admin#admin-section-scheduled-policies');
+    await expect.poll(() => state.calendarLoadCount || 0).toBe(1);
+    await expect(page.locator('[data-admin-section-lifecycle="scheduled-policies"]')).toHaveAttribute('data-status', 'current');
   });
 
   test('admin section drafts support save eligibility, discard, replacement confirmation, and safe navigation warnings', async ({ page }) => {

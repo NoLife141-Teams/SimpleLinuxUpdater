@@ -172,6 +172,82 @@ test("scheduled administration is composed without copying its semantic state", 
     assert.equal(store.planCommand("scheduled:savePolicy").command, "savePolicy");
 });
 
+test("Admin workspace projects stable sections and accepted-fact summaries", () => {
+    const scheduledView = {
+        snapshots: {
+            policies: { data: { items: [{ id: 1 }, { id: 2 }] }, lastError: "" },
+            runs: { data: { items: [{ id: 10 }] }, lastError: "" }
+        }
+    };
+    const store = createStore({ scheduled: { getView: () => scheduledView } });
+
+    assert.deepEqual(store.getView().workspace.sections.map(section => section.id), [
+        "app-time",
+        "notifications",
+        "account-security",
+        "scheduled-policies",
+        "scheduled-runs",
+        "backup",
+        "metrics"
+    ]);
+    assert.equal(store.getView().workspace.activeSection, "app-time");
+    assert.equal(store.getView().workspace.sections[0].summary, "Timezone unavailable");
+
+    store.dispatch({ type: "timezoneSnapshotReceived", data: { resolved_timezone: "America/Toronto" } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true } });
+    store.dispatch({ type: "accountSnapshotReceived", data: { session_count: 5 } });
+    store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });
+    store.dispatch({ type: "metricsSnapshotReceived", data: { enabled: true } });
+
+    const summaries = Object.fromEntries(store.getView().workspace.sections.map(section => [section.id, section.summary]));
+    assert.deepEqual(summaries, {
+        "app-time": "America/Toronto",
+        "notifications": "Webhook enabled",
+        "account-security": "5 active sessions",
+        "scheduled-policies": "2 saved policies",
+        "scheduled-runs": "1 recent run",
+        "backup": "Backup operations ready",
+        "metrics": "Token enabled"
+    });
+
+    const refresh = effect(store.dispatch({ type: "snapshotRequested", stream: "timezone" }), "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "timezone", requestID: refresh.requestID, error: "Timezone refresh failed." });
+    scheduledView.snapshots.policies.lastError = "Policy refresh failed.";
+    const staleSummaries = Object.fromEntries(store.getView().workspace.sections.map(section => [section.id, section.summary]));
+    assert.equal(staleSummaries["app-time"], "America/Toronto · Stale");
+    assert.equal(staleSummaries["scheduled-policies"], "2 saved policies · Stale");
+});
+
+test("Admin workspace validates persisted disclosure and navigation intents", () => {
+    const store = createStore();
+
+    let effects = store.dispatch({
+        type: "sectionPreferencesRestored",
+        collapsedSections: ["notifications", "backup", "not-a-section", "notifications"]
+    });
+    assert.deepEqual(store.getView().workspace.collapsedSections, ["notifications", "backup"]);
+    assert.equal(effect(effects, "render").area, "workspace");
+
+    effects = store.dispatch({ type: "sectionNavigationRequested", sectionID: "backup" });
+    assert.equal(store.getView().workspace.activeSection, "backup");
+    assert.deepEqual(store.getView().workspace.collapsedSections, ["notifications"]);
+    assert.equal(effect(effects, "focusSection").sectionID, "backup");
+    assert.deepEqual(effect(effects, "persistSectionPreferences").collapsedSections, ["notifications"]);
+
+    effects = store.dispatch({ type: "sectionCollapseToggled", sectionID: "account-security" });
+    assert.deepEqual(store.getView().workspace.collapsedSections, ["notifications", "account-security"]);
+    assert.deepEqual(effect(effects, "persistSectionPreferences").collapsedSections, ["notifications", "account-security"]);
+
+    const before = store.getView().workspace;
+    assert.deepEqual(store.dispatch({ type: "sectionNavigationRequested", sectionID: "not-a-section" }), []);
+    assert.deepEqual(store.getView().workspace, before);
+
+    effects = store.dispatch({ type: "sectionActivated", sectionID: "scheduled-policies" });
+    assert.equal(store.getView().workspace.activeSection, "scheduled-policies");
+    assert.equal(effect(effects, "render").area, "workspace");
+    assert.equal(effect(effects, "focusSection"), undefined);
+});
+
 test("Admin adapter does not own accepted interaction state globals", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/admin.js"), "utf8");
     assert.doesNotMatch(source, /let\s+appTimezoneSelection\s*=/);

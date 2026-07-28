@@ -168,7 +168,7 @@ test("session administration normalizes inventory and scopes destructive command
         data: {
             session_count: 2,
             sessions: [
-                { id: "current-id", current: true, client_label: "Chrome · Windows", client_ip: "192.168.4.x" },
+                { id: "current-id", current: true, client_label: "Chrome · Windows", client_ip: "192.168.4.x", full_ip: "192.168.4.55" },
                 { id: "other-id", current: false, client_label: "Firefox · Linux", client_ip: "203.0.113.x" }
             ]
         }
@@ -176,6 +176,7 @@ test("session administration normalizes inventory and scopes destructive command
     assert.equal(store.getView().account.sessions.length, 2);
     assert.equal(store.getView().account.sessions[0].clientLabel, "Chrome · Windows");
     assert.equal(store.getView().account.sessions[0].clientIP, "192.168.4.x");
+    assert.equal(JSON.stringify(store.getView()).includes("192.168.4.55"), false);
     assert.deepEqual(store.planCommand("revokeSession", { id: "other-id" }).payload, { id: "other-id" });
     assert.equal(store.planCommand("revokeSession", { id: "" }).enabled, false);
     assert.equal(store.planCommand("clearOtherSessions").enabled, true);

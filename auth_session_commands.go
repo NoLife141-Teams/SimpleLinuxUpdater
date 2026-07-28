@@ -18,6 +18,7 @@ type authSessionAccount interface {
 	CreateInitialUser(username, password string) error
 	ChangePassword(currentPassword, newPassword, confirmPassword string) error
 	Authenticate(username, password string) (bool, error)
+	CountSessions() (int, error)
 	ClearSessions() (int64, error)
 	RevokeSession(id string) (bool, error)
 	ClearOtherSessions(currentToken string) (int64, error)
@@ -120,26 +121,33 @@ type authSetupOutcome struct {
 type authPasswordOutcomeKind string
 
 const (
-	authPasswordSucceeded       authPasswordOutcomeKind = "succeeded"
-	authPasswordInvalid         authPasswordOutcomeKind = "invalid"
-	authPasswordCurrentRejected authPasswordOutcomeKind = "current_password_rejected"
-	authPasswordSetupRequired   authPasswordOutcomeKind = "setup_required"
-	authPasswordRateLimited     authPasswordOutcomeKind = "rate_limited"
-	authPasswordWriteFailed     authPasswordOutcomeKind = "write_failed"
+	authPasswordSucceeded          authPasswordOutcomeKind = "succeeded"
+	authPasswordInvalid            authPasswordOutcomeKind = "invalid"
+	authPasswordCurrentRejected    authPasswordOutcomeKind = "current_password_rejected"
+	authPasswordSetupRequired      authPasswordOutcomeKind = "setup_required"
+	authPasswordRateLimited        authPasswordOutcomeKind = "rate_limited"
+	authPasswordWriteFailed        authPasswordOutcomeKind = "write_failed"
+	authPasswordInvalidationFailed authPasswordOutcomeKind = "session_invalidation_failed"
 )
 
 type authPasswordCommand struct {
-	Actor           string
-	ClientIP        string
-	CurrentPassword string
-	NewPassword     string
-	ConfirmPassword string
+	Actor                   string
+	ClientIP                string
+	CurrentToken            string
+	CurrentPassword         string
+	NewPassword             string
+	ConfirmPassword         string
+	InvalidateOtherSessions bool
 }
 
 type authPasswordOutcome struct {
-	Kind        authPasswordOutcomeKind
-	PublicError string
-	Err         error
+	Kind                    authPasswordOutcomeKind
+	PublicError             string
+	Err                     error
+	InvalidationRequested   bool
+	InvalidatedSessions     int64
+	PreservedSessions       int
+	CurrentSessionPreserved bool
 }
 
 type authLoginOutcomeKind string
@@ -370,8 +378,58 @@ func (m *authSessionCommands) ChangePassword(_ context.Context, cmd authPassword
 		return authPasswordOutcome{Kind: authPasswordRateLimited, PublicError: "too many password change attempts"}
 	}
 
-	err := deps.Account.ChangePassword(cmd.CurrentPassword, cmd.NewPassword, cmd.ConfirmPassword)
+	activeSessions, err := deps.Account.CountSessions()
+	if err != nil {
+		deps.PasswordPolicy.RecordFailure(key)
+		m.recordAudit(authSessionCommandAuditRecord{
+			Actor:      cmd.Actor,
+			ClientIP:   cmd.ClientIP,
+			Action:     "auth.password.change",
+			TargetType: "auth_user",
+			TargetName: cmd.Actor,
+			Status:     "failure",
+			Message:    "Password change failed",
+			Meta:       map[string]any{"failure_kind": "session_count_failed"},
+		})
+		return authPasswordOutcome{Kind: authPasswordWriteFailed, PublicError: "failed to change password", Err: err}
+	}
+
+	err = deps.Account.ChangePassword(cmd.CurrentPassword, cmd.NewPassword, cmd.ConfirmPassword)
 	if err == nil {
+		outcome := authPasswordOutcome{
+			Kind:                    authPasswordSucceeded,
+			InvalidationRequested:   cmd.InvalidateOtherSessions,
+			PreservedSessions:       max(1, activeSessions),
+			CurrentSessionPreserved: true,
+		}
+		if cmd.InvalidateOtherSessions {
+			deleted, clearErr := deps.Account.ClearOtherSessions(cmd.CurrentToken)
+			if clearErr != nil {
+				m.recordAudit(authSessionCommandAuditRecord{
+					Actor:      cmd.Actor,
+					ClientIP:   cmd.ClientIP,
+					Action:     "auth.password.change",
+					TargetType: "auth_user",
+					TargetName: cmd.Actor,
+					Status:     "failure",
+					Message:    "Password changed but other session invalidation failed",
+					Meta: map[string]any{
+						"failure_kind":              "session_invalidation_failed",
+						"password_changed":          true,
+						"invalidation_requested":    true,
+						"invalidated_sessions":      0,
+						"preserved_sessions":        max(1, activeSessions),
+						"current_session_preserved": true,
+					},
+				})
+				outcome.Kind = authPasswordInvalidationFailed
+				outcome.PublicError = "password changed, but other sessions could not be invalidated"
+				outcome.Err = clearErr
+				return outcome
+			}
+			outcome.InvalidatedSessions = deleted
+			outcome.PreservedSessions = max(1, activeSessions-int(deleted))
+		}
 		m.recordAudit(authSessionCommandAuditRecord{
 			Actor:      cmd.Actor,
 			ClientIP:   cmd.ClientIP,
@@ -380,8 +438,14 @@ func (m *authSessionCommands) ChangePassword(_ context.Context, cmd authPassword
 			TargetName: cmd.Actor,
 			Status:     "success",
 			Message:    "Password changed",
+			Meta: map[string]any{
+				"invalidation_requested":    outcome.InvalidationRequested,
+				"invalidated_sessions":      outcome.InvalidatedSessions,
+				"preserved_sessions":        outcome.PreservedSessions,
+				"current_session_preserved": outcome.CurrentSessionPreserved,
+			},
 		})
-		return authPasswordOutcome{Kind: authPasswordSucceeded}
+		return outcome
 	}
 
 	deps.PasswordPolicy.RecordFailure(key)

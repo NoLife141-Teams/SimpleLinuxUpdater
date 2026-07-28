@@ -667,11 +667,117 @@ async function saveAppTimezoneSettings() {
     }
 }
 
-function setAuthPasswordFeedback(successMessage, errorMessage) {
+function setAuthPasswordFeedback(statusMessage, errorMessage, tone = "success") {
     const success = document.getElementById("auth-password-status");
     const error = document.getElementById("auth-password-error");
-    if (success) success.textContent = successMessage || "";
+    if (success) {
+        success.textContent = statusMessage || "";
+        success.classList.toggle("form-feedback-success", tone === "success");
+        success.classList.toggle("form-feedback-warning", tone === "warning");
+    }
     if (error) error.textContent = errorMessage || "";
+}
+
+function passwordPolicyChecks(value, policy = adminPageView().account.passwordPolicy) {
+    const password = String(value || "");
+    const length = Array.from(password).length;
+    return {
+        length: length >= policy.minLength && length <= policy.maxLength,
+        letter: !policy.requiresLetter || /[A-Za-z]/.test(password),
+        digit: !policy.requiresDigit || /[0-9]/.test(password)
+    };
+}
+
+function passwordDraftFacts() {
+    const currentPassword = document.getElementById("auth-current-password")?.value || "";
+    const newPassword = document.getElementById("auth-new-password")?.value || "";
+    const confirmPassword = document.getElementById("auth-confirm-password")?.value || "";
+    const checks = passwordPolicyChecks(newPassword);
+    return {
+        hasCurrentPassword: currentPassword.length > 0,
+        hasNewPassword: newPassword.length > 0,
+        passwordsMatch: newPassword === confirmPassword,
+        passwordValid: Object.values(checks).every(Boolean),
+        invalidateOtherSessions: Boolean(document.getElementById("auth-password-invalidate-others")?.checked),
+        checks
+    };
+}
+
+function renderAuthPasswordControls() {
+    const policy = adminPageView().account.passwordPolicy;
+    const newInput = document.getElementById("auth-new-password");
+    const confirmInput = document.getElementById("auth-confirm-password");
+    const save = document.getElementById("auth-password-save");
+    const facts = passwordDraftFacts();
+    [newInput, confirmInput].forEach(input => {
+        if (!input) return;
+        input.minLength = policy.minLength;
+        input.maxLength = policy.maxLength;
+    });
+    const length = document.querySelector('[data-password-requirement="length"]');
+    const letter = document.querySelector('[data-password-requirement="letter"]');
+    const digit = document.querySelector('[data-password-requirement="digit"]');
+    if (length) length.textContent = `${policy.minLength}–${policy.maxLength} characters`;
+    if (letter) {
+        letter.textContent = policy.requiresLetter ? "At least one letter" : "Letters are optional";
+        letter.hidden = !policy.requiresLetter;
+    }
+    if (digit) {
+        digit.textContent = policy.requiresDigit ? "At least one digit" : "Digits are optional";
+        digit.hidden = !policy.requiresDigit;
+    }
+    const hasDraft = Boolean(newInput?.value);
+    Object.entries(facts.checks).forEach(([name, met]) => {
+        document.querySelector(`[data-password-requirement="${name}"]`)?.classList.toggle("is-met", hasDraft && met);
+    });
+    const plan = adminPageInteraction.planCommand("changePassword", facts);
+    if (save) {
+        save.disabled = !plan.enabled;
+        save.title = plan.enabled ? "" : plan.reason || "";
+    }
+}
+
+function togglePasswordVisibility(event) {
+    const button = event.currentTarget;
+    const input = document.getElementById(button.dataset.passwordToggle || "");
+    if (!input) return;
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    button.textContent = showing ? "Show" : "Hide";
+    button.setAttribute("aria-pressed", String(!showing));
+    const fieldName = input.id === "auth-current-password"
+        ? "current password"
+        : input.id === "auth-new-password" ? "new password" : "password confirmation";
+    button.setAttribute("aria-label", `${showing ? "Show" : "Hide"} ${fieldName}`);
+    input.focus();
+}
+
+function updatePasswordCapsLockWarning(event) {
+    const warning = document.getElementById("auth-password-caps-warning");
+    if (!warning || typeof event.getModifierState !== "function") return;
+    warning.hidden = !event.getModifierState("CapsLock");
+}
+
+function resetPasswordEntryControls() {
+    ["auth-current-password", "auth-new-password", "auth-confirm-password"].forEach(id => {
+        const input = document.getElementById(id);
+        const toggle = document.querySelector(`[data-password-toggle="${id}"]`);
+        if (input) {
+            input.value = "";
+            input.type = "password";
+        }
+        if (toggle) {
+            toggle.textContent = "Show";
+            toggle.setAttribute("aria-pressed", "false");
+            const fieldName = id === "auth-current-password"
+                ? "current password"
+                : id === "auth-new-password" ? "new password" : "password confirmation";
+            toggle.setAttribute("aria-label", `Show ${fieldName}`);
+        }
+    });
+    const warning = document.getElementById("auth-password-caps-warning");
+    if (warning) warning.hidden = true;
+    renderAuthPasswordControls();
 }
 
 function formatSessionTime(value) {
@@ -771,6 +877,7 @@ function renderAuthSessions() {
         showAll.textContent = view.account.otherSessionsExpanded ? "Collapse" : "Show all";
     }
     otherList.classList.toggle("is-expanded", view.account.otherSessionsExpanded);
+    renderAuthPasswordControls();
     renderAdminWorkspace();
 }
 
@@ -1092,13 +1199,11 @@ async function changeAdminPassword() {
         const currentPassword = currentInput?.value || "";
         const newPassword = newInput?.value || "";
         const confirmPassword = confirmInput?.value || "";
-        plan = beginAdminCommand("changePassword", {
-            hasCurrentPassword: currentPassword.length > 0,
-            hasNewPassword: newPassword.length > 0,
-            passwordsMatch: newPassword === confirmPassword
-        });
+        const facts = passwordDraftFacts();
+        plan = beginAdminCommand("changePassword", facts);
         if (!plan) {
-            setAuthPasswordFeedback("", "Current password and matching new passwords are required.");
+            const rejected = adminPageInteraction.planCommand("changePassword", facts);
+            setAuthPasswordFeedback("", rejected.reason || "Review the password fields.");
             return;
         }
         const res = await fetch("/api/auth/password", {
@@ -1107,7 +1212,8 @@ async function changeAdminPassword() {
             body: JSON.stringify({
                 current_password: currentPassword,
                 new_password: newPassword,
-                confirm_password: confirmPassword
+                confirm_password: confirmPassword,
+                invalidate_other_sessions: plan.payload.invalidateOtherSessions
             })
         });
         if (!res.ok) {
@@ -1116,16 +1222,24 @@ async function changeAdminPassword() {
             setAuthPasswordFeedback("", message);
             return;
         }
-        finishAdminCommand(plan, null, "Password changed.");
-        if (currentInput) currentInput.value = "";
-        if (newInput) newInput.value = "";
-        if (confirmInput) confirmInput.value = "";
-        setAuthPasswordFeedback("Password changed.", "");
+        const data = await res.json().catch(() => ({}));
+        const invalidated = Math.max(0, Number(data.invalidated_sessions) || 0);
+        const preserved = Math.max(0, Number(data.preserved_sessions) || 0);
+        const partial = data.outcome === "partial_failure";
+        const message = partial
+            ? `Password changed, but other sessions could not be invalidated. ${preserved} active session${preserved === 1 ? "" : "s"} preserved.`
+            : data.invalidation_requested
+                ? `Password changed. ${invalidated} other session${invalidated === 1 ? "" : "s"} invalidated; ${preserved} active session${preserved === 1 ? "" : "s"} preserved.`
+                : `Password changed. 0 sessions invalidated; ${preserved} active session${preserved === 1 ? "" : "s"} preserved.`;
+        finishAdminCommand(plan, data, message);
+        resetPasswordEntryControls();
+        setAuthPasswordFeedback(message, "", partial ? "warning" : "success");
+        if (data.invalidation_requested) await fetchAuthSessionStatus();
     } catch (err) {
         finishAdminCommand(plan, null, err.message || "Failed to change password.", true);
         setAuthPasswordFeedback("", err.message || "Failed to change password.");
     } finally {
-        if (button) button.disabled = false;
+        renderAuthPasswordControls();
     }
 }
 
@@ -3174,6 +3288,17 @@ document.getElementById("notification-webhook-url").addEventListener("input", sy
 document.getElementById("notification-enabled").addEventListener("change", syncNotificationDraftFromDOM);
 document.querySelectorAll("[data-notification-event]").forEach(input => input.addEventListener("change", syncNotificationDraftFromDOM));
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
+["auth-current-password", "auth-new-password", "auth-confirm-password"].forEach(id => {
+    const input = document.getElementById(id);
+    input.addEventListener("input", () => {
+        setAuthPasswordFeedback("", "");
+        renderAuthPasswordControls();
+    });
+    input.addEventListener("keydown", updatePasswordCapsLockWarning);
+    input.addEventListener("keyup", updatePasswordCapsLockWarning);
+});
+document.querySelectorAll("[data-password-toggle]").forEach(button => button.addEventListener("click", togglePasswordVisibility));
+document.getElementById("auth-password-invalidate-others").addEventListener("change", renderAuthPasswordControls);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
 document.getElementById("auth-sessions-clear-others").addEventListener("click", clearOtherAuthSessions);
 document.getElementById("auth-session-inventory").addEventListener("click", handleAuthSessionListClick);

@@ -624,7 +624,16 @@ func handleAuthSessionsStatus(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session_count": len(sessions), "sessions": sessions})
+	c.JSON(http.StatusOK, gin.H{
+		"session_count": len(sessions),
+		"sessions":      sessions,
+		"password_policy": gin.H{
+			"min_length":      authMinPasswordLen,
+			"max_length":      authMaxPasswordLen,
+			"requires_letter": true,
+			"requires_digit":  true,
+		},
+	})
 }
 
 func handleAuthPasswordChange(c *gin.Context) {
@@ -656,14 +665,28 @@ func handleAuthPasswordChange(c *gin.Context) {
 		return
 	}
 	outcome := authCommandsForContext(c).ChangePassword(c.Request.Context(), authPasswordCommand{
-		Actor:           actor,
-		ClientIP:        clientIPFromContext(c),
-		CurrentPassword: req.CurrentPassword,
-		NewPassword:     req.NewPassword,
-		ConfirmPassword: req.ConfirmPassword,
+		Actor:                   actor,
+		ClientIP:                clientIPFromContext(c),
+		CurrentToken:            currentSessionToken(c),
+		CurrentPassword:         req.CurrentPassword,
+		NewPassword:             req.NewPassword,
+		ConfirmPassword:         req.ConfirmPassword,
+		InvalidateOtherSessions: req.InvalidateOtherSessions,
 	})
 	switch outcome.Kind {
 	case authPasswordSucceeded:
+	case authPasswordInvalidationFailed:
+		log.Printf("handleAuthPasswordChange: other session invalidation failed for actor=%q: %v", actor, outcome.Err)
+		c.JSON(http.StatusMultiStatus, gin.H{
+			"message":                   outcome.PublicError,
+			"outcome":                   "partial_failure",
+			"password_changed":          true,
+			"invalidation_requested":    outcome.InvalidationRequested,
+			"invalidated_sessions":      outcome.InvalidatedSessions,
+			"preserved_sessions":        outcome.PreservedSessions,
+			"current_session_preserved": outcome.CurrentSessionPreserved,
+		})
+		return
 	case authPasswordRateLimited:
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": outcome.PublicError})
 		return
@@ -681,7 +704,15 @@ func handleAuthPasswordChange(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to change password"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "password changed"})
+	c.JSON(http.StatusOK, gin.H{
+		"message":                   "password changed",
+		"outcome":                   "succeeded",
+		"password_changed":          true,
+		"invalidation_requested":    outcome.InvalidationRequested,
+		"invalidated_sessions":      outcome.InvalidatedSessions,
+		"preserved_sessions":        outcome.PreservedSessions,
+		"current_session_preserved": outcome.CurrentSessionPreserved,
+	})
 }
 
 func handleAuthSessionsClear(c *gin.Context) {

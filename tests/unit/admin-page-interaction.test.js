@@ -146,11 +146,60 @@ test("section drafts normalize accepted values, discard independently, and exclu
 
 test("account and metrics administration excludes secrets and clears token reveal", () => {
     const store = createStore();
-    store.dispatch({ type: "accountSnapshotReceived", data: { count: 4 } });
-    const password = effect(store.dispatch({ type: "commandRequested", command: "changePassword", payload: { hasCurrentPassword: true, hasNewPassword: true, passwordsMatch: true } }), "executeCommand");
-    assert.deepEqual(password.plan.payload, {});
+    store.dispatch({ type: "accountSnapshotReceived", data: {
+        count: 4,
+        password_policy: { min_length: 12, max_length: 80, requires_letter: true, requires_digit: true }
+    } });
+    assert.deepEqual(store.getView().account.passwordPolicy, {
+        minLength: 12,
+        maxLength: 80,
+        requiresLetter: true,
+        requiresDigit: true
+    });
+    assert.equal(store.planCommand("changePassword", {
+        hasCurrentPassword: true,
+        hasNewPassword: true,
+        passwordsMatch: false,
+        passwordValid: true
+    }).enabled, false);
+    assert.equal(store.planCommand("changePassword", {
+        hasCurrentPassword: true,
+        hasNewPassword: true,
+        passwordsMatch: true,
+        passwordValid: false
+    }).enabled, false);
+    const password = effect(store.dispatch({
+        type: "commandRequested",
+        command: "changePassword",
+        payload: {
+            hasCurrentPassword: true,
+            hasNewPassword: true,
+            passwordsMatch: true,
+            passwordValid: true,
+            invalidateOtherSessions: true
+        }
+    }), "executeCommand");
+    assert.deepEqual(password.plan.payload, { invalidateOtherSessions: true });
     assert.equal(JSON.stringify(store.getView()).includes("secret"), false);
-    store.dispatch({ type: "commandCompleted", plan: password.plan, message: "Password changed." });
+    store.dispatch({
+        type: "commandCompleted",
+        plan: password.plan,
+        data: {
+            outcome: "succeeded",
+            invalidation_requested: true,
+            invalidated_sessions: 3,
+            preserved_sessions: 1,
+            current_session_preserved: true
+        },
+        message: "Password changed."
+    });
+    assert.deepEqual(store.getView().account.passwordChangeOutcome, {
+        outcome: "succeeded",
+        invalidationRequested: true,
+        invalidatedSessions: 3,
+        preservedSessions: 1,
+        currentSessionPreserved: true
+    });
     store.dispatch({ type: "metricsSnapshotReceived", data: { enabled: false } });
     const rotate = effect(store.dispatch({ type: "commandRequested", command: "rotateMetricsToken" }), "executeCommand");
     store.dispatch({ type: "commandCompleted", plan: rotate.plan, data: { enabled: true, token: "one-time-token" } });
@@ -167,6 +216,7 @@ test("session administration normalizes inventory and scopes destructive command
         type: "accountSnapshotReceived",
         data: {
             session_count: 2,
+            password_policy: { min_length: 10, max_length: 64, requires_letter: true, requires_digit: true },
             sessions: [
                 { id: "current-id", current: true, client_label: "Chrome · Windows", client_ip: "192.168.4.x", full_ip: "192.168.4.55" },
                 { id: "other-id", current: false, client_label: "Firefox · Linux", client_ip: "203.0.113.x" }

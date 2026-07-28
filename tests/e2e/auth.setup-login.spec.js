@@ -428,11 +428,51 @@ test.describe.serial('setup and login flows', () => {
         state.sessionClearCount = (state.sessionClearCount || 0) + 1;
         return fulfillJson(route, { deleted: 2 });
       }
-      return fulfillJson(route, { session_count: state.sessions.length, sessions: state.sessions });
+      return fulfillJson(route, {
+        session_count: state.sessions.length,
+        sessions: state.sessions,
+        password_policy: {
+          min_length: 10,
+          max_length: 64,
+          requires_letter: true,
+          requires_digit: true,
+        },
+      });
     });
     await page.route('**/api/auth/password', async route => {
       state.passwordPayload = await route.request().postDataJSON();
-      return fulfillJson(route, { ok: true });
+      state.passwordPayloads = [...(state.passwordPayloads || []), state.passwordPayload];
+      const preservedBefore = state.sessions.length;
+      if (state.passwordPartialFailure) {
+        return route.fulfill({
+          status: 207,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            message: 'password changed, but other sessions could not be invalidated',
+            outcome: 'partial_failure',
+            password_changed: true,
+            invalidation_requested: true,
+            invalidated_sessions: 0,
+            preserved_sessions: preservedBefore,
+            current_session_preserved: true,
+          }),
+        });
+      }
+      let invalidated = 0;
+      if (state.passwordPayload.invalidate_other_sessions) {
+        const before = state.sessions.length;
+        state.sessions = state.sessions.filter(session => session.current);
+        invalidated = before - state.sessions.length;
+      }
+      return fulfillJson(route, {
+        message: 'password changed',
+        outcome: 'succeeded',
+        password_changed: true,
+        invalidation_requested: Boolean(state.passwordPayload.invalidate_other_sessions),
+        invalidated_sessions: invalidated,
+        preserved_sessions: state.sessions.length,
+        current_session_preserved: true,
+      });
     });
     await page.route('**/api/notifications/settings', async route => {
       if (route.request().method() === 'PUT') {
@@ -2061,6 +2101,7 @@ test.describe.serial('setup and login flows', () => {
       current_password: password,
       new_password: changedPassword,
       confirm_password: changedPassword,
+      invalidate_other_sessions: true,
     });
     await expect(page.locator('#auth-password-status')).toContainText('Password changed');
 
@@ -2072,6 +2113,86 @@ test.describe.serial('setup and login flows', () => {
     });
     await acceptTypedConfirm(page, page.locator('#auth-sessions-clear'), 'LOGOUT ALL');
     await expect.poll(() => state.sessionClearCount || 0).toBe(1);
+  });
+
+  test('admin password controls expose requirements, entry aids, and both session outcomes', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    await expect(page.locator('#auth-password-requirements')).toContainText('10–64 characters');
+    await expect(page.locator('#auth-password-requirements')).toContainText('At least one letter');
+    await expect(page.locator('#auth-password-requirements')).toContainText('At least one digit');
+    const current = page.locator('#auth-current-password');
+    await current.fill(password);
+    await page.getByRole('button', { name: 'Show current password' }).click();
+    await expect(current).toHaveAttribute('type', 'text');
+    await expect(page.getByRole('button', { name: 'Hide current password' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: 'Hide current password' }).click();
+    await expect(current).toHaveAttribute('type', 'password');
+
+    await current.evaluate(input => {
+      const event = new KeyboardEvent('keydown', { key: 'A', bubbles: true });
+      Object.defineProperty(event, 'getModifierState', { value: key => key === 'CapsLock' });
+      input.dispatchEvent(event);
+    });
+    await expect(page.locator('#auth-password-caps-warning')).toBeVisible();
+    await current.evaluate(input => {
+      const event = new KeyboardEvent('keyup', { key: 'a', bubbles: true });
+      Object.defineProperty(event, 'getModifierState', { value: () => false });
+      input.dispatchEvent(event);
+    });
+    await expect(page.locator('#auth-password-caps-warning')).toBeHidden();
+
+    await page.locator('#auth-new-password').fill(changedPassword);
+    await page.locator('#auth-confirm-password').fill('DifferentPass123');
+    await expect(page.locator('#auth-password-save')).toBeDisabled();
+    await expect(page.locator('#auth-password-save')).toHaveAttribute('title', 'New passwords do not match.');
+
+    await page.locator('#auth-confirm-password').fill(changedPassword);
+    await page.locator('#auth-password-invalidate-others').uncheck();
+    await page.locator('#auth-password-save').click();
+    await expect.poll(() => state.passwordPayloads?.length || 0).toBe(1);
+    await expect(state.passwordPayloads[0]).toMatchObject({ invalidate_other_sessions: false });
+    await expect(page.locator('#auth-password-status')).toHaveText('Password changed. 0 sessions invalidated; 2 active sessions preserved.');
+    await expect(page.locator('#auth-current-password')).toHaveValue('');
+    await expect(page.locator('#auth-new-password')).toHaveValue('');
+    await expect(page.locator('#auth-confirm-password')).toHaveValue('');
+
+    await page.locator('#auth-current-password').fill(password);
+    await page.locator('#auth-new-password').fill(changedPassword);
+    await page.locator('#auth-confirm-password').fill(changedPassword);
+    await page.locator('#auth-password-invalidate-others').check();
+    await page.locator('#auth-password-save').click();
+    await expect.poll(() => state.passwordPayloads?.length || 0).toBe(2);
+    await expect(state.passwordPayloads[1]).toMatchObject({ invalidate_other_sessions: true });
+    await expect(page.locator('#auth-password-status')).toHaveText('Password changed. 1 other session invalidated; 1 active session preserved.');
+    await expect(page.locator('#auth-session-status')).toHaveText('1 active session.');
+  });
+
+  test('admin password change reports partial session invalidation without retaining secrets', async ({ page }) => {
+    const state = { passwordPartialFailure: true };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    await page.locator('#auth-current-password').fill(password);
+    await page.locator('#auth-new-password').fill(changedPassword);
+    await page.locator('#auth-confirm-password').fill(changedPassword);
+    await page.locator('#auth-password-save').click();
+    await expect(page.locator('#auth-password-status')).toHaveText(
+      'Password changed, but other sessions could not be invalidated. 2 active sessions preserved.',
+    );
+    await expect(page.locator('#auth-password-status')).toHaveClass(/form-feedback-warning/);
+    await expect(page.locator('#auth-session-status')).toHaveText('2 active sessions.');
+    await expect(page.locator('#auth-current-password')).toHaveValue('');
+    await expect(page.locator('#auth-new-password')).toHaveValue('');
+    await expect(page.locator('#auth-confirm-password')).toHaveValue('');
+    await expect.poll(() => page.evaluate(() => JSON.stringify({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+    }))).not.toContain(changedPassword);
   });
 
   test('active session inventory keeps a temporary IP reveal controllable and undisclosed', async ({ page }) => {

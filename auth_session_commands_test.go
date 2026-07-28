@@ -20,6 +20,8 @@ type fakeAuthCommandAccount struct {
 	changedPassword   bool
 	authenticated     bool
 	authenticateErr   error
+	sessionCount      int
+	sessionCountErr   error
 	clearSessionsErr  error
 	clearedSessions   bool
 	deletedSessions   int64
@@ -58,6 +60,10 @@ func (f *fakeAuthCommandAccount) ChangePassword(_, _, _ string) error {
 
 func (f *fakeAuthCommandAccount) Authenticate(_, _ string) (bool, error) {
 	return f.authenticated, f.authenticateErr
+}
+
+func (f *fakeAuthCommandAccount) CountSessions() (int, error) {
+	return f.sessionCount, f.sessionCountErr
 }
 
 func (f *fakeAuthCommandAccount) ClearSessions() (int64, error) {
@@ -284,6 +290,82 @@ func TestAuthSessionCommandsChangePasswordOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthSessionCommandsPasswordChangeSessionOutcomes(t *testing.T) {
+	t.Run("preserves every session when invalidation is not requested", func(t *testing.T) {
+		account := &fakeAuthCommandAccount{sessionCount: 3}
+		audits := make([]authSessionCommandAuditRecord, 0, 1)
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{
+			Account: account,
+			RecordAudit: func(record authSessionCommandAuditRecord) error {
+				audits = append(audits, record)
+				return nil
+			},
+		})
+
+		outcome := module.ChangePassword(context.Background(), authPasswordCommand{
+			Actor: "admin", CurrentToken: "current-token",
+			CurrentPassword: "CurrentPass123", NewPassword: "NewStrongPass123", ConfirmPassword: "NewStrongPass123",
+		})
+
+		if outcome.Kind != authPasswordSucceeded || outcome.InvalidationRequested || outcome.InvalidatedSessions != 0 || outcome.PreservedSessions != 3 || !outcome.CurrentSessionPreserved {
+			t.Fatalf("ChangePassword(preserve) = %+v", outcome)
+		}
+		if account.clearOthersToken != "" {
+			t.Fatalf("ChangePassword(preserve) cleared sessions with token %q", account.clearOthersToken)
+		}
+		if len(audits) != 1 || audits[0].Meta["preserved_sessions"] != 3 || audits[0].Meta["invalidated_sessions"] != int64(0) {
+			t.Fatalf("ChangePassword(preserve) audits = %+v", audits)
+		}
+	})
+
+	t.Run("invalidates only other sessions and preserves current", func(t *testing.T) {
+		account := &fakeAuthCommandAccount{sessionCount: 3, deletedOthers: 2}
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{Account: account})
+
+		outcome := module.ChangePassword(context.Background(), authPasswordCommand{
+			Actor: "admin", CurrentToken: "current-token",
+			CurrentPassword: "CurrentPass123", NewPassword: "NewStrongPass123", ConfirmPassword: "NewStrongPass123",
+			InvalidateOtherSessions: true,
+		})
+
+		if outcome.Kind != authPasswordSucceeded || !outcome.InvalidationRequested || outcome.InvalidatedSessions != 2 || outcome.PreservedSessions != 1 || !outcome.CurrentSessionPreserved {
+			t.Fatalf("ChangePassword(invalidate) = %+v", outcome)
+		}
+		if account.clearOthersToken != "current-token" {
+			t.Fatalf("ChangePassword(invalidate) token = %q", account.clearOthersToken)
+		}
+	})
+
+	t.Run("reports password success with session invalidation failure", func(t *testing.T) {
+		clearErr := errors.New("session store unavailable")
+		account := &fakeAuthCommandAccount{sessionCount: 3, clearOthersErr: clearErr}
+		audits := make([]authSessionCommandAuditRecord, 0, 1)
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{
+			Account: account,
+			RecordAudit: func(record authSessionCommandAuditRecord) error {
+				audits = append(audits, record)
+				return nil
+			},
+		})
+
+		outcome := module.ChangePassword(context.Background(), authPasswordCommand{
+			Actor: "admin", CurrentToken: "current-token",
+			CurrentPassword: "CurrentPass123", NewPassword: "NewStrongPass123", ConfirmPassword: "NewStrongPass123",
+			InvalidateOtherSessions: true,
+		})
+
+		if outcome.Kind != authPasswordInvalidationFailed || !account.changedPassword || outcome.InvalidatedSessions != 0 || outcome.PreservedSessions != 3 || !outcome.CurrentSessionPreserved {
+			t.Fatalf("ChangePassword(partial) = %+v account=%+v", outcome, account)
+		}
+		if len(audits) != 1 || audits[0].Status != "failure" || audits[0].Meta["password_changed"] != true || audits[0].Meta["failure_kind"] != "session_invalidation_failed" {
+			t.Fatalf("ChangePassword(partial) audits = %+v", audits)
+		}
+		if _, leaked := audits[0].Meta["error"]; leaked {
+			t.Fatalf("ChangePassword(partial) leaked infrastructure error: %+v", audits[0].Meta)
+		}
+	})
 }
 
 func TestAuthSessionCommandsLoginOutcomes(t *testing.T) {

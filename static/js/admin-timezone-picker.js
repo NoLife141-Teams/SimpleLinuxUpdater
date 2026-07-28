@@ -12,7 +12,7 @@
         return String(value || "")
             .normalize("NFD")
             .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[_/+-]+/g, " ")
+            .replace(/[_/]+/g, " ")
             .replace(/\s+/g, " ")
             .trim()
             .toLowerCase();
@@ -104,7 +104,7 @@
                 primary: "System default timezone",
                 secondary: detectedLabel
                     ? `Detected at startup: ${detectedLabel} \u00b7 Follows server setting after restart`
-                    : "Detecting the server timezone",
+                    : "Uses the server timezone detected when saved",
                 group: "Automatic",
                 search: `system default automatic server timezone ${systemTimezone} ${detectedLabel}`
             };

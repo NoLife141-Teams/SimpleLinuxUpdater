@@ -149,7 +149,10 @@ function renderScheduledTimezone(payload) {
         ? window.setAppTimezoneCache(payload)
         : { timezone: String(payload || "").trim() || scheduledPolicyView().timezone || "UTC" };
     const timezone = timezoneState.timezone || "UTC";
-    if (appTimezonePicker) appTimezonePicker.setSystemTimezone(timezoneState.resolved_timezone);
+    const configuredTimezone = String(timezoneState.editable_timezone ?? timezoneState.editableTimezone ?? "").trim();
+    if (appTimezonePicker) {
+        appTimezonePicker.setSystemTimezone(configuredTimezone ? "" : timezoneState.resolved_timezone);
+    }
     renderCurrentAppTime(timezoneState.resolved_timezone || timezone);
     scheduledPolicyAdministration.dispatch({ type: "timezoneReceived", timezone });
     const timezoneSelection = adminPageView().timezone.draft;

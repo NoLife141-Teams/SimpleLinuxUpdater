@@ -40,7 +40,7 @@ test("timezone picker presents automatic, suggested, IANA, and fixed-offset choi
 
 test("timezone search accepts city, canonical region, and UTC offset terms", () => {
     const options = buildOptions(
-        ["America/Toronto", "America/New_York", "Europe/Paris", "+05:30"],
+        ["America/Toronto", "America/New_York", "Europe/Paris", "+05:30", "-05:30"],
         { now: new Date("2026-01-15T12:00:00Z") },
     );
 
@@ -52,6 +52,10 @@ test("timezone search accepts city, canonical region, and UTC offset terms", () 
     assert.deepEqual(
         filterOptions(options, "utc +05:30").map(option => option.value),
         ["+05:30"],
+    );
+    assert.deepEqual(
+        filterOptions(options, "utc -05:30").map(option => option.value),
+        ["-05:30"],
     );
     assert.equal(filterOptions(options, "not-a-timezone").length, 0);
 });

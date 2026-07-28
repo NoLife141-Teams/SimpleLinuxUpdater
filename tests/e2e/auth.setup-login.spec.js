@@ -1212,8 +1212,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#app-timezone-popover')).toBeVisible();
     const systemDefault = page.locator('#app-timezone-options [role="option"][data-value=""]');
     await expect(systemDefault).toContainText('System default timezone');
-    await expect(systemDefault).toContainText('Detected at startup');
-    await expect(systemDefault).toContainText('America/Toronto');
+    await expect(systemDefault).toContainText('Uses the server timezone detected when saved');
+    await expect(systemDefault).not.toContainText('Detected at startup');
     await expect(page.locator('#app-timezone-options [role="option"][data-value="Local"]')).toHaveCount(0);
     const overlap = await page.evaluate(() => {
       const popover = document.querySelector('#app-timezone-popover');

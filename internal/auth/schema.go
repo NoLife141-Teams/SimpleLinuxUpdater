@@ -90,10 +90,39 @@ func EnsureSchema(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			last_seen_at TEXT NOT NULL,
 			client_ip TEXT NOT NULL,
+			client_ip_encrypted TEXT NOT NULL DEFAULT '',
 			client_label TEXT NOT NULL
 		)
 	`); err != nil {
 		return err
+	}
+	metadataRows, err := db.Query("PRAGMA table_info(auth_session_metadata)")
+	if err != nil {
+		return err
+	}
+	hasEncryptedIP := false
+	for metadataRows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := metadataRows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			metadataRows.Close()
+			return err
+		}
+		hasEncryptedIP = hasEncryptedIP || name == "client_ip_encrypted"
+	}
+	if err := metadataRows.Err(); err != nil {
+		metadataRows.Close()
+		return err
+	}
+	if err := metadataRows.Close(); err != nil {
+		return err
+	}
+	if !hasEncryptedIP {
+		if _, err := db.Exec("ALTER TABLE auth_session_metadata ADD COLUMN client_ip_encrypted TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

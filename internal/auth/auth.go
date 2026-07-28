@@ -241,8 +241,9 @@ type Repository interface {
 	UpdatePasswordHash(passwordHash, now string) error
 	CountSessions() (int, error)
 	ClearSessions() (int64, error)
-	TouchSession(token, clientIP, clientLabel, now string) error
+	TouchSession(token, clientIP, encryptedClientIP, clientLabel, now string) error
 	ListSessions(currentToken string) ([]SessionInfo, error)
+	SessionEncryptedIP(id string) (string, bool, error)
 	RevokeSession(id string) (bool, error)
 	ClearOtherSessions(currentToken string) (int64, error)
 }
@@ -340,19 +341,20 @@ func sessionPublicID(token string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func (r *SQLiteRepository) TouchSession(token, clientIP, clientLabel, now string) error {
+func (r *SQLiteRepository) TouchSession(token, clientIP, encryptedClientIP, clientLabel, now string) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil
 	}
 	_, err := r.db().Exec(`
-		INSERT INTO auth_session_metadata(token, created_at, last_seen_at, client_ip, client_label)
-		VALUES(?, ?, ?, ?, ?)
+		INSERT INTO auth_session_metadata(token, created_at, last_seen_at, client_ip, client_ip_encrypted, client_label)
+		VALUES(?, ?, ?, ?, ?, ?)
 		ON CONFLICT(token) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			client_ip = excluded.client_ip,
+			client_ip_encrypted = excluded.client_ip_encrypted,
 			client_label = excluded.client_label
-	`, token, now, now, clientIP, clientLabel)
+	`, token, now, now, clientIP, encryptedClientIP, clientLabel)
 	return err
 }
 
@@ -442,6 +444,35 @@ func (r *SQLiteRepository) RevokeSession(id string) (bool, error) {
 	return affected > 0, tx.Commit()
 }
 
+func (r *SQLiteRepository) SessionEncryptedIP(id string) (string, bool, error) {
+	id = strings.TrimSpace(id)
+	if len(id) != 32 {
+		return "", false, nil
+	}
+	rows, err := r.db().Query(`
+		SELECT s.token, COALESCE(m.client_ip_encrypted, '')
+		FROM sessions s
+		LEFT JOIN auth_session_metadata m ON m.token = s.token
+	`)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var token, encrypted string
+		if err := rows.Scan(&token, &encrypted); err != nil {
+			return "", false, err
+		}
+		if subtle.ConstantTimeCompare([]byte(sessionPublicID(token)), []byte(id)) == 1 {
+			return encrypted, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	return "", false, nil
+}
+
 func (r *SQLiteRepository) ClearOtherSessions(currentToken string) (int64, error) {
 	currentToken = strings.TrimSpace(currentToken)
 	if currentToken == "" {
@@ -467,14 +498,18 @@ func (r *SQLiteRepository) ClearOtherSessions(currentToken string) (int64, error
 }
 
 type ServiceOptions struct {
-	DB   DBProvider
-	Repo Repository
-	Now  func() time.Time
+	DB      DBProvider
+	Repo    Repository
+	Now     func() time.Time
+	Encrypt func(string) (string, error)
+	Decrypt func(string) (string, error)
 }
 
 type Service struct {
-	repo Repository
-	now  func() time.Time
+	repo    Repository
+	now     func() time.Time
+	encrypt func(string) (string, error)
+	decrypt func(string) (string, error)
 }
 
 func NewService(opts ServiceOptions) *Service {
@@ -487,7 +522,7 @@ func NewService(opts ServiceOptions) *Service {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Service{repo: opts.Repo, now: opts.Now}
+	return &Service{repo: opts.Repo, now: opts.Now, encrypt: opts.Encrypt, decrypt: opts.Decrypt}
 }
 
 func (s *Service) SetupRequired() (bool, error) {
@@ -588,13 +623,39 @@ func (s *Service) ClearSessions() (int64, error) {
 	return s.repo.ClearSessions()
 }
 
-func (s *Service) TouchSession(token, clientIP, clientLabel string) error {
+func (s *Service) TouchSession(token, fullClientIP, maskedClientIP, clientLabel string) error {
+	encryptedClientIP := ""
+	if strings.TrimSpace(fullClientIP) != "" {
+		if s.encrypt == nil {
+			return errors.New("session IP encryption is unavailable")
+		}
+		var err error
+		encryptedClientIP, err = s.encrypt(strings.TrimSpace(fullClientIP))
+		if err != nil {
+			return fmt.Errorf("encrypt session IP: %w", err)
+		}
+	}
 	now := s.now().UTC().Format(time.RFC3339)
-	return s.repo.TouchSession(strings.TrimSpace(token), strings.TrimSpace(clientIP), strings.TrimSpace(clientLabel), now)
+	return s.repo.TouchSession(strings.TrimSpace(token), strings.TrimSpace(maskedClientIP), encryptedClientIP, strings.TrimSpace(clientLabel), now)
 }
 
 func (s *Service) ListSessions(currentToken string) ([]SessionInfo, error) {
 	return s.repo.ListSessions(strings.TrimSpace(currentToken))
+}
+
+func (s *Service) RevealSessionIP(id string) (string, bool, error) {
+	encrypted, found, err := s.repo.SessionEncryptedIP(strings.TrimSpace(id))
+	if err != nil || !found || encrypted == "" {
+		return "", found, err
+	}
+	if s.decrypt == nil {
+		return "", true, errors.New("session IP decryption is unavailable")
+	}
+	ip, err := s.decrypt(encrypted)
+	if err != nil {
+		return "", true, fmt.Errorf("decrypt session IP: %w", err)
+	}
+	return ip, true, nil
 }
 
 func (s *Service) RevokeSession(id string) (bool, error) {

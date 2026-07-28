@@ -357,6 +357,10 @@ test.describe.serial('setup and login flows', () => {
       state.sessions = state.sessions.filter(session => session.id !== id);
       return fulfillJson(route, { current_session: false });
     });
+    await page.route('**/api/auth/sessions/*/reveal-ip', async route => {
+      state.sessionIPRevealPayload = await route.request().postDataJSON();
+      return fulfillJson(route, { ip: '192.168.1.44', visible_for_seconds: 30 });
+    });
     await page.route('**/api/auth/sessions/others', async route => {
       state.sessionClearOthersCount = (state.sessionClearOthersCount || 0) + 1;
       const before = state.sessions.length;
@@ -1322,10 +1326,10 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/admin');
     await expect(page.locator('#auth-session-status')).toContainText('2 server-side session');
-    await expect(page.locator('#auth-session-list')).toContainText('Chrome · Windows');
-    await expect(page.locator('#auth-session-list')).toContainText('Firefox · Linux');
-    await expect(page.locator('#auth-session-list')).toContainText('192.168.1.x');
-    await page.locator('#auth-session-list button[data-session-id="other-session"]').click();
+    await expect(page.locator('#auth-session-inventory')).toContainText('Chrome · Windows');
+    await expect(page.locator('#auth-session-inventory')).toContainText('Firefox · Linux');
+    await expect(page.locator('#auth-session-inventory')).toContainText('192.168.1.x');
+    await page.locator('#auth-session-inventory button[data-session-id="other-session"]').click();
     await expect(page.locator('#action-confirm-modal')).toBeVisible();
     await expect(page.locator('#action-confirm-message')).toContainText('Revoke this server-side session');
     await page.locator('#action-confirm-cancel').click();
@@ -1357,6 +1361,34 @@ test.describe.serial('setup and login flows', () => {
     });
     await acceptTypedConfirm(page, page.locator('#auth-sessions-clear'), 'LOGOUT ALL');
     await expect.poll(() => state.sessionClearCount || 0).toBe(1);
+  });
+
+  test('admin session inventory stays compact and reveals IP after reauthentication', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    state.sessions.push(
+      { ...state.sessions[1], id: 'other-session-2' },
+      { ...state.sessions[1], id: 'other-session-3' },
+      { ...state.sessions[1], id: 'other-session-4' },
+    );
+
+    await page.goto('/admin');
+    await expect(page.locator('#auth-current-session-list .session-item')).toHaveCount(1);
+    await expect(page.locator('#auth-other-session-list .session-item')).toHaveCount(4);
+    await expect(page.locator('#auth-other-session-list')).not.toHaveClass(/is-expanded/);
+    await expect(page.locator('#auth-sessions-show-all')).toBeVisible();
+    await page.locator('#auth-sessions-show-all').click();
+    await expect(page.locator('#auth-other-session-list')).toHaveClass(/is-expanded/);
+    await expect(page.locator('#auth-sessions-show-all')).toHaveText('Collapse');
+
+    await page.locator('button[data-reveal-session-id="current-session"]').click();
+    await expect(page.locator('#session-ip-reveal-modal')).toBeVisible();
+    await page.locator('#session-ip-reveal-password').fill(password);
+    await page.locator('#session-ip-reveal-submit').click();
+    await expect.poll(() => state.sessionIPRevealPayload).toEqual({ current_password: password });
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.44');
+    await expect(page.locator('button[data-reveal-session-id="current-session"]')).toHaveText('Visible for 30s');
   });
 
   test('manage typed confirmations gate destructive host and audit actions', async ({ page, context }) => {

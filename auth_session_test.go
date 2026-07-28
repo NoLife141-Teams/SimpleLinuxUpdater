@@ -1338,7 +1338,7 @@ func TestAuthSessionInventoryAndManagementAPI(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert other session: %v", err)
 	}
-	if err := defaultAuthService().TouchSession("other-token", "203.0.113.x", "Firefox · Linux"); err != nil {
+	if err := defaultAuthService().TouchSession("other-token", "203.0.113.9", "203.0.113.x", "Firefox · Linux"); err != nil {
 		t.Fatalf("touch other session: %v", err)
 	}
 
@@ -1456,6 +1456,42 @@ func TestAuthCurrentSessionRevokeAPIExpiresCookie(t *testing.T) {
 	}
 	if !expired {
 		t.Fatalf("current session revoke did not expire the browser cookie")
+	}
+}
+
+func TestAuthSessionIPRevealRequiresCurrentPassword(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-session-ip-reveal.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	statusReq.AddCookie(sessionCookie)
+	statusReq.RemoteAddr = "192.168.4.55:54321"
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+	var payload struct {
+		Sessions []authpkg.SessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil || len(payload.Sessions) != 1 {
+		t.Fatalf("decode session inventory: payload=%+v err=%v", payload, err)
+	}
+	id := payload.Sessions[0].ID
+
+	reveal := func(password string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/sessions/"+id+"/reveal-ip", bytes.NewBufferString(`{"current_password":"`+password+`"}`))
+		req.AddCookie(sessionCookie)
+		req.RemoteAddr = "192.168.4.55:54321"
+		req.Header.Set("Content-Type", "application/json")
+		markSameOriginAuthRequest(req)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := reveal("WrongStrongPass123"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password reveal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec := reveal(testPasswordStrong)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ip":"192.168.4.55"`) {
+		t.Fatalf("valid reveal status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

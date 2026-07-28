@@ -382,66 +382,158 @@ function formatSessionTime(value) {
     return parsed.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
+function createAuthSessionCard(session) {
+    const item = document.createElement("article");
+    item.className = "session-item";
+    const head = document.createElement("div");
+    head.className = "session-item-head";
+    const title = document.createElement("p");
+    title.className = "session-item-title";
+    title.textContent = session.clientLabel || "Unknown browser · Unknown OS";
+    head.appendChild(title);
+    if (session.current) {
+        const badge = document.createElement("span");
+        badge.className = "pill pill-success";
+        badge.textContent = "This session";
+        head.appendChild(badge);
+    }
+    item.appendChild(head);
+
+    const details = document.createElement("dl");
+    details.className = "session-item-details";
+    [
+        ["Masked IP", session.clientIP || "Unavailable", "ip"],
+        ["Created", formatSessionTime(session.createdAt)],
+        ["Last activity", formatSessionTime(session.lastSeenAt)],
+        ["Expires", formatSessionTime(session.expiresAt)]
+    ].forEach(([label, value, kind]) => {
+        const group = document.createElement("div");
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        term.textContent = label;
+        description.textContent = value;
+        if (kind === "ip") {
+            description.dataset.sessionIpId = session.id;
+            description.dataset.maskedIp = session.clientIP || "Unavailable";
+        }
+        group.append(term, description);
+        details.appendChild(group);
+    });
+    item.appendChild(details);
+
+    const actions = document.createElement("div");
+    actions.className = "session-item-actions";
+    const revealButton = document.createElement("button");
+    revealButton.type = "button";
+    revealButton.className = "btn-ghost session-revoke";
+    revealButton.dataset.revealSessionId = session.id;
+    revealButton.disabled = !session.clientIP;
+    revealButton.textContent = "Reveal IP";
+    const revokeButton = document.createElement("button");
+    revokeButton.type = "button";
+    revokeButton.className = "btn-danger session-revoke";
+    revokeButton.dataset.sessionId = session.id;
+    revokeButton.dataset.currentSession = String(session.current);
+    revokeButton.textContent = session.current ? "Logout This Session" : "Revoke Session";
+    actions.append(revealButton, revokeButton);
+    item.appendChild(actions);
+    return item;
+}
+
 function renderAuthSessions() {
     const view = adminPageView();
     const status = document.getElementById("auth-session-status");
-    const list = document.getElementById("auth-session-list");
+    const currentList = document.getElementById("auth-current-session-list");
+    const otherList = document.getElementById("auth-other-session-list");
+    const currentGroup = document.getElementById("auth-current-session-group");
+    const otherGroup = document.getElementById("auth-other-session-group");
+    const otherTitle = document.getElementById("auth-other-session-title");
+    const showAll = document.getElementById("auth-sessions-show-all");
     const clearOthers = document.getElementById("auth-sessions-clear-others");
     if (status) status.textContent = `${view.account.sessionCount} server-side session(s) stored.`;
-    if (clearOthers) clearOthers.disabled = !view.account.sessions.some(item => !item.current);
-    if (!list) return;
-    list.replaceChildren();
-    if (view.account.sessions.length === 0) {
-        const empty = document.createElement("p");
-        empty.className = "muted";
-        empty.textContent = "No active session details are available.";
-        list.appendChild(empty);
+    if (clearOthers) clearOthers.disabled = view.account.otherSessions.length === 0;
+    if (!currentList || !otherList) return;
+    currentList.replaceChildren();
+    otherList.replaceChildren();
+    if (view.account.currentSession) currentList.appendChild(createAuthSessionCard(view.account.currentSession));
+    view.account.otherSessions.forEach(session => otherList.appendChild(createAuthSessionCard(session)));
+    if (currentGroup) currentGroup.hidden = !view.account.currentSession;
+    if (otherGroup) otherGroup.hidden = view.account.otherSessions.length === 0;
+    if (otherTitle) otherTitle.textContent = `Other sessions (${view.account.otherSessions.length})`;
+    if (showAll) {
+        showAll.hidden = view.account.otherSessions.length <= 3;
+        showAll.textContent = view.account.otherSessionsExpanded ? "Collapse" : "Show all";
+    }
+    otherList.classList.toggle("is-expanded", view.account.otherSessionsExpanded);
+}
+
+function closeSessionIPRevealModal() {
+    const modal = document.getElementById("session-ip-reveal-modal");
+    const password = document.getElementById("session-ip-reveal-password");
+    const error = document.getElementById("session-ip-reveal-error");
+    if (modal) {
+        modal.classList.remove("active");
+        delete modal.dataset.sessionId;
+    }
+    if (password) password.value = "";
+    if (error) error.textContent = "";
+}
+
+function openSessionIPRevealModal(sessionID) {
+    const modal = document.getElementById("session-ip-reveal-modal");
+    const password = document.getElementById("session-ip-reveal-password");
+    if (!modal || !password || !sessionID) return;
+    modal.dataset.sessionId = sessionID;
+    modal.classList.add("active");
+    window.requestAnimationFrame(() => password.focus());
+}
+
+async function submitSessionIPReveal(event) {
+    event.preventDefault();
+    const modal = document.getElementById("session-ip-reveal-modal");
+    const password = document.getElementById("session-ip-reveal-password");
+    const error = document.getElementById("session-ip-reveal-error");
+    const submit = document.getElementById("session-ip-reveal-submit");
+    const sessionID = modal?.dataset.sessionId || "";
+    if (!sessionID || !password?.value) {
+        if (error) error.textContent = "Current password is required.";
         return;
     }
-    view.account.sessions.forEach((session) => {
-        const item = document.createElement("article");
-        item.className = "session-item";
-        const head = document.createElement("div");
-        head.className = "session-item-head";
-        const title = document.createElement("p");
-        title.className = "session-item-title";
-        title.textContent = session.clientLabel || "Unknown browser · Unknown OS";
-        head.appendChild(title);
-        if (session.current) {
-            const badge = document.createElement("span");
-            badge.className = "pill pill-success";
-            badge.textContent = "This session";
-            head.appendChild(badge);
-        }
-        item.appendChild(head);
-
-        const details = document.createElement("dl");
-        details.className = "session-item-details";
-        [
-            ["Masked IP", session.clientIP || "Unavailable"],
-            ["Created", formatSessionTime(session.createdAt)],
-            ["Last activity", formatSessionTime(session.lastSeenAt)],
-            ["Expires", formatSessionTime(session.expiresAt)]
-        ].forEach(([label, value]) => {
-            const group = document.createElement("div");
-            const term = document.createElement("dt");
-            const description = document.createElement("dd");
-            term.textContent = label;
-            description.textContent = value;
-            group.append(term, description);
-            details.appendChild(group);
+    if (submit) submit.disabled = true;
+    try {
+        const res = await fetch(`/api/auth/sessions/${encodeURIComponent(sessionID)}/reveal-ip`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ current_password: password.value })
         });
-        item.appendChild(details);
-
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "btn-danger session-revoke";
-        button.dataset.sessionId = session.id;
-        button.dataset.currentSession = String(session.current);
-        button.textContent = session.current ? "Logout This Session" : "Revoke Session";
-        item.appendChild(button);
-        list.appendChild(item);
-    });
+        if (!res.ok) {
+            if (error) error.textContent = await parseErrorResponse(res, "Failed to reveal session IP.");
+            password.value = "";
+            password.focus();
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const ipNode = document.querySelector(`[data-session-ip-id="${sessionID}"]`);
+        const revealButton = document.querySelector(`button[data-reveal-session-id="${sessionID}"]`);
+        const maskedIP = ipNode?.dataset.maskedIp || "Unavailable";
+        if (ipNode) ipNode.textContent = String(data.ip || maskedIP);
+        if (revealButton) {
+            revealButton.disabled = true;
+            revealButton.textContent = "Visible for 30s";
+        }
+        closeSessionIPRevealModal();
+        window.setTimeout(() => {
+            if (ipNode?.isConnected) ipNode.textContent = maskedIP;
+            if (revealButton?.isConnected) {
+                revealButton.disabled = false;
+                revealButton.textContent = "Reveal IP";
+            }
+        }, Math.max(1, Number(data.visible_for_seconds || 30)) * 1000);
+    } catch (err) {
+        if (error) error.textContent = err.message || "Failed to reveal session IP.";
+    } finally {
+        if (submit) submit.disabled = false;
+    }
 }
 
 async function fetchAuthSessionStatus() {
@@ -516,6 +608,11 @@ async function revokeAuthSession(id, current) {
 }
 
 function handleAuthSessionListClick(event) {
+    const revealButton = event.target.closest("button[data-reveal-session-id]");
+    if (revealButton) {
+        openSessionIPRevealModal(revealButton.dataset.revealSessionId || "");
+        return;
+    }
     const button = event.target.closest("button[data-session-id]");
     if (!button) return;
     revokeAuthSession(button.dataset.sessionId || "", button.dataset.currentSession === "true");
@@ -2112,7 +2209,17 @@ document.getElementById("notification-webhook-url").addEventListener("input", ()
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
 document.getElementById("auth-sessions-clear-others").addEventListener("click", clearOtherAuthSessions);
-document.getElementById("auth-session-list").addEventListener("click", handleAuthSessionListClick);
+document.getElementById("auth-session-inventory").addEventListener("click", handleAuthSessionListClick);
+document.getElementById("auth-sessions-show-all").addEventListener("click", () => {
+    const expanded = !adminPageView().account.otherSessionsExpanded;
+    adminPageInteraction.dispatch({ type: "sessionListExpandedChanged", expanded });
+    renderAuthSessions();
+});
+document.getElementById("session-ip-reveal-form").addEventListener("submit", submitSessionIPReveal);
+document.getElementById("session-ip-reveal-cancel").addEventListener("click", closeSessionIPRevealModal);
+document.getElementById("session-ip-reveal-modal").addEventListener("click", (event) => {
+    if (event.target?.id === "session-ip-reveal-modal") closeSessionIPRevealModal();
+});
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
 document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
@@ -2143,6 +2250,10 @@ document.addEventListener("keydown", (event) => {
     const modal = document.getElementById("job-detail-modal");
     if (event.key === "Escape" && modal && modal.classList.contains("active")) {
         closeJobDetailModal();
+    }
+    const revealModal = document.getElementById("session-ip-reveal-modal");
+    if (event.key === "Escape" && revealModal && revealModal.classList.contains("active")) {
+        closeSessionIPRevealModal();
     }
 });
 

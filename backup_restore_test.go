@@ -792,17 +792,38 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	}
 	var verifyResp struct {
 		Valid              bool     `json:"valid"`
+		Compatible         bool     `json:"compatible"`
+		RestoreReady       bool     `json:"restore_ready"`
 		ManifestFiles      int      `json:"manifest_files"`
 		FileNames          []string `json:"file_names"`
 		KnownHostsIncluded bool     `json:"known_hosts_included"`
 		DatabaseValid      bool     `json:"database_valid"`
 		ConfigValid        bool     `json:"config_valid"`
+		Archive            struct {
+			Format    string `json:"format"`
+			Version   int    `json:"version"`
+			CreatedAt string `json:"created_at"`
+			SizeBytes int64  `json:"size_bytes"`
+		} `json:"archive"`
+		SafeCounts internalbackup.SafeCounts       `json:"safe_counts"`
+		Impact     internalbackup.RestoreImpact    `json:"impact"`
+		Blockers   []internalbackup.ReadinessIssue `json:"blockers"`
+		Warnings   []internalbackup.ReadinessIssue `json:"warnings"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &verifyResp); err != nil {
 		t.Fatalf("unmarshal verify response: %v", err)
 	}
-	if !verifyResp.Valid || !verifyResp.DatabaseValid || !verifyResp.ConfigValid || verifyResp.ManifestFiles != 2 || verifyResp.KnownHostsIncluded {
+	if !verifyResp.Valid || !verifyResp.Compatible || !verifyResp.RestoreReady || !verifyResp.DatabaseValid || !verifyResp.ConfigValid || verifyResp.ManifestFiles != 2 || verifyResp.KnownHostsIncluded {
 		t.Fatalf("verify response = %+v, want valid archive with manifest files", verifyResp)
+	}
+	if verifyResp.Archive.Format != internalbackup.FormatName || verifyResp.Archive.Version != internalbackup.FormatVersion || verifyResp.Archive.CreatedAt == "" || verifyResp.Archive.SizeBytes != int64(len(backupBlob)) {
+		t.Fatalf("verify archive facts = %+v, want current version/date/size", verifyResp.Archive)
+	}
+	if verifyResp.SafeCounts.Servers != 1 || len(verifyResp.Blockers) != 0 || len(verifyResp.Warnings) < 3 {
+		t.Fatalf("verify readiness facts counts=%+v blockers=%+v warnings=%+v", verifyResp.SafeCounts, verifyResp.Blockers, verifyResp.Warnings)
+	}
+	if !verifyResp.Impact.SessionsInvalidated || !verifyResp.Impact.MetricsAccessReplaced || !verifyResp.Impact.MaintenanceRequired || !verifyResp.Impact.DowntimeExpected || verifyResp.Impact.RestartRequired {
+		t.Fatalf("verify restore impact = %+v, want expected invalidation and no restart", verifyResp.Impact)
 	}
 	var afterVerifyCount int
 	if err := getDB().QueryRow("SELECT COUNT(1) FROM servers WHERE name = ?", "after-export").Scan(&afterVerifyCount); err != nil {
@@ -820,6 +841,51 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	}
 	if state := currentMaintenanceState(); state.Active {
 		t.Fatalf("maintenance state after verify = %+v, want inactive", state)
+	}
+
+	incompatibleBlob, err := json.Marshal(internalbackup.Envelope{
+		Format:    internalbackup.FormatName,
+		Version:   internalbackup.FormatVersion + 1,
+		CreatedAt: "2026-05-17T06:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal incompatible backup envelope: %v", err)
+	}
+	var incompatibleBody bytes.Buffer
+	incompatibleWriter := multipart.NewWriter(&incompatibleBody)
+	incompatiblePart, err := incompatibleWriter.CreateFormFile("file", "future"+backupFileExtension)
+	if err != nil {
+		t.Fatalf("CreateFormFile(incompatible verify): %v", err)
+	}
+	if _, err := incompatiblePart.Write(incompatibleBlob); err != nil {
+		t.Fatalf("write incompatible verify part: %v", err)
+	}
+	if err := incompatibleWriter.WriteField("passphrase", "very-strong-passphrase"); err != nil {
+		t.Fatalf("write incompatible verify passphrase: %v", err)
+	}
+	if err := incompatibleWriter.Close(); err != nil {
+		t.Fatalf("close incompatible verify writer: %v", err)
+	}
+	incompatibleRec := httptest.NewRecorder()
+	incompatibleReq := httptest.NewRequest(http.MethodPost, "/api/backup/verify", &incompatibleBody)
+	incompatibleReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(incompatibleReq)
+	incompatibleReq.Header.Set("Content-Type", incompatibleWriter.FormDataContentType())
+	handler.ServeHTTP(incompatibleRec, incompatibleReq)
+	if incompatibleRec.Code != http.StatusOK {
+		t.Fatalf("incompatible backup review status = %d, want %d (body=%s)", incompatibleRec.Code, http.StatusOK, incompatibleRec.Body.String())
+	}
+	var incompatibleReview struct {
+		Valid        bool                            `json:"valid"`
+		Compatible   bool                            `json:"compatible"`
+		RestoreReady bool                            `json:"restore_ready"`
+		Blockers     []internalbackup.ReadinessIssue `json:"blockers"`
+	}
+	if err := json.Unmarshal(incompatibleRec.Body.Bytes(), &incompatibleReview); err != nil {
+		t.Fatalf("unmarshal incompatible review: %v", err)
+	}
+	if incompatibleReview.Valid || incompatibleReview.Compatible || incompatibleReview.RestoreReady || len(incompatibleReview.Blockers) != 1 || incompatibleReview.Blockers[0].Code != "unsupported_version" {
+		t.Fatalf("incompatible review = %+v, want structured unsupported-version blocker", incompatibleReview)
 	}
 
 	var restoreBody bytes.Buffer

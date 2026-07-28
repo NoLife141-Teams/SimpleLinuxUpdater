@@ -888,6 +888,111 @@
     gap: 10px;
 }
 
+.backup-restore-review,
+.backup-review-empty {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.backup-review-empty {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.backup-restore-review {
+    display: grid;
+    gap: 12px;
+}
+
+.backup-restore-review[hidden] {
+    display: none;
+}
+
+.backup-review-head,
+.backup-review-facts,
+.backup-review-counts {
+    display: grid;
+    gap: 8px;
+}
+
+.backup-review-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+}
+
+.backup-review-head h4,
+.backup-review-section h5 {
+    margin: 0;
+}
+
+.backup-review-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.backup-review-facts > div,
+.backup-review-counts > div {
+    min-width: 0;
+}
+
+.backup-review-facts dt,
+.backup-review-counts dt {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.backup-review-facts dd,
+.backup-review-counts dd {
+    margin: 3px 0 0;
+    overflow-wrap: anywhere;
+}
+
+.backup-review-counts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.backup-review-section {
+    display: grid;
+    gap: 6px;
+}
+
+.backup-review-section ul {
+    display: grid;
+    gap: 5px;
+    margin: 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.backup-review-blockers {
+    padding: 10px;
+    border: 1px solid rgba(239, 95, 95, 0.4);
+    border-radius: var(--radius-sm);
+    background: rgba(239, 95, 95, 0.08);
+}
+
+.backup-review-blockers h5,
+.backup-review-blockers li {
+    color: var(--danger);
+}
+
+.backup-review-warnings {
+    padding: 10px;
+    border: 1px solid rgba(245, 160, 72, 0.35);
+    border-radius: var(--radius-sm);
+    background: rgba(245, 160, 72, 0.07);
+}
+
+.backup-review-warnings h5,
+.backup-review-warnings li {
+    color: var(--warning);
+}
+
 .secret-box {
     margin-top: 12px;
 }
@@ -1249,6 +1354,12 @@
 }
 
 @media (max-width: 600px) {
+    .backup-review-head,
+    .backup-review-facts,
+    .backup-review-counts {
+        grid-template-columns: 1fr;
+    }
+
     .scheduled-runs-filter {
         grid-template-columns: 1fr;
     }

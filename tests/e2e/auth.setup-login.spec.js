@@ -444,9 +444,37 @@ test.describe.serial('setup and login flows', () => {
     });
     await page.route('**/api/backup/verify', async route => {
       state.verifyCount = (state.verifyCount || 0) + 1;
-      return fulfillJson(route, {
+      return fulfillJson(route, state.verifyResponse || {
         valid: true,
+        compatible: true,
+        restore_ready: true,
+        archive: {
+          format: 'simplelinuxupdater-backup',
+          version: 1,
+          created_at: '2026-05-17T06:00:00Z',
+          size_bytes: 4096,
+        },
         manifest_files: 3,
+        resources: [
+          { name: 'servers.db', size_bytes: 3072, required: true, included: true },
+          { name: 'config.json', size_bytes: 256, required: true, included: true },
+          { name: 'known_hosts', size_bytes: 0, required: false, included: false },
+        ],
+        missing_resources: [],
+        safe_counts: { servers: 5, policies: 2, jobs: 14, sessions: 3 },
+        impact: {
+          sessions_invalidated: true,
+          metrics_access_replaced: true,
+          maintenance_required: true,
+          downtime_expected: true,
+          restart_required: false,
+        },
+        blockers: [],
+        warnings: [
+          { code: 'sessions_invalidated', message: 'All active Admin sessions will be invalidated after replacement.' },
+          { code: 'metrics_access_replaced', message: 'The current Metrics API credential will be replaced by the archived state.' },
+          { code: 'known_hosts_not_included', message: 'known_hosts is not included; the current host-key trust file will remain unchanged.' },
+        ],
         known_hosts_included: false,
         created_at: '2026-05-17T06:00:00Z',
       });
@@ -1746,19 +1774,18 @@ test.describe.serial('setup and login flows', () => {
       buffer: Buffer.from('fake-backup'),
     });
     await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
-    await dismissTypedConfirm(page, page.locator('#backup-restore-btn'));
-    await expect.poll(() => state.restoreCount || 0).toBe(0);
-
-    await page.evaluate(() => { window.alert = () => {}; });
-    await page.locator('#backup-restore-file').setInputFiles({
-      name: 'backup.slubkp',
-      mimeType: 'application/octet-stream',
-      buffer: Buffer.from('fake-backup'),
-    });
-    await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
+    await expect(page.locator('#backup-restore-btn')).toBeDisabled();
     await page.locator('#backup-verify-btn').click();
     await expect.poll(() => state.verifyCount || 0).toBe(1);
-    await expect(page.locator('#backup-status')).toContainText('Backup verified: 3 manifest file(s)');
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Ready for confirmation');
+    await expect(page.locator('#backup-restore-review')).toContainText('5');
+    await expect(page.locator('#backup-restore-review')).toContainText('All active Admin sessions will be invalidated');
+    await expect(page.locator('#backup-restore-btn')).toBeEnabled();
+    await dismissTypedConfirm(page, page.locator('#backup-restore-btn'));
+    await expect.poll(() => state.restoreCount || 0).toBe(0);
+    await expect(page.locator('#backup-restore-btn')).toBeEnabled();
+
+    await page.evaluate(() => { window.alert = () => {}; });
     await acceptTypedConfirm(page, page.locator('#backup-restore-btn'), 'RESTORE');
     await expect.poll(() => state.restoreCount || 0).toBe(1);
     await expect(page.locator('#auth-sessions-clear')).toBeDisabled();
@@ -1773,6 +1800,68 @@ test.describe.serial('setup and login flows', () => {
 
     await acceptTypedConfirm(page, deletePolicyButton, 'Nightly security');
     await expect.poll(() => state.policyDeleteCount || 0).toBe(1);
+  });
+
+  test('restore readiness distinguishes blockers and expires when the archive or passphrase changes', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="backup"]').click();
+
+    await page.locator('#backup-restore-file').setInputFiles({
+      name: 'ready.slubkp',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('ready-backup'),
+    });
+    await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
+    await page.locator('#backup-verify-btn').click();
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Ready for confirmation');
+    await expect(page.locator('#backup-review-warnings')).toContainText('Metrics API credential');
+    await expect(page.locator('#backup-restore-btn')).toBeEnabled();
+
+    await page.locator('#backup-restore-file').setInputFiles({
+      name: 'future.slubkp',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('future-backup'),
+    });
+    await expect(page.locator('#backup-restore-review')).toBeHidden();
+    await expect(page.locator('#backup-restore-btn')).toBeDisabled();
+
+    state.verifyResponse = {
+      valid: false,
+      compatible: false,
+      restore_ready: false,
+      archive: {
+        format: 'simplelinuxupdater-backup',
+        version: 99,
+        created_at: '2026-06-01T08:00:00Z',
+        size_bytes: 8192,
+      },
+      resources: [],
+      missing_resources: [],
+      safe_counts: {},
+      impact: {
+        sessions_invalidated: true,
+        metrics_access_replaced: true,
+        maintenance_required: true,
+        downtime_expected: true,
+        restart_required: false,
+      },
+      blockers: [{ code: 'unsupported_version', message: 'Backup version 99 is not supported.' }],
+      warnings: [],
+    };
+    await page.locator('#backup-verify-btn').click();
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Blocked');
+    await expect(page.locator('#backup-review-blockers')).toContainText('Backup version 99 is not supported');
+    await expect(page.locator('#backup-restore-btn')).toBeDisabled();
+
+    state.verifyResponse = undefined;
+    await page.locator('#backup-restore-passphrase').fill('AnotherLongPassphrase456');
+    await expect(page.locator('#backup-restore-review')).toBeHidden();
+    await page.locator('#backup-verify-btn').click();
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Ready for confirmation');
+    await expect(page.locator('#backup-restore-btn')).toBeEnabled();
   });
 
   test('admin danger dialogs explain impact, trap keyboard focus, isolate the page, and restore focus', async ({ page }) => {
@@ -1811,6 +1900,8 @@ test.describe.serial('setup and login flows', () => {
       buffer: Buffer.from('fake-backup'),
     });
     await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
+    await page.locator('#backup-verify-btn').click();
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Ready for confirmation');
     const restore = page.locator('#backup-restore-btn');
     await restore.focus();
     await page.keyboard.press('Enter');

@@ -117,13 +117,59 @@ type RestoreResult struct {
 }
 
 type VerifyResult struct {
-	Manifest           Manifest `json:"manifest"`
-	FileNames          []string `json:"file_names"`
-	ManifestFileCount  int      `json:"manifest_file_count"`
-	TotalBytes         int64    `json:"total_bytes"`
-	KnownHostsIncluded bool     `json:"known_hosts_included"`
-	DatabaseValid      bool     `json:"database_valid"`
-	ConfigValid        bool     `json:"config_valid"`
+	Manifest           Manifest         `json:"manifest"`
+	ArchiveFormat      string           `json:"archive_format"`
+	ArchiveVersion     int              `json:"archive_version"`
+	ArchiveCreatedAt   string           `json:"archive_created_at"`
+	ArchiveSizeBytes   int64            `json:"archive_size_bytes"`
+	FileNames          []string         `json:"file_names"`
+	ManifestFileCount  int              `json:"manifest_file_count"`
+	TotalBytes         int64            `json:"total_bytes"`
+	KnownHostsIncluded bool             `json:"known_hosts_included"`
+	DatabaseValid      bool             `json:"database_valid"`
+	ConfigValid        bool             `json:"config_valid"`
+	Compatible         bool             `json:"compatible"`
+	RestoreReady       bool             `json:"restore_ready"`
+	Resources          []ResourceReview `json:"resources"`
+	MissingResources   []string         `json:"missing_resources"`
+	SafeCounts         SafeCounts       `json:"safe_counts"`
+	Impact             RestoreImpact    `json:"impact"`
+	Blockers           []ReadinessIssue `json:"blockers"`
+	Warnings           []ReadinessIssue `json:"warnings"`
+}
+
+type ResourceReview struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+	Required  bool   `json:"required"`
+	Included  bool   `json:"included"`
+}
+
+type SafeCounts struct {
+	Servers  int64 `json:"servers"`
+	Policies int64 `json:"policies"`
+	Jobs     int64 `json:"jobs"`
+	Sessions int64 `json:"sessions"`
+}
+
+type RestoreImpact struct {
+	SessionsInvalidated   bool `json:"sessions_invalidated"`
+	MetricsAccessReplaced bool `json:"metrics_access_replaced"`
+	MaintenanceRequired   bool `json:"maintenance_required"`
+	DowntimeExpected      bool `json:"downtime_expected"`
+	RestartRequired       bool `json:"restart_required"`
+}
+
+type ReadinessIssue struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type ArchiveInspection struct {
+	Files            map[string][]byte
+	Manifest         Manifest
+	Compatible       bool
+	MissingResources []string
 }
 
 type RestoreOptions struct {
@@ -373,38 +419,149 @@ func (s *Service) VerifyArchive(ctx context.Context, encrypted []byte, passphras
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return VerifyResult{}, err
 	}
-	plain, err := DecryptPayload(encrypted, passphrase)
+	envelope, err := InspectEnvelope(encrypted)
 	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
-	files, manifest, err := ExtractTarGz(plain)
+	result := VerifyResult{
+		ArchiveFormat:    envelope.Format,
+		ArchiveVersion:   envelope.Version,
+		ArchiveCreatedAt: envelope.CreatedAt,
+		ArchiveSizeBytes: int64(len(encrypted)),
+		Impact:           defaultRestoreImpact(),
+		Blockers:         []ReadinessIssue{},
+		Warnings:         defaultRestoreWarnings(),
+		Resources:        []ResourceReview{},
+		MissingResources: []string{},
+	}
+	if envelope.Format != FormatName {
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "unsupported_format",
+			Message: fmt.Sprintf("Backup format %q is not supported by this application.", envelope.Format),
+		})
+		return result, nil
+	}
+	if envelope.Version != FormatVersion {
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "unsupported_version",
+			Message: fmt.Sprintf("Backup version %d is not supported; this application accepts version %d.", envelope.Version, FormatVersion),
+		})
+		return result, nil
+	}
+	plain, err := DecryptPayload(encrypted, passphrase)
+	if err != nil {
+		if errors.Is(err, ErrUnsupportedFormat) {
+			result.Blockers = append(result.Blockers, ReadinessIssue{
+				Code:    "unsupported_encryption",
+				Message: "The backup uses encryption settings that this application does not support.",
+			})
+			return result, nil
+		}
+		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
+	}
+	inspection, err := InspectTarGzWithLimits(plain, MaxUploadBytes, MaxExtractedBytes)
 	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+	}
+	files := inspection.Files
+	manifest := inspection.Manifest
+	result.Manifest = manifest
+	result.ArchiveFormat = manifest.Format
+	result.ArchiveVersion = manifest.Version
+	result.ArchiveCreatedAt = manifest.CreatedAt
+	result.Compatible = inspection.Compatible
+	result.MissingResources = append([]string(nil), inspection.MissingResources...)
+	result.Resources = restoreResourceReviews(manifest, files)
+	result.FileNames, result.ManifestFileCount, result.TotalBytes = manifestResourceFacts(manifest)
+	_, result.KnownHostsIncluded = manifest.Files["known_hosts"]
+	if !inspection.Compatible {
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "unsupported_manifest",
+			Message: fmt.Sprintf("Backup manifest %q version %d is not supported.", manifest.Format, manifest.Version),
+		})
+		return result, nil
+	}
+	if len(inspection.MissingResources) > 0 {
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "missing_required_resource",
+			Message: "The backup is missing required resources: " + strings.Join(inspection.MissingResources, ", ") + ".",
+		})
+		return result, nil
 	}
 	backupKey, err := s.ValidateConfigData(files["config.json"])
 	if err != nil {
-		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "invalid_configuration",
+			Message: "The archived configuration cannot be restored safely.",
+		})
+		return result, nil
 	}
+	result.ConfigValid = true
 	if err := s.ValidateDatabaseData(ctx, files["servers.db"], backupKey); err != nil {
+		result.Blockers = append(result.Blockers, ReadinessIssue{
+			Code:    "invalid_database",
+			Message: "The archived database is not compatible with this application.",
+		})
+		return result, nil
+	}
+	result.DatabaseValid = true
+	counts, err := InspectDatabaseSafeCounts(ctx, files["servers.db"])
+	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
-	fileNames := make([]string, 0, len(manifest.Files))
+	result.SafeCounts = counts
+	if !result.KnownHostsIncluded {
+		result.Warnings = append(result.Warnings, ReadinessIssue{
+			Code:    "known_hosts_not_included",
+			Message: "known_hosts is not included; the current host-key trust file will remain unchanged.",
+		})
+	}
+	result.RestoreReady = true
+	return result, nil
+}
+
+func defaultRestoreImpact() RestoreImpact {
+	return RestoreImpact{
+		SessionsInvalidated:   true,
+		MetricsAccessReplaced: true,
+		MaintenanceRequired:   true,
+		DowntimeExpected:      true,
+		RestartRequired:       false,
+	}
+}
+
+func defaultRestoreWarnings() []ReadinessIssue {
+	return []ReadinessIssue{
+		{Code: "sessions_invalidated", Message: "All active Admin sessions will be invalidated after replacement."},
+		{Code: "metrics_access_replaced", Message: "The current Metrics API credential will be replaced by the archived state."},
+		{Code: "maintenance_downtime", Message: "Exclusive maintenance mode pauses requests while the archived state is applied and reloaded."},
+	}
+}
+
+func restoreResourceReviews(manifest Manifest, files map[string][]byte) []ResourceReview {
+	resources := make([]ResourceReview, 0, 3)
+	for _, name := range []string{"servers.db", "config.json", "known_hosts"} {
+		meta, declared := manifest.Files[name]
+		_, included := files[name]
+		resources = append(resources, ResourceReview{
+			Name:      name,
+			SizeBytes: meta.Size,
+			Required:  name != "known_hosts",
+			Included:  declared && included,
+		})
+	}
+	return resources
+}
+
+func manifestResourceFacts(manifest Manifest) ([]string, int, int64) {
+	names := make([]string, 0, len(manifest.Files))
 	var totalBytes int64
 	for name, meta := range manifest.Files {
-		fileNames = append(fileNames, name)
+		names = append(names, name)
 		totalBytes += meta.Size
 	}
-	sort.Strings(fileNames)
-	_, knownHostsIncluded := manifest.Files["known_hosts"]
-	return VerifyResult{
-		Manifest:           manifest,
-		FileNames:          fileNames,
-		ManifestFileCount:  len(manifest.Files),
-		TotalBytes:         totalBytes,
-		KnownHostsIncluded: knownHostsIncluded,
-		DatabaseValid:      true,
-		ConfigValid:        true,
-	}, nil
+	sort.Strings(names)
+	return names, len(manifest.Files), totalBytes
 }
 
 func ValidatePassphrase(passphrase string) error {
@@ -549,9 +706,9 @@ func EncryptPayload(plain []byte, passphrase string) ([]byte, error) {
 }
 
 func DecryptPayload(encrypted []byte, passphrase string) ([]byte, error) {
-	var env Envelope
-	if err := json.Unmarshal(encrypted, &env); err != nil {
-		return nil, ErrMalformed
+	env, err := InspectEnvelope(encrypted)
+	if err != nil {
+		return nil, err
 	}
 	if env.Format != FormatName || env.Version != FormatVersion {
 		return nil, ErrUnsupportedFormat
@@ -597,16 +754,41 @@ func DecryptPayload(encrypted []byte, passphrase string) ([]byte, error) {
 	return plain, nil
 }
 
+func InspectEnvelope(encrypted []byte) (Envelope, error) {
+	var env Envelope
+	if err := json.Unmarshal(encrypted, &env); err != nil {
+		return Envelope{}, ErrMalformed
+	}
+	if strings.TrimSpace(env.Format) == "" || env.Version <= 0 {
+		return Envelope{}, ErrMalformed
+	}
+	return env, nil
+}
+
 func ExtractTarGz(payload []byte) (map[string][]byte, Manifest, error) {
 	return ExtractTarGzWithLimits(payload, MaxUploadBytes, MaxExtractedBytes)
 }
 
 func ExtractTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (map[string][]byte, Manifest, error) {
+	inspection, err := InspectTarGzWithLimits(payload, maxFileBytes, maxTotalBytes)
+	if err != nil {
+		return nil, Manifest{}, err
+	}
+	if !inspection.Compatible {
+		return nil, Manifest{}, ErrUnsupportedFormat
+	}
+	if len(inspection.MissingResources) > 0 {
+		return nil, Manifest{}, fmt.Errorf("%w: %s", ErrMissingFile, inspection.MissingResources[0])
+	}
+	return inspection.Files, inspection.Manifest, nil
+}
+
+func InspectTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (ArchiveInspection, error) {
 	files := make(map[string][]byte)
 	var totalExtracted int64
 	zr, err := gzip.NewReader(bytes.NewReader(payload))
 	if err != nil {
-		return nil, Manifest{}, err
+		return ArchiveInspection{}, err
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
@@ -616,23 +798,23 @@ func ExtractTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 			break
 		}
 		if err != nil {
-			return nil, Manifest{}, err
+			return ArchiveInspection{}, err
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		if hdr.Size < 0 || hdr.Size > maxFileBytes {
-			return nil, Manifest{}, fmt.Errorf("%w: backup entry %q is too large", ErrMalformed, hdr.Name)
+			return ArchiveInspection{}, fmt.Errorf("%w: backup entry %q is too large", ErrMalformed, hdr.Name)
 		}
 		data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
 		if err != nil {
-			return nil, Manifest{}, err
+			return ArchiveInspection{}, err
 		}
 		if int64(len(data)) > maxFileBytes {
-			return nil, Manifest{}, fmt.Errorf("%w: backup entry %q is too large", ErrMalformed, hdr.Name)
+			return ArchiveInspection{}, fmt.Errorf("%w: backup entry %q is too large", ErrMalformed, hdr.Name)
 		}
 		if totalExtracted+int64(len(data)) > maxTotalBytes {
-			return nil, Manifest{}, fmt.Errorf("%w: backup payload is too large", ErrMalformed)
+			return ArchiveInspection{}, fmt.Errorf("%w: backup payload is too large", ErrMalformed)
 		}
 		totalExtracted += int64(len(data))
 		name := filepath.Base(strings.TrimSpace(hdr.Name))
@@ -647,48 +829,68 @@ func ExtractTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 
 	manifestData, ok := files["manifest.json"]
 	if !ok {
-		return nil, Manifest{}, ErrMalformed
+		return ArchiveInspection{}, ErrMalformed
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, Manifest{}, ErrMalformed
-	}
-	if manifest.Format != FormatName || manifest.Version != FormatVersion {
-		return nil, Manifest{}, ErrUnsupportedFormat
+		return ArchiveInspection{}, ErrMalformed
 	}
 	if manifest.Files == nil {
-		return nil, Manifest{}, ErrMalformed
+		return ArchiveInspection{}, ErrMalformed
 	}
+	missing := make([]string, 0, 2)
 	for _, name := range []string{"servers.db", "config.json"} {
 		if _, ok := files[name]; !ok {
-			return nil, Manifest{}, fmt.Errorf("%w: %s", ErrMissingFile, name)
+			missing = append(missing, name)
+			continue
 		}
 		if _, ok := manifest.Files[name]; !ok {
-			return nil, Manifest{}, fmt.Errorf("%w: %s", ErrMissingFile, name)
+			missing = append(missing, name)
 		}
 	}
 	if _, ok := files["known_hosts"]; ok {
 		if _, ok := manifest.Files["known_hosts"]; !ok {
-			return nil, Manifest{}, fmt.Errorf("%w: known_hosts", ErrMissingFile)
+			return ArchiveInspection{}, fmt.Errorf("%w: known_hosts is present but not declared", ErrMalformed)
 		}
 	}
 	for name, meta := range manifest.Files {
 		if name != "servers.db" && name != "config.json" && name != "known_hosts" {
-			return nil, Manifest{}, fmt.Errorf("%w: unexpected file %s", ErrMalformed, name)
+			return ArchiveInspection{}, fmt.Errorf("%w: unexpected file %s", ErrMalformed, name)
 		}
 		data, exists := files[name]
 		if !exists {
-			return nil, Manifest{}, fmt.Errorf("%w: %s", ErrMissingFile, name)
+			missing = append(missing, name)
+			continue
 		}
 		if int64(len(data)) != meta.Size {
-			return nil, Manifest{}, fmt.Errorf("checksum size mismatch for %s", name)
+			return ArchiveInspection{}, fmt.Errorf("checksum size mismatch for %s", name)
 		}
 		sum := sha256.Sum256(data)
 		if !strings.EqualFold(meta.SHA256, hex.EncodeToString(sum[:])) {
-			return nil, Manifest{}, fmt.Errorf("checksum mismatch for %s", name)
+			return ArchiveInspection{}, fmt.Errorf("checksum mismatch for %s", name)
 		}
 	}
-	return files, manifest, nil
+	sort.Strings(missing)
+	missing = compactStrings(missing)
+	return ArchiveInspection{
+		Files:            files,
+		Manifest:         manifest,
+		Compatible:       manifest.Format == FormatName && manifest.Version == FormatVersion,
+		MissingResources: missing,
+	}, nil
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func WriteAtomicFile(path string, data []byte, mode os.FileMode, ensurePrivateDirForFile func(string) error) error {
@@ -858,6 +1060,74 @@ func (s *Service) ValidateDatabaseData(ctx context.Context, data []byte, encrypt
 		return fmt.Errorf("validate restored Global SSH Credential: %w", err)
 	}
 	return nil
+}
+
+func InspectDatabaseSafeCounts(ctx context.Context, data []byte) (SafeCounts, error) {
+	tmp, err := os.CreateTemp("", "slu-restore-counts-*.sqlite")
+	if err != nil {
+		return SafeCounts{}, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return SafeCounts{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return SafeCounts{}, err
+	}
+	db, err := sql.Open("sqlite", tmpPath)
+	if err != nil {
+		return SafeCounts{}, fmt.Errorf("open restored database for safe counts: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return SafeCounts{}, fmt.Errorf("set restored database query-only mode: %w", err)
+	}
+	servers, err := countExistingRows(ctx, db, "servers")
+	if err != nil {
+		return SafeCounts{}, err
+	}
+	policies, err := countExistingRows(ctx, db, "update_policies")
+	if err != nil {
+		return SafeCounts{}, err
+	}
+	jobs, err := countExistingRows(ctx, db, "jobs")
+	if err != nil {
+		return SafeCounts{}, err
+	}
+	sessions, err := countExistingRows(ctx, db, "sessions")
+	if err != nil {
+		return SafeCounts{}, err
+	}
+	return SafeCounts{
+		Servers:  servers,
+		Policies: policies,
+		Jobs:     jobs,
+		Sessions: sessions,
+	}, nil
+}
+
+func countExistingRows(ctx context.Context, db *sql.DB, table string) (int64, error) {
+	switch table {
+	case "servers", "update_policies", "jobs", "sessions":
+	default:
+		return 0, fmt.Errorf("unsupported safe-count table %q", table)
+	}
+	var exists int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&exists); err != nil {
+		return 0, fmt.Errorf("inspect restored %s table: %w", table, err)
+	}
+	if exists == 0 {
+		return 0, nil
+	}
+	var count int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM "+table).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count restored %s rows: %w", table, err)
+	}
+	return count, nil
 }
 
 func (s *Service) ReencryptDatabaseData(ctx context.Context, data []byte, fromKey, toKey []byte) ([]byte, error) {

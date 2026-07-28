@@ -79,6 +79,8 @@ Behavior:
   - optional `known_hosts` (controlled by export toggle)
 - Restore requires the backup file + passphrase and applies immediately (no restart required).
 - Restore replaces `servers.db` and optional `known_hosts`; backup `config.json` is validated, but the local `config.json` remains in place and restored secrets are re-encrypted to its key.
+- Recovery health treats successful export and verification evidence as stale after 7 days (168 hours).
+- Recovery evidence comes from audit history and is retained for up to 90 days. Exported archives are downloaded to operator-managed storage; the app does not retain, schedule, rotate, or automatically delete them.
 
 What backup does not include:
 

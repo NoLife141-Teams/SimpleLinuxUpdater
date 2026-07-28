@@ -884,6 +884,86 @@
     margin-top: 12px;
 }
 
+.backup-recovery-health {
+    display: grid;
+    gap: 16px;
+    margin-top: 12px;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: linear-gradient(145deg, rgba(16, 30, 40, 0.78), rgba(24, 25, 29, 0.96));
+}
+
+.backup-recovery-health-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.backup-recovery-health-head h3,
+.backup-recovery-health-head p {
+    margin: 0;
+}
+
+.backup-recovery-health-head .eyebrow {
+    margin-bottom: 5px;
+}
+
+.backup-recovery-health-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin: 0;
+}
+
+.backup-recovery-health-facts > div {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(8, 10, 13, 0.28);
+}
+
+.backup-recovery-health-facts dt {
+    margin-bottom: 5px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+}
+
+.backup-recovery-health-facts dd {
+    margin: 0;
+    color: var(--text);
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
+
+.backup-recovery-health-facts small {
+    display: block;
+    margin-top: 5px;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.backup-recovery-retention {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 16px;
+    align-items: start;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.backup-recovery-retention strong {
+    color: var(--text);
+}
+
 .backup-block {
     gap: 10px;
 }
@@ -1213,6 +1293,14 @@
     .scheduled-runs-filter {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+
+    .backup-recovery-health-facts {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .backup-recovery-retention {
+        grid-template-columns: 1fr;
+    }
 }
 
 @media (max-width: 760px) {
@@ -1354,6 +1442,11 @@
 }
 
 @media (max-width: 600px) {
+    .backup-recovery-health-head {
+        display: grid;
+    }
+
+    .backup-recovery-health-facts,
     .backup-review-head,
     .backup-review-facts,
     .backup-review-counts {

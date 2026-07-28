@@ -20,12 +20,93 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	internalbackup "debian-updater/internal/backup"
 	observabilitypkg "debian-updater/internal/observability"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestBackupStatusAPIExposesRecoveryHealthAndUnavailableEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 28, 5, 0, 0, 0, time.UTC)
+	newService := func(t *testing.T, withEvidenceSchema bool) *BackupService {
+		t.Helper()
+		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "backup-status.db"))
+		if err != nil {
+			t.Fatalf("open backup status database: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if withEvidenceSchema {
+			if _, err := db.Exec(`
+				CREATE TABLE audit_events (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					created_at TEXT NOT NULL,
+					action TEXT NOT NULL,
+					target_type TEXT NOT NULL,
+					status TEXT NOT NULL,
+					message TEXT NOT NULL,
+					meta_json TEXT NOT NULL
+				);
+				INSERT INTO audit_events(created_at, action, target_type, status, message, meta_json)
+				VALUES
+					('2026-07-27T05:00:00Z', 'backup.export', 'backup', 'success', 'Backup exported', '{"bytes":4096}'),
+					('2026-07-27T17:00:00Z', 'backup.verify', 'backup', 'success', 'Backup restore readiness reviewed', '{"restore_ready":true,"archive_size_bytes":4096}')
+			`); err != nil {
+				t.Fatalf("seed backup recovery evidence: %v", err)
+			}
+		}
+		dataDir := t.TempDir()
+		return NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+			DB:                            func() *sql.DB { return db },
+			DBPath:                        func() string { return filepath.Join(dataDir, "servers.db") },
+			ConfigPath:                    func() string { return filepath.Join(dataDir, "config.json") },
+			KnownHostsWritePath:           func() (string, error) { return filepath.Join(dataDir, "known_hosts"), nil },
+			Now:                           func() time.Time { return now },
+			RecoveryStaleAfter:            7 * 24 * time.Hour,
+			RecoveryEvidenceRetentionDays: 90,
+		})
+	}
+
+	t.Run("healthy", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/backup/status", nil)
+		handleBackupStatusWithService(c, newService(t, true))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("backup status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var response internalbackup.StatusResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("unmarshal backup status: %v", err)
+		}
+		if response.RecoveryHealth.State != internalbackup.RecoveryStateHealthy || response.RecoveryHealth.Export.SizeBytes == nil || *response.RecoveryHealth.Export.SizeBytes != 4096 {
+			t.Fatalf("recovery health = %+v, want healthy evidence with size", response.RecoveryHealth)
+		}
+		if response.RecoveryHealth.Schedule.Scheduled || response.RecoveryHealth.Retention.ArchiveRetained || response.RecoveryHealth.Retention.AutomaticDeletion {
+			t.Fatalf("recovery schedule/retention = %+v/%+v, want no scheduler or archive retention", response.RecoveryHealth.Schedule, response.RecoveryHealth.Retention)
+		}
+	})
+
+	t.Run("unavailable", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/backup/status", nil)
+		handleBackupStatusWithService(c, newService(t, false))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("backup status = %d, want %d (body=%s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		var response struct {
+			RecoveryHealth internalbackup.RecoveryHealth `json:"recovery_health"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("unmarshal unavailable backup status: %v", err)
+		}
+		if response.RecoveryHealth.State != internalbackup.RecoveryStateUnavailable {
+			t.Fatalf("unavailable recovery health = %+v", response.RecoveryHealth)
+		}
+	})
+}
 
 func TestBackupRestoreRollbackUsesSameRestoredRuntimeInterface(t *testing.T) {
 	preserveServerState(t)

@@ -211,7 +211,17 @@ func handleBackupStatusWithService(c *gin.Context, service *BackupService) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "backup service unavailable"})
 		return
 	}
-	c.JSON(http.StatusOK, service.Status())
+	status := service.Status()
+	recoveryHealth, err := service.RecoveryHealth(c.Request.Context())
+	status.RecoveryHealth = recoveryHealth
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":           "backup recovery evidence unavailable",
+			"recovery_health": recoveryHealth,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, status)
 }
 
 func handleBackupExportWithDeps(c *gin.Context, deps AppDeps) {
@@ -349,6 +359,7 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 		"manifest_files":       result.ManifestFileCount,
 		"known_hosts_included": result.KnownHostsIncluded,
 		"total_bytes":          result.TotalBytes,
+		"archive_size_bytes":   result.ArchiveSizeBytes,
 		"compatible":           result.Compatible,
 		"restore_ready":        result.RestoreReady,
 		"blocker_count":        len(result.Blockers),

@@ -58,10 +58,11 @@ type ExportRequest struct {
 }
 
 type StatusResponse struct {
-	DBPath           string `json:"db_path"`
-	ConfigPath       string `json:"config_path"`
-	KnownHostsPath   string `json:"known_hosts_path"`
-	KnownHostsExists bool   `json:"known_hosts_exists"`
+	DBPath           string         `json:"db_path"`
+	ConfigPath       string         `json:"config_path"`
+	KnownHostsPath   string         `json:"known_hosts_path"`
+	KnownHostsExists bool           `json:"known_hosts_exists"`
+	RecoveryHealth   RecoveryHealth `json:"recovery_health"`
 }
 
 type Manifest struct {
@@ -233,20 +234,22 @@ func (e *RestoreError) Unwrap() error {
 }
 
 type ServiceDeps struct {
-	DB                      func() *sql.DB
-	DBPath                  func() string
-	ConfigPath              func() string
-	KnownHostsWritePath     func() (string, error)
-	EnsurePrivateDirForFile func(string) error
-	EnsureSchema            func(*sql.DB) error
-	DecodeEncryptionKey     func(string) ([]byte, error)
-	CurrentEncryptionKey    func() []byte
-	DecryptSecretWithKey    func(string, []byte) (string, error)
-	EncryptSecretWithKey    func(string, []byte) (string, error)
-	GlobalSSHCredential     *serverpkg.GlobalSSHCredential
-	RestoredRuntime         RestoredRuntime
-	Now                     func() time.Time
-	Logf                    func(string, ...any)
+	DB                            func() *sql.DB
+	DBPath                        func() string
+	ConfigPath                    func() string
+	KnownHostsWritePath           func() (string, error)
+	EnsurePrivateDirForFile       func(string) error
+	EnsureSchema                  func(*sql.DB) error
+	DecodeEncryptionKey           func(string) ([]byte, error)
+	CurrentEncryptionKey          func() []byte
+	DecryptSecretWithKey          func(string, []byte) (string, error)
+	EncryptSecretWithKey          func(string, []byte) (string, error)
+	GlobalSSHCredential           *serverpkg.GlobalSSHCredential
+	RestoredRuntime               RestoredRuntime
+	Now                           func() time.Time
+	RecoveryStaleAfter            time.Duration
+	RecoveryEvidenceRetentionDays int
+	Logf                          func(string, ...any)
 }
 
 // RestoredRuntime prepares persistence replacement and rehydrates app-scoped state afterward.
@@ -279,6 +282,12 @@ func (deps ServiceDeps) withDefaults() ServiceDeps {
 	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if deps.RecoveryStaleAfter <= 0 {
+		deps.RecoveryStaleAfter = DefaultRecoveryStaleAfter
+	}
+	if deps.RecoveryEvidenceRetentionDays <= 0 {
+		deps.RecoveryEvidenceRetentionDays = DefaultRecoveryEvidenceRetentionDays
 	}
 	if deps.Logf == nil {
 		deps.Logf = log.Printf

@@ -70,7 +70,8 @@ test("timezone save is enabled only when the accepted choice changes", () => {
 
 test("notification administration owns settings, delivery, and command lifecycle", () => {
     const store = createStore();
-    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_configured: true, webhook_url_masked: "https://hooks.example.test/••••", event_types: ["update.complete", "update.complete"], last_delivery: { success: true, delivered_at: "2026-07-10T12:00:00Z" } } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_configured: true, webhook_url_masked: "https://hooks.example.test/••••", event_types: ["update.complete", "update.complete"] } });
+    store.dispatch({ type: "notificationDiagnosticsReceived", data: { last_attempt: { outcome: "succeeded", attempted_at: "2026-07-10T12:00:00Z", completed_at: "2026-07-10T12:00:01Z", duration_ms: 1000 } } });
     assert.deepEqual(store.getView().notifications.eventTypes, ["update.complete"]);
     store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false } });
     const save = effect(store.dispatch({ type: "commandRequested", command: "saveNotifications" }), "executeCommand");
@@ -81,8 +82,84 @@ test("notification administration owns settings, delivery, and command lifecycle
     assert.deepEqual(replace.payload, { enabled: false, webhook_url_intent: "replace", event_types: ["update.complete"] });
     assert.equal(JSON.stringify(store.getView()).includes("hooks.example.test/y"), false);
     const delivery = effect(store.dispatch({ type: "commandRequested", command: "testNotification" }), "executeCommand");
-    store.dispatch({ type: "commandFailed", plan: delivery.plan, data: { last_delivery: { success: false, attempts: 3 } }, message: "Notification test failed." });
-    assert.equal(store.getView().notifications.lastDelivery.attempts, 3);
+    store.dispatch({ type: "commandFailed", plan: delivery.plan, data: { last_attempt: { outcome: "failed", attempts: 3, consecutive_failures: 3, error: "Webhook delivery failed." } }, message: "Notification test failed." });
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.attempts, 3);
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.consecutiveFailures, 3);
+    assert.equal(store.getView().feedback.notifications.error, true);
+});
+
+test("notification settings, diagnostics, and test outcomes retain accepted state independently", () => {
+    const store = createStore();
+    const settingsRequest = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
+    const diagnosticsRequest = effect(store.dispatch({ type: "snapshotRequested", stream: "notificationDiagnostics" }), "fetchSnapshot");
+    store.dispatch({
+        type: "notificationSnapshotReceived",
+        requestID: settingsRequest.requestID,
+        data: {
+            enabled: true,
+            webhook_configured: true,
+            webhook_url_masked: "https://hooks.example.test/••••",
+            event_types: ["update.complete"],
+        },
+    });
+    store.dispatch({
+        type: "snapshotFailed",
+        stream: "notificationDiagnostics",
+        requestID: diagnosticsRequest.requestID,
+        error: "diagnostics offline",
+    });
+    assert.equal(store.getView().notifications.enabled, true);
+    assert.equal(store.getView().streams.notifications.status, "current");
+    assert.equal(store.getView().streams.notificationDiagnostics.status, "failed");
+
+    const acceptedDiagnostics = effect(store.dispatch({ type: "snapshotRequested", stream: "notificationDiagnostics" }), "fetchSnapshot");
+    store.dispatch({
+        type: "notificationDiagnosticsReceived",
+        requestID: acceptedDiagnostics.requestID,
+        data: {
+            last_attempt: {
+                outcome: "retrying",
+                event_type: "update.complete",
+                attempted_at: "2026-07-10T12:00:00Z",
+                completed_at: "2026-07-10T12:00:01Z",
+                duration_ms: 1000,
+                status_code: 503,
+                consecutive_failures: 2,
+                next_retry_at: "2026-07-10T12:00:03Z",
+                headers: { authorization: "never-store" },
+                response_body: "never-store",
+            },
+        },
+    });
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.outcome, "retrying");
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.nextRetryAt, "2026-07-10T12:00:03Z");
+    assert.equal(JSON.stringify(store.getView()).includes("never-store"), false);
+
+    const failedSettingsRefresh = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "notifications", requestID: failedSettingsRefresh.requestID, error: "settings offline" });
+    assert.equal(store.getView().streams.notifications.status, "stale");
+    assert.equal(store.getView().streams.notificationDiagnostics.status, "current");
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.statusCode, 503);
+
+    const testCommand = effect(store.dispatch({ type: "commandRequested", command: "testNotification" }), "executeCommand");
+    store.dispatch({
+        type: "commandFailed",
+        plan: testCommand.plan,
+        data: {
+            last_attempt: {
+                outcome: "failed",
+                attempted_at: "2026-07-10T12:01:00Z",
+                completed_at: "2026-07-10T12:01:01Z",
+                consecutive_failures: 3,
+                next_retry_at: "2026-07-10T12:01:03Z",
+            },
+        },
+        message: "Notification test failed.",
+    });
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.outcome, "failed");
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.nextRetryAt, "");
+    assert.equal(store.getView().streams.notificationDiagnostics.status, "current");
+    assert.equal(store.getView().streams.notifications.status, "stale");
     assert.equal(store.getView().feedback.notifications.error, true);
 });
 

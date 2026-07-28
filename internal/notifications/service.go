@@ -67,7 +67,6 @@ type SettingsResponse struct {
 	WebhookURLMasked  string           `json:"webhook_url_masked,omitempty"`
 	WebhookURLIntent  WebhookURLIntent `json:"webhook_url_intent"`
 	EventTypes        []string         `json:"event_types"`
-	LastDelivery      *DeliveryStatus  `json:"last_delivery,omitempty"`
 	SupportedEvents   []string         `json:"supported_events"`
 }
 
@@ -97,15 +96,33 @@ func (e *ValidationError) Error() string {
 	return e.Message
 }
 
+type DeliveryOutcome string
+
+const (
+	DeliveryOutcomeSucceeded DeliveryOutcome = "succeeded"
+	DeliveryOutcomeRetrying  DeliveryOutcome = "retrying"
+	DeliveryOutcomeFailed    DeliveryOutcome = "failed"
+)
+
 type DeliveryStatus struct {
-	EventType   string `json:"event_type"`
-	Action      string `json:"action"`
-	TargetName  string `json:"target_name"`
-	Success     bool   `json:"success"`
-	Attempts    int    `json:"attempts"`
-	StatusCode  int    `json:"status_code,omitempty"`
-	Error       string `json:"error,omitempty"`
-	DeliveredAt string `json:"delivered_at"`
+	EventType           string          `json:"event_type"`
+	Action              string          `json:"action"`
+	TargetName          string          `json:"target_name"`
+	Outcome             DeliveryOutcome `json:"outcome"`
+	Success             bool            `json:"success"`
+	Attempts            int             `json:"attempts"`
+	StatusCode          int             `json:"status_code,omitempty"`
+	Error               string          `json:"error,omitempty"`
+	AttemptedAt         string          `json:"attempted_at"`
+	CompletedAt         string          `json:"completed_at"`
+	DeliveredAt         string          `json:"delivered_at,omitempty"`
+	DurationMS          int64           `json:"duration_ms"`
+	ConsecutiveFailures int             `json:"consecutive_failures"`
+	NextRetryAt         string          `json:"next_retry_at,omitempty"`
+}
+
+type DeliveryDiagnostics struct {
+	LastAttempt *DeliveryStatus `json:"last_attempt,omitempty"`
 }
 
 type DeliveryIntent struct {
@@ -137,6 +154,7 @@ type Admission struct {
 type Lifecycle interface {
 	Settings() (SettingsResponse, error)
 	SaveSettings(SettingsUpdate) (SettingsResponse, error)
+	DeliveryDiagnostics() (DeliveryDiagnostics, error)
 	Accept(DeliveryIntent) Admission
 	TestDelivery(context.Context) (DeliveryStatus, error)
 	Close(context.Context) error
@@ -356,6 +374,16 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 	return settingsResponse(settings, intent), nil
 }
 
+func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	settings, err := s.loadSettings()
+	if err != nil {
+		return DeliveryDiagnostics{}, err
+	}
+	return DeliveryDiagnostics{LastAttempt: safeDeliveryStatus(settings.LastDelivery)}, nil
+}
+
 func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
 	evt := DeliveryIntent{
 		CreatedAt:  s.deps.Now().UTC().Format(time.RFC3339),
@@ -411,9 +439,20 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 		Action:     evt.Action,
 		TargetName: evt.TargetName,
 	}
+	if previous := safeDeliveryStatus(settings.LastDelivery); previous != nil {
+		status.ConsecutiveFailures = previous.ConsecutiveFailures
+	}
 	var lastErr error
 	for attempt := 1; attempt <= defaultAttempts; attempt++ {
+		attemptedAt := s.deps.Now().UTC()
 		status.Attempts = attempt
+		status.AttemptedAt = attemptedAt.Format(time.RFC3339)
+		status.CompletedAt = ""
+		status.DeliveredAt = ""
+		status.DurationMS = 0
+		status.StatusCode = 0
+		status.Error = ""
+		status.NextRetryAt = ""
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, settings.WebhookURL, bytes.NewReader(body))
 		if reqErr != nil {
 			lastErr = errors.New("webhook request could not be created")
@@ -429,9 +468,15 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				completedAt := s.deps.Now().UTC()
 				status.Success = true
+				status.Outcome = DeliveryOutcomeSucceeded
 				status.Error = ""
-				status.DeliveredAt = s.deps.Now().UTC().Format(time.RFC3339)
+				status.CompletedAt = completedAt.Format(time.RFC3339)
+				status.DeliveredAt = status.CompletedAt
+				status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
+				status.ConsecutiveFailures = 0
+				status.NextRetryAt = ""
 				if err := s.storeLastDelivery(status); err != nil {
 					return status, fmt.Errorf("record notification delivery outcome: %w", err)
 				}
@@ -439,18 +484,44 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 			}
 			lastErr = fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
 		}
+		completedAt := s.deps.Now().UTC()
+		status.Success = false
+		status.CompletedAt = completedAt.Format(time.RFC3339)
+		status.DeliveredAt = status.CompletedAt
+		status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
+		status.Error = safeDeliveryError(lastErr)
+		status.ConsecutiveFailures++
 		if attempt < defaultAttempts {
+			delay := s.deps.Backoff(attempt)
+			if delay < 0 {
+				delay = 0
+			}
+			status.Outcome = DeliveryOutcomeRetrying
+			status.NextRetryAt = completedAt.Add(delay).Format(time.RFC3339)
+			if err := s.storeLastDelivery(status); err != nil {
+				return status, fmt.Errorf("record notification retry outcome: %w", err)
+			}
 			select {
 			case <-ctx.Done():
 				lastErr = ctx.Err()
 				attempt = defaultAttempts
-			case <-time.After(s.deps.Backoff(attempt)):
+			case <-time.After(delay):
 			}
 		}
 	}
+	completedAt := s.deps.Now().UTC()
 	status.Success = false
+	status.Outcome = DeliveryOutcomeFailed
 	status.Error = safeDeliveryError(lastErr)
-	status.DeliveredAt = s.deps.Now().UTC().Format(time.RFC3339)
+	if status.AttemptedAt == "" {
+		status.AttemptedAt = completedAt.Format(time.RFC3339)
+	}
+	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.DeliveredAt = status.CompletedAt
+	status.NextRetryAt = ""
+	if status.ConsecutiveFailures == 0 {
+		status.ConsecutiveFailures = 1
+	}
 	if err := s.storeLastDelivery(status); err != nil {
 		if lastErr == nil {
 			lastErr = errors.New("webhook delivery failed")
@@ -747,9 +818,15 @@ func settingsResponse(settings Settings, intent WebhookURLIntent) SettingsRespon
 		WebhookURLMasked:  maskWebhookURL(settings.WebhookURL),
 		WebhookURLIntent:  intent,
 		EventTypes:        append([]string(nil), settings.EventTypes...),
-		LastDelivery:      safeDeliveryStatus(settings.LastDelivery),
 		SupportedEvents:   SupportedEvents(),
 	}
+}
+
+func nonNegativeMilliseconds(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	return duration.Milliseconds()
 }
 
 func maskWebhookURL(raw string) string {
@@ -809,6 +886,40 @@ func safeDeliveryStatus(status *DeliveryStatus) *DeliveryStatus {
 		return nil
 	}
 	safe := *status
+	switch safe.Outcome {
+	case DeliveryOutcomeSucceeded, DeliveryOutcomeRetrying, DeliveryOutcomeFailed:
+	default:
+		if safe.Success {
+			safe.Outcome = DeliveryOutcomeSucceeded
+		} else {
+			safe.Outcome = DeliveryOutcomeFailed
+		}
+	}
+	safe.Success = safe.Outcome == DeliveryOutcomeSucceeded
+	if safe.AttemptedAt == "" {
+		safe.AttemptedAt = safe.CompletedAt
+	}
+	if safe.AttemptedAt == "" {
+		safe.AttemptedAt = safe.DeliveredAt
+	}
+	if safe.CompletedAt == "" {
+		safe.CompletedAt = safe.DeliveredAt
+	}
+	if safe.DeliveredAt == "" {
+		safe.DeliveredAt = safe.CompletedAt
+	}
+	if safe.DurationMS < 0 {
+		safe.DurationMS = 0
+	}
+	if safe.Outcome == DeliveryOutcomeSucceeded {
+		safe.ConsecutiveFailures = 0
+		safe.NextRetryAt = ""
+	} else if safe.ConsecutiveFailures <= 0 {
+		safe.ConsecutiveFailures = 1
+	}
+	if safe.Outcome != DeliveryOutcomeRetrying {
+		safe.NextRetryAt = ""
+	}
 	if strings.TrimSpace(safe.Error) != "" {
 		safe.Error = safeDeliveryError(errors.New(safe.Error))
 	}

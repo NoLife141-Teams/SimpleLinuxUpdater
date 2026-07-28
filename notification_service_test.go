@@ -89,7 +89,8 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	getReq.AddCookie(sessionCookie)
 	app.Handler.ServeHTTP(getRec, getReq)
 	if getRec.Code != http.StatusOK || getRec.Header().Get("Cache-Control") != "no-store" ||
-		strings.Contains(getRec.Body.String(), "secret-value") || strings.Contains(getRec.Body.String(), `"webhook_url":`) {
+		strings.Contains(getRec.Body.String(), "secret-value") || strings.Contains(getRec.Body.String(), `"webhook_url":`) ||
+		strings.Contains(getRec.Body.String(), `"last_delivery"`) {
 		t.Fatalf("GET settings status=%d cache=%q body=%s", getRec.Code, getRec.Header().Get("Cache-Control"), getRec.Body.String())
 	}
 
@@ -101,6 +102,17 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	if testRec.Code != http.StatusOK {
 		t.Fatalf("POST /api/notifications/test status = %d, want %d (body=%s)", testRec.Code, http.StatusOK, testRec.Body.String())
 	}
+	var testOutcome struct {
+		LastAttempt NotificationDeliveryStatus `json:"last_attempt"`
+	}
+	if err := json.Unmarshal(testRec.Body.Bytes(), &testOutcome); err != nil {
+		t.Fatalf("unmarshal notification test outcome: %v", err)
+	}
+	if testOutcome.LastAttempt.Outcome != notificationpkg.DeliveryOutcomeSucceeded ||
+		testOutcome.LastAttempt.AttemptedAt == "" || testOutcome.LastAttempt.CompletedAt == "" ||
+		testOutcome.LastAttempt.ConsecutiveFailures != 0 || testOutcome.LastAttempt.StatusCode != http.StatusAccepted {
+		t.Fatalf("test outcome = %+v, want successful canonical diagnostics", testOutcome.LastAttempt)
+	}
 	select {
 	case payload := <-received:
 		if payload.EventType != notificationpkg.EventTest || payload.TargetName != "webhook" {
@@ -108,6 +120,21 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for test webhook")
+	}
+	diagnosticsRec := httptest.NewRecorder()
+	diagnosticsReq := httptest.NewRequest(http.MethodGet, "/api/notifications/delivery-diagnostics", nil)
+	diagnosticsReq.AddCookie(sessionCookie)
+	app.Handler.ServeHTTP(diagnosticsRec, diagnosticsReq)
+	if diagnosticsRec.Code != http.StatusOK || diagnosticsRec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET delivery diagnostics status=%d cache=%q body=%s", diagnosticsRec.Code, diagnosticsRec.Header().Get("Cache-Control"), diagnosticsRec.Body.String())
+	}
+	var diagnostics NotificationDeliveryDiagnostics
+	if err := json.Unmarshal(diagnosticsRec.Body.Bytes(), &diagnostics); err != nil {
+		t.Fatalf("unmarshal delivery diagnostics: %v", err)
+	}
+	if diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Outcome != notificationpkg.DeliveryOutcomeSucceeded ||
+		diagnostics.LastAttempt.EventType != notificationpkg.EventTest {
+		t.Fatalf("delivery diagnostics = %+v, want latest test outcome", diagnostics.LastAttempt)
 	}
 
 	if err := app.Deps.AuditService.Record("admin", "127.0.0.1", updateCompleteAction, "server", "srv-notify", "success", "Update completed", map[string]any{
@@ -146,6 +173,76 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	}
 	if settings.WebhookConfigured || settings.WebhookURLIntent != notificationpkg.WebhookURLClear {
 		t.Fatalf("cleared settings = %+v", settings)
+	}
+}
+
+func TestNotificationDeliveryDiagnosticsRedactRemoteFailureDetails(t *testing.T) {
+	const secret = "remote-body-secret"
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, secret, http.StatusBadGateway)
+	}))
+	t.Cleanup(webhook.Close)
+
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "notification-diagnostics-api.db")})
+	sessionCookie := app.authenticate(t)
+	updateRec := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", bytes.NewBufferString(`{
+		"enabled":true,
+		"webhook_url_intent":"replace",
+		"webhook_url":"`+webhook.URL+`/hook?token=url-secret",
+		"event_types":["update.complete"]
+	}`))
+	updateReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(updateReq)
+	updateReq.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("configure failing webhook status=%d body=%s", updateRec.Code, updateRec.Body.String())
+	}
+
+	testRec := httptest.NewRecorder()
+	testReq := httptest.NewRequest(http.MethodPost, "/api/notifications/test", nil)
+	testReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(testReq)
+	app.Handler.ServeHTTP(testRec, testReq)
+	if testRec.Code != http.StatusBadRequest {
+		t.Fatalf("POST failing notification test status=%d body=%s", testRec.Code, testRec.Body.String())
+	}
+	if strings.Contains(testRec.Body.String(), secret) || strings.Contains(testRec.Body.String(), "url-secret") ||
+		strings.Contains(testRec.Body.String(), webhook.URL) {
+		t.Fatalf("failing notification response leaked remote details: %s", testRec.Body.String())
+	}
+	var outcome struct {
+		LastAttempt NotificationDeliveryStatus `json:"last_attempt"`
+	}
+	if err := json.Unmarshal(testRec.Body.Bytes(), &outcome); err != nil {
+		t.Fatalf("unmarshal failed diagnostics: %v", err)
+	}
+	if outcome.LastAttempt.Outcome != notificationpkg.DeliveryOutcomeFailed ||
+		outcome.LastAttempt.StatusCode != http.StatusBadGateway ||
+		outcome.LastAttempt.ConsecutiveFailures != 3 ||
+		outcome.LastAttempt.NextRetryAt != "" ||
+		outcome.LastAttempt.Error != "webhook returned HTTP 502" {
+		t.Fatalf("failed outcome = %+v, want safe terminal diagnostics", outcome.LastAttempt)
+	}
+
+	diagnosticsRec := httptest.NewRecorder()
+	diagnosticsReq := httptest.NewRequest(http.MethodGet, "/api/notifications/delivery-diagnostics", nil)
+	diagnosticsReq.AddCookie(sessionCookie)
+	app.Handler.ServeHTTP(diagnosticsRec, diagnosticsReq)
+	if diagnosticsRec.Code != http.StatusOK || strings.Contains(diagnosticsRec.Body.String(), secret) ||
+		strings.Contains(diagnosticsRec.Body.String(), "url-secret") || strings.Contains(diagnosticsRec.Body.String(), webhook.URL) {
+		t.Fatalf("GET failed diagnostics status=%d body=%s", diagnosticsRec.Code, diagnosticsRec.Body.String())
+	}
+
+	audits, err := app.Deps.AuditService.List(AuditListFilter{Action: "notifications.test"})
+	if err != nil {
+		t.Fatalf("list notification test audits: %v", err)
+	}
+	auditJSON, _ := json.Marshal(audits)
+	if strings.Contains(string(auditJSON), secret) || strings.Contains(string(auditJSON), "url-secret") ||
+		strings.Contains(string(auditJSON), webhook.URL) {
+		t.Fatalf("notification test audit leaked remote details: %s", auditJSON)
 	}
 }
 
@@ -191,6 +288,7 @@ func TestNotificationRoutesRequireAuthentication(t *testing.T) {
 	}{
 		{name: "settings status", method: http.MethodGet, path: "/api/notifications/settings"},
 		{name: "settings update", method: http.MethodPut, path: "/api/notifications/settings", body: `{"enabled":false}`},
+		{name: "delivery diagnostics", method: http.MethodGet, path: "/api/notifications/delivery-diagnostics"},
 		{name: "test", method: http.MethodPost, path: "/api/notifications/test"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

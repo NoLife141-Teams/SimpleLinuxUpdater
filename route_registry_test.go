@@ -37,6 +37,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPut, "/api/app-settings/timezone"},
 		{http.MethodGet, "/api/notifications/settings"},
 		{http.MethodPut, "/api/notifications/settings"},
+		{http.MethodGet, "/api/notifications/delivery-diagnostics"},
 		{http.MethodPost, "/api/notifications/test"},
 		{http.MethodPost, "/api/backup/export"},
 		{http.MethodPost, "/api/backup/restore"},

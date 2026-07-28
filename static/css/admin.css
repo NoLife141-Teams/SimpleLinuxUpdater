@@ -293,6 +293,70 @@
     font-size: 12px;
 }
 
+.notification-diagnostics-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+}
+
+.notification-diagnostics-head h3,
+.notification-diagnostics-head .eyebrow {
+    margin: 0;
+}
+
+.notification-diagnostics-head .eyebrow {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.notification-diagnostics-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+    margin: 14px 0 0;
+}
+
+.notification-diagnostics-facts > div {
+    min-width: 0;
+    padding: 11px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(8, 10, 13, 0.28);
+}
+
+.notification-diagnostics-facts dt {
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+}
+
+.notification-diagnostics-facts dd {
+    margin: 0;
+    color: var(--text);
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
+
+#notification-diagnostics-outcome[data-outcome="succeeded"] {
+    color: var(--success);
+}
+
+#notification-diagnostics-outcome[data-outcome="retrying"] {
+    color: var(--warning);
+}
+
+#notification-diagnostics-outcome[data-outcome="failed"],
+#notification-diagnostics-error {
+    color: var(--danger);
+}
+
 .draft-state {
     color: var(--faint);
     font-size: 12px;
@@ -1659,6 +1723,10 @@
 }
 
 @media (max-width: 600px) {
+    .notification-diagnostics-facts {
+        grid-template-columns: 1fr;
+    }
+
     .backup-recovery-health-head {
         display: grid;
     }

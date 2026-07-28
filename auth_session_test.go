@@ -1473,6 +1473,9 @@ func TestAuthSessionIPRevealRequiresCurrentPassword(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil || len(payload.Sessions) != 1 {
 		t.Fatalf("decode session inventory: payload=%+v err=%v", payload, err)
 	}
+	if strings.Contains(statusRec.Body.String(), "192.168.4.55") {
+		t.Fatalf("masked session inventory disclosed full IP: %s", statusRec.Body.String())
+	}
 	id := payload.Sessions[0].ID
 
 	reveal := func(password string) *httptest.ResponseRecorder {
@@ -1492,6 +1495,15 @@ func TestAuthSessionIPRevealRequiresCurrentPassword(t *testing.T) {
 	rec := reveal(testPasswordStrong)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ip":"192.168.4.55"`) {
 		t.Fatalf("valid reveal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"visible_for_seconds":30`) {
+		t.Fatalf("valid reveal omitted visibility duration: %s", rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("valid reveal Cache-Control=%q, want no-store", got)
+	}
+	if got := rec.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("valid reveal Pragma=%q, want no-cache", got)
 	}
 }
 

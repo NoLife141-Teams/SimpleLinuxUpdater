@@ -36,6 +36,7 @@ const (
 	authRateLimitWindow           = authpkg.RateLimitWindow
 	metricsRateLimitWindow        = authpkg.MetricsRateLimitWindow
 	defaultSessionLifetime        = authpkg.DefaultSessionLifetime
+	authSessionIPRevealSeconds    = 30
 )
 
 var sessionManager *scs.SessionManager
@@ -763,7 +764,7 @@ func handleAuthSessionIPReveal(c *gin.Context) {
 	setNoStoreHeaders(c)
 	switch outcome.Kind {
 	case authRevealSessionIPSucceeded:
-		c.JSON(http.StatusOK, gin.H{"ip": outcome.IP, "visible_for_seconds": 30})
+		c.JSON(http.StatusOK, gin.H{"ip": outcome.IP, "visible_for_seconds": authSessionIPRevealSeconds})
 	case authRevealSessionIPInvalid:
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is invalid"})
 	case authRevealSessionIPRateLimited:

@@ -170,8 +170,8 @@
             <div class="workspace-head">
                 <div>
                     <div class="eyebrow">Account security</div>
-                    <h2 id="admin-section-account-security-heading" tabindex="-1">Admin Password &amp; Sessions</h2>
-                    <p class="muted workspace-note">Rotate the local admin password and invalidate server-side sessions when needed.</p>
+                    <h2 id="admin-section-account-security-heading" tabindex="-1">Admin Password &amp; Active Sessions</h2>
+                    <p class="muted workspace-note">Rotate the local admin password and review or invalidate active sessions when needed.</p>
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="account-security" hidden>Session status unavailable</span>
@@ -199,9 +199,9 @@
                     <div id="auth-password-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
                 </div>
                 <div class="admin-block">
-                    <h3>Sessions</h3>
-                    <p class="muted" id="auth-session-status">Session status loading...</p>
-                    <div id="auth-session-inventory" aria-live="polite">
+                    <h3>Active sessions</h3>
+                    <p class="muted" id="auth-session-status" role="status" aria-live="polite">Session status loading...</p>
+                    <div id="auth-session-inventory">
                         <div class="session-group" id="auth-current-session-group">
                             <h4>Current session</h4>
                             <div class="session-list" id="auth-current-session-list"></div>
@@ -825,6 +825,6 @@
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
     <script src="/static/js/admin-page-interaction.js?v=recovery-health-20260728a"></script>
-    <script src="/static/js/admin.js?v=recovery-health-20260728a"></script>
+    <script src="/static/js/admin.js?v=temporary-session-ip-reveal-20260728a"></script>
 </body>
 </html>

@@ -19,6 +19,16 @@ let appTimezonePicker = null;
 let appTimezonePreviewTimer = 0;
 let adminSectionObserver = null;
 let adminSectionNavigationLockUntil = 0;
+const sessionIPReveal = {
+    sessionID: "",
+    expiresAt: 0,
+    intervalID: 0,
+    timeoutID: 0,
+    requestController: null,
+    requestID: 0,
+    trigger: null,
+    background: []
+};
 
 const adminSectionPreferenceKey = "simplelinuxupdater.admin.collapsed-sections.v1";
 
@@ -692,7 +702,7 @@ function createAuthSessionCard(session) {
     const details = document.createElement("dl");
     details.className = "session-item-details";
     [
-        ["Masked IP", session.clientIP || "Unavailable", "ip"],
+        ["IP address", session.clientIP || "Unavailable", "ip"],
         ["Created", formatSessionTime(session.createdAt)],
         ["Last activity", formatSessionTime(session.lastSeenAt)],
         ["Expires", formatSessionTime(session.expiresAt)]
@@ -719,6 +729,10 @@ function createAuthSessionCard(session) {
     revealButton.dataset.revealSessionId = session.id;
     revealButton.disabled = !session.clientIP;
     revealButton.textContent = "Reveal IP";
+    const visibility = document.createElement("span");
+    visibility.className = "session-ip-visibility";
+    visibility.dataset.sessionIpVisibility = session.id;
+    visibility.hidden = true;
     const revokeButton = document.createElement("button");
     revokeButton.type = "button";
     revokeButton.className = "btn-danger session-revoke";
@@ -726,12 +740,13 @@ function createAuthSessionCard(session) {
     revokeButton.dataset.currentSession = String(session.current);
     revokeButton.dataset.adminDangerCommand = "revokeSession";
     revokeButton.textContent = session.current ? "Logout This Session" : "Revoke Session";
-    actions.append(revealButton, revokeButton);
+    actions.append(revealButton, visibility, revokeButton);
     item.appendChild(actions);
     return item;
 }
 
 function renderAuthSessions() {
+    hideTemporarySessionIPReveal();
     const view = adminPageView();
     const status = document.getElementById("auth-session-status");
     const currentList = document.getElementById("auth-current-session-list");
@@ -741,7 +756,7 @@ function renderAuthSessions() {
     const otherTitle = document.getElementById("auth-other-session-title");
     const showAll = document.getElementById("auth-sessions-show-all");
     const clearOthers = document.getElementById("auth-sessions-clear-others");
-    if (status) status.textContent = `${view.account.sessionCount} server-side session(s) stored.`;
+    if (status) status.textContent = `${view.account.sessionCount} active session${view.account.sessionCount === 1 ? "" : "s"}.`;
     if (clearOthers) clearOthers.disabled = view.account.otherSessions.length === 0;
     if (!currentList || !otherList) return;
     currentList.replaceChildren();
@@ -759,25 +774,151 @@ function renderAuthSessions() {
     renderAdminWorkspace();
 }
 
-function closeSessionIPRevealModal() {
+function lockSessionIPRevealBackground(modal) {
+    sessionIPReveal.background = Array.from(document.body.children)
+        .filter(element => element !== modal)
+        .map(element => ({
+            element,
+            inert: Boolean(element.inert),
+            ariaHidden: element.getAttribute("aria-hidden")
+        }));
+    sessionIPReveal.background.forEach(({ element }) => {
+        element.inert = true;
+        element.setAttribute("aria-hidden", "true");
+    });
+    document.body.classList.add("modal-open");
+}
+
+function unlockSessionIPRevealBackground() {
+    sessionIPReveal.background.forEach(({ element, inert, ariaHidden }) => {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+    });
+    sessionIPReveal.background = [];
+    document.body.classList.remove("modal-open");
+}
+
+function closeSessionIPRevealModal(options = {}) {
     const modal = document.getElementById("session-ip-reveal-modal");
     const password = document.getElementById("session-ip-reveal-password");
     const error = document.getElementById("session-ip-reveal-error");
+    const restoreFocus = options.restoreFocus !== false;
+    const abortRequest = options.abortRequest !== false;
+    const trigger = sessionIPReveal.trigger;
+    if (abortRequest && sessionIPReveal.requestController) {
+        sessionIPReveal.requestID += 1;
+        sessionIPReveal.requestController.abort();
+        sessionIPReveal.requestController = null;
+    }
     if (modal) {
         modal.classList.remove("active");
         delete modal.dataset.sessionId;
     }
+    unlockSessionIPRevealBackground();
     if (password) password.value = "";
     if (error) error.textContent = "";
+    sessionIPReveal.trigger = null;
+    if (restoreFocus && trigger?.isConnected && typeof trigger.focus === "function") {
+        trigger.focus();
+    }
 }
 
-function openSessionIPRevealModal(sessionID) {
+function openSessionIPRevealModal(sessionID, trigger) {
     const modal = document.getElementById("session-ip-reveal-modal");
     const password = document.getElementById("session-ip-reveal-password");
     if (!modal || !password || !sessionID) return;
+    hideTemporarySessionIPReveal();
     modal.dataset.sessionId = sessionID;
+    sessionIPReveal.trigger = trigger || null;
+    lockSessionIPRevealBackground(modal);
     modal.classList.add("active");
     window.requestAnimationFrame(() => password.focus());
+}
+
+function hideTemporarySessionIPReveal() {
+    window.clearInterval(sessionIPReveal.intervalID);
+    window.clearTimeout(sessionIPReveal.timeoutID);
+    const sessionID = sessionIPReveal.sessionID;
+    if (sessionID) {
+        const ipNode = document.querySelector(`[data-session-ip-id="${CSS.escape(sessionID)}"]`);
+        const visibility = document.querySelector(`[data-session-ip-visibility="${CSS.escape(sessionID)}"]`);
+        const button = document.querySelector(`button[data-hide-session-ip="${CSS.escape(sessionID)}"]`);
+        if (ipNode) ipNode.textContent = ipNode.dataset.maskedIp || "Unavailable";
+        if (visibility) {
+            visibility.hidden = true;
+            visibility.textContent = "";
+        }
+        if (button) {
+            delete button.dataset.hideSessionIp;
+            button.dataset.revealSessionId = sessionID;
+            button.textContent = "Reveal IP";
+            button.disabled = false;
+        }
+    }
+    sessionIPReveal.sessionID = "";
+    sessionIPReveal.expiresAt = 0;
+    sessionIPReveal.intervalID = 0;
+    sessionIPReveal.timeoutID = 0;
+}
+
+function updateTemporarySessionIPReveal() {
+    if (!sessionIPReveal.sessionID) return;
+    const remaining = Math.max(0, Math.ceil((sessionIPReveal.expiresAt - Date.now()) / 1000));
+    if (remaining === 0) {
+        hideTemporarySessionIPReveal();
+        return;
+    }
+    const visibility = document.querySelector(
+        `[data-session-ip-visibility="${CSS.escape(sessionIPReveal.sessionID)}"]`
+    );
+    if (visibility) visibility.textContent = `Full IP visible for ${remaining} second${remaining === 1 ? "" : "s"}`;
+}
+
+function showTemporarySessionIPReveal(sessionID, fullIP, requestedSeconds) {
+    hideTemporarySessionIPReveal();
+    const ipNode = document.querySelector(`[data-session-ip-id="${CSS.escape(sessionID)}"]`);
+    const visibility = document.querySelector(`[data-session-ip-visibility="${CSS.escape(sessionID)}"]`);
+    const button = document.querySelector(`button[data-reveal-session-id="${CSS.escape(sessionID)}"]`);
+    if (!ipNode || !visibility || !button || !fullIP) return false;
+    const seconds = Math.min(30, Math.max(1, Number(requestedSeconds) || 30));
+    sessionIPReveal.sessionID = sessionID;
+    sessionIPReveal.expiresAt = Date.now() + (seconds * 1000);
+    ipNode.textContent = fullIP;
+    visibility.hidden = false;
+    delete button.dataset.revealSessionId;
+    button.dataset.hideSessionIp = sessionID;
+    button.textContent = "Hide now";
+    button.disabled = false;
+    updateTemporarySessionIPReveal();
+    sessionIPReveal.intervalID = window.setInterval(updateTemporarySessionIPReveal, 250);
+    sessionIPReveal.timeoutID = window.setTimeout(hideTemporarySessionIPReveal, seconds * 1000);
+    return true;
+}
+
+function handleSessionIPRevealModalKeydown(event) {
+    const modal = document.getElementById("session-ip-reveal-modal");
+    if (!modal?.classList.contains("active")) return;
+    if (event.key === "Escape") {
+        event.preventDefault();
+        closeSessionIPRevealModal();
+        return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = modal.querySelector('[role="dialog"]');
+    const focusable = Array.from(dialog?.querySelectorAll(
+        "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+    ) || []);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
 }
 
 async function submitSessionIPReveal(event) {
@@ -792,12 +933,20 @@ async function submitSessionIPReveal(event) {
         return;
     }
     if (submit) submit.disabled = true;
+    const requestID = ++sessionIPReveal.requestID;
+    const requestController = new AbortController();
+    sessionIPReveal.requestController?.abort();
+    sessionIPReveal.requestController = requestController;
     try {
-        const res = await fetch(`/api/auth/sessions/${encodeURIComponent(sessionID)}/reveal-ip`, {
+        const request = typeof window.__nativeFetch === "function" ? window.__nativeFetch : window.fetch;
+        const res = await request(`/api/auth/sessions/${encodeURIComponent(sessionID)}/reveal-ip`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ current_password: password.value })
+            body: JSON.stringify({ current_password: password.value }),
+            cache: "no-store",
+            signal: requestController.signal
         });
+        if (requestID !== sessionIPReveal.requestID || !modal?.classList.contains("active")) return;
         if (!res.ok) {
             if (error) error.textContent = await parseErrorResponse(res, "Failed to reveal session IP.");
             password.value = "";
@@ -805,30 +954,26 @@ async function submitSessionIPReveal(event) {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        const ipNode = document.querySelector(`[data-session-ip-id="${sessionID}"]`);
-        const revealButton = document.querySelector(`button[data-reveal-session-id="${sessionID}"]`);
-        const maskedIP = ipNode?.dataset.maskedIp || "Unavailable";
-        if (ipNode) ipNode.textContent = String(data.ip || maskedIP);
-        if (revealButton) {
-            revealButton.disabled = true;
-            revealButton.textContent = "Visible for 30s";
+        const fullIP = String(data.ip || "").trim();
+        if (!fullIP || !showTemporarySessionIPReveal(sessionID, fullIP, data.visible_for_seconds)) {
+            if (error) error.textContent = "The full IP address is unavailable.";
+            return;
         }
-        closeSessionIPRevealModal();
-        window.setTimeout(() => {
-            if (ipNode?.isConnected) ipNode.textContent = maskedIP;
-            if (revealButton?.isConnected) {
-                revealButton.disabled = false;
-                revealButton.textContent = "Reveal IP";
-            }
-        }, Math.max(1, Number(data.visible_for_seconds || 30)) * 1000);
+        sessionIPReveal.requestController = null;
+        closeSessionIPRevealModal({ abortRequest: false });
     } catch (err) {
+        if (err?.name === "AbortError") return;
         if (error) error.textContent = err.message || "Failed to reveal session IP.";
     } finally {
-        if (submit) submit.disabled = false;
+        if (requestID === sessionIPReveal.requestID) {
+            sessionIPReveal.requestController = null;
+            if (submit) submit.disabled = false;
+        }
     }
 }
 
 async function fetchAuthSessionStatus() {
+    hideTemporarySessionIPReveal();
     const status = document.getElementById("auth-session-status");
     if (!status) return;
     const requestID = beginAdminSnapshot("account");
@@ -919,9 +1064,15 @@ async function revokeAuthSession(id, current) {
 }
 
 function handleAuthSessionListClick(event) {
+    const hideButton = event.target.closest("button[data-hide-session-ip]");
+    if (hideButton) {
+        hideTemporarySessionIPReveal();
+        hideButton.focus();
+        return;
+    }
     const revealButton = event.target.closest("button[data-reveal-session-id]");
     if (revealButton) {
-        openSessionIPRevealModal(revealButton.dataset.revealSessionId || "");
+        openSessionIPRevealModal(revealButton.dataset.revealSessionId || "", revealButton);
         return;
     }
     const button = event.target.closest("button[data-session-id]");
@@ -3036,6 +3187,13 @@ document.getElementById("session-ip-reveal-cancel").addEventListener("click", cl
 document.getElementById("session-ip-reveal-modal").addEventListener("click", (event) => {
     if (event.target?.id === "session-ip-reveal-modal") closeSessionIPRevealModal();
 });
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) return;
+    hideTemporarySessionIPReveal();
+    const modal = document.getElementById("session-ip-reveal-modal");
+    if (modal?.classList.contains("active")) closeSessionIPRevealModal({ restoreFocus: false });
+});
+window.addEventListener("pagehide", hideTemporarySessionIPReveal);
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
 document.getElementById("policy-new-btn").addEventListener("click", event => requestPolicyReplacement({ type: "reset" }, event.currentTarget));
 document.getElementById("policy-discard-btn").addEventListener("click", discardPolicyDraft);
@@ -3097,13 +3255,10 @@ document.getElementById("job-detail-modal").addEventListener("click", (event) =>
     }
 });
 document.addEventListener("keydown", (event) => {
+    handleSessionIPRevealModalKeydown(event);
     const modal = document.getElementById("job-detail-modal");
     if (event.key === "Escape" && modal && modal.classList.contains("active")) {
         closeJobDetailModal();
-    }
-    const revealModal = document.getElementById("session-ip-reveal-modal");
-    if (event.key === "Escape" && revealModal && revealModal.classList.contains("active")) {
-        closeSessionIPRevealModal();
     }
 });
 window.addEventListener("beforeunload", (event) => {

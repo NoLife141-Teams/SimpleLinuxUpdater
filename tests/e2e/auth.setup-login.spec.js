@@ -402,7 +402,20 @@ test.describe.serial('setup and login flows', () => {
     });
     await page.route('**/api/auth/sessions/*/reveal-ip', async route => {
       state.sessionIPRevealPayload = await route.request().postDataJSON();
-      return fulfillJson(route, { ip: '192.168.1.44', visible_for_seconds: 30 });
+      if (state.sessionIPRevealDelayMs) {
+        await new Promise(resolve => setTimeout(resolve, state.sessionIPRevealDelayMs));
+      }
+      if (state.sessionIPRevealFailure) {
+        return route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'current password is invalid' }),
+        });
+      }
+      return fulfillJson(route, {
+        ip: '192.168.1.44',
+        visible_for_seconds: state.sessionIPRevealSeconds || 30,
+      });
     });
     await page.route('**/api/auth/sessions/others', async route => {
       state.sessionClearOthersCount = (state.sessionClearOthersCount || 0) + 1;
@@ -2023,7 +2036,7 @@ test.describe.serial('setup and login flows', () => {
     await stubAdminApi(page, state);
 
     await page.goto('/admin');
-    await expect(page.locator('#auth-session-status')).toContainText('2 server-side session');
+    await expect(page.locator('#auth-session-status')).toContainText('2 active sessions');
     await expect(page.locator('#auth-session-inventory')).toContainText('Chrome · Windows');
     await expect(page.locator('#auth-session-inventory')).toContainText('Firefox · Linux');
     await expect(page.locator('#auth-session-inventory')).toContainText('192.168.1.x');
@@ -2037,7 +2050,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#action-confirm-modal')).toBeVisible();
     await page.locator('#action-confirm-submit').click();
     await expect.poll(() => state.sessionClearOthersCount || 0).toBe(1);
-    await expect(page.locator('#auth-session-status')).toContainText('1 server-side session');
+    await expect(page.locator('#auth-session-status')).toContainText('1 active session');
     await expect(page.locator('#auth-sessions-clear-others')).toBeDisabled();
 
     await page.locator('#auth-current-password').fill(password);
@@ -2061,7 +2074,7 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.sessionClearCount || 0).toBe(1);
   });
 
-  test('admin session inventory stays compact and reveals IP after reauthentication', async ({ page }) => {
+  test('active session inventory keeps a temporary IP reveal controllable and undisclosed', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
@@ -2080,13 +2093,100 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#auth-other-session-list')).toHaveClass(/is-expanded/);
     await expect(page.locator('#auth-sessions-show-all')).toHaveText('Collapse');
 
-    await page.locator('button[data-reveal-session-id="current-session"]').click();
+    const reveal = page.locator('button[data-reveal-session-id="current-session"]');
+    await reveal.focus();
+    await reveal.click();
     await expect(page.locator('#session-ip-reveal-modal')).toBeVisible();
+    await expect(page.locator('#session-ip-reveal-password')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('#session-ip-reveal-submit')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#session-ip-reveal-modal')).toBeHidden();
+    await expect(reveal).toBeFocused();
+
+    await reveal.click();
     await page.locator('#session-ip-reveal-password').fill(password);
     await page.locator('#session-ip-reveal-submit').click();
     await expect.poll(() => state.sessionIPRevealPayload).toEqual({ current_password: password });
     await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.44');
-    await expect(page.locator('button[data-reveal-session-id="current-session"]')).toHaveText('Visible for 30s');
+    await expect(page.locator('[data-session-ip-visibility="current-session"]')).toContainText('Full IP visible for 30 seconds');
+    const hide = page.locator('button[data-hide-session-ip="current-session"]');
+    await expect(hide).toHaveText('Hide now');
+    await expect(hide).toBeFocused();
+    await expect(page).not.toHaveURL(/192\.168\.1\.44/);
+    await expect.poll(() => page.evaluate(() => JSON.stringify({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+    }))).not.toContain('192.168.1.44');
+    await expect.poll(() => page.locator('[aria-live]').allTextContents()).not.toContain('192.168.1.44');
+
+    await hide.click();
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x');
+    await expect(page.locator('button[data-reveal-session-id="current-session"]')).toHaveText('Reveal IP');
+  });
+
+  test('temporary session IP remasks on expiry, refresh, and document hiding', async ({ page }) => {
+    const state = { sessionIPRevealSeconds: 1 };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    const revealIP = async () => {
+      await page.locator('button[data-reveal-session-id="current-session"]').click();
+      await page.locator('#session-ip-reveal-password').fill(password);
+      await page.locator('#session-ip-reveal-submit').click();
+      await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.44');
+    };
+
+    await revealIP();
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x', { timeout: 2500 });
+
+    state.sessionIPRevealSeconds = 30;
+    await revealIP();
+    await page.evaluate(() => window.fetchAuthSessionStatus());
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x');
+
+    await revealIP();
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x');
+  });
+
+  test('session IP reveal keeps authentication failures inside the secure dialog', async ({ page }) => {
+    const state = { sessionIPRevealFailure: true };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    await page.locator('button[data-reveal-session-id="current-session"]').click();
+    await page.locator('#session-ip-reveal-password').fill('wrong password');
+    await page.locator('#session-ip-reveal-submit').click();
+    await expect(page.locator('#session-ip-reveal-error')).toHaveText('current password is invalid');
+    await expect(page.locator('#session-ip-reveal-modal')).toBeVisible();
+    await expect(page.locator('#session-ip-reveal-password')).toBeFocused();
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x');
+    await expect(page.locator('body')).not.toContainText('192.168.1.44');
+  });
+
+  test('cancelling session IP reauthentication discards a late response', async ({ page }) => {
+    const state = { sessionIPRevealDelayMs: 300 };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    const reveal = page.locator('button[data-reveal-session-id="current-session"]');
+    await reveal.click();
+    await page.locator('#session-ip-reveal-password').fill(password);
+    await page.locator('#session-ip-reveal-submit').click();
+    await expect.poll(() => state.sessionIPRevealPayload).toEqual({ current_password: password });
+    await page.locator('#session-ip-reveal-cancel').click();
+    await expect(page.locator('#session-ip-reveal-modal')).toBeHidden();
+    await expect(reveal).toBeFocused();
+    await page.waitForTimeout(450);
+    await expect(page.locator('[data-session-ip-id="current-session"]')).toHaveText('192.168.1.x');
+    await expect(page.locator('body')).not.toContainText('192.168.1.44');
   });
 
   test('manage typed confirmations gate destructive host and audit actions', async ({ page, context }) => {

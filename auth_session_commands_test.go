@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	authpkg "debian-updater/internal/auth"
@@ -451,4 +452,46 @@ func TestAuthSessionCommandsRevokeAndClearOthers(t *testing.T) {
 			t.Fatalf("ClearOtherSessions() outcome=%+v account=%+v session=%+v", outcome, account, session)
 		}
 	})
+}
+
+func TestAuthSessionCommandsRevealIPAuditsWithoutDisclosingTargetIP(t *testing.T) {
+	const revealedIP = "203.0.113.84"
+	account := &fakeAuthCommandAccount{
+		authenticated: true,
+		revealedIP:    revealedIP,
+		revealFound:   true,
+	}
+	audits := make([]authSessionCommandAuditRecord, 0, 1)
+	module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{
+		Account: account,
+		RecordAudit: func(record authSessionCommandAuditRecord) error {
+			audits = append(audits, record)
+			return nil
+		},
+	})
+
+	outcome := module.RevealSessionIP(context.Background(), authRevealSessionIPCommand{
+		Actor:           "admin",
+		ClientIP:        "192.0.2.10",
+		SessionID:       "session-42",
+		CurrentPassword: "StrongPass123",
+		AttemptKey:      "attempt-key",
+	})
+
+	if outcome.Kind != authRevealSessionIPSucceeded || outcome.IP != revealedIP {
+		t.Fatalf("RevealSessionIP() = %+v", outcome)
+	}
+	if len(audits) != 1 {
+		t.Fatalf("RevealSessionIP() audits = %+v", audits)
+	}
+	audit := audits[0]
+	if audit.Action != "auth.session.ip_reveal" || audit.Status != "success" || audit.TargetName != "session-42" {
+		t.Fatalf("RevealSessionIP() audit = %+v", audit)
+	}
+	if strings.Contains(audit.Message, revealedIP) || strings.Contains(audit.TargetName, revealedIP) {
+		t.Fatalf("RevealSessionIP() audit disclosed target IP: %+v", audit)
+	}
+	if len(audit.Meta) != 0 {
+		t.Fatalf("RevealSessionIP() audit metadata should not include target details: %+v", audit.Meta)
+	}
 }

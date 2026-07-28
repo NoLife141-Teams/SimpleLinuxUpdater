@@ -1524,6 +1524,58 @@ function showMetricsTokenOnce(token) {
     panel.style.display = "block";
 }
 
+function formatMetricsCredentialTime(value, emptyLabel) {
+    const parsed = new Date(String(value || ""));
+    if (!value || Number.isNaN(parsed.getTime())) return emptyLabel;
+    if (window.formatAppTimestamp) {
+        return window.formatAppTimestamp(value, { titleUTC: true }).primary;
+    }
+    return parsed.toISOString();
+}
+
+function renderMetricsCredentialLifecycle() {
+    const view = adminPageView().metrics;
+    const state = document.getElementById("metrics-token-lifecycle-state");
+    const status = document.getElementById("metrics-token-status");
+    const created = document.getElementById("metrics-token-created");
+    const rotated = document.getElementById("metrics-token-rotated");
+    const lastUsed = document.getElementById("metrics-token-last-used");
+    const lastOrigin = document.getElementById("metrics-token-last-origin");
+    const stalePolicy = document.getElementById("metrics-token-stale-policy");
+    if (!status) return;
+
+    const labels = {
+        disabled: "Disabled",
+        unknown: "Usage unknown",
+        never_used: "Never used",
+        current: "Current",
+        stale: "Stale"
+    };
+    if (state) {
+        state.dataset.state = view.lifecycleState;
+        state.textContent = labels[view.lifecycleState] || "Unavailable";
+    }
+    if (created) created.textContent = formatMetricsCredentialTime(view.createdAt, "Unavailable");
+    if (rotated) rotated.textContent = formatMetricsCredentialTime(view.rotatedAt, "Never");
+    if (lastUsed) lastUsed.textContent = formatMetricsCredentialTime(view.lastUsedAt, "Never");
+    if (lastOrigin) lastOrigin.textContent = view.lastUsedOriginMasked || "Unavailable";
+    if (stalePolicy) {
+        stalePolicy.textContent = `A token is considered stale after ${view.staleAfterDays} days without successful use. Stale tokens are never disabled automatically.`;
+    }
+
+    if (!view.enabled) {
+        status.textContent = "Metrics access is disabled.";
+    } else if (view.lifecycleState === "unknown") {
+        status.textContent = "The token predates lifecycle tracking. Its usage is unknown until the next successful metrics request or rotation.";
+    } else if (view.neverUsed) {
+        status.textContent = "The token is enabled but has never completed a successful metrics request.";
+    } else if (view.stale) {
+        status.textContent = `No successful metrics request has been recorded for at least ${view.staleAfterDays} days. Review scraper health; access remains enabled.`;
+    } else {
+        status.textContent = `The token has been used successfully within the last ${view.staleAfterDays} days.`;
+    }
+}
+
 async function fetchMetricsTokenStatus(resetReveal = true) {
     const status = document.getElementById("metrics-token-status");
     if (!status) return;
@@ -1541,7 +1593,7 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
         }
         const data = await res.json().catch(() => ({}));
         adminPageInteraction.dispatch({ type: "metricsSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
-        status.textContent = data.enabled ? "Metrics API token: enabled" : "Metrics API token: disabled";
+        renderMetricsCredentialLifecycle();
         renderAdminWorkspace();
     } catch (err) {
         console.error("Failed to fetch metrics token status:", err);

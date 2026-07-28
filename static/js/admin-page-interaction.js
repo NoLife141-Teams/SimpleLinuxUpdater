@@ -230,6 +230,32 @@
         };
     }
 
+    function normalizeMetrics(data = {}, revealedToken = "", acceptReveal = false) {
+        const enabled = Boolean(data.enabled ?? data.configured ?? data.has_token);
+        const normalizedState = ["disabled", "unknown", "never_used", "current", "stale"].includes(String(data.lifecycle_state || ""))
+            ? String(data.lifecycle_state)
+            : enabled ? "unknown" : "disabled";
+        const lifecycleState = enabled ? (normalizedState === "disabled" ? "unknown" : normalizedState) : "disabled";
+        const origin = String(data.last_used_origin_masked || "").trim();
+        const ipv4Parts = origin.split(".");
+        const maskedIPv4 = ipv4Parts.length === 4 && ipv4Parts[3] === "x" &&
+            ipv4Parts.slice(0, 3).every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+        const maskedIPv6 = /^[0-9a-f:]+::\/64$/i.test(origin);
+        const safeOrigin = origin === "unknown" || maskedIPv4 || maskedIPv6 ? origin : "";
+        return {
+            enabled,
+            lifecycleState,
+            createdAt: String(data.created_at || "").trim(),
+            rotatedAt: String(data.rotated_at || "").trim(),
+            lastUsedAt: String(data.last_used_at || "").trim(),
+            lastUsedOriginMasked: safeOrigin,
+            neverUsed: lifecycleState === "never_used",
+            stale: lifecycleState === "stale",
+            staleAfterDays: Math.max(1, Number(data.stale_after_days) || 30),
+            revealedToken: acceptReveal && typeof data.token === "string" ? data.token : String(revealedToken || "")
+        };
+    }
+
     function createStore(options = {}) {
         const scheduled = options.scheduled || null;
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -246,7 +272,7 @@
             passwordChangeOutcome: null
         };
         let activity = normalizeActivity();
-        let metrics = { enabled: false, revealedToken: "" };
+        let metrics = normalizeMetrics();
         let backup = {
             blocked: false,
             reason: "",
@@ -410,8 +436,8 @@
                 hiddenOtherSessionCount: account.otherSessionsExpanded ? 0 : Math.max(0, otherSessions.length - 3)
             };
         }
-        function applyMetrics(data = {}) {
-            metrics = { enabled: Boolean(data.enabled ?? data.configured ?? data.has_token), revealedToken: String(data.token ?? metrics.revealedToken ?? "") };
+        function applyMetrics(data = {}, acceptReveal = false) {
+            metrics = normalizeMetrics(data, metrics.revealedToken, acceptReveal);
         }
         function applyBackup(data) { backup = { ...backup, ...normalizeBackup(data) }; }
         function normalizeSectionIDs(values) {
@@ -439,6 +465,16 @@
                 unavailable: "Recovery unavailable"
             };
             return labels[state] || "Backup operations ready";
+        }
+        function metricsSummary() {
+            const labels = {
+                disabled: "Token disabled",
+                unknown: "Token usage unknown",
+                never_used: "Token never used",
+                current: "Token current",
+                stale: "Token stale"
+            };
+            return labels[metrics.lifecycleState] || (metrics.enabled ? "Token enabled" : "Token disabled");
         }
         function scheduledStreamStatus(state) {
             if (!state) return { status: "unavailable", lastSuccessfulRefresh: "", error: "" };
@@ -495,7 +531,7 @@
                 "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
                 "scheduled-runs": Array.isArray(runItems) ? freshnessSummary(countSummary(runItems.length, "recent run"), Boolean(scheduledSnapshots.runs?.lastError)) : "Run history unavailable",
                 backup: streams.backup.accepted ? freshnessSummary(backupSummary(), streams.backup.freshness === "stale") : "Backup status unavailable",
-                metrics: streams.metrics.accepted ? freshnessSummary(metrics.enabled ? "Token enabled" : "Token disabled", streams.metrics.freshness === "stale") : "Metrics token status unavailable"
+                metrics: streams.metrics.accepted ? freshnessSummary(metricsSummary(), streams.metrics.freshness === "stale") : "Metrics token status unavailable"
             };
             return {
                 activeSection,
@@ -597,8 +633,8 @@
                 account = { ...account, passwordChangeOutcome: normalizePasswordChangeOutcome(data) };
             }
             if (plan.command === "clearSessions" && !failed) applyAccount(data || {});
-            if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {});
-            if (plan.command === "disableMetricsToken" && !failed) metrics = { enabled: false, revealedToken: "" };
+            if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {}, true);
+            if (plan.command === "disableMetricsToken" && !failed) metrics = normalizeMetrics(data || {});
             if (plan.command === "verifyBackup") {
                 if (!failed && backupBindingMatches(plan.binding)) {
                     backup.review = normalizeBackupReview(data || {});

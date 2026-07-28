@@ -330,10 +330,44 @@ test("account and metrics administration excludes secrets and clears token revea
         preservedSessions: 1,
         currentSessionPreserved: true
     });
-    store.dispatch({ type: "metricsSnapshotReceived", data: { enabled: false } });
+    store.dispatch({ type: "metricsSnapshotReceived", data: {
+        enabled: true,
+        lifecycle_state: "stale",
+        created_at: "2026-05-01T12:00:00Z",
+        rotated_at: "2026-05-15T12:00:00Z",
+        last_used_at: "2026-05-16T12:00:00Z",
+        last_used_origin_masked: "203.0.113.x",
+        stale_after_days: 30,
+        token: "snapshot-token-must-not-be-revealed",
+        bearer: "snapshot-bearer-must-not-be-stored",
+        last_used_origin: "203.0.113.44"
+    } });
+    assert.deepEqual(store.getView().metrics, {
+        enabled: true,
+        lifecycleState: "stale",
+        createdAt: "2026-05-01T12:00:00Z",
+        rotatedAt: "2026-05-15T12:00:00Z",
+        lastUsedAt: "2026-05-16T12:00:00Z",
+        lastUsedOriginMasked: "203.0.113.x",
+        neverUsed: false,
+        stale: true,
+        staleAfterDays: 30,
+        revealedToken: ""
+    });
+    assert.equal(JSON.stringify(store.getView()).includes("snapshot-token"), false);
+    assert.equal(JSON.stringify(store.getView()).includes("snapshot-bearer"), false);
+    assert.equal(JSON.stringify(store.getView()).includes("203.0.113.44"), false);
     const rotate = effect(store.dispatch({ type: "commandRequested", command: "rotateMetricsToken" }), "executeCommand");
-    store.dispatch({ type: "commandCompleted", plan: rotate.plan, data: { enabled: true, token: "one-time-token" } });
+    store.dispatch({ type: "commandCompleted", plan: rotate.plan, data: {
+        enabled: true,
+        lifecycle_state: "never_used",
+        created_at: "2026-05-01T12:00:00Z",
+        rotated_at: "2026-06-01T12:00:00Z",
+        token: "one-time-token"
+    } });
     assert.equal(store.getView().metrics.revealedToken, "one-time-token");
+    assert.equal(store.getView().metrics.lifecycleState, "never_used");
+    assert.equal(store.getView().metrics.lastUsedAt, "");
     assert.equal(store.planCommand("copyMetricsToken").enabled, true);
     store.dispatch({ type: "metricsTokenHidden" });
     assert.equal(store.getView().metrics.revealedToken, "");
@@ -584,7 +618,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
         "scheduled-policies": "2 saved policies",
         "scheduled-runs": "1 recent run",
         "backup": "Backup operations ready",
-        "metrics": "Token enabled"
+        "metrics": "Token usage unknown"
     });
 
     const refresh = effect(store.dispatch({ type: "snapshotRequested", stream: "timezone" }), "fetchSnapshot");

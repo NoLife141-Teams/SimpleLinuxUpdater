@@ -166,6 +166,8 @@ Metrics:
   - `POST /api/metrics/token` (generate/rotate and return token once)
   - `DELETE /api/metrics/token` (disable metrics token)
 
+The token status distinguishes disabled, never-used, current, and stale credentials. A token becomes stale after 30 days without a successful `/metrics` request, but is never disabled automatically. Status responses expose only safe timestamps and a masked last-used origin; they never return the bearer token after its one-time create/rotate response.
+
 Observability KPIs are computed from `update.complete` audit events.
 
 ## Backup and restore

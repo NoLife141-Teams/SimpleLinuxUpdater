@@ -1130,12 +1130,13 @@ func handleMetricsTokenStatusWithService(c *gin.Context, credential MetricsAcces
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "metrics credential unavailable"})
 		return
 	}
-	status, err := credential.Status(c.Request.Context())
-	if err != nil || status == observabilitypkg.MetricsAccessUnavailable {
+	details, err := credential.Details(c.Request.Context())
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "metrics credential unavailable"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"enabled": status == observabilitypkg.MetricsAccessEnabled})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, details)
 }
 
 func handleMetricsTokenRotateWithService(c *gin.Context, credential MetricsAccessCredential) {
@@ -1150,7 +1151,23 @@ func handleMetricsTokenRotateWithService(c *gin.Context, credential MetricsAcces
 		return
 	}
 	audit(c, "metrics.token.rotate", "metrics_token", "metrics", "success", "Metrics API token rotated", nil)
-	c.JSON(http.StatusOK, gin.H{"enabled": true, "token": token})
+	details, detailsErr := credential.Details(c.Request.Context())
+	if detailsErr != nil {
+		details = observabilitypkg.MetricsAccessDetails{
+			Enabled:        true,
+			LifecycleState: observabilitypkg.MetricsAccessLifecycleNeverUsed,
+			NeverUsed:      true,
+			StaleAfterDays: int(observabilitypkg.DefaultMetricsCredentialStaleAfter / (24 * time.Hour)),
+		}
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, struct {
+		observabilitypkg.MetricsAccessDetails
+		Token string `json:"token"`
+	}{
+		MetricsAccessDetails: details,
+		Token:                token,
+	})
 }
 
 func handleMetricsTokenClearWithService(c *gin.Context, credential MetricsAccessCredential) {
@@ -1164,7 +1181,12 @@ func handleMetricsTokenClearWithService(c *gin.Context, credential MetricsAccess
 		return
 	}
 	audit(c, "metrics.token.clear", "metrics_token", "metrics", "success", "Metrics API token disabled", nil)
-	c.JSON(http.StatusOK, gin.H{"enabled": false, "message": "Metrics token disabled"})
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, observabilitypkg.MetricsAccessDetails{
+		Enabled:        false,
+		LifecycleState: observabilitypkg.MetricsAccessLifecycleDisabled,
+		StaleAfterDays: int(observabilitypkg.DefaultMetricsCredentialStaleAfter / (24 * time.Hour)),
+	})
 }
 
 func actorFromContext(c *gin.Context) string {

@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=webhook-delivery-diagnostics-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=metrics-credential-lifecycle-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -838,20 +838,48 @@
                 </div>
             </div>
             <div class="admin-section-content" id="admin-section-metrics-content" data-admin-section-content="metrics">
+            <div class="metrics-credential-overview">
+                <div class="metrics-credential-heading">
+                    <div>
+                        <div class="eyebrow">Credential lifecycle</div>
+                        <h3>Access status</h3>
+                    </div>
+                    <span class="status-pill" id="metrics-token-lifecycle-state" data-state="disabled">Disabled</span>
+                </div>
+                <div id="metrics-token-status" class="muted" role="status" aria-live="polite" aria-atomic="true">Open this section to load credential status.</div>
+                <dl class="metrics-credential-facts" id="metrics-token-lifecycle-facts">
+                    <div>
+                        <dt>Created</dt>
+                        <dd id="metrics-token-created">Unavailable</dd>
+                    </div>
+                    <div>
+                        <dt>Last rotated</dt>
+                        <dd id="metrics-token-rotated">Never</dd>
+                    </div>
+                    <div>
+                        <dt>Last used</dt>
+                        <dd id="metrics-token-last-used">Never</dd>
+                    </div>
+                    <div>
+                        <dt>Last origin</dt>
+                        <dd id="metrics-token-last-origin">Unavailable</dd>
+                    </div>
+                </dl>
+                <p class="muted metrics-stale-policy" id="metrics-token-stale-policy">A token is considered stale after 30 days without successful use. Stale tokens are never disabled automatically.</p>
+            </div>
             <div class="nav key-actions">
                 <button class="primary-action" type="button" id="metrics-token-generate">Generate Token</button>
             </div>
-            <div class="admin-danger-zone">
+            <div class="admin-danger-zone" id="metrics-token-danger-zone">
                 <div>
                     <h3>Token danger zone</h3>
-                    <p class="muted">Rotation invalidates the current credential; disabling removes Metrics API access.</p>
+                    <p class="muted">Rotation immediately invalidates the current credential and disabling immediately stops every scraper. Neither action can restore the previous token.</p>
                 </div>
                 <div class="policy-actions">
                     <button class="btn-danger" type="button" id="metrics-token-rotate" data-admin-danger-command="rotateMetricsToken">Rotate Token</button>
                     <button class="btn-danger" type="button" id="metrics-token-disable" data-admin-danger-command="disableMetricsToken">Disable Token</button>
                 </div>
             </div>
-            <div id="metrics-token-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
             <div id="metrics-token-once" class="secret-box">
                 <div class="muted">Copy this token now. It will not be shown again.</div>
                 <code id="metrics-token-value"></code>
@@ -934,7 +962,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=webhook-delivery-diagnostics-20260728a"></script>
-    <script src="/static/js/admin.js?v=webhook-delivery-diagnostics-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
+    <script src="/static/js/admin.js?v=metrics-credential-lifecycle-20260728a"></script>
 </body>
 </html>

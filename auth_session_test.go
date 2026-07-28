@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1117,6 +1118,12 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	if enabled, _ := statusPayload["enabled"].(bool); enabled {
 		t.Fatalf("metrics token status enabled = true before create, want false")
 	}
+	if state, _ := statusPayload["lifecycle_state"].(string); state != "disabled" {
+		t.Fatalf("metrics token lifecycle before create = %q, want disabled", state)
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("metrics token status cache control = %q, want no-store", rec.Header().Get("Cache-Control"))
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/metrics/token", nil)
@@ -1134,6 +1141,13 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	if strings.TrimSpace(firstToken) == "" {
 		t.Fatalf("metrics token create token empty")
 	}
+	createdAt, _ := createPayload["created_at"].(string)
+	if state, _ := createPayload["lifecycle_state"].(string); state != "never_used" || createdAt == "" {
+		t.Fatalf("metrics token create lifecycle = %+v, want never_used with created_at", createPayload)
+	}
+	if _, present := createPayload["last_used_origin"]; present {
+		t.Fatalf("metrics token create unexpectedly exposed unmasked origin field")
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -1141,6 +1155,37 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("metrics with first token status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/metrics/token", nil)
+	req.AddCookie(sessionCookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics token status after use = %d, want %d", rec.Code, http.StatusOK)
+	}
+	statusPayload = map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("metrics token status after use unmarshal error = %v", err)
+	}
+	if state, _ := statusPayload["lifecycle_state"].(string); state != "current" {
+		t.Fatalf("metrics token lifecycle after use = %q, want current", state)
+	}
+	if lastUsed, _ := statusPayload["last_used_at"].(string); lastUsed == "" {
+		t.Fatalf("metrics token last_used_at empty after successful use")
+	}
+	if origin, _ := statusPayload["last_used_origin_masked"].(string); origin != "192.0.2.x" {
+		t.Fatalf("metrics token masked origin = %q, want 192.0.2.x", origin)
+	}
+	if body := rec.Body.String(); strings.Contains(body, firstToken) || strings.Contains(body, "192.0.2.1") {
+		t.Fatalf("metrics token status exposed bearer or full client origin: %s", body)
+	}
+	var persistedLifecycle string
+	if err := getDB().QueryRow("SELECT value FROM settings WHERE key = ?", observabilitypkg.DefaultMetricsCredentialLifecycleSettingKey).Scan(&persistedLifecycle); err != nil {
+		t.Fatalf("load persisted metrics lifecycle: %v", err)
+	}
+	if strings.Contains(persistedLifecycle, firstToken) || strings.Contains(persistedLifecycle, "192.0.2.1") {
+		t.Fatalf("persisted lifecycle contains bearer or full client origin: %s", persistedLifecycle)
 	}
 
 	rec = httptest.NewRecorder()
@@ -1161,6 +1206,18 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	}
 	if secondToken == firstToken {
 		t.Fatalf("metrics token rotate returned same token")
+	}
+	if state, _ := createPayload["lifecycle_state"].(string); state != "never_used" {
+		t.Fatalf("metrics token rotate lifecycle = %q, want never_used", state)
+	}
+	if rotatedAt, _ := createPayload["rotated_at"].(string); rotatedAt == "" {
+		t.Fatalf("metrics token rotate rotated_at empty")
+	}
+	if gotCreated, _ := createPayload["created_at"].(string); gotCreated != createdAt {
+		t.Fatalf("metrics token rotate created_at = %q, want preserved %q", gotCreated, createdAt)
+	}
+	if lastUsed, _ := createPayload["last_used_at"].(string); lastUsed != "" {
+		t.Fatalf("metrics token rotate last_used_at = %q, want reset", lastUsed)
 	}
 
 	rec = httptest.NewRecorder()
@@ -1197,6 +1254,9 @@ func TestMetricsTokenAPIAndMetricsRouteLifecycle(t *testing.T) {
 	}
 	if body := rec.Body.String(); strings.Contains(body, firstToken) || strings.Contains(body, secondToken) {
 		t.Fatalf("audit payload unexpectedly contains metrics token")
+	}
+	if err := getDB().QueryRow("SELECT value FROM settings WHERE key = ?", observabilitypkg.DefaultMetricsCredentialLifecycleSettingKey).Scan(&persistedLifecycle); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("disabled credential lifecycle metadata error = %v, want sql.ErrNoRows", err)
 	}
 
 	rec = httptest.NewRecorder()

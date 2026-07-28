@@ -638,6 +638,15 @@ func TestAppScopedBackupRestoreInvalidatesMetricsAccessCredential(t *testing.T) 
 	if status, statusErr := deps.MetricsAccessCredential.Status(context.Background()); statusErr != nil || status != observabilitypkg.MetricsAccessEnabled {
 		t.Fatalf("credential status after restore = %q, %v; want restored enabled state", status, statusErr)
 	}
+	restoredDetails, detailsErr := deps.MetricsAccessCredential.Details(context.Background())
+	if detailsErr != nil {
+		t.Fatalf("credential details after restore: %v", detailsErr)
+	}
+	if restoredDetails.LifecycleState != observabilitypkg.MetricsAccessLifecycleNeverUsed ||
+		restoredDetails.CreatedAt == "" || restoredDetails.RotatedAt != "" ||
+		restoredDetails.LastUsedAt != "" || restoredDetails.LastUsedOriginMasked != "" {
+		t.Fatalf("credential lifecycle after restore = %+v, want archived never-used lifecycle", restoredDetails)
+	}
 	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); verifyErr != nil || result != observabilitypkg.MetricsAccessRejected {
 		t.Fatalf("stale credential after restore = %q, %v; want rejected", result, verifyErr)
 	}

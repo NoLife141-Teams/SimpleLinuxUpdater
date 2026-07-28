@@ -258,9 +258,22 @@ type ServiceDeps struct {
 }
 
 type MetricsCredentialStore interface {
-	Load(context.Context) (string, error)
-	Replace(context.Context, string) error
+	Load(context.Context) (MetricsCredentialRecord, error)
+	Replace(context.Context, MetricsCredentialRecord) error
+	UpdateLifecycle(context.Context, MetricsCredentialLifecycle) error
 	Delete(context.Context) error
+}
+
+type MetricsCredentialLifecycle struct {
+	CreatedAt            string `json:"created_at,omitempty"`
+	RotatedAt            string `json:"rotated_at,omitempty"`
+	LastUsedAt           string `json:"last_used_at,omitempty"`
+	LastUsedOriginMasked string `json:"last_used_origin_masked,omitempty"`
+}
+
+type MetricsCredentialRecord struct {
+	Hash      string
+	Lifecycle MetricsCredentialLifecycle
 }
 
 type MetricsAccessCredentialDeps struct {
@@ -269,4 +282,7 @@ type MetricsAccessCredentialDeps struct {
 	HashPassword           func(string) (string, error)
 	ComparePasswordAndHash func(string, string) (bool, error)
 	EntropyBytes           int
+	Now                    func() time.Time
+	StaleAfter             time.Duration
+	UsageWriteInterval     time.Duration
 }

@@ -1324,6 +1324,97 @@
     margin-top: 12px;
 }
 
+.metrics-credential-overview {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.metrics-credential-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.metrics-credential-heading h3 {
+    margin: 2px 0 0;
+}
+
+.metrics-credential-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+}
+
+.metrics-credential-facts > div {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.metrics-credential-facts dt {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.metrics-credential-facts dd {
+    margin: 5px 0 0;
+    overflow-wrap: anywhere;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.metrics-stale-policy {
+    margin: 0;
+}
+
+#metrics-token-lifecycle-state[data-state="current"] {
+    color: var(--success);
+    border-color: rgba(var(--success-rgb), 0.42);
+    background: rgba(var(--success-rgb), 0.08);
+}
+
+#metrics-token-lifecycle-state[data-state="never_used"] {
+    color: var(--warning);
+    border-color: rgba(var(--warning-rgb), 0.42);
+    background: rgba(var(--warning-rgb), 0.08);
+}
+
+#metrics-token-lifecycle-state[data-state="unknown"] {
+    color: var(--muted);
+    border-color: var(--border);
+    background: rgba(255, 255, 255, 0.035);
+}
+
+#metrics-token-lifecycle-state[data-state="stale"] {
+    color: var(--danger);
+    border-color: rgba(var(--danger-rgb), 0.42);
+    background: rgba(var(--danger-rgb), 0.08);
+}
+
+@media (max-width: 900px) {
+    .metrics-credential-facts {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .metrics-credential-facts {
+        grid-template-columns: 1fr;
+    }
+}
+
 #scheduled-policy-table {
     min-width: 980px;
 }

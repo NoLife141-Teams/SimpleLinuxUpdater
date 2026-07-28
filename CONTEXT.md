@@ -73,7 +73,7 @@ The lifecycle of an accepted outbound notification from event eligibility and ad
 _Avoid_: Notification goroutine, webhook helper, audit notification callback
 
 **Metrics Access Credential**:
-The optional app-wide credential that grants bearer access to operational metrics, including its enabled state, rotation, disablement, verification, and continuity across restored persistence.
+The optional app-wide credential that grants bearer access to operational metrics, including its enabled state, rotation, disablement, verification, safe usage-origin facts, never-used/current/stale lifecycle, and continuity across restored persistence.
 _Avoid_: Metrics token cache, metrics bearer hash, metrics API token helper
 
 **Runtime Status Projection**:

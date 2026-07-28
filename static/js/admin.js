@@ -16,6 +16,7 @@ const scheduledPolicyAdministration = Object.freeze({
 });
 let scheduledPolicyPreviewTimer = 0;
 let appTimezonePicker = null;
+let appTimezonePreviewTimer = 0;
 
 function adminPageView() {
     return adminPageInteraction.getView();
@@ -66,14 +67,36 @@ function browserSupportedTimezones() {
 }
 
 function ensureTimezoneSelectHasValue(value) {
-    const timezone = String(value || "").trim();
+    const rawTimezone = String(value || "").trim();
+    const timezone = rawTimezone === "Local" ? "" : rawTimezone;
     if (appTimezonePicker) appTimezonePicker.setValue(timezone);
+}
+
+function renderTimezoneSaveState() {
+    const view = adminPageView();
+    const button = document.getElementById("app-timezone-save");
+    if (!button) return;
+    const inFlight = view.commands.inFlight.includes("saveTimezone");
+    button.disabled = !view.timezone.dirty || inFlight;
+    button.title = view.timezone.dirty
+        ? "Save the selected app timezone."
+        : "Choose a different timezone to save.";
+}
+
+function renderCurrentAppTime(resolvedTimezone = "") {
+    const preview = document.getElementById("app-timezone-preview");
+    if (!preview || !window.AdminTimezonePicker?.formatCurrentTimePreview) return;
+    const acceptedTimezone = String(resolvedTimezone || preview.dataset.timezone || "").trim() || "UTC";
+    preview.dataset.timezone = acceptedTimezone;
+    preview.textContent = window.AdminTimezonePicker.formatCurrentTimePreview(acceptedTimezone);
 }
 
 function populateTimezonePicker() {
     const trigger = document.getElementById("app-timezone-input");
     if (!trigger || !window.AdminTimezonePicker) return;
-    const currentValue = trigger.value || adminPageView().timezone.draft || "";
+    const rawCurrentValue = trigger.value || adminPageView().timezone.draft || "";
+    const currentValue = rawCurrentValue === "Local" ? "" : rawCurrentValue;
+    const systemTimezone = adminPageView().timezone.resolved || "";
     const browserTimezone = (() => {
         try {
             return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
@@ -83,7 +106,6 @@ function populateTimezonePicker() {
     })();
     const combined = [
         "",
-        "Local",
         "UTC",
         ...browserSupportedTimezones(),
         ...ianaTimezoneOptions,
@@ -101,7 +123,7 @@ function populateTimezonePicker() {
         "Europe/London",
         "Europe/Paris"
     ].filter(Boolean);
-    const options = window.AdminTimezonePicker.buildOptions(combined, { suggested });
+    const options = window.AdminTimezonePicker.buildOptions(combined, { suggested, systemTimezone });
     appTimezonePicker = window.AdminTimezonePicker.createPicker({
         trigger,
         popover: document.getElementById("app-timezone-popover"),
@@ -116,6 +138,10 @@ function populateTimezonePicker() {
     if (note) {
         note.textContent = `Search ${options.length} choices by city, region, timezone name, or UTC offset. Fixed offsets do not follow daylight-saving changes.`;
     }
+    renderTimezoneSaveState();
+    if (!appTimezonePreviewTimer) {
+        appTimezonePreviewTimer = window.setInterval(() => renderCurrentAppTime(), 30_000);
+    }
 }
 
 function renderScheduledTimezone(payload) {
@@ -123,6 +149,8 @@ function renderScheduledTimezone(payload) {
         ? window.setAppTimezoneCache(payload)
         : { timezone: String(payload || "").trim() || scheduledPolicyView().timezone || "UTC" };
     const timezone = timezoneState.timezone || "UTC";
+    if (appTimezonePicker) appTimezonePicker.setSystemTimezone(timezoneState.resolved_timezone);
+    renderCurrentAppTime(timezoneState.resolved_timezone || timezone);
     scheduledPolicyAdministration.dispatch({ type: "timezoneReceived", timezone });
     const timezoneSelection = adminPageView().timezone.draft;
     const timezoneLabel = document.getElementById("scheduled-timezone");
@@ -134,6 +162,7 @@ function renderScheduledTimezone(payload) {
     if (timezoneInput && !timezonePickerRoot?.contains(document.activeElement)) {
         ensureTimezoneSelectHasValue(timezoneSelection);
     }
+    renderTimezoneSaveState();
     updatePolicySummary();
     renderScheduledPolicies();
     renderScheduledRuns(scheduledPolicyView().runs);
@@ -304,7 +333,7 @@ async function saveAppTimezoneSettings() {
         adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone });
         plan = beginAdminCommand("saveTimezone");
         if (!plan) return;
-        if (button) button.disabled = true;
+        renderTimezoneSaveState();
         const res = await fetch("/api/app-settings/timezone", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -331,8 +360,7 @@ async function saveAppTimezoneSettings() {
         finishAdminCommand(plan, null, err.message || "Failed to save app timezone.", true);
         setAppTimezoneFeedback("", err.message || "Failed to save app timezone.");
     } finally {
-        const button = document.getElementById("app-timezone-save");
-        if (button) button.disabled = false;
+        renderTimezoneSaveState();
     }
 }
 
@@ -1940,6 +1968,7 @@ document.getElementById("app-timezone-save").addEventListener("click", saveAppTi
 document.getElementById("app-timezone-input").addEventListener("input", (event) => {
     adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone: event.target.value });
     setAppTimezoneFeedback("", "");
+    renderTimezoneSaveState();
 });
 document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
 document.getElementById("notification-test").addEventListener("click", sendNotificationTest);

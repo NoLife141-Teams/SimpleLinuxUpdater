@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=vscode-dark-20260601b">
+    <link rel="stylesheet" href="/static/css/admin.css?v=timezone-controls-20260727a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -77,9 +77,10 @@
                             <div class="timezone-picker-empty" id="app-timezone-empty" hidden>No matching timezone.</div>
                         </div>
                     </div>
+                    <div class="timezone-current-preview" id="app-timezone-preview" role="status" aria-live="polite">Loading current app time...</div>
                     <div class="table-secondary" id="app-timezone-picker-note">Search by city, region, timezone name, or UTC offset.</div>
                     <div class="policy-actions app-time-actions">
-                        <button class="primary-action" type="button" id="app-timezone-save">Save Timezone</button>
+                        <button class="primary-action" type="button" id="app-timezone-save" disabled>Save Timezone</button>
                     </div>
                     <div id="app-timezone-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="app-timezone-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -525,9 +526,9 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
-    <script src="/static/js/admin-timezone-picker.js?v=searchable-timezone-picker-20260727a"></script>
+    <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=admin-page-interaction-20260710a"></script>
-    <script src="/static/js/admin.js?v=searchable-timezone-picker-20260727a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=timezone-controls-20260727a"></script>
+    <script src="/static/js/admin.js?v=timezone-controls-20260727a"></script>
 </body>
 </html>

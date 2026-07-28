@@ -3,12 +3,14 @@
 }
 
 .app-time-card {
+    position: relative;
+    z-index: 1;
     margin-bottom: 16px;
 }
 
 .app-time-grid {
     display: grid;
-    grid-template-columns: minmax(0, 0.8fr) minmax(320px, 1.2fr);
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 620px);
     align-items: start;
 }
 
@@ -228,6 +230,13 @@
 
 .timezone-picker-empty[hidden] {
     display: none;
+}
+
+.timezone-current-preview {
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
 }
 
 .policy-form {

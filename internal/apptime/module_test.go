@@ -42,6 +42,26 @@ func TestModuleInitializesAndConfiguresAcceptedInterpretation(t *testing.T) {
 	}
 }
 
+func TestModuleNormalizesLegacyLocalChoiceToSystemDefault(t *testing.T) {
+	store := NewMemoryStore("Local")
+	detector := DetectorFunc(func() (*time.Location, string, error) {
+		loc, err := time.LoadLocation("America/Toronto")
+		return loc, "America/Toronto", err
+	})
+	module := New(Deps{Store: store, Detector: detector})
+
+	if err := module.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	interpretation := module.Current()
+	if interpretation.Configured != ChoiceSystem || interpretation.EditableName != "" {
+		t.Fatalf("Current() = %+v, want system choice with empty editable name", interpretation)
+	}
+	if interpretation.ResolvedName != "America/Toronto" {
+		t.Fatalf("Current().ResolvedName = %q, want America/Toronto", interpretation.ResolvedName)
+	}
+}
+
 func TestInterpretationResolvesDSTGapAndOverlap(t *testing.T) {
 	loc, err := time.LoadLocation("America/Toronto")
 	if err != nil {

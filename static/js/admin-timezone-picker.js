@@ -5,7 +5,7 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminTimezonePickerFactory() {
     "use strict";
 
-    const automaticValues = new Set(["", "Local"]);
+    const automaticValues = new Set([""]);
     const fixedOffsetPattern = /^[+-]\d{2}:\d{2}$/;
 
     function normalizeSearch(value) {
@@ -61,24 +61,52 @@
         }
     }
 
+    function formatCurrentTimePreview(timezone, now = new Date()) {
+        const resolved = String(timezone || "").trim() || "UTC";
+        try {
+            const fixedMinutes = fixedOffsetPattern.test(resolved) ? fixedOffsetMinutes(resolved) : null;
+            const displayDate = fixedMinutes === null
+                ? now
+                : new Date(now.getTime() + (fixedMinutes * 60 * 1000));
+            const formatter = new Intl.DateTimeFormat("en-CA", {
+                timeZone: fixedMinutes === null ? resolved : "UTC",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                hourCycle: "h23",
+                ...(fixedMinutes === null ? { timeZoneName: "short" } : {}),
+            });
+            const parts = Object.fromEntries(
+                formatter.formatToParts(displayDate)
+                    .filter(part => part.type !== "literal")
+                    .map(part => [part.type, part.value]),
+            );
+            const zoneLabel = fixedMinutes === null ? (parts.timeZoneName || resolved) : formatOffsetMinutes(fixedMinutes);
+            return `Current app time: ${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${zoneLabel} \u00b7 ${resolved}`;
+        } catch (_) {
+            return `Current app time unavailable \u00b7 ${resolved}`;
+        }
+    }
+
     function optionFromValue(value, options = {}) {
-        const timezone = String(value || "").trim();
+        const rawTimezone = String(value || "").trim();
+        const timezone = rawTimezone === "Local" ? "" : rawTimezone;
         if (timezone === "") {
+            const systemTimezone = String(options.systemTimezone || "").trim();
+            const detected = systemTimezone && systemTimezone !== "Local"
+                ? optionFromValue(systemTimezone, { now: options.now, detected: true })
+                : null;
+            const detectedLabel = detected?.secondary || systemTimezone;
             return {
                 value: "",
                 primary: "System default timezone",
-                secondary: "Uses the server timezone configuration",
+                secondary: detectedLabel
+                    ? `Detected at startup: ${detectedLabel} \u00b7 Follows server setting after restart`
+                    : "Detecting the server timezone",
                 group: "Automatic",
-                search: "system default automatic server timezone"
-            };
-        }
-        if (timezone === "Local") {
-            return {
-                value: timezone,
-                primary: "Local system timezone",
-                secondary: "Follows the server local timezone",
-                group: "Automatic",
-                search: "local system automatic server timezone"
+                search: `system default automatic server timezone ${systemTimezone} ${detectedLabel}`
             };
         }
         if (fixedOffsetPattern.test(timezone)) {
@@ -99,7 +127,7 @@
         return {
             value: timezone,
             primary,
-            secondary: [offset, canonical].filter(Boolean).join(" \u00b7 "),
+            secondary: [options.detected ? "" : "Explicit timezone", offset, canonical].filter(Boolean).join(" \u00b7 "),
             group: options.suggested?.has(timezone) ? "Suggested" : "Timezones",
             search: `${primary} ${canonical} ${offset} ${timezone === "UTC" ? "gmt coordinated universal" : ""}`
         };
@@ -110,15 +138,14 @@
         const seen = new Set();
         return (Array.isArray(values) ? values : [])
             .map(value => String(value || "").trim())
+            .map(value => value === "Local" ? "" : value)
             .filter(value => !seen.has(value) && seen.add(value))
             .map(value => optionFromValue(value, { ...options, suggested }))
             .sort((a, b) => {
                 const groupOrder = { Automatic: 0, Suggested: 1, Timezones: 2, "Fixed UTC offsets": 3 };
                 const groupDifference = groupOrder[a.group] - groupOrder[b.group];
                 if (groupDifference !== 0) return groupDifference;
-                if (automaticValues.has(a.value) || automaticValues.has(b.value)) {
-                    return Number(a.value === "Local") - Number(b.value === "Local");
-                }
+                if (automaticValues.has(a.value) || automaticValues.has(b.value)) return 0;
                 if (a.group === "Fixed UTC offsets") {
                     return fixedOffsetMinutes(a.value) - fixedOffsetMinutes(b.value);
                 }
@@ -328,6 +355,12 @@
                 updateTrigger();
                 if (open) render(search.value);
             },
+            setSystemTimezone(systemTimezone) {
+                const index = options.findIndex(option => option.value === "");
+                if (index >= 0) options[index] = optionFromValue("", { systemTimezone });
+                updateTrigger();
+                if (open) render(search.value);
+            },
             open: () => setOpen(true),
             close: () => setOpen(false)
         });
@@ -338,6 +371,7 @@
         cityName,
         createPicker,
         filterOptions,
+        formatCurrentTimePreview,
         formatOffsetMinutes,
         normalizeSearch,
         optionFromValue,

@@ -5,18 +5,19 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory() {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "account", "metrics", "backup"];
+    const streamNames = ["timezone", "notifications", "account", "activity", "metrics", "backup"];
     const sectionDefinitions = [
         { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
         { id: "account-security", label: "Account Security" },
+        { id: "recent-activity", label: "Recent Activity" },
         { id: "scheduled-policies", label: "Policies" },
         { id: "scheduled-runs", label: "Scheduled Runs" },
         { id: "backup", label: "Backup" },
         { id: "metrics", label: "Metrics" }
     ];
     const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
-    const lazySectionIDs = new Set(["notifications", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
+    const lazySectionIDs = new Set(["notifications", "recent-activity", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
     const destructiveCommands = new Set([
         "clearSessions",
         "clearOtherSessions",
@@ -93,6 +94,25 @@
             invalidatedSessions: Math.max(0, Number(data.invalidated_sessions) || 0),
             preservedSessions: Math.max(0, Number(data.preserved_sessions) || 0),
             currentSessionPreserved: Boolean(data.current_session_preserved)
+        };
+    }
+
+    function normalizeActivity(data = {}) {
+        const items = (Array.isArray(data.items) ? data.items : []).map(item => {
+            const id = Number(item?.id);
+            return {
+                id: Number.isSafeInteger(id) && id > 0 ? id : 0,
+                createdAt: String(item?.created_at ?? item?.createdAt ?? "").trim(),
+                createdAtDisplay: String(item?.created_at_display ?? item?.createdAtDisplay ?? "").trim(),
+                actor: String(item?.actor || "unknown").trim() || "unknown",
+                action: String(item?.action || "").trim(),
+                status: String(item?.status || "").trim()
+            };
+        }).filter(item => item.id && item.action).slice(0, 8);
+        return {
+            items,
+            total: Math.max(items.length, Number(data.total) || 0),
+            limit: 8
         };
     }
 
@@ -196,6 +216,7 @@
             passwordPolicy: normalizePasswordPolicy(),
             passwordChangeOutcome: null
         };
+        let activity = normalizeActivity();
         let metrics = { enabled: false, revealedToken: "" };
         let backup = {
             blocked: false,
@@ -322,6 +343,9 @@
                 passwordChangeOutcome: account.passwordChangeOutcome
             };
         }
+        function applyActivity(data = {}) {
+            activity = normalizeActivity(data);
+        }
         function projectAccount() {
             const currentSession = account.sessions.find(item => item.current) || null;
             const otherSessions = account.sessions.filter(item => !item.current);
@@ -399,6 +423,7 @@
                 "app-time": streams.timezone,
                 notifications: streams.notifications,
                 "account-security": streams.account,
+                "recent-activity": streams.activity,
                 "scheduled-policies": aggregateScheduledStatus([
                     scheduledSnapshots.policies,
                     scheduledSnapshots.settings,
@@ -412,6 +437,7 @@
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
                 notifications: streams.notifications.accepted ? freshnessSummary(acceptedNotifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
                 "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
+                "recent-activity": streams.activity.accepted ? freshnessSummary(countSummary(activity.items.length, "recent event"), streams.activity.freshness === "stale") : "Recent activity unavailable",
                 "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
                 "scheduled-runs": Array.isArray(runItems) ? freshnessSummary(countSummary(runItems.length, "recent run"), Boolean(scheduledSnapshots.runs?.lastError)) : "Run history unavailable",
                 backup: streams.backup.accepted ? freshnessSummary(backupSummary(), streams.backup.freshness === "stale") : "Backup status unavailable",
@@ -580,6 +606,7 @@
                     feedback.timezone = { message: "", error: false };
                     return [effect("render", { area: "timezone" })];
                 case "accountSnapshotReceived": if (accept("account", event.requestID, event.receivedAt)) { applyAccount(event.data); return [effect("render", { area: "account" }), effect("render", { area: "workspace" })]; } return [];
+                case "activitySnapshotReceived": if (accept("activity", event.requestID, event.receivedAt)) { applyActivity(event.data); return [effect("render", { area: "activity" }), effect("render", { area: "workspace" })]; } return [];
                 case "sessionListExpandedChanged": account.otherSessionsExpanded = Boolean(event.expanded); return [effect("render", { area: "account" })];
                 case "passwordDraftChanged": {
                     const plan = planCommand("changePassword", event);
@@ -680,6 +707,7 @@
                 timezone: { ...timezone, dirty: timezoneDirty },
                 notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 account: projectAccount(),
+                activity,
                 metrics,
                 backup,
                 feedback,

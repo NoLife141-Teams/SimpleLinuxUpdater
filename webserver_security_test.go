@@ -1091,3 +1091,57 @@ func TestAuditEventsAPIFiltering(t *testing.T) {
 		t.Fatalf("invalid from status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
+
+func TestAuditEventsAPIAdminActivityCategory(t *testing.T) {
+	preserveDBState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "admin_activity_api.db"))
+	_ = getDB()
+
+	actions := []string{"server.delete", "auth.login", "notifications.test", "update_policy.create"}
+	for index, action := range actions {
+		if err := writeAuditEvent(AuditEvent{
+			CreatedAt:  time.Date(2026, 7, 28, 12, index, 0, 0, time.UTC).Format(time.RFC3339),
+			Actor:      "admin",
+			Action:     action,
+			TargetType: "system",
+			TargetName: "-",
+			Status:     "success",
+			Message:    action,
+			MetaJSON:   "{}",
+		}); err != nil {
+			t.Fatalf("seed writeAuditEvent(%q) error = %v", action, err)
+		}
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/audit-events", handleAuditEvents)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/audit-events?category=admin_activity&page=1&page_size=2", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Items    []AuditEvent `json:"items"`
+		PageSize int          `json:"page_size"`
+		Total    int          `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json unmarshal error = %v", err)
+	}
+	if payload.Total != 3 || payload.PageSize != 2 || len(payload.Items) != 2 {
+		t.Fatalf("unexpected category payload: %+v", payload)
+	}
+	if payload.Items[0].Action != "update_policy.create" || payload.Items[1].Action != "notifications.test" {
+		t.Fatalf("category ordering = %q, %q", payload.Items[0].Action, payload.Items[1].Action)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/audit-events?category=not-supported", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid category status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}

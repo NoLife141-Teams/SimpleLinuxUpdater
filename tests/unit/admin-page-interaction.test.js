@@ -429,6 +429,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
         "app-time",
         "notifications",
         "account-security",
+        "recent-activity",
         "scheduled-policies",
         "scheduled-runs",
         "backup",
@@ -440,6 +441,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
     store.dispatch({ type: "timezoneSnapshotReceived", data: { resolved_timezone: "America/Toronto" } });
     store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true } });
     store.dispatch({ type: "accountSnapshotReceived", data: { session_count: 5 } });
+    store.dispatch({ type: "activitySnapshotReceived", data: { items: [{ id: 9, action: "auth.login" }], total: 1 } });
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });
     store.dispatch({ type: "metricsSnapshotReceived", data: { enabled: true } });
 
@@ -448,6 +450,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
         "app-time": "America/Toronto",
         "notifications": "Webhook enabled",
         "account-security": "5 active sessions",
+        "recent-activity": "1 recent event",
         "scheduled-policies": "2 saved policies",
         "scheduled-runs": "1 recent run",
         "backup": "Backup operations ready",
@@ -460,6 +463,45 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
     const staleSummaries = Object.fromEntries(store.getView().workspace.sections.map(section => [section.id, section.summary]));
     assert.equal(staleSummaries["app-time"], "America/Toronto · Stale");
     assert.equal(staleSummaries["scheduled-policies"], "2 saved policies · Stale");
+});
+
+test("Recent Admin Activity is bounded, ordered, and excludes sensitive audit fields", () => {
+    const store = createStore();
+    const request = effect(store.dispatch({ type: "snapshotRequested", stream: "activity" }), "fetchSnapshot");
+    const items = Array.from({ length: 10 }, (_, index) => ({
+        id: 100 - index,
+        created_at: `2026-07-28T0${index}:00:00Z`,
+        created_at_display: `Application time ${index}`,
+        actor: index === 0 ? "admin" : "",
+        action: index === 1 ? "" : "auth.login",
+        status: index === 0 ? "success" : "failure",
+        message: "must not be projected",
+        meta_json: "{\"password\":\"secret\"}",
+        request_id: "sensitive-request",
+        client_ip: "203.0.113.44",
+        target_name: "sensitive-target"
+    }));
+
+    store.dispatch({
+        type: "activitySnapshotReceived",
+        requestID: request.requestID,
+        receivedAt: "2026-07-28T12:00:00Z",
+        data: { items, total: 10 }
+    });
+
+    const activity = store.getView().activity;
+    assert.deepEqual(activity.items.map(item => item.id), [100, 98, 97, 96, 95, 94, 93, 92]);
+    assert.equal(activity.limit, 8);
+    assert.equal(activity.total, 10);
+    assert.equal(activity.items[0].createdAtDisplay, "Application time 0");
+    assert.equal(activity.items[1].actor, "unknown");
+    const serialized = JSON.stringify(activity);
+    assert.doesNotMatch(serialized, /must not be projected|secret|sensitive-request|203\\.0\\.113\\.44|sensitive-target/);
+
+    const refresh = effect(store.dispatch({ type: "snapshotRequested", stream: "activity" }), "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "activity", requestID: refresh.requestID, error: "offline" });
+    assert.equal(store.getView().streams.activity.status, "stale");
+    assert.deepEqual(store.getView().activity.items.map(item => item.id), [100, 98, 97, 96, 95, 94, 93, 92]);
 });
 
 test("Admin workspace validates persisted disclosure and navigation intents", () => {

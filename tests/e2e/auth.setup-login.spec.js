@@ -516,6 +516,46 @@ test.describe.serial('setup and login flows', () => {
       if (route.request().method() === 'GET') state.metricsLoadCount = (state.metricsLoadCount || 0) + 1;
       return fulfillJson(route, { enabled: true, token: 'test-token' });
     });
+    await page.route('**/api/audit-events?*', route => {
+      state.adminActivityLoadCount = (state.adminActivityLoadCount || 0) + 1;
+      state.adminActivityURLs = [...(state.adminActivityURLs || []), route.request().url()];
+      if ((state.adminActivityFailuresRemaining || 0) > 0) {
+        state.adminActivityFailuresRemaining -= 1;
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'recent activity unavailable' }),
+        });
+      }
+      return fulfillJson(route, state.adminActivityResponse || {
+        items: [
+          {
+            id: 82,
+            created_at: '2026-05-17T12:05:00Z',
+            created_at_display: '2026-05-17 08:05 EDT · America/Toronto',
+            actor: 'admin',
+            action: 'auth.session.ip_reveal',
+            status: 'success',
+            message: 'DO-NOT-RENDER-MESSAGE',
+            meta_json: '{"password":"DO-NOT-RENDER-META"}',
+            request_id: 'DO-NOT-RENDER-REQUEST',
+            client_ip: '203.0.113.44',
+            target_name: 'DO-NOT-RENDER-TARGET',
+          },
+          {
+            id: 81,
+            created_at: '2026-05-17T12:00:00Z',
+            created_at_display: '2026-05-17 08:00 EDT · America/Toronto',
+            actor: 'scheduler',
+            action: 'update_policy.update',
+            status: 'failure',
+          },
+        ],
+        total: 2,
+        page: 1,
+        page_size: 8,
+      });
+    });
     await page.route('**/api/backup/status', route => {
       state.backupLoadCount = (state.backupLoadCount || 0) + 1;
       if ((state.backupFailuresRemaining || 0) > 0) {
@@ -1713,7 +1753,7 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/admin');
     const sectionLinks = page.locator('#admin-section-nav [data-admin-section-link]');
-    await expect(sectionLinks).toHaveCount(7);
+    await expect(sectionLinks).toHaveCount(8);
     await expect(sectionLinks.first()).toHaveAttribute('aria-current', 'location');
 
     await page.locator('#admin-section-account-security').scrollIntoViewIfNeeded();
@@ -1760,6 +1800,7 @@ test.describe.serial('setup and login flows', () => {
     await page.evaluate(() => {
       localStorage.setItem('simplelinuxupdater.admin.collapsed-sections.v1', JSON.stringify([
         'notifications',
+        'recent-activity',
         'scheduled-policies',
         'scheduled-runs',
         'backup',
@@ -1770,11 +1811,12 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin');
     await expect.poll(() => ({
       notifications: state.notificationLoadCount || 0,
+      activity: state.adminActivityLoadCount || 0,
       runs: state.scheduledRunsLoadCount || 0,
       calendar: state.calendarLoadCount || 0,
       backup: state.backupLoadCount || 0,
       metrics: state.metricsLoadCount || 0,
-    })).toEqual({ notifications: 0, runs: 0, calendar: 0, backup: 0, metrics: 0 });
+    })).toEqual({ notifications: 0, activity: 0, runs: 0, calendar: 0, backup: 0, metrics: 0 });
 
     await page.locator('[data-admin-section-toggle="backup"]').click();
     const backupLifecycle = page.locator('[data-admin-section-lifecycle="backup"]');
@@ -1799,6 +1841,50 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin#admin-section-scheduled-policies');
     await expect.poll(() => state.calendarLoadCount || 0).toBe(1);
     await expect(page.locator('[data-admin-section-lifecycle="scheduled-policies"]')).toHaveAttribute('data-status', 'current');
+  });
+
+  test('recent Admin activity loads on demand with safe ordered facts and retains stale results', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.evaluate(() => {
+      localStorage.setItem('simplelinuxupdater.admin.collapsed-sections.v1', JSON.stringify(['recent-activity']));
+    });
+
+    await page.goto('/admin');
+    await expect.poll(() => state.adminActivityLoadCount || 0).toBe(0);
+    await page.locator('[data-admin-section-link="recent-activity"]').click();
+    const lifecycle = page.locator('[data-admin-section-lifecycle="recent-activity"]');
+    const list = page.locator('#admin-activity-list');
+    await expect(lifecycle).toHaveAttribute('data-status', 'current');
+    await expect.poll(() => new URL(state.adminActivityURLs[0]).searchParams.get('category')).toBe('admin_activity');
+    expect(new URL(state.adminActivityURLs[0]).searchParams.get('page_size')).toBe('8');
+    await expect(list.locator('.admin-activity-item')).toHaveCount(2);
+    await expect(list.locator('.admin-activity-action')).toHaveText(['Session IP revealed', 'Policy updated']);
+    await expect(list).toContainText('2026-05-17 08:05 EDT · America/Toronto');
+    await expect(list).toContainText('Actor: admin');
+    await expect(list).toContainText('success');
+    await expect(list.locator('a').first()).toHaveAttribute('href', '/api/reports/audit/82');
+    await expect(page.locator('#admin-section-recent-activity a[href="/manage#audit-trail"]')).toBeVisible();
+    const pageText = await page.locator('#admin-section-recent-activity').innerText();
+    expect(pageText).not.toContain('DO-NOT-RENDER-MESSAGE');
+    expect(pageText).not.toContain('DO-NOT-RENDER-META');
+    expect(pageText).not.toContain('DO-NOT-RENDER-REQUEST');
+    expect(pageText).not.toContain('203.0.113.44');
+    expect(pageText).not.toContain('DO-NOT-RENDER-TARGET');
+
+    state.adminActivityFailuresRemaining = 1;
+    await page.evaluate(() => window.fetchRecentAdminActivity());
+    await expect(lifecycle).toHaveAttribute('data-status', 'stale');
+    await expect(page.locator('#admin-activity-message')).toContainText('Showing the last successful results');
+    await expect(list.locator('.admin-activity-item')).toHaveCount(2);
+    await lifecycle.locator('[data-admin-section-retry]').click();
+    await expect(lifecycle).toHaveAttribute('data-status', 'current');
+
+    state.adminActivityResponse = { items: [], total: 0, page: 1, page_size: 8 };
+    await page.reload();
+    await expect(page.locator('#admin-activity-message')).toHaveText('No recent administrative activity.');
+    await expect(page.locator('#admin-activity-list .admin-activity-item')).toHaveCount(0);
   });
 
   test('backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence', async ({ page }) => {

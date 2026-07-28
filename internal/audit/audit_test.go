@@ -200,6 +200,52 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 }
 
+func TestServiceListAdminActivityCategoryFiltersOrdersAndBoundsExistingAuditEvents(t *testing.T) {
+	db := newTestDB(t)
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
+	actions := []string{
+		"server.delete",
+		"auth.login",
+		"auth.session.ip_reveal",
+		"auth.password.change",
+		"app_settings.timezone",
+		"backup.restore",
+		"metrics.token.rotate",
+		"notifications.settings",
+		"update_policy.update",
+		"schedule.run.completed",
+	}
+	for index, action := range actions {
+		if err := svc.Write(Event{
+			CreatedAt:  time.Date(2026, 7, 28, 10, index, 0, 0, time.UTC).Format(time.RFC3339),
+			Actor:      "admin",
+			Action:     action,
+			TargetType: "system",
+			TargetName: "-",
+			Status:     "success",
+			Message:    action,
+			MetaJSON:   "{}",
+		}); err != nil {
+			t.Fatalf("Write(%q) error = %v", action, err)
+		}
+	}
+
+	result, err := svc.List(ListFilter{Category: ListCategoryAdminActivity, Page: 1, PageSize: 3})
+	if err != nil {
+		t.Fatalf("List(admin activity) error = %v", err)
+	}
+	if result.Total != 8 || len(result.Items) != 3 {
+		t.Fatalf("admin activity result = %+v, want 8 total and 3 bounded items", result)
+	}
+	got := []string{result.Items[0].Action, result.Items[1].Action, result.Items[2].Action}
+	want := []string{"update_policy.update", "notifications.settings", "metrics.token.rotate"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("ordered actions = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestServicePruneDeletesOldEventsAndRespectsGuard(t *testing.T) {
 	db := newTestDB(t)
 	pruneAllowed := false

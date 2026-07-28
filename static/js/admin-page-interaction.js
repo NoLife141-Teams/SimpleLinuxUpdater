@@ -16,6 +16,7 @@
         { id: "metrics", label: "Metrics" }
     ];
     const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
+    const lazySectionIDs = new Set(["notifications", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -29,7 +30,15 @@
     }
 
     function emptyStream() {
-        return { nextRequestID: 1, activeRequestID: null, freshness: "unavailable", error: "", accepted: false };
+        return {
+            nextRequestID: 1,
+            activeRequestID: null,
+            freshness: "unavailable",
+            status: "unavailable",
+            error: "",
+            accepted: false,
+            lastSuccessfulRefresh: ""
+        };
     }
 
     function normalizeTimezoneChoice(value) {
@@ -73,6 +82,7 @@
         let backup = { blocked: false, reason: "", status: null, selectedFile: null };
         let activeSection = sectionDefinitions[0].id;
         let collapsedSections = [];
+        const activatedSections = new Set();
         const feedback = Object.fromEntries(streamNames.map(name => [name, { message: "", error: false }]));
 
         function effect(type, details = {}) { return { type, ...details }; }
@@ -92,11 +102,12 @@
             const requestID = state.nextRequestID++;
             state.activeRequestID = requestID;
             state.freshness = "refreshing";
+            state.status = "loading";
             state.error = "";
             return [effect("fetchSnapshot", { stream, requestID })];
         }
 
-        function accept(stream, requestID) {
+        function accept(stream, requestID, receivedAt) {
             const state = streams[stream];
             if (!state) return false;
             if (state.activeRequestID !== null && state.activeRequestID !== requestID) return false;
@@ -104,7 +115,9 @@
             state.activeRequestID = null;
             state.accepted = true;
             state.freshness = "fresh";
+            state.status = "current";
             state.error = "";
+            state.lastSuccessfulRefresh = String(receivedAt || state.lastSuccessfulRefresh || "");
             return true;
         }
 
@@ -114,8 +127,9 @@
             state.activeRequestID = null;
             state.error = String(error || "Failed to refresh.");
             state.freshness = state.accepted ? "stale" : "unavailable";
+            state.status = state.accepted ? "stale" : "failed";
             feedback[stream] = { message: state.error, error: true };
-            return [effect("render", { area: stream })];
+            return [effect("render", { area: stream }), effect("render", { area: "workspace" })];
         }
 
         function applyTimezone(data, preserveDraft = false) {
@@ -187,10 +201,52 @@
         function freshnessSummary(summary, stale) {
             return stale ? `${summary} · Stale` : summary;
         }
+        function scheduledStreamStatus(state) {
+            if (!state) return { status: "unavailable", lastSuccessfulRefresh: "", error: "" };
+            if (state.status) {
+                return {
+                    status: state.status,
+                    lastSuccessfulRefresh: String(state.lastSuccessfulRefresh || ""),
+                    error: String(state.lastError || "")
+                };
+            }
+            if (state.inFlight !== null && state.inFlight !== undefined) return { status: "loading", lastSuccessfulRefresh: "", error: "" };
+            if (state.lastError) return { status: state.data ? "stale" : "failed", lastSuccessfulRefresh: "", error: String(state.lastError) };
+            if (state.data) return { status: "current", lastSuccessfulRefresh: "", error: "" };
+            return { status: "unavailable", lastSuccessfulRefresh: "", error: "" };
+        }
+        function aggregateScheduledStatus(states) {
+            const projected = states.map(scheduledStreamStatus);
+            const timestamps = projected.map(state => state.lastSuccessfulRefresh).filter(Boolean).sort();
+            const errorState = projected.find(state => state.error);
+            let status = "current";
+            if (projected.some(state => state.status === "loading")) status = "loading";
+            else if (projected.some(state => state.status === "stale")) status = "stale";
+            else if (projected.some(state => state.status === "failed")) status = "failed";
+            else if (projected.some(state => state.status === "unavailable")) status = "unavailable";
+            return {
+                status,
+                lastSuccessfulRefresh: timestamps.at(-1) || "",
+                error: errorState?.error || ""
+            };
+        }
         function workspaceView(scheduledView) {
             const scheduledSnapshots = scheduledView?.snapshots || {};
             const policyItems = scheduledSnapshots.policies?.data?.items;
             const runItems = scheduledSnapshots.runs?.data?.items;
+            const lifecycle = {
+                "app-time": streams.timezone,
+                notifications: streams.notifications,
+                "account-security": streams.account,
+                "scheduled-policies": aggregateScheduledStatus([
+                    scheduledSnapshots.policies,
+                    scheduledSnapshots.settings,
+                    scheduledSnapshots.calendar
+                ]),
+                "scheduled-runs": scheduledStreamStatus(scheduledSnapshots.runs),
+                backup: streams.backup,
+                metrics: streams.metrics
+            };
             const summaries = {
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
                 notifications: streams.notifications.accepted ? freshnessSummary(acceptedNotifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
@@ -206,9 +262,17 @@
                 sections: sectionDefinitions.map(section => ({
                     ...section,
                     summary: summaries[section.id],
-                    collapsed: collapsedSections.includes(section.id)
+                    collapsed: collapsedSections.includes(section.id),
+                    lifecycle: clone(lifecycle[section.id])
                 }))
             };
+        }
+
+        function activateSectionData(sectionID, reason = "first-activation") {
+            if (!lazySectionIDs.has(sectionID) || collapsedSections.includes(sectionID)) return [];
+            if (reason !== "retry" && activatedSections.has(sectionID)) return [];
+            activatedSections.add(sectionID);
+            return [effect("loadSectionData", { sectionID, reason })];
         }
 
         function planCommand(command, payload = {}) {
@@ -289,18 +353,18 @@
                 case "timezoneSnapshotReceived": {
                     const preserveDraft = streams.timezone.accepted
                         && normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured);
-                    if (accept("timezone", event.requestID)) {
+                    if (accept("timezone", event.requestID, event.receivedAt)) {
                         applyTimezone(event.data, preserveDraft);
-                        return [effect("render", { area: "timezone" }), effect("reconcileSchedule")];
+                        return [effect("render", { area: "timezone" }), effect("render", { area: "workspace" }), effect("reconcileSchedule")];
                     }
                     return [];
                 }
                 case "timezoneDraftChanged": timezone.draft = normalizeTimezoneChoice(event.timezone); feedback.timezone = { message: "", error: false }; return [effect("render", { area: "timezone" })];
                 case "notificationSnapshotReceived": {
                     const preserveDraft = streams.notifications.accepted && notificationsDirty();
-                    if (accept("notifications", event.requestID)) {
+                    if (accept("notifications", event.requestID, event.receivedAt)) {
                         applyNotifications(event.data, preserveDraft);
-                        return [effect("render", { area: "notifications" })];
+                        return [effect("render", { area: "notifications" }), effect("render", { area: "workspace" })];
                     }
                     return [];
                 }
@@ -318,15 +382,15 @@
                     timezone.draft = timezone.configured;
                     feedback.timezone = { message: "", error: false };
                     return [effect("render", { area: "timezone" })];
-                case "accountSnapshotReceived": if (accept("account", event.requestID)) { applyAccount(event.data); return [effect("render", { area: "account" })]; } return [];
+                case "accountSnapshotReceived": if (accept("account", event.requestID, event.receivedAt)) { applyAccount(event.data); return [effect("render", { area: "account" }), effect("render", { area: "workspace" })]; } return [];
                 case "sessionListExpandedChanged": account.otherSessionsExpanded = Boolean(event.expanded); return [effect("render", { area: "account" })];
                 case "passwordDraftChanged": {
                     const plan = planCommand("changePassword", event);
                     return [effect("passwordDraftPlanned", { valid: plan.enabled, reason: plan.reason || "" })];
                 }
-                case "metricsSnapshotReceived": if (accept("metrics", event.requestID)) { applyMetrics(event.data); return [effect("render", { area: "metrics" })]; } return [];
+                case "metricsSnapshotReceived": if (accept("metrics", event.requestID, event.receivedAt)) { applyMetrics(event.data); return [effect("render", { area: "metrics" }), effect("render", { area: "workspace" })]; } return [];
                 case "metricsTokenHidden": metrics.revealedToken = ""; return [effect("render", { area: "metrics" })];
-                case "backupSnapshotReceived": if (accept("backup", event.requestID)) { applyBackup(event.data); return [effect("render", { area: "backup" })]; } return [];
+                case "backupSnapshotReceived": if (accept("backup", event.requestID, event.receivedAt)) { applyBackup(event.data); return [effect("render", { area: "backup" }), effect("render", { area: "workspace" })]; } return [];
                 case "backupFileSelected": backup.selectedFile = event.file ? { name: String(event.file.name || ""), size: Number(event.file.size) || 0 } : null; return [effect("render", { area: "backup" })];
                 case "sectionPreferencesRestored":
                     collapsedSections = normalizeSectionIDs(event.collapsedSections);
@@ -339,25 +403,39 @@
                     return [
                         effect("render", { area: "workspace" }),
                         effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) }),
-                        effect("focusSection", { sectionID })
+                        effect("focusSection", { sectionID }),
+                        ...activateSectionData(sectionID)
                     ];
                 }
                 case "sectionCollapseToggled": {
                     const sectionID = String(event.sectionID || "").trim();
                     if (!sectionIDs.has(sectionID)) return [];
+                    const expanding = collapsedSections.includes(sectionID);
                     collapsedSections = collapsedSections.includes(sectionID)
                         ? collapsedSections.filter(value => value !== sectionID)
                         : [...collapsedSections, sectionID];
                     return [
                         effect("render", { area: "workspace" }),
-                        effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) })
+                        effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) }),
+                        ...(expanding ? activateSectionData(sectionID) : [])
                     ];
                 }
                 case "sectionActivated": {
                     const sectionID = String(event.sectionID || "").trim();
-                    if (!sectionIDs.has(sectionID) || sectionID === activeSection) return [];
-                    activeSection = sectionID;
-                    return [effect("render", { area: "workspace" })];
+                    if (!sectionIDs.has(sectionID) || collapsedSections.includes(sectionID)) return [];
+                    const effects = activateSectionData(sectionID);
+                    if (sectionID !== activeSection) {
+                        activeSection = sectionID;
+                        effects.unshift(effect("render", { area: "workspace" }));
+                    }
+                    return effects;
+                }
+                case "sectionRetryRequested": {
+                    const sectionID = String(event.sectionID || "").trim();
+                    if (!sectionIDs.has(sectionID)) return [];
+                    return lazySectionIDs.has(sectionID)
+                        ? activateSectionData(sectionID, "retry")
+                        : [effect("loadSectionData", { sectionID, reason: "retry" })];
                 }
                 case "commandRequested": {
                     const plan = planCommand(event.command, event.payload || event);

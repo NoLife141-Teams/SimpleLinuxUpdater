@@ -310,6 +310,73 @@ test("Admin workspace validates persisted disclosure and navigation intents", ()
     assert.equal(effect(effects, "focusSection"), undefined);
 });
 
+test("Admin section data activates once, retries explicitly, and skips collapsed visibility", () => {
+    const store = createStore();
+
+    let effects = store.dispatch({
+        type: "sectionPreferencesRestored",
+        collapsedSections: ["notifications"]
+    });
+    assert.equal(effect(effects, "loadSectionData"), undefined);
+
+    effects = store.dispatch({ type: "sectionActivated", sectionID: "notifications" });
+    assert.equal(effect(effects, "loadSectionData"), undefined);
+
+    effects = store.dispatch({ type: "sectionCollapseToggled", sectionID: "notifications" });
+    assert.equal(effect(effects, "loadSectionData").sectionID, "notifications");
+    assert.equal(effect(effects, "loadSectionData").reason, "first-activation");
+
+    effects = store.dispatch({ type: "sectionActivated", sectionID: "notifications" });
+    assert.equal(effect(effects, "loadSectionData"), undefined);
+
+    effects = store.dispatch({ type: "sectionRetryRequested", sectionID: "notifications" });
+    assert.equal(effect(effects, "loadSectionData").sectionID, "notifications");
+    assert.equal(effect(effects, "loadSectionData").reason, "retry");
+
+    effects = store.dispatch({ type: "sectionNavigationRequested", sectionID: "metrics" });
+    assert.equal(effect(effects, "loadSectionData").sectionID, "metrics");
+});
+
+test("Admin streams expose lifecycle timestamps, preserve stale data, and reject late snapshots", () => {
+    const store = createStore();
+    assert.deepEqual(
+        {
+            status: store.getView().streams.metrics.status,
+            lastSuccessfulRefresh: store.getView().streams.metrics.lastSuccessfulRefresh
+        },
+        { status: "unavailable", lastSuccessfulRefresh: "" }
+    );
+
+    const first = effect(store.dispatch({ type: "snapshotRequested", stream: "metrics" }), "fetchSnapshot");
+    assert.equal(store.getView().streams.metrics.status, "loading");
+    store.dispatch({
+        type: "metricsSnapshotReceived",
+        requestID: first.requestID,
+        receivedAt: "2026-07-28T03:30:00Z",
+        data: { enabled: true }
+    });
+    assert.equal(store.getView().streams.metrics.status, "current");
+    assert.equal(store.getView().streams.metrics.lastSuccessfulRefresh, "2026-07-28T03:30:00Z");
+
+    const second = effect(store.dispatch({ type: "snapshotRequested", stream: "metrics" }), "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "metrics", requestID: second.requestID, error: "offline" });
+    assert.equal(store.getView().streams.metrics.status, "stale");
+    assert.equal(store.getView().metrics.enabled, true);
+
+    store.dispatch({
+        type: "metricsSnapshotReceived",
+        requestID: first.requestID,
+        receivedAt: "2026-07-28T03:31:00Z",
+        data: { enabled: false }
+    });
+    assert.equal(store.getView().metrics.enabled, true);
+    assert.equal(store.getView().streams.metrics.lastSuccessfulRefresh, "2026-07-28T03:30:00Z");
+
+    const notifications = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "notifications", requestID: notifications.requestID, error: "offline" });
+    assert.equal(store.getView().streams.notifications.status, "failed");
+});
+
 test("Admin adapter does not own accepted interaction state globals", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/admin.js"), "utf8");
     assert.doesNotMatch(source, /let\s+appTimezoneSelection\s*=/);

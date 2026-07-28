@@ -28,18 +28,38 @@ function adminPageView() {
     return adminPageInteraction.getView();
 }
 
+function formatAdminRefreshTime(value) {
+    const timestamp = String(value || "").trim();
+    if (!timestamp) return "";
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+    }).format(parsed);
+}
+
 function renderAdminWorkspace() {
     const workspace = adminPageView().workspace;
     if (!workspace) return;
+    const lifecycleLabels = {
+        loading: "Loading",
+        current: "Current",
+        stale: "Stale",
+        failed: "Failed",
+        unavailable: "Unavailable"
+    };
     workspace.sections.forEach((section) => {
         const root = document.querySelector(`[data-admin-section="${section.id}"]`);
         const link = document.querySelector(`[data-admin-section-link="${section.id}"]`);
         const navSummary = document.querySelector(`[data-admin-section-nav-summary="${section.id}"]`);
         const summary = document.querySelector(`[data-admin-section-summary="${section.id}"]`);
+        const lifecycle = document.querySelector(`[data-admin-section-lifecycle="${section.id}"]`);
         const toggle = document.querySelector(`[data-admin-section-toggle="${section.id}"]`);
         const content = document.querySelector(`[data-admin-section-content="${section.id}"]`);
 
         root?.classList.toggle("is-collapsed", section.collapsed);
+        root?.setAttribute("aria-busy", String(section.lifecycle?.status === "loading"));
         if (link) {
             if (workspace.activeSection === section.id) link.setAttribute("aria-current", "location");
             else link.removeAttribute("aria-current");
@@ -48,6 +68,24 @@ function renderAdminWorkspace() {
         if (summary) {
             summary.textContent = section.summary;
             summary.hidden = !section.collapsed;
+        }
+        if (lifecycle) {
+            const status = section.lifecycle?.status || "unavailable";
+            const statusNode = lifecycle.querySelector("[data-admin-section-status]");
+            const refreshedNode = lifecycle.querySelector("[data-admin-section-refreshed]");
+            const retry = lifecycle.querySelector("[data-admin-section-retry]");
+            const refreshed = formatAdminRefreshTime(section.lifecycle?.lastSuccessfulRefresh);
+            lifecycle.dataset.status = status;
+            lifecycle.title = section.lifecycle?.error || "";
+            if (statusNode) statusNode.textContent = lifecycleLabels[status] || lifecycleLabels.unavailable;
+            if (refreshedNode) {
+                refreshedNode.textContent = refreshed ? `Updated ${refreshed}` : "";
+                refreshedNode.hidden = !refreshed;
+            }
+            if (retry) {
+                retry.hidden = !["stale", "failed"].includes(status);
+                retry.disabled = status === "loading";
+            }
         }
         if (toggle) {
             toggle.setAttribute("aria-expanded", String(!section.collapsed));
@@ -75,7 +113,35 @@ function runAdminWorkspaceEffects(effects) {
             section?.scrollIntoView({ behavior: "auto", block: "start" });
             heading?.focus({ preventScroll: true });
         }
+        if (effect.type === "loadSectionData") {
+            void loadAdminSectionData(effect.sectionID, effect.reason);
+        }
     });
+}
+
+async function loadAdminSectionData(sectionID, reason = "first-activation") {
+    try {
+        if (sectionID === "app-time") await fetchAppTimezoneSettings(true);
+        if (sectionID === "notifications") await fetchNotificationSettings();
+        if (sectionID === "account-security") await fetchAuthSessionStatus();
+        if (sectionID === "backup") await fetchBackupStatus();
+        if (sectionID === "metrics") await fetchMetricsTokenStatus();
+        if (sectionID === "scheduled-runs") {
+            const effects = scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "runs" });
+            renderAdminWorkspace();
+            await runScheduledEffects(effects);
+        }
+        if (sectionID === "scheduled-policies") {
+            const streams = reason === "retry" ? ["policies", "settings", "calendar"] : ["calendar"];
+            const effects = streams.flatMap(stream => scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream }));
+            renderAdminWorkspace();
+            await runScheduledEffects(effects);
+        }
+    } catch (error) {
+        console.error(`Failed to load Admin section "${sectionID}":`, error);
+    } finally {
+        renderAdminWorkspace();
+    }
 }
 
 function adminSectionIDFromHash() {
@@ -112,6 +178,14 @@ function initializeAdminWorkspace() {
             runAdminWorkspaceEffects(adminPageInteraction.dispatch({
                 type: "sectionCollapseToggled",
                 sectionID: toggle.dataset.adminSectionToggle
+            }));
+        });
+    });
+    document.querySelectorAll("[data-admin-section-retry]").forEach((retry) => {
+        retry.addEventListener("click", () => {
+            runAdminWorkspaceEffects(adminPageInteraction.dispatch({
+                type: "sectionRetryRequested",
+                sectionID: retry.dataset.adminSectionRetry
             }));
         });
     });
@@ -152,8 +226,9 @@ function finishAdminCommand(plan, data, message, failed = false) {
 }
 
 function beginAdminSnapshot(stream) {
-    return adminPageInteraction.dispatch({ type: "snapshotRequested", stream })
-        .find((item) => item.type === "fetchSnapshot")?.requestID || null;
+    const effects = adminPageInteraction.dispatch({ type: "snapshotRequested", stream });
+    renderAdminWorkspace();
+    return effects.find((item) => item.type === "fetchSnapshot")?.requestID || null;
 }
 
 function scheduledPolicyView() {
@@ -299,7 +374,7 @@ function renderScheduledTimezone(payload) {
 }
 
 function applyScheduledTimezone(payload, requestID = null) {
-    const effects = adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", requestID, data: payload });
+    const effects = adminPageInteraction.dispatch({ type: "timezoneSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data: payload });
     if (effects.length === 0) return false;
     renderScheduledTimezone(payload);
     return true;
@@ -399,7 +474,7 @@ function discardTimezoneDraft() {
 }
 
 function applyNotificationSettings(payload, requestID = null) {
-    const effects = adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", requestID, data: payload });
+    const effects = adminPageInteraction.dispatch({ type: "notificationSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data: payload });
     if (effects.length === 0) return false;
     renderNotificationSettings();
     return true;
@@ -724,7 +799,7 @@ async function fetchAuthSessionStatus() {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        adminPageInteraction.dispatch({ type: "accountSnapshotReceived", requestID, data });
+        adminPageInteraction.dispatch({ type: "accountSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
         renderAuthSessions();
     } catch (err) {
         console.error("Failed to fetch session status:", err);
@@ -897,7 +972,7 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        adminPageInteraction.dispatch({ type: "metricsSnapshotReceived", requestID, data });
+        adminPageInteraction.dispatch({ type: "metricsSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
         status.textContent = data.enabled ? "Metrics API token: enabled" : "Metrics API token: disabled";
         renderAdminWorkspace();
     } catch (err) {
@@ -1005,7 +1080,7 @@ async function fetchBackupStatus() {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, data });
+        adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
         const knownHostsState = data.known_hosts_exists ? "present" : "missing";
         status.textContent = `Backup paths: DB=${data.db_path || "-"}, config=${data.config_path || "-"}, known_hosts=${data.known_hosts_path || "-"} (${knownHostsState})`;
         renderAdminWorkspace();
@@ -2092,7 +2167,7 @@ async function fetchScheduledPolicies(request) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled policies."));
     }
     const data = await res.json().catch(() => ({}));
-    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "policies", requestId: request.requestId, data });
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "policies", requestId: request.requestId, receivedAt: new Date().toISOString(), data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
@@ -2110,7 +2185,7 @@ async function fetchScheduledSettings(request) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled update settings."));
     }
     const data = await res.json().catch(() => ({}));
-    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "settings", requestId: request.requestId, data });
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "settings", requestId: request.requestId, receivedAt: new Date().toISOString(), data });
     applyScheduledTimezone(data.timezone ? data : scheduledPolicyView().timezone || "UTC");
     setBlackoutEditorRows("global", data.global_blackouts || []);
     setBlackoutJsonStatus("global", "");
@@ -2126,7 +2201,7 @@ async function fetchScheduledRuns(request) {
         throw new Error(await parseErrorResponse(res, "Failed to load scheduled runs."));
     }
     const data = await res.json().catch(() => ({}));
-    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "runs", requestId: request.requestId, data });
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "runs", requestId: request.requestId, receivedAt: new Date().toISOString(), data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
@@ -2146,7 +2221,7 @@ async function fetchMaintenanceCalendar(request) {
         throw new Error(await parseErrorResponse(res, "Failed to load maintenance window calendar."));
     }
     const data = await res.json().catch(() => ({}));
-    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "calendar", requestId: request.requestId, data });
+    const followUp = scheduledPolicyAdministration.dispatch({ type: "snapshotReceived", stream: "calendar", requestId: request.requestId, receivedAt: new Date().toISOString(), data });
     if (data.timezone) {
         applyScheduledTimezone(data);
     }
@@ -2168,6 +2243,7 @@ async function reloadMaintenanceCalendar() {
 }
 
 async function runScheduledEffects(effects) {
+    let firstError = null;
     for (const effect of effects) {
         if (effect.type !== "fetchSnapshot") continue;
         try {
@@ -2178,18 +2254,18 @@ async function runScheduledEffects(effects) {
         } catch (err) {
             scheduledPolicyAdministration.dispatch({ type: "snapshotFailed", stream: effect.stream, requestId: effect.requestId, error: err.message || "Failed to refresh scheduled policy data." });
             renderAdminWorkspace();
-            throw err;
+            firstError = firstError || err;
         }
     }
+    if (firstError) throw firstError;
 }
 
 async function refreshScheduledUpdateViews() {
     try {
         await fetchAppTimezoneSettings(true);
-        await runScheduledEffects(["policies", "settings", "runs"].flatMap((stream) => (
+        await runScheduledEffects(["policies", "settings"].flatMap((stream) => (
             scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream })
         )));
-        await runScheduledEffects(scheduledPolicyAdministration.dispatch({ type: "snapshotRequested", stream: "calendar" }));
     } catch (err) {
         console.error("Failed to refresh scheduled update views:", err);
         setPolicyFeedback("", err.message || "Failed to load scheduled update views.");
@@ -2563,10 +2639,7 @@ bindPolicyFormInteractions();
 initializeAdminWorkspace();
 populateTimezonePicker();
 resetPolicyForm();
-fetchMetricsTokenStatus();
 fetchAuthSessionStatus();
-fetchBackupStatus();
-fetchNotificationSettings();
 refreshScheduledUpdateViews();
 updateFileLabel(document.getElementById("backup-restore-file"), "Choose backup file");
 renderNotificationDraftState();

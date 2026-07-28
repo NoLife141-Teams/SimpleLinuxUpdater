@@ -27,7 +27,7 @@ func TestSchemaCreatesAuthTablesAndIsIdempotent(t *testing.T) {
 	}
 	assertAuthColumnsExist(t, db, "auth_users", "id", "username", "password_hash", "created_at", "updated_at")
 	assertAuthColumnsExist(t, db, "sessions", "token", "data", "expiry")
-	assertAuthColumnsExist(t, db, "auth_session_metadata", "token", "created_at", "last_seen_at", "client_ip", "client_label")
+	assertAuthColumnsExist(t, db, "auth_session_metadata", "token", "created_at", "last_seen_at", "client_ip", "client_ip_encrypted", "client_label")
 	if !authIndexExists(t, db, "sessions_expiry_idx") {
 		t.Fatalf("sessions_expiry_idx was not created")
 	}

@@ -21,6 +21,7 @@ type authSessionAccount interface {
 	ClearSessions() (int64, error)
 	RevokeSession(id string) (bool, error)
 	ClearOtherSessions(currentToken string) (int64, error)
+	RevealSessionIP(id string) (string, bool, error)
 }
 
 type authPasswordAttemptPolicy interface {
@@ -239,6 +240,30 @@ type authClearOtherSessionsOutcome struct {
 	Kind            authClearOtherSessionsOutcomeKind
 	DeletedSessions int64
 	Err             error
+}
+
+type authRevealSessionIPOutcomeKind string
+
+const (
+	authRevealSessionIPSucceeded   authRevealSessionIPOutcomeKind = "succeeded"
+	authRevealSessionIPInvalid     authRevealSessionIPOutcomeKind = "invalid_credentials"
+	authRevealSessionIPRateLimited authRevealSessionIPOutcomeKind = "rate_limited"
+	authRevealSessionIPNotFound    authRevealSessionIPOutcomeKind = "not_found"
+	authRevealSessionIPFailed      authRevealSessionIPOutcomeKind = "failed"
+)
+
+type authRevealSessionIPCommand struct {
+	Actor           string
+	ClientIP        string
+	SessionID       string
+	CurrentPassword string
+	AttemptKey      string
+}
+
+type authRevealSessionIPOutcome struct {
+	Kind authRevealSessionIPOutcomeKind
+	IP   string
+	Err  error
 }
 
 func authSessionCommandDepsFromAppDeps(deps AppDeps) authSessionCommandDeps {
@@ -594,6 +619,45 @@ func (m *authSessionCommands) ClearOtherSessions(ctx context.Context, cmd authCl
 		Message: "Other sessions cleared", Meta: map[string]any{"deleted_sessions": deleted},
 	})
 	return authClearOtherSessionsOutcome{Kind: authClearOtherSessionsSucceeded, DeletedSessions: deleted}
+}
+
+func (m *authSessionCommands) RevealSessionIP(ctx context.Context, cmd authRevealSessionIPCommand) authRevealSessionIPOutcome {
+	deps := m.deps.withDefaults()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd.Actor = strings.TrimSpace(cmd.Actor)
+	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
+	cmd.SessionID = strings.TrimSpace(cmd.SessionID)
+	if deps.PasswordPolicy.Limited(cmd.AttemptKey) {
+		return authRevealSessionIPOutcome{Kind: authRevealSessionIPRateLimited}
+	}
+	accepted, err := deps.Account.Authenticate(cmd.Actor, cmd.CurrentPassword)
+	if err != nil {
+		return authRevealSessionIPOutcome{Kind: authRevealSessionIPFailed, Err: err}
+	}
+	if !accepted {
+		deps.PasswordPolicy.RecordFailure(cmd.AttemptKey)
+		m.recordAudit(authSessionCommandAuditRecord{
+			Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.session.ip_reveal",
+			TargetType: "auth_session", TargetName: cmd.SessionID, Status: "failure",
+			Message: "Session IP reveal rejected",
+		})
+		return authRevealSessionIPOutcome{Kind: authRevealSessionIPInvalid}
+	}
+	ip, found, err := deps.Account.RevealSessionIP(cmd.SessionID)
+	if err != nil {
+		return authRevealSessionIPOutcome{Kind: authRevealSessionIPFailed, Err: err}
+	}
+	if !found || strings.TrimSpace(ip) == "" {
+		return authRevealSessionIPOutcome{Kind: authRevealSessionIPNotFound}
+	}
+	m.recordAudit(authSessionCommandAuditRecord{
+		Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.session.ip_reveal",
+		TargetType: "auth_session", TargetName: cmd.SessionID, Status: "success",
+		Message: "Session IP revealed",
+	})
+	return authRevealSessionIPOutcome{Kind: authRevealSessionIPSucceeded, IP: ip}
 }
 
 func authPasswordChangeRateKey(clientIP, actor string) string {

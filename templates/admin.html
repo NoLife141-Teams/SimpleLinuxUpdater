@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=session-management-20260727a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=session-ip-reveal-20260727a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -143,7 +143,19 @@
                 <div class="admin-block">
                     <h3>Sessions</h3>
                     <p class="muted" id="auth-session-status">Session status loading...</p>
-                    <div class="session-list" id="auth-session-list" aria-live="polite"></div>
+                    <div id="auth-session-inventory" aria-live="polite">
+                        <div class="session-group" id="auth-current-session-group">
+                            <h4>Current session</h4>
+                            <div class="session-list" id="auth-current-session-list"></div>
+                        </div>
+                        <div class="session-group" id="auth-other-session-group">
+                            <div class="session-group-head">
+                                <h4 id="auth-other-session-title">Other sessions</h4>
+                                <button class="btn-ghost inline-btn" type="button" id="auth-sessions-show-all" hidden>Show all</button>
+                            </div>
+                            <div class="session-list session-list-compact" id="auth-other-session-list"></div>
+                        </div>
+                    </div>
                     <div class="policy-actions">
                         <button class="btn-ghost" type="button" id="auth-sessions-clear-others">Logout All Other Sessions</button>
                         <button class="btn-danger" type="button" id="auth-sessions-clear">Logout All Sessions</button>
@@ -525,12 +537,27 @@
         </div>
     </div>
 
+    <div class="modal-backdrop" id="session-ip-reveal-modal">
+        <form class="modal session-ip-reveal-modal" id="session-ip-reveal-form" role="dialog" aria-modal="true" aria-labelledby="session-ip-reveal-title">
+            <div class="eyebrow">Sensitive session detail</div>
+            <h2 id="session-ip-reveal-title">Reveal full IP address</h2>
+            <p class="muted">Confirm your current admin password. The full address will be visible for 30 seconds and the action will be audited.</p>
+            <label class="form-label" for="session-ip-reveal-password">Current password</label>
+            <input type="password" id="session-ip-reveal-password" autocomplete="current-password" required>
+            <div id="session-ip-reveal-error" class="form-feedback form-feedback-error" role="alert" aria-live="polite"></div>
+            <div class="modal-actions">
+                <button class="btn-ghost inline-btn" id="session-ip-reveal-cancel" type="button">Cancel</button>
+                <button class="primary-action inline-btn" id="session-ip-reveal-submit" type="submit">Reveal IP</button>
+            </div>
+        </form>
+    </div>
+
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=session-management-20260727a"></script>
-    <script src="/static/js/admin.js?v=session-management-20260727a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=session-ip-reveal-20260727a"></script>
+    <script src="/static/js/admin.js?v=session-ip-reveal-20260727a"></script>
 </body>
 </html>

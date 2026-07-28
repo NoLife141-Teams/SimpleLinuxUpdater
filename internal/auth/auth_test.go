@@ -129,8 +129,14 @@ func TestServiceSessionInventoryAndRevocation(t *testing.T) {
 	svc := NewService(ServiceOptions{
 		DB:  func() *sql.DB { return db },
 		Now: func() time.Time { return now },
+		Encrypt: func(value string) (string, error) {
+			return "encrypted:" + value, nil
+		},
+		Decrypt: func(value string) (string, error) {
+			return strings.TrimPrefix(value, "encrypted:"), nil
+		},
 	})
-	if err := svc.TouchSession("current-token", "192.168.4.x", "Chrome · Windows"); err != nil {
+	if err := svc.TouchSession("current-token", "192.168.4.55", "192.168.4.x", "Chrome · Windows"); err != nil {
 		t.Fatalf("TouchSession() error = %v", err)
 	}
 
@@ -150,6 +156,10 @@ func TestServiceSessionInventoryAndRevocation(t *testing.T) {
 	}
 	if current.ExpiresAt != "2026-08-27T21:00:00Z" {
 		t.Fatalf("current expiry = %q", current.ExpiresAt)
+	}
+	revealedIP, found, err := svc.RevealSessionIP(current.ID)
+	if err != nil || !found || revealedIP != "192.168.4.55" {
+		t.Fatalf("RevealSessionIP() = %q, %v, %v", revealedIP, found, err)
 	}
 	if sessions[1].Current || sessions[1].ID == "" || sessions[1].ID == current.ID {
 		t.Fatalf("other session = %+v", sessions[1])

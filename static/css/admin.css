@@ -30,6 +30,35 @@
     gap: 10px;
 }
 
+.session-group {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.session-group h4 {
+    margin: 0;
+}
+
+.session-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.session-list-compact {
+    max-height: 440px;
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-gutter: stable;
+}
+
+.session-list-compact.is-expanded {
+    max-height: none;
+    overflow: visible;
+}
+
 .session-item {
     display: grid;
     gap: 10px;
@@ -82,6 +111,16 @@
     justify-self: start;
     padding: 7px 10px;
     font-size: 12px;
+}
+
+.session-item-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.session-ip-reveal-modal {
+    width: min(460px, calc(100vw - 32px));
 }
 
 @media (max-width: 640px) {

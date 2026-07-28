@@ -52,7 +52,11 @@ type AuthCredentialsRequest = authpkg.CredentialsRequest
 type AuthPasswordChangeRequest = authpkg.PasswordChangeRequest
 
 func NewAuthService(db authpkg.DBProvider) *AuthService {
-	return authpkg.NewService(authpkg.ServiceOptions{DB: db})
+	return authpkg.NewService(authpkg.ServiceOptions{
+		DB:      db,
+		Encrypt: encryptSecret,
+		Decrypt: decryptSecret,
+	})
 }
 
 func defaultAuthService() *AuthService {
@@ -539,7 +543,7 @@ func authGateMiddleware() gin.HandlerFunc {
 		if username != "" {
 			c.Set("actor", username)
 			if token := currentSessionToken(c); token != "" {
-				if err := authServiceForContext(c).TouchSession(token, maskedSessionClientIP(c), sessionClientLabel(c.GetHeader("User-Agent"))); err != nil {
+				if err := authServiceForContext(c).TouchSession(token, rateLimitClientIP(c), maskedSessionClientIP(c), sessionClientLabel(c.GetHeader("User-Agent"))); err != nil {
 					log.Printf("authGateMiddleware: failed to update session activity: %v", err)
 				}
 			}
@@ -740,6 +744,39 @@ func handleAuthSessionRevoke(c *gin.Context) {
 	default:
 		log.Printf("handleAuthSessionRevoke: failed for session=%q kind=%s: %v", id, outcome.Kind, outcome.Err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke session"})
+	}
+}
+
+func handleAuthSessionIPReveal(c *gin.Context) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+	}
+	limitAuthRequestBody(c)
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.CurrentPassword) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "current_password is required"})
+		return
+	}
+	actor := sessionUsername(c)
+	outcome := authCommandsForContext(c).RevealSessionIP(c.Request.Context(), authRevealSessionIPCommand{
+		Actor:           actor,
+		ClientIP:        clientIPFromContext(c),
+		SessionID:       c.Param("id"),
+		CurrentPassword: req.CurrentPassword,
+		AttemptKey:      authPasswordChangeRateKey(rateLimitClientIP(c), actor) + ":session-ip-reveal",
+	})
+	setNoStoreHeaders(c)
+	switch outcome.Kind {
+	case authRevealSessionIPSucceeded:
+		c.JSON(http.StatusOK, gin.H{"ip": outcome.IP, "visible_for_seconds": 30})
+	case authRevealSessionIPInvalid:
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is invalid"})
+	case authRevealSessionIPRateLimited:
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many reveal attempts"})
+	case authRevealSessionIPNotFound:
+		c.JSON(http.StatusNotFound, gin.H{"error": "session IP is unavailable"})
+	default:
+		log.Printf("handleAuthSessionIPReveal: failed for actor=%q: %v", actor, outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reveal session IP"})
 	}
 }
 

@@ -57,7 +57,7 @@
         const inFlight = new Map();
         let timezone = { configured: "", resolved: "UTC", draft: "" };
         let notifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
-        let account = { sessionCount: 0, sessions: [] };
+        let account = { sessionCount: 0, sessions: [], otherSessionsExpanded: false };
         let metrics = { enabled: false, revealedToken: "" };
         let backup = { blocked: false, reason: "", status: null, selectedFile: null };
         const feedback = Object.fromEntries(streamNames.map(name => [name, { message: "", error: false }]));
@@ -122,7 +122,18 @@
             })).filter(item => item.id);
             account = {
                 sessionCount: Math.max(0, Number(data.count ?? data.session_count ?? sessions.length) || 0),
-                sessions
+                sessions,
+                otherSessionsExpanded: account.otherSessionsExpanded
+            };
+        }
+        function projectAccount() {
+            const currentSession = account.sessions.find(item => item.current) || null;
+            const otherSessions = account.sessions.filter(item => !item.current);
+            return {
+                ...account,
+                currentSession,
+                otherSessions,
+                hiddenOtherSessionCount: account.otherSessionsExpanded ? 0 : Math.max(0, otherSessions.length - 3)
             };
         }
         function applyMetrics(data = {}) {
@@ -205,6 +216,7 @@
                 case "notificationSnapshotReceived": if (accept("notifications", event.requestID)) { applyNotifications(event.data); return [effect("render", { area: "notifications" })]; } return [];
                 case "notificationDraftChanged": notifications = { ...notifications, ...(event.patch || {}) }; notifications.eventTypes = uniqueStrings(notifications.eventTypes); feedback.notifications = { message: "", error: false }; return [effect("render", { area: "notifications" })];
                 case "accountSnapshotReceived": if (accept("account", event.requestID)) { applyAccount(event.data); return [effect("render", { area: "account" })]; } return [];
+                case "sessionListExpandedChanged": account.otherSessionsExpanded = Boolean(event.expanded); return [effect("render", { area: "account" })];
                 case "passwordDraftChanged": {
                     const plan = planCommand("changePassword", event);
                     return [effect("passwordDraftPlanned", { valid: plan.enabled, reason: plan.reason || "" })];
@@ -231,7 +243,7 @@
             return clone({
                 timezone: { ...timezone, dirty: normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured) },
                 notifications,
-                account,
+                account: projectAccount(),
                 metrics,
                 backup,
                 feedback,

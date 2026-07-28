@@ -48,6 +48,42 @@ func TestValidatePassphrase(t *testing.T) {
 	}
 }
 
+func TestClearPersistedSessionsRemovesSessionMetadata(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (token TEXT PRIMARY KEY, data BLOB NOT NULL, expiry REAL NOT NULL);
+		CREATE TABLE auth_session_metadata (
+			token TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			client_ip TEXT NOT NULL,
+			client_ip_encrypted TEXT NOT NULL,
+			client_label TEXT NOT NULL
+		);
+		INSERT INTO sessions(token, data, expiry) VALUES('token', x'00', 1);
+		INSERT INTO auth_session_metadata VALUES('token', 'created', 'seen', '192.0.2.x', 'encrypted', 'Chrome');
+	`); err != nil {
+		t.Fatalf("seed session tables: %v", err)
+	}
+	service := NewService(ServiceDeps{DB: func() *sql.DB { return db }})
+	if err := service.ClearPersistedSessions(); err != nil {
+		t.Fatalf("ClearPersistedSessions() error = %v", err)
+	}
+	for _, table := range []string{"sessions", "auth_session_metadata"} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(1) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", table, count)
+		}
+	}
+}
+
 func TestCreateDBSnapshotSupportsApostropheInTempPath(t *testing.T) {
 	root := t.TempDir()
 	quotedTempRoot := filepath.Join(root, "tmp-with-'quote")

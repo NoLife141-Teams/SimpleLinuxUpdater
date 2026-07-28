@@ -1096,10 +1096,18 @@ func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, resto
 }
 
 func (s *Service) ClearPersistedSessions() error {
-	if _, err := s.deps.DB().Exec("DELETE FROM sessions"); err != nil {
+	tx, err := s.deps.DB().BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin session clear: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM sessions"); err != nil {
 		return fmt.Errorf("clear sessions: %w", err)
 	}
-	return nil
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata"); err != nil {
+		return fmt.Errorf("clear session metadata: %w", err)
+	}
+	return tx.Commit()
 }
 
 func ReadUploadedFile(file *multipart.FileHeader) ([]byte, error) {

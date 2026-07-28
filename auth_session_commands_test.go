@@ -28,6 +28,9 @@ type fakeAuthCommandAccount struct {
 	clearOthersErr    error
 	clearOthersToken  string
 	deletedOthers     int64
+	revealedIP        string
+	revealFound       bool
+	revealErr         error
 }
 
 func (f *fakeAuthCommandAccount) SetupRequired() (bool, error) {
@@ -69,6 +72,10 @@ func (f *fakeAuthCommandAccount) RevokeSession(id string) (bool, error) {
 func (f *fakeAuthCommandAccount) ClearOtherSessions(currentToken string) (int64, error) {
 	f.clearOthersToken = currentToken
 	return f.deletedOthers, f.clearOthersErr
+}
+
+func (f *fakeAuthCommandAccount) RevealSessionIP(string) (string, bool, error) {
+	return f.revealedIP, f.revealFound, f.revealErr
 }
 
 type fakeAuthCommandSession struct {

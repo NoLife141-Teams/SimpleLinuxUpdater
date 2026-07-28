@@ -119,6 +119,28 @@ test("session administration normalizes inventory and scopes destructive command
     assert.equal(store.planCommand("clearOtherSessions").enabled, true);
 });
 
+test("session administration pins current and progressively reveals other sessions", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "accountSnapshotReceived",
+        data: {
+            sessions: [
+                { id: "current", current: true },
+                { id: "other-1" },
+                { id: "other-2" },
+                { id: "other-3" },
+                { id: "other-4" }
+            ]
+        }
+    });
+    assert.equal(store.getView().account.currentSession.id, "current");
+    assert.deepEqual(store.getView().account.otherSessions.map(item => item.id), ["other-1", "other-2", "other-3", "other-4"]);
+    assert.equal(store.getView().account.hiddenOtherSessionCount, 1);
+    store.dispatch({ type: "sessionListExpandedChanged", expanded: true });
+    assert.equal(store.getView().account.otherSessionsExpanded, true);
+    assert.equal(store.getView().account.hiddenOtherSessionCount, 0);
+});
+
 test("backup administration owns eligibility but excludes passphrases and file contents", () => {
     const store = createStore();
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: true, reason: "Maintenance active" } });

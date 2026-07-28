@@ -94,6 +94,47 @@ test.describe.serial('setup and login flows', () => {
     });
   }
 
+  function backupRecoveryHealthFixture(state = 'healthy') {
+    const failed = state === 'failed';
+    const never = state === 'never';
+    const stale = state === 'stale';
+    const unavailable = state === 'unavailable';
+    return {
+      state,
+      message: {
+        healthy: 'Recent successful backup export and verification evidence is available.',
+        stale: 'Backup recovery evidence is older than the 168-hour threshold.',
+        never: 'No successful backup export and verification have both been recorded.',
+        failed: 'The latest backup export or verification did not produce accepted recovery evidence.',
+        unavailable: 'Backup recovery evidence is unavailable.',
+      }[state],
+      checked_at: '2026-07-28T05:00:00Z',
+      stale_after_hours: 168,
+      export: {
+        state: unavailable ? 'unavailable' : failed ? 'failed' : state,
+        last_attempt_at: never || unavailable ? '' : failed ? '2026-07-28T04:00:00Z' : '2026-07-27T05:00:00Z',
+        last_success_at: never || unavailable ? '' : '2026-07-27T05:00:00Z',
+        size_bytes: never || unavailable ? null : 4096,
+        message: failed ? 'Failed to build backup payload.' : never ? 'No backup export has been recorded.' : 'Backup exported.',
+      },
+      verification: {
+        state: unavailable ? 'unavailable' : never ? 'never' : 'healthy',
+        last_attempt_at: never || unavailable ? '' : '2026-07-27T17:00:00Z',
+        last_success_at: never || unavailable ? '' : '2026-07-27T17:00:00Z',
+        size_bytes: never || unavailable ? null : 4096,
+        message: never ? 'No backup verification has been recorded.' : 'Backup restore readiness reviewed.',
+      },
+      schedule: { scheduled: false, message: 'No backup is scheduled.' },
+      retention: {
+        evidence_days: 90,
+        archive_retained_by_app: false,
+        automatic_deletion: false,
+        evidence_description: 'Backup recovery evidence is retained in audit history for up to 90 days.',
+        archive_description: 'Exported archives are downloaded to operator-managed storage and are not retained or deleted by the app.',
+      },
+    };
+  }
+
   async function dismissTypedConfirm(page, trigger, wrongText = 'WRONG') {
     await trigger.click();
     await expect(page.locator('#typed-confirm-modal')).toBeVisible();
@@ -428,10 +469,11 @@ test.describe.serial('setup and login flows', () => {
         state.backupFailuresRemaining -= 1;
         return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'backup unavailable' }) });
       }
-      return fulfillJson(route, {
+      return fulfillJson(route, state.backupStatusResponse || {
         db_path: '/tmp/simplelinuxupdater.db',
         backup_supported: true,
         known_hosts_path: '/tmp/known_hosts',
+        recovery_health: backupRecoveryHealthFixture('healthy'),
       });
     });
     await page.route('**/api/backup/restore', async route => {
@@ -1704,6 +1746,60 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin#admin-section-scheduled-policies');
     await expect.poll(() => state.calendarLoadCount || 0).toBe(1);
     await expect(page.locator('[data-admin-section-lifecycle="scheduled-policies"]')).toHaveAttribute('data-status', 'current');
+  });
+
+  test('backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin#admin-section-backup');
+
+    const healthState = page.locator('#backup-recovery-health-state');
+    const healthPanel = page.locator('.backup-recovery-health');
+    const lifecycle = page.locator('[data-admin-section-lifecycle="backup"]');
+    await expect(healthState).toHaveText('Healthy');
+    await expect(healthPanel).toContainText('4.0 KB');
+    await expect(healthPanel).toContainText('No backup is scheduled.');
+    await expect(healthPanel).toContainText('up to 90 days');
+    await expect(healthPanel).toContainText('not retained or deleted by the app');
+
+    state.backupStatusResponse = {
+      db_path: '/tmp/simplelinuxupdater.db',
+      known_hosts_path: '/tmp/known_hosts',
+      recovery_health: backupRecoveryHealthFixture('stale'),
+    };
+    await page.reload();
+    await expect(healthState).toHaveText('Stale');
+    await expect(page.locator('#backup-recovery-health-message')).toContainText('older than the 168-hour threshold');
+
+    state.backupStatusResponse.recovery_health = backupRecoveryHealthFixture('never');
+    await page.reload();
+    await expect(healthState).toHaveText('Never recorded');
+    await expect(page.locator('#backup-recovery-export')).toHaveText('Never recorded');
+    await expect(page.locator('#backup-recovery-verification')).toHaveText('Never recorded');
+
+    state.backupStatusResponse.recovery_health = backupRecoveryHealthFixture('failed');
+    await page.reload();
+    await expect(healthState).toHaveText('Failed');
+    await expect(page.locator('#backup-recovery-export-detail')).toContainText('Latest attempt failed');
+    await expect(page.locator('#backup-recovery-export')).toContainText('4.0 KB');
+
+    state.backupStatusResponse.recovery_health = backupRecoveryHealthFixture('healthy');
+    await page.reload();
+    await expect(healthState).toHaveText('Healthy');
+    state.backupFailuresRemaining = 1;
+    await page.evaluate(() => window.fetchBackupStatus());
+    await expect(lifecycle).toHaveAttribute('data-status', 'stale');
+    await expect(healthState).toHaveText('Healthy');
+    await expect(lifecycle.locator('[data-admin-section-retry]')).toBeVisible();
+
+    state.backupFailuresRemaining = 1;
+    await page.reload();
+    await expect(lifecycle).toHaveAttribute('data-status', 'failed');
+    await expect(healthState).toHaveText('Unavailable');
+    await lifecycle.locator('[data-admin-section-retry]').click();
+    await expect(lifecycle).toHaveAttribute('data-status', 'current');
+    await expect(healthState).toHaveText('Healthy');
   });
 
   test('admin section drafts support save eligibility, discard, replacement confirmation, and safe navigation warnings', async ({ page }) => {

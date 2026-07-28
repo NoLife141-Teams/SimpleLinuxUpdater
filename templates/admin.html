@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=restore-readiness-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=recovery-health-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -613,6 +613,43 @@
                 </div>
             </div>
             <div class="admin-section-content" id="admin-section-backup-content" data-admin-section-content="backup">
+            <section class="backup-recovery-health" aria-labelledby="backup-recovery-health-title">
+                <div class="backup-recovery-health-head">
+                    <div>
+                        <div class="eyebrow">Recovery coverage</div>
+                        <h3 id="backup-recovery-health-title">Backup recovery health</h3>
+                        <p class="muted" id="backup-recovery-health-message">Recovery evidence is unavailable.</p>
+                    </div>
+                    <span class="pill pill-muted" id="backup-recovery-health-state">Unavailable</span>
+                </div>
+                <dl class="backup-recovery-health-facts">
+                    <div>
+                        <dt>Last successful export</dt>
+                        <dd id="backup-recovery-export">Unavailable</dd>
+                        <small id="backup-recovery-export-detail"></small>
+                    </div>
+                    <div>
+                        <dt>Last successful verification</dt>
+                        <dd id="backup-recovery-verification">Unavailable</dd>
+                        <small id="backup-recovery-verification-detail"></small>
+                    </div>
+                    <div>
+                        <dt>Next backup</dt>
+                        <dd id="backup-recovery-next">No backup is scheduled.</dd>
+                        <small>The app does not provide a backup scheduler.</small>
+                    </div>
+                    <div>
+                        <dt>Recency threshold</dt>
+                        <dd id="backup-recovery-threshold">7 days</dd>
+                        <small id="backup-recovery-checked">Evidence has not been checked.</small>
+                    </div>
+                </dl>
+                <div class="backup-recovery-retention">
+                    <strong>Retention</strong>
+                    <span id="backup-recovery-retention-evidence">Recovery evidence is unavailable.</span>
+                    <span id="backup-recovery-retention-archive">Exported archives are operator-managed.</span>
+                </div>
+            </section>
             <div class="backup-grid">
                 <div class="backup-block">
                     <h3>Export Backup</h3>
@@ -787,7 +824,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=restore-readiness-20260728a"></script>
-    <script src="/static/js/admin.js?v=restore-readiness-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=recovery-health-20260728a"></script>
+    <script src="/static/js/admin.js?v=recovery-health-20260728a"></script>
 </body>
 </html>

@@ -1165,6 +1165,75 @@ function formatBackupBytes(value) {
     return `${amount >= 10 ? amount.toFixed(0) : amount.toFixed(1)} ${unit}`;
 }
 
+function recoveryStateLabel(state) {
+    return {
+        healthy: "Healthy",
+        stale: "Stale",
+        never: "Never recorded",
+        failed: "Failed",
+        unavailable: "Unavailable"
+    }[state] || "Unavailable";
+}
+
+function renderRecoveryOperation(prefix, operation) {
+    const value = document.getElementById(`backup-recovery-${prefix}`);
+    const detail = document.getElementById(`backup-recovery-${prefix}-detail`);
+    if (!value || !detail) return;
+    if (!operation || !operation.lastSuccessAt) {
+        value.textContent = recoveryStateLabel(operation?.state || "unavailable");
+        detail.textContent = operation?.message || "Recovery evidence is unavailable.";
+        return;
+    }
+    const size = operation.sizeBytes === null ? "" : ` · ${formatBackupBytes(operation.sizeBytes)}`;
+    value.textContent = `${formatSessionTime(operation.lastSuccessAt)}${size}`;
+    if (operation.state === "failed" && operation.lastAttemptAt) {
+        detail.textContent = `Latest attempt failed ${formatSessionTime(operation.lastAttemptAt)}. ${operation.message || ""}`.trim();
+        return;
+    }
+    detail.textContent = operation.message || recoveryStateLabel(operation.state);
+}
+
+function renderBackupRecoveryHealth() {
+    const health = adminPageView().backup.recoveryHealth;
+    const state = health?.state || "unavailable";
+    const badge = document.getElementById("backup-recovery-health-state");
+    if (badge) {
+        badge.textContent = recoveryStateLabel(state);
+        const className = state === "healthy"
+            ? "pill-success"
+            : state === "stale"
+                ? "pill-warning"
+                : state === "failed"
+                    ? "pill-danger"
+                    : "pill-muted";
+        badge.className = `pill ${className}`;
+    }
+    const message = document.getElementById("backup-recovery-health-message");
+    if (message) message.textContent = health?.message || "Recovery evidence is unavailable.";
+    renderRecoveryOperation("export", health?.export);
+    renderRecoveryOperation("verification", health?.verification);
+
+    const next = document.getElementById("backup-recovery-next");
+    if (next) {
+        next.textContent = health?.schedule?.scheduled && health.schedule.nextBackupAt
+            ? formatSessionTime(health.schedule.nextBackupAt)
+            : health?.schedule?.message || "No backup is scheduled.";
+    }
+    const threshold = document.getElementById("backup-recovery-threshold");
+    if (threshold) {
+        const hours = Number(health?.staleAfterHours) || 0;
+        threshold.textContent = hours > 0 && hours % 24 === 0
+            ? `${hours / 24} day${hours / 24 === 1 ? "" : "s"} (${hours} hours)`
+            : hours > 0 ? `${hours} hours` : "Unavailable";
+    }
+    const checked = document.getElementById("backup-recovery-checked");
+    if (checked) checked.textContent = health?.checkedAt ? `Checked ${formatSessionTime(health.checkedAt)}.` : "Evidence has not been checked.";
+    const evidence = document.getElementById("backup-recovery-retention-evidence");
+    if (evidence) evidence.textContent = health?.retention?.evidenceDescription || "Recovery evidence is unavailable.";
+    const archive = document.getElementById("backup-recovery-retention-archive");
+    if (archive) archive.textContent = health?.retention?.archiveDescription || "Exported archives are operator-managed.";
+}
+
 function renderBackupIssueList(containerID, issues) {
     const container = document.getElementById(containerID);
     const list = container?.querySelector("ul");
@@ -1242,6 +1311,7 @@ async function fetchBackupStatus() {
         }
         const data = await res.json().catch(() => ({}));
         adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
+        renderBackupRecoveryHealth();
         const knownHostsState = data.known_hosts_exists ? "present" : "missing";
         status.textContent = `Backup paths: DB=${data.db_path || "-"}, config=${data.config_path || "-"}, known_hosts=${data.known_hosts_path || "-"} (${knownHostsState})`;
         renderAdminWorkspace();

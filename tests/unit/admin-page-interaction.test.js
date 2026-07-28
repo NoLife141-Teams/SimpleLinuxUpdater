@@ -250,6 +250,55 @@ test("backup administration owns eligibility but excludes passphrases and file c
     assert.match(store.getView().feedback.backup.message, /review expired/i);
 });
 
+test("backup recovery health normalizes lifecycle states and retains accepted evidence when refresh fails", () => {
+    const states = ["healthy", "stale", "never", "failed", "unavailable"];
+    for (const state of states) {
+        const store = createStore();
+        const requested = store.dispatch({ type: "snapshotRequested", stream: "backup" })[0];
+        store.dispatch({
+            type: "backupSnapshotReceived",
+            requestID: requested.requestID,
+            receivedAt: "2026-07-28T05:00:00Z",
+            data: {
+                recovery_health: {
+                    state,
+                    message: `Recovery is ${state}.`,
+                    checked_at: "2026-07-28T05:00:00Z",
+                    stale_after_hours: 168,
+                    export: {
+                        state,
+                        last_attempt_at: "2026-07-28T04:00:00Z",
+                        last_success_at: state === "never" ? "" : "2026-07-27T05:00:00Z",
+                        size_bytes: state === "never" ? null : 4096,
+                        message: "Export evidence."
+                    },
+                    verification: { state, message: "Verification evidence." },
+                    schedule: { scheduled: false, message: "No backup is scheduled." },
+                    retention: {
+                        evidence_days: 90,
+                        archive_retained_by_app: false,
+                        automatic_deletion: false,
+                        evidence_description: "Evidence retained for up to 90 days.",
+                        archive_description: "Archives are operator-managed."
+                    }
+                }
+            }
+        });
+        const accepted = store.getView().backup.recoveryHealth;
+        assert.equal(accepted.state, state);
+        assert.equal(accepted.staleAfterHours, 168);
+        assert.equal(accepted.schedule.scheduled, false);
+        assert.equal(accepted.retention.evidenceDays, 90);
+        assert.equal(accepted.retention.archiveRetainedByApp, false);
+        assert.equal(accepted.retention.automaticDeletion, false);
+
+        const refresh = store.dispatch({ type: "snapshotRequested", stream: "backup" })[0];
+        store.dispatch({ type: "snapshotFailed", stream: "backup", requestID: refresh.requestID, error: "Recovery evidence unavailable." });
+        assert.deepEqual(store.getView().backup.recoveryHealth, accepted);
+        assert.equal(store.getView().streams.backup.status, "stale");
+    }
+});
+
 test("incompatible backup reviews keep restore blocked while preserving safe review facts", () => {
     const store = createStore();
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });

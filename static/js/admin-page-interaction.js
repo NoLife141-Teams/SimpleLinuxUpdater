@@ -78,7 +78,51 @@
         return {
             blocked: Boolean(data.blocked),
             reason: String(data.reason || data.maintenance_reason || "").trim(),
-            status: clone(data)
+            status: clone(data),
+            recoveryHealth: normalizeRecoveryHealth(data.recovery_health)
+        };
+    }
+
+    function normalizeRecoveryOperation(data = {}) {
+        const state = normalizeRecoveryState(data.state);
+        const rawSize = data.size_bytes;
+        return {
+            state,
+            lastAttemptAt: String(data.last_attempt_at || "").trim(),
+            lastSuccessAt: String(data.last_success_at || "").trim(),
+            sizeBytes: rawSize === null || rawSize === undefined ? null : Math.max(0, Number(rawSize) || 0),
+            message: String(data.message || "").trim()
+        };
+    }
+
+    function normalizeRecoveryState(value) {
+        const state = String(value || "").trim().toLowerCase();
+        return ["healthy", "stale", "never", "failed", "unavailable"].includes(state) ? state : "unavailable";
+    }
+
+    function normalizeRecoveryHealth(data) {
+        if (!data || typeof data !== "object") return null;
+        const schedule = data.schedule && typeof data.schedule === "object" ? data.schedule : {};
+        const retention = data.retention && typeof data.retention === "object" ? data.retention : {};
+        return {
+            state: normalizeRecoveryState(data.state),
+            message: String(data.message || "").trim(),
+            checkedAt: String(data.checked_at || "").trim(),
+            staleAfterHours: Math.max(0, Number(data.stale_after_hours) || 0),
+            export: normalizeRecoveryOperation(data.export),
+            verification: normalizeRecoveryOperation(data.verification),
+            schedule: {
+                scheduled: Boolean(schedule.scheduled),
+                nextBackupAt: String(schedule.next_backup_at || "").trim(),
+                message: String(schedule.message || "").trim()
+            },
+            retention: {
+                evidenceDays: Math.max(0, Number(retention.evidence_days) || 0),
+                archiveRetainedByApp: Boolean(retention.archive_retained_by_app),
+                automaticDeletion: Boolean(retention.automatic_deletion),
+                evidenceDescription: String(retention.evidence_description || "").trim(),
+                archiveDescription: String(retention.archive_description || "").trim()
+            }
         };
     }
 
@@ -129,6 +173,7 @@
             blocked: false,
             reason: "",
             status: null,
+            recoveryHealth: null,
             selectedFile: null,
             credentialValid: false,
             credentialRevision: 0,
@@ -274,6 +319,19 @@
         function freshnessSummary(summary, stale) {
             return stale ? `${summary} · Stale` : summary;
         }
+        function backupSummary() {
+            if (backup.blocked) return backup.reason || "Backup operations blocked";
+            const state = backup.recoveryHealth?.state;
+            if (!state) return "Backup operations ready";
+            const labels = {
+                healthy: "Recovery healthy",
+                stale: "Recovery stale",
+                never: "Recovery never verified",
+                failed: "Recovery needs attention",
+                unavailable: "Recovery unavailable"
+            };
+            return labels[state] || "Backup operations ready";
+        }
         function scheduledStreamStatus(state) {
             if (!state) return { status: "unavailable", lastSuccessfulRefresh: "", error: "" };
             if (state.status) {
@@ -326,7 +384,7 @@
                 "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
                 "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
                 "scheduled-runs": Array.isArray(runItems) ? freshnessSummary(countSummary(runItems.length, "recent run"), Boolean(scheduledSnapshots.runs?.lastError)) : "Run history unavailable",
-                backup: streams.backup.accepted ? freshnessSummary(backup.blocked ? (backup.reason || "Backup operations blocked") : "Backup operations ready", streams.backup.freshness === "stale") : "Backup status unavailable",
+                backup: streams.backup.accepted ? freshnessSummary(backupSummary(), streams.backup.freshness === "stale") : "Backup status unavailable",
                 metrics: streams.metrics.accepted ? freshnessSummary(metrics.enabled ? "Token enabled" : "Token disabled", streams.metrics.freshness === "stale") : "Metrics token status unavailable"
             };
             return {

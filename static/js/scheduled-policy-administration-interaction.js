@@ -195,6 +195,9 @@
         let draft = defaultDraft();
         let policyBlackouts = [];
         let globalBlackouts = [];
+        let acceptedDraft = cloneValue(draft);
+        let acceptedPolicyBlackouts = [];
+        let acceptedGlobalBlackouts = [];
         let validation = {};
         let timezone = "UTC";
         let preview = { nextRequestId: 1, activeRequestId: 0, data: null, message: "", loading: false };
@@ -205,6 +208,37 @@
         let globalSettingsInFlight = false;
 
         function effect(type, payload) { return { type, ...payload }; }
+        function sameValue(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+        function editorDirty() {
+            return !sameValue(normalizeDraft(draft), normalizeDraft(acceptedDraft))
+                || !sameValue(policyBlackouts.map(normalizeBlackoutRow), acceptedPolicyBlackouts.map(normalizeBlackoutRow));
+        }
+        function globalSettingsState() {
+            let validation = { valid: true, message: "" };
+            try {
+                validateBlackoutRows(globalBlackouts, "Global no-run window");
+            } catch (error) {
+                validation = { valid: false, message: error.message };
+            }
+            return {
+                dirty: !sameValue(globalBlackouts.map(normalizeBlackoutRow), acceptedGlobalBlackouts.map(normalizeBlackoutRow)),
+                ...validation
+            };
+        }
+        function applyEditorReplacement(replacement = {}) {
+            if (replacement.type === "load") {
+                draft = normalizeDraft(replacement.policy);
+                policyBlackouts = (Array.isArray(replacement.policy?.policy_blackouts) ? replacement.policy.policy_blackouts : []).map(normalizeBlackoutRow);
+            } else {
+                draft = defaultDraft();
+                policyBlackouts = [];
+            }
+            acceptedDraft = cloneValue(draft);
+            acceptedPolicyBlackouts = cloneValue(policyBlackouts);
+            validation = {};
+            preview = { ...preview, data: null, message: "", loading: false };
+            return [effect("render", { area: "editor" })];
+        }
 
         function requestStream(stream, payload = {}) {
             const state = streams[stream];
@@ -267,6 +301,7 @@
         function commandPlan(command, policyIDInput) {
             if (command === "savePolicy") {
                 const result = validatePolicyDraft(draft, policyBlackouts);
+                if (!editorDirty()) return { enabled: false, reason: "Policy settings are unchanged." };
                 validation = cloneValue(result.errors || {});
                 if (!result.ok) return { enabled: false, reason: result.message };
                 const policyID = result.payload.id;
@@ -284,6 +319,7 @@
             }
             if (command === "saveGlobalSettings") {
                 if (globalSettingsInFlight) return { enabled: false, reason: "Global settings are already being saved." };
+                if (!globalSettingsState().dirty) return { enabled: false, reason: "Global no-run windows are unchanged." };
                 try {
                     return { enabled: true, command: "saveGlobalSettings", payload: { global_blackouts: validateBlackoutRows(globalBlackouts, "Global no-run window") } };
                 } catch (error) {
@@ -297,11 +333,26 @@
             const input = event && typeof event === "object" ? event : {};
             switch (input.type) {
                 case "editorReset":
-                    draft = defaultDraft(); policyBlackouts = []; validation = {}; preview = { ...preview, data: null, message: "", loading: false };
-                    return [effect("render", { area: "editor" })];
+                    return applyEditorReplacement({ type: "reset" });
                 case "editorLoaded":
-                    draft = normalizeDraft(input.policy); policyBlackouts = (Array.isArray(input.policy && input.policy.policy_blackouts) ? input.policy.policy_blackouts : []).map(normalizeBlackoutRow); validation = {};
+                    return applyEditorReplacement({ type: "load", policy: input.policy });
+                case "editorDiscardRequested":
+                    draft = cloneValue(acceptedDraft);
+                    policyBlackouts = cloneValue(acceptedPolicyBlackouts);
+                    validation = {};
+                    preview = { ...preview, data: null, message: "", loading: false };
                     return [effect("render", { area: "editor" })];
+                case "globalSettingsDiscardRequested":
+                    globalBlackouts = cloneValue(acceptedGlobalBlackouts);
+                    return [effect("render", { area: "settings" })];
+                case "editorReplacementRequested": {
+                    const replacement = cloneValue(input.replacement || { type: "reset" });
+                    return editorDirty()
+                        ? [effect("confirmEditorReplacement", { replacement })]
+                        : applyEditorReplacement(replacement);
+                }
+                case "editorReplacementConfirmed":
+                    return applyEditorReplacement(input.replacement || { type: "reset" });
                 case "editorChanged":
                     draft = normalizeDraft({ ...draft, ...(input.patch || {}) }); validation = {};
                     return [effect("render", { area: "editor" })];
@@ -309,8 +360,16 @@
                     draft = normalizeDraft({ ...draft, weekdays: draft.weekdays.includes(normalizeWeekdayToken(input.day)) ? draft.weekdays.filter(day => day !== normalizeWeekdayToken(input.day)) : [...draft.weekdays, normalizeWeekdayToken(input.day)] });
                     return [effect("render", { area: "editor" })];
                 case "blackoutRowsReceived":
-                    if (input.kind === "policy") policyBlackouts = (Array.isArray(input.rows) ? input.rows : []).map(normalizeBlackoutRow);
-                    if (input.kind === "global") globalBlackouts = (Array.isArray(input.rows) ? input.rows : []).map(normalizeBlackoutRow);
+                    if (input.kind === "policy") {
+                        policyBlackouts = (Array.isArray(input.rows) ? input.rows : []).map(normalizeBlackoutRow);
+                        acceptedPolicyBlackouts = cloneValue(policyBlackouts);
+                    }
+                    if (input.kind === "global") {
+                        const acceptedRows = (Array.isArray(input.rows) ? input.rows : []).map(normalizeBlackoutRow);
+                        const preserveDraft = globalSettingsState().dirty;
+                        acceptedGlobalBlackouts = cloneValue(acceptedRows);
+                        if (!preserveDraft) globalBlackouts = cloneValue(acceptedRows);
+                    }
                     return [effect("render", { area: input.kind === "policy" ? "editor" : "settings" })];
                 case "blackoutRowAdded": {
                     const rows = input.kind === "policy" ? policyBlackouts : globalBlackouts;
@@ -385,6 +444,11 @@
                     if (plan.command === "saveGlobalSettings") globalSettingsInFlight = false;
                     const error = input.type === "commandFailed";
                     const message = String(input.message || (error ? "Scheduled policy action failed." : "Scheduled policy action completed."));
+                    if (!error && ["createPolicy", "updatePolicy"].includes(plan.command)) {
+                        acceptedDraft = cloneValue(draft);
+                        acceptedPolicyBlackouts = cloneValue(policyBlackouts);
+                    }
+                    if (!error && plan.command === "saveGlobalSettings") acceptedGlobalBlackouts = cloneValue(globalBlackouts);
                     const effects = [effect("announce", { scope: plan.command || "policy", message, error })];
                     if (!error) effects.push(...["policies", "settings", "runs", "calendar"].flatMap(stream => requestStream(stream)));
                     return effects;
@@ -395,8 +459,20 @@
 
         function getView() {
             const policies = streams.policies.data && Array.isArray(streams.policies.data.items) ? streams.policies.data.items : [];
+            const policyValidation = validatePolicyDraft(draft, policyBlackouts);
             return cloneValue({
-                editor: { draft, policyBlackouts, globalBlackouts, validation, summary: summaryFor(draft, policyBlackouts, timezone), preview },
+                editor: {
+                    draft,
+                    policyBlackouts,
+                    globalBlackouts,
+                    validation,
+                    summary: summaryFor(draft, policyBlackouts, timezone),
+                    preview,
+                    dirty: editorDirty(),
+                    valid: policyValidation.ok,
+                    validationMessage: policyValidation.ok ? "" : policyValidation.message
+                },
+                globalSettings: globalSettingsState(),
                 timezone,
                 snapshots: streams,
                 policies,

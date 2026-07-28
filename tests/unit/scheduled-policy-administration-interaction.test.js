@@ -20,6 +20,58 @@ test("editor normalizes weekdays and projects a deterministic schedule summary",
     assert.match(view.editor.summary.body, /Every Mon, Wed at 02:00/);
 });
 
+test("policy and global-setting drafts expose normalized dirty, validation, discard, and save eligibility", () => {
+    const store = createStore();
+    assert.equal(store.getView().editor.dirty, false);
+    assert.equal(store.getView().editor.valid, false);
+    assert.equal(store.planCommand("savePolicy").enabled, false);
+
+    store.dispatch({ type: "editorChanged", patch: readyDraft() });
+    assert.equal(store.getView().editor.dirty, true);
+    assert.equal(store.getView().editor.valid, true);
+    assert.equal(store.planCommand("savePolicy").enabled, true);
+
+    store.dispatch({ type: "editorDiscardRequested" });
+    assert.equal(store.getView().editor.dirty, false);
+    assert.equal(store.getView().editor.draft.name, "");
+
+    store.dispatch({ type: "blackoutRowsReceived", kind: "global", rows: [
+        { weekdays: ["fri"], start_time: "03:00", end_time: "04:00" },
+    ] });
+    assert.equal(store.getView().globalSettings.dirty, false);
+    assert.equal(store.planCommand("saveGlobalSettings").enabled, false);
+
+    store.dispatch({ type: "blackoutRowChanged", kind: "global", index: 0, field: "end_time", value: "05:00" });
+    assert.equal(store.getView().globalSettings.dirty, true);
+    assert.equal(store.getView().globalSettings.valid, true);
+    assert.equal(store.planCommand("saveGlobalSettings").enabled, true);
+    store.dispatch({ type: "blackoutRowsReceived", kind: "global", rows: [
+        { weekdays: ["fri"], start_time: "03:00", end_time: "06:00" },
+    ] });
+    assert.equal(store.getView().editor.globalBlackouts[0].end_time, "05:00");
+    assert.equal(store.getView().globalSettings.dirty, true);
+    store.dispatch({ type: "globalSettingsDiscardRequested" });
+    assert.equal(store.getView().editor.globalBlackouts[0].end_time, "06:00");
+    assert.equal(store.getView().globalSettings.dirty, false);
+});
+
+test("policy context replacement requires confirmation only for meaningful changes", () => {
+    const store = createStore();
+    const policy = readyDraft({ id: "7", name: "Accepted policy" });
+    let effects = store.dispatch({ type: "editorReplacementRequested", replacement: { type: "load", policy } });
+    assert.equal(effects[0].type, "render");
+    assert.equal(store.getView().editor.draft.id, "7");
+
+    store.dispatch({ type: "editorChanged", patch: { name: "Unsaved name" } });
+    effects = store.dispatch({ type: "editorReplacementRequested", replacement: { type: "reset" } });
+    assert.equal(effects[0].type, "confirmEditorReplacement");
+    assert.equal(store.getView().editor.draft.name, "Unsaved name");
+
+    store.dispatch({ type: "editorReplacementConfirmed", replacement: effects[0].replacement });
+    assert.equal(store.getView().editor.draft.name, "");
+    assert.equal(store.getView().editor.dirty, false);
+});
+
 test("preview intent validates the draft and stale responses cannot overwrite the newest preview", () => {
     const store = createStore();
     store.dispatch({ type: "editorChanged", patch: readyDraft() });
@@ -80,6 +132,8 @@ test("command planning prevents competing policy and global-settings mutations",
     assert.equal(first.plan.command, "updatePolicy");
     assert.equal(duplicate[0].type, "commandRejected");
     store.dispatch({ type: "commandCompleted", plan: first.plan, message: "Policy updated." });
+    store.dispatch({ type: "blackoutRowAdded", kind: "global" });
+    store.dispatch({ type: "blackoutWeekdayToggled", kind: "global", index: 0, day: "sun" });
     const global = store.dispatch({ type: "commandRequested", command: "saveGlobalSettings" }).find(effect => effect.type === "executeCommand");
     assert.equal(store.dispatch({ type: "commandRequested", command: "saveGlobalSettings" })[0].type, "commandRejected");
     store.dispatch({ type: "commandFailed", plan: global.plan, message: "offline" });

@@ -66,7 +66,8 @@
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         const inFlight = new Map();
         let timezone = { configured: "", resolved: "UTC", draft: "" };
-        let notifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
+        let acceptedNotifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
+        let notificationDraft = clone(acceptedNotifications);
         let account = { sessionCount: 0, sessions: [], otherSessionsExpanded: false };
         let metrics = { enabled: false, revealedToken: "" };
         let backup = { blocked: false, reason: "", status: null, selectedFile: null };
@@ -117,11 +118,32 @@
             return [effect("render", { area: stream })];
         }
 
-        function applyTimezone(data) {
+        function applyTimezone(data, preserveDraft = false) {
             const normalized = normalizeTimezone(data);
-            timezone = { ...timezone, ...normalized, draft: normalized.configured };
+            timezone = { ...timezone, ...normalized, draft: preserveDraft ? timezone.draft : normalized.configured };
         }
-        function applyNotifications(data) { notifications = normalizeNotifications(data); }
+        function notificationComparable(value) {
+            return {
+                enabled: Boolean(value.enabled),
+                webhookURL: String(value.webhookURL || "").trim(),
+                eventTypes: uniqueStrings(value.eventTypes).sort()
+            };
+        }
+        function notificationsDirty() {
+            return JSON.stringify(notificationComparable(notificationDraft)) !== JSON.stringify(notificationComparable(acceptedNotifications));
+        }
+        function notificationValidation() {
+            const url = String(notificationDraft.webhookURL || "").trim();
+            const validURL = !notificationDraft.enabled || /^https?:\/\/\S+$/i.test(url);
+            return {
+                valid: validURL,
+                message: validURL ? "" : "An enabled webhook requires a valid HTTP or HTTPS URL."
+            };
+        }
+        function applyNotifications(data, preserveDraft = false) {
+            acceptedNotifications = normalizeNotifications(data);
+            if (!preserveDraft) notificationDraft = clone(acceptedNotifications);
+        }
         function applyAccount(data = {}) {
             const sessions = (Array.isArray(data.sessions) ? data.sessions : []).map(item => ({
                 id: String(item?.id || "").trim(),
@@ -171,7 +193,7 @@
             const runItems = scheduledSnapshots.runs?.data?.items;
             const summaries = {
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
-                notifications: streams.notifications.accepted ? freshnessSummary(notifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
+                notifications: streams.notifications.accepted ? freshnessSummary(acceptedNotifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
                 "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
                 "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
                 "scheduled-runs": Array.isArray(runItems) ? freshnessSummary(countSummary(runItems.length, "recent run"), Boolean(scheduledSnapshots.runs?.lastError)) : "Run history unavailable",
@@ -204,7 +226,9 @@
                     return { enabled: true, command, key, payload: { timezone: value } };
                 }
                 case "saveNotifications":
-                    return { enabled: true, command, key, payload: { enabled: notifications.enabled, webhook_url: notifications.webhookURL, event_types: clone(notifications.eventTypes) } };
+                    if (!notificationsDirty()) return { enabled: false, command, key, reason: "Notification settings are unchanged." };
+                    if (!notificationValidation().valid) return { enabled: false, command, key, reason: notificationValidation().message };
+                    return { enabled: true, command, key, payload: { enabled: notificationDraft.enabled, webhook_url: notificationDraft.webhookURL, event_types: clone(notificationDraft.eventTypes) } };
                 case "testNotification": return { enabled: true, command, key, payload: {} };
                 case "changePassword": {
                     if (!payload.hasCurrentPassword || !payload.hasNewPassword || !payload.passwordsMatch) return { enabled: false, command, key, reason: "Current password and matching new passwords are required." };
@@ -242,7 +266,10 @@
             feedback[scope] = { message: String(message || ""), error: Boolean(failed) };
             if (plan.command === "saveTimezone" && !failed) applyTimezone(data || plan.payload);
             if (plan.command === "saveNotifications" && !failed) applyNotifications(data || plan.payload);
-            if (plan.command === "testNotification" && data && data.last_delivery) notifications.lastDelivery = clone(data.last_delivery);
+            if (plan.command === "testNotification" && data && data.last_delivery) {
+                acceptedNotifications.lastDelivery = clone(data.last_delivery);
+                notificationDraft.lastDelivery = clone(data.last_delivery);
+            }
             if (plan.command === "changePassword" && !failed) account = { ...account };
             if (plan.command === "clearSessions" && !failed) applyAccount(data || {});
             if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {});
@@ -259,10 +286,38 @@
             switch (event.type) {
                 case "snapshotRequested": return request(event.stream);
                 case "snapshotFailed": return fail(event.stream, event.requestID, event.error);
-                case "timezoneSnapshotReceived": if (accept("timezone", event.requestID)) { applyTimezone(event.data); return [effect("render", { area: "timezone" }), effect("reconcileSchedule")]; } return [];
+                case "timezoneSnapshotReceived": {
+                    const preserveDraft = streams.timezone.accepted
+                        && normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured);
+                    if (accept("timezone", event.requestID)) {
+                        applyTimezone(event.data, preserveDraft);
+                        return [effect("render", { area: "timezone" }), effect("reconcileSchedule")];
+                    }
+                    return [];
+                }
                 case "timezoneDraftChanged": timezone.draft = normalizeTimezoneChoice(event.timezone); feedback.timezone = { message: "", error: false }; return [effect("render", { area: "timezone" })];
-                case "notificationSnapshotReceived": if (accept("notifications", event.requestID)) { applyNotifications(event.data); return [effect("render", { area: "notifications" })]; } return [];
-                case "notificationDraftChanged": notifications = { ...notifications, ...(event.patch || {}) }; notifications.eventTypes = uniqueStrings(notifications.eventTypes); feedback.notifications = { message: "", error: false }; return [effect("render", { area: "notifications" })];
+                case "notificationSnapshotReceived": {
+                    const preserveDraft = streams.notifications.accepted && notificationsDirty();
+                    if (accept("notifications", event.requestID)) {
+                        applyNotifications(event.data, preserveDraft);
+                        return [effect("render", { area: "notifications" })];
+                    }
+                    return [];
+                }
+                case "notificationDraftChanged":
+                    notificationDraft = { ...notificationDraft, ...(event.patch || {}) };
+                    notificationDraft.webhookURL = String(notificationDraft.webhookURL || "").trim();
+                    notificationDraft.eventTypes = uniqueStrings(notificationDraft.eventTypes);
+                    feedback.notifications = { message: "", error: false };
+                    return [effect("render", { area: "notifications" })];
+                case "notificationDiscardRequested":
+                    notificationDraft = clone(acceptedNotifications);
+                    feedback.notifications = { message: "", error: false };
+                    return [effect("render", { area: "notifications" })];
+                case "timezoneDiscardRequested":
+                    timezone.draft = timezone.configured;
+                    feedback.timezone = { message: "", error: false };
+                    return [effect("render", { area: "timezone" })];
                 case "accountSnapshotReceived": if (accept("account", event.requestID)) { applyAccount(event.data); return [effect("render", { area: "account" })]; } return [];
                 case "sessionListExpandedChanged": account.otherSessionsExpanded = Boolean(event.expanded); return [effect("render", { area: "account" })];
                 case "passwordDraftChanged": {
@@ -320,9 +375,15 @@
 
         function getView() {
             const scheduledView = scheduled && typeof scheduled.getView === "function" ? scheduled.getView() : null;
+            const timezoneDirty = normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured);
+            const notificationDirty = notificationsDirty();
+            const dirtySections = [];
+            if (timezoneDirty) dirtySections.push("app-time");
+            if (notificationDirty) dirtySections.push("notifications");
+            if (scheduledView?.editor?.dirty || scheduledView?.globalSettings?.dirty) dirtySections.push("scheduled-policies");
             return clone({
-                timezone: { ...timezone, dirty: normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured) },
-                notifications,
+                timezone: { ...timezone, dirty: timezoneDirty },
+                notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 account: projectAccount(),
                 metrics,
                 backup,
@@ -330,7 +391,9 @@
                 streams,
                 commands: { inFlight: Array.from(inFlight.keys()) },
                 scheduled: scheduledView,
-                workspace: workspaceView(scheduledView)
+                workspace: workspaceView(scheduledView),
+                dirtySections,
+                hasMeaningfulDirty: dirtySections.length > 0
             });
         }
 

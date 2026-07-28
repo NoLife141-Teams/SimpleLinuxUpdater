@@ -124,6 +124,58 @@
     display: none;
 }
 
+.draft-state {
+    color: var(--faint);
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.draft-state.is-dirty {
+    color: var(--warning);
+}
+
+.policy-editor-context {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.policy-draft-action-bar {
+    position: sticky;
+    top: 164px;
+    z-index: 18;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px;
+    border: 1px solid rgba(var(--accent-rgb), 0.45);
+    border-radius: var(--radius);
+    background: rgba(var(--panel-rgb), 0.97);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+}
+
+.policy-draft-action-bar[hidden] {
+    display: none;
+}
+
+.policy-draft-action-bar strong,
+.policy-draft-action-bar .muted {
+    display: block;
+}
+
+.policy-draft-action-bar .muted {
+    margin-top: 3px;
+    font-size: 12px;
+}
+
+.policy-unsaved-modal {
+    width: min(520px, calc(100vw - 32px));
+}
+
 .admin-workspace-section > [id$="-heading"]:focus,
 .admin-workspace-section h2:focus {
     border-radius: 4px;
@@ -827,6 +879,16 @@
     .admin-section-summary {
         max-width: min(62vw, 280px);
         text-align: left;
+    }
+
+    .policy-draft-action-bar {
+        top: 82px;
+        flex-wrap: wrap;
+    }
+
+    .policy-draft-action-bar > div,
+    .policy-draft-action-bar .policy-actions {
+        width: 100%;
     }
 }
 

@@ -174,6 +174,81 @@
     display: none;
 }
 
+.admin-activity-message {
+    padding: 10px 0;
+}
+
+.admin-activity-message[hidden] {
+    display: none;
+}
+
+.admin-activity-list {
+    border-top: 1px solid var(--border);
+}
+
+.admin-activity-item {
+    display: grid;
+    grid-template-columns: minmax(190px, 0.9fr) minmax(220px, 1.35fr) minmax(110px, 0.55fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-width: 0;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.admin-activity-primary,
+.admin-activity-context {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.admin-activity-action {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-activity-time,
+.admin-activity-actor {
+    overflow-wrap: anywhere;
+    color: var(--subtle);
+    font-size: 12px;
+}
+
+.admin-activity-outcome {
+    justify-self: start;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--subtle);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.admin-activity-outcome.is-success {
+    border-color: rgba(var(--success-rgb), 0.45);
+    color: var(--success);
+}
+
+.admin-activity-outcome.is-failure {
+    border-color: rgba(var(--danger-rgb), 0.45);
+    color: var(--danger);
+}
+
+.admin-activity-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-top: 14px;
+}
+
 .draft-state {
     color: var(--faint);
     font-size: 12px;
@@ -1397,6 +1472,31 @@
     .admin-section-summary {
         max-width: min(62vw, 280px);
         text-align: left;
+    }
+
+    .admin-activity-item {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px 14px;
+    }
+
+    .admin-activity-context {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+
+    .admin-activity-outcome {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .admin-activity-item > a {
+        grid-column: 1 / -1;
+        justify-self: start;
+    }
+
+    .admin-activity-footer {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
     .policy-draft-action-bar {

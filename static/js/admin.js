@@ -171,6 +171,7 @@ async function loadAdminSectionData(sectionID, reason = "first-activation") {
         if (sectionID === "app-time") await fetchAppTimezoneSettings(true);
         if (sectionID === "notifications") await fetchNotificationSettings();
         if (sectionID === "account-security") await fetchAuthSessionStatus();
+        if (sectionID === "recent-activity") await fetchRecentAdminActivity();
         if (sectionID === "backup") await fetchBackupStatus();
         if (sectionID === "metrics") await fetchMetricsTokenStatus();
         if (sectionID === "scheduled-runs") {
@@ -1099,6 +1100,99 @@ async function fetchAuthSessionStatus() {
         console.error("Failed to fetch session status:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status request failed." });
         status.textContent = "Session status request failed.";
+        renderAdminWorkspace();
+    }
+}
+
+const adminActivityLabels = Object.freeze({
+    "auth.login": "Admin sign-in",
+    "auth.session.ip_reveal": "Session IP revealed",
+    "auth.password.change": "Admin password changed",
+    "app_settings.timezone": "App timezone changed",
+    "backup.restore": "Backup restored",
+    "metrics.token.rotate": "Metrics token rotated",
+    "metrics.token.clear": "Metrics token disabled",
+    "notifications.settings": "Notification settings changed",
+    "notifications.test": "Notification test sent",
+    "update_policy.create": "Policy created",
+    "update_policy.update": "Policy updated",
+    "update_policy.delete": "Policy deleted",
+    "update_policy.override": "Policy override changed",
+    "update_policy.settings": "Policy settings changed"
+});
+
+function adminActivityLabel(action) {
+    const normalized = String(action || "").trim();
+    return adminActivityLabels[normalized] || normalized.split(".").map(part => (
+        part ? `${part.charAt(0).toUpperCase()}${part.slice(1).replaceAll("_", " ")}` : ""
+    )).join(" · ");
+}
+
+function renderRecentAdminActivity() {
+    const view = adminPageView();
+    const list = document.getElementById("admin-activity-list");
+    const message = document.getElementById("admin-activity-message");
+    if (!list || !message) return;
+    const items = view.activity?.items || [];
+    const stream = view.streams?.activity || {};
+    list.innerHTML = items.map(item => {
+        const outcome = String(item.status || "unknown").toLowerCase();
+        const outcomeClass = ["success", "succeeded", "completed"].includes(outcome)
+            ? "is-success"
+            : ["failure", "failed", "error"].includes(outcome) ? "is-failure" : "";
+        const displayTime = item.createdAtDisplay || item.createdAt || "Time unavailable";
+        return `<article class="admin-activity-item" role="listitem">
+            <div class="admin-activity-primary">
+                <span class="admin-activity-action">${escapeHtml(adminActivityLabel(item.action))}</span>
+                <time class="admin-activity-time" datetime="${escapeHtml(item.createdAt)}">${escapeHtml(displayTime)}</time>
+            </div>
+            <div class="admin-activity-context">
+                <span class="admin-activity-actor">Actor: ${escapeHtml(item.actor)}</span>
+                <span class="muted">Application Time</span>
+            </div>
+            <span class="admin-activity-outcome ${outcomeClass}">${escapeHtml(outcome || "unknown")}</span>
+            <a class="btn-ghost inline-btn" href="/api/reports/audit/${item.id}">View detail</a>
+        </article>`;
+    }).join("");
+
+    if (stream.status === "loading" && items.length === 0) {
+        message.textContent = "Loading recent activity...";
+        message.hidden = false;
+    } else if (stream.status === "failed") {
+        message.textContent = stream.error || "Recent activity is unavailable.";
+        message.hidden = false;
+    } else if (stream.status === "stale") {
+        message.textContent = `${stream.error || "Recent activity could not be refreshed."} Showing the last successful results.`;
+        message.hidden = false;
+    } else if (stream.accepted && items.length === 0) {
+        message.textContent = "No recent administrative activity.";
+        message.hidden = false;
+    } else {
+        message.textContent = "";
+        message.hidden = true;
+    }
+}
+
+async function fetchRecentAdminActivity() {
+    const requestID = beginAdminSnapshot("activity");
+    renderRecentAdminActivity();
+    try {
+        const res = await fetch("/api/audit-events?category=admin_activity&page=1&page_size=8", { cache: "no-store" });
+        if (!res.ok) {
+            const error = await parseErrorResponse(res, "Failed to load recent activity.");
+            adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "activity", requestID, error });
+            renderRecentAdminActivity();
+            renderAdminWorkspace();
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        adminPageInteraction.dispatch({ type: "activitySnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
+        renderRecentAdminActivity();
+        renderAdminWorkspace();
+    } catch (error) {
+        console.error("Failed to fetch recent Admin activity:", error);
+        adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "activity", requestID, error: "Failed to load recent activity." });
+        renderRecentAdminActivity();
         renderAdminWorkspace();
     }
 }

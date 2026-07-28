@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=password-session-invalidation-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=recent-admin-activity-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -31,6 +31,7 @@
                 <a href="#admin-section-app-time" data-admin-section-link="app-time"><span>App Time</span><small data-admin-section-nav-summary="app-time">Loading</small></a>
                 <a href="#admin-section-notifications" data-admin-section-link="notifications"><span>Notifications</span><small data-admin-section-nav-summary="notifications">Loading</small></a>
                 <a href="#admin-section-account-security" data-admin-section-link="account-security"><span>Account Security</span><small data-admin-section-nav-summary="account-security">Loading</small></a>
+                <a href="#admin-section-recent-activity" data-admin-section-link="recent-activity"><span>Recent Activity</span><small data-admin-section-nav-summary="recent-activity">Loading</small></a>
                 <a href="#admin-section-scheduled-policies" data-admin-section-link="scheduled-policies"><span>Policies</span><small data-admin-section-nav-summary="scheduled-policies">Loading</small></a>
                 <a href="#admin-section-scheduled-runs" data-admin-section-link="scheduled-runs"><span>Scheduled Runs</span><small data-admin-section-nav-summary="scheduled-runs">Loading</small></a>
                 <a href="#admin-section-backup" data-admin-section-link="backup"><span>Backup</span><small data-admin-section-nav-summary="backup">Loading</small></a>
@@ -251,6 +252,35 @@
                     </div>
                 </div>
             </div>
+            </div>
+        </section>
+
+        <section class="workspace fade-in section-spaced admin-workspace-section" id="admin-section-recent-activity" data-admin-section="recent-activity" aria-labelledby="admin-section-recent-activity-heading">
+            <div class="workspace-head">
+                <div>
+                    <div class="eyebrow">Audit orientation</div>
+                    <h2 id="admin-section-recent-activity-heading" tabindex="-1">Recent Admin Activity</h2>
+                    <p class="muted workspace-note">Review a compact, redacted timeline of security and administration events in Application Time.</p>
+                </div>
+                <div class="admin-section-controls">
+                    <span class="admin-section-summary" data-admin-section-summary="recent-activity" hidden>Recent activity unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="recent-activity" role="status">
+                        <span data-admin-section-status>Unavailable</span>
+                        <span data-admin-section-refreshed hidden></span>
+                        <button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="recent-activity" hidden>Retry</button>
+                    </span>
+                    <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="recent-activity" aria-expanded="true" aria-controls="admin-section-recent-activity-content">
+                        <span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span>
+                    </button>
+                </div>
+            </div>
+            <div class="admin-section-content" id="admin-section-recent-activity-content" data-admin-section-content="recent-activity">
+                <div class="admin-activity-message muted" id="admin-activity-message" role="status" aria-live="polite">Open this section to load recent activity.</div>
+                <div class="admin-activity-list" id="admin-activity-list" role="list" aria-label="Recent administrative events"></div>
+                <div class="admin-activity-footer">
+                    <span class="muted">Only safe event facts are shown here.</span>
+                    <a class="btn-ghost inline-btn" href="/manage#audit-trail">Open full audit</a>
+                </div>
             </div>
         </section>
 
@@ -849,7 +879,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=password-session-invalidation-20260728a"></script>
-    <script src="/static/js/admin.js?v=password-session-invalidation-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=recent-admin-activity-20260728a"></script>
+    <script src="/static/js/admin.js?v=recent-admin-activity-20260728a"></script>
 </body>
 </html>

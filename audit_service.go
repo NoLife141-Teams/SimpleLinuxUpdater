@@ -19,6 +19,8 @@ type AuditListFilter = auditpkg.ListFilter
 type AuditListResult = auditpkg.ListResult
 type AuditListError = auditpkg.ListError
 
+const AuditListCategoryAdminActivity = auditpkg.ListCategoryAdminActivity
+
 type auditDBProvider func() *sql.DB
 
 type auditNotifier func(string)

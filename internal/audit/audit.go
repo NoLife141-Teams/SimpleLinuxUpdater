@@ -45,12 +45,15 @@ type Event struct {
 type ListFilter struct {
 	Page       int
 	PageSize   int
+	Category   string
 	TargetName string
 	Action     string
 	Status     string
 	From       string
 	To         string
 }
+
+const ListCategoryAdminActivity = "admin_activity"
 
 type ListResult struct {
 	Items    []Event `json:"items"`
@@ -187,6 +190,22 @@ func (r *SQLiteRepository) PruneBefore(cutoff string) error {
 func auditWhereClause(filter ListFilter) (string, []any) {
 	var whereParts []string
 	var args []any
+	if filter.Category == ListCategoryAdminActivity {
+		whereParts = append(whereParts, `(action IN (?, ?, ?, ?, ?)
+			OR action GLOB ?
+			OR action GLOB ?
+			OR action GLOB ?)`)
+		args = append(args,
+			"auth.login",
+			"auth.session.ip_reveal",
+			"auth.password.change",
+			"app_settings.timezone",
+			"backup.restore",
+			"metrics.token.*",
+			"notifications.*",
+			"update_policy.*",
+		)
+	}
 	if filter.TargetName != "" {
 		whereParts = append(whereParts, "target_name = ?")
 		args = append(args, filter.TargetName)

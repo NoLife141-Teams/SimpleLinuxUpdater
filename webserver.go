@@ -794,8 +794,13 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	targetName := strings.TrimSpace(c.Query("target_name"))
 	action := strings.TrimSpace(c.Query("action"))
 	status := strings.TrimSpace(c.Query("status"))
+	category := strings.TrimSpace(c.Query("category"))
 	from := strings.TrimSpace(c.Query("from"))
 	to := strings.TrimSpace(c.Query("to"))
+	if category != "" && category != AuditListCategoryAdminActivity {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit category"})
+		return
+	}
 
 	if from != "" {
 		normalizedFrom, err := normalizeAuditFilterTimestamp(from)
@@ -817,6 +822,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	result, err := service.List(AuditListFilter{
 		Page:       page,
 		PageSize:   pageSize,
+		Category:   category,
 		TargetName: targetName,
 		Action:     action,
 		Status:     status,

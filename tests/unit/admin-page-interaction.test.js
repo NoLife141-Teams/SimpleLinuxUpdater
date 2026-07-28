@@ -49,6 +49,25 @@ test("timezone save is deduplicated and requests schedule reconciliation", () =>
     assert.equal(store.getView().feedback.timezone.message, "App timezone saved.");
 });
 
+test("timezone save is enabled only when the accepted choice changes", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "timezoneSnapshotReceived",
+        data: { editable_timezone: "America/Toronto", resolved_timezone: "America/Toronto" },
+    });
+
+    assert.equal(store.getView().timezone.dirty, false);
+    assert.equal(store.planCommand("saveTimezone").enabled, false);
+
+    store.dispatch({ type: "timezoneDraftChanged", timezone: "Europe/Paris" });
+    assert.equal(store.getView().timezone.dirty, true);
+    assert.equal(store.planCommand("saveTimezone").enabled, true);
+
+    store.dispatch({ type: "timezoneDraftChanged", timezone: "America/Toronto" });
+    assert.equal(store.getView().timezone.dirty, false);
+    assert.equal(store.planCommand("saveTimezone").enabled, false);
+});
+
 test("notification administration owns settings, delivery, and command lifecycle", () => {
     const store = createStore();
     store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_url: " https://hooks.example.test/x ", event_types: ["update.complete", "update.complete"], last_delivery: { success: true, delivered_at: "2026-07-10T12:00:00Z" } } });

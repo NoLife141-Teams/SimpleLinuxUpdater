@@ -126,9 +126,6 @@ func (m *Module) resolve(raw string) (Interpretation, string, error) {
 		if detectErr != nil {
 			result.Diagnostic = detectErr.Error()
 		}
-		if strings.EqualFold(strings.TrimSpace(raw), "Local") || strings.EqualFold(strings.TrimSpace(raw), "Server local time") {
-			result.EditableName = "Local"
-		}
 		return result, "", nil
 	}
 	if name, loc, ok := parseOffset(value); ok {

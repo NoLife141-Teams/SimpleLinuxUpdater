@@ -22,8 +22,13 @@
         return { nextRequestID: 1, activeRequestID: null, freshness: "unavailable", error: "", accepted: false };
     }
 
+    function normalizeTimezoneChoice(value) {
+        const normalized = String(value ?? "").trim();
+        return normalized === "Local" ? "" : normalized;
+    }
+
     function normalizeTimezone(data = {}) {
-        const configured = String(data.editable_timezone ?? data.editableTimezone ?? data.timezone ?? "").trim();
+        const configured = normalizeTimezoneChoice(data.editable_timezone ?? data.editableTimezone ?? data.timezone);
         const resolved = String(data.resolved_timezone ?? data.resolvedTimezone ?? data.timezone ?? "").trim();
         return { configured, resolved: resolved || configured || "UTC" };
     }
@@ -119,7 +124,10 @@
             if (inFlight.has(key)) return { enabled: false, command, key, reason: "This Admin action is already in progress." };
             switch (command) {
                 case "saveTimezone": {
-                    const value = String(payload.timezone ?? timezone.draft ?? "").trim();
+                    const value = normalizeTimezoneChoice(payload.timezone ?? timezone.draft);
+                    if (value === normalizeTimezoneChoice(timezone.configured)) {
+                        return { enabled: false, command, key, reason: "Choose a different timezone to save." };
+                    }
                     return { enabled: true, command, key, payload: { timezone: value } };
                 }
                 case "saveNotifications":
@@ -169,7 +177,7 @@
                 case "snapshotRequested": return request(event.stream);
                 case "snapshotFailed": return fail(event.stream, event.requestID, event.error);
                 case "timezoneSnapshotReceived": if (accept("timezone", event.requestID)) { applyTimezone(event.data); return [effect("render", { area: "timezone" }), effect("reconcileSchedule")]; } return [];
-                case "timezoneDraftChanged": timezone.draft = String(event.timezone || "").trim(); feedback.timezone = { message: "", error: false }; return [effect("render", { area: "timezone" })];
+                case "timezoneDraftChanged": timezone.draft = normalizeTimezoneChoice(event.timezone); feedback.timezone = { message: "", error: false }; return [effect("render", { area: "timezone" })];
                 case "notificationSnapshotReceived": if (accept("notifications", event.requestID)) { applyNotifications(event.data); return [effect("render", { area: "notifications" })]; } return [];
                 case "notificationDraftChanged": notifications = { ...notifications, ...(event.patch || {}) }; notifications.eventTypes = uniqueStrings(notifications.eventTypes); feedback.notifications = { message: "", error: false }; return [effect("render", { area: "notifications" })];
                 case "accountSnapshotReceived": if (accept("account", event.requestID)) { applyAccount(event.data); return [effect("render", { area: "account" })]; } return [];
@@ -197,7 +205,7 @@
 
         function getView() {
             return clone({
-                timezone,
+                timezone: { ...timezone, dirty: normalizeTimezoneChoice(timezone.draft) !== normalizeTimezoneChoice(timezone.configured) },
                 notifications,
                 account,
                 metrics,

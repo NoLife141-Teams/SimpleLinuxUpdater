@@ -1194,6 +1194,59 @@ test.describe.serial('setup and login flows', () => {
     });
   });
 
+  test('admin timezone picker searches by city and saves the canonical timezone', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+
+    await page.goto('/admin');
+    const picker = page.locator('#app-timezone-input');
+    const saveTimezone = page.locator('#app-timezone-save');
+    await expect(picker).toContainText('Toronto');
+    await expect(picker).toContainText('America/Toronto');
+    await expect(saveTimezone).toBeDisabled();
+    await expect(page.locator('#app-timezone-preview')).toContainText('Current app time:');
+    await expect(page.locator('#app-timezone-preview')).toContainText('America/Toronto');
+
+    await picker.click();
+    await expect(page.locator('#app-timezone-popover')).toBeVisible();
+    const systemDefault = page.locator('#app-timezone-options [role="option"][data-value=""]');
+    await expect(systemDefault).toContainText('System default timezone');
+    await expect(systemDefault).toContainText('Uses the server timezone detected when saved');
+    await expect(systemDefault).not.toContainText('Detected at startup');
+    await expect(page.locator('#app-timezone-options [role="option"][data-value="Local"]')).toHaveCount(0);
+    const overlap = await page.evaluate(() => {
+      const popover = document.querySelector('#app-timezone-popover');
+      const followingSection = document.querySelector('.app-time-card + .workspace');
+      const popoverRect = popover.getBoundingClientRect();
+      const followingRect = followingSection.getBoundingClientRect();
+      const x = Math.max(popoverRect.left, followingRect.left) + 24;
+      const y = Math.max(popoverRect.top, followingRect.top) + 24;
+      const hasOverlap = x < Math.min(popoverRect.right, followingRect.right)
+        && y < Math.min(popoverRect.bottom, followingRect.bottom);
+      const topElement = hasOverlap ? document.elementFromPoint(x, y) : null;
+      return {
+        hasOverlap,
+        pickerOwnsOverlap: Boolean(topElement && popover.contains(topElement)),
+      };
+    });
+    expect(overlap.hasOverlap).toBe(true);
+    expect(overlap.pickerOwnsOverlap).toBe(true);
+    await page.locator('#app-timezone-search').fill('paris');
+    const paris = page.locator('#app-timezone-options [role="option"][data-value="Europe/Paris"]');
+    await expect(paris).toContainText('Paris');
+    await expect(paris).toContainText('Europe/Paris');
+    await paris.click();
+
+    await expect(picker).toContainText('Paris');
+    await expect(page.locator('#app-timezone-popover')).toBeHidden();
+    await expect(saveTimezone).toBeEnabled();
+    await saveTimezone.click();
+    await expect.poll(() => state.timezoneSave).toEqual({ timezone: 'Europe/Paris' });
+    await expect(page.locator('#app-timezone-status')).toContainText('App timezone saved');
+    await expect(saveTimezone).toBeDisabled();
+  });
+
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

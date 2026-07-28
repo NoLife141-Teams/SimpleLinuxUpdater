@@ -44,6 +44,20 @@ const (
 	MaxRunsLimit                  = 200
 	DefaultSchedulerTickInterval  = time.Minute
 	DefaultTimestampLayout        = "2006-01-02T15:04:05.000000000Z"
+
+	PreviewOccurrenceLimit = 5
+
+	PreviewAdmissionAdmitted          = "admitted"
+	PreviewAdmissionBlockedNoRun      = "blocked_no_run"
+	PreviewAdmissionNoMatchingServers = "no_matching_servers"
+	PreviewAdmissionPolicyDisabled    = "policy_disabled"
+
+	PreviewDSTUnambiguous   = "unambiguous"
+	PreviewDSTAmbiguous     = "ambiguous"
+	PreviewDSTOffsetChanged = "offset_changed"
+
+	PreviewCanonicalExact           = "exact"
+	PreviewCanonicalEarlierFallback = "earlier_fallback_occurrence"
 )
 
 type BlackoutWindow struct {
@@ -80,10 +94,32 @@ type PreviewServer struct {
 }
 
 type PreviewResponse struct {
-	MatchedServers     []PreviewServer `json:"matched_servers"`
-	ExcludedServers    []PreviewServer `json:"excluded_servers"`
-	DisabledByOverride []PreviewServer `json:"disabled_by_override"`
-	Warnings           []string        `json:"warnings"`
+	MatchedServers      []PreviewServer     `json:"matched_servers"`
+	ExcludedServers     []PreviewServer     `json:"excluded_servers"`
+	DisabledByOverride  []PreviewServer     `json:"disabled_by_override"`
+	UpcomingOccurrences []PreviewOccurrence `json:"upcoming_occurrences"`
+	ValidationErrors    []PreviewDiagnostic `json:"validation_errors"`
+	OperationalWarnings []PreviewDiagnostic `json:"operational_warnings"`
+	InformationalFacts  []PreviewDiagnostic `json:"informational_facts"`
+	Warnings            []string            `json:"warnings,omitempty"`
+}
+
+type PreviewDiagnostic struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type PreviewOccurrence struct {
+	LocalCivilTime         string                  `json:"local_civil_time"`
+	Timezone               string                  `json:"timezone"`
+	Offset                 string                  `json:"offset"`
+	Abbreviation           string                  `json:"abbreviation"`
+	ScheduledForUTC        string                  `json:"scheduled_for_utc"`
+	DSTStatus              string                  `json:"dst_status"`
+	CanonicalChoice        string                  `json:"canonical_choice"`
+	MatchedServerCount     int                     `json:"matched_server_count"`
+	ApplicableNoRunWindows []CalendarBlockedWindow `json:"applicable_no_run_windows"`
+	AdmissionOutcome       string                  `json:"admission_outcome"`
 }
 
 type Override struct {

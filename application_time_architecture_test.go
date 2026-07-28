@@ -26,4 +26,14 @@ func TestApplicationTimeInterpretationArchitectureBoundary(t *testing.T) {
 	if strings.Contains(string(data), "time.Date(day.Year(), day.Month(), day.Day(), hour, minute") {
 		t.Fatal("schedule projection constructs application-local occurrences outside Application Time Interpretation")
 	}
+
+	interaction, err := os.ReadFile("static/js/scheduled-policy-administration-interaction.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Intl.", "new Date(", ".getDay(", ".getTimezoneOffset("} {
+		if strings.Contains(string(interaction), forbidden) {
+			t.Errorf("scheduled policy interaction reimplements server-authoritative schedule projection with %q", forbidden)
+		}
+	}
 }

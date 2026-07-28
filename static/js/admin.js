@@ -406,6 +406,7 @@ function renderScheduledTimezone(payload) {
     renderScheduledPolicies();
     renderScheduledRuns(scheduledPolicyView().runs);
     renderAdminWorkspace();
+    schedulePolicyPreview();
 }
 
 function applyScheduledTimezone(payload, requestID = null) {
@@ -1676,11 +1677,72 @@ function renderPolicyPreviewList(items, emptyText, includeReason = false) {
     }).join("");
 }
 
+function policyPreviewAdmissionLabel(outcome) {
+    switch (String(outcome || "")) {
+        case "admitted":
+            return "Expected: admitted";
+        case "blocked_no_run":
+            return "Expected: blocked by no-run window";
+        case "no_matching_servers":
+            return "Expected: no matching servers";
+        case "policy_disabled":
+            return "Expected: policy disabled";
+        default:
+            return "Expected outcome unavailable";
+    }
+}
+
+function renderPolicyPreviewOccurrence(occurrence) {
+    const matchedServerCount = Number.isFinite(Number(occurrence?.matched_server_count))
+        ? Number(occurrence.matched_server_count)
+        : (Array.isArray(occurrence?.matched_servers) ? occurrence.matched_servers.length : 0);
+    const windows = Array.isArray(occurrence?.applicable_no_run_windows) ? occurrence.applicable_no_run_windows : [];
+    const clock = [
+        occurrence?.abbreviation,
+        occurrence?.offset,
+        occurrence?.timezone
+    ].filter(Boolean).join(" · ");
+    const canonical = occurrence?.canonical_choice === "earlier_fallback_occurrence"
+        ? '<span class="preview-dst-note">Repeated local time · scheduler uses the earlier occurrence</span>'
+        : "";
+    const noRun = windows.length
+        ? `<div class="preview-no-run">${windows.map((window) => escapeHtml(`${window.source || "policy"} ${window.start_time || ""}-${window.end_time || ""}${window.overnight ? " overnight" : ""}`)).join(" · ")}</div>`
+        : '<div class="table-secondary">No applicable no-run window</div>';
+    return `
+        <li class="preview-occurrence">
+            <div class="preview-occurrence-primary">
+                <div>
+                    <strong>${escapeHtml(occurrence?.local_civil_time || "Local time unavailable")}</strong>
+                    <div class="table-secondary">${escapeHtml(clock)}</div>
+                </div>
+                <span class="pill${occurrence?.admission_outcome === "admitted" ? "" : " pill-muted"}">${escapeHtml(policyPreviewAdmissionLabel(occurrence?.admission_outcome))}</span>
+            </div>
+            <div class="preview-utc">UTC ${escapeHtml(occurrence?.scheduled_for_utc || "unavailable")}</div>
+            <div class="table-secondary">${escapeHtml(pluralize(matchedServerCount, "matching server", "matching servers"))}</div>
+            ${noRun}
+            ${canonical}
+        </li>
+    `;
+}
+
+function renderPolicyPreviewDiagnostics(elementId, items, className) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    element.innerHTML = (Array.isArray(items) ? items : [])
+        .map((item) => `<div class="${className}">${escapeHtml(item?.message || item || "")}</div>`)
+        .join("");
+}
+
 function renderPolicyPreview(preview) {
     const matched = Array.isArray(preview?.matched_servers) ? preview.matched_servers : [];
     const excluded = Array.isArray(preview?.excluded_servers) ? preview.excluded_servers : [];
     const disabled = Array.isArray(preview?.disabled_by_override) ? preview.disabled_by_override : [];
-    const warnings = Array.isArray(preview?.warnings) ? preview.warnings : [];
+    const occurrences = Array.isArray(preview?.upcoming_occurrences) ? preview.upcoming_occurrences : [];
+    const validationErrors = Array.isArray(preview?.validation_errors) ? preview.validation_errors : [];
+    const operationalWarnings = Array.isArray(preview?.operational_warnings)
+        ? preview.operational_warnings
+        : (Array.isArray(preview?.warnings) ? preview.warnings : []);
+    const informationalFacts = Array.isArray(preview?.informational_facts) ? preview.informational_facts : [];
     const skipped = [...disabled.map((item) => ({ ...item, reason: "disabled_by_override" })), ...excluded];
     document.getElementById("policy-preview-summary").textContent = matched.length
         ? `${pluralize(matched.length, "server", "servers")} would match this policy.`
@@ -1688,9 +1750,13 @@ function renderPolicyPreview(preview) {
     document.getElementById("policy-preview-count").textContent = `${matched.length} matched`;
     document.getElementById("policy-preview-matched").innerHTML = renderPolicyPreviewList(matched, "None");
     document.getElementById("policy-preview-skipped").innerHTML = renderPolicyPreviewList(skipped, "None", true);
-    document.getElementById("policy-preview-warnings").innerHTML = warnings
-        .map((warning) => `<div class="preview-warning">${escapeHtml(warning)}</div>`)
-        .join("");
+    document.getElementById("policy-preview-occurrence-count").textContent = `${occurrences.length} projected`;
+    document.getElementById("policy-preview-occurrences").innerHTML = occurrences.length
+        ? occurrences.map(renderPolicyPreviewOccurrence).join("")
+        : '<li class="subtle">No canonical occurrence is available for this draft.</li>';
+    renderPolicyPreviewDiagnostics("policy-preview-validation-errors", validationErrors, "preview-error");
+    renderPolicyPreviewDiagnostics("policy-preview-warnings", operationalWarnings, "preview-warning");
+    renderPolicyPreviewDiagnostics("policy-preview-facts", informationalFacts, "preview-fact");
 }
 
 function setPolicyPreviewMessage(message, countText = "0 matched") {
@@ -1698,7 +1764,11 @@ function setPolicyPreviewMessage(message, countText = "0 matched") {
     document.getElementById("policy-preview-count").textContent = countText;
     document.getElementById("policy-preview-matched").innerHTML = '<span class="subtle">None</span>';
     document.getElementById("policy-preview-skipped").innerHTML = '<span class="subtle">None</span>';
-    document.getElementById("policy-preview-warnings").innerHTML = "";
+    document.getElementById("policy-preview-occurrence-count").textContent = "0 projected";
+    document.getElementById("policy-preview-occurrences").innerHTML = '<li class="subtle">Complete the policy fields to project its schedule.</li>';
+    renderPolicyPreviewDiagnostics("policy-preview-validation-errors", [], "preview-error");
+    renderPolicyPreviewDiagnostics("policy-preview-warnings", [], "preview-warning");
+    renderPolicyPreviewDiagnostics("policy-preview-facts", [], "preview-fact");
 }
 
 async function refreshPolicyPreview() {

@@ -151,9 +151,12 @@
         }
         if (Object.keys(errors).length) return { ok: false, errors, message: "Policy name and at least one target tag, included tag, or explicit server are required." };
         try {
+            const payload = { ...normalized, policy_blackouts: validateBlackoutRows(blackouts, "Policy no-run window") };
+            if (normalized.id) payload.id = Number(normalized.id);
+            else delete payload.id;
             return {
                 ok: true,
-                payload: { ...normalized, policy_blackouts: validateBlackoutRows(blackouts, "Policy no-run window") },
+                payload,
                 errors: {}
             };
         } catch (error) {
@@ -426,9 +429,20 @@
                     if (input.requestId !== preview.activeRequestId) return [];
                     preview = { ...preview, loading: false, message: String(input.error || "Failed to preview scheduled policy.") };
                     return [effect("render", { area: "preview" })];
-                case "timezoneReceived":
-                    timezone = String(input.timezone || timezone || "UTC");
+                case "timezoneReceived": {
+                    const nextTimezone = String(input.timezone || timezone || "UTC");
+                    if (nextTimezone !== timezone) {
+                        preview = {
+                            ...preview,
+                            activeRequestId: 0,
+                            data: null,
+                            loading: false,
+                            message: "The application timezone changed; refresh the schedule preview."
+                        };
+                    }
+                    timezone = nextTimezone;
                     return [effect("render", { area: "editor" }), effect("render", { area: "runs" })];
+                }
                 case "snapshotRequested": return requestStream(input.stream, input.payload);
                 case "snapshotReceived": return receiveStream(input.stream, input.requestId, input.data, input.receivedAt);
                 case "snapshotFailed": return failStream(input.stream, input.requestId, input.error);

@@ -58,6 +58,9 @@ const (
 
 	PreviewCanonicalExact           = "exact"
 	PreviewCanonicalEarlierFallback = "earlier_fallback_occurrence"
+
+	PreviewConflictPartial = "partial"
+	PreviewConflictFull    = "full"
 )
 
 type BlackoutWindow struct {
@@ -98,6 +101,7 @@ type PreviewResponse struct {
 	ExcludedServers     []PreviewServer     `json:"excluded_servers"`
 	DisabledByOverride  []PreviewServer     `json:"disabled_by_override"`
 	UpcomingOccurrences []PreviewOccurrence `json:"upcoming_occurrences"`
+	ScheduleConflicts   []PreviewConflict   `json:"schedule_conflicts"`
 	ValidationErrors    []PreviewDiagnostic `json:"validation_errors"`
 	OperationalWarnings []PreviewDiagnostic `json:"operational_warnings"`
 	InformationalFacts  []PreviewDiagnostic `json:"informational_facts"`
@@ -120,6 +124,24 @@ type PreviewOccurrence struct {
 	MatchedServerCount     int                     `json:"matched_server_count"`
 	ApplicableNoRunWindows []CalendarBlockedWindow `json:"applicable_no_run_windows"`
 	AdmissionOutcome       string                  `json:"admission_outcome"`
+}
+
+type PreviewConflict struct {
+	PolicyID          int64                   `json:"policy_id"`
+	PolicyName        string                  `json:"policy_name"`
+	OverlapKind       string                  `json:"overlap_kind"`
+	SharedServers     []string                `json:"shared_servers"`
+	OccurrenceWindows []PreviewConflictWindow `json:"occurrence_windows"`
+}
+
+type PreviewConflictWindow struct {
+	LocalCivilTime            string `json:"local_civil_time"`
+	Timezone                  string `json:"timezone"`
+	WindowStartUTC            string `json:"window_start_utc"`
+	WindowEndUTC              string `json:"window_end_utc"`
+	DraftAdmissionOutcome     string `json:"draft_admission_outcome"`
+	CompetingAdmissionOutcome string `json:"competing_admission_outcome"`
+	Effective                 bool   `json:"effective"`
 }
 
 type Override struct {

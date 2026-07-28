@@ -353,6 +353,9 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 		addPreviewOperationalWarning(&response, "no_matching_servers", "No current server would be targeted by this policy.")
 	}
 	s.projectPolicyPreviewOccurrences(policy, response.MatchedServers, globalBlackouts, &response)
+	if err := s.projectPolicyPreviewConflicts(policy, response.MatchedServers, serversSnapshot, overrides, globalBlackouts, &response); err != nil {
+		return PreviewResponse{}, err
+	}
 	return response, nil
 }
 

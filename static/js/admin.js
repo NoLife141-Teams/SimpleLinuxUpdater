@@ -1733,11 +1733,60 @@ function renderPolicyPreviewDiagnostics(elementId, items, className) {
         .join("");
 }
 
+function renderPolicyConflictWindow(window) {
+    const effective = Boolean(window?.effective);
+    const suppressedByNoRun = window?.draft_admission_outcome === "blocked_no_run" ||
+        window?.competing_admission_outcome === "blocked_no_run";
+    const outcome = effective
+        ? "Effective overlap"
+        : (suppressedByNoRun ? "Suppressed by no-run" : "Inactive overlap");
+    const admissions = [
+        `Draft: ${policyPreviewAdmissionLabel(window?.draft_admission_outcome).replace("Expected: ", "")}`,
+        `Competing: ${policyPreviewAdmissionLabel(window?.competing_admission_outcome).replace("Expected: ", "")}`
+    ].join(" · ");
+    return `
+        <li class="preview-conflict-window">
+            <div class="preview-conflict-window-head">
+                <strong>${escapeHtml(window?.local_civil_time || "Local time unavailable")}</strong>
+                <span class="pill${effective ? " pill-warning" : " pill-muted"}">${escapeHtml(outcome)}</span>
+            </div>
+            <div class="table-secondary">${escapeHtml(window?.timezone || "Timezone unavailable")}</div>
+            <div class="preview-utc">UTC ${escapeHtml(window?.window_start_utc || "unavailable")} – ${escapeHtml(window?.window_end_utc || "unavailable")}</div>
+            <div class="table-secondary">${escapeHtml(admissions)}</div>
+        </li>
+    `;
+}
+
+function renderPolicyConflict(conflict) {
+    const sharedServers = Array.isArray(conflict?.shared_servers) ? conflict.shared_servers : [];
+    const windows = Array.isArray(conflict?.occurrence_windows) ? conflict.occurrence_windows : [];
+    const overlapLabel = conflict?.overlap_kind === "full" ? "Full target overlap" : "Partial target overlap";
+    return `
+        <article class="preview-conflict">
+            <div class="preview-conflict-head">
+                <div>
+                    <strong>${escapeHtml(conflict?.policy_name || "Unnamed policy")}</strong>
+                    <div class="table-secondary">Policy #${escapeHtml(conflict?.policy_id ?? "unknown")}</div>
+                </div>
+                <span class="pill pill-warning">${escapeHtml(overlapLabel)}</span>
+            </div>
+            <div>
+                <span class="table-shell-label">Shared servers</span>
+                <div class="preview-list">${renderPolicyPreviewList(sharedServers.map((name) => ({ name })), "None")}</div>
+            </div>
+            <ol class="preview-conflict-windows">
+                ${windows.map(renderPolicyConflictWindow).join("")}
+            </ol>
+        </article>
+    `;
+}
+
 function renderPolicyPreview(preview) {
     const matched = Array.isArray(preview?.matched_servers) ? preview.matched_servers : [];
     const excluded = Array.isArray(preview?.excluded_servers) ? preview.excluded_servers : [];
     const disabled = Array.isArray(preview?.disabled_by_override) ? preview.disabled_by_override : [];
     const occurrences = Array.isArray(preview?.upcoming_occurrences) ? preview.upcoming_occurrences : [];
+    const conflicts = Array.isArray(preview?.schedule_conflicts) ? preview.schedule_conflicts : [];
     const validationErrors = Array.isArray(preview?.validation_errors) ? preview.validation_errors : [];
     const operationalWarnings = Array.isArray(preview?.operational_warnings)
         ? preview.operational_warnings
@@ -1754,6 +1803,10 @@ function renderPolicyPreview(preview) {
     document.getElementById("policy-preview-occurrences").innerHTML = occurrences.length
         ? occurrences.map(renderPolicyPreviewOccurrence).join("")
         : '<li class="subtle">No canonical occurrence is available for this draft.</li>';
+    document.getElementById("policy-preview-conflict-count").textContent = pluralize(conflicts.length, "policy", "policies");
+    document.getElementById("policy-preview-conflicts").innerHTML = conflicts.length
+        ? conflicts.map(renderPolicyConflict).join("")
+        : '<span class="subtle">No enabled policy overlap is projected.</span>';
     renderPolicyPreviewDiagnostics("policy-preview-validation-errors", validationErrors, "preview-error");
     renderPolicyPreviewDiagnostics("policy-preview-warnings", operationalWarnings, "preview-warning");
     renderPolicyPreviewDiagnostics("policy-preview-facts", informationalFacts, "preview-fact");
@@ -1766,6 +1819,8 @@ function setPolicyPreviewMessage(message, countText = "0 matched") {
     document.getElementById("policy-preview-skipped").innerHTML = '<span class="subtle">None</span>';
     document.getElementById("policy-preview-occurrence-count").textContent = "0 projected";
     document.getElementById("policy-preview-occurrences").innerHTML = '<li class="subtle">Complete the policy fields to project its schedule.</li>';
+    document.getElementById("policy-preview-conflict-count").textContent = "0 policies";
+    document.getElementById("policy-preview-conflicts").innerHTML = '<span class="subtle">Complete the policy fields to project competing policy overlaps.</span>';
     renderPolicyPreviewDiagnostics("policy-preview-validation-errors", [], "preview-error");
     renderPolicyPreviewDiagnostics("policy-preview-warnings", [], "preview-warning");
     renderPolicyPreviewDiagnostics("policy-preview-facts", [], "preview-fact");

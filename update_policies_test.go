@@ -401,6 +401,30 @@ func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 		t.Fatalf("unmarshal created policy: %v", err)
 	}
 
+	competingBody := bytes.NewBufferString(`{
+		"name":"Competing web policy",
+		"enabled":true,
+		"target_servers":["srv-web"],
+		"package_scope":"security",
+		"execution_mode":"scan_only",
+		"cadence_kind":"daily",
+		"time_local":"02:15",
+		"weekdays":[]
+	}`)
+	competingRec := httptest.NewRecorder()
+	competingReq := httptest.NewRequest(http.MethodPost, "/api/update-policies", competingBody)
+	competingReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(competingReq)
+	competingReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(competingRec, competingReq)
+	if competingRec.Code != http.StatusCreated {
+		t.Fatalf("competing policy create status = %d, want %d (body=%s)", competingRec.Code, http.StatusCreated, competingRec.Body.String())
+	}
+	var competing UpdatePolicy
+	if err := json.Unmarshal(competingRec.Body.Bytes(), &competing); err != nil {
+		t.Fatalf("unmarshal competing policy: %v", err)
+	}
+
 	overrideBody := bytes.NewBufferString(`{"disabled":true}`)
 	overrideRec := httptest.NewRecorder()
 	overrideReq := httptest.NewRequest(http.MethodPut, "/api/update-policies/"+strconvFormatInt(created.ID)+"/overrides/srv-db", overrideBody)
@@ -462,6 +486,20 @@ func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 	}
 	if len(preview.ValidationErrors) != 0 || len(preview.OperationalWarnings) == 0 || len(preview.InformationalFacts) == 0 {
 		t.Fatalf("preview diagnostics = validation:%+v operational:%+v facts:%+v", preview.ValidationErrors, preview.OperationalWarnings, preview.InformationalFacts)
+	}
+	if len(preview.ScheduleConflicts) != 1 {
+		t.Fatalf("schedule conflicts = %+v, want one competing policy", preview.ScheduleConflicts)
+	}
+	conflict := preview.ScheduleConflicts[0]
+	if conflict.PolicyID != competing.ID || conflict.PolicyName != "Competing web policy" ||
+		conflict.OverlapKind != policypkg.PreviewConflictFull ||
+		len(conflict.SharedServers) != 1 || conflict.SharedServers[0] != "srv-web" ||
+		len(conflict.OccurrenceWindows) != policypkg.PreviewOccurrenceLimit ||
+		!conflict.OccurrenceWindows[0].Effective {
+		t.Fatalf("schedule conflict = %+v, want full effective srv-web overlap", conflict)
+	}
+	if !strings.Contains(strings.Join(preview.Warnings, "\n"), "shared servers") {
+		t.Fatalf("warnings = %+v, want advisory schedule-overlap warning", preview.Warnings)
 	}
 
 	invalidPreviewRec := httptest.NewRecorder()

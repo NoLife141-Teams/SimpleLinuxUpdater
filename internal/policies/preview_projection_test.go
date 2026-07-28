@@ -198,6 +198,161 @@ func TestPreviewPolicySeparatesNoRunEmptyTargetAndValidationDiagnostics(t *testi
 	}
 }
 
+func TestPreviewPolicyProjectsCrossPolicyConflicts(t *testing.T) {
+	serversSnapshot := []servers.Server{
+		{Name: "srv-a", Tags: []string{"prod"}},
+		{Name: "srv-b", Tags: []string{"prod"}},
+		{Name: "srv-dev", Tags: []string{"dev"}},
+	}
+	draft := previewProjectionPolicy(Policy{
+		ID:          42,
+		TargetTag:   "prod",
+		CadenceKind: CadenceDaily,
+		TimeLocal:   "02:00",
+	})
+	allDays := []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+
+	tests := []struct {
+		name            string
+		policies        []Policy
+		wantConflicts   int
+		wantKind        string
+		wantShared      []string
+		wantEffective   bool
+		wantCompeting   string
+		wantWarning     bool
+		wantSuppressed  bool
+		wantWindowCount int
+	}{
+		{
+			name: "no overlap",
+			policies: []Policy{
+				previewProjectionPolicy(Policy{ID: 7, Name: "Different minute", TargetTag: "prod", TimeLocal: "03:00"}),
+			},
+		},
+		{
+			name: "edited policy does not conflict with itself",
+			policies: []Policy{
+				previewProjectionPolicy(Policy{ID: 42, Name: "Projected policy", TargetTag: "prod", TimeLocal: "02:00"}),
+			},
+		},
+		{
+			name: "partial overlap",
+			policies: []Policy{
+				previewProjectionPolicy(Policy{ID: 7, Name: "Only A", TargetTag: "", TargetServers: []string{"srv-a"}, TimeLocal: "02:00"}),
+			},
+			wantConflicts:   1,
+			wantKind:        PreviewConflictPartial,
+			wantShared:      []string{"srv-a"},
+			wantEffective:   true,
+			wantCompeting:   PreviewAdmissionAdmitted,
+			wantWarning:     true,
+			wantWindowCount: PreviewOccurrenceLimit,
+		},
+		{
+			name: "full overlap",
+			policies: []Policy{
+				previewProjectionPolicy(Policy{ID: 7, Name: "Same fleet", TargetTag: "prod", TimeLocal: "02:00"}),
+			},
+			wantConflicts:   1,
+			wantKind:        PreviewConflictFull,
+			wantShared:      []string{"srv-a", "srv-b"},
+			wantEffective:   true,
+			wantCompeting:   PreviewAdmissionAdmitted,
+			wantWarning:     true,
+			wantWindowCount: PreviewOccurrenceLimit,
+		},
+		{
+			name: "disabled policy is ignored",
+			policies: []Policy{
+				{
+					ID:            7,
+					Name:          "Disabled",
+					Enabled:       false,
+					TargetTag:     "prod",
+					PackageScope:  PackageScopeSecurity,
+					UpgradeMode:   UpgradeModeStandard,
+					ExecutionMode: ExecutionScanOnly,
+					CadenceKind:   CadenceDaily,
+					TimeLocal:     "02:00",
+				},
+			},
+		},
+		{
+			name: "no run suppresses competing candidates",
+			policies: []Policy{
+				previewProjectionPolicy(Policy{
+					ID:        7,
+					Name:      "Blocked competitor",
+					TargetTag: "prod",
+					TimeLocal: "02:00",
+					PolicyBlackouts: []BlackoutWindow{{
+						Weekdays:  allDays,
+						StartTime: "01:00",
+						EndTime:   "03:00",
+					}},
+				}),
+			},
+			wantConflicts:   1,
+			wantKind:        PreviewConflictFull,
+			wantShared:      []string{"srv-a", "srv-b"},
+			wantEffective:   false,
+			wantCompeting:   PreviewAdmissionBlockedNoRun,
+			wantSuppressed:  true,
+			wantWindowCount: PreviewOccurrenceLimit,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := previewProjectionDeps(time.UTC, nil)
+			deps.Now = func() time.Time { return time.Date(2026, 5, 17, 0, 0, 0, 0, time.UTC) }
+			deps.SnapshotServers = func() []servers.Server { return append([]servers.Server(nil), serversSnapshot...) }
+			deps.ListPolicies = func() ([]Policy, error) { return append([]Policy(nil), tt.policies...), nil }
+
+			preview, err := NewService(deps).PreviewPolicy(draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(preview.ScheduleConflicts) != tt.wantConflicts {
+				t.Fatalf("schedule conflicts = %+v, want %d", preview.ScheduleConflicts, tt.wantConflicts)
+			}
+			if tt.wantConflicts == 0 {
+				if hasPreviewDiagnostic(preview.OperationalWarnings, "policy_schedule_overlap", "") {
+					t.Fatalf("warnings = %+v, want no overlap warning", preview.OperationalWarnings)
+				}
+				return
+			}
+
+			conflict := preview.ScheduleConflicts[0]
+			if conflict.PolicyID != 7 || conflict.PolicyName != tt.policies[0].Name || conflict.OverlapKind != tt.wantKind {
+				t.Fatalf("conflict identity = %+v", conflict)
+			}
+			if strings.Join(conflict.SharedServers, ",") != strings.Join(tt.wantShared, ",") {
+				t.Fatalf("shared servers = %v, want %v", conflict.SharedServers, tt.wantShared)
+			}
+			if len(conflict.OccurrenceWindows) != tt.wantWindowCount {
+				t.Fatalf("occurrence windows = %+v, want %d", conflict.OccurrenceWindows, tt.wantWindowCount)
+			}
+			window := conflict.OccurrenceWindows[0]
+			if window.LocalCivilTime != "2026-05-17 02:00" ||
+				window.WindowStartUTC != "2026-05-17T02:00:00.000000000Z" ||
+				window.WindowEndUTC != "2026-05-17T02:01:00.000000000Z" ||
+				window.Effective != tt.wantEffective ||
+				window.DraftAdmissionOutcome != PreviewAdmissionAdmitted ||
+				window.CompetingAdmissionOutcome != tt.wantCompeting {
+				t.Fatalf("first conflict window = %+v", window)
+			}
+			if hasPreviewDiagnostic(preview.OperationalWarnings, "policy_schedule_overlap", "") != tt.wantWarning {
+				t.Fatalf("warnings = %+v, want overlap warning %t", preview.OperationalWarnings, tt.wantWarning)
+			}
+			if hasPreviewDiagnostic(preview.InformationalFacts, "policy_schedule_overlap_suppressed_by_no_run", "") != tt.wantSuppressed {
+				t.Fatalf("facts = %+v, want suppressed fact %t", preview.InformationalFacts, tt.wantSuppressed)
+			}
+		})
+	}
+}
+
 func previewProjectionPolicy(patch Policy) Policy {
 	policy := Policy{
 		ID:            42,
@@ -209,6 +364,12 @@ func previewProjectionPolicy(patch Policy) Policy {
 		ExecutionMode: ExecutionScanOnly,
 		CadenceKind:   CadenceDaily,
 		TimeLocal:     "02:00",
+	}
+	if patch.ID != 0 {
+		policy.ID = patch.ID
+	}
+	if patch.Name != "" {
+		policy.Name = patch.Name
 	}
 	if patch.CadenceKind != "" {
 		policy.CadenceKind = patch.CadenceKind

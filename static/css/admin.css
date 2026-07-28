@@ -668,12 +668,14 @@
 }
 
 .preview-occurrence-section,
+.preview-conflict-section,
 .preview-diagnostics {
     display: grid;
     gap: 6px;
 }
 
-.preview-occurrence-section {
+.preview-occurrence-section,
+.preview-conflict-section {
     padding-top: 12px;
     border-top: 1px solid var(--border);
 }
@@ -737,6 +739,51 @@
 .preview-dst-note {
     color: var(--accent);
     font-weight: 700;
+}
+
+.preview-conflicts,
+.preview-conflict,
+.preview-conflict-windows {
+    display: grid;
+    gap: 8px;
+}
+
+.preview-conflict {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid rgba(245, 160, 72, 0.32);
+    border-radius: var(--radius-sm);
+    background: rgba(245, 160, 72, 0.045);
+}
+
+.preview-conflict-head,
+.preview-conflict-window-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.preview-conflict-windows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.preview-conflict-window {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.pill-warning {
+    color: var(--warning);
+    border-color: rgba(245, 160, 72, 0.4);
+    background: rgba(245, 160, 72, 0.08);
 }
 
 .calendar-list {
@@ -1037,14 +1084,19 @@
     .section-grid,
     .policy-preview,
     .preview-occurrence-section,
-    .preview-occurrence {
+    .preview-occurrence,
+    .preview-conflict-section,
+    .preview-conflict,
+    .preview-conflict-window {
         min-width: 0;
         max-width: 100%;
     }
 
     .block-head,
     .preview-occurrence-head,
-    .preview-occurrence-primary {
+    .preview-occurrence-primary,
+    .preview-conflict-head,
+    .preview-conflict-window-head {
         flex-wrap: wrap;
     }
 
@@ -1056,7 +1108,8 @@
 
     .policy-editor-context .pill,
     .policy-editor-context button,
-    .preview-occurrence-primary .pill {
+    .preview-occurrence-primary .pill,
+    .preview-conflict .pill {
         max-width: 100%;
         white-space: normal;
     }

@@ -521,7 +521,7 @@ func metricsBearerMiddlewareWithServiceAndLimiter(service MetricsAccessCredentia
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return
 		}
-		result, err := service.Verify(c.Request.Context(), parts[1])
+		result, err := service.VerifyWithOrigin(c.Request.Context(), parts[1], rateLimitClientIP(c))
 		if err != nil || result != observabilitypkg.MetricsAccessAccepted {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid bearer token"})
 			return

@@ -58,6 +58,9 @@ Behavior:
 - Enabled only after generating a token from the Admin page.
 - Token is shown once on create/rotate; if lost, rotate again.
 - Scrape requests are rate-limited per client IP (in-memory, per app instance).
+- The Admin page records the credential creation and rotation times plus the last successful use and a masked client origin. Bearer values and full client addresses are never stored in lifecycle metadata.
+- An enabled token is marked stale after 30 days without a successful request. This is an operator warning only; the app never disables stale credentials automatically.
+- Tokens created before lifecycle tracking remain valid and show `Usage unknown` until their next successful request or rotation.
 
 Prometheus must send:
 

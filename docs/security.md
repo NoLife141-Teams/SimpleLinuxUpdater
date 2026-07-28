@@ -73,6 +73,8 @@ Configure from the Admin page (`/admin`):
 - Generate/rotate the Metrics API token in-app
 - Store the one-time token output securely for your scraper
 - Disable token to make `/metrics` return `404`
+- Review the safe lifecycle status in Admin: creation, rotation, last successful use, and masked origin
+- Treat the 30-day stale state as a scraper-health warning; stale credentials remain enabled until an operator rotates or disables them
 
 Scrapers must send:
 

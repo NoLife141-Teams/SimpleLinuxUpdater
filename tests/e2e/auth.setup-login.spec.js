@@ -547,8 +547,57 @@ test.describe.serial('setup and login flows', () => {
       return fulfillJson(route, body);
     });
     await page.route('**/api/metrics/token', route => {
-      if (route.request().method() === 'GET') state.metricsLoadCount = (state.metricsLoadCount || 0) + 1;
-      return fulfillJson(route, { enabled: true, token: 'test-token' });
+      const method = route.request().method();
+      if (method === 'GET') {
+        state.metricsLoadCount = (state.metricsLoadCount || 0) + 1;
+        if ((state.metricsFailuresRemaining || 0) > 0) {
+          state.metricsFailuresRemaining -= 1;
+          return route.fulfill({
+            status: 503,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'metrics credential unavailable' }),
+          });
+        }
+        return fulfillJson(route, state.metricsResponse || {
+          enabled: true,
+          lifecycle_state: 'current',
+          created_at: '2026-05-01T12:00:00Z',
+          rotated_at: '2026-05-15T12:00:00Z',
+          last_used_at: '2026-07-27T12:00:00Z',
+          last_used_origin_masked: '192.0.2.x',
+          stale_after_days: 30,
+        });
+      }
+      if (method === 'POST') {
+        state.metricsRotateCount = (state.metricsRotateCount || 0) + 1;
+        const response = state.metricsRotateResponse || {
+          enabled: true,
+          lifecycle_state: 'never_used',
+          created_at: '2026-05-01T12:00:00Z',
+          rotated_at: '2026-07-28T12:00:00Z',
+          last_used_at: '',
+          last_used_origin_masked: '',
+          stale_after_days: 30,
+          token: 'one-time-metrics-token',
+        };
+        state.metricsResponse = { ...response };
+        delete state.metricsResponse.token;
+        return fulfillJson(route, response);
+      }
+      if (method === 'DELETE') {
+        state.metricsDisableCount = (state.metricsDisableCount || 0) + 1;
+        state.metricsResponse = {
+          enabled: false,
+          lifecycle_state: 'disabled',
+          created_at: '',
+          rotated_at: '',
+          last_used_at: '',
+          last_used_origin_masked: '',
+          stale_after_days: 30,
+        };
+        return fulfillJson(route, state.metricsResponse);
+      }
+      return route.fulfill({ status: 405 });
     });
     await page.route('**/api/audit-events?*', route => {
       state.adminActivityLoadCount = (state.adminActivityLoadCount || 0) + 1;
@@ -1878,6 +1927,122 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/admin#admin-section-scheduled-policies');
     await expect.poll(() => state.calendarLoadCount || 0).toBe(1);
     await expect(page.locator('[data-admin-section-lifecycle="scheduled-policies"]')).toHaveAttribute('data-status', 'current');
+  });
+
+  test('metrics credential lifecycle covers generate, use, stale, rotate, disable, restore, and safe copy feedback', async ({ page, context }) => {
+    const state = {
+      metricsResponse: {
+        enabled: false,
+        lifecycle_state: 'disabled',
+        created_at: '',
+        rotated_at: '',
+        last_used_at: '',
+        last_used_origin_masked: '',
+        stale_after_days: 30,
+      },
+    };
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:8080' });
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin#admin-section-metrics');
+
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Disabled');
+    await expect(page.locator('#metrics-token-status')).toHaveText('Metrics access is disabled.');
+    await expect(page.locator('#metrics-token-generate')).toBeEnabled();
+    await expect(page.locator('#metrics-token-rotate')).toBeDisabled();
+    await expect(page.locator('#metrics-token-disable')).toBeDisabled();
+
+    await page.locator('#metrics-token-generate').click();
+    await expect.poll(() => state.metricsRotateCount || 0).toBe(1);
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Never used');
+    await expect(page.locator('#metrics-token-status')).toContainText('never completed a successful metrics request');
+    await expect(page.locator('#metrics-token-once')).toBeVisible();
+    await expect(page.locator('#metrics-token-value')).toHaveText('one-time-metrics-token');
+
+    await page.locator('#metrics-token-copy').click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('one-time-metrics-token');
+    await expect(page.locator('#app-feedback-region')).toHaveText('Metrics token copied.');
+    await expect(page.locator('#app-feedback-region')).not.toContainText('one-time-metrics-token');
+
+    state.metricsResponse = {
+      enabled: true,
+      lifecycle_state: 'current',
+      created_at: '2026-05-01T12:00:00Z',
+      rotated_at: '',
+      last_used_at: '2026-07-27T12:00:00Z',
+      last_used_origin_masked: '198.51.100.x',
+      stale_after_days: 30,
+    };
+    await page.reload();
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Current');
+    await expect(page.locator('#metrics-token-last-origin')).toHaveText('198.51.100.x');
+    await expect(page.locator('#metrics-token-once')).toBeHidden();
+    await expect(page.locator('body')).not.toContainText('one-time-metrics-token');
+
+    state.metricsResponse = {
+      enabled: true,
+      lifecycle_state: 'stale',
+      created_at: '2026-05-01T12:00:00Z',
+      rotated_at: '2026-05-15T12:00:00Z',
+      last_used_at: '2026-05-16T12:00:00Z',
+      last_used_origin_masked: '203.0.113.x',
+      stale_after_days: 30,
+      token: 'DO-NOT-REVEAL-STATUS-TOKEN',
+      last_used_origin: '203.0.113.44',
+    };
+    await page.reload();
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Stale');
+    await expect(page.locator('#metrics-token-status')).toContainText('access remains enabled');
+    await expect(page.locator('#metrics-token-last-origin')).toHaveText('203.0.113.x');
+    await expect(page.locator('#metrics-token-stale-policy')).toContainText('never disabled automatically');
+    await expect(page.locator('body')).not.toContainText('DO-NOT-REVEAL-STATUS-TOKEN');
+    await expect(page.locator('body')).not.toContainText('203.0.113.44');
+
+    state.metricsRotateResponse = {
+      enabled: true,
+      lifecycle_state: 'never_used',
+      created_at: '2026-05-01T12:00:00Z',
+      rotated_at: '2026-07-28T12:00:00Z',
+      last_used_at: '',
+      last_used_origin_masked: '',
+      stale_after_days: 30,
+      token: 'rotated-one-time-token',
+    };
+    await dismissTypedConfirm(page, page.locator('#metrics-token-rotate'));
+    expect(state.metricsRotateCount).toBe(1);
+    await acceptTypedConfirm(page, page.locator('#metrics-token-rotate'), 'ROTATE TOKEN');
+    await expect.poll(() => state.metricsRotateCount || 0).toBe(2);
+    await expect(page.locator('#metrics-token-value')).toHaveText('rotated-one-time-token');
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Never used');
+    await expect(page.locator('#metrics-token-last-used')).toHaveText('Never');
+
+    await acceptTypedConfirm(page, page.locator('#metrics-token-disable'), 'DISABLE METRICS');
+    await expect.poll(() => state.metricsDisableCount || 0).toBe(1);
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Disabled');
+    await expect(page.locator('#metrics-token-once')).toBeHidden();
+    await expect(page.locator('#metrics-token-danger-zone')).toContainText('immediately stops every scraper');
+
+    state.metricsResponse = {
+      enabled: true,
+      lifecycle_state: 'never_used',
+      created_at: '2026-04-01T12:00:00Z',
+      rotated_at: '',
+      last_used_at: '',
+      last_used_origin_masked: '',
+      stale_after_days: 30,
+    };
+    await page.reload();
+    await expect(page.locator('#metrics-token-lifecycle-state')).toHaveText('Never used');
+    await expect(page.locator('#metrics-token-created')).not.toHaveText('Unavailable');
+    await expect(page.locator('#metrics-token-last-used')).toHaveText('Never');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileMetricsLayout = await page.evaluate(() => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      factColumns: getComputedStyle(document.querySelector('#metrics-token-lifecycle-facts')).gridTemplateColumns.split(' ').length,
+    }));
+    expect(mobileMetricsLayout.bodyWidth).toBeLessThanOrEqual(mobileMetricsLayout.viewportWidth);
+    expect(mobileMetricsLayout.factColumns).toBe(1);
   });
 
   test('recent Admin activity loads on demand with safe ordered facts and retains stale results', async ({ page }) => {

@@ -22,6 +22,12 @@ type fakeAuthCommandAccount struct {
 	clearSessionsErr  error
 	clearedSessions   bool
 	deletedSessions   int64
+	revokeSessionErr  error
+	revokedSessionID  string
+	revokeFound       bool
+	clearOthersErr    error
+	clearOthersToken  string
+	deletedOthers     int64
 }
 
 func (f *fakeAuthCommandAccount) SetupRequired() (bool, error) {
@@ -53,6 +59,16 @@ func (f *fakeAuthCommandAccount) Authenticate(_, _ string) (bool, error) {
 func (f *fakeAuthCommandAccount) ClearSessions() (int64, error) {
 	f.clearedSessions = true
 	return f.deletedSessions, f.clearSessionsErr
+}
+
+func (f *fakeAuthCommandAccount) RevokeSession(id string) (bool, error) {
+	f.revokedSessionID = id
+	return f.revokeFound, f.revokeSessionErr
+}
+
+func (f *fakeAuthCommandAccount) ClearOtherSessions(currentToken string) (int64, error) {
+	f.clearOthersToken = currentToken
+	return f.deletedOthers, f.clearOthersErr
 }
 
 type fakeAuthCommandSession struct {
@@ -390,4 +406,42 @@ func TestAuthSessionCommandsClearSessionsOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuthSessionCommandsRevokeAndClearOthers(t *testing.T) {
+	t.Run("revokes one non-current session", func(t *testing.T) {
+		account := &fakeAuthCommandAccount{revokeFound: true}
+		session := &fakeAuthCommandSession{}
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{Account: account, Session: session})
+		outcome := module.RevokeSession(context.Background(), authRevokeSessionCommand{
+			Actor: "admin", ClientIP: "192.0.2.10", SessionID: "safe-id",
+		})
+		if outcome.Kind != authRevokeSessionSucceeded || account.revokedSessionID != "safe-id" || session.destroyed {
+			t.Fatalf("RevokeSession() outcome=%+v account=%+v session=%+v", outcome, account, session)
+		}
+	})
+
+	t.Run("revoking current session destroys browser session", func(t *testing.T) {
+		account := &fakeAuthCommandAccount{revokeFound: true}
+		session := &fakeAuthCommandSession{}
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{Account: account, Session: session})
+		outcome := module.RevokeSession(context.Background(), authRevokeSessionCommand{
+			Actor: "admin", SessionID: "safe-id", Current: true,
+		})
+		if outcome.Kind != authRevokeSessionSucceeded || !session.destroyed {
+			t.Fatalf("RevokeSession(current) outcome=%+v session=%+v", outcome, session)
+		}
+	})
+
+	t.Run("clears other sessions and preserves current", func(t *testing.T) {
+		account := &fakeAuthCommandAccount{deletedOthers: 2}
+		session := &fakeAuthCommandSession{}
+		module := newAuthSessionCommandsWithDeps(authSessionCommandDeps{Account: account, Session: session})
+		outcome := module.ClearOtherSessions(context.Background(), authClearOtherSessionsCommand{
+			Actor: "admin", CurrentToken: "current-token",
+		})
+		if outcome.Kind != authClearOtherSessionsSucceeded || outcome.DeletedSessions != 2 || account.clearOthersToken != "current-token" || session.destroyed {
+			t.Fatalf("ClearOtherSessions() outcome=%+v account=%+v session=%+v", outcome, account, session)
+		}
+	})
 }

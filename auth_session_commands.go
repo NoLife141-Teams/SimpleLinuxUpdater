@@ -19,6 +19,8 @@ type authSessionAccount interface {
 	ChangePassword(currentPassword, newPassword, confirmPassword string) error
 	Authenticate(username, password string) (bool, error)
 	ClearSessions() (int64, error)
+	RevokeSession(id string) (bool, error)
+	ClearOtherSessions(currentToken string) (int64, error)
 }
 
 type authPasswordAttemptPolicy interface {
@@ -194,6 +196,47 @@ type authClearSessionsCommand struct {
 
 type authClearSessionsOutcome struct {
 	Kind            authClearSessionsOutcomeKind
+	DeletedSessions int64
+	Err             error
+}
+
+type authRevokeSessionOutcomeKind string
+
+const (
+	authRevokeSessionSucceeded       authRevokeSessionOutcomeKind = "succeeded"
+	authRevokeSessionNotFound        authRevokeSessionOutcomeKind = "not_found"
+	authRevokeSessionWriteFailed     authRevokeSessionOutcomeKind = "write_failed"
+	authRevokeSessionDestroyedFailed authRevokeSessionOutcomeKind = "current_destroy_failed"
+)
+
+type authRevokeSessionCommand struct {
+	Actor     string
+	ClientIP  string
+	SessionID string
+	Current   bool
+}
+
+type authRevokeSessionOutcome struct {
+	Kind    authRevokeSessionOutcomeKind
+	Current bool
+	Err     error
+}
+
+type authClearOtherSessionsOutcomeKind string
+
+const (
+	authClearOtherSessionsSucceeded   authClearOtherSessionsOutcomeKind = "succeeded"
+	authClearOtherSessionsWriteFailed authClearOtherSessionsOutcomeKind = "write_failed"
+)
+
+type authClearOtherSessionsCommand struct {
+	Actor        string
+	ClientIP     string
+	CurrentToken string
+}
+
+type authClearOtherSessionsOutcome struct {
+	Kind            authClearOtherSessionsOutcomeKind
 	DeletedSessions int64
 	Err             error
 }
@@ -487,6 +530,70 @@ func (m *authSessionCommands) ClearSessions(ctx context.Context, cmd authClearSe
 		Meta:       map[string]any{"deleted_sessions": totalDeleted, "current_session_destroyed": true},
 	})
 	return authClearSessionsOutcome{Kind: authClearSessionsSucceeded, DeletedSessions: totalDeleted}
+}
+
+func (m *authSessionCommands) RevokeSession(ctx context.Context, cmd authRevokeSessionCommand) authRevokeSessionOutcome {
+	deps := m.deps.withDefaults()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd.Actor = strings.TrimSpace(cmd.Actor)
+	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
+	cmd.SessionID = strings.TrimSpace(cmd.SessionID)
+	found, err := deps.Account.RevokeSession(cmd.SessionID)
+	if err != nil {
+		m.recordAudit(authSessionCommandAuditRecord{
+			Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.session.revoke",
+			TargetType: "auth_session", TargetName: cmd.SessionID, Status: "failure",
+			Message: "Failed to revoke session",
+		})
+		return authRevokeSessionOutcome{Kind: authRevokeSessionWriteFailed, Current: cmd.Current, Err: err}
+	}
+	if !found {
+		return authRevokeSessionOutcome{Kind: authRevokeSessionNotFound, Current: cmd.Current}
+	}
+	if cmd.Current {
+		if err := deps.Session.Destroy(ctx); err != nil {
+			m.recordAudit(authSessionCommandAuditRecord{
+				Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.session.revoke",
+				TargetType: "auth_session", TargetName: cmd.SessionID, Status: "failure",
+				Message: "Session revoked but current browser cookie could not be destroyed",
+				Meta:    map[string]any{"current_session": true, "persisted_session_revoked": true},
+			})
+			return authRevokeSessionOutcome{Kind: authRevokeSessionDestroyedFailed, Current: true, Err: err}
+		}
+	}
+	m.recordAudit(authSessionCommandAuditRecord{
+		Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.session.revoke",
+		TargetType: "auth_session", TargetName: cmd.SessionID, Status: "success",
+		Message: "Session revoked", Meta: map[string]any{"current_session": cmd.Current},
+	})
+	return authRevokeSessionOutcome{Kind: authRevokeSessionSucceeded, Current: cmd.Current}
+}
+
+func (m *authSessionCommands) ClearOtherSessions(ctx context.Context, cmd authClearOtherSessionsCommand) authClearOtherSessionsOutcome {
+	deps := m.deps.withDefaults()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd.Actor = strings.TrimSpace(cmd.Actor)
+	cmd.ClientIP = strings.TrimSpace(cmd.ClientIP)
+	cmd.CurrentToken = strings.TrimSpace(cmd.CurrentToken)
+	deleted, err := deps.Account.ClearOtherSessions(cmd.CurrentToken)
+	if err != nil {
+		m.recordAudit(authSessionCommandAuditRecord{
+			Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.sessions.clear_others",
+			TargetType: "auth_user", TargetName: cmd.Actor, Status: "failure",
+			Message: "Failed to clear other sessions",
+		})
+		return authClearOtherSessionsOutcome{Kind: authClearOtherSessionsWriteFailed, Err: err}
+	}
+	m.recordAudit(authSessionCommandAuditRecord{
+		Actor: cmd.Actor, ClientIP: cmd.ClientIP, Action: "auth.sessions.clear_others",
+		TargetType: "auth_user", TargetName: cmd.Actor, Status: "success",
+		Message: "Other sessions cleared", Meta: map[string]any{"deleted_sessions": deleted},
+	})
+	return authClearOtherSessionsOutcome{Kind: authClearOtherSessionsSucceeded, DeletedSessions: deleted}
 }
 
 func authPasswordChangeRateKey(clientIP, actor string) string {

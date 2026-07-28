@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	authpkg "debian-updater/internal/auth"
 	maintenancepkg "debian-updater/internal/maintenance"
 	observabilitypkg "debian-updater/internal/observability"
 
@@ -1321,6 +1322,140 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("session count after clear = %d, want 0", count)
+	}
+}
+
+func TestAuthSessionInventoryAndManagementAPI(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-session-inventory.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	var currentToken string
+	if err := getDB().QueryRow("SELECT token FROM sessions").Scan(&currentToken); err != nil {
+		t.Fatalf("load current session token: %v", err)
+	}
+	if _, err := getDB().Exec(
+		"INSERT INTO sessions(token, data, expiry) VALUES(?, x'00', julianday('2026-08-20T18:00:00Z'))",
+		"other-token",
+	); err != nil {
+		t.Fatalf("insert other session: %v", err)
+	}
+	if err := defaultAuthService().TouchSession("other-token", "203.0.113.x", "Firefox · Linux"); err != nil {
+		t.Fatalf("touch other session: %v", err)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	statusReq.AddCookie(sessionCookie)
+	statusReq.RemoteAddr = "192.168.4.55:54321"
+	statusReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36")
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("session status = %d, want %d (body=%s)", statusRec.Code, http.StatusOK, statusRec.Body.String())
+	}
+	var payload struct {
+		SessionCount int                   `json:"session_count"`
+		Sessions     []authpkg.SessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode session inventory: %v", err)
+	}
+	if payload.SessionCount != 2 || len(payload.Sessions) != 2 {
+		t.Fatalf("session payload = %+v", payload)
+	}
+	if !payload.Sessions[0].Current || payload.Sessions[0].ClientIP != "192.168.4.x" || payload.Sessions[0].ClientLabel != "Chrome · Windows" {
+		t.Fatalf("current session = %+v", payload.Sessions[0])
+	}
+
+	clearOthersReq := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions/others", nil)
+	clearOthersReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(clearOthersReq)
+	clearOthersRec := httptest.NewRecorder()
+	handler.ServeHTTP(clearOthersRec, clearOthersReq)
+	if clearOthersRec.Code != http.StatusOK || !strings.Contains(clearOthersRec.Body.String(), `"deleted_sessions":1`) {
+		t.Fatalf("clear others status=%d body=%s", clearOthersRec.Code, clearOthersRec.Body.String())
+	}
+	var remainingToken string
+	if err := getDB().QueryRow("SELECT token FROM sessions").Scan(&remainingToken); err != nil {
+		t.Fatalf("load preserved session: %v", err)
+	}
+	if remainingToken != currentToken {
+		t.Fatalf("remaining token = %q, want current token", remainingToken)
+	}
+}
+
+func TestAuthSessionRevokeAPI(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-session-revoke.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	if _, err := getDB().Exec(
+		"INSERT INTO sessions(token, data, expiry) VALUES(?, x'00', julianday('2026-08-20T18:00:00Z'))",
+		"other-token",
+	); err != nil {
+		t.Fatalf("insert other session: %v", err)
+	}
+	sessions, err := defaultAuthService().ListSessions("")
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	var otherID string
+	for _, item := range sessions {
+		if item.ExpiresAt == "2026-08-20T18:00:00Z" {
+			otherID = item.ID
+		}
+	}
+	if otherID == "" {
+		t.Fatalf("other session ID not found: %+v", sessions)
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions/"+otherID, nil)
+	revokeReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(revokeReq)
+	revokeRec := httptest.NewRecorder()
+	handler.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", revokeRec.Code, revokeRec.Body.String())
+	}
+	count, err := countStoredSessions()
+	if err != nil || count != 1 {
+		t.Fatalf("remaining session count = %d, %v", count, err)
+	}
+}
+
+func TestAuthCurrentSessionRevokeAPIExpiresCookie(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-current-session-revoke.db")
+	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	statusReq.AddCookie(sessionCookie)
+	statusRec := httptest.NewRecorder()
+	handler.ServeHTTP(statusRec, statusReq)
+	var payload struct {
+		Sessions []authpkg.SessionInfo `json:"sessions"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil || len(payload.Sessions) != 1 {
+		t.Fatalf("decode current session inventory: payload=%+v err=%v", payload, err)
+	}
+	if !payload.Sessions[0].Current {
+		t.Fatalf("session is not marked current: %+v", payload.Sessions[0])
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions/"+payload.Sessions[0].ID, nil)
+	revokeReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(revokeReq)
+	revokeRec := httptest.NewRecorder()
+	handler.ServeHTTP(revokeRec, revokeReq)
+	if revokeRec.Code != http.StatusOK || !strings.Contains(revokeRec.Body.String(), `"current_session":true`) {
+		t.Fatalf("revoke current status=%d body=%s", revokeRec.Code, revokeRec.Body.String())
+	}
+	count, err := countStoredSessions()
+	if err != nil || count != 0 {
+		t.Fatalf("remaining session count = %d, %v", count, err)
+	}
+	expired := false
+	for _, cookie := range revokeRec.Result().Cookies() {
+		if cookie.Name == sessionManager.Cookie.Name && cookie.MaxAge < 0 {
+			expired = true
+		}
+	}
+	if !expired {
+		t.Fatalf("current session revoke did not expire the browser cookie")
 	}
 }
 

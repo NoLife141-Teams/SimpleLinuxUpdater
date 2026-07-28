@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=timezone-controls-20260727a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=session-management-20260727a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -143,7 +143,9 @@
                 <div class="admin-block">
                     <h3>Sessions</h3>
                     <p class="muted" id="auth-session-status">Session status loading...</p>
+                    <div class="session-list" id="auth-session-list" aria-live="polite"></div>
                     <div class="policy-actions">
+                        <button class="btn-ghost" type="button" id="auth-sessions-clear-others">Logout All Other Sessions</button>
                         <button class="btn-danger" type="button" id="auth-sessions-clear">Logout All Sessions</button>
                     </div>
                 </div>
@@ -528,7 +530,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/admin.js?v=timezone-controls-20260727a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=session-management-20260727a"></script>
+    <script src="/static/js/admin.js?v=session-management-20260727a"></script>
 </body>
 </html>

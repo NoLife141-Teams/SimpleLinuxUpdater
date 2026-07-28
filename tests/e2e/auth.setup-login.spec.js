@@ -321,6 +321,26 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function stubAdminApi(page, state = {}) {
+    state.sessions = state.sessions || [
+      {
+        id: 'current-session',
+        current: true,
+        created_at: '2026-05-17T12:00:00Z',
+        last_seen_at: '2026-05-17T12:05:00Z',
+        expires_at: '2026-06-16T12:05:00Z',
+        client_ip: '192.168.1.x',
+        client_label: 'Chrome · Windows',
+      },
+      {
+        id: 'other-session',
+        current: false,
+        created_at: '2026-05-16T09:00:00Z',
+        last_seen_at: '2026-05-17T11:00:00Z',
+        expires_at: '2026-06-16T11:00:00Z',
+        client_ip: '203.0.113.x',
+        client_label: 'Firefox · Linux',
+      },
+    ];
     await page.route('**/api/app-settings/timezone', async route => {
       if (route.request().method() === 'PUT') {
         state.timezoneSave = await route.request().postDataJSON();
@@ -331,12 +351,24 @@ test.describe.serial('setup and login flows', () => {
         editable_timezone: state.timezoneSave?.timezone || 'America/Toronto',
       });
     });
+    await page.route('**/api/auth/sessions/*', async route => {
+      const id = decodeURIComponent(route.request().url().split('/').pop());
+      state.sessionRevokeID = id;
+      state.sessions = state.sessions.filter(session => session.id !== id);
+      return fulfillJson(route, { current_session: false });
+    });
+    await page.route('**/api/auth/sessions/others', async route => {
+      state.sessionClearOthersCount = (state.sessionClearOthersCount || 0) + 1;
+      const before = state.sessions.length;
+      state.sessions = state.sessions.filter(session => session.current);
+      return fulfillJson(route, { deleted_sessions: before - state.sessions.length });
+    });
     await page.route('**/api/auth/sessions', async route => {
       if (route.request().method() === 'DELETE') {
         state.sessionClearCount = (state.sessionClearCount || 0) + 1;
         return fulfillJson(route, { deleted: 2 });
       }
-      return fulfillJson(route, { session_count: 2 });
+      return fulfillJson(route, { session_count: state.sessions.length, sessions: state.sessions });
     });
     await page.route('**/api/auth/password', async route => {
       state.passwordPayload = await route.request().postDataJSON();
@@ -1290,6 +1322,22 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/admin');
     await expect(page.locator('#auth-session-status')).toContainText('2 server-side session');
+    await expect(page.locator('#auth-session-list')).toContainText('Chrome · Windows');
+    await expect(page.locator('#auth-session-list')).toContainText('Firefox · Linux');
+    await expect(page.locator('#auth-session-list')).toContainText('192.168.1.x');
+    await page.locator('#auth-session-list button[data-session-id="other-session"]').click();
+    await expect(page.locator('#action-confirm-modal')).toBeVisible();
+    await expect(page.locator('#action-confirm-message')).toContainText('Revoke this server-side session');
+    await page.locator('#action-confirm-cancel').click();
+    await expect.poll(() => state.sessionRevokeID || '').toBe('');
+
+    await page.locator('#auth-sessions-clear-others').click();
+    await expect(page.locator('#action-confirm-modal')).toBeVisible();
+    await page.locator('#action-confirm-submit').click();
+    await expect.poll(() => state.sessionClearOthersCount || 0).toBe(1);
+    await expect(page.locator('#auth-session-status')).toContainText('1 server-side session');
+    await expect(page.locator('#auth-sessions-clear-others')).toBeDisabled();
+
     await page.locator('#auth-current-password').fill(password);
     await page.locator('#auth-new-password').fill(changedPassword);
     await page.locator('#auth-confirm-password').fill(changedPassword);

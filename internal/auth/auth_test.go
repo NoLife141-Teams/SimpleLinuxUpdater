@@ -116,6 +116,83 @@ func TestServiceSessionCountAndClear(t *testing.T) {
 	}
 }
 
+func TestServiceSessionInventoryAndRevocation(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Date(2026, 7, 27, 21, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`
+		INSERT INTO sessions(token, data, expiry) VALUES
+			('current-token', x'00', julianday('2026-08-27T21:00:00Z')),
+			('other-token', x'00', julianday('2026-08-20T18:00:00Z'))
+	`); err != nil {
+		t.Fatalf("insert sessions: %v", err)
+	}
+	svc := NewService(ServiceOptions{
+		DB:  func() *sql.DB { return db },
+		Now: func() time.Time { return now },
+	})
+	if err := svc.TouchSession("current-token", "192.168.4.x", "Chrome · Windows"); err != nil {
+		t.Fatalf("TouchSession() error = %v", err)
+	}
+
+	sessions, err := svc.ListSessions("current-token")
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("ListSessions() length = %d, want 2", len(sessions))
+	}
+	current := sessions[0]
+	if !current.Current || current.ID == "" || current.ClientIP != "192.168.4.x" || current.ClientLabel != "Chrome · Windows" {
+		t.Fatalf("current session = %+v", current)
+	}
+	if current.CreatedAt != now.Format(time.RFC3339) || current.LastSeenAt != now.Format(time.RFC3339) {
+		t.Fatalf("current timestamps = %q / %q, want %q", current.CreatedAt, current.LastSeenAt, now.Format(time.RFC3339))
+	}
+	if current.ExpiresAt != "2026-08-27T21:00:00Z" {
+		t.Fatalf("current expiry = %q", current.ExpiresAt)
+	}
+	if sessions[1].Current || sessions[1].ID == "" || sessions[1].ID == current.ID {
+		t.Fatalf("other session = %+v", sessions[1])
+	}
+
+	revoked, err := svc.RevokeSession(sessions[1].ID)
+	if err != nil || !revoked {
+		t.Fatalf("RevokeSession() = %v, %v, want true/nil", revoked, err)
+	}
+	deleted, err := svc.ClearOtherSessions("current-token")
+	if err != nil || deleted != 0 {
+		t.Fatalf("ClearOtherSessions() = %d, %v, want 0/nil", deleted, err)
+	}
+	count, err := svc.CountSessions()
+	if err != nil || count != 1 {
+		t.Fatalf("CountSessions() = %d, %v, want 1/nil", count, err)
+	}
+}
+
+func TestServiceClearOtherSessionsPreservesCurrent(t *testing.T) {
+	db := newTestDB(t)
+	if _, err := db.Exec(`
+		INSERT INTO sessions(token, data, expiry) VALUES
+			('current-token', x'00', julianday('2026-08-27T21:00:00Z')),
+			('other-token-1', x'00', julianday('2026-08-20T18:00:00Z')),
+			('other-token-2', x'00', julianday('2026-08-20T18:00:00Z'))
+	`); err != nil {
+		t.Fatalf("insert sessions: %v", err)
+	}
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }})
+	deleted, err := svc.ClearOtherSessions("current-token")
+	if err != nil || deleted != 2 {
+		t.Fatalf("ClearOtherSessions() = %d, %v, want 2/nil", deleted, err)
+	}
+	var token string
+	if err := db.QueryRow("SELECT token FROM sessions").Scan(&token); err != nil {
+		t.Fatalf("load preserved session: %v", err)
+	}
+	if token != "current-token" {
+		t.Fatalf("preserved token = %q", token)
+	}
+}
+
 func TestNewSessionManagerPreservesCookieOptions(t *testing.T) {
 	db := newTestDB(t)
 	t.Setenv(SessionCookieSecureEnv, "true")
@@ -192,20 +269,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func ensureTestSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS auth_users (
-		id INTEGER PRIMARY KEY CHECK (id = 1),
-		username TEXT NOT NULL UNIQUE,
-		password_hash TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	)`); err != nil {
-		t.Fatalf("create auth_users schema: %v", err)
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
-		token TEXT PRIMARY KEY,
-		data BLOB NOT NULL,
-		expiry TEXT NOT NULL
-	)`); err != nil {
-		t.Fatalf("create sessions schema: %v", err)
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("EnsureSchema() error = %v", err)
 	}
 }

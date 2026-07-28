@@ -84,5 +84,16 @@ func EnsureSchema(db *sql.DB) error {
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expiry)"); err != nil {
 		return err
 	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS auth_session_metadata (
+			token TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			client_ip TEXT NOT NULL,
+			client_label TEXT NOT NULL
+		)
+	`); err != nil {
+		return err
+	}
 	return nil
 }

@@ -1773,6 +1773,8 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/auth/logout", handleAuthLogout)
 	r.GET("/api/auth/sessions", handleAuthSessionsStatus)
 	r.PUT("/api/auth/password", handleAuthPasswordChange)
+	r.DELETE("/api/auth/sessions/others", handleAuthOtherSessionsClear)
+	r.DELETE("/api/auth/sessions/:id", handleAuthSessionRevoke)
 	r.DELETE("/api/auth/sessions", handleAuthSessionsClear)
 	r.GET("/api/metrics/token", func(c *gin.Context) {
 		handleMetricsTokenStatusWithService(c, deps.MetricsAccessCredential)

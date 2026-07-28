@@ -296,6 +296,68 @@ func countStoredSessionsForContext(c *gin.Context) (int, error) {
 	return authServiceForContext(c).CountSessions()
 }
 
+func currentSessionToken(c *gin.Context) (token string) {
+	defer func() {
+		if recover() != nil {
+			token = ""
+		}
+	}()
+	sm := sessionManagerForContext(c)
+	if sm == nil || c == nil || c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(sm.Token(c.Request.Context()))
+}
+
+func maskedSessionClientIP(c *gin.Context) string {
+	host := rateLimitClientIP(c)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "unknown"
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return fmt.Sprintf("%d.%d.%d.x", ipv4[0], ipv4[1], ipv4[2])
+	}
+	ipv6 := ip.To16()
+	if ipv6 == nil {
+		return "unknown"
+	}
+	masked := append(net.IP(nil), ipv6...)
+	for i := 8; i < len(masked); i++ {
+		masked[i] = 0
+	}
+	return masked.String() + "/64"
+}
+
+func sessionClientLabel(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+	browser := "Unknown browser"
+	switch {
+	case strings.Contains(ua, "edg/"):
+		browser = "Edge"
+	case strings.Contains(ua, "firefox/"):
+		browser = "Firefox"
+	case strings.Contains(ua, "chrome/"):
+		browser = "Chrome"
+	case strings.Contains(ua, "safari/"):
+		browser = "Safari"
+	}
+	osName := "Unknown OS"
+	switch {
+	case strings.Contains(ua, "windows"):
+		osName = "Windows"
+	case strings.Contains(ua, "android"):
+		osName = "Android"
+	case strings.Contains(ua, "iphone"), strings.Contains(ua, "ipad"):
+		osName = "iOS"
+	case strings.Contains(ua, "mac os"), strings.Contains(ua, "macintosh"):
+		osName = "macOS"
+	case strings.Contains(ua, "linux"):
+		osName = "Linux"
+	}
+	return browser + " · " + osName
+}
+
 func sessionUsername(c *gin.Context) string {
 	if runtime, ok := authRuntimeFromContext(c); ok && runtime.sessionManager != nil {
 		if sm := runtime.sessionManager(); sm != nil {
@@ -476,6 +538,11 @@ func authGateMiddleware() gin.HandlerFunc {
 		username := sessionUsername(c)
 		if username != "" {
 			c.Set("actor", username)
+			if token := currentSessionToken(c); token != "" {
+				if err := authServiceForContext(c).TouchSession(token, maskedSessionClientIP(c), sessionClientLabel(c.GetHeader("User-Agent"))); err != nil {
+					log.Printf("authGateMiddleware: failed to update session activity: %v", err)
+				}
+			}
 			c.Next()
 			return
 		}
@@ -551,12 +618,12 @@ func handleAuthStatus(c *gin.Context) {
 }
 
 func handleAuthSessionsStatus(c *gin.Context) {
-	count, err := countStoredSessionsForContext(c)
+	sessions, err := authServiceForContext(c).ListSessions(currentSessionToken(c))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count sessions"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session_count": count})
+	c.JSON(http.StatusOK, gin.H{"session_count": len(sessions), "sessions": sessions})
 }
 
 func handleAuthPasswordChange(c *gin.Context) {
@@ -628,6 +695,52 @@ func handleAuthSessionsClear(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "sessions cleared", "deleted_sessions": outcome.DeletedSessions})
+}
+
+func handleAuthOtherSessionsClear(c *gin.Context) {
+	actor := sessionUsername(c)
+	outcome := authCommandsForContext(c).ClearOtherSessions(c.Request.Context(), authClearOtherSessionsCommand{
+		Actor:        actor,
+		ClientIP:     clientIPFromContext(c),
+		CurrentToken: currentSessionToken(c),
+	})
+	if outcome.Kind != authClearOtherSessionsSucceeded {
+		log.Printf("handleAuthOtherSessionsClear: failed for actor=%q: %v", actor, outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear other sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "other sessions cleared", "deleted_sessions": outcome.DeletedSessions})
+}
+
+func handleAuthSessionRevoke(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	current := false
+	sessions, err := authServiceForContext(c).ListSessions(currentSessionToken(c))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to inspect sessions"})
+		return
+	}
+	for _, item := range sessions {
+		if item.ID == id {
+			current = item.Current
+			break
+		}
+	}
+	outcome := authCommandsForContext(c).RevokeSession(c.Request.Context(), authRevokeSessionCommand{
+		Actor:     sessionUsername(c),
+		ClientIP:  clientIPFromContext(c),
+		SessionID: id,
+		Current:   current,
+	})
+	switch outcome.Kind {
+	case authRevokeSessionSucceeded:
+		c.JSON(http.StatusOK, gin.H{"message": "session revoked", "current_session": outcome.Current})
+	case authRevokeSessionNotFound:
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+	default:
+		log.Printf("handleAuthSessionRevoke: failed for session=%q kind=%s: %v", id, outcome.Kind, outcome.Err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke session"})
+	}
 }
 
 func handleAuthSetup(c *gin.Context) {

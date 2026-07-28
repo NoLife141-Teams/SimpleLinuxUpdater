@@ -25,6 +25,71 @@
     align-content: start;
 }
 
+.session-list {
+    display: grid;
+    gap: 10px;
+}
+
+.session-item {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--field-rgb), 0.48);
+}
+
+.session-item-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.session-item-title {
+    margin: 0;
+    color: var(--text);
+    font-weight: 750;
+}
+
+.session-item-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 14px;
+    margin: 0;
+}
+
+.session-item-details div {
+    min-width: 0;
+}
+
+.session-item-details dt {
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.session-item-details dd {
+    margin: 3px 0 0;
+    color: var(--subtle);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.session-revoke {
+    justify-self: start;
+    padding: 7px 10px;
+    font-size: 12px;
+}
+
+@media (max-width: 640px) {
+    .session-item-details {
+        grid-template-columns: 1fr;
+    }
+}
+
 .timezone-picker {
     position: relative;
     min-width: 0;

@@ -57,7 +57,7 @@
         const inFlight = new Map();
         let timezone = { configured: "", resolved: "UTC", draft: "" };
         let notifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
-        let account = { sessionCount: 0 };
+        let account = { sessionCount: 0, sessions: [] };
         let metrics = { enabled: false, revealedToken: "" };
         let backup = { blocked: false, reason: "", status: null, selectedFile: null };
         const feedback = Object.fromEntries(streamNames.map(name => [name, { message: "", error: false }]));
@@ -66,7 +66,7 @@
         function feedbackScope(command) {
             if (command === "saveTimezone") return "timezone";
             if (command === "saveNotifications" || command === "testNotification") return "notifications";
-            if (command === "changePassword" || command === "clearSessions") return "account";
+            if (command === "changePassword" || command === "clearSessions" || command === "clearOtherSessions" || command === "revokeSession") return "account";
             if (command.includes("MetricsToken")) return "metrics";
             if (command.includes("Backup")) return "backup";
             return "account";
@@ -110,7 +110,21 @@
             timezone = { ...timezone, ...normalized, draft: normalized.configured };
         }
         function applyNotifications(data) { notifications = normalizeNotifications(data); }
-        function applyAccount(data = {}) { account = { sessionCount: Math.max(0, Number(data.count ?? data.session_count ?? 0) || 0) }; }
+        function applyAccount(data = {}) {
+            const sessions = (Array.isArray(data.sessions) ? data.sessions : []).map(item => ({
+                id: String(item?.id || "").trim(),
+                current: Boolean(item?.current),
+                createdAt: String(item?.created_at ?? item?.createdAt ?? "").trim(),
+                lastSeenAt: String(item?.last_seen_at ?? item?.lastSeenAt ?? "").trim(),
+                expiresAt: String(item?.expires_at ?? item?.expiresAt ?? "").trim(),
+                clientIP: String(item?.client_ip ?? item?.clientIP ?? "").trim(),
+                clientLabel: String(item?.client_label ?? item?.clientLabel ?? "").trim()
+            })).filter(item => item.id);
+            account = {
+                sessionCount: Math.max(0, Number(data.count ?? data.session_count ?? sessions.length) || 0),
+                sessions
+            };
+        }
         function applyMetrics(data = {}) {
             metrics = { enabled: Boolean(data.enabled ?? data.configured ?? data.has_token), revealedToken: String(data.token ?? metrics.revealedToken ?? "") };
         }
@@ -138,6 +152,16 @@
                     return { enabled: true, command, key, payload: {} };
                 }
                 case "clearSessions": return { enabled: true, command, key, payload: {} };
+                case "clearOtherSessions":
+                    return account.sessions.filter(item => !item.current).length > 0
+                        ? { enabled: true, command, key, payload: {} }
+                        : { enabled: false, command, key, reason: "No other session is active." };
+                case "revokeSession": {
+                    const id = String(payload.id || "").trim();
+                    return id
+                        ? { enabled: true, command, key, payload: { id } }
+                        : { enabled: false, command, key, reason: "Choose a session to revoke." };
+                }
                 case "rotateMetricsToken": case "disableMetricsToken": return { enabled: true, command, key, payload: {} };
                 case "copyMetricsToken": return metrics.revealedToken ? { enabled: true, command, key, payload: { token: metrics.revealedToken } } : { enabled: false, command, key, reason: "No revealed metrics token is available." };
                 case "exportBackup":
@@ -166,7 +190,7 @@
             if (plan.command === "disableMetricsToken" && !failed) metrics = { enabled: false, revealedToken: "" };
             const effects = [effect("render", { area: scope })];
             if (plan.command === "saveTimezone" && !failed) effects.push(effect("reconcileSchedule"));
-            if (["saveNotifications", "clearSessions", "rotateMetricsToken", "disableMetricsToken", "exportBackup", "verifyBackup", "restoreBackup"].includes(plan.command) && !failed) {
+            if (["saveNotifications", "clearSessions", "clearOtherSessions", "revokeSession", "rotateMetricsToken", "disableMetricsToken", "exportBackup", "verifyBackup", "restoreBackup"].includes(plan.command) && !failed) {
                 effects.push(effect("refreshSnapshot", { stream: scope === "account" ? "account" : scope }));
             }
             return effects;

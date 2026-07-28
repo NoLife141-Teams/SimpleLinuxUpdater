@@ -99,6 +99,26 @@ test("account and metrics administration excludes secrets and clears token revea
     assert.equal(store.planCommand("copyMetricsToken").enabled, false);
 });
 
+test("session administration normalizes inventory and scopes destructive commands", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "accountSnapshotReceived",
+        data: {
+            session_count: 2,
+            sessions: [
+                { id: "current-id", current: true, client_label: "Chrome · Windows", client_ip: "192.168.4.x" },
+                { id: "other-id", current: false, client_label: "Firefox · Linux", client_ip: "203.0.113.x" }
+            ]
+        }
+    });
+    assert.equal(store.getView().account.sessions.length, 2);
+    assert.equal(store.getView().account.sessions[0].clientLabel, "Chrome · Windows");
+    assert.equal(store.getView().account.sessions[0].clientIP, "192.168.4.x");
+    assert.deepEqual(store.planCommand("revokeSession", { id: "other-id" }).payload, { id: "other-id" });
+    assert.equal(store.planCommand("revokeSession", { id: "" }).enabled, false);
+    assert.equal(store.planCommand("clearOtherSessions").enabled, true);
+});
+
 test("backup administration owns eligibility but excludes passphrases and file contents", () => {
     const store = createStore();
     store.dispatch({ type: "backupSnapshotReceived", data: { blocked: true, reason: "Maintenance active" } });

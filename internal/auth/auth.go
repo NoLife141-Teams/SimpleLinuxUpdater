@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -222,6 +224,16 @@ type User struct {
 	PasswordHash string
 }
 
+type SessionInfo struct {
+	ID          string `json:"id"`
+	Current     bool   `json:"current"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	LastSeenAt  string `json:"last_seen_at,omitempty"`
+	ExpiresAt   string `json:"expires_at"`
+	ClientIP    string `json:"client_ip,omitempty"`
+	ClientLabel string `json:"client_label,omitempty"`
+}
+
 type Repository interface {
 	SetupRequired() (bool, error)
 	GetSingleUser() (User, bool, error)
@@ -229,6 +241,10 @@ type Repository interface {
 	UpdatePasswordHash(passwordHash, now string) error
 	CountSessions() (int, error)
 	ClearSessions() (int64, error)
+	TouchSession(token, clientIP, clientLabel, now string) error
+	ListSessions(currentToken string) ([]SessionInfo, error)
+	RevokeSession(id string) (bool, error)
+	ClearOtherSessions(currentToken string) (int64, error)
 }
 
 type SQLiteRepository struct {
@@ -300,15 +316,154 @@ func (r *SQLiteRepository) CountSessions() (int, error) {
 }
 
 func (r *SQLiteRepository) ClearSessions() (int64, error) {
-	result, err := r.db().Exec("DELETE FROM sessions")
+	tx, err := r.db().BeginTx(context.Background(), nil)
 	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("DELETE FROM sessions")
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata"); err != nil {
 		return 0, err
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return 0, err
 	}
-	return rows, nil
+	return rows, tx.Commit()
+}
+
+func sessionPublicID(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:16])
+}
+
+func (r *SQLiteRepository) TouchSession(token, clientIP, clientLabel, now string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	_, err := r.db().Exec(`
+		INSERT INTO auth_session_metadata(token, created_at, last_seen_at, client_ip, client_label)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(token) DO UPDATE SET
+			last_seen_at = excluded.last_seen_at,
+			client_ip = excluded.client_ip,
+			client_label = excluded.client_label
+	`, token, now, now, clientIP, clientLabel)
+	return err
+}
+
+func (r *SQLiteRepository) ListSessions(currentToken string) ([]SessionInfo, error) {
+	if _, err := r.db().Exec("DELETE FROM auth_session_metadata WHERE token NOT IN (SELECT token FROM sessions)"); err != nil {
+		return nil, err
+	}
+	rows, err := r.db().Query(`
+		SELECT s.token,
+			COALESCE(m.created_at, ''),
+			COALESCE(m.last_seen_at, ''),
+			strftime('%Y-%m-%dT%H:%M:%SZ', s.expiry),
+			COALESCE(m.client_ip, ''),
+			COALESCE(m.client_label, '')
+		FROM sessions s
+		LEFT JOIN auth_session_metadata m ON m.token = s.token
+		ORDER BY CASE WHEN s.token = ? THEN 0 ELSE 1 END, m.last_seen_at DESC, s.expiry DESC
+	`, currentToken)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := make([]SessionInfo, 0)
+	for rows.Next() {
+		var token string
+		var item SessionInfo
+		if err := rows.Scan(&token, &item.CreatedAt, &item.LastSeenAt, &item.ExpiresAt, &item.ClientIP, &item.ClientLabel); err != nil {
+			return nil, err
+		}
+		item.ID = sessionPublicID(token)
+		item.Current = token != "" && token == currentToken
+		sessions = append(sessions, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
+func (r *SQLiteRepository) RevokeSession(id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if len(id) != 32 {
+		return false, nil
+	}
+	rows, err := r.db().Query("SELECT token FROM sessions")
+	if err != nil {
+		return false, err
+	}
+	var target string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			rows.Close()
+			return false, err
+		}
+		if subtle.ConstantTimeCompare([]byte(sessionPublicID(token)), []byte(id)) == 1 {
+			target = token
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if target == "" {
+		return false, nil
+	}
+	tx, err := r.db().BeginTx(context.Background(), nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("DELETE FROM sessions WHERE token = ?", target)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata WHERE token = ?", target); err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, tx.Commit()
+}
+
+func (r *SQLiteRepository) ClearOtherSessions(currentToken string) (int64, error) {
+	currentToken = strings.TrimSpace(currentToken)
+	if currentToken == "" {
+		return 0, errors.New("current session token is required")
+	}
+	tx, err := r.db().BeginTx(context.Background(), nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("DELETE FROM sessions WHERE token <> ?", currentToken)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata WHERE token <> ?", currentToken); err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, tx.Commit()
 }
 
 type ServiceOptions struct {
@@ -431,6 +586,23 @@ func (s *Service) CountSessions() (int, error) {
 
 func (s *Service) ClearSessions() (int64, error) {
 	return s.repo.ClearSessions()
+}
+
+func (s *Service) TouchSession(token, clientIP, clientLabel string) error {
+	now := s.now().UTC().Format(time.RFC3339)
+	return s.repo.TouchSession(strings.TrimSpace(token), strings.TrimSpace(clientIP), strings.TrimSpace(clientLabel), now)
+}
+
+func (s *Service) ListSessions(currentToken string) ([]SessionInfo, error) {
+	return s.repo.ListSessions(strings.TrimSpace(currentToken))
+}
+
+func (s *Service) RevokeSession(id string) (bool, error) {
+	return s.repo.RevokeSession(strings.TrimSpace(id))
+}
+
+func (s *Service) ClearOtherSessions(currentToken string) (int64, error) {
+	return s.repo.ClearOtherSessions(strings.TrimSpace(currentToken))
 }
 
 func ValidatePasswordPolicy(password string) error {

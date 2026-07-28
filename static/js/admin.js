@@ -374,6 +374,76 @@ function setAuthPasswordFeedback(successMessage, errorMessage) {
     if (error) error.textContent = errorMessage || "";
 }
 
+function formatSessionTime(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "Unavailable";
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return raw;
+    return parsed.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function renderAuthSessions() {
+    const view = adminPageView();
+    const status = document.getElementById("auth-session-status");
+    const list = document.getElementById("auth-session-list");
+    const clearOthers = document.getElementById("auth-sessions-clear-others");
+    if (status) status.textContent = `${view.account.sessionCount} server-side session(s) stored.`;
+    if (clearOthers) clearOthers.disabled = !view.account.sessions.some(item => !item.current);
+    if (!list) return;
+    list.replaceChildren();
+    if (view.account.sessions.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No active session details are available.";
+        list.appendChild(empty);
+        return;
+    }
+    view.account.sessions.forEach((session) => {
+        const item = document.createElement("article");
+        item.className = "session-item";
+        const head = document.createElement("div");
+        head.className = "session-item-head";
+        const title = document.createElement("p");
+        title.className = "session-item-title";
+        title.textContent = session.clientLabel || "Unknown browser · Unknown OS";
+        head.appendChild(title);
+        if (session.current) {
+            const badge = document.createElement("span");
+            badge.className = "pill pill-success";
+            badge.textContent = "This session";
+            head.appendChild(badge);
+        }
+        item.appendChild(head);
+
+        const details = document.createElement("dl");
+        details.className = "session-item-details";
+        [
+            ["Masked IP", session.clientIP || "Unavailable"],
+            ["Created", formatSessionTime(session.createdAt)],
+            ["Last activity", formatSessionTime(session.lastSeenAt)],
+            ["Expires", formatSessionTime(session.expiresAt)]
+        ].forEach(([label, value]) => {
+            const group = document.createElement("div");
+            const term = document.createElement("dt");
+            const description = document.createElement("dd");
+            term.textContent = label;
+            description.textContent = value;
+            group.append(term, description);
+            details.appendChild(group);
+        });
+        item.appendChild(details);
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn-danger session-revoke";
+        button.dataset.sessionId = session.id;
+        button.dataset.currentSession = String(session.current);
+        button.textContent = session.current ? "Logout This Session" : "Revoke Session";
+        item.appendChild(button);
+        list.appendChild(item);
+    });
+}
+
 async function fetchAuthSessionStatus() {
     const status = document.getElementById("auth-session-status");
     if (!status) return;
@@ -386,13 +456,69 @@ async function fetchAuthSessionStatus() {
             return;
         }
         const data = await res.json().catch(() => ({}));
-        adminPageInteraction.dispatch({ type: "accountSnapshotReceived", requestID, data: { count: data.session_count } });
-        status.textContent = `${Number(data.session_count || 0)} server-side session(s) stored.`;
+        adminPageInteraction.dispatch({ type: "accountSnapshotReceived", requestID, data });
+        renderAuthSessions();
     } catch (err) {
         console.error("Failed to fetch session status:", err);
         adminPageInteraction.dispatch({ type: "snapshotFailed", stream: "account", requestID, error: "Session status request failed." });
         status.textContent = "Session status request failed.";
     }
+}
+
+async function clearOtherAuthSessions() {
+    if (!(await window.confirmAction("Logout every other server-side session and keep this browser signed in?", { confirmLabel: "Logout Others" }))) return;
+    const plan = beginAdminCommand("clearOtherSessions");
+    if (!plan) return;
+    try {
+        const res = await fetch("/api/auth/sessions/others", { method: "DELETE" });
+        if (!res.ok) {
+            const message = await parseErrorResponse(res, "Failed to clear other sessions.");
+            finishAdminCommand(plan, null, message, true);
+            window.notifyApp(message);
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        finishAdminCommand(plan, data, "Other sessions cleared.");
+        await fetchAuthSessionStatus();
+        window.notifyApp(`${Number(data.deleted_sessions || 0)} other session(s) logged out.`);
+    } catch (err) {
+        finishAdminCommand(plan, null, err.message || "Failed to clear other sessions.", true);
+        window.notifyApp(err.message || "Failed to clear other sessions.");
+    }
+}
+
+async function revokeAuthSession(id, current) {
+    const prompt = current
+        ? "Logout this browser session now?"
+        : "Revoke this server-side session?";
+    if (!(await window.confirmAction(prompt, { confirmLabel: current ? "Logout" : "Revoke Session" }))) return;
+    const plan = beginAdminCommand("revokeSession", { id });
+    if (!plan) return;
+    try {
+        const res = await fetch(`/api/auth/sessions/${encodeURIComponent(plan.payload.id)}`, { method: "DELETE" });
+        if (!res.ok) {
+            const message = await parseErrorResponse(res, "Failed to revoke session.");
+            finishAdminCommand(plan, null, message, true);
+            window.notifyApp(message);
+            return;
+        }
+        finishAdminCommand(plan, null, "Session revoked.");
+        if (current) {
+            window.location.assign("/login");
+            return;
+        }
+        await fetchAuthSessionStatus();
+        window.notifyApp("Session revoked.");
+    } catch (err) {
+        finishAdminCommand(plan, null, err.message || "Failed to revoke session.", true);
+        window.notifyApp(err.message || "Failed to revoke session.");
+    }
+}
+
+function handleAuthSessionListClick(event) {
+    const button = event.target.closest("button[data-session-id]");
+    if (!button) return;
+    revokeAuthSession(button.dataset.sessionId || "", button.dataset.currentSession === "true");
 }
 
 async function changeAdminPassword() {
@@ -1985,6 +2111,8 @@ document.getElementById("notification-webhook-url").addEventListener("input", ()
 });
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
+document.getElementById("auth-sessions-clear-others").addEventListener("click", clearOtherAuthSessions);
+document.getElementById("auth-session-list").addEventListener("click", handleAuthSessionListClick);
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
 document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);

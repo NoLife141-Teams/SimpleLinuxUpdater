@@ -19,6 +19,8 @@ let appTimezonePicker = null;
 let appTimezonePreviewTimer = 0;
 let adminSectionObserver = null;
 let adminSectionNavigationLockUntil = 0;
+let pendingPolicyReplacement = null;
+let pendingPolicyReplacementTrigger = null;
 
 const adminSectionPreferenceKey = "simplelinuxupdater.admin.collapsed-sections.v1";
 
@@ -192,12 +194,19 @@ function ensureTimezoneSelectHasValue(value) {
 function renderTimezoneSaveState() {
     const view = adminPageView();
     const button = document.getElementById("app-timezone-save");
+    const discard = document.getElementById("app-timezone-discard");
+    const state = document.getElementById("app-timezone-draft-state");
     if (!button) return;
     const inFlight = view.commands.inFlight.includes("saveTimezone");
     button.disabled = !view.timezone.dirty || inFlight;
     button.title = view.timezone.dirty
         ? "Save the selected app timezone."
         : "Choose a different timezone to save.";
+    if (discard) discard.disabled = !view.timezone.dirty || inFlight;
+    if (state) {
+        state.textContent = view.timezone.dirty ? "Unsaved timezone change" : "No unsaved changes";
+        state.classList.toggle("is-dirty", view.timezone.dirty);
+    }
 }
 
 function renderCurrentAppTime(resolvedTimezone = "") {
@@ -342,7 +351,51 @@ function renderNotificationSettings() {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
     renderNotificationLastDelivery(view.lastDelivery);
+    renderNotificationDraftState();
     renderAdminWorkspace();
+}
+
+function renderNotificationDraftState() {
+    const view = adminPageView();
+    const notification = view.notifications;
+    const inFlight = view.commands.inFlight.includes("saveNotifications");
+    const save = document.getElementById("notification-save");
+    const discard = document.getElementById("notification-discard");
+    const state = document.getElementById("notification-draft-state");
+    if (save) {
+        save.disabled = !notification.dirty || !notification.valid || inFlight;
+        save.title = notification.valid ? "" : notification.message;
+    }
+    if (discard) discard.disabled = !notification.dirty || inFlight;
+    if (state) {
+        state.textContent = notification.dirty
+            ? (notification.valid ? "Unsaved notification changes" : notification.message)
+            : "No unsaved changes";
+        state.classList.toggle("is-dirty", notification.dirty);
+    }
+}
+
+function syncNotificationDraftFromDOM() {
+    adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: {
+        enabled: Boolean(document.getElementById("notification-enabled")?.checked),
+        webhookURL: document.getElementById("notification-webhook-url")?.value?.trim() || "",
+        eventTypes: selectedNotificationEvents()
+    } });
+    setNotificationFeedback("", "");
+    renderNotificationDraftState();
+}
+
+function discardNotificationDraft() {
+    adminPageInteraction.dispatch({ type: "notificationDiscardRequested" });
+    renderNotificationSettings();
+    setNotificationFeedback("", "");
+}
+
+function discardTimezoneDraft() {
+    adminPageInteraction.dispatch({ type: "timezoneDiscardRequested" });
+    ensureTimezoneSelectHasValue(adminPageView().timezone.draft);
+    renderTimezoneSaveState();
+    setAppTimezoneFeedback("", "");
 }
 
 function applyNotificationSettings(payload, requestID = null) {
@@ -407,7 +460,7 @@ async function saveNotificationSettings() {
         finishAdminCommand(plan, null, "Failed to save notification settings.", true);
         setNotificationFeedback("", "Failed to save notification settings.");
     } finally {
-        if (button) button.disabled = false;
+        renderNotificationDraftState();
     }
 }
 
@@ -1265,6 +1318,7 @@ function renderBlackoutEditor(kind) {
         container.innerHTML = '<div class="empty-editor-state subtle">No no-run windows yet.</div>';
         syncBlackoutTextarea(kind);
         if (kind === "policy") updatePolicySummary();
+        else renderGlobalSettingsDraftState();
         return;
     }
     container.innerHTML = rows.map((row, index) => `
@@ -1294,6 +1348,7 @@ function renderBlackoutEditor(kind) {
     `).join("");
     syncBlackoutTextarea(kind);
     if (kind === "policy") updatePolicySummary();
+    else renderGlobalSettingsDraftState();
 }
 
 function addBlackoutRow(kind) {
@@ -1390,6 +1445,49 @@ function updatePolicySummary() {
         <div class="summary-title">${escapeHtml(projection.title)}</div>
 		<div class="summary-body">${escapeHtml(projection.body)}</div>
 	`;
+    renderPolicyDraftState();
+}
+
+function renderPolicyDraftState() {
+    const view = scheduledPolicyView();
+    const editor = view.editor;
+    const operationKey = String(editor.draft.id || "__new_policy__");
+    const submitting = view.commands.inFlightPolicyIDs.includes(operationKey);
+    const bar = document.getElementById("policy-draft-action-bar");
+    const validation = document.getElementById("policy-draft-validation");
+    const save = document.getElementById("policy-save-btn");
+    const discard = document.getElementById("policy-discard-btn");
+    if (bar) bar.hidden = !editor.dirty;
+    if (validation) {
+        validation.textContent = editor.valid
+            ? "Ready to save this section."
+            : (editor.validationMessage || "Complete required fields to save.");
+    }
+    if (save) {
+        save.disabled = !editor.dirty || !editor.valid || submitting;
+        save.textContent = editor.draft.id ? "Update Policy" : "Create Policy";
+    }
+    if (discard) discard.disabled = !editor.dirty || submitting;
+}
+
+function renderGlobalSettingsDraftState() {
+    const view = scheduledPolicyView();
+    const state = view.globalSettings;
+    const submitting = view.commands.globalSettingsInFlight;
+    const label = document.getElementById("scheduled-settings-draft-state");
+    const save = document.getElementById("scheduled-settings-save");
+    const discard = document.getElementById("scheduled-settings-discard");
+    if (label) {
+        label.textContent = state.dirty
+            ? (state.valid ? "Unsaved global schedule changes" : state.message)
+            : "No unsaved changes";
+        label.classList.toggle("is-dirty", state.dirty);
+    }
+    if (save) {
+        save.disabled = !state.dirty || !state.valid || submitting;
+        save.title = state.valid ? "" : state.message;
+    }
+    if (discard) discard.disabled = !state.dirty || submitting;
 }
 
 function policyPreviewReasonLabel(reason) {
@@ -1682,8 +1780,8 @@ async function copyJobDetailText(kind) {
     }
 }
 
-function resetPolicyForm() {
-    scheduledPolicyAdministration.dispatch({ type: "editorReset" });
+function resetPolicyForm(options = {}) {
+    if (options.updateStore !== false) scheduledPolicyAdministration.dispatch({ type: "editorReset" });
     document.getElementById("policy-id").value = "";
     document.getElementById("policy-name").value = "";
     document.getElementById("policy-target-tag").value = "";
@@ -1700,17 +1798,18 @@ function resetPolicyForm() {
     clearPolicyFieldErrors();
     setPolicyFeedback("", "");
     setPolicyEditorModeLabel("Create new policy");
-    document.getElementById("policy-save-btn").textContent = "Create Policy";
     setPolicyWeekdays([]);
-    setBlackoutEditorRows("policy", []);
+    if (options.updateStore !== false) setBlackoutEditorRows("policy", []);
+    else renderBlackoutEditor("policy");
     setBlackoutJsonStatus("policy", "");
     refreshPolicyFormVisibility();
     updatePolicySummary();
     schedulePolicyPreview();
+    renderPolicyDraftState();
 }
 
-function applyPolicyToForm(policy) {
-    scheduledPolicyAdministration.dispatch({ type: "editorLoaded", policy });
+function applyPolicyToForm(policy, options = {}) {
+    if (options.updateStore !== false) scheduledPolicyAdministration.dispatch({ type: "editorLoaded", policy });
     document.getElementById("policy-id").value = String(policy.id || "");
     document.getElementById("policy-name").value = policy.name || "";
     document.getElementById("policy-target-tag").value = policy.target_tag || "";
@@ -1727,13 +1826,68 @@ function applyPolicyToForm(policy) {
     clearPolicyFieldErrors();
     setPolicyFeedback("", "");
     setPolicyWeekdays(policy.weekdays || []);
-    setBlackoutEditorRows("policy", policy.policy_blackouts || []);
+    if (options.updateStore !== false) setBlackoutEditorRows("policy", policy.policy_blackouts || []);
+    else renderBlackoutEditor("policy");
     setBlackoutJsonStatus("policy", "");
     setPolicyEditorModeLabel(`Editing #${policy.id}`);
-    document.getElementById("policy-save-btn").textContent = "Update Policy";
     refreshPolicyFormVisibility();
     updatePolicySummary();
     schedulePolicyPreview();
+    renderPolicyDraftState();
+}
+
+function applyPolicyReplacementToDOM(replacement) {
+    if (replacement?.type === "load") {
+        const draft = scheduledPolicyView().editor.draft;
+        applyPolicyToForm({ ...draft, policy_blackouts: scheduledPolicyView().editor.policyBlackouts }, { updateStore: false });
+    } else {
+        resetPolicyForm({ updateStore: false });
+    }
+    document.getElementById("update-policy-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closePolicyUnsavedModal(restoreFocus = true) {
+    document.getElementById("policy-unsaved-modal")?.classList.remove("active");
+    pendingPolicyReplacement = null;
+    if (restoreFocus) pendingPolicyReplacementTrigger?.focus({ preventScroll: true });
+    pendingPolicyReplacementTrigger = null;
+}
+
+function requestPolicyReplacement(replacement, trigger) {
+    const effects = scheduledPolicyAdministration.dispatch({ type: "editorReplacementRequested", replacement });
+    const confirmation = effects.find(effect => effect.type === "confirmEditorReplacement");
+    if (confirmation) {
+        pendingPolicyReplacement = confirmation.replacement;
+        pendingPolicyReplacementTrigger = trigger || document.activeElement;
+        document.getElementById("policy-unsaved-modal")?.classList.add("active");
+        document.getElementById("policy-unsaved-cancel")?.focus({ preventScroll: true });
+        return;
+    }
+    applyPolicyReplacementToDOM(replacement);
+}
+
+function confirmPolicyReplacement() {
+    if (!pendingPolicyReplacement) return;
+    const replacement = pendingPolicyReplacement;
+    scheduledPolicyAdministration.dispatch({ type: "editorReplacementConfirmed", replacement });
+    closePolicyUnsavedModal(false);
+    applyPolicyReplacementToDOM(replacement);
+}
+
+function discardPolicyDraft() {
+    scheduledPolicyAdministration.dispatch({ type: "editorDiscardRequested" });
+    const editor = scheduledPolicyView().editor;
+    const replacement = editor.draft.id
+        ? { type: "load", policy: { ...editor.draft, policy_blackouts: editor.policyBlackouts } }
+        : { type: "reset" };
+    applyPolicyReplacementToDOM(replacement);
+}
+
+function discardGlobalSettingsDraft() {
+    scheduledPolicyAdministration.dispatch({ type: "globalSettingsDiscardRequested" });
+    renderBlackoutEditor("global");
+    setScheduledSettingsFeedback("", "");
+    renderGlobalSettingsDraftState();
 }
 
 function renderScheduledPolicies() {
@@ -2113,8 +2267,7 @@ async function saveScheduledPolicy(event) {
         if (plan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan, message: err.message || "Failed to save scheduled policy." });
         setPolicyFeedback("", err.message || "Failed to save scheduled policy.");
     } finally {
-        const saveBtn = document.getElementById("policy-save-btn");
-        if (saveBtn) saveBtn.disabled = false;
+        renderPolicyDraftState();
     }
 }
 
@@ -2154,8 +2307,7 @@ async function saveScheduledSettings() {
         if (plan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan, message: err.message || "Failed to save global no-run windows." });
         setScheduledSettingsFeedback("", err.message || "Failed to save global no-run windows.");
     } finally {
-        const button = document.getElementById("scheduled-settings-save");
-        if (button) button.disabled = false;
+        renderGlobalSettingsDraftState();
     }
 }
 
@@ -2198,8 +2350,7 @@ function handleScheduledPolicyTableClick(event) {
     const policy = scheduledPolicyView().policies.find((item) => String(item.id) === id);
     if (!policy) return;
     if (button.dataset.action === "edit-policy") {
-        applyPolicyToForm(policy);
-        document.getElementById("update-policy-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        requestPolicyReplacement({ type: "load", policy }, button);
         return;
     }
     if (button.dataset.action === "delete-policy") {
@@ -2212,6 +2363,7 @@ function updateBlackoutRowField(kind, index, field, value) {
     syncBlackoutTextarea(kind);
     updateBlackoutRowSummary(kind, index);
     if (kind === "policy") updatePolicySummary();
+    else renderGlobalSettingsDraftState();
 }
 
 function handleBlackoutEditorClick(event) {
@@ -2236,6 +2388,7 @@ function handleBlackoutEditorClick(event) {
         syncBlackoutTextarea(kind);
         updateBlackoutRowSummary(kind, index);
         if (kind === "policy") updatePolicySummary();
+        else renderGlobalSettingsDraftState();
     }
 }
 
@@ -2259,6 +2412,7 @@ function applyBlackoutJson(kind, label) {
         setBlackoutJsonStatus(kind, effect.message, false);
         if (kind === "global") {
             setScheduledSettingsFeedback("", "");
+            renderGlobalSettingsDraftState();
         }
     } else {
         setBlackoutJsonStatus(kind, effect?.message || `Failed to apply ${label.toLowerCase()}.`, true);
@@ -2326,21 +2480,18 @@ document.getElementById("backup-export-btn").addEventListener("click", exportBac
 document.getElementById("backup-verify-btn").addEventListener("click", verifyBackup);
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);
 document.getElementById("app-timezone-save").addEventListener("click", saveAppTimezoneSettings);
+document.getElementById("app-timezone-discard").addEventListener("click", discardTimezoneDraft);
 document.getElementById("app-timezone-input").addEventListener("input", (event) => {
     adminPageInteraction.dispatch({ type: "timezoneDraftChanged", timezone: event.target.value });
     setAppTimezoneFeedback("", "");
     renderTimezoneSaveState();
 });
 document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
+document.getElementById("notification-discard").addEventListener("click", discardNotificationDraft);
 document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
-document.getElementById("notification-webhook-url").addEventListener("input", () => {
-    adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: {
-        enabled: Boolean(document.getElementById("notification-enabled")?.checked),
-        webhookURL: document.getElementById("notification-webhook-url")?.value?.trim() || "",
-        eventTypes: selectedNotificationEvents()
-    } });
-    setNotificationFeedback("", "");
-});
+document.getElementById("notification-webhook-url").addEventListener("input", syncNotificationDraftFromDOM);
+document.getElementById("notification-enabled").addEventListener("change", syncNotificationDraftFromDOM);
+document.querySelectorAll("[data-notification-event]").forEach(input => input.addEventListener("change", syncNotificationDraftFromDOM));
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 document.getElementById("auth-sessions-clear").addEventListener("click", clearAuthSessions);
 document.getElementById("auth-sessions-clear-others").addEventListener("click", clearOtherAuthSessions);
@@ -2356,8 +2507,15 @@ document.getElementById("session-ip-reveal-modal").addEventListener("click", (ev
     if (event.target?.id === "session-ip-reveal-modal") closeSessionIPRevealModal();
 });
 document.getElementById("update-policy-form").addEventListener("submit", saveScheduledPolicy);
-document.getElementById("policy-reset-btn").addEventListener("click", resetPolicyForm);
+document.getElementById("policy-new-btn").addEventListener("click", event => requestPolicyReplacement({ type: "reset" }, event.currentTarget));
+document.getElementById("policy-discard-btn").addEventListener("click", discardPolicyDraft);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
+document.getElementById("scheduled-settings-discard").addEventListener("click", discardGlobalSettingsDraft);
+document.getElementById("policy-unsaved-cancel").addEventListener("click", () => closePolicyUnsavedModal(true));
+document.getElementById("policy-unsaved-confirm").addEventListener("click", confirmPolicyReplacement);
+document.getElementById("policy-unsaved-modal").addEventListener("click", event => {
+    if (event.target?.id === "policy-unsaved-modal") closePolicyUnsavedModal(true);
+});
 document.getElementById("maintenance-calendar-refresh").addEventListener("click", reloadMaintenanceCalendar);
 document.getElementById("maintenance-calendar-policy").addEventListener("change", (event) => {
     scheduledPolicyAdministration.dispatch({ type: "calendarPolicySelected", policyID: event.target.value });
@@ -2390,6 +2548,15 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && revealModal && revealModal.classList.contains("active")) {
         closeSessionIPRevealModal();
     }
+    const unsavedModal = document.getElementById("policy-unsaved-modal");
+    if (event.key === "Escape" && unsavedModal && unsavedModal.classList.contains("active")) {
+        closePolicyUnsavedModal(true);
+    }
+});
+window.addEventListener("beforeunload", (event) => {
+    if (!adminPageView().hasMeaningfulDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
 });
 
 bindPolicyFormInteractions();
@@ -2402,3 +2569,5 @@ fetchBackupStatus();
 fetchNotificationSettings();
 refreshScheduledUpdateViews();
 updateFileLabel(document.getElementById("backup-restore-file"), "Choose backup file");
+renderNotificationDraftState();
+renderGlobalSettingsDraftState();

@@ -82,6 +82,68 @@ test("notification administration owns settings, delivery, and command lifecycle
     assert.equal(store.getView().feedback.notifications.error, true);
 });
 
+test("section drafts normalize accepted values, discard independently, and exclude secrets", () => {
+    const scheduled = {
+        getView() {
+            return {
+                editor: { dirty: true },
+                globalSettings: { dirty: false },
+            };
+        },
+    };
+    const store = createStore({ scheduled });
+    store.dispatch({ type: "timezoneSnapshotReceived", data: { editable_timezone: "America/Toronto", resolved_timezone: "America/Toronto" } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: {
+        enabled: true,
+        webhook_url: "https://hooks.example.test/current",
+        event_types: ["update.complete"],
+    } });
+
+    assert.equal(store.getView().notifications.dirty, false);
+    assert.equal(store.planCommand("saveNotifications").enabled, false);
+
+    store.dispatch({ type: "notificationDraftChanged", patch: {
+        webhookURL: " https://hooks.example.test/replacement ",
+        eventTypes: ["update.complete", "update.complete"],
+    } });
+    assert.equal(store.getView().notifications.dirty, true);
+    assert.equal(store.planCommand("saveNotifications").enabled, true);
+
+    const notificationRefresh = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
+    store.dispatch({ type: "notificationSnapshotReceived", requestID: notificationRefresh.requestID, data: {
+        enabled: true,
+        webhook_url: "https://hooks.example.test/server-updated",
+        event_types: ["update.complete"],
+    } });
+    assert.equal(store.getView().notifications.webhookURL, "https://hooks.example.test/replacement");
+    assert.equal(store.getView().notifications.dirty, true);
+
+    store.dispatch({ type: "notificationDiscardRequested" });
+    assert.equal(store.getView().notifications.webhookURL, "https://hooks.example.test/server-updated");
+    assert.equal(store.getView().notifications.dirty, false);
+
+    store.dispatch({ type: "timezoneDraftChanged", timezone: "Europe/Paris" });
+    store.dispatch({ type: "backupFileSelected", file: { name: "secret.slubkp", size: 20, contents: "never" } });
+    store.dispatch({ type: "passwordDraftChanged", hasCurrentPassword: true, hasNewPassword: true, passwordsMatch: true, password: "never-store" });
+    const view = store.getView();
+    assert.deepEqual(view.dirtySections, ["app-time", "scheduled-policies"]);
+    assert.equal(view.hasMeaningfulDirty, true);
+    assert.equal(JSON.stringify(view).includes("never-store"), false);
+
+    const timezoneRefresh = effect(store.dispatch({ type: "snapshotRequested", stream: "timezone" }), "fetchSnapshot");
+    store.dispatch({ type: "timezoneSnapshotReceived", requestID: timezoneRefresh.requestID, data: {
+        editable_timezone: "America/New_York",
+        resolved_timezone: "America/New_York",
+    } });
+    assert.equal(store.getView().timezone.draft, "Europe/Paris");
+    assert.equal(store.getView().timezone.dirty, true);
+
+    store.dispatch({ type: "timezoneDiscardRequested" });
+    assert.equal(store.getView().timezone.draft, "America/New_York");
+    assert.equal(store.getView().timezone.dirty, false);
+    assert.deepEqual(store.getView().dirtySections, ["scheduled-policies"]);
+});
+
 test("account and metrics administration excludes secrets and clears token reveal", () => {
     const store = createStore();
     store.dispatch({ type: "accountSnapshotReceived", data: { count: 4 } });

@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=admin-workspace-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=admin-drafts-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -103,6 +103,8 @@
                     <div class="timezone-current-preview" id="app-timezone-preview" role="status" aria-live="polite">Loading current app time...</div>
                     <div class="table-secondary" id="app-timezone-picker-note">Search by city, region, timezone name, or UTC offset.</div>
                     <div class="policy-actions app-time-actions">
+                        <span class="draft-state" id="app-timezone-draft-state">No unsaved changes</span>
+                        <button class="btn-ghost" type="button" id="app-timezone-discard" disabled>Discard</button>
                         <button class="primary-action" type="button" id="app-timezone-save" disabled>Save Timezone</button>
                     </div>
                     <div id="app-timezone-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
@@ -134,7 +136,9 @@
                     <label for="notification-webhook-url" class="form-label">Webhook URL</label>
                     <input type="url" id="notification-webhook-url" placeholder="https://hooks.example.internal/simplelinuxupdater">
                     <div class="policy-actions">
-                        <button class="primary-action" type="button" id="notification-save">Save Notifications</button>
+                        <span class="draft-state" id="notification-draft-state">No unsaved changes</span>
+                        <button class="btn-ghost" type="button" id="notification-discard" disabled>Discard</button>
+                        <button class="primary-action" type="button" id="notification-save" disabled>Save Notifications</button>
                         <button class="btn-ghost" type="button" id="notification-test">Send Test</button>
                     </div>
                     <div id="notification-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
@@ -226,10 +230,23 @@
                             <h3>Policy Editor</h3>
                             <p class="muted block-summary">Build one policy at a time with guided schedule controls and a live summary before saving.</p>
                         </div>
-                        <span class="pill pill-muted" id="policy-editor-mode">Create new policy</span>
+                        <div class="policy-editor-context">
+                            <span class="pill pill-muted" id="policy-editor-mode">Create new policy</span>
+                            <button class="btn-ghost inline-btn" type="button" id="policy-new-btn">Start New Policy</button>
+                        </div>
                     </div>
                     <form id="update-policy-form" class="policy-form">
                         <input type="hidden" id="policy-id" aria-label="Policy ID">
+                        <div class="field-span policy-draft-action-bar" id="policy-draft-action-bar" hidden>
+                            <div>
+                                <strong id="policy-draft-state">Unsaved policy changes</strong>
+                                <span class="muted" id="policy-draft-validation">Complete required fields to save.</span>
+                            </div>
+                            <div class="policy-actions">
+                                <button class="btn-ghost" type="button" id="policy-discard-btn">Discard</button>
+                                <button class="primary-action" type="submit" id="policy-save-btn">Create Policy</button>
+                            </div>
+                        </div>
                         <div class="field-span form-section">
                             <div class="form-section-head">
                                 <h4>Identity</h4>
@@ -370,10 +387,6 @@
                                 <div id="policy-blackouts-json-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
                             </details>
                         </div>
-                        <div class="field-span policy-actions">
-                            <button class="primary-action" type="submit" id="policy-save-btn">Create Policy</button>
-                            <button class="btn-ghost" type="button" id="policy-reset-btn">Start New Policy</button>
-                        </div>
                         <div id="update-policy-error" class="form-feedback form-feedback-error field-span" aria-live="polite" aria-atomic="true"></div>
                     </form>
                     <div id="update-policy-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -410,7 +423,9 @@
                         </details>
                     </div>
                     <div class="policy-actions">
-                        <button class="primary-action" type="button" id="scheduled-settings-save">Save Global No-Run Windows</button>
+                        <span class="draft-state" id="scheduled-settings-draft-state">No unsaved changes</span>
+                        <button class="btn-ghost" type="button" id="scheduled-settings-discard" disabled>Discard</button>
+                        <button class="primary-action" type="button" id="scheduled-settings-save" disabled>Save Global No-Run Windows</button>
                     </div>
                     <div id="scheduled-settings-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="scheduled-settings-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -624,12 +639,24 @@
         </form>
     </div>
 
+    <div class="modal-backdrop" id="policy-unsaved-modal">
+        <div class="modal policy-unsaved-modal" role="dialog" aria-modal="true" aria-labelledby="policy-unsaved-title" aria-describedby="policy-unsaved-description">
+            <div class="eyebrow">Unsaved policy draft</div>
+            <h2 id="policy-unsaved-title">Discard unsaved changes?</h2>
+            <p class="muted" id="policy-unsaved-description">Opening another policy or starting a new one will replace the current unsaved policy draft.</p>
+            <div class="modal-actions">
+                <button class="btn-ghost inline-btn" id="policy-unsaved-cancel" type="button">Continue Editing</button>
+                <button class="btn-danger inline-btn" id="policy-unsaved-confirm" type="button">Discard Changes</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-policy-administration-20260709a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=admin-workspace-20260728a"></script>
-    <script src="/static/js/admin.js?v=admin-workspace-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=admin-drafts-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=admin-drafts-20260728a"></script>
+    <script src="/static/js/admin.js?v=admin-drafts-20260728a"></script>
 </body>
 </html>

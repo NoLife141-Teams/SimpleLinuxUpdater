@@ -1327,6 +1327,59 @@ test.describe.serial('setup and login flows', () => {
     expect(layout.bodyWidth).toBeLessThanOrEqual(layout.viewportWidth);
   });
 
+  test('admin section drafts support save eligibility, discard, replacement confirmation, and safe navigation warnings', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    const dispatchBeforeUnload = () => page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      return !window.dispatchEvent(event);
+    });
+
+    await page.locator('#auth-current-password').fill('secret-current-password');
+    await page.locator('#backup-export-passphrase').fill('secret-backup-passphrase');
+    expect(await dispatchBeforeUnload()).toBe(false);
+
+    await expect(page.locator('#notification-save')).toBeDisabled();
+    await page.locator('#notification-webhook-url').fill('https://hooks.example.test/replacement');
+    await page.locator('#notification-enabled').check();
+    await expect(page.locator('#notification-draft-state')).toContainText('Unsaved notification changes');
+    await expect(page.locator('#notification-save')).toBeEnabled();
+    expect(await dispatchBeforeUnload()).toBe(true);
+    await page.locator('#notification-discard').click();
+    await expect(page.locator('#notification-webhook-url')).toHaveValue('');
+    await expect(page.locator('#notification-enabled')).not.toBeChecked();
+    await expect(page.locator('#notification-save')).toBeDisabled();
+    expect(await dispatchBeforeUnload()).toBe(false);
+
+    await expect(page.locator('#policy-draft-action-bar')).toBeHidden();
+    await page.locator('#policy-name').fill('Unsaved policy');
+    await expect(page.locator('#policy-draft-action-bar')).toBeVisible();
+    await expect(page.locator('#policy-save-btn')).toBeDisabled();
+    await page.locator('#policy-target-tag').fill('prod');
+    await expect(page.locator('#policy-save-btn')).toBeEnabled();
+
+    const editPolicy = page.locator('button[data-action="edit-policy"][data-id="12"]');
+    await editPolicy.click();
+    await expect(page.locator('#policy-unsaved-modal')).toBeVisible();
+    await page.locator('#policy-unsaved-cancel').click();
+    await expect(page.locator('#policy-name')).toHaveValue('Unsaved policy');
+
+    await editPolicy.click();
+    await page.locator('#policy-unsaved-confirm').click();
+    await expect(page.locator('#policy-unsaved-modal')).not.toBeVisible();
+    await expect(page.locator('#policy-name')).toHaveValue('Nightly security');
+    await expect(page.locator('#policy-draft-action-bar')).toBeHidden();
+
+    await page.locator('#policy-name').fill('Changed accepted policy');
+    await expect(page.locator('#policy-draft-action-bar')).toBeVisible();
+    await page.locator('#policy-discard-btn').click();
+    await expect(page.locator('#policy-name')).toHaveValue('Nightly security');
+    await expect(page.locator('#policy-draft-action-bar')).toBeHidden();
+  });
+
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,10 +29,12 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 
 	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "notification-api.db")})
 	sessionCookie := app.authenticate(t)
+	webhookURL := webhook.URL + "/hook?token=secret-value"
 
 	updateBody := bytes.NewBufferString(`{
 		"enabled":true,
-		"webhook_url":"` + webhook.URL + `",
+		"webhook_url":"` + webhookURL + `",
+		"webhook_url_intent":"replace",
 		"event_types":["update.complete","backup.restore"]
 	}`)
 	rec := httptest.NewRecorder()
@@ -47,8 +50,47 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &settings); err != nil {
 		t.Fatalf("unmarshal notification settings: %v", err)
 	}
-	if !settings.Enabled || settings.WebhookURL != webhook.URL || len(settings.EventTypes) != 2 || len(settings.SupportedEvents) == 0 {
-		t.Fatalf("settings = %+v, want enabled webhook with supported events", settings)
+	if !settings.Enabled || !settings.WebhookConfigured || settings.WebhookURLMasked == "" ||
+		strings.Contains(rec.Body.String(), "secret-value") || strings.Contains(rec.Body.String(), `"webhook_url":`) ||
+		len(settings.EventTypes) != 2 || len(settings.SupportedEvents) == 0 {
+		t.Fatalf("settings = %+v, want enabled masked webhook with supported events", settings)
+	}
+	var persistedRaw string
+	if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", notificationpkg.SettingsKey).Scan(&persistedRaw); err != nil {
+		t.Fatalf("load notification persistence: %v", err)
+	}
+	if strings.Contains(persistedRaw, webhookURL) || strings.Contains(persistedRaw, "secret-value") {
+		t.Fatalf("notification persistence leaked webhook URL: %s", persistedRaw)
+	}
+
+	preserveBody := bytes.NewBufferString(`{
+		"enabled":true,
+		"webhook_url_intent":"preserve",
+		"event_types":["update.complete"]
+	}`)
+	preserveRec := httptest.NewRecorder()
+	preserveReq := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", preserveBody)
+	preserveReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(preserveReq)
+	preserveReq.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(preserveRec, preserveReq)
+	if preserveRec.Code != http.StatusOK || strings.Contains(preserveRec.Body.String(), "secret-value") {
+		t.Fatalf("preserve status = %d body=%s", preserveRec.Code, preserveRec.Body.String())
+	}
+	if err := json.Unmarshal(preserveRec.Body.Bytes(), &settings); err != nil {
+		t.Fatalf("unmarshal preserved settings: %v", err)
+	}
+	if !settings.WebhookConfigured || settings.WebhookURLIntent != notificationpkg.WebhookURLPreserve {
+		t.Fatalf("preserved settings = %+v", settings)
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/notifications/settings", nil)
+	getReq.AddCookie(sessionCookie)
+	app.Handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK || getRec.Header().Get("Cache-Control") != "no-store" ||
+		strings.Contains(getRec.Body.String(), "secret-value") || strings.Contains(getRec.Body.String(), `"webhook_url":`) {
+		t.Fatalf("GET settings status=%d cache=%q body=%s", getRec.Code, getRec.Header().Get("Cache-Control"), getRec.Body.String())
 	}
 
 	testRec := httptest.NewRecorder()
@@ -84,6 +126,58 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for audit webhook")
+	}
+
+	clearRec := httptest.NewRecorder()
+	clearReq := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", bytes.NewBufferString(`{
+		"enabled":false,
+		"webhook_url_intent":"clear",
+		"event_types":["update.complete"]
+	}`))
+	clearReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(clearReq)
+	clearReq.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d body=%s", clearRec.Code, clearRec.Body.String())
+	}
+	if err := json.Unmarshal(clearRec.Body.Bytes(), &settings); err != nil {
+		t.Fatalf("unmarshal cleared settings: %v", err)
+	}
+	if settings.WebhookConfigured || settings.WebhookURLIntent != notificationpkg.WebhookURLClear {
+		t.Fatalf("cleared settings = %+v", settings)
+	}
+}
+
+func TestNotificationSettingsAPIRejectsUnsafeReplacementWithoutEchoingSecrets(t *testing.T) {
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "notification-validation-api.db")})
+	sessionCookie := app.authenticate(t)
+	const secret = "do-not-echo-secret"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", bytes.NewBufferString(`{
+		"enabled":true,
+		"webhook_url_intent":"replace",
+		"webhook_url":"https://admin:`+secret+`@example.test/hook",
+		"event_types":["update.complete"]
+	}`))
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe replacement status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("unsafe replacement response leaked credentials: %s", rec.Body.String())
+	}
+
+	audits, err := app.Deps.AuditService.List(AuditListFilter{Action: "notifications.settings"})
+	if err != nil {
+		t.Fatalf("list notification audit events: %v", err)
+	}
+	auditJSON, _ := json.Marshal(audits)
+	if strings.Contains(string(auditJSON), secret) || strings.Contains(string(auditJSON), "admin:") {
+		t.Fatalf("notification audit leaked credentials: %s", auditJSON)
 	}
 }
 

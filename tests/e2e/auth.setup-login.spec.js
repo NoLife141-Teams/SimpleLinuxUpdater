@@ -477,9 +477,17 @@ test.describe.serial('setup and login flows', () => {
     await page.route('**/api/notifications/settings', async route => {
       if (route.request().method() === 'PUT') {
         state.notificationPayload = await route.request().postDataJSON();
+        if (state.notificationPayload.webhook_url_intent === 'replace') {
+          state.notificationConfiguredURL = state.notificationPayload.webhook_url;
+        }
+        if (state.notificationPayload.webhook_url_intent === 'clear') {
+          state.notificationConfiguredURL = '';
+        }
         return fulfillJson(route, {
           enabled: state.notificationPayload.enabled,
-          webhook_url: state.notificationPayload.webhook_url,
+          webhook_configured: Boolean(state.notificationConfiguredURL),
+          webhook_url_masked: state.notificationConfiguredURL ? 'https://hooks.example.test/••••' : '',
+          webhook_url_intent: state.notificationPayload.webhook_url_intent,
           event_types: state.notificationPayload.event_types,
           supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
           last_delivery: null,
@@ -492,7 +500,9 @@ test.describe.serial('setup and login flows', () => {
       }
       return fulfillJson(route, {
         enabled: false,
-        webhook_url: '',
+        webhook_configured: Boolean(state.notificationConfiguredURL),
+        webhook_url_masked: state.notificationConfiguredURL ? 'https://hooks.example.test/••••' : '',
+        webhook_url_intent: 'preserve',
         event_types: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
         supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
         last_delivery: null,
@@ -1447,15 +1457,17 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="notifications"]').click();
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('#notification-enabled').check();
+    await page.locator('#notification-webhook-replace').click();
     await page.locator('#notification-webhook-url').fill('https://hooks.example.test/simplelinuxupdater');
     await page.locator('#notification-event-schedule-skipped').uncheck();
     await page.locator('#notification-save').click();
     await expect.poll(() => state.notificationPayload).toMatchObject({
       enabled: true,
       webhook_url: 'https://hooks.example.test/simplelinuxupdater',
+      webhook_url_intent: 'replace',
       event_types: ['update.complete', 'schedule.run.failed', 'backup.restore'],
     });
-    await expect(page.locator('#notification-status')).toContainText('Notification settings saved');
+    await expect(page.locator('#notification-status')).toContainText('Webhook URL replaced');
     await page.locator('#notification-test').click();
     await expect.poll(() => state.notificationTestCount || 0).toBe(1);
     await expect(page.locator('#notification-last-delivery')).toContainText('notification.test');
@@ -1887,6 +1899,60 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#admin-activity-list .admin-activity-item')).toHaveCount(0);
   });
 
+  test('notification webhook settings preserve, replace, clear, and mask secret-bearing URLs', async ({ page }) => {
+    const state = {
+      notificationConfiguredURL: 'https://hooks.example.test/path?token=stored-secret',
+    };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin#admin-section-notifications');
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
+
+    await expect(page.locator('#notification-webhook-masked')).toHaveText('https://hooks.example.test/••••');
+    await expect(page.locator('#notification-webhook-editor')).toBeHidden();
+    await expect(page.locator('#notification-webhook-url')).toHaveValue('');
+    expect(await page.locator('#admin-section-notifications').innerText()).not.toContain('stored-secret');
+    await expect(page.locator('#notification-webhook-policy')).toContainText('Use HTTPS for public endpoints');
+    await expect(page.locator('#notification-webhook-policy')).toContainText('Embedded URL credentials are not supported');
+
+    await page.locator('#notification-event-schedule-skipped').uncheck();
+    await page.locator('#notification-save').click();
+    await expect.poll(() => state.notificationPayload).toMatchObject({
+      webhook_url_intent: 'preserve',
+    });
+    expect(state.notificationPayload).not.toHaveProperty('webhook_url');
+    await expect(page.locator('#notification-status')).toContainText('configured URL was preserved');
+    await expect(page.locator('#notification-webhook-masked')).toHaveText('https://hooks.example.test/••••');
+
+    await page.locator('#notification-webhook-replace').click();
+    await expect(page.locator('#notification-webhook-editor')).toBeVisible();
+    await page.locator('#notification-webhook-url').fill('http://public.example.test/hook');
+    await expect(page.locator('#notification-save')).toBeDisabled();
+    await expect(page.locator('#notification-draft-state')).toContainText('Use HTTPS for public endpoints');
+    await page.locator('#notification-webhook-url').fill('https://replacement.example.test/hook?token=replacement-secret');
+    await expect(page.locator('#notification-save')).toBeEnabled();
+    await page.locator('#notification-save').click();
+    await expect.poll(() => state.notificationPayload).toMatchObject({
+      webhook_url_intent: 'replace',
+      webhook_url: 'https://replacement.example.test/hook?token=replacement-secret',
+    });
+    await expect(page.locator('#notification-status')).toContainText('Webhook URL replaced');
+    await expect(page.locator('#notification-webhook-editor')).toBeHidden();
+    expect(await page.locator('#admin-section-notifications').innerText()).not.toContain('replacement-secret');
+
+    await page.locator('#notification-webhook-clear').click();
+    await expect(page.locator('#notification-webhook-masked')).toHaveText('Will be cleared when saved');
+    await page.locator('#notification-save').click();
+    await expect.poll(() => state.notificationPayload).toMatchObject({
+      enabled: false,
+      webhook_url_intent: 'clear',
+    });
+    expect(state.notificationPayload).not.toHaveProperty('webhook_url');
+    await expect(page.locator('#notification-status')).toContainText('Webhook URL cleared');
+    await expect(page.locator('#notification-webhook-masked')).toHaveText('Not configured');
+    await expect(page.locator('#notification-webhook-clear')).toBeDisabled();
+  });
+
   test('backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);
@@ -1959,9 +2025,10 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="notifications"]').click();
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await expect(page.locator('#notification-save')).toBeDisabled();
+    await page.locator('#notification-webhook-replace').click();
     await page.locator('#notification-webhook-url').fill('https://hooks.example.test/replacement');
     await page.locator('#notification-enabled').check();
-    await expect(page.locator('#notification-draft-state')).toContainText('Unsaved notification changes');
+    await expect(page.locator('#notification-draft-state')).toContainText('Webhook URL will be replaced');
     await expect(page.locator('#notification-save')).toBeEnabled();
     expect(await dispatchBeforeUnload()).toBe(true);
     await page.locator('#notification-discard').click();

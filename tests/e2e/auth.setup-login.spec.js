@@ -1549,6 +1549,8 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#backup-export-passphrase').fill('secret-backup-passphrase');
     expect(await dispatchBeforeUnload()).toBe(false);
 
+    await page.locator('[data-admin-section-link="notifications"]').click();
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await expect(page.locator('#notification-save')).toBeDisabled();
     await page.locator('#notification-webhook-url').fill('https://hooks.example.test/replacement');
     await page.locator('#notification-enabled').check();

@@ -190,6 +190,26 @@ test("a new policy draft cannot start a competing create command", () => {
     assert.equal(store.getView().commands.inFlightPolicyIDs.length, 0);
 });
 
+test("one accepted policy deletion blocks every competing deletion until settlement", () => {
+    const store = createStore();
+    const request = store.dispatch({ type: "snapshotRequested", stream: "policies" }).find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({
+        type: "snapshotReceived",
+        stream: "policies",
+        requestId: request.requestId,
+        data: { items: [{ id: 7, name: "One" }, { id: 8, name: "Two" }] }
+    });
+
+    const first = store.dispatch({ type: "commandRequested", command: "deletePolicy", policyID: "7" }).find(effect => effect.type === "executeCommand");
+    assert.equal(store.getView().commands.destructiveInFlight, true);
+    assert.equal(store.planCommand("deletePolicy", "8").enabled, false);
+    assert.match(store.planCommand("deletePolicy", "8").reason, /destructive Admin action is already in progress/i);
+
+    store.dispatch({ type: "commandFailed", plan: first.plan, message: "offline" });
+    assert.equal(store.getView().commands.destructiveInFlight, false);
+    assert.equal(store.planCommand("deletePolicy", "8").enabled, true);
+});
+
 test("Admin no longer declares the legacy policy editor state globals", () => {
     const admin = fs.readFileSync(path.join(__dirname, "../../static/js/admin.js"), "utf8");
     assert.doesNotMatch(admin, /const\\s+scheduledPoliciesState\\s*=/);

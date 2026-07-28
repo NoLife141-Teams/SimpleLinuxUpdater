@@ -19,8 +19,6 @@ let appTimezonePicker = null;
 let appTimezonePreviewTimer = 0;
 let adminSectionObserver = null;
 let adminSectionNavigationLockUntil = 0;
-let pendingPolicyReplacement = null;
-let pendingPolicyReplacementTrigger = null;
 
 const adminSectionPreferenceKey = "simplelinuxupdater.admin.collapsed-sections.v1";
 
@@ -37,6 +35,39 @@ function formatAdminRefreshTime(value) {
         dateStyle: "medium",
         timeStyle: "short"
     }).format(parsed);
+}
+
+function renderAdminDestructiveControls() {
+    const view = adminPageView();
+    const locked = Boolean(view.commands?.destructiveInFlight);
+    const generateMetricsToken = document.getElementById("metrics-token-generate");
+    if (generateMetricsToken) {
+        generateMetricsToken.disabled = locked || view.metrics.enabled;
+        generateMetricsToken.title = locked
+            ? "Another destructive Admin action is already in progress."
+            : view.metrics.enabled ? "A Metrics API token already exists. Rotate it from the danger zone." : "";
+    }
+    document.querySelectorAll("[data-admin-danger-command]").forEach((button) => {
+        const command = button.dataset.adminDangerCommand;
+        let disabled = locked;
+        let reason = locked ? "Another destructive Admin action is already in progress." : "";
+        if (!locked && command === "clearOtherSessions") {
+            const plan = adminPageInteraction.planCommand(command);
+            disabled = !plan.enabled;
+            reason = plan.reason || "";
+        }
+        if (!locked && command === "scheduled:deletePolicy") {
+            const plan = adminPageInteraction.planCommand(command, button.dataset.id || "");
+            disabled = !plan.enabled;
+            reason = plan.reason || "";
+        }
+        if (!locked && ["rotateMetricsToken", "disableMetricsToken"].includes(command) && !view.metrics.enabled) {
+            disabled = true;
+            reason = "No Metrics API token is configured.";
+        }
+        button.disabled = disabled;
+        button.title = disabled ? reason : "";
+    });
 }
 
 function renderAdminWorkspace() {
@@ -95,6 +126,7 @@ function renderAdminWorkspace() {
         }
         if (content) content.hidden = section.collapsed;
     });
+    renderAdminDestructiveControls();
 }
 
 function runAdminWorkspaceEffects(effects) {
@@ -216,13 +248,16 @@ function initializeAdminWorkspace() {
 }
 
 function beginAdminCommand(command, payload = {}) {
-    return adminPageInteraction.dispatch({ type: "commandRequested", command, payload })
-        .find((item) => item.type === "executeCommand")?.plan || null;
+    const effects = adminPageInteraction.dispatch({ type: "commandRequested", command, payload });
+    renderAdminDestructiveControls();
+    return effects.find((item) => item.type === "executeCommand")?.plan || null;
 }
 
 function finishAdminCommand(plan, data, message, failed = false) {
     if (!plan) return [];
-    return adminPageInteraction.dispatch({ type: failed ? "commandFailed" : "commandCompleted", plan, data, message });
+    const effects = adminPageInteraction.dispatch({ type: failed ? "commandFailed" : "commandCompleted", plan, data, message });
+    renderAdminDestructiveControls();
+    return effects;
 }
 
 function beginAdminSnapshot(stream) {
@@ -683,6 +718,7 @@ function createAuthSessionCard(session) {
     revokeButton.className = "btn-danger session-revoke";
     revokeButton.dataset.sessionId = session.id;
     revokeButton.dataset.currentSession = String(session.current);
+    revokeButton.dataset.adminDangerCommand = "revokeSession";
     revokeButton.textContent = session.current ? "Logout This Session" : "Revoke Session";
     actions.append(revealButton, revokeButton);
     item.appendChild(actions);
@@ -810,7 +846,17 @@ async function fetchAuthSessionStatus() {
 }
 
 async function clearOtherAuthSessions() {
-    if (!(await window.confirmAction("Logout every other server-side session and keep this browser signed in?", { confirmLabel: "Logout Others" }))) return;
+    const count = adminPageView().account.otherSessions.length;
+    if (!(await window.confirmAction("Review the sessions that will be invalidated before continuing.", {
+        danger: true,
+        title: "Logout other Admin sessions",
+        operation: "Invalidate all other server-side sessions",
+        resources: `${count} other signed-in browser session${count === 1 ? "" : "s"}`,
+        consequences: "Other browsers will be logged out immediately. This browser remains signed in.",
+        reversibility: "Not reversible. Affected users must sign in again.",
+        authentication: "Your current signed-in Admin session authorizes this operation.",
+        confirmLabel: "Logout Others"
+    }))) return;
     const plan = beginAdminCommand("clearOtherSessions");
     if (!plan) return;
     try {
@@ -832,10 +878,17 @@ async function clearOtherAuthSessions() {
 }
 
 async function revokeAuthSession(id, current) {
-    const prompt = current
-        ? "Logout this browser session now?"
-        : "Revoke this server-side session?";
-    if (!(await window.confirmAction(prompt, { confirmLabel: current ? "Logout" : "Revoke Session" }))) return;
+    const session = adminPageView().account.sessions.find(item => item.id === id);
+    if (!(await window.confirmAction("Review the selected session before continuing.", {
+        danger: true,
+        title: current ? "Logout this Admin session" : "Revoke server-side session",
+        operation: current ? "Invalidate the current session" : "Revoke one server-side session",
+        resources: `${session?.clientLabel || "Selected browser"} · ${session?.clientIP || "IP unavailable"}`,
+        consequences: current ? "This browser will return to the sign-in page immediately." : "The selected browser will be logged out immediately.",
+        reversibility: "Not reversible. The browser must sign in again.",
+        authentication: "Your current signed-in Admin session authorizes this operation.",
+        confirmLabel: current ? "Logout" : "Revoke Session"
+    }))) return;
     const plan = beginAdminCommand("revokeSession", { id });
     if (!plan) return;
     try {
@@ -920,7 +973,16 @@ async function changeAdminPassword() {
 }
 
 async function clearAuthSessions() {
-    if (!(await window.confirmTypedAction("Logout every server-side session, including this browser?", "LOGOUT ALL"))) {
+    const count = adminPageView().account.sessionCount;
+    if (!(await window.confirmTypedAction("Type the confirmation text to invalidate every session.", "LOGOUT ALL", {
+        title: "Logout every Admin session",
+        operation: "Invalidate all server-side sessions",
+        resources: `${count} signed-in browser session${count === 1 ? "" : "s"}`,
+        consequences: "Every browser, including this one, will be logged out immediately.",
+        reversibility: "Not reversible. Every user must sign in again.",
+        authentication: "Typed confirmation is required; the current Admin session authorizes the request.",
+        confirmLabel: "Logout All Sessions"
+    }))) {
         return;
     }
     const plan = beginAdminCommand("clearSessions");
@@ -984,7 +1046,15 @@ async function fetchMetricsTokenStatus(resetReveal = true) {
 }
 
 async function rotateMetricsToken(askConfirm) {
-    if (askConfirm && !(await window.confirmTypedAction("Rotate metrics token? Existing scrapers using the old token will fail until updated.", "ROTATE TOKEN"))) {
+    if (askConfirm && !(await window.confirmTypedAction("Type the confirmation text to replace the current Metrics API credential.", "ROTATE TOKEN", {
+        title: "Rotate Metrics API token",
+        operation: "Replace the active Metrics API token",
+        resources: "The current /metrics credential and every scraper using it",
+        consequences: "Existing scrapers will fail until they receive the new one-time token.",
+        reversibility: "The previous token cannot be restored.",
+        authentication: "Typed confirmation is required; the new token is displayed once.",
+        confirmLabel: "Rotate Token"
+    }))) {
         return;
     }
     const plan = beginAdminCommand("rotateMetricsToken");
@@ -1015,7 +1085,15 @@ async function rotateMetricsToken(askConfirm) {
 }
 
 async function disableMetricsToken() {
-    if (!(await window.confirmTypedAction("Disable metrics token and hide /metrics now?", "DISABLE METRICS"))) {
+    if (!(await window.confirmTypedAction("Type the confirmation text to disable authenticated Metrics API access.", "DISABLE METRICS", {
+        title: "Disable Metrics API token",
+        operation: "Disable the active Metrics API token",
+        resources: "The /metrics endpoint and every configured scraper",
+        consequences: "Metrics collection stops immediately for clients using this token.",
+        reversibility: "Access can be restored only by generating a new token.",
+        authentication: "Typed confirmation is required; the current Admin session authorizes the request.",
+        confirmLabel: "Disable Token"
+    }))) {
         return;
     }
     const plan = beginAdminCommand("disableMetricsToken");
@@ -1161,7 +1239,15 @@ async function restoreBackup() {
             window.notifyApp("Passphrase must be at least 12 characters.");
             return;
         }
-        if (!(await window.confirmTypedAction("Restore will replace the current DB and optional known_hosts. Local config.json stays in place.", "RESTORE"))) {
+        if (!(await window.confirmTypedAction("Type the confirmation text only after verifying this backup.", "RESTORE", {
+            title: "Restore application backup",
+            operation: "Replace application data from an encrypted backup",
+            resources: `${file.name}; current database and optional known_hosts`,
+            consequences: "Current application data is replaced and active sessions may be invalidated. Local config.json stays in place.",
+            reversibility: "Not automatically reversible. Export a current backup first if rollback may be needed.",
+            authentication: "The backup passphrase and typed confirmation are both required.",
+            confirmLabel: "Restore Backup"
+        }))) {
             return;
         }
         adminPageInteraction.dispatch({ type: "backupFileSelected", file });
@@ -1921,31 +2007,25 @@ function applyPolicyReplacementToDOM(replacement) {
     document.getElementById("update-policy-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function closePolicyUnsavedModal(restoreFocus = true) {
-    document.getElementById("policy-unsaved-modal")?.classList.remove("active");
-    pendingPolicyReplacement = null;
-    if (restoreFocus) pendingPolicyReplacementTrigger?.focus({ preventScroll: true });
-    pendingPolicyReplacementTrigger = null;
-}
-
-function requestPolicyReplacement(replacement, trigger) {
+async function requestPolicyReplacement(replacement, trigger) {
     const effects = scheduledPolicyAdministration.dispatch({ type: "editorReplacementRequested", replacement });
     const confirmation = effects.find(effect => effect.type === "confirmEditorReplacement");
     if (confirmation) {
-        pendingPolicyReplacement = confirmation.replacement;
-        pendingPolicyReplacementTrigger = trigger || document.activeElement;
-        document.getElementById("policy-unsaved-modal")?.classList.add("active");
-        document.getElementById("policy-unsaved-cancel")?.focus({ preventScroll: true });
-        return;
+        trigger?.focus({ preventScroll: true });
+        const editor = scheduledPolicyView().editor;
+        const confirmed = await window.confirmAction("Review the unsaved browser draft before replacing it.", {
+            danger: true,
+            title: "Discard unsaved policy changes",
+            operation: replacement?.type === "load" ? "Open another policy" : "Start a new policy draft",
+            resources: editor.draft.name ? `Unsaved draft "${editor.draft.name}"` : "Current unsaved policy draft",
+            consequences: "All unsaved policy fields and no-run window edits in this browser are discarded.",
+            reversibility: "Not reversible unless the same values are entered again.",
+            authentication: "No additional authentication is required because no accepted server data is changed.",
+            confirmLabel: "Discard Changes"
+        });
+        if (!confirmed) return;
+        scheduledPolicyAdministration.dispatch({ type: "editorReplacementConfirmed", replacement: confirmation.replacement });
     }
-    applyPolicyReplacementToDOM(replacement);
-}
-
-function confirmPolicyReplacement() {
-    if (!pendingPolicyReplacement) return;
-    const replacement = pendingPolicyReplacement;
-    scheduledPolicyAdministration.dispatch({ type: "editorReplacementConfirmed", replacement });
-    closePolicyUnsavedModal(false);
     applyPolicyReplacementToDOM(replacement);
 }
 
@@ -1993,7 +2073,9 @@ function renderScheduledPolicies() {
             <td>
                 <div class="table-actions">
                     <button class="btn-ghost" type="button" data-action="edit-policy" data-id="${escapeHtml(String(policy.id))}">Edit</button>
-                    <button class="btn-danger" type="button" data-action="delete-policy" data-id="${escapeHtml(String(policy.id))}">Delete</button>
+                    <span class="admin-danger-action-group">
+                        <button class="btn-danger" type="button" data-action="delete-policy" data-admin-danger-command="scheduled:deletePolicy" data-id="${escapeHtml(String(policy.id))}">Delete</button>
+                    </span>
                 </div>
             </td>
         `;
@@ -2395,7 +2477,15 @@ async function deleteScheduledPolicy(id) {
         setPolicyFeedback("", plan.reason || "Scheduled policy action is unavailable.");
         return;
     }
-    if (!(await window.confirmTypedAction(`Delete scheduled update policy "${required}"?`, required))) {
+    if (!(await window.confirmTypedAction("Type the policy name to confirm permanent deletion.", required, {
+        title: "Delete scheduled update policy",
+        operation: "Permanently delete one recurring update policy",
+        resources: `${required} (policy ${id})`,
+        consequences: "Future runs from this policy stop; existing job and audit records remain.",
+        reversibility: "Not reversible. Recreating the policy requires entering its configuration again.",
+        authentication: "Typed policy-name confirmation is required; the current Admin session authorizes the request.",
+        confirmLabel: "Delete Policy"
+    }))) {
         return;
     }
     let activePlan;
@@ -2404,6 +2494,7 @@ async function deleteScheduledPolicy(id) {
         const execution = command.find((effect) => effect.type === "executeCommand");
         if (!execution) throw new Error(command.find((effect) => effect.type === "commandRejected")?.message || "Scheduled policy action is unavailable.");
         activePlan = execution.plan;
+        renderAdminDestructiveControls();
         const res = await fetch(`/api/update-policies/${encodeURIComponent(activePlan.policyID)}`, { method: "DELETE" });
         if (!res.ok) {
             throw new Error(await parseErrorResponse(res, "Failed to delete scheduled policy."));
@@ -2416,6 +2507,8 @@ async function deleteScheduledPolicy(id) {
     } catch (err) {
         if (activePlan) scheduledPolicyAdministration.dispatch({ type: "commandFailed", plan: activePlan, message: err?.message || "Failed to delete scheduled policy." });
         setPolicyFeedback("", err?.message || "Failed to delete scheduled policy.");
+    } finally {
+        renderAdminDestructiveControls();
     }
 }
 
@@ -2587,11 +2680,6 @@ document.getElementById("policy-new-btn").addEventListener("click", event => req
 document.getElementById("policy-discard-btn").addEventListener("click", discardPolicyDraft);
 document.getElementById("scheduled-settings-save").addEventListener("click", saveScheduledSettings);
 document.getElementById("scheduled-settings-discard").addEventListener("click", discardGlobalSettingsDraft);
-document.getElementById("policy-unsaved-cancel").addEventListener("click", () => closePolicyUnsavedModal(true));
-document.getElementById("policy-unsaved-confirm").addEventListener("click", confirmPolicyReplacement);
-document.getElementById("policy-unsaved-modal").addEventListener("click", event => {
-    if (event.target?.id === "policy-unsaved-modal") closePolicyUnsavedModal(true);
-});
 document.getElementById("maintenance-calendar-refresh").addEventListener("click", reloadMaintenanceCalendar);
 document.getElementById("maintenance-calendar-policy").addEventListener("change", (event) => {
     scheduledPolicyAdministration.dispatch({ type: "calendarPolicySelected", policyID: event.target.value });
@@ -2623,10 +2711,6 @@ document.addEventListener("keydown", (event) => {
     const revealModal = document.getElementById("session-ip-reveal-modal");
     if (event.key === "Escape" && revealModal && revealModal.classList.contains("active")) {
         closeSessionIPRevealModal();
-    }
-    const unsavedModal = document.getElementById("policy-unsaved-modal");
-    if (event.key === "Escape" && unsavedModal && unsavedModal.classList.contains("active")) {
-        closePolicyUnsavedModal(true);
     }
 });
 window.addEventListener("beforeunload", (event) => {

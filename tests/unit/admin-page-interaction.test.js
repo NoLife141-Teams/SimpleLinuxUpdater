@@ -222,6 +222,37 @@ test("backup administration owns eligibility but excludes passphrases and file c
     assert.equal(store.getView().feedback.backup.message, "Backup verified.");
 });
 
+test("accepted destructive commands block every competing destructive Admin command", () => {
+    const scheduled = {
+        getView: () => ({ commands: { destructiveInFlight: false } }),
+        planCommand: () => ({ enabled: true })
+    };
+    const store = createStore({ scheduled });
+    store.dispatch({
+        type: "accountSnapshotReceived",
+        data: { sessions: [{ id: "current", current: true }, { id: "other" }] }
+    });
+    store.dispatch({ type: "backupSnapshotReceived", data: { blocked: false } });
+    store.dispatch({ type: "backupFileSelected", file: { name: "backup.slubkp", size: 42 } });
+
+    const active = effect(store.dispatch({ type: "commandRequested", command: "clearOtherSessions" }), "executeCommand");
+    assert.equal(store.getView().commands.destructiveInFlight, true);
+    [
+        store.planCommand("clearSessions"),
+        store.planCommand("revokeSession", { id: "other" }),
+        store.planCommand("disableMetricsToken"),
+        store.planCommand("restoreBackup", { passphraseValid: true }),
+        store.planCommand("scheduled:deletePolicy", "7")
+    ].forEach(plan => {
+        assert.equal(plan.enabled, false);
+        assert.match(plan.reason, /destructive Admin action is already in progress/i);
+    });
+
+    store.dispatch({ type: "commandCompleted", plan: active.plan });
+    assert.equal(store.getView().commands.destructiveInFlight, false);
+    assert.equal(store.planCommand("disableMetricsToken").enabled, true);
+});
+
 test("scheduled administration is composed without copying its semantic state", () => {
     const scheduled = {
         dispatch(event) { return [{ type: "scheduledEffect", eventType: event.type }]; },

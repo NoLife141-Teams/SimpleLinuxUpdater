@@ -345,10 +345,12 @@ test.describe.serial('setup and login flows', () => {
       if (route.request().method() === 'PUT') {
         state.timezoneSave = await route.request().postDataJSON();
       }
+      const configuredTimezone = state.timezoneSave?.timezone ?? 'America/Toronto';
+      const resolvedTimezone = configuredTimezone || 'America/Toronto';
       return fulfillJson(route, {
-        timezone: 'America/Toronto',
-        resolved_timezone: 'America/Toronto',
-        editable_timezone: state.timezoneSave?.timezone || 'America/Toronto',
+        timezone: resolvedTimezone,
+        resolved_timezone: resolvedTimezone,
+        editable_timezone: configuredTimezone,
       });
     });
     await page.route('**/api/auth/sessions/*', async route => {
@@ -535,7 +537,10 @@ test.describe.serial('setup and login flows', () => {
     }));
     await page.route('**/api/update-policies/preview', async route => {
       state.policyPreviewPayload = await route.request().postDataJSON();
-      return fulfillJson(route, {
+      state.policyPreviewCount = (state.policyPreviewCount || 0) + 1;
+      const timezone = state.timezoneSave?.timezone || 'America/Toronto';
+      const fixedOffset = timezone === '+05:30';
+      const defaultPreview = {
         matched_servers: [
           { name: 'srv-web-01', tags: ['prod', 'web'] },
           { name: 'srv-web-02', tags: ['prod'] },
@@ -545,7 +550,29 @@ test.describe.serial('setup and login flows', () => {
         ],
         disabled_by_override: [],
         warnings: ['Explicit server "srv-missing" is not in the current inventory.'],
-      });
+        validation_errors: [],
+        operational_warnings: [
+          { code: 'missing_explicit_server', message: 'Explicit server "srv-missing" is not in the current inventory.' },
+        ],
+        informational_facts: [
+          { code: 'application_timezone', message: `Occurrences use the canonical application timezone ${timezone}.` },
+        ],
+        upcoming_occurrences: [
+          {
+            local_civil_time: fixedOffset ? '2026-05-18 03:45' : '2026-05-17 03:45',
+            timezone,
+            offset: fixedOffset ? '+05:30' : '-04:00',
+            abbreviation: fixedOffset ? '+05:30' : 'EDT',
+            scheduled_for_utc: fixedOffset ? '2026-05-17T22:15:00.000000000Z' : '2026-05-17T07:45:00.000000000Z',
+            dst_status: 'standard',
+            canonical_choice: 'exact',
+            matched_server_count: 2,
+            applicable_no_run_windows: [],
+            admission_outcome: 'admitted',
+          },
+        ],
+      };
+      return fulfillJson(route, state.policyPreviewResponse || defaultPreview);
     });
     await page.route('**/api/update-policies', async route => {
       if (route.request().method() === 'POST') {
@@ -1239,6 +1266,19 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#policy-preview')).toContainText('2 matched');
     await expect(page.locator('#policy-preview')).toContainText('srv-web-02');
     await expect(page.locator('#policy-preview')).toContainText('srv-db-01');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('2026-05-17 03:45');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('America/Toronto');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('UTC 2026-05-17T07:45:00.000000000Z');
+    await expect(page.locator('#policy-preview-facts')).toContainText('canonical application timezone America/Toronto');
+
+    const previewCountBeforeTimezoneChange = state.policyPreviewCount;
+    await page.locator('#app-timezone-input').click();
+    await page.locator('#app-timezone-search').fill('+05:30');
+    await page.locator('#app-timezone-options [role="option"][data-value="+05:30"]').click();
+    await page.locator('#app-timezone-save').click();
+    await expect.poll(() => state.policyPreviewCount).toBeGreaterThan(previewCountBeforeTimezoneChange);
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('+05:30');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('UTC 2026-05-17T22:15:00.000000000Z');
     await page.locator('#policy-save-btn').click();
 
     await expect.poll(() => state.policyPreviewPayload).toMatchObject({
@@ -1257,6 +1297,93 @@ test.describe.serial('setup and login flows', () => {
       execution_mode: 'approval_required',
       approval_timeout_minutes: 90,
     });
+  });
+
+  test('admin policy preview explains canonical DST, no-run, and empty-target outcomes', async ({ page }) => {
+    const state = {
+      policyPreviewResponse: {
+        matched_servers: [{ name: 'srv-web-01', tags: ['prod', 'web'] }],
+        excluded_servers: [],
+        disabled_by_override: [],
+        validation_errors: [],
+        operational_warnings: [
+          { code: 'no_run_window', message: 'One or more upcoming occurrences are blocked by an applicable no-run window.' },
+        ],
+        informational_facts: [
+          { code: 'dst_nonexistent_skipped', message: '2026-03-08 02:30 does not exist in America/Toronto; the scheduler skips that local occurrence.' },
+          { code: 'dst_fallback_canonical_choice', message: '2026-11-01 01:30 is repeated; the scheduler uses the earlier occurrence.' },
+        ],
+        upcoming_occurrences: [{
+          local_civil_time: '2026-11-01 01:30',
+          timezone: 'America/Toronto',
+          offset: '-04:00',
+          abbreviation: 'EDT',
+          scheduled_for_utc: '2026-11-01T05:30:00.000000000Z',
+          dst_status: 'ambiguous',
+          canonical_choice: 'earlier_fallback_occurrence',
+          matched_server_count: 1,
+          applicable_no_run_windows: [{
+            source: 'global',
+            weekdays: ['sun'],
+            start_time: '01:00',
+            end_time: '02:00',
+            overnight: false,
+            applies_to_slot: true,
+          }],
+          admission_outcome: 'blocked_no_run',
+        }],
+      },
+    };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    await page.locator('#policy-name').fill('DST policy');
+    await page.locator('#policy-target-tag').fill('prod');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('2026-11-01 01:30');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('Repeated local time');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('Expected: blocked by no-run window');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('global 01:00-02:00');
+    await expect(page.locator('#policy-preview-facts')).toContainText('does not exist');
+    await expect(page.locator('#policy-preview-facts')).toContainText('earlier occurrence');
+    await expect(page.locator('#policy-preview-warnings')).toContainText('blocked by an applicable no-run window');
+    await expect(page.locator('#policy-preview-validation-errors')).toBeEmpty();
+
+    state.policyPreviewResponse = {
+      matched_servers: [],
+      excluded_servers: [{ name: 'srv-web-01', tags: ['prod'], reason: 'no_target_match' }],
+      disabled_by_override: [],
+      validation_errors: [],
+      operational_warnings: [{ code: 'no_matching_servers', message: 'No current server would be targeted by this policy.' }],
+      informational_facts: [{ code: 'application_timezone', message: 'Occurrences use the canonical application timezone America/Toronto.' }],
+      upcoming_occurrences: [{
+        local_civil_time: '2026-11-02 01:30',
+        timezone: 'America/Toronto',
+        offset: '-05:00',
+        abbreviation: 'EST',
+        scheduled_for_utc: '2026-11-02T06:30:00.000000000Z',
+        dst_status: 'standard',
+        canonical_choice: 'exact',
+        matched_server_count: 0,
+        applicable_no_run_windows: [],
+        admission_outcome: 'no_matching_servers',
+      }],
+    };
+    const previousPreviewCount = state.policyPreviewCount;
+    await page.locator('#policy-target-tag').fill('');
+    await page.locator('#policy-target-servers').fill('srv-missing');
+    await expect.poll(() => state.policyPreviewCount).toBeGreaterThan(previousPreviewCount);
+    await expect(page.locator('#policy-preview-summary')).toContainText('No current server');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('Expected: no matching servers');
+    await expect(page.locator('#policy-preview-warnings')).toContainText('No current server would be targeted');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }));
+    expect(mobileLayout.bodyWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
+    await expect(page.locator('#policy-preview-occurrences')).toBeVisible();
   });
 
   test('admin timezone picker searches by city and saves the canonical timezone', async ({ page }) => {

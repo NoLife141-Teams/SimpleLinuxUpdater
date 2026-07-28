@@ -667,14 +667,75 @@
     color: var(--muted);
 }
 
-.preview-warnings {
+.preview-occurrence-section,
+.preview-diagnostics {
     display: grid;
     gap: 6px;
 }
 
+.preview-occurrence-section {
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.preview-occurrence-head,
+.preview-occurrence-primary {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.preview-occurrence-head p {
+    margin: 5px 0 0;
+    font-size: 12px;
+}
+
+.preview-occurrences {
+    display: grid;
+    gap: 8px;
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.preview-occurrence {
+    display: grid;
+    gap: 5px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.preview-utc {
+    color: var(--accent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.preview-no-run,
 .preview-warning {
     color: var(--warning);
     font-size: 12px;
+    font-weight: 700;
+}
+
+.preview-error {
+    color: var(--danger);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.preview-fact,
+.preview-dst-note {
+    color: var(--subtle);
+    font-size: 12px;
+}
+
+.preview-dst-note {
+    color: var(--accent);
     font-weight: 700;
 }
 
@@ -967,6 +1028,37 @@
     .policy-draft-action-bar > div,
     .policy-draft-action-bar .policy-actions {
         width: 100%;
+    }
+
+    .admin-grid,
+    .admin-block,
+    .block-head,
+    .policy-form,
+    .section-grid,
+    .policy-preview,
+    .preview-occurrence-section,
+    .preview-occurrence {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .block-head,
+    .preview-occurrence-head,
+    .preview-occurrence-primary {
+        flex-wrap: wrap;
+    }
+
+    .policy-editor-context {
+        width: 100%;
+        min-width: 0;
+        justify-content: flex-start;
+    }
+
+    .policy-editor-context .pill,
+    .policy-editor-context button,
+    .preview-occurrence-primary .pill {
+        max-width: 100%;
+        white-space: normal;
     }
 }
 

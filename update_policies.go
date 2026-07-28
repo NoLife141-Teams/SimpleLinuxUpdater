@@ -336,13 +336,13 @@ func handleUpdatePolicyPreviewWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := deps.PolicyService.NormalizePolicy(&policy); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
 	preview, err := deps.PolicyService.PreviewPolicy(policy)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to preview update policy"})
+		return
+	}
+	if len(preview.ValidationErrors) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, preview)
 		return
 	}
 	c.JSON(http.StatusOK, preview)

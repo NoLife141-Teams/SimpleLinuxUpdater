@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	policypkg "debian-updater/internal/policies"
 	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
@@ -452,6 +453,32 @@ func TestUpdatePolicyPreviewAPIClassifiesCurrentInventory(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(preview.Warnings, "\n"), "srv-missing") {
 		t.Fatalf("warnings = %+v, want missing explicit server warning", preview.Warnings)
+	}
+	if len(preview.UpcomingOccurrences) != policypkg.PreviewOccurrenceLimit {
+		t.Fatalf("upcoming occurrences = %d, want %d", len(preview.UpcomingOccurrences), policypkg.PreviewOccurrenceLimit)
+	}
+	if first := preview.UpcomingOccurrences[0]; first.LocalCivilTime == "" || first.Timezone == "" || first.Offset == "" || first.Abbreviation == "" || first.ScheduledForUTC == "" {
+		t.Fatalf("first upcoming occurrence = %+v, want complete canonical clock facts", first)
+	}
+	if len(preview.ValidationErrors) != 0 || len(preview.OperationalWarnings) == 0 || len(preview.InformationalFacts) == 0 {
+		t.Fatalf("preview diagnostics = validation:%+v operational:%+v facts:%+v", preview.ValidationErrors, preview.OperationalWarnings, preview.InformationalFacts)
+	}
+
+	invalidPreviewRec := httptest.NewRecorder()
+	invalidPreviewReq := httptest.NewRequest(http.MethodPost, "/api/update-policies/preview", bytes.NewBufferString(`{"name":"Invalid preview"}`))
+	invalidPreviewReq.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(invalidPreviewReq)
+	invalidPreviewReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(invalidPreviewRec, invalidPreviewReq)
+	if invalidPreviewRec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid preview status = %d, want %d (body=%s)", invalidPreviewRec.Code, http.StatusUnprocessableEntity, invalidPreviewRec.Body.String())
+	}
+	var invalidPreview UpdatePolicyPreviewResponse
+	if err := json.Unmarshal(invalidPreviewRec.Body.Bytes(), &invalidPreview); err != nil {
+		t.Fatalf("unmarshal invalid preview response: %v", err)
+	}
+	if len(invalidPreview.ValidationErrors) != 1 || invalidPreview.ValidationErrors[0].Code != "invalid_policy" {
+		t.Fatalf("invalid preview validation errors = %+v", invalidPreview.ValidationErrors)
 	}
 }
 

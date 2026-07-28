@@ -293,8 +293,13 @@ func (s *Service) EnrichPoliciesWithMatches(policies []Policy) []Policy {
 }
 
 func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
+	response := newPreviewResponse()
 	if err := s.NormalizePolicy(&policy); err != nil {
-		return PreviewResponse{}, err
+		response.ValidationErrors = append(response.ValidationErrors, PreviewDiagnostic{
+			Code:    "invalid_policy",
+			Message: err.Error(),
+		})
+		return response, nil
 	}
 	deps := s.EnsureDeps()
 	serversSnapshot := []servers.Server{}
@@ -309,15 +314,16 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 		}
 		overrides = loaded
 	}
-
-	response := PreviewResponse{
-		MatchedServers:     []PreviewServer{},
-		ExcludedServers:    []PreviewServer{},
-		DisabledByOverride: []PreviewServer{},
-		Warnings:           []string{},
+	globalBlackouts := []BlackoutWindow{}
+	if deps.LoadGlobalBlackouts != nil {
+		loaded, err := deps.LoadGlobalBlackouts()
+		if err != nil {
+			return PreviewResponse{}, err
+		}
+		globalBlackouts = loaded
 	}
 	if !policy.Enabled {
-		response.Warnings = append(response.Warnings, "Policy is disabled; matched servers will not run until it is enabled.")
+		addPreviewOperationalWarning(&response, "policy_disabled", "Policy is disabled; matched servers will not run until it is enabled.")
 	}
 
 	foundServers := make(map[string]struct{}, len(serversSnapshot))
@@ -340,12 +346,13 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 
 	for _, name := range policy.TargetServers {
 		if _, ok := foundServers[strings.ToLower(strings.TrimSpace(name))]; !ok {
-			response.Warnings = append(response.Warnings, fmt.Sprintf("Explicit server %q is not in the current inventory.", name))
+			addPreviewOperationalWarning(&response, "missing_explicit_server", fmt.Sprintf("Explicit server %q is not in the current inventory.", name))
 		}
 	}
 	if len(response.MatchedServers) == 0 {
-		response.Warnings = append(response.Warnings, "No current server would be targeted by this policy.")
+		addPreviewOperationalWarning(&response, "no_matching_servers", "No current server would be targeted by this policy.")
 	}
+	s.projectPolicyPreviewOccurrences(policy, response.MatchedServers, globalBlackouts, &response)
 	return response, nil
 }
 
@@ -489,6 +496,11 @@ func matchedServerNamesForPolicy(s *Service, policy Policy, serversSnapshot []se
 }
 
 func (s *Service) policySlotForDay(policy Policy, dayStart time.Time) (time.Time, bool) {
+	slot, _, ok := s.resolvePolicySlotForDay(policy, dayStart)
+	return slot, ok
+}
+
+func (s *Service) resolvePolicySlotForDay(policy Policy, dayStart time.Time) (time.Time, apptimepkg.OccurrenceKind, bool) {
 	minutes, err := ParseTimeLocalMinutes(policy.TimeLocal)
 	if err != nil {
 		minutes = 0
@@ -498,11 +510,11 @@ func (s *Service) policySlotForDay(policy Policy, dayStart time.Time) (time.Time
 		interpretation := deps.ApplicationTime.Current()
 		occurrence := interpretation.ResolveLocal(dayStart, minutes/60, minutes%60)
 		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
-			return time.Time{}, false
+			return time.Time{}, occurrence.Kind, false
 		}
-		return occurrence.Instant.In(interpretation.Location), true
+		return occurrence.Instant.In(interpretation.Location), occurrence.Kind, true
 	}
-	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location()), true
+	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location()), apptimepkg.OccurrenceValid, true
 }
 
 func weekdayToken(t time.Time) string {

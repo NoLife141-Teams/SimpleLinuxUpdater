@@ -76,11 +76,55 @@ test("preview intent validates the draft and stale responses cannot overwrite th
     const store = createStore();
     store.dispatch({ type: "editorChanged", patch: readyDraft() });
     const first = store.dispatch({ type: "previewRequested" }).find(effect => effect.type === "fetchPreview");
+    assert.equal(Object.hasOwn(first.payload, "id"), false);
     store.dispatch({ type: "editorChanged", patch: { name: "Later policy" } });
     const second = store.dispatch({ type: "previewRequested" }).find(effect => effect.type === "fetchPreview");
     store.dispatch({ type: "previewReceived", requestId: first.requestId, preview: { matched_servers: [{ name: "old" }] } });
     store.dispatch({ type: "previewReceived", requestId: second.requestId, preview: { matched_servers: [{ name: "new" }] } });
     assert.deepEqual(store.getView().editor.preview.data.matched_servers.map(server => server.name), ["new"]);
+});
+
+test("existing-policy preview sends its identifier as an API integer", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorLoaded", policy: readyDraft({ id: 7 }) });
+    const request = store.dispatch({ type: "previewRequested" }).find(effect => effect.type === "fetchPreview");
+    assert.equal(request.payload.id, 7);
+    assert.equal(typeof request.payload.id, "number");
+});
+
+test("preview accepts canonical occurrence facts and invalidates them when the application timezone changes", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft() });
+    const request = store.dispatch({ type: "previewRequested" }).find(effect => effect.type === "fetchPreview");
+    const preview = {
+        matched_servers: [{ name: "srv-prod", tags: ["prod"] }],
+        upcoming_occurrences: [{
+            local_civil_time: "2026-11-01 01:30",
+            timezone: "America/Toronto",
+            offset: "-04:00",
+            abbreviation: "EDT",
+            scheduled_for_utc: "2026-11-01T05:30:00.000000000Z",
+            dst_status: "ambiguous",
+            canonical_choice: "earlier_fallback_occurrence",
+            matched_server_count: 1,
+            applicable_no_run_windows: [],
+            admission_outcome: "admitted",
+        }],
+        validation_errors: [],
+        operational_warnings: [],
+        informational_facts: [{ code: "dst_fallback_canonical_choice", message: "The scheduler uses the earlier occurrence." }],
+    };
+    store.dispatch({ type: "previewReceived", requestId: request.requestId, preview });
+
+    const accepted = store.getView().editor.preview.data;
+    assert.deepEqual(accepted.upcoming_occurrences, preview.upcoming_occurrences);
+    assert.deepEqual(accepted.informational_facts, preview.informational_facts);
+    preview.upcoming_occurrences[0].timezone = "mutated";
+    assert.equal(store.getView().editor.preview.data.upcoming_occurrences[0].timezone, "America/Toronto");
+
+    store.dispatch({ type: "timezoneReceived", timezone: "+05:30" });
+    assert.equal(store.getView().editor.preview.data, null);
+    assert.match(store.getView().editor.preview.message, /timezone changed/i);
 });
 
 test("blackout JSON failures preserve the last accepted policy and global rows", () => {

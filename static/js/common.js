@@ -108,6 +108,73 @@
         }, Number(options.duration || 6000));
     };
 
+    let confirmationBackgroundState = [];
+
+    function lockConfirmationBackground(backdrop) {
+        confirmationBackgroundState = Array.from(document.body.children)
+            .filter(element => element !== backdrop)
+            .map(element => ({
+                element,
+                inert: Boolean(element.inert),
+                ariaHidden: element.getAttribute("aria-hidden")
+            }));
+        confirmationBackgroundState.forEach(({ element }) => {
+            element.inert = true;
+            element.setAttribute("aria-hidden", "true");
+        });
+        document.body.classList.add("modal-open");
+    }
+
+    function unlockConfirmationBackground() {
+        confirmationBackgroundState.forEach(({ element, inert, ariaHidden }) => {
+            element.inert = inert;
+            if (ariaHidden === null) element.removeAttribute("aria-hidden");
+            else element.setAttribute("aria-hidden", ariaHidden);
+        });
+        confirmationBackgroundState = [];
+        document.body.classList.remove("modal-open");
+    }
+
+    function confirmationSummaryMarkup() {
+        return `
+            <dl class="confirmation-summary" data-confirm-summary hidden>
+                <div><dt>Operation</dt><dd data-confirm-operation></dd></div>
+                <div><dt>Affected resources</dt><dd data-confirm-resources></dd></div>
+                <div><dt>Consequences</dt><dd data-confirm-consequences></dd></div>
+                <div><dt>Reversibility</dt><dd data-confirm-reversibility></dd></div>
+                <div><dt>Authentication</dt><dd data-confirm-authentication></dd></div>
+            </dl>`;
+    }
+
+    function renderConfirmationContext(backdrop, message, options = {}) {
+        const title = backdrop.querySelector("h2");
+        const messageNode = backdrop.querySelector("[data-confirm-message]");
+        const summary = backdrop.querySelector("[data-confirm-summary]");
+        const structured = Boolean(
+            options.danger ||
+            options.operation ||
+            options.resources ||
+            options.consequences ||
+            options.reversibility ||
+            options.authentication
+        );
+        if (title) title.textContent = String(options.title || (options.danger ? "Confirm destructive action" : "Confirm action"));
+        if (messageNode) messageNode.textContent = String(message || "");
+        if (!summary) return;
+        summary.hidden = !structured;
+        const values = {
+            operation: options.operation || options.title || "Admin action",
+            resources: options.resources || "The selected Admin resource",
+            consequences: options.consequences || message || "The requested change will be applied immediately.",
+            reversibility: options.reversibility || "Review the operation before continuing.",
+            authentication: options.authentication || "Your current signed-in Admin session authorizes this action."
+        };
+        Object.entries(values).forEach(([key, value]) => {
+            const node = summary.querySelector(`[data-confirm-${key}]`);
+            if (node) node.textContent = String(value);
+        });
+    }
+
     function ensureActionConfirmModal() {
         let backdrop = document.getElementById("action-confirm-modal");
         if (backdrop) return backdrop;
@@ -115,10 +182,11 @@
         backdrop.className = "modal-backdrop action-confirm-backdrop";
         backdrop.id = "action-confirm-modal";
         backdrop.innerHTML = `
-            <div class="modal action-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title" aria-describedby="action-confirm-message">
+            <div class="modal action-confirm-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="action-confirm-title" aria-describedby="action-confirm-message">
                 <div class="eyebrow">Review operation</div>
                 <h2 id="action-confirm-title">Confirm action</h2>
-                <p class="muted action-confirm-message" id="action-confirm-message"></p>
+                <p class="muted action-confirm-message" id="action-confirm-message" data-confirm-message></p>
+                ${confirmationSummaryMarkup()}
                 <div class="modal-actions">
                     <button class="btn-ghost inline-btn" id="action-confirm-cancel" type="button">Cancel</button>
                     <button class="primary-action inline-btn" id="action-confirm-submit" type="button">Confirm</button>
@@ -134,7 +202,6 @@
             const dialog = backdrop.querySelector(".action-confirm-modal");
             const submit = backdrop.querySelector("#action-confirm-submit");
             const cancel = backdrop.querySelector("#action-confirm-cancel");
-            const messageNode = backdrop.querySelector("#action-confirm-message");
             const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             const focusable = () => Array.from(dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"));
             const close = (confirmed) => {
@@ -143,6 +210,7 @@
                 submit.removeEventListener("click", onSubmit);
                 cancel.removeEventListener("click", onCancel);
                 backdrop.removeEventListener("click", onBackdrop);
+                unlockConfirmationBackground();
                 if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
                 resolve(confirmed);
             };
@@ -168,13 +236,14 @@
                     first.focus();
                 }
             };
-            messageNode.textContent = String(message || "");
+            renderConfirmationContext(backdrop, message, options);
             submit.textContent = String(options.confirmLabel || "Confirm");
             submit.className = `${options.danger ? "btn-danger" : "primary-action"} inline-btn`;
             submit.addEventListener("click", onSubmit);
             cancel.addEventListener("click", onCancel);
             backdrop.addEventListener("click", onBackdrop);
             document.addEventListener("keydown", onKeydown);
+            lockConfirmationBackground(backdrop);
             backdrop.classList.add("active");
             window.requestAnimationFrame(() => cancel.focus());
         });
@@ -187,10 +256,11 @@
         backdrop.className = "modal-backdrop typed-confirm-backdrop";
         backdrop.id = "typed-confirm-modal";
         backdrop.innerHTML = `
-            <div class="modal typed-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="typed-confirm-title">
+            <div class="modal typed-confirm-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="typed-confirm-title" aria-describedby="typed-confirm-message">
                 <div class="eyebrow">Confirmation required</div>
                 <h2 id="typed-confirm-title">Confirm Action</h2>
-                <p class="muted" id="typed-confirm-message"></p>
+                <p class="muted" id="typed-confirm-message" data-confirm-message></p>
+                ${confirmationSummaryMarkup()}
                 <label class="field full-width" for="typed-confirm-input">
                     <span id="typed-confirm-label">Type the confirmation text</span>
                     <input type="text" id="typed-confirm-input" autocomplete="off" spellcheck="false">
@@ -205,17 +275,16 @@
         return backdrop;
     }
 
-    window.confirmTypedAction = window.confirmTypedAction || function confirmTypedAction(message, requiredText) {
+    window.confirmTypedAction = window.confirmTypedAction || function confirmTypedAction(message, requiredText, options = {}) {
         const required = String(requiredText || "").trim();
         if (!required) {
-            return window.confirmAction(message);
+            return window.confirmAction(message, options);
         }
         return new Promise((resolve) => {
             const backdrop = ensureTypedConfirmModal();
             const input = backdrop.querySelector("#typed-confirm-input");
             const submit = backdrop.querySelector("#typed-confirm-submit");
             const cancel = backdrop.querySelector("#typed-confirm-cancel");
-            const messageNode = backdrop.querySelector("#typed-confirm-message");
             const label = backdrop.querySelector("#typed-confirm-label");
             const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             const close = (confirmed) => {
@@ -228,6 +297,7 @@
                 cancel.removeEventListener("click", onCancel);
                 backdrop.removeEventListener("click", onBackdropClick);
                 document.removeEventListener("keydown", onDocumentKeydown);
+                unlockConfirmationBackground();
                 if (previousFocus && typeof previousFocus.focus === "function") {
                     previousFocus.focus();
                 }
@@ -271,8 +341,9 @@
                     }
                 }
             };
-            messageNode.textContent = String(message || "");
+            renderConfirmationContext(backdrop, message, { ...options, danger: options.danger !== false });
             label.textContent = `Type "${required}" to confirm.`;
+            submit.textContent = String(options.confirmLabel || "Confirm");
             input.value = "";
             submit.disabled = true;
             input.addEventListener("input", onInput);
@@ -281,6 +352,7 @@
             cancel.addEventListener("click", onCancel);
             backdrop.addEventListener("click", onBackdropClick);
             document.addEventListener("keydown", onDocumentKeydown);
+            lockConfirmationBackground(backdrop);
             backdrop.classList.add("active");
             window.requestAnimationFrame(() => input.focus());
         });

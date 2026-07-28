@@ -752,6 +752,10 @@ tbody tr:last-child td {
     display: flex;
 }
 
+body.modal-open {
+    overflow: hidden;
+}
+
 .app-feedback-region {
     position: fixed;
     z-index: 120;
@@ -781,6 +785,49 @@ tbody tr:last-child td {
 .action-confirm-message {
     margin: 12px 0 18px;
     white-space: pre-line;
+}
+
+.confirmation-modal {
+    width: min(620px, 100%);
+    overscroll-behavior: contain;
+}
+
+.confirmation-summary {
+    display: grid;
+    gap: 1px;
+    margin: 14px 0 18px;
+    overflow: hidden;
+    border: 1px solid rgba(var(--danger-rgb), 0.34);
+    border-radius: var(--radius-sm);
+    background: rgba(var(--danger-rgb), 0.04);
+}
+
+.confirmation-summary[hidden] {
+    display: none;
+}
+
+.confirmation-summary > div {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.34fr) minmax(0, 1fr);
+    gap: 12px;
+    padding: 9px 11px;
+    background: rgba(var(--panel-rgb), 0.94);
+}
+
+.confirmation-summary dt {
+    color: var(--faint);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.confirmation-summary dd {
+    margin: 0;
+    color: var(--subtle);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
 }
 
 .modal {
@@ -1009,5 +1056,24 @@ pre {
 
     h1 {
         font-size: 2rem;
+    }
+
+    .modal-backdrop {
+        align-items: flex-start;
+        overflow-y: auto;
+        padding:
+            max(12px, env(safe-area-inset-top))
+            max(12px, env(safe-area-inset-right))
+            max(12px, env(safe-area-inset-bottom))
+            max(12px, env(safe-area-inset-left));
+    }
+
+    .confirmation-modal {
+        max-height: calc(100dvh - 24px);
+    }
+
+    .confirmation-summary > div {
+        grid-template-columns: 1fr;
+        gap: 4px;
     }
 }

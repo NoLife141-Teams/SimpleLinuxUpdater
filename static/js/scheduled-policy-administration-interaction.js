@@ -214,6 +214,7 @@
         let selectedCalendarPolicyID = "";
         let selectedJob = null;
         const inFlightPolicyIDs = new Set();
+        const destructiveOperationKeys = new Set();
         let globalSettingsInFlight = false;
 
         function effect(type, payload) { return { type, ...payload }; }
@@ -325,6 +326,7 @@
             if (command === "deletePolicy") {
                 const policyID = String(policyIDInput || "").trim();
                 if (!policyID) return { enabled: false, reason: "Policy is no longer available." };
+                if (destructiveOperationKeys.size > 0) return { enabled: false, reason: "Another destructive Admin action is already in progress." };
                 if (inFlightPolicyIDs.has(policyID)) return { enabled: false, reason: "Policy action is already in progress." };
                 const policies = Array.isArray(streams.policies.data && streams.policies.data.items) ? streams.policies.data.items : [];
                 const policy = policies.find(item => String(item.id) === policyID);
@@ -447,6 +449,7 @@
                     const plan = commandPlan(input.command, input.policyID);
                     if (!plan.enabled) return [effect("commandRejected", { command: input.command, message: plan.reason })];
                     if (plan.operationKey) inFlightPolicyIDs.add(plan.operationKey);
+                    if (plan.command === "deletePolicy" && plan.operationKey) destructiveOperationKeys.add(plan.operationKey);
                     if (plan.command === "saveGlobalSettings") globalSettingsInFlight = true;
                     return [effect("executeCommand", { plan })];
                 }
@@ -454,6 +457,7 @@
                 case "commandFailed": {
                     const plan = input.plan || {};
                     if (plan.operationKey || plan.policyID) inFlightPolicyIDs.delete(String(plan.operationKey || plan.policyID));
+                    if (plan.operationKey || plan.policyID) destructiveOperationKeys.delete(String(plan.operationKey || plan.policyID));
                     if (plan.command === "saveGlobalSettings") globalSettingsInFlight = false;
                     const error = input.type === "commandFailed";
                     const message = String(input.message || (error ? "Scheduled policy action failed." : "Scheduled policy action completed."));
@@ -493,7 +497,11 @@
                 calendar: streams.calendar.data,
                 selectedCalendarPolicyID,
                 selectedJob,
-                commands: { inFlightPolicyIDs: Array.from(inFlightPolicyIDs), globalSettingsInFlight }
+                commands: {
+                    inFlightPolicyIDs: Array.from(inFlightPolicyIDs),
+                    globalSettingsInFlight,
+                    destructiveInFlight: destructiveOperationKeys.size > 0
+                }
             });
         }
 

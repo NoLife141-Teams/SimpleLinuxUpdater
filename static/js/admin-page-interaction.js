@@ -17,6 +17,14 @@
     ];
     const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
     const lazySectionIDs = new Set(["notifications", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
+    const destructiveCommands = new Set([
+        "clearSessions",
+        "clearOtherSessions",
+        "revokeSession",
+        "rotateMetricsToken",
+        "disableMetricsToken",
+        "restoreBackup"
+    ]);
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -95,6 +103,15 @@
             return "account";
         }
         function commandKey(command) { return command; }
+        function scheduledDestructiveInFlight() {
+            return Boolean(scheduled && typeof scheduled.getView === "function" && scheduled.getView()?.commands?.destructiveInFlight);
+        }
+        function destructiveInFlight() {
+            return Array.from(inFlight.keys()).some(command => destructiveCommands.has(command)) || scheduledDestructiveInFlight();
+        }
+        function isDestructiveCommand(command) {
+            return destructiveCommands.has(command) || command === "scheduled:deletePolicy";
+        }
 
         function request(stream) {
             const state = streams[stream];
@@ -276,6 +293,14 @@
         }
 
         function planCommand(command, payload = {}) {
+            if (isDestructiveCommand(command) && destructiveInFlight()) {
+                return {
+                    enabled: false,
+                    command,
+                    key: commandKey(command),
+                    reason: "Another destructive Admin action is already in progress."
+                };
+            }
             if (String(command).startsWith("scheduled:") && scheduled && typeof scheduled.planCommand === "function") {
                 return clone(scheduled.planCommand(String(command).slice(10), payload));
             }
@@ -467,7 +492,7 @@
                 backup,
                 feedback,
                 streams,
-                commands: { inFlight: Array.from(inFlight.keys()) },
+                commands: { inFlight: Array.from(inFlight.keys()), destructiveInFlight: destructiveInFlight() },
                 scheduled: scheduledView,
                 workspace: workspaceView(scheduledView),
                 dirtySections,

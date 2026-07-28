@@ -434,6 +434,10 @@ test.describe.serial('setup and login flows', () => {
     });
     await page.route('**/api/backup/restore', async route => {
       state.restoreCount = (state.restoreCount || 0) + 1;
+      if (state.deferRestore) {
+        await new Promise(resolve => { state.releaseRestore = resolve; });
+      }
+      state.restoreCompleted = true;
       return fulfillJson(route, { restored: true, sessions_invalidated: false });
     });
     await page.route('**/api/backup/verify', async route => {
@@ -1439,13 +1443,14 @@ test.describe.serial('setup and login flows', () => {
 
     const editPolicy = page.locator('button[data-action="edit-policy"][data-id="12"]');
     await editPolicy.click();
-    await expect(page.locator('#policy-unsaved-modal')).toBeVisible();
-    await page.locator('#policy-unsaved-cancel').click();
+    await expect(page.locator('#action-confirm-modal')).toBeVisible();
+    await expect(page.locator('#action-confirm-title')).toHaveText('Discard unsaved policy changes');
+    await page.locator('#action-confirm-cancel').click();
     await expect(page.locator('#policy-name')).toHaveValue('Unsaved policy');
 
     await editPolicy.click();
-    await page.locator('#policy-unsaved-confirm').click();
-    await expect(page.locator('#policy-unsaved-modal')).not.toBeVisible();
+    await page.locator('#action-confirm-submit').click();
+    await expect(page.locator('#action-confirm-modal')).not.toBeVisible();
     await expect(page.locator('#policy-name')).toHaveValue('Nightly security');
     await expect(page.locator('#policy-draft-action-bar')).toBeHidden();
 
@@ -1457,7 +1462,7 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin typed confirmations gate restore and policy deletion', async ({ page }) => {
-    const state = {};
+    const state = { deferRestore: true };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
@@ -1483,6 +1488,11 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#backup-status')).toContainText('Backup verified: 3 manifest file(s)');
     await acceptTypedConfirm(page, page.locator('#backup-restore-btn'), 'RESTORE');
     await expect.poll(() => state.restoreCount || 0).toBe(1);
+    await expect(page.locator('#auth-sessions-clear')).toBeDisabled();
+    await expect(page.locator('#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]')).toBeDisabled();
+    state.releaseRestore();
+    await expect.poll(() => state.restoreCompleted || false).toBe(true);
+    await expect(page.locator('#auth-sessions-clear')).toBeEnabled();
 
     const deletePolicyButton = page.locator('#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]');
     await dismissTypedConfirm(page, deletePolicyButton);
@@ -1490,6 +1500,61 @@ test.describe.serial('setup and login flows', () => {
 
     await acceptTypedConfirm(page, deletePolicyButton, 'Nightly security');
     await expect.poll(() => state.policyDeleteCount || 0).toBe(1);
+  });
+
+  test('admin danger dialogs explain impact, trap keyboard focus, isolate the page, and restore focus', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+
+    await page.locator('[data-admin-section-link="account-security"]').click();
+    const revokeSession = page.locator('#auth-session-inventory button[data-session-id="other-session"]');
+    await revokeSession.focus();
+    await page.keyboard.press('Enter');
+    const actionModal = page.locator('#action-confirm-modal');
+    await expect(actionModal).toBeVisible();
+    await expect(actionModal.locator('#action-confirm-title')).toHaveText('Revoke server-side session');
+    await expect(actionModal.locator('[data-confirm-operation]')).toContainText('Revoke one server-side session');
+    await expect(actionModal.locator('[data-confirm-resources]')).toContainText('Firefox · Linux');
+    await expect(actionModal.locator('[data-confirm-consequences]')).toContainText('logged out immediately');
+    await expect(actionModal.locator('[data-confirm-reversibility]')).toContainText('Not reversible');
+    await expect(actionModal.locator('[data-confirm-authentication]')).toContainText('signed-in Admin session');
+    await expect(page.locator('.dashboard-shell')).toHaveAttribute('inert', '');
+    await expect(page.locator('#action-confirm-cancel')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('#action-confirm-submit')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(actionModal).toBeHidden();
+    await expect(revokeSession).toBeFocused();
+    await expect(page.locator('.dashboard-shell')).not.toHaveAttribute('inert', '');
+
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.setViewportSize({ width: 390, height: 640 });
+    await page.locator('[data-admin-section-link="backup"]').click();
+    await page.locator('#backup-restore-file').setInputFiles({
+      name: 'backup.slubkp',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('fake-backup'),
+    });
+    await page.locator('#backup-restore-passphrase').fill('LongPassphrase123');
+    const restore = page.locator('#backup-restore-btn');
+    await restore.focus();
+    await page.keyboard.press('Enter');
+    const typedModal = page.locator('#typed-confirm-modal');
+    await expect(typedModal).toBeVisible();
+    await expect(typedModal.locator('#typed-confirm-title')).toHaveText('Restore application backup');
+    await expect(typedModal.locator('[data-confirm-resources]')).toContainText('backup.slubkp');
+    await expect(typedModal.locator('[data-confirm-authentication]')).toContainText('backup passphrase');
+    await expect(page.locator('#typed-confirm-input')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('#typed-confirm-cancel')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#typed-confirm-input')).toBeFocused();
+    await expect(typedModal.locator('.confirmation-modal')).toBeInViewport();
+    await page.keyboard.press('Escape');
+    await expect(typedModal).toBeHidden();
+    await expect(restore).toBeFocused();
   });
 
   test('admin password change sends payload and session clear requires typed confirmation', async ({ page }) => {
@@ -1504,7 +1569,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#auth-session-inventory')).toContainText('192.168.1.x');
     await page.locator('#auth-session-inventory button[data-session-id="other-session"]').click();
     await expect(page.locator('#action-confirm-modal')).toBeVisible();
-    await expect(page.locator('#action-confirm-message')).toContainText('Revoke this server-side session');
+    await expect(page.locator('#action-confirm-title')).toHaveText('Revoke server-side session');
     await page.locator('#action-confirm-cancel').click();
     await expect.poll(() => state.sessionRevokeID || '').toBe('');
 

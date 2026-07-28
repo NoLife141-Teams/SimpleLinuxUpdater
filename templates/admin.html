@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/admin.css?v=admin-freshness-20260728a">
+    <link rel="stylesheet" href="/static/css/base.css?v=admin-danger-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=admin-danger-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -214,9 +214,15 @@
                             <div class="session-list session-list-compact" id="auth-other-session-list"></div>
                         </div>
                     </div>
-                    <div class="policy-actions">
-                        <button class="btn-ghost" type="button" id="auth-sessions-clear-others">Logout All Other Sessions</button>
-                        <button class="btn-danger" type="button" id="auth-sessions-clear">Logout All Sessions</button>
+                    <div class="admin-danger-zone" aria-labelledby="session-danger-zone-title">
+                        <div>
+                            <h4 id="session-danger-zone-title">Session danger zone</h4>
+                            <p class="muted">These actions immediately invalidate one or more signed-in browsers.</p>
+                        </div>
+                        <div class="policy-actions">
+                            <button class="btn-danger" type="button" id="auth-sessions-clear-others" data-admin-danger-command="clearOtherSessions">Logout All Other Sessions</button>
+                            <button class="btn-danger" type="button" id="auth-sessions-clear" data-admin-danger-command="clearSessions">Logout All Sessions</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -558,13 +564,14 @@
                     <label class="checkbox-inline"><input type="checkbox" id="backup-include-known-hosts" checked> Include known_hosts</label>
                     <button class="primary-action" type="button" id="backup-export-btn">Download Backup</button>
                 </div>
-                <div class="backup-block">
+                <div class="backup-block admin-danger-zone">
                     <h3>Restore Backup</h3>
+                    <p class="muted">A restore replaces application data and can invalidate active sessions.</p>
                     <input class="file-input" type="file" id="backup-restore-file" accept=".slubkp,application/octet-stream">
                     <label class="file-btn" for="backup-restore-file">Choose backup file</label>
                     <input type="password" id="backup-restore-passphrase" aria-label="Backup restore passphrase" placeholder="Backup passphrase">
                     <button class="btn-ghost" type="button" id="backup-verify-btn">Verify Backup</button>
-                    <button class="btn-danger" type="button" id="backup-restore-btn">Restore Backup (Full Replace)</button>
+                    <button class="btn-danger" type="button" id="backup-restore-btn" data-admin-danger-command="restoreBackup">Restore Backup (Full Replace)</button>
                 </div>
             </div>
             <div id="backup-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -593,8 +600,16 @@
             <div class="admin-section-content" id="admin-section-metrics-content" data-admin-section-content="metrics">
             <div class="nav key-actions">
                 <button class="primary-action" type="button" id="metrics-token-generate">Generate Token</button>
-                <button class="btn-ghost" type="button" id="metrics-token-rotate">Rotate Token</button>
-                <button class="btn-danger" type="button" id="metrics-token-disable">Disable Token</button>
+            </div>
+            <div class="admin-danger-zone">
+                <div>
+                    <h3>Token danger zone</h3>
+                    <p class="muted">Rotation invalidates the current credential; disabling removes Metrics API access.</p>
+                </div>
+                <div class="policy-actions">
+                    <button class="btn-danger" type="button" id="metrics-token-rotate" data-admin-danger-command="rotateMetricsToken">Rotate Token</button>
+                    <button class="btn-danger" type="button" id="metrics-token-disable" data-admin-danger-command="disableMetricsToken">Disable Token</button>
+                </div>
             </div>
             <div id="metrics-token-status" class="muted" role="status" aria-live="polite" aria-atomic="true"></div>
             <div id="metrics-token-once" class="secret-box">
@@ -674,24 +689,12 @@
         </form>
     </div>
 
-    <div class="modal-backdrop" id="policy-unsaved-modal">
-        <div class="modal policy-unsaved-modal" role="dialog" aria-modal="true" aria-labelledby="policy-unsaved-title" aria-describedby="policy-unsaved-description">
-            <div class="eyebrow">Unsaved policy draft</div>
-            <h2 id="policy-unsaved-title">Discard unsaved changes?</h2>
-            <p class="muted" id="policy-unsaved-description">Opening another policy or starting a new one will replace the current unsaved policy draft.</p>
-            <div class="modal-actions">
-                <button class="btn-ghost inline-btn" id="policy-unsaved-cancel" type="button">Continue Editing</button>
-                <button class="btn-danger inline-btn" id="policy-unsaved-confirm" type="button">Discard Changes</button>
-            </div>
-        </div>
-    </div>
-
     <script src="/static/auth.js"></script>
-    <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
+    <script src="/static/js/common.js?v=admin-danger-20260728a"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=admin-freshness-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=admin-freshness-20260728a"></script>
-    <script src="/static/js/admin.js?v=admin-freshness-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=admin-danger-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=admin-danger-20260728a"></script>
+    <script src="/static/js/admin.js?v=admin-danger-20260728a"></script>
 </body>
 </html>

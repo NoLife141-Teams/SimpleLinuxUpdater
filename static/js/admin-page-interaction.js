@@ -68,7 +68,11 @@
     function normalizeNotifications(data = {}) {
         return {
             enabled: Boolean(data.enabled),
-            webhookURL: String(data.webhook_url ?? data.webhookURL ?? "").trim(),
+            webhookConfigured: Boolean(data.webhook_configured ?? data.webhookConfigured),
+            webhookURLMasked: String(data.webhook_url_masked ?? data.webhookURLMasked ?? "").trim(),
+            webhookURLIntent: "preserve",
+            replacementProvided: false,
+            replacementValid: true,
             eventTypes: uniqueStrings(data.event_types ?? data.eventTypes),
             supportedEvents: uniqueStrings(data.supported_events ?? data.supportedEvents),
             lastDelivery: clone(data.last_delivery ?? data.lastDelivery ?? null)
@@ -207,7 +211,7 @@
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         const inFlight = new Map();
         let timezone = { configured: "", resolved: "UTC", draft: "" };
-        let acceptedNotifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
+        let acceptedNotifications = normalizeNotifications();
         let notificationDraft = clone(acceptedNotifications);
         let account = {
             sessionCount: 0,
@@ -306,7 +310,8 @@
         function notificationComparable(value) {
             return {
                 enabled: Boolean(value.enabled),
-                webhookURL: String(value.webhookURL || "").trim(),
+                webhookURLIntent: String(value.webhookURLIntent || "preserve"),
+                replacementProvided: Boolean(value.replacementProvided),
                 eventTypes: uniqueStrings(value.eventTypes).sort()
             };
         }
@@ -314,12 +319,20 @@
             return JSON.stringify(notificationComparable(notificationDraft)) !== JSON.stringify(notificationComparable(acceptedNotifications));
         }
         function notificationValidation() {
-            const url = String(notificationDraft.webhookURL || "").trim();
-            const validURL = !notificationDraft.enabled || /^https?:\/\/\S+$/i.test(url);
-            return {
-                valid: validURL,
-                message: validURL ? "" : "An enabled webhook requires a valid HTTP or HTTPS URL."
-            };
+            const intent = String(notificationDraft.webhookURLIntent || "preserve");
+            if (intent === "replace" && !notificationDraft.replacementProvided) {
+                return { valid: false, message: "Enter the replacement webhook URL." };
+            }
+            if (intent === "replace" && !notificationDraft.replacementValid) {
+                return { valid: false, message: "Use HTTPS for public endpoints. HTTP is allowed only for supported local or internal endpoints." };
+            }
+            if (intent === "clear" && notificationDraft.enabled) {
+                return { valid: false, message: "Disable webhook delivery before clearing the configured URL." };
+            }
+            if (intent === "preserve" && notificationDraft.enabled && !acceptedNotifications.webhookConfigured) {
+                return { valid: false, message: "Choose Replace URL before enabling webhook delivery." };
+            }
+            return { valid: true, message: "" };
         }
         function applyNotifications(data, preserveDraft = false) {
             acceptedNotifications = normalizeNotifications(data);
@@ -487,7 +500,7 @@
                 case "saveNotifications":
                     if (!notificationsDirty()) return { enabled: false, command, key, reason: "Notification settings are unchanged." };
                     if (!notificationValidation().valid) return { enabled: false, command, key, reason: notificationValidation().message };
-                    return { enabled: true, command, key, payload: { enabled: notificationDraft.enabled, webhook_url: notificationDraft.webhookURL, event_types: clone(notificationDraft.eventTypes) } };
+                    return { enabled: true, command, key, payload: { enabled: notificationDraft.enabled, webhook_url_intent: notificationDraft.webhookURLIntent, event_types: clone(notificationDraft.eventTypes) } };
                 case "testNotification": return { enabled: true, command, key, payload: {} };
                 case "changePassword": {
                     if (!payload.hasCurrentPassword) return { enabled: false, command, key, reason: "Current password is required." };
@@ -592,8 +605,19 @@
                     return [];
                 }
                 case "notificationDraftChanged":
-                    notificationDraft = { ...notificationDraft, ...(event.patch || {}) };
-                    notificationDraft.webhookURL = String(notificationDraft.webhookURL || "").trim();
+                    notificationDraft = {
+                        ...notificationDraft,
+                        enabled: event.patch?.enabled ?? notificationDraft.enabled,
+                        webhookURLIntent: event.patch?.webhookURLIntent ?? notificationDraft.webhookURLIntent,
+                        replacementProvided: event.patch?.replacementProvided ?? notificationDraft.replacementProvided,
+                        replacementValid: event.patch?.replacementValid ?? notificationDraft.replacementValid,
+                        eventTypes: event.patch?.eventTypes ?? notificationDraft.eventTypes
+                    };
+                    notificationDraft.webhookURLIntent = ["preserve", "replace", "clear"].includes(notificationDraft.webhookURLIntent)
+                        ? notificationDraft.webhookURLIntent
+                        : "preserve";
+                    notificationDraft.replacementProvided = Boolean(notificationDraft.replacementProvided);
+                    notificationDraft.replacementValid = notificationDraft.replacementValid !== false;
                     notificationDraft.eventTypes = uniqueStrings(notificationDraft.eventTypes);
                     feedback.notifications = { message: "", error: false };
                     return [effect("render", { area: "notifications" })];

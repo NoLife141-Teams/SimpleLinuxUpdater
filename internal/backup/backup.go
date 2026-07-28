@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/scrypt"
@@ -1263,6 +1264,18 @@ func (s *Service) ReencryptDatabaseData(ctx context.Context, data []byte, fromKe
 	})
 	if err := credential.ReencryptStored(ctx); err != nil {
 		return nil, fmt.Errorf("rewrap restored Global SSH Credential: %w", err)
+	}
+	if err := notificationpkg.ReencryptStoredWebhookURL(
+		ctx,
+		tx,
+		func(encrypted string) (string, error) {
+			return s.deps.DecryptSecretWithKey(encrypted, fromKey)
+		},
+		func(webhookURL string) (string, error) {
+			return s.deps.EncryptSecretWithKey(webhookURL, toKey)
+		},
+	); err != nil {
+		return nil, fmt.Errorf("rewrap restored notification webhook: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -25,16 +25,16 @@ test("timezone administration retains accepted facts and rejects stale responses
 
 test("unscoped Admin snapshots cannot bypass an active request", () => {
     const store = createStore();
-    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_url: "https://new.example.test" } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_configured: true, webhook_url_masked: "https://new.example.test/••••" } });
     const active = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
 
-    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: false, webhook_url: "https://stale.example.test" } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: false, webhook_configured: true, webhook_url_masked: "https://stale.example.test/••••" } });
 
     assert.equal(store.getView().notifications.enabled, true);
-    assert.equal(store.getView().notifications.webhookURL, "https://new.example.test");
+    assert.equal(store.getView().notifications.webhookURLMasked, "https://new.example.test/••••");
     assert.equal(store.getView().streams.notifications.freshness, "refreshing");
-    store.dispatch({ type: "notificationSnapshotReceived", requestID: active.requestID, data: { enabled: false, webhook_url: "https://accepted.example.test" } });
-    assert.equal(store.getView().notifications.webhookURL, "https://accepted.example.test");
+    store.dispatch({ type: "notificationSnapshotReceived", requestID: active.requestID, data: { enabled: false, webhook_configured: true, webhook_url_masked: "https://accepted.example.test/••••" } });
+    assert.equal(store.getView().notifications.webhookURLMasked, "https://accepted.example.test/••••");
 });
 
 test("timezone save is deduplicated and requests schedule reconciliation", () => {
@@ -70,16 +70,62 @@ test("timezone save is enabled only when the accepted choice changes", () => {
 
 test("notification administration owns settings, delivery, and command lifecycle", () => {
     const store = createStore();
-    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_url: " https://hooks.example.test/x ", event_types: ["update.complete", "update.complete"], last_delivery: { success: true, delivered_at: "2026-07-10T12:00:00Z" } } });
+    store.dispatch({ type: "notificationSnapshotReceived", data: { enabled: true, webhook_configured: true, webhook_url_masked: "https://hooks.example.test/••••", event_types: ["update.complete", "update.complete"], last_delivery: { success: true, delivered_at: "2026-07-10T12:00:00Z" } } });
     assert.deepEqual(store.getView().notifications.eventTypes, ["update.complete"]);
-    store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false, webhookURL: "https://hooks.example.test/y" } });
+    store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false } });
     const save = effect(store.dispatch({ type: "commandRequested", command: "saveNotifications" }), "executeCommand");
-    assert.deepEqual(save.plan.payload, { enabled: false, webhook_url: "https://hooks.example.test/y", event_types: ["update.complete"] });
-    store.dispatch({ type: "commandCompleted", plan: save.plan, data: { enabled: false, webhook_url: "https://hooks.example.test/y", event_types: ["update.complete"] } });
+    assert.deepEqual(save.plan.payload, { enabled: false, webhook_url_intent: "preserve", event_types: ["update.complete"] });
+    store.dispatch({ type: "commandCompleted", plan: save.plan, data: { enabled: false, webhook_configured: true, webhook_url_masked: "https://hooks.example.test/••••", event_types: ["update.complete"] } });
+    store.dispatch({ type: "notificationDraftChanged", patch: { webhookURLIntent: "replace", replacementProvided: true, replacementValid: true } });
+    const replace = store.planCommand("saveNotifications");
+    assert.deepEqual(replace.payload, { enabled: false, webhook_url_intent: "replace", event_types: ["update.complete"] });
+    assert.equal(JSON.stringify(store.getView()).includes("hooks.example.test/y"), false);
     const delivery = effect(store.dispatch({ type: "commandRequested", command: "testNotification" }), "executeCommand");
     store.dispatch({ type: "commandFailed", plan: delivery.plan, data: { last_delivery: { success: false, attempts: 3 } }, message: "Notification test failed." });
     assert.equal(store.getView().notifications.lastDelivery.attempts, 3);
     assert.equal(store.getView().feedback.notifications.error, true);
+});
+
+test("notification URL intents preserve accepted configuration and never retain replacement secrets", () => {
+    const store = createStore();
+    store.dispatch({ type: "notificationSnapshotReceived", data: {
+        enabled: true,
+        webhook_configured: true,
+        webhook_url_masked: "https://hooks.example.test/••••",
+        webhook_url: "https://hooks.example.test/path?token=server-secret",
+        event_types: ["update.complete"],
+    } });
+    assert.equal(JSON.stringify(store.getView()).includes("server-secret"), false);
+
+    store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false } });
+    assert.deepEqual(store.planCommand("saveNotifications").payload, {
+        enabled: false,
+        webhook_url_intent: "preserve",
+        event_types: ["update.complete"],
+    });
+
+    store.dispatch({ type: "notificationDraftChanged", patch: {
+        webhookURLIntent: "replace",
+        replacementProvided: false,
+        replacementValid: true,
+        webhookURL: "https://replacement.example.test/hook?token=browser-secret",
+    } });
+    assert.equal(store.planCommand("saveNotifications").enabled, false);
+    assert.equal(store.planCommand("saveNotifications").reason, "Enter the replacement webhook URL.");
+    assert.equal(JSON.stringify(store.getView()).includes("browser-secret"), false);
+    store.dispatch({ type: "notificationDraftChanged", patch: { replacementProvided: true, replacementValid: false } });
+    assert.equal(store.planCommand("saveNotifications").enabled, false);
+    store.dispatch({ type: "notificationDraftChanged", patch: { replacementValid: true } });
+    assert.equal(store.planCommand("saveNotifications").enabled, true);
+
+    store.dispatch({ type: "notificationDraftChanged", patch: { webhookURLIntent: "clear", enabled: true } });
+    assert.equal(store.planCommand("saveNotifications").reason, "Disable webhook delivery before clearing the configured URL.");
+    store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false } });
+    assert.deepEqual(store.planCommand("saveNotifications").payload, {
+        enabled: false,
+        webhook_url_intent: "clear",
+        event_types: ["update.complete"],
+    });
 });
 
 test("section drafts normalize accepted values, discard independently, and exclude secrets", () => {
@@ -95,7 +141,8 @@ test("section drafts normalize accepted values, discard independently, and exclu
     store.dispatch({ type: "timezoneSnapshotReceived", data: { editable_timezone: "America/Toronto", resolved_timezone: "America/Toronto" } });
     store.dispatch({ type: "notificationSnapshotReceived", data: {
         enabled: true,
-        webhook_url: "https://hooks.example.test/current",
+        webhook_configured: true,
+        webhook_url_masked: "https://hooks.example.test/••••",
         event_types: ["update.complete"],
     } });
 
@@ -103,7 +150,10 @@ test("section drafts normalize accepted values, discard independently, and exclu
     assert.equal(store.planCommand("saveNotifications").enabled, false);
 
     store.dispatch({ type: "notificationDraftChanged", patch: {
-        webhookURL: " https://hooks.example.test/replacement ",
+        webhookURL: "https://secret.example.test/path?token=never-store",
+        webhookURLIntent: "replace",
+        replacementProvided: true,
+        replacementValid: true,
         eventTypes: ["update.complete", "update.complete"],
     } });
     assert.equal(store.getView().notifications.dirty, true);
@@ -112,14 +162,17 @@ test("section drafts normalize accepted values, discard independently, and exclu
     const notificationRefresh = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");
     store.dispatch({ type: "notificationSnapshotReceived", requestID: notificationRefresh.requestID, data: {
         enabled: true,
-        webhook_url: "https://hooks.example.test/server-updated",
+        webhook_configured: true,
+        webhook_url_masked: "https://server-updated.example.test/••••",
         event_types: ["update.complete"],
     } });
-    assert.equal(store.getView().notifications.webhookURL, "https://hooks.example.test/replacement");
+    assert.equal(store.getView().notifications.webhookURLIntent, "replace");
+    assert.equal(JSON.stringify(store.getView()).includes("never-store"), false);
     assert.equal(store.getView().notifications.dirty, true);
 
     store.dispatch({ type: "notificationDiscardRequested" });
-    assert.equal(store.getView().notifications.webhookURL, "https://hooks.example.test/server-updated");
+    assert.equal(store.getView().notifications.webhookURLMasked, "https://server-updated.example.test/••••");
+    assert.equal(store.getView().notifications.webhookURLIntent, "preserve");
     assert.equal(store.getView().notifications.dirty, false);
 
     store.dispatch({ type: "timezoneDraftChanged", timezone: "Europe/Paris" });

@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,15 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func testWebhookCodec() (func(string) (string, error), func(string) (string, error)) {
+	return func(value string) (string, error) {
+			return base64.StdEncoding.EncodeToString([]byte(value)), nil
+		}, func(value string) (string, error) {
+			plain, err := base64.StdEncoding.DecodeString(value)
+			return string(plain), err
+		}
+}
 
 func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan WebhookPayload) {
 	return newTestServiceWithQueue(t, handler, defaultQueueSize)
@@ -39,24 +49,28 @@ func newTestServiceWithQueue(t *testing.T, handler http.HandlerFunc, queueSize i
 		handler(w, r)
 	}))
 	t.Cleanup(server.Close)
+	encrypt, decrypt := testWebhookCodec()
 	svc := NewService(ServiceDeps{
 		DB: func() *sql.DB { return db },
 		Now: func() time.Time {
 			return time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 		},
-		Backoff:   func(int) time.Duration { return 0 },
-		Logf:      func(string, ...any) {},
-		QueueSize: queueSize,
+		Backoff:       func(int) time.Duration { return 0 },
+		Logf:          func(string, ...any) {},
+		QueueSize:     queueSize,
+		EncryptSecret: encrypt,
+		DecryptSecret: decrypt,
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = svc.Close(ctx)
 	})
-	if _, err := svc.SaveSettings(Settings{
-		Enabled:    true,
-		WebhookURL: server.URL,
-		EventTypes: []string{EventUpdateComplete},
+	if _, err := svc.SaveSettings(SettingsUpdate{
+		Enabled:          true,
+		WebhookURL:       server.URL,
+		WebhookURLIntent: WebhookURLReplace,
+		EventTypes:       []string{EventUpdateComplete},
 	}); err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -169,7 +183,7 @@ func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	var attempts int32
 	svc, _ := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&attempts, 1)
-		http.Error(w, "down", http.StatusBadGateway)
+		http.Error(w, "remote-secret-body", http.StatusBadGateway)
 	})
 
 	admission := svc.Accept(DeliveryIntent{
@@ -198,6 +212,13 @@ func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	}
 	if settings.LastDelivery == nil || settings.LastDelivery.Success || !strings.Contains(settings.LastDelivery.Error, "502") {
 		t.Fatalf("last delivery = %+v, want saved HTTP failure", settings.LastDelivery)
+	}
+	var persistedRaw string
+	if err := svc.deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&persistedRaw); err != nil {
+		t.Fatalf("load persisted failure: %v", err)
+	}
+	if strings.Contains(persistedRaw, "remote-secret-body") {
+		t.Fatalf("remote response body leaked into persistence: %s", persistedRaw)
 	}
 }
 
@@ -230,24 +251,246 @@ func TestSaveSettingsValidatesURLAndEvents(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
 		t.Fatalf("create settings table: %v", err)
 	}
-	svc := NewService(ServiceDeps{DB: func() *sql.DB { return db }, Logf: func(string, ...any) {}})
+	encrypt, decrypt := testWebhookCodec()
+	svc := NewService(ServiceDeps{
+		DB:            func() *sql.DB { return db },
+		Logf:          func(string, ...any) {},
+		EncryptSecret: encrypt,
+		DecryptSecret: decrypt,
+	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = svc.Close(ctx)
 	})
-	if _, err := svc.SaveSettings(Settings{Enabled: true, WebhookURL: "ftp://example.test/hook", EventTypes: []string{EventUpdateComplete}}); err == nil {
+	if _, err := svc.SaveSettings(SettingsUpdate{Enabled: true, WebhookURL: "ftp://example.test/hook", WebhookURLIntent: WebhookURLReplace, EventTypes: []string{EventUpdateComplete}}); err == nil {
 		t.Fatalf("SaveSettings() accepted invalid URL")
 	}
-	if _, err := svc.SaveSettings(Settings{Enabled: false, EventTypes: []string{"unknown.event"}}); err == nil {
+	if _, err := svc.SaveSettings(SettingsUpdate{Enabled: false, EventTypes: []string{"unknown.event"}}); err == nil {
 		t.Fatalf("SaveSettings() accepted unsupported event type")
 	}
-	resp, err := svc.SaveSettings(Settings{Enabled: false, EventTypes: []string{}})
+	resp, err := svc.SaveSettings(SettingsUpdate{Enabled: false, EventTypes: []string{}})
 	if err != nil {
 		t.Fatalf("SaveSettings(empty events) error = %v", err)
 	}
 	if len(resp.EventTypes) != 0 {
 		t.Fatalf("EventTypes = %+v, want explicit empty selection preserved", resp.EventTypes)
+	}
+}
+
+func TestWebhookSettingsPreserveReplaceClearAndMigrateLegacySecret(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notifications-intents.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create settings table: %v", err)
+	}
+	const legacySecretURL = "https://legacy.example.test/hook?token=legacy-secret"
+	legacy, err := json.Marshal(persistedSettings{
+		Enabled:          true,
+		LegacyWebhookURL: legacySecretURL,
+		EventTypes:       []string{EventUpdateComplete},
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy settings: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO settings(key, value) VALUES(?, ?)", SettingsKey, string(legacy)); err != nil {
+		t.Fatalf("insert legacy settings: %v", err)
+	}
+	encrypt, decrypt := testWebhookCodec()
+	svc := NewService(ServiceDeps{
+		DB:            func() *sql.DB { return db },
+		EncryptSecret: encrypt,
+		DecryptSecret: decrypt,
+		Logf:          func(string, ...any) {},
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Close(ctx)
+	})
+
+	status, err := svc.Settings()
+	if err != nil {
+		t.Fatalf("Settings(legacy) error = %v", err)
+	}
+	responseJSON, _ := json.Marshal(status)
+	if !status.WebhookConfigured || status.WebhookURLMasked != "https://legacy.example.test/••••" ||
+		strings.Contains(string(responseJSON), "legacy-secret") || strings.Contains(string(responseJSON), legacySecretURL) {
+		t.Fatalf("legacy status = %+v json=%s, want configured masked response", status, responseJSON)
+	}
+	var persistedRaw string
+	if err := db.QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&persistedRaw); err != nil {
+		t.Fatalf("load automatically migrated settings: %v", err)
+	}
+	if strings.Contains(persistedRaw, legacySecretURL) || strings.Contains(persistedRaw, "legacy-secret") ||
+		strings.Contains(persistedRaw, `"webhook_url":`) || !strings.Contains(persistedRaw, `"webhook_url_enc":`) {
+		t.Fatalf("legacy read did not protect persisted URL: %s", persistedRaw)
+	}
+
+	preserved, err := svc.SaveSettings(SettingsUpdate{
+		Enabled:          false,
+		WebhookURLIntent: WebhookURLPreserve,
+		EventTypes:       []string{EventBackupRestore},
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings(preserve) error = %v", err)
+	}
+	if preserved.WebhookURLIntent != WebhookURLPreserve || !preserved.WebhookConfigured || preserved.Enabled {
+		t.Fatalf("preserved response = %+v", preserved)
+	}
+	if err := db.QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&persistedRaw); err != nil {
+		t.Fatalf("load migrated settings: %v", err)
+	}
+	if strings.Contains(persistedRaw, legacySecretURL) || strings.Contains(persistedRaw, "legacy-secret") ||
+		strings.Contains(persistedRaw, `"webhook_url":`) || !strings.Contains(persistedRaw, `"webhook_url_enc":`) {
+		t.Fatalf("preserved persistence leaked legacy URL: %s", persistedRaw)
+	}
+
+	const replacementSecretURL = "https://replacement.example.test/new?token=replacement-secret"
+	replaced, err := svc.SaveSettings(SettingsUpdate{
+		Enabled:          true,
+		WebhookURL:       replacementSecretURL,
+		WebhookURLIntent: WebhookURLReplace,
+		EventTypes:       []string{EventUpdateComplete},
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings(replace) error = %v", err)
+	}
+	if replaced.WebhookURLIntent != WebhookURLReplace || replaced.WebhookURLMasked != "https://replacement.example.test/••••" {
+		t.Fatalf("replaced response = %+v", replaced)
+	}
+	if err := db.QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&persistedRaw); err != nil {
+		t.Fatalf("load replaced settings: %v", err)
+	}
+	if strings.Contains(persistedRaw, replacementSecretURL) || strings.Contains(persistedRaw, "replacement-secret") {
+		t.Fatalf("replacement URL leaked into persistence: %s", persistedRaw)
+	}
+
+	cleared, err := svc.SaveSettings(SettingsUpdate{
+		Enabled:          false,
+		WebhookURLIntent: WebhookURLClear,
+		EventTypes:       []string{EventUpdateComplete},
+	})
+	if err != nil {
+		t.Fatalf("SaveSettings(clear) error = %v", err)
+	}
+	if cleared.WebhookURLIntent != WebhookURLClear || cleared.WebhookConfigured || cleared.WebhookURLMasked != "" {
+		t.Fatalf("cleared response = %+v", cleared)
+	}
+}
+
+func TestWebhookReplacementPolicyRejectsAmbiguousAndCredentialBearingURLs(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notifications-policy.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create settings table: %v", err)
+	}
+	encrypt, decrypt := testWebhookCodec()
+	svc := NewService(ServiceDeps{DB: func() *sql.DB { return db }, EncryptSecret: encrypt, DecryptSecret: decrypt})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Close(ctx)
+	})
+
+	tests := []struct {
+		name   string
+		update SettingsUpdate
+		want   string
+	}{
+		{"public HTTP", SettingsUpdate{WebhookURLIntent: WebhookURLReplace, WebhookURL: "http://example.com/hook"}, "Use HTTPS"},
+		{"embedded credentials", SettingsUpdate{WebhookURLIntent: WebhookURLReplace, WebhookURL: "https://admin:secret@example.com/hook"}, "credentials"},
+		{"missing replacement", SettingsUpdate{WebhookURLIntent: WebhookURLReplace}, "required"},
+		{"enabled clear", SettingsUpdate{Enabled: true, WebhookURLIntent: WebhookURLClear}, "Disable"},
+		{"unknown intent", SettingsUpdate{WebhookURLIntent: "rotate"}, "preserve, replace, or clear"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.SaveSettings(tt.update)
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || !strings.Contains(validationErr.Error(), tt.want) {
+				t.Fatalf("SaveSettings() error = %v, want validation containing %q", err, tt.want)
+			}
+			if strings.Contains(validationErr.Error(), "admin:secret") {
+				t.Fatalf("validation error leaked URL credentials: %v", validationErr)
+			}
+		})
+	}
+	for _, accepted := range []string{
+		"https://public.example.com/hook",
+		"http://localhost:8080/hook",
+		"http://192.168.1.5/hook",
+		"http://hooks.example.internal/hook",
+	} {
+		if _, err := svc.SaveSettings(SettingsUpdate{
+			WebhookURLIntent: WebhookURLReplace,
+			WebhookURL:       accepted,
+			EventTypes:       []string{},
+		}); err != nil {
+			t.Fatalf("SaveSettings(%q) error = %v", accepted, err)
+		}
+	}
+}
+
+func TestReencryptStoredWebhookURLHandlesEncryptedAndLegacyBackupSettings(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "encrypted", true: "legacy"}[legacy], func(t *testing.T) {
+			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notification-rewrap.db"))
+			if err != nil {
+				t.Fatalf("sql.Open() error = %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+				t.Fatalf("create settings table: %v", err)
+			}
+			const webhookURL = "https://backup.example.test/hook?token=backup-secret"
+			stored := persistedSettings{Enabled: true, EventTypes: []string{EventUpdateComplete}}
+			if legacy {
+				stored.LegacyWebhookURL = webhookURL
+			} else {
+				stored.EncryptedWebhookURL = "old:" + base64.StdEncoding.EncodeToString([]byte(webhookURL))
+			}
+			body, _ := json.Marshal(stored)
+			if _, err := db.Exec("INSERT INTO settings(key, value) VALUES(?, ?)", SettingsKey, string(body)); err != nil {
+				t.Fatalf("insert settings: %v", err)
+			}
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatalf("begin transaction: %v", err)
+			}
+			err = ReencryptStoredWebhookURL(
+				context.Background(),
+				tx,
+				func(value string) (string, error) {
+					plain, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(value, "old:"))
+					return string(plain), err
+				},
+				func(value string) (string, error) {
+					return "new:" + base64.StdEncoding.EncodeToString([]byte(value)), nil
+				},
+			)
+			if err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("ReencryptStoredWebhookURL() error = %v", err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatalf("commit transaction: %v", err)
+			}
+			var raw string
+			if err := db.QueryRow("SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw); err != nil {
+				t.Fatalf("load rewrapped settings: %v", err)
+			}
+			if strings.Contains(raw, webhookURL) || strings.Contains(raw, "backup-secret") ||
+				strings.Contains(raw, `"webhook_url":`) || !strings.Contains(raw, `"webhook_url_enc":"new:`) {
+				t.Fatalf("rewrapped settings = %s", raw)
+			}
+		})
 	}
 }
 
@@ -265,8 +508,8 @@ func TestDeliveryOutcomeDoesNotOverwriteConcurrentSettings(t *testing.T) {
 	}
 	<-started
 	const replacementURL = "https://replacement.example.test/hook"
-	if _, err := svc.SaveSettings(Settings{
-		Enabled: true, WebhookURL: replacementURL, EventTypes: []string{EventScheduleRunFailed},
+	if _, err := svc.SaveSettings(SettingsUpdate{
+		Enabled: true, WebhookURL: replacementURL, WebhookURLIntent: WebhookURLReplace, EventTypes: []string{EventScheduleRunFailed},
 	}); err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
@@ -280,7 +523,7 @@ func TestDeliveryOutcomeDoesNotOverwriteConcurrentSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Settings() error = %v", err)
 	}
-	if settings.WebhookURL != replacementURL || len(settings.EventTypes) != 1 || settings.EventTypes[0] != EventScheduleRunFailed {
+	if !settings.WebhookConfigured || settings.WebhookURLMasked != "https://replacement.example.test/••••" || len(settings.EventTypes) != 1 || settings.EventTypes[0] != EventScheduleRunFailed {
 		t.Fatalf("settings = %+v, want concurrent replacement preserved", settings)
 	}
 	if settings.LastDelivery == nil || !settings.LastDelivery.Success {

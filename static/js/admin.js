@@ -471,9 +471,21 @@ function renderNotificationSettings() {
     const view = adminPageView().notifications;
     const enabled = document.getElementById("notification-enabled");
     const webhookURL = document.getElementById("notification-webhook-url");
+    const masked = document.getElementById("notification-webhook-masked");
+    const editor = document.getElementById("notification-webhook-editor");
+    const replace = document.getElementById("notification-webhook-replace");
+    const clear = document.getElementById("notification-webhook-clear");
     const eventTypes = view.eventTypes;
     if (enabled) enabled.checked = view.enabled;
-    if (webhookURL && document.activeElement !== webhookURL) webhookURL.value = view.webhookURL;
+    if (masked) {
+        masked.textContent = view.webhookURLIntent === "clear"
+            ? "Will be cleared when saved"
+            : view.webhookConfigured ? view.webhookURLMasked || "Configured endpoint (masked)" : "Not configured";
+    }
+    if (editor) editor.hidden = view.webhookURLIntent !== "replace";
+    if (replace) replace.disabled = view.webhookURLIntent === "replace";
+    if (clear) clear.disabled = !view.webhookConfigured || view.webhookURLIntent === "clear";
+    if (webhookURL && view.webhookURLIntent !== "replace") webhookURL.value = "";
     document.querySelectorAll("[data-notification-event]").forEach((input) => {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
@@ -495,25 +507,67 @@ function renderNotificationDraftState() {
     }
     if (discard) discard.disabled = !notification.dirty || inFlight;
     if (state) {
+        const intentLabels = {
+            replace: "Webhook URL will be replaced",
+            clear: "Webhook URL will be cleared"
+        };
         state.textContent = notification.dirty
-            ? (notification.valid ? "Unsaved notification changes" : notification.message)
+            ? (notification.valid ? intentLabels[notification.webhookURLIntent] || "Unsaved notification changes" : notification.message)
             : "No unsaved changes";
         state.classList.toggle("is-dirty", notification.dirty);
     }
 }
 
+function notificationReplacementPolicyValid(raw) {
+    try {
+        const parsed = new URL(String(raw || "").trim());
+        if (parsed.username || parsed.password) return false;
+        if (parsed.protocol === "https:") return true;
+        if (parsed.protocol !== "http:") return false;
+        const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+        if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+        if (host === "::1" || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
+        const private172 = host.match(/^172\.(\d{1,3})\./);
+        return Boolean(private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31);
+    } catch (_) {
+        return false;
+    }
+}
+
 function syncNotificationDraftFromDOM() {
+    const current = adminPageView().notifications;
+    const replacement = document.getElementById("notification-webhook-url")?.value?.trim() || "";
     adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: {
         enabled: Boolean(document.getElementById("notification-enabled")?.checked),
-        webhookURL: document.getElementById("notification-webhook-url")?.value?.trim() || "",
+        webhookURLIntent: current.webhookURLIntent,
+        replacementProvided: current.webhookURLIntent === "replace" && replacement !== "",
+        replacementValid: current.webhookURLIntent !== "replace" || notificationReplacementPolicyValid(replacement),
         eventTypes: selectedNotificationEvents()
     } });
     setNotificationFeedback("", "");
     renderNotificationDraftState();
 }
 
+function setNotificationWebhookIntent(intent) {
+    const input = document.getElementById("notification-webhook-url");
+    if (input) input.value = "";
+    adminPageInteraction.dispatch({
+        type: "notificationDraftChanged",
+        patch: {
+            webhookURLIntent: intent,
+            replacementProvided: false,
+            replacementValid: true
+        }
+    });
+    setNotificationFeedback("", "");
+    renderNotificationSettings();
+    if (intent === "replace") input?.focus();
+}
+
 function discardNotificationDraft() {
     adminPageInteraction.dispatch({ type: "notificationDiscardRequested" });
+    const webhookURL = document.getElementById("notification-webhook-url");
+    if (webhookURL) webhookURL.value = "";
     renderNotificationSettings();
     setNotificationFeedback("", "");
 }
@@ -559,14 +613,13 @@ async function saveNotificationSettings() {
     try {
         setNotificationFeedback("", "");
         if (button) button.disabled = true;
-        const payload = {
-            enabled: Boolean(document.getElementById("notification-enabled")?.checked),
-            webhook_url: document.getElementById("notification-webhook-url")?.value?.trim() || "",
-            event_types: selectedNotificationEvents()
-        };
-        adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: { enabled: payload.enabled, webhookURL: payload.webhook_url, eventTypes: payload.event_types } });
+        syncNotificationDraftFromDOM();
         plan = beginAdminCommand("saveNotifications");
         if (!plan) return;
+        const payload = { ...plan.payload };
+        if (payload.webhook_url_intent === "replace") {
+            payload.webhook_url = document.getElementById("notification-webhook-url")?.value?.trim() || "";
+        }
         const res = await fetch("/api/notifications/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -581,7 +634,12 @@ async function saveNotificationSettings() {
         const data = await res.json().catch(() => ({}));
         finishAdminCommand(plan, data, "Notification settings saved.");
         renderNotificationSettings();
-        setNotificationFeedback("Notification settings saved.", "");
+        const outcomes = {
+            replace: "Webhook URL replaced.",
+            clear: "Webhook URL cleared.",
+            preserve: "Notification settings saved; the configured URL was preserved."
+        };
+        setNotificationFeedback(outcomes[data.webhook_url_intent] || "Notification settings saved.", "");
     } catch (err) {
         console.error("Failed to save notification settings:", err);
         finishAdminCommand(plan, null, "Failed to save notification settings.", true);
@@ -3379,6 +3437,9 @@ document.getElementById("notification-save").addEventListener("click", saveNotif
 document.getElementById("notification-discard").addEventListener("click", discardNotificationDraft);
 document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
 document.getElementById("notification-webhook-url").addEventListener("input", syncNotificationDraftFromDOM);
+document.getElementById("notification-webhook-replace").addEventListener("click", () => setNotificationWebhookIntent("replace"));
+document.getElementById("notification-webhook-clear").addEventListener("click", () => setNotificationWebhookIntent("clear"));
+document.getElementById("notification-webhook-cancel").addEventListener("click", () => setNotificationWebhookIntent("preserve"));
 document.getElementById("notification-enabled").addEventListener("change", syncNotificationDraftFromDOM);
 document.querySelectorAll("[data-notification-event]").forEach(input => input.addEventListener("change", syncNotificationDraftFromDOM));
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -39,6 +40,14 @@ var supportedEvents = []string{
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 
+type WebhookURLIntent string
+
+const (
+	WebhookURLPreserve WebhookURLIntent = "preserve"
+	WebhookURLReplace  WebhookURLIntent = "replace"
+	WebhookURLClear    WebhookURLIntent = "clear"
+)
+
 type DBProvider func() *sql.DB
 
 type HTTPClient interface {
@@ -46,15 +55,46 @@ type HTTPClient interface {
 }
 
 type Settings struct {
-	Enabled      bool            `json:"enabled"`
-	WebhookURL   string          `json:"webhook_url"`
-	EventTypes   []string        `json:"event_types"`
-	LastDelivery *DeliveryStatus `json:"last_delivery,omitempty"`
+	Enabled      bool
+	WebhookURL   string
+	EventTypes   []string
+	LastDelivery *DeliveryStatus
 }
 
 type SettingsResponse struct {
-	Settings
-	SupportedEvents []string `json:"supported_events"`
+	Enabled           bool             `json:"enabled"`
+	WebhookConfigured bool             `json:"webhook_configured"`
+	WebhookURLMasked  string           `json:"webhook_url_masked,omitempty"`
+	WebhookURLIntent  WebhookURLIntent `json:"webhook_url_intent"`
+	EventTypes        []string         `json:"event_types"`
+	LastDelivery      *DeliveryStatus  `json:"last_delivery,omitempty"`
+	SupportedEvents   []string         `json:"supported_events"`
+}
+
+type SettingsUpdate struct {
+	Enabled          bool             `json:"enabled"`
+	WebhookURL       string           `json:"webhook_url,omitempty"`
+	WebhookURLIntent WebhookURLIntent `json:"webhook_url_intent,omitempty"`
+	EventTypes       []string         `json:"event_types"`
+}
+
+type persistedSettings struct {
+	Enabled             bool            `json:"enabled"`
+	LegacyWebhookURL    string          `json:"webhook_url,omitempty"`
+	EncryptedWebhookURL string          `json:"webhook_url_enc,omitempty"`
+	EventTypes          []string        `json:"event_types"`
+	LastDelivery        *DeliveryStatus `json:"last_delivery,omitempty"`
+}
+
+type ValidationError struct {
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
 }
 
 type DeliveryStatus struct {
@@ -96,7 +136,7 @@ type Admission struct {
 
 type Lifecycle interface {
 	Settings() (SettingsResponse, error)
-	SaveSettings(Settings) (SettingsResponse, error)
+	SaveSettings(SettingsUpdate) (SettingsResponse, error)
 	Accept(DeliveryIntent) Admission
 	TestDelivery(context.Context) (DeliveryStatus, error)
 	Close(context.Context) error
@@ -118,6 +158,8 @@ type WebhookPayload struct {
 type ServiceDeps struct {
 	DB              DBProvider
 	HTTPClient      HTTPClient
+	EncryptSecret   func(string) (string, error)
+	DecryptSecret   func(string) (string, error)
 	Now             func() time.Time
 	Backoff         func(attempt int) time.Duration
 	Logf            func(string, ...any)
@@ -258,38 +300,60 @@ func (s *Service) Settings() (SettingsResponse, error) {
 	if err != nil {
 		return SettingsResponse{}, err
 	}
-	return SettingsResponse{
-		Settings:        settings,
-		SupportedEvents: SupportedEvents(),
-	}, nil
+	return settingsResponse(settings, WebhookURLPreserve), nil
 }
 
-func (s *Service) SaveSettings(settings Settings) (SettingsResponse, error) {
+func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
 	current, err := s.loadSettings()
 	if err != nil {
 		return SettingsResponse{}, err
 	}
-	settings.WebhookURL = strings.TrimSpace(settings.WebhookURL)
-	events, err := normalizeEventTypes(settings.EventTypes)
+	events, err := normalizeEventTypes(update.EventTypes)
 	if err != nil {
 		return SettingsResponse{}, err
 	}
-	settings.EventTypes = events
-	settings.LastDelivery = current.LastDelivery
-	if settings.Enabled || settings.WebhookURL != "" {
-		if err := validateWebhookURL(settings.WebhookURL); err != nil {
+	intent, err := normalizeWebhookURLIntent(update)
+	if err != nil {
+		return SettingsResponse{}, err
+	}
+	settings := Settings{
+		Enabled:      update.Enabled,
+		WebhookURL:   current.WebhookURL,
+		EventTypes:   events,
+		LastDelivery: current.LastDelivery,
+	}
+	switch intent {
+	case WebhookURLReplace:
+		replacement := strings.TrimSpace(update.WebhookURL)
+		if replacement == "" {
+			return SettingsResponse{}, validationError("A replacement webhook URL is required.")
+		}
+		if err := validateReplacementWebhookURL(replacement); err != nil {
 			return SettingsResponse{}, err
 		}
+		settings.WebhookURL = replacement
+	case WebhookURLClear:
+		if strings.TrimSpace(update.WebhookURL) != "" {
+			return SettingsResponse{}, validationError("webhook_url must be empty when clearing the configured URL.")
+		}
+		if update.Enabled {
+			return SettingsResponse{}, validationError("Disable webhook delivery before clearing the configured URL.")
+		}
+		settings.WebhookURL = ""
+	case WebhookURLPreserve:
+		if strings.TrimSpace(update.WebhookURL) != "" {
+			return SettingsResponse{}, validationError("webhook_url must be empty when preserving the configured URL.")
+		}
+	}
+	if settings.Enabled && settings.WebhookURL == "" {
+		return SettingsResponse{}, validationError("Enablement requires a configured webhook URL. Choose Replace URL first.")
 	}
 	if err := s.saveSettings(settings); err != nil {
 		return SettingsResponse{}, err
 	}
-	return SettingsResponse{
-		Settings:        settings,
-		SupportedEvents: SupportedEvents(),
-	}, nil
+	return settingsResponse(settings, intent), nil
 }
 
 func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
@@ -331,7 +395,7 @@ func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, st
 }
 
 func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) (DeliveryStatus, error) {
-	if err := validateWebhookURL(settings.WebhookURL); err != nil {
+	if err := validateStoredWebhookURL(settings.WebhookURL); err != nil {
 		return DeliveryStatus{}, err
 	}
 	payload, err := buildPayload(eventType, evt)
@@ -352,14 +416,14 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 		status.Attempts = attempt
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, settings.WebhookURL, bytes.NewReader(body))
 		if reqErr != nil {
-			lastErr = reqErr
+			lastErr = errors.New("webhook request could not be created")
 			break
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "SimpleLinuxUpdater/notification-hook")
 		resp, doErr := s.deps.HTTPClient.Do(req)
 		if doErr != nil {
-			lastErr = doErr
+			lastErr = safeWebhookRequestError(doErr)
 		} else {
 			status.StatusCode = resp.StatusCode
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
@@ -385,7 +449,7 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 		}
 	}
 	status.Success = false
-	status.Error = truncate(strings.TrimSpace(fmt.Sprint(lastErr)), 240)
+	status.Error = safeDeliveryError(lastErr)
 	status.DeliveredAt = s.deps.Now().UTC().Format(time.RFC3339)
 	if err := s.storeLastDelivery(status); err != nil {
 		if lastErr == nil {
@@ -420,8 +484,27 @@ func (s *Service) loadSettings() (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+	var stored persistedSettings
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return Settings{}, err
+	}
+	settings.Enabled = stored.Enabled
+	settings.EventTypes = stored.EventTypes
+	settings.LastDelivery = safeDeliveryStatus(stored.LastDelivery)
+	legacyURLStored := strings.TrimSpace(stored.EncryptedWebhookURL) == "" &&
+		strings.TrimSpace(stored.LegacyWebhookURL) != ""
+	switch {
+	case strings.TrimSpace(stored.EncryptedWebhookURL) != "":
+		if s.deps.DecryptSecret == nil {
+			return Settings{}, errors.New("protected webhook URL cannot be loaded")
+		}
+		decrypted, err := s.deps.DecryptSecret(stored.EncryptedWebhookURL)
+		if err != nil {
+			return Settings{}, errors.New("protected webhook URL cannot be loaded")
+		}
+		settings.WebhookURL = strings.TrimSpace(decrypted)
+	default:
+		settings.WebhookURL = strings.TrimSpace(stored.LegacyWebhookURL)
 	}
 	if settings.EventTypes == nil {
 		settings.EventTypes = SupportedEvents()
@@ -433,6 +516,11 @@ func (s *Service) loadSettings() (Settings, error) {
 		settings.EventTypes = events
 	}
 	settings.WebhookURL = strings.TrimSpace(settings.WebhookURL)
+	if legacyURLStored {
+		if err := s.saveSettings(settings); err != nil {
+			return Settings{}, errors.New("legacy webhook URL could not be protected")
+		}
+	}
 	return settings, nil
 }
 
@@ -444,7 +532,22 @@ func (s *Service) saveSettings(settings Settings) error {
 	if db == nil {
 		return nil
 	}
-	body, err := json.Marshal(settings)
+	stored := persistedSettings{
+		Enabled:      settings.Enabled,
+		EventTypes:   append([]string(nil), settings.EventTypes...),
+		LastDelivery: safeDeliveryStatus(settings.LastDelivery),
+	}
+	if strings.TrimSpace(settings.WebhookURL) != "" {
+		if s.deps.EncryptSecret == nil {
+			return errors.New("webhook URL protection is unavailable")
+		}
+		encrypted, err := s.deps.EncryptSecret(settings.WebhookURL)
+		if err != nil {
+			return errors.New("webhook URL could not be protected")
+		}
+		stored.EncryptedWebhookURL = encrypted
+	}
+	body, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
@@ -465,6 +568,58 @@ func (s *Service) storeLastDelivery(status DeliveryStatus) error {
 	}
 	settings.LastDelivery = &status
 	return s.saveSettings(settings)
+}
+
+func ReencryptStoredWebhookURL(
+	ctx context.Context,
+	tx *sql.Tx,
+	decrypt func(string) (string, error),
+	encrypt func(string) (string, error),
+) error {
+	if tx == nil {
+		return errors.New("notification settings transaction is unavailable")
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return errors.New("read restored notification settings")
+	}
+	var stored persistedSettings
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return errors.New("parse restored notification settings")
+	}
+	webhookURL := strings.TrimSpace(stored.LegacyWebhookURL)
+	if strings.TrimSpace(stored.EncryptedWebhookURL) != "" {
+		if decrypt == nil {
+			return errors.New("notification webhook decryption is unavailable")
+		}
+		webhookURL, err = decrypt(stored.EncryptedWebhookURL)
+		if err != nil {
+			return errors.New("decrypt restored notification webhook")
+		}
+	}
+	stored.LegacyWebhookURL = ""
+	stored.EncryptedWebhookURL = ""
+	if strings.TrimSpace(webhookURL) != "" {
+		if encrypt == nil {
+			return errors.New("notification webhook encryption is unavailable")
+		}
+		stored.EncryptedWebhookURL, err = encrypt(webhookURL)
+		if err != nil {
+			return errors.New("encrypt restored notification webhook")
+		}
+	}
+	body, err := json.Marshal(stored)
+	if err != nil {
+		return errors.New("encode restored notification settings")
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE settings SET value = ? WHERE key = ?", string(body), SettingsKey); err != nil {
+		return errors.New("update restored notification settings")
+	}
+	return nil
 }
 
 func buildPayload(eventType string, evt DeliveryIntent) (WebhookPayload, error) {
@@ -526,15 +681,138 @@ func eventEnabled(events []string, eventType string) bool {
 	return false
 }
 
-func validateWebhookURL(raw string) error {
+func normalizeWebhookURLIntent(update SettingsUpdate) (WebhookURLIntent, error) {
+	intent := WebhookURLIntent(strings.ToLower(strings.TrimSpace(string(update.WebhookURLIntent))))
+	if intent == "" {
+		if strings.TrimSpace(update.WebhookURL) != "" {
+			return WebhookURLReplace, nil
+		}
+		return WebhookURLPreserve, nil
+	}
+	switch intent {
+	case WebhookURLPreserve, WebhookURLReplace, WebhookURLClear:
+		return intent, nil
+	default:
+		return "", validationError("webhook_url_intent must be preserve, replace, or clear.")
+	}
+}
+
+func validateStoredWebhookURL(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed == nil || parsed.Host == "" {
-		return errors.New("webhook_url must be an http or https URL")
+		return validationError("The configured webhook URL is invalid.")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("webhook_url must be an http or https URL")
+		return validationError("The configured webhook URL is invalid.")
 	}
 	return nil
+}
+
+func validateReplacementWebhookURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Host == "" {
+		return validationError("Webhook URL must be a valid HTTPS URL.")
+	}
+	if parsed.User != nil {
+		return validationError("Embedded URL credentials are not supported.")
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLocalWebhookHost(parsed.Hostname()) {
+			return nil
+		}
+		return validationError("Use HTTPS for public endpoints. HTTP is allowed only for localhost, private IP addresses, and .local or .internal hosts.")
+	default:
+		return validationError("Webhook URL must use HTTPS. HTTP is allowed only for supported local or internal endpoints.")
+	}
+}
+
+func isLocalWebhookHost(host string) bool {
+	normalized := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if normalized == "localhost" || strings.HasSuffix(normalized, ".localhost") ||
+		strings.HasSuffix(normalized, ".local") || strings.HasSuffix(normalized, ".internal") {
+		return true
+	}
+	ip := net.ParseIP(normalized)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
+}
+
+func settingsResponse(settings Settings, intent WebhookURLIntent) SettingsResponse {
+	configured := strings.TrimSpace(settings.WebhookURL) != ""
+	return SettingsResponse{
+		Enabled:           settings.Enabled,
+		WebhookConfigured: configured,
+		WebhookURLMasked:  maskWebhookURL(settings.WebhookURL),
+		WebhookURLIntent:  intent,
+		EventTypes:        append([]string(nil), settings.EventTypes...),
+		LastDelivery:      safeDeliveryStatus(settings.LastDelivery),
+		SupportedEvents:   SupportedEvents(),
+	}
+}
+
+func maskWebhookURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil || parsed.Hostname() == "" {
+		if strings.TrimSpace(raw) == "" {
+			return ""
+		}
+		return "Configured endpoint (masked)"
+	}
+	host := parsed.Hostname()
+	if port := parsed.Port(); port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	masked := (&url.URL{Scheme: parsed.Scheme, Host: host}).String()
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		masked += "/••••"
+	}
+	return masked
+}
+
+func validationError(message string) error {
+	return &ValidationError{Message: message}
+}
+
+func safeWebhookRequestError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return errors.New("webhook request failed")
+}
+
+func safeDeliveryError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) {
+		return "Webhook delivery was canceled."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "Webhook delivery timed out."
+	}
+	message := strings.TrimSpace(err.Error())
+	if strings.HasPrefix(message, "webhook returned HTTP ") {
+		return truncate(message, 240)
+	}
+	return "Webhook delivery failed."
+}
+
+func safeDeliveryStatus(status *DeliveryStatus) *DeliveryStatus {
+	if status == nil {
+		return nil
+	}
+	safe := *status
+	if strings.TrimSpace(safe.Error) != "" {
+		safe.Error = safeDeliveryError(errors.New(safe.Error))
+	}
+	return &safe
 }
 
 func redactMap(in map[string]any) map[string]any {

@@ -1298,6 +1298,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());
         document.getElementById('upload-global-key-btn').addEventListener('click', uploadGlobalKey);
         document.getElementById('clear-global-key-btn').addEventListener('click', clearGlobalKey);
+        const auditDeepLink = new URLSearchParams(window.location.search);
+        document.getElementById('audit-target-filter').value = auditDeepLink.get('audit_target') || "";
+        document.getElementById('audit-action-filter').value = auditDeepLink.get('audit_action') || "";
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();

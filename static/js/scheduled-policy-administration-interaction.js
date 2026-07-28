@@ -216,6 +216,10 @@
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         let selectedCalendarPolicyID = "";
         let selectedJob = null;
+        const defaultRunQuery = Object.freeze({
+            policy: "", server: "", outcome: "", from: "", to: "", page: 1, pageSize: 25
+        });
+        let runQuery = { ...defaultRunQuery };
         const inFlightPolicyIDs = new Set();
         const destructiveOperationKeys = new Set();
         let globalSettingsInFlight = false;
@@ -253,18 +257,40 @@
             return [effect("render", { area: "editor" })];
         }
 
-        function requestStream(stream, payload = {}) {
+        function requestStream(stream, payload = {}, options = {}) {
             const state = streams[stream];
             if (!state) return [];
-            if (state.inFlight !== null) {
+            if (state.inFlight !== null && !options.supersede) {
                 state.queued = cloneValue(payload);
                 return [];
             }
             const requestId = state.nextRequestId++;
             state.inFlight = requestId;
+            if (options.supersede) state.queued = null;
             state.lastError = "";
             state.status = "loading";
             return [effect("fetchSnapshot", { stream, requestId, ...cloneValue(payload) })];
+        }
+
+        function normalizeRunQuery(query) {
+            const source = query && typeof query === "object" ? query : {};
+            const outcome = ["queued", "running", "waiting_approval", "succeeded", "failed", "skipped", "cancelled", "interrupted"]
+                .includes(String(source.outcome || "").trim()) ? String(source.outcome).trim() : "";
+            const page = Math.max(1, Number.parseInt(source.page, 10) || 1);
+            const pageSize = Math.min(200, Math.max(1, Number.parseInt(source.pageSize, 10) || defaultRunQuery.pageSize));
+            return {
+                policy: String(source.policy || "").trim(),
+                server: String(source.server || "").trim(),
+                outcome,
+                from: /^\d{4}-\d{2}-\d{2}$/.test(String(source.from || "").trim()) ? String(source.from).trim() : "",
+                to: /^\d{4}-\d{2}-\d{2}$/.test(String(source.to || "").trim()) ? String(source.to).trim() : "",
+                page,
+                pageSize
+            };
+        }
+
+        function requestRunQuery() {
+            return requestStream("runs", { query: cloneValue(runQuery) }, { supersede: true });
         }
 
         function receiveStream(stream, requestId, data, receivedAt) {
@@ -443,9 +469,24 @@
                     timezone = nextTimezone;
                     return [effect("render", { area: "editor" }), effect("render", { area: "runs" })];
                 }
-                case "snapshotRequested": return requestStream(input.stream, input.payload);
+                case "snapshotRequested":
+                    return input.stream === "runs"
+                        ? requestStream("runs", { query: cloneValue(runQuery), ...(input.payload || {}) }, { supersede: !!input.supersede })
+                        : requestStream(input.stream, input.payload);
                 case "snapshotReceived": return receiveStream(input.stream, input.requestId, input.data, input.receivedAt);
                 case "snapshotFailed": return failStream(input.stream, input.requestId, input.error);
+                case "runQueryChanged":
+                    runQuery = normalizeRunQuery({ ...runQuery, ...(input.patch || {}), page: 1 });
+                    return [effect("render", { area: "runs" })];
+                case "runQueryApplied":
+                    runQuery = normalizeRunQuery({ ...runQuery, page: 1 });
+                    return requestRunQuery();
+                case "runQueryReset":
+                    runQuery = { ...defaultRunQuery };
+                    return requestRunQuery();
+                case "runPageRequested":
+                    runQuery = normalizeRunQuery({ ...runQuery, page: input.page });
+                    return requestRunQuery();
                 case "calendarPolicySelected":
                     selectedCalendarPolicyID = String(input.policyID || "").trim();
                     return [effect("render", { area: "calendarFilter" })];
@@ -490,6 +531,8 @@
 
         function getView() {
             const policies = streams.policies.data && Array.isArray(streams.policies.data.items) ? streams.policies.data.items : [];
+            const runItems = streams.runs.data && Array.isArray(streams.runs.data.items) ? streams.runs.data.items : [];
+            const runPage = streams.runs.data || {};
             const policyValidation = validatePolicyDraft(draft, policyBlackouts);
             return cloneValue({
                 editor: {
@@ -507,7 +550,15 @@
                 timezone,
                 snapshots: streams,
                 policies,
-                runs: streams.runs.data && Array.isArray(streams.runs.data.items) ? streams.runs.data.items : [],
+                runs: runItems,
+                runHistory: {
+                    query: runQuery,
+                    items: runItems,
+                    page: Number(runPage.page) || runQuery.page,
+                    pageSize: Number(runPage.page_size) || runQuery.pageSize,
+                    total: Number(runPage.total) || 0,
+                    totalPages: Number(runPage.total_pages) || 0
+                },
                 calendar: streams.calendar.data,
                 selectedCalendarPolicyID,
                 selectedJob,

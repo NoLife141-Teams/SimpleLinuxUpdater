@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	maintenancepkg "debian-updater/internal/maintenance"
 	observabilitypkg "debian-updater/internal/observability"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,6 +28,15 @@ const (
 	testPasswordStrong = "StrongPass123" // gitleaks:allow
 	testPasswordAlt    = "StrongPass999" // gitleaks:allow
 )
+
+type failingClearOtherAuthAccount struct {
+	*AuthService
+	err error
+}
+
+func (a *failingClearOtherAuthAccount) ClearOtherSessions(string) (int64, error) {
+	return 0, a.err
+}
 
 func preserveSessionState(t *testing.T) {
 	t.Helper()
@@ -1303,6 +1314,12 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 	if statusRec.Code != http.StatusOK {
 		t.Fatalf("session status = %d, want %d", statusRec.Code, http.StatusOK)
 	}
+	if !strings.Contains(statusRec.Body.String(), `"min_length":10`) || !strings.Contains(statusRec.Body.String(), `"max_length":64`) {
+		t.Fatalf("session status password policy = %s", statusRec.Body.String())
+	}
+	if !strings.Contains(changeRec.Body.String(), `"invalidated_sessions":0`) || !strings.Contains(changeRec.Body.String(), `"preserved_sessions":1`) || !strings.Contains(changeRec.Body.String(), `"current_session_preserved":true`) {
+		t.Fatalf("password change outcome = %s", changeRec.Body.String())
+	}
 
 	clearReq := httptest.NewRequest(http.MethodDelete, "/api/auth/sessions", nil)
 	clearReq.AddCookie(sessionCookie)
@@ -1322,6 +1339,127 @@ func TestAuthPasswordChangeAndSessionClearAPI(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("session count after clear = %d, want 0", count)
+	}
+}
+
+func TestAuthPasswordChangeCanInvalidateOtherSessions(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-password-invalidate-others.db")
+	handler, currentCookie := setupAuthenticatedHandler(t, dbFile)
+
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"` + testPasswordStrong + `"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody)
+	loginReq.RemoteAddr = "203.0.113.20:443"
+	loginReq.Header.Set("Content-Type", "application/json")
+	markSameOriginAuthRequest(loginReq)
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("second login status=%d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+	otherCookie := testSessionCookieFromRecorder(t, loginRec)
+	if count, err := countStoredSessions(); err != nil || count != 2 {
+		t.Fatalf("stored sessions before password change=%d err=%v, want 2", count, err)
+	}
+
+	changeBody := bytes.NewBufferString(`{
+		"current_password":"` + testPasswordStrong + `",
+		"new_password":"NewStrongPass123",
+		"confirm_password":"NewStrongPass123",
+		"invalidate_other_sessions":true
+	}`)
+	changeReq := httptest.NewRequest(http.MethodPut, "/api/auth/password", changeBody)
+	changeReq.AddCookie(currentCookie)
+	changeReq.Header.Set("Content-Type", "application/json")
+	markSameOriginAuthRequest(changeReq)
+	changeRec := httptest.NewRecorder()
+	handler.ServeHTTP(changeRec, changeReq)
+	if changeRec.Code != http.StatusOK {
+		t.Fatalf("password change status=%d body=%s", changeRec.Code, changeRec.Body.String())
+	}
+	if !strings.Contains(changeRec.Body.String(), `"invalidated_sessions":1`) || !strings.Contains(changeRec.Body.String(), `"preserved_sessions":1`) || !strings.Contains(changeRec.Body.String(), `"current_session_preserved":true`) {
+		t.Fatalf("password change invalidation outcome=%s", changeRec.Body.String())
+	}
+	if count, err := countStoredSessions(); err != nil || count != 1 {
+		t.Fatalf("stored sessions after password change=%d err=%v, want 1", count, err)
+	}
+
+	currentStatusReq := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	currentStatusReq.AddCookie(currentCookie)
+	currentStatusRec := httptest.NewRecorder()
+	handler.ServeHTTP(currentStatusRec, currentStatusReq)
+	if currentStatusRec.Code != http.StatusOK {
+		t.Fatalf("current session status=%d body=%s", currentStatusRec.Code, currentStatusRec.Body.String())
+	}
+
+	otherStatusReq := httptest.NewRequest(http.MethodGet, "/api/auth/sessions", nil)
+	otherStatusReq.AddCookie(otherCookie)
+	otherStatusRec := httptest.NewRecorder()
+	handler.ServeHTTP(otherStatusRec, otherStatusReq)
+	if otherStatusRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalidated session status=%d body=%s, want 401", otherStatusRec.Code, otherStatusRec.Body.String())
+	}
+}
+
+func TestAuthPasswordChangeAPIReturnsRedactedPartialOutcome(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "auth-password-partial.db")
+	clearErr := errors.New("sensitive session store detail")
+	service := NewAuthService(getDB)
+	commands := newAuthSessionCommandsWithDeps(authSessionCommandDeps{
+		Account: &failingClearOtherAuthAccount{AuthService: service, err: clearErr},
+		Session: scsAuthSessionLifecycle{current: func() *scs.SessionManager {
+			return currentSessionManager()
+		}},
+	})
+	app := newTestAppWithDeps(t, dbFile, AppDeps{
+		AuthService:         service,
+		AuthSessionCommands: commands,
+	})
+	currentCookie := app.authenticate(t)
+
+	loginBody := bytes.NewBufferString(`{"username":"admin","password":"` + testPasswordStrong + `"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", loginBody)
+	loginReq.Header.Set("Content-Type", "application/json")
+	markSameOriginAuthRequest(loginReq)
+	loginRec := httptest.NewRecorder()
+	app.Handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("second login status=%d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+
+	changeBody := bytes.NewBufferString(`{
+		"current_password":"` + testPasswordStrong + `",
+		"new_password":"NewStrongPass123",
+		"confirm_password":"NewStrongPass123",
+		"invalidate_other_sessions":true
+	}`)
+	changeReq := httptest.NewRequest(http.MethodPut, "/api/auth/password", changeBody)
+	changeReq.AddCookie(currentCookie)
+	changeReq.Header.Set("Content-Type", "application/json")
+	markSameOriginAuthRequest(changeReq)
+	changeRec := httptest.NewRecorder()
+	app.Handler.ServeHTTP(changeRec, changeReq)
+
+	if changeRec.Code != http.StatusMultiStatus {
+		t.Fatalf("partial password change status=%d body=%s", changeRec.Code, changeRec.Body.String())
+	}
+	body := changeRec.Body.String()
+	for _, expected := range []string{
+		`"outcome":"partial_failure"`,
+		`"password_changed":true`,
+		`"invalidated_sessions":0`,
+		`"preserved_sessions":2`,
+		`"current_session_preserved":true`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("partial password change body=%s, missing %s", body, expected)
+		}
+	}
+	if strings.Contains(body, clearErr.Error()) {
+		t.Fatalf("partial password change leaked infrastructure detail: %s", body)
+	}
+	ok, err := authenticateUser("admin", "NewStrongPass123")
+	if err != nil || !ok {
+		t.Fatalf("new password after partial outcome authenticated=%v err=%v", ok, err)
 	}
 }
 

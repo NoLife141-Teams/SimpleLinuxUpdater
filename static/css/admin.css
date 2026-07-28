@@ -252,6 +252,63 @@
     align-content: start;
 }
 
+.password-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.password-field input {
+    min-width: 0;
+}
+
+.password-toggle {
+    min-width: 66px;
+    padding: 8px 10px;
+}
+
+.password-requirements {
+    display: grid;
+    gap: 5px;
+    color: var(--subtle);
+    font-size: 12px;
+}
+
+.password-requirements strong {
+    color: var(--text);
+}
+
+.password-requirements ul {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding-left: 18px;
+}
+
+.password-requirements li.is-met {
+    color: var(--success);
+}
+
+.form-feedback-warning {
+    border-color: rgba(var(--warning-rgb), 0.34);
+    color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.09);
+}
+
+.caps-lock-warning {
+    margin-top: 0;
+}
+
+.caps-lock-warning[hidden] {
+    display: none;
+}
+
+.password-session-choice {
+    align-items: flex-start;
+    line-height: 1.45;
+}
+
 .admin-danger-zone {
     display: grid;
     gap: 10px;

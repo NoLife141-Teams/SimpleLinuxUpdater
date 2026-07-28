@@ -74,6 +74,28 @@
         };
     }
 
+    function normalizePasswordPolicy(data = {}) {
+        const source = data.password_policy && typeof data.password_policy === "object"
+            ? data.password_policy
+            : data.passwordPolicy && typeof data.passwordPolicy === "object" ? data.passwordPolicy : {};
+        return {
+            minLength: Math.max(1, Number(source.min_length ?? source.minLength) || 10),
+            maxLength: Math.max(1, Number(source.max_length ?? source.maxLength) || 64),
+            requiresLetter: source.requires_letter ?? source.requiresLetter ?? true,
+            requiresDigit: source.requires_digit ?? source.requiresDigit ?? true
+        };
+    }
+
+    function normalizePasswordChangeOutcome(data = {}) {
+        return {
+            outcome: String(data.outcome || "").trim(),
+            invalidationRequested: Boolean(data.invalidation_requested),
+            invalidatedSessions: Math.max(0, Number(data.invalidated_sessions) || 0),
+            preservedSessions: Math.max(0, Number(data.preserved_sessions) || 0),
+            currentSessionPreserved: Boolean(data.current_session_preserved)
+        };
+    }
+
     function normalizeBackup(data = {}) {
         return {
             blocked: Boolean(data.blocked),
@@ -167,7 +189,13 @@
         let timezone = { configured: "", resolved: "UTC", draft: "" };
         let acceptedNotifications = { enabled: false, webhookURL: "", eventTypes: [], supportedEvents: [], lastDelivery: null };
         let notificationDraft = clone(acceptedNotifications);
-        let account = { sessionCount: 0, sessions: [], otherSessionsExpanded: false };
+        let account = {
+            sessionCount: 0,
+            sessions: [],
+            otherSessionsExpanded: false,
+            passwordPolicy: normalizePasswordPolicy(),
+            passwordChangeOutcome: null
+        };
         let metrics = { enabled: false, revealedToken: "" };
         let backup = {
             blocked: false,
@@ -289,7 +317,9 @@
             account = {
                 sessionCount: Math.max(0, Number(data.count ?? data.session_count ?? sessions.length) || 0),
                 sessions,
-                otherSessionsExpanded: account.otherSessionsExpanded
+                otherSessionsExpanded: account.otherSessionsExpanded,
+                passwordPolicy: normalizePasswordPolicy(data),
+                passwordChangeOutcome: account.passwordChangeOutcome
             };
         }
         function projectAccount() {
@@ -434,8 +464,11 @@
                     return { enabled: true, command, key, payload: { enabled: notificationDraft.enabled, webhook_url: notificationDraft.webhookURL, event_types: clone(notificationDraft.eventTypes) } };
                 case "testNotification": return { enabled: true, command, key, payload: {} };
                 case "changePassword": {
-                    if (!payload.hasCurrentPassword || !payload.hasNewPassword || !payload.passwordsMatch) return { enabled: false, command, key, reason: "Current password and matching new passwords are required." };
-                    return { enabled: true, command, key, payload: {} };
+                    if (!payload.hasCurrentPassword) return { enabled: false, command, key, reason: "Current password is required." };
+                    if (!payload.hasNewPassword) return { enabled: false, command, key, reason: "A new password is required." };
+                    if (!payload.passwordsMatch) return { enabled: false, command, key, reason: "New passwords do not match." };
+                    if (!payload.passwordValid) return { enabled: false, command, key, reason: "The new password does not meet the displayed requirements." };
+                    return { enabled: true, command, key, payload: { invalidateOtherSessions: Boolean(payload.invalidateOtherSessions) } };
                 }
                 case "clearSessions": return { enabled: true, command, key, payload: {} };
                 case "clearOtherSessions":
@@ -480,7 +513,9 @@
                 acceptedNotifications.lastDelivery = clone(data.last_delivery);
                 notificationDraft.lastDelivery = clone(data.last_delivery);
             }
-            if (plan.command === "changePassword" && !failed) account = { ...account };
+            if (plan.command === "changePassword" && !failed) {
+                account = { ...account, passwordChangeOutcome: normalizePasswordChangeOutcome(data) };
+            }
             if (plan.command === "clearSessions" && !failed) applyAccount(data || {});
             if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {});
             if (plan.command === "disableMetricsToken" && !failed) metrics = { enabled: false, revealedToken: "" };
@@ -623,6 +658,7 @@
                     if (!plan.enabled) return [effect("commandRejected", plan)];
                     inFlight.set(plan.key, true);
                     feedback[feedbackScope(plan.command)] = { message: "", error: false };
+                    if (plan.command === "changePassword") account = { ...account, passwordChangeOutcome: null };
                     return [effect("executeCommand", { plan })];
                 }
                 case "commandCompleted": return complete(event.plan, event.data, event.message, false);

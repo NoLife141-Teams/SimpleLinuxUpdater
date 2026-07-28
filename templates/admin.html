@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=policy-conflicts-20260728a">
-    <link rel="stylesheet" href="/static/css/admin.css?v=recovery-health-20260728a">
+    <link rel="stylesheet" href="/static/css/admin.css?v=password-session-invalidation-20260728a">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -189,11 +189,36 @@
             <div class="admin-grid">
                 <div class="admin-block">
                     <h3>Change Password</h3>
-                    <input type="password" id="auth-current-password" aria-label="Current password" placeholder="Current password" autocomplete="current-password">
-                    <input type="password" id="auth-new-password" aria-label="New password" placeholder="New password" autocomplete="new-password">
-                    <input type="password" id="auth-confirm-password" aria-label="Confirm new password" placeholder="Confirm new password" autocomplete="new-password">
+                    <label class="form-label" for="auth-current-password">Current password</label>
+                    <div class="password-field">
+                        <input type="password" id="auth-current-password" autocomplete="current-password" aria-describedby="auth-password-caps-warning auth-password-error">
+                        <button class="btn-ghost password-toggle" type="button" data-password-toggle="auth-current-password" aria-label="Show current password" aria-pressed="false">Show</button>
+                    </div>
+                    <label class="form-label" for="auth-new-password">New password</label>
+                    <div class="password-field">
+                        <input type="password" id="auth-new-password" autocomplete="new-password" aria-describedby="auth-password-requirements auth-password-caps-warning auth-password-error">
+                        <button class="btn-ghost password-toggle" type="button" data-password-toggle="auth-new-password" aria-label="Show new password" aria-pressed="false">Show</button>
+                    </div>
+                    <label class="form-label" for="auth-confirm-password">Confirm new password</label>
+                    <div class="password-field">
+                        <input type="password" id="auth-confirm-password" autocomplete="new-password" aria-describedby="auth-password-requirements auth-password-caps-warning auth-password-error">
+                        <button class="btn-ghost password-toggle" type="button" data-password-toggle="auth-confirm-password" aria-label="Show password confirmation" aria-pressed="false">Show</button>
+                    </div>
+                    <div class="password-requirements" id="auth-password-requirements">
+                        <strong>Password requirements</strong>
+                        <ul>
+                            <li data-password-requirement="length">10–64 characters</li>
+                            <li data-password-requirement="letter">At least one letter</li>
+                            <li data-password-requirement="digit">At least one digit</li>
+                        </ul>
+                    </div>
+                    <div class="form-feedback form-feedback-warning caps-lock-warning" id="auth-password-caps-warning" role="status" aria-live="polite" hidden>Caps Lock is on.</div>
+                    <label class="checkbox-row password-session-choice" for="auth-password-invalidate-others">
+                        <input type="checkbox" id="auth-password-invalidate-others" checked>
+                        Invalidate all other active sessions after changing the password
+                    </label>
                     <div class="policy-actions">
-                        <button class="primary-action" type="button" id="auth-password-save">Change Password</button>
+                        <button class="primary-action" type="button" id="auth-password-save" disabled>Change Password</button>
                     </div>
                     <div id="auth-password-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="auth-password-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -824,7 +849,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
-    <script src="/static/js/admin-page-interaction.js?v=recovery-health-20260728a"></script>
-    <script src="/static/js/admin.js?v=temporary-session-ip-reveal-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=password-session-invalidation-20260728a"></script>
+    <script src="/static/js/admin.js?v=password-session-invalidation-20260728a"></script>
 </body>
 </html>

@@ -1217,6 +1217,10 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#package-trend-chart .trend-y-axis-label')).toHaveCount(3);
     await expect(page.locator('#package-trend-chart .trend-x-axis-label')).toHaveCount(3);
     await expect(page.locator('#package-trend-chart .trend-x-axis-label')).toHaveText(['Jul 28', 'Jul 28', 'Jul 29']);
+    await expect(page.locator('#package-trend-chart .trend-point')).toHaveCount(2);
+    await expect(page.getByRole('group', { name: /Package count trend/ })).toHaveAttribute('aria-label', /2 time points/);
+    const packageLinePoints = await page.locator('#package-trend-chart .trend-line').getAttribute('points');
+    expect(packageLinePoints.trim().split(/\s+/)).toHaveLength(3);
     await expect(page.locator('.trend-chart-scope')).toHaveText(['Fleet total', 'Fleet total', 'Fleet total', 'Fleet total']);
     const packagePoint = page.locator('#package-trend-chart .trend-point').first();
     await packagePoint.hover();
@@ -1224,6 +1228,9 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Fleet total');
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 packages');
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Jul 28, 2026, 07:00 EDT');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Daily bucket');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 hosts represented');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 observations');
     const lastPackagePoint = page.locator('#package-trend-chart .trend-point').last();
     await lastPackagePoint.hover();
     const tooltipBox = await page.locator('#package-trend-chart .trend-tooltip').boundingBox();

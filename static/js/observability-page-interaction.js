@@ -131,14 +131,105 @@
         if (metric === "security") return Number(point.security_count);
         if (metric === "disk") return validDiskKB(point.disk_free_kb);
         if (metric === "failures") {
-            const failed = ["failure", "failed", "error"];
-            return failed.includes(String(point.last_update_status || "").toLowerCase())
-                || failed.includes(String(point.last_scan_status || "").toLowerCase()) ? 1 : 0;
+            const failed = ["failure", "failed", "error", "cancelled", "interrupted"];
+            const updateFailed = failed.includes(String(point.last_update_status || "").toLowerCase()) ? 1 : 0;
+            const scanFailed = failed.includes(String(point.last_scan_status || "").toLowerCase()) ? 1 : 0;
+            return updateFailed + scanFailed;
         }
         return null;
     }
 
-    function projectFleetTrendSeries(servers, metric) {
+    function trendBucketUnit(windowValue) {
+        if (windowValue === "24h") return "hour";
+        if (windowValue === "90d") return "week";
+        return "day";
+    }
+
+    function createTrendBucketKeyer(windowValue, timeZone) {
+        const bucketUnit = trendBucketUnit(windowValue);
+        const formatterOptions = {
+            timeZone: String(timeZone || "UTC"),
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            hourCycle: "h23",
+            timeZoneName: "longOffset",
+        };
+        let formatter;
+        try {
+            formatter = new Intl.DateTimeFormat("en-CA", formatterOptions);
+        } catch (_) {
+            formatter = new Intl.DateTimeFormat("en-CA", { ...formatterOptions, timeZone: "UTC" });
+        }
+        const localParts = timestamp => Object.fromEntries(
+            formatter.formatToParts(new Date(timestamp))
+                .filter(part => part.type !== "literal")
+                .map(part => [part.type, part.value])
+        );
+        const offsetMinutes = raw => {
+            const match = String(raw || "").match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/);
+            if (!match) return 0;
+            const minutes = Number(match[2]) * 60 + Number(match[3] || 0);
+            return match[1] === "-" ? -minutes : minutes;
+        };
+        const canonicalStart = (bucketKey, unit, offsetName) => {
+            const [year, month, day] = bucketKey.slice(0, 10).split("-").map(Number);
+            const hour = unit === "hour" ? Number(bucketKey.slice(11, 13)) : 0;
+            const targetAsUTC = Date.UTC(year, month - 1, day, hour);
+            if (unit === "hour") {
+                return new Date(targetAsUTC - offsetMinutes(offsetName) * 60_000).toISOString();
+            }
+            let candidate = targetAsUTC;
+            for (let attempt = 0; attempt < 4; attempt += 1) {
+                const projected = localParts(candidate);
+                const projectedAsUTC = Date.UTC(
+                    Number(projected.year),
+                    Number(projected.month) - 1,
+                    Number(projected.day),
+                    Number(projected.hour)
+                );
+                const correction = targetAsUTC - projectedAsUTC;
+                candidate += correction;
+                if (correction === 0) break;
+            }
+            return new Date(candidate).toISOString();
+        };
+        return timestamp => {
+            const parts = localParts(timestamp);
+            const dayKey = `${parts.year}-${parts.month}-${parts.day}`;
+            if (bucketUnit === "hour") {
+                const bucketKey = `${dayKey}T${parts.hour}`;
+                const offsetName = parts.timeZoneName || "GMT";
+                return {
+                    bucketID: `${bucketKey}|${offsetName}`,
+                    bucketKey,
+                    bucketUnit,
+                    timestamp: canonicalStart(bucketKey, bucketUnit, offsetName),
+                };
+            }
+            if (bucketUnit === "week") {
+                const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+                const daysSinceMonday = (localDate.getUTCDay() + 6) % 7;
+                localDate.setUTCDate(localDate.getUTCDate() - daysSinceMonday);
+                const bucketKey = localDate.toISOString().slice(0, 10);
+                return {
+                    bucketID: bucketKey,
+                    bucketKey,
+                    bucketUnit,
+                    timestamp: canonicalStart(bucketKey, bucketUnit, parts.timeZoneName),
+                };
+            }
+            return {
+                bucketID: dayKey,
+                bucketKey: dayKey,
+                bucketUnit,
+                timestamp: canonicalStart(dayKey, bucketUnit, parts.timeZoneName),
+            };
+        };
+    }
+
+    function projectFleetTrendSeries(servers, metric, options = {}) {
         const events = [];
         (Array.isArray(servers) ? servers : []).forEach(server => {
             (Array.isArray(server.points) ? server.points : []).forEach(point => {
@@ -147,18 +238,30 @@
             });
         });
         events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp) || left.server.localeCompare(right.server));
-        if (metric === "failures") {
-            const counts = new Map();
-            events.forEach(event => {
-                const value = trendMetricValue(event.point, metric);
-                if (value) counts.set(event.timestamp, (counts.get(event.timestamp) || 0) + value);
-            });
-            return [...counts.entries()].map(([timestamp, value]) => ({ timestamp, value }));
-        }
-        const latestByServer = new Map();
-        const series = [];
+        const bucketFor = createTrendBucketKeyer(options.window || "7d", options.timeZone || "UTC");
+        const buckets = new Map();
         events.forEach(event => {
-            latestByServer.set(event.server, event.point);
+            const bucket = bucketFor(event.timestamp);
+            if (!buckets.has(bucket.bucketID)) {
+                buckets.set(bucket.bucketID, { ...bucket, events: [] });
+            }
+            buckets.get(bucket.bucketID).events.push(event);
+        });
+        if (metric === "failures") {
+            return [...buckets.values()].map(bucket => ({
+                timestamp: bucket.timestamp,
+                lastObservedAt: bucket.events[bucket.events.length - 1].timestamp,
+                value: bucket.events.reduce((total, event) => total + trendMetricValue(event.point, metric), 0),
+                samples: new Set(bucket.events.map(event => event.server)).size,
+                observations: bucket.events.length,
+                bucketKey: bucket.bucketKey,
+                bucketUnit: bucket.bucketUnit,
+            }));
+        }
+        const series = [];
+        buckets.forEach(bucket => {
+            const latestByServer = new Map();
+            bucket.events.forEach(event => latestByServer.set(event.server, event.point));
             let total = 0;
             let samples = 0;
             latestByServer.forEach(point => {
@@ -168,13 +271,15 @@
                 samples += 1;
             });
             if (samples === 0) return;
-            const previous = series[series.length - 1];
-            if (previous?.timestamp === event.timestamp) {
-                previous.value = total;
-                previous.samples = samples;
-            } else {
-                series.push({ timestamp: event.timestamp, value: total, samples });
-            }
+            series.push({
+                timestamp: bucket.timestamp,
+                lastObservedAt: bucket.events[bucket.events.length - 1].timestamp,
+                value: total,
+                samples,
+                observations: bucket.events.length,
+                bucketKey: bucket.bucketKey,
+                bucketUnit: bucket.bucketUnit,
+            });
         });
         return series;
     }
@@ -236,6 +341,7 @@
         const now = typeof options.now === "function" ? options.now : Date.now;
         let selectedWindow = validWindows.has(options.window) ? options.window : "7d";
         let selectedHost = String(options.host || "").trim();
+        let timeZone = String(options.timeZone || "UTC").trim() || "UTC";
         let search = String(options.search || "").trim();
         let attention = validAttentionFilters.has(options.attention) ? options.attention : "all";
         let sort = validSorts.has(options.sort) ? options.sort : "attention";
@@ -355,6 +461,7 @@
                     return [effect("render")];
                 case "sourceSucceeded": {
                     const effects = settle(event.source, event.requestID, state => {
+                        if (event.timeZone) timeZone = String(event.timeZone);
                         state.status = "fresh";
                         state.data = clone(event.data);
                         state.error = null;
@@ -397,14 +504,15 @@
                 search, attention, sort, window: selectedWindow, page, nowMS: now(),
             });
             const trendSeries = {
-                packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages"),
-                security: projectFleetTrendSeries(sources.trends.data?.servers, "security"),
-                disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk"),
-                failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures"),
+                packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages", { window: selectedWindow, timeZone }),
+                security: projectFleetTrendSeries(sources.trends.data?.servers, "security", { window: selectedWindow, timeZone }),
+                disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk", { window: selectedWindow, timeZone }),
+                failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures", { window: selectedWindow, timeZone }),
             };
             return clone({
                 selectedWindow,
                 selectedHost,
+                timeZone,
                 knownHosts,
                 search,
                 attention,

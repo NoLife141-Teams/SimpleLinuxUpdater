@@ -44,10 +44,24 @@ test("full refresh retains accepted data and ignores superseded source results",
     const nextSummary = effect(effects, "loadSource", "summary");
     assert.equal(store.getView().summary.status, "refreshing");
     assert.equal(store.getView().summary.data.version, 1);
-    store.dispatch({ type: "sourceSucceeded", source: "summary", requestID: firstSummary.requestID, data: { version: 0 } });
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: firstSummary.requestID,
+        data: { version: 0 },
+        timeZone: "Asia/Tokyo",
+    });
     assert.equal(store.getView().summary.data.version, 1);
-    store.dispatch({ type: "sourceSucceeded", source: "summary", requestID: nextSummary.requestID, data: { version: 2 } });
+    assert.equal(store.getView().timeZone, "UTC");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: nextSummary.requestID,
+        data: { version: 2 },
+        timeZone: "America/Toronto",
+    });
     assert.equal(store.getView().summary.data.version, 2);
+    assert.equal(store.getView().timeZone, "America/Toronto");
 });
 
 test("partial failure is source-specific and keeps accepted data", () => {
@@ -165,54 +179,147 @@ test("valid deep-linked host is verified by the unfiltered result before loading
     assert.equal(filteredTrends.queryWindow, "24h");
 });
 
-test("fleet trend projection carries each host's latest value across staggered samples", () => {
+test("fleet trend projection combines staggered host samples into app-local daily buckets", () => {
     const series = projectFleetTrendSeries([
         {
             name: "alpha",
             points: [
-                { captured_at: "2026-07-29T10:00:00Z", package_count: 4 },
-                { captured_at: "2026-07-29T12:00:00Z", package_count: 6 },
+                { captured_at: "2026-07-22T13:00:00Z", package_count: 2 },
+                { captured_at: "2026-07-22T20:00:00Z", package_count: 3 },
+                { captured_at: "2026-07-23T16:00:00Z", package_count: 4 },
             ],
         },
         {
             name: "beta",
             points: [
-                { captured_at: "2026-07-29T11:00:00Z", package_count: 10 },
-                { captured_at: "2026-07-29T13:00:00Z", package_count: 12 },
+                { captured_at: "2026-07-22T15:00:00Z", package_count: 5 },
+                { captured_at: "2026-07-23T14:00:00Z", package_count: 6 },
             ],
         },
-    ], "packages");
+    ], "packages", { window: "7d", timeZone: "America/Toronto" });
 
-    assert.deepEqual(series.map(point => [point.timestamp, point.value]), [
-        ["2026-07-29T10:00:00Z", 4],
-        ["2026-07-29T11:00:00Z", 14],
-        ["2026-07-29T12:00:00Z", 16],
-        ["2026-07-29T13:00:00Z", 18],
+    assert.deepEqual(series, [
+        {
+            timestamp: "2026-07-22T04:00:00.000Z",
+            lastObservedAt: "2026-07-22T20:00:00Z",
+            value: 8,
+            samples: 2,
+            observations: 3,
+            bucketKey: "2026-07-22",
+            bucketUnit: "day",
+        },
+        {
+            timestamp: "2026-07-23T04:00:00.000Z",
+            lastObservedAt: "2026-07-23T16:00:00Z",
+            value: 10,
+            samples: 2,
+            observations: 2,
+            bucketKey: "2026-07-23",
+            bucketUnit: "day",
+        },
     ]);
 });
 
-test("failure trend projection counts events only at their actual timestamps", () => {
+test("failure trend projection sums events and preserves zeroes in hourly buckets", () => {
     const series = projectFleetTrendSeries([
         {
             name: "alpha",
             points: [
-                { captured_at: "2026-07-29T10:00:00Z", last_update_status: "failure" },
-                { captured_at: "2026-07-29T12:00:00Z", last_update_status: "success" },
+                { captured_at: "2026-07-29T10:05:00Z", last_update_status: "failure", last_scan_status: "error" },
+                { captured_at: "2026-07-29T10:45:00Z", last_update_status: "interrupted" },
+                { captured_at: "2026-07-29T11:15:00Z", last_update_status: "success" },
             ],
         },
         {
             name: "beta",
             points: [
-                { captured_at: "2026-07-29T11:00:00Z", last_scan_status: "failure" },
-                { captured_at: "2026-07-29T12:00:00Z", last_scan_status: "failure" },
+                { captured_at: "2026-07-29T10:30:00Z", last_scan_status: "cancelled" },
+                { captured_at: "2026-07-29T11:40:00Z", last_scan_status: "success" },
             ],
         },
-    ], "failures");
+    ], "failures", { window: "24h", timeZone: "UTC" });
 
     assert.deepEqual(series, [
-        { timestamp: "2026-07-29T10:00:00Z", value: 1 },
-        { timestamp: "2026-07-29T11:00:00Z", value: 1 },
-        { timestamp: "2026-07-29T12:00:00Z", value: 1 },
+        {
+            timestamp: "2026-07-29T10:00:00.000Z",
+            lastObservedAt: "2026-07-29T10:45:00Z",
+            value: 4,
+            samples: 2,
+            observations: 3,
+            bucketKey: "2026-07-29T10",
+            bucketUnit: "hour",
+        },
+        {
+            timestamp: "2026-07-29T11:00:00.000Z",
+            lastObservedAt: "2026-07-29T11:40:00Z",
+            value: 0,
+            samples: 2,
+            observations: 2,
+            bucketKey: "2026-07-29T11",
+            bucketUnit: "hour",
+        },
+    ]);
+});
+
+test("fleet buckets include only hosts observed during that period", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-22T12:00:00Z", package_count: 4 },
+                { captured_at: "2026-07-23T12:00:00Z", package_count: 5 },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-22T13:00:00Z", package_count: 10 },
+            ],
+        },
+    ], "packages", { window: "7d", timeZone: "UTC" });
+
+    assert.deepEqual(series.map(point => [point.bucketKey, point.value, point.samples]), [
+        ["2026-07-22", 14, 2],
+        ["2026-07-23", 5, 1],
+    ]);
+});
+
+test("hourly buckets keep both repeated DST fallback hours distinct", () => {
+    const series = projectFleetTrendSeries([{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-11-01T05:30:00Z", package_count: 1 },
+            { captured_at: "2026-11-01T06:30:00Z", package_count: 2 },
+        ],
+    }], "packages", { window: "24h", timeZone: "America/Toronto" });
+
+    assert.deepEqual(series.map(point => [point.bucketKey, point.timestamp, point.value]), [
+        ["2026-11-01T01", "2026-11-01T05:00:00.000Z", 1],
+        ["2026-11-01T01", "2026-11-01T06:00:00.000Z", 2],
+    ]);
+});
+
+test("adaptive trend buckets follow app-local midnight and use weeks for 90 days", () => {
+    const localDays = projectFleetTrendSeries([{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-07-23T03:30:00Z", package_count: 1 },
+            { captured_at: "2026-07-23T04:30:00Z", package_count: 2 },
+        ],
+    }], "packages", { window: "7d", timeZone: "America/Toronto" });
+    assert.deepEqual(localDays.map(point => point.bucketKey), ["2026-07-22", "2026-07-23"]);
+
+    const weeks = projectFleetTrendSeries([{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-07-20T12:00:00Z", package_count: 1 },
+            { captured_at: "2026-07-26T12:00:00Z", package_count: 2 },
+            { captured_at: "2026-07-27T12:00:00Z", package_count: 3 },
+        ],
+    }], "packages", { window: "90d", timeZone: "UTC" });
+    assert.deepEqual(weeks.map(point => [point.bucketKey, point.value]), [
+        ["2026-07-20", 2],
+        ["2026-07-27", 3],
     ]);
 });
 

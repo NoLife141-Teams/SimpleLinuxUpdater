@@ -177,7 +177,14 @@ let refreshTimeoutId = null;
                     throw { kind: 'http', status: response.status };
                 }
                 const data = await response.json();
-                executeEffects(observabilityInteraction.dispatch({ type: 'sourceSucceeded', source: effect.source, requestID: effect.requestID, data, unfiltered: effect.unfiltered }));
+                executeEffects(observabilityInteraction.dispatch({
+                    type: 'sourceSucceeded',
+                    source: effect.source,
+                    requestID: effect.requestID,
+                    data,
+                    unfiltered: effect.unfiltered,
+                    timeZone: window.getAppTimezoneResolved ? window.getAppTimezoneResolved() : 'UTC',
+                }));
             } catch (err) {
                 executeEffects(observabilityInteraction.dispatch({ type: 'sourceFailed', source: effect.source, requestID: effect.requestID, error: sourceError(err) }));
             } finally {
@@ -434,6 +441,29 @@ let refreshTimeoutId = null;
             return raw;
         }
 
+        function formatTrendBucket(point) {
+            const rawDate = String(point?.bucketKey || '').slice(0, 10);
+            const date = new Date(`${rawDate}T12:00:00Z`);
+            const dateLabel = Number.isFinite(date.getTime())
+                ? new Intl.DateTimeFormat('en-US', {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                    timeZone: 'UTC',
+                }).format(date)
+                : rawDate;
+            if (point?.bucketUnit === 'hour') {
+                const hour = Number.parseInt(String(point.bucketKey).slice(11, 13), 10);
+                const hourLabel = new Intl.DateTimeFormat('en-US', {
+                    hour: 'numeric',
+                    timeZone: 'UTC',
+                }).format(new Date(Date.UTC(2000, 0, 1, Number.isFinite(hour) ? hour : 0)));
+                return `Hourly bucket · ${dateLabel}, ${hourLabel}`;
+            }
+            if (point?.bucketUnit === 'week') return `Weekly bucket · Week of ${dateLabel}`;
+            return `Daily bucket · ${dateLabel}`;
+        }
+
         function appendSVGText(svg, namespace, value, attributes, className) {
             const text = document.createElementNS(namespace, 'text');
             Object.entries(attributes).forEach(([name, attribute]) => text.setAttribute(name, String(attribute)));
@@ -502,7 +532,12 @@ let refreshTimeoutId = null;
                 y: yFor(point.value),
             }));
             const line = document.createElementNS(namespace, 'polyline');
-            line.setAttribute('points', positions.map(point => `${point.x},${point.y}`).join(' '));
+            const stepPoints = [];
+            positions.forEach((point, index) => {
+                if (index > 0) stepPoints.push(`${point.x},${positions[index - 1].y}`);
+                stepPoints.push(`${point.x},${point.y}`);
+            });
+            line.setAttribute('points', stepPoints.join(' '));
             line.setAttribute('class', 'trend-line');
             svg.appendChild(line);
             const tooltip = document.createElement('div');
@@ -514,10 +549,14 @@ let refreshTimeoutId = null;
                 const value = document.createElement('strong');
                 value.textContent = options.tooltipFormatter(point.value);
                 const timestamp = document.createElement('span');
-                timestamp.textContent = detailedTrendTimestamp(point.timestamp);
+                timestamp.textContent = `Last observation · ${detailedTrendTimestamp(point.lastObservedAt || point.timestamp)}`;
+                const bucket = document.createElement('span');
+                bucket.textContent = formatTrendBucket(point);
+                const coverage = document.createElement('span');
+                coverage.textContent = `${plural(point.samples, 'host')} represented · ${plural(point.observations, 'observation')}`;
                 const scope = document.createElement('span');
                 scope.textContent = options.scope;
-                tooltip.append(value, timestamp, scope);
+                tooltip.append(value, timestamp, bucket, coverage, scope);
                 tooltip.style.left = `${(point.x / 360) * 100}%`;
                 tooltip.style.top = `${(point.y / 150) * 100}%`;
                 tooltip.classList.toggle('trend-tooltip-start', point.xRatio < 0.2);
@@ -534,7 +573,10 @@ let refreshTimeoutId = null;
                 circle.setAttribute('r', '3.5');
                 circle.setAttribute('tabindex', '0');
                 circle.setAttribute('role', 'img');
-                circle.setAttribute('aria-label', `${options.label}: ${options.tooltipFormatter(point.value)} at ${detailedTrendTimestamp(point.timestamp)}, ${options.scope}`);
+                circle.setAttribute(
+                    'aria-label',
+                    `${options.label}: ${options.tooltipFormatter(point.value)}, ${formatTrendBucket(point)}, ${plural(point.samples, 'host')} represented, ${options.scope}`
+                );
                 circle.setAttribute('class', 'trend-point');
                 circle.addEventListener('mouseenter', () => showTooltip(point));
                 circle.addEventListener('mouseleave', hideTooltip);

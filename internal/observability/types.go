@@ -21,8 +21,9 @@ const (
 var ErrInvalidWindow = errors.New("invalid observability window")
 
 type FailureItem struct {
-	Cause string `json:"cause"`
-	Count int    `json:"count"`
+	Cause   string   `json:"cause"`
+	Count   int      `json:"count"`
+	Servers []string `json:"servers,omitempty"`
 }
 
 type StatusItem struct {

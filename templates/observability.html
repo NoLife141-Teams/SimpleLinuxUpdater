@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Observability</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/observability.css?v=vscode-dark-20260601b">
+    <link rel="stylesheet" href="/static/css/observability.css?v=actionable-workspace-20260729">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -20,19 +20,26 @@
                     <p class="muted">Track success rate, duration, and failure patterns with the same dense operations language as the dashboard.</p>
                 </div>
                 <div class="head-meta" aria-label="Telemetry metadata">
-                    <span class="meta-pill">Update health</span>
-                    <span class="meta-pill">Audit-derived</span>
-                    <span class="meta-pill">Local Docker</span>
+                    <span class="meta-pill" id="observability-source">Audit + health snapshots</span>
+                    <span class="meta-pill" id="observability-retention">Retention loading</span>
+                    <span class="meta-pill" id="observability-last-refresh">Awaiting first refresh</span>
+                    <span class="meta-pill live" id="observability-auto-refresh">Auto-refresh · 15s</span>
                 </div>
             </section>
 
-            <section class="workspace fade-in">
+            <div id="observability-live-status" class="sr-only" role="status" aria-live="polite"></div>
+
+            <section class="workspace fade-in" id="observability-summary" aria-labelledby="update-metrics-heading" aria-busy="true">
                 <div class="workspace-head">
                     <div>
                         <div class="eyebrow">Query controls</div>
-                        <h2>Update metrics</h2>
+                        <h2 id="update-metrics-heading">Update metrics</h2>
                     </div>
-                    <p class="muted workspace-note">Refresh the selected window to review fleet-level run health.</p>
+                    <div class="source-lifecycle" id="summary-lifecycle" data-state="loading">
+                        <span class="status-pill source-lifecycle-status">Loading</span>
+                        <span class="source-lifecycle-time">Waiting for update metrics</span>
+                        <button class="btn-ghost small-btn source-retry" type="button" data-retry-source="summary" hidden>Retry</button>
+                    </div>
                 </div>
                 <div class="control-strip">
                     <div class="controls">
@@ -45,39 +52,47 @@
                         <button class="primary-action" id="refresh-btn" type="button">Refresh</button>
                         <span id="range-label" class="muted"></span>
                     </div>
+                    <span class="muted">Refreshes automatically every 15 seconds while this page is visible.</span>
                 </div>
                 <div id="error-banner" class="error-banner" role="alert" aria-live="assertive"></div>
 
                 <div class="metric-strip kpi-grid" aria-label="Observability KPIs">
-                    <article class="metric-item kpi">
+                    <article class="metric-item kpi" id="kpi-success-rate-card" data-severity="neutral">
                         <span>Success rate</span>
-                        <strong id="kpi-success-rate" class="kpi-value accent">0%</strong>
-                        <small>Completed without failure</small>
+                        <strong id="kpi-success-rate" class="kpi-value">Loading</strong>
+                        <small id="kpi-success-context">Waiting for accepted data</small>
                     </article>
                     <article class="metric-item kpi">
                         <span>Total update runs</span>
-                        <strong id="kpi-total" class="kpi-value">0</strong>
-                        <small>Runs in selected window</small>
+                        <strong id="kpi-total" class="kpi-value">Loading</strong>
+                        <small id="kpi-total-context">Runs in selected window</small>
                     </article>
-                    <article class="metric-item kpi">
+                    <article class="metric-item kpi" id="kpi-duration-card" data-confidence="unavailable">
                         <span>Average duration</span>
-                        <strong id="kpi-duration" class="kpi-value">0 ms</strong>
-                        <small id="kpi-duration-samples"></small>
+                        <strong id="kpi-duration" class="kpi-value">Loading</strong>
+                        <small id="kpi-duration-samples">Waiting for duration coverage</small>
                     </article>
                 </div>
             </section>
 
-            <section class="workspace fade-in" aria-label="Host health trends">
+            <section class="workspace fade-in" id="observability-trends" aria-labelledby="trend-summary-heading" aria-busy="true">
                 <div class="workspace-head">
                     <div>
                         <div class="eyebrow">Host health</div>
-                        <h2>Trend summary</h2>
+                        <h2 id="trend-summary-heading">Trend summary</h2>
                     </div>
-                    <div class="controls compact-controls">
-                        <label for="health-trend-server">Host</label>
-                        <select id="health-trend-server">
-                            <option value="">All hosts</option>
-                        </select>
+                    <div class="workspace-head-actions">
+                        <div class="source-lifecycle" id="trends-lifecycle" data-state="loading">
+                            <span class="status-pill source-lifecycle-status">Loading</span>
+                            <span class="source-lifecycle-time">Waiting for host health</span>
+                            <button class="btn-ghost small-btn source-retry" type="button" data-retry-source="trends" hidden>Retry</button>
+                        </div>
+                        <div class="controls compact-controls">
+                            <label for="health-trend-server">Host</label>
+                            <select id="health-trend-server">
+                                <option value="">All hosts</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
                 <div class="metric-strip kpi-grid health-trend-kpis" aria-label="Host health trend KPIs">
@@ -97,15 +112,77 @@
                         <small>Update or scan failures</small>
                     </article>
                 </div>
-                <article class="table-shell health-trend-table">
+                <div class="trend-chart-grid" aria-label="Host health charts">
+                    <article class="trend-chart-card">
+                        <div class="trend-chart-head">
+                            <h3>Package count</h3>
+                            <span class="muted" id="package-chart-summary">Waiting for samples</span>
+                        </div>
+                        <div id="package-trend-chart" class="trend-chart"></div>
+                    </article>
+                    <article class="trend-chart-card">
+                        <div class="trend-chart-head">
+                            <h3>Security updates</h3>
+                            <span class="muted" id="security-chart-summary">Waiting for samples</span>
+                        </div>
+                        <div id="security-trend-chart" class="trend-chart"></div>
+                    </article>
+                    <article class="trend-chart-card">
+                        <div class="trend-chart-head">
+                            <h3>Disk free</h3>
+                            <span class="muted" id="disk-chart-summary">Waiting for samples</span>
+                        </div>
+                        <div id="disk-trend-chart" class="trend-chart"></div>
+                    </article>
+                    <article class="trend-chart-card">
+                        <div class="trend-chart-head">
+                            <h3>Failure events</h3>
+                            <span class="muted" id="failure-chart-summary">Waiting for samples</span>
+                        </div>
+                        <div id="failure-trend-chart" class="trend-chart"></div>
+                    </article>
+                </div>
+                <article class="table-shell health-trend-table" aria-labelledby="host-health-trend-label">
                     <div class="table-shell-head">
                         <div class="table-shell-title">
-                            <span class="table-shell-label">Host health trend</span>
+                            <span class="table-shell-label" id="host-health-trend-label">Host health trend</span>
                             <span class="table-shell-subtle" id="trend-range-label">No trend samples loaded.</span>
                         </div>
+                        <button class="btn-ghost small-btn" id="export-health-csv" type="button">Export CSV</button>
                     </div>
+                    <div class="health-table-controls">
+                        <div class="field health-search-field">
+                            <label for="health-search">Search hosts</label>
+                            <input id="health-search" type="search" placeholder="Host name">
+                        </div>
+                        <div class="field">
+                            <label for="health-attention-filter">Attention</label>
+                            <select id="health-attention-filter">
+                                <option value="all">All hosts</option>
+                                <option value="failures">Failures</option>
+                                <option value="apt">APT problems</option>
+                                <option value="disk">Disk problems</option>
+                                <option value="reboot">Reboot required</option>
+                                <option value="stale">Stale observations</option>
+                                <option value="missing">Missing data</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label for="health-sort">Sort</label>
+                            <select id="health-sort">
+                                <option value="attention">Attention first</option>
+                                <option value="name">Host name</option>
+                                <option value="freshness">Freshness</option>
+                                <option value="packages">Packages</option>
+                                <option value="security">Security</option>
+                                <option value="disk">Disk free</option>
+                                <option value="failures">Failures</option>
+                            </select>
+                        </div>
+                    </div>
+                    <p class="table-scroll-hint" id="health-scroll-hint">Swipe horizontally to view every health column.</p>
                     <div class="table-wrap">
-                        <table>
+                        <table aria-labelledby="host-health-trend-label" aria-describedby="trend-range-label health-result-count">
                             <thead>
                                 <tr>
                                     <th>Host</th>
@@ -123,19 +200,29 @@
                             </tbody>
                         </table>
                     </div>
+                    <div class="health-table-footer">
+                        <span class="muted" id="health-result-count" role="status" aria-live="polite">0 of 0 hosts</span>
+                        <div class="pagination">
+                            <button class="btn-ghost small-btn" id="health-previous-page" type="button">Previous</button>
+                            <span class="muted" id="health-page-label">Page 1 of 1</span>
+                            <button class="btn-ghost small-btn" id="health-next-page" type="button">Next</button>
+                        </div>
+                    </div>
                 </article>
             </section>
 
             <section class="observability-grid fade-in">
-                <article class="table-shell">
+                <article class="table-shell" aria-labelledby="failure-causes-label">
                     <div class="table-shell-head">
                         <div class="table-shell-title">
-                            <span class="table-shell-label">Failure causes</span>
-                            <span class="table-shell-subtle">Grouped failure signals in the selected window.</span>
+                            <span class="table-shell-label" id="failure-causes-label">Failure causes</span>
+                            <span class="table-shell-subtle" id="failure-causes-description">Grouped failure signals in the selected window.</span>
                         </div>
+                        <button class="btn-ghost small-btn" id="export-failures-csv" type="button">Export CSV</button>
                     </div>
+                    <div class="breakdown-bars" id="failure-breakdown-bars" aria-label="Failure cause proportions"></div>
                     <div class="table-wrap">
-                        <table>
+                        <table aria-labelledby="failure-causes-label" aria-describedby="failure-causes-description">
                             <thead>
                                 <tr>
                                     <th>Cause</th>
@@ -149,15 +236,16 @@
                     </div>
                 </article>
 
-                <article class="table-shell">
+                <article class="table-shell" aria-labelledby="status-breakdown-label">
                     <div class="table-shell-head">
                         <div class="table-shell-title">
-                            <span class="table-shell-label">Status breakdown</span>
-                            <span class="table-shell-subtle">Run outcomes across the current window.</span>
+                            <span class="table-shell-label" id="status-breakdown-label">Status breakdown</span>
+                            <span class="table-shell-subtle" id="status-breakdown-description">Run outcomes across the current window.</span>
                         </div>
                     </div>
+                    <div class="breakdown-bars" id="status-breakdown-bars" aria-label="Run status proportions"></div>
                     <div class="table-wrap">
-                        <table>
+                        <table aria-labelledby="status-breakdown-label" aria-describedby="status-breakdown-description">
                             <thead>
                                 <tr>
                                     <th>Status</th>
@@ -176,7 +264,7 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/observability-page-interaction.js"></script>
-    <script src="/static/js/observability.js"></script>
+    <script src="/static/js/observability-page-interaction.js?v=actionable-workspace-20260729"></script>
+    <script src="/static/js/observability.js?v=actionable-workspace-20260729"></script>
 </body>
 </html>

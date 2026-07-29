@@ -1050,8 +1050,194 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/observability');
     await expect(page.locator('#kpi-total')).toHaveText('4');
-    await expect(page.locator('#kpi-success-rate')).toHaveText('75.00%');
+    await expect(page.locator('#kpi-success-rate')).toContainText('75.00%');
     await expect(page.locator('#error-banner')).toContainText('Health trends is unavailable (HTTP 503)');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Current');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Unavailable');
+    await expect(page.locator('#trends-lifecycle').getByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+
+  test('observability keeps successful health trends when the summary is unavailable', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'temporarily unavailable' }),
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '7d',
+      from: '2026-07-22T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: 1 },
+      servers: [{
+        name: 'healthy-host',
+        samples: 1,
+        latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1048576, apt_status: 'ok', disk_status: 'ok' },
+        first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1048576 },
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Unavailable');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#health-trends-body')).toContainText('healthy-host');
+  });
+
+  test('observability projects source lifecycle, fleet severity, confidence, and missing health facts', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 4, updates_success: 3, updates_failure: 1, success_rate_pct: 75 },
+      duration: { avg_ms: 1250, samples_with_duration: 1, samples_without_duration: 3 },
+      failure_causes: [{ cause: 'unknown', count: 1, servers: ['demo-host'] }],
+      status_breakdown: [{ status: 'success', count: 3 }, { status: 'failure', count: 1 }],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: 2, update_failures: 1, scan_failures: 0 },
+      servers: [{
+        name: 'demo-host',
+        samples: 2,
+        latest: {
+          captured_at: '2026-07-26T11:00:00Z',
+          package_count: 4,
+          security_count: 2,
+          disk_free_kb: 0,
+          apt_status: 'ok',
+          disk_status: 'unknown',
+        },
+        first: {
+          captured_at: '2026-07-28T13:00:00Z',
+          package_count: 1,
+          security_count: 0,
+          disk_free_kb: 0,
+        },
+        package_delta: 3,
+        security_delta: 2,
+        disk_free_delta_kb: -119231880,
+        update_failures: 1,
+        scan_failures: 0,
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Current');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('Critical');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('3 successful');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('1 failed');
+    await expect(page.locator('#kpi-duration-card')).toContainText('Low confidence');
+    await expect(page.locator('#kpi-duration-card')).toContainText('1 of 4 runs');
+    await expect(page.locator('#failure-causes-body')).toContainText('Data quality issue');
+    await expect(page.locator('#failure-causes-body')).toContainText('Affected: demo-host');
+    await expect(page.locator('#failure-causes-body a[href*="audit_target=demo-host"]')).toHaveAttribute('href', /audit_status=failure/);
+    await expect(page.locator('#health-trends-body')).toContainText('Unavailable');
+    await expect(page.locator('#health-trends-body')).toContainText('Stale');
+    await expect(page.locator('#health-trends-body')).not.toContainText('119231880');
+    await page.locator('#failure-causes-body a[href*="audit_target=demo-host"]').click();
+    await expect(page).toHaveURL(/\/manage\?/);
+    await expect(page.locator('#audit-target-filter')).toHaveValue('demo-host');
+    await expect(page.locator('#audit-action-filter')).toHaveValue('update.complete');
+    await expect(page.locator('#audit-status-filter')).toHaveValue('failure');
+  });
+
+  test('observability charts, filters, shareable URL, pagination, and CSV scale an investigation', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '7d',
+      from: '2026-07-22T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 10, updates_success: 9, updates_failure: 1, success_rate_pct: 90 },
+      duration: { avg_ms: 800, samples_with_duration: 10, samples_without_duration: 0 },
+      failure_causes: [{ cause: 'retry_exhausted', count: 1, servers: ['prod-failing'] }],
+      status_breakdown: [{ status: 'success', count: 9 }, { status: 'failure', count: 1 }],
+    }));
+    const servers = Array.from({ length: 28 }, (_, index) => ({
+      name: index === 0 ? 'prod-failing' : `host-${String(index).padStart(2, '0')}`,
+      samples: 2,
+      latest: {
+        captured_at: '2026-07-29T11:00:00Z',
+        package_count: index,
+        security_count: index % 3,
+        disk_free_kb: 10485760 - index * 1024,
+        apt_status: 'ok',
+        disk_status: 'ok',
+      },
+      first: {
+        captured_at: '2026-07-28T11:00:00Z',
+        package_count: Math.max(0, index - 1),
+        security_count: 0,
+        disk_free_kb: 11534336,
+      },
+      package_delta: 1,
+      security_delta: index % 3,
+      disk_free_delta_kb: -1048576,
+      update_failures: index === 0 ? 2 : 0,
+      scan_failures: 0,
+      apt_problem_samples: 0,
+      disk_problem_samples: 0,
+      reboot_seen: false,
+      points: [
+        { captured_at: '2026-07-28T11:00:00Z', package_count: 1, security_count: 0, disk_free_kb: 11534336, last_update_status: 'success' },
+        { captured_at: '2026-07-29T11:00:00Z', package_count: 2, security_count: 1, disk_free_kb: 10485760, last_update_status: index === 0 ? 'failure' : 'success' },
+      ],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '7d',
+      from: '2026-07-22T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 28, samples: 56, update_failures: 2, scan_failures: 0 },
+      servers,
+    }));
+
+    await page.goto('/observability?window=7d');
+    await expect(page.getByRole('img', { name: /Package count trend/ })).toBeVisible();
+    await expect(page.getByRole('img', { name: /Disk free trend/ })).toBeVisible();
+    await expect(page.locator('#failure-breakdown-bars progress')).toHaveCount(1);
+    await expect(page.locator('#failure-causes-body a[href*="audit_target=prod-failing"]')).toHaveAttribute('href', /audit_status=failure/);
+    await expect(page.locator('#status-breakdown-bars progress')).toHaveCount(2);
+    await expect(page.locator('#health-result-count')).toContainText('25 of 28');
+    await expect(page.locator('#health-trends-body tr')).toHaveCount(25);
+    await page.locator('#health-next-page').click();
+    await expect(page).toHaveURL(/page=2/);
+    await expect(page.locator('#health-result-count')).toContainText('3 of 28');
+
+    await page.locator('#health-search').fill('prod');
+    await page.locator('#health-attention-filter').selectOption('failures');
+    await expect(page).toHaveURL(/search=prod/);
+    await expect(page).toHaveURL(/attention=failures/);
+    await expect(page.locator('#health-trends-body')).toContainText('prod-failing');
+    await expect(page.locator('#health-trends-body tr')).toHaveCount(1);
+    await expect(page.locator('#health-trends-body a')).toHaveAttribute('href', /audit_target=prod-failing/);
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-health-csv').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^observability-health-7d\.csv$/);
+    const failuresDownloadPromise = page.waitForEvent('download');
+    await page.locator('#export-failures-csv').click();
+    const failuresDownload = await failuresDownloadPromise;
+    expect(failuresDownload.suggestedFilename()).toBe('observability-failures-7d.csv');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }));
+    expect(mobileLayout.bodyWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
+    await expect(page.locator('#health-scroll-hint')).toBeVisible();
   });
 
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
@@ -1914,8 +2100,6 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
-    // Browser layout can report an authored 8px gap a fraction below 8px after
-    // Linux font metrics and subpixel rounding are applied.
     const minimumVisibleGap = 7.5;
     const state = {};
     await ensureAuthenticatedSession(page);

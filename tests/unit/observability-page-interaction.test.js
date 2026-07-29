@@ -2,7 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createStore } = require("../../static/js/observability-page-interaction.js");
+const {
+    createStore,
+    projectFleetHealth,
+    projectDurationConfidence,
+    projectFleetTrendSeries,
+    projectHealthCollection,
+} = require("../../static/js/observability-page-interaction.js");
 
 function effect(effects, type, source) {
     return effects.find(item => item.type === type && (!source || item.source === source));
@@ -97,8 +103,127 @@ test("automatic refresh waits for settlement and visibility cancellation is sile
     assert.equal(effects.filter(item => item.type === "loadSource").length, 2);
 });
 
+test("validated shareable selections and source retry stay inside Observability Page Interaction", () => {
+    assert.equal(createStore({ window: "90d" }).getView().selectedWindow, "7d");
+    const store = createStore({
+        window: "24h",
+        host: "alpha",
+        search: "prod",
+        attention: "failures",
+        sort: "freshness",
+        page: 3,
+    });
+    let view = store.getView();
+    assert.equal(view.selectedWindow, "24h");
+    assert.equal(view.selectedHost, "alpha");
+    assert.equal(view.search, "prod");
+    assert.equal(view.attention, "failures");
+    assert.equal(view.sort, "freshness");
+    assert.equal(view.page, 3);
+
+    let effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const trends = effect(effects, "loadSource", "trends");
+    assert.equal(trends.queryWindow, "24h");
+    assert.equal(trends.host, "");
+    store.dispatch({ type: "sourceFailed", source: "summary", requestID: summary.requestID, error: { kind: "http", status: 503 } });
+    store.dispatch({ type: "sourceSucceeded", source: "trends", requestID: trends.requestID, data: { generated_at: "2026-07-29T01:00:00Z", servers: [] }, unfiltered: true });
+    assert.equal(store.getView().selectedHost, "");
+    assert.equal(store.getView().page, 1);
+
+    effects = store.dispatch({ type: "retrySource", source: "summary" });
+    assert.equal(effects.filter(item => item.type === "loadSource").length, 1);
+    assert.equal(effect(effects, "loadSource", "summary").window, "24h");
+    assert.equal(store.getView().summary.status, "refreshing");
+
+    store.dispatch({ type: "filtersChanged", search: "db", attention: "disk", sort: "disk", page: 4 });
+    view = store.getView();
+    assert.equal(view.search, "db");
+    assert.equal(view.attention, "disk");
+    assert.equal(view.sort, "disk");
+    assert.equal(view.page, 1);
+});
+
+test("valid deep-linked host is verified by the unfiltered result before loading its 24h trend", () => {
+    const store = createStore({ window: "24h", host: "alpha" });
+    const effects = store.dispatch({ type: "pageShown" });
+    const firstTrends = effect(effects, "loadSource", "trends");
+    assert.equal(firstTrends.host, "");
+    assert.equal(firstTrends.queryWindow, "24h");
+
+    const settled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: firstTrends.requestID,
+        data: { servers: [{ name: "alpha" }, { name: "beta" }] },
+        unfiltered: true,
+    });
+    const filteredTrends = settled.filter(item => item.type === "loadSource" && item.source === "trends").at(-1);
+    assert.equal(filteredTrends.host, "alpha");
+    assert.equal(filteredTrends.queryWindow, "24h");
+});
+
+test("fleet trend projection carries each host's latest value across staggered samples", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-29T10:00:00Z", package_count: 4 },
+                { captured_at: "2026-07-29T12:00:00Z", package_count: 6 },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-29T11:00:00Z", package_count: 10 },
+                { captured_at: "2026-07-29T13:00:00Z", package_count: 12 },
+            ],
+        },
+    ], "packages");
+
+    assert.deepEqual(series.map(point => [point.timestamp, point.value]), [
+        ["2026-07-29T10:00:00Z", 4],
+        ["2026-07-29T11:00:00Z", 14],
+        ["2026-07-29T12:00:00Z", 16],
+        ["2026-07-29T13:00:00Z", 18],
+    ]);
+});
+
+test("health projection clamps pages and identifies stale observations deterministically", () => {
+    const result = projectHealthCollection([
+        { name: "stale", latest: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 } },
+        { name: "fresh", latest: { captured_at: "2026-07-29T11:00:00Z", disk_free_kb: 100 } },
+    ], {
+        window: "24h",
+        page: 99,
+        sort: "name",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    });
+
+    assert.equal(result.page, 1);
+    assert.deepEqual(result.staleNames, ["stale"]);
+});
+
+test("fleet severity and duration confidence project documented boundaries", () => {
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 0, successRate: 0 }), { state: "neutral", label: "No data" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 95 }), { state: "healthy", label: "Healthy" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 94.99 }), { state: "degraded", label: "Degraded" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 80 }), { state: "degraded", label: "Degraded" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 79.99 }), { state: "critical", label: "Critical" });
+
+    assert.deepEqual(projectDurationConfidence({ samples: 0, total: 4 }), { state: "no-data", label: "No duration data" });
+    assert.deepEqual(projectDurationConfidence({ samples: 1, total: 4 }), { state: "low", label: "Low confidence" });
+    assert.deepEqual(projectDurationConfidence({ samples: 2, total: 4 }), { state: "representative", label: "Representative" });
+    assert.deepEqual(projectDurationConfidence({ samples: 4, total: 4 }), { state: "representative", label: "Representative" });
+});
+
 test("Observability adapter does not restore interaction state globals", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/observability.js"), "utf8");
     assert.doesNotMatch(source, /let\s+refreshIntervalId\s*=/);
     assert.doesNotMatch(source, /let\s+knownHealthTrendServers\s*=/);
+    assert.doesNotMatch(source, /let\s+lastLifecycleAnnouncement\s*=/);
+    assert.doesNotMatch(source, /let\s+lastFilteredHealthServers\s*=/);
+    assert.doesNotMatch(source, /let\s+lastAcceptedSummary\s*=/);
+    assert.doesNotMatch(source, /function\s+projectHealthServers\s*\(/);
+    assert.doesNotMatch(source, /function\s+aggregateTrendSeries\s*\(/);
 });

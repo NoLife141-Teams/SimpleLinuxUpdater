@@ -5,7 +5,9 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function observabilityPageInteractionFactory() {
     "use strict";
 
-    const validWindows = new Set(["24h", "7d", "30d", "90d"]);
+    const validWindows = new Set(["24h", "7d", "30d"]);
+    const validAttentionFilters = new Set(["all", "failures", "apt", "disk", "reboot", "stale", "missing"]);
+    const validSorts = new Set(["attention", "name", "freshness", "packages", "security", "disk", "failures"]);
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -17,10 +19,167 @@
         return { status: "unavailable", data: null, error: null, requestID: null, generation: 0 };
     }
 
+    function projectFleetHealth(input = {}) {
+        const updatesTotal = Number(input.updatesTotal || 0);
+        const successRate = Number(input.successRate || 0);
+        if (updatesTotal <= 0) return { state: "neutral", label: "No data" };
+        if (successRate >= 95) return { state: "healthy", label: "Healthy" };
+        if (successRate >= 80) return { state: "degraded", label: "Degraded" };
+        return { state: "critical", label: "Critical" };
+    }
+
+    function projectDurationConfidence(input = {}) {
+        const samples = Math.max(0, Number(input.samples || 0));
+        const total = Math.max(0, Number(input.total || 0));
+        if (samples === 0 || total === 0) return { state: "no-data", label: "No duration data" };
+        if (samples / total < 0.5) return { state: "low", label: "Low confidence" };
+        return { state: "representative", label: "Representative" };
+    }
+
+    function projectSourceLifecycle(source, state = {}) {
+        const hasData = Boolean(state.data);
+        const acceptedAt = state.data?.generated_at || state.data?.to || "";
+        if (state.status === "refreshing") {
+            return {
+                state: hasData ? "refreshing" : "loading",
+                label: hasData ? "Refreshing" : "Loading",
+                acceptedAt,
+                detail: hasData ? "Last accepted data retained" : `Waiting for ${source === "summary" ? "update metrics" : "host health"}`,
+                retry: false,
+            };
+        }
+        if (state.status === "fresh") {
+            return { state: "current", label: "Current", acceptedAt, detail: "Accepted data", retry: false };
+        }
+        if (state.status === "stale") {
+            return { state: "stale", label: "Stale", acceptedAt, detail: "Showing last accepted data", retry: true };
+        }
+        return { state: "unavailable", label: "Unavailable", acceptedAt: "", detail: "No accepted data", retry: true };
+    }
+
+    function validDiskKB(value) {
+        const disk = Number(value);
+        return Number.isFinite(disk) && disk > 0 ? disk : null;
+    }
+
+    function observationIsStale(server, windowValue, nowMS) {
+        const captured = Date.parse(server?.latest?.captured_at || "");
+        if (!Number.isFinite(captured)) return true;
+        const maximumAge = windowValue === "24h" ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000;
+        return nowMS - captured > maximumAge;
+    }
+
+    function healthAttentionScore(server, windowValue, nowMS) {
+        let score = 0;
+        score += (Number(server.update_failures || 0) + Number(server.scan_failures || 0)) * 100;
+        score += (Number(server.apt_problem_samples || 0) + Number(server.disk_problem_samples || 0)) * 20;
+        if (server.reboot_seen) score += 10;
+        if (observationIsStale(server, windowValue, nowMS)) score += 5;
+        if (!validDiskKB(server?.latest?.disk_free_kb)) score += 2;
+        return score;
+    }
+
+    function matchesAttention(server, filter, windowValue, nowMS) {
+        if (filter === "failures") return Number(server.update_failures || 0) + Number(server.scan_failures || 0) > 0;
+        if (filter === "apt") return Number(server.apt_problem_samples || 0) > 0;
+        if (filter === "disk") return Number(server.disk_problem_samples || 0) > 0;
+        if (filter === "reboot") return Boolean(server.reboot_seen);
+        if (filter === "stale") return observationIsStale(server, windowValue, nowMS);
+        if (filter === "missing") return !server.latest || !validDiskKB(server.latest.disk_free_kb);
+        return true;
+    }
+
+    function projectHealthCollection(servers, options = {}) {
+        const search = String(options.search || "").trim().toLowerCase();
+        const attention = validAttentionFilters.has(options.attention) ? options.attention : "all";
+        const sort = validSorts.has(options.sort) ? options.sort : "attention";
+        const windowValue = validWindows.has(options.window) ? options.window : "7d";
+        const nowMS = Number(options.nowMS) || Date.now();
+        const items = (Array.isArray(servers) ? servers : []).filter(server =>
+            (!search || String(server.name || "").toLowerCase().includes(search))
+            && matchesAttention(server, attention, windowValue, nowMS)
+        );
+        items.sort((left, right) => {
+            if (sort === "name") return String(left.name || "").localeCompare(String(right.name || ""));
+            if (sort === "freshness") return Date.parse(right.latest?.captured_at || 0) - Date.parse(left.latest?.captured_at || 0);
+            if (sort === "packages") return Number(right.latest?.package_count || 0) - Number(left.latest?.package_count || 0);
+            if (sort === "security") return Number(right.latest?.security_count || 0) - Number(left.latest?.security_count || 0);
+            if (sort === "disk") return Number(right.latest?.disk_free_kb || 0) - Number(left.latest?.disk_free_kb || 0);
+            if (sort === "failures") {
+                return (Number(right.update_failures || 0) + Number(right.scan_failures || 0))
+                    - (Number(left.update_failures || 0) + Number(left.scan_failures || 0));
+            }
+            return healthAttentionScore(right, windowValue, nowMS) - healthAttentionScore(left, windowValue, nowMS)
+                || String(left.name || "").localeCompare(String(right.name || ""));
+        });
+        const pageSize = 25;
+        const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+        const page = Math.min(Math.max(1, Number.parseInt(options.page, 10) || 1), pageCount);
+        return {
+            items,
+            visibleItems: items.slice((page - 1) * pageSize, page * pageSize),
+            total: items.length,
+            page,
+            pageCount,
+            pageSize,
+            staleNames: items.filter(server => observationIsStale(server, windowValue, nowMS)).map(server => server.name),
+        };
+    }
+
+    function trendMetricValue(point, metric) {
+        if (metric === "packages") return Number(point.package_count);
+        if (metric === "security") return Number(point.security_count);
+        if (metric === "disk") return validDiskKB(point.disk_free_kb);
+        if (metric === "failures") {
+            const failed = ["failure", "failed", "error"];
+            return failed.includes(String(point.last_update_status || "").toLowerCase())
+                || failed.includes(String(point.last_scan_status || "").toLowerCase()) ? 1 : 0;
+        }
+        return null;
+    }
+
+    function projectFleetTrendSeries(servers, metric) {
+        const latestByServer = new Map();
+        const events = [];
+        (Array.isArray(servers) ? servers : []).forEach(server => {
+            (Array.isArray(server.points) ? server.points : []).forEach(point => {
+                const timestamp = String(point.captured_at || "");
+                if (Number.isFinite(Date.parse(timestamp))) events.push({ server: String(server.name || ""), timestamp, point });
+            });
+        });
+        events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp) || left.server.localeCompare(right.server));
+        const series = [];
+        events.forEach(event => {
+            latestByServer.set(event.server, event.point);
+            let total = 0;
+            let samples = 0;
+            latestByServer.forEach(point => {
+                const value = trendMetricValue(point, metric);
+                if (value === null || !Number.isFinite(value)) return;
+                total += value;
+                samples += 1;
+            });
+            if (samples === 0) return;
+            const previous = series[series.length - 1];
+            if (previous?.timestamp === event.timestamp) {
+                previous.value = total;
+                previous.samples = samples;
+            } else {
+                series.push({ timestamp: event.timestamp, value: total, samples });
+            }
+        });
+        return series;
+    }
+
     function createStore(options = {}) {
         const refreshDelayMs = Number(options.refreshDelayMs) > 0 ? Number(options.refreshDelayMs) : 15000;
+        const now = typeof options.now === "function" ? options.now : Date.now;
         let selectedWindow = validWindows.has(options.window) ? options.window : "7d";
-        let selectedHost = "";
+        let selectedHost = String(options.host || "").trim();
+        let search = String(options.search || "").trim();
+        let attention = validAttentionFilters.has(options.attention) ? options.attention : "all";
+        let sort = validSorts.has(options.sort) ? options.sort : "attention";
+        let page = Math.max(1, Number.parseInt(options.page, 10) || 1);
         let knownHosts = [];
         let pageVisible = false;
         let generation = 0;
@@ -50,7 +209,7 @@
             const details = { source, requestID, generation: currentGeneration, window: selectedWindow };
             if (source === "trends") {
                 details.host = host;
-                details.queryWindow = selectedWindow === "24h" ? "7d" : selectedWindow;
+                details.queryWindow = selectedWindow;
                 details.unfiltered = !host;
             }
             return effect("loadSource", details);
@@ -61,7 +220,7 @@
             const effects = [effect("cancelRefresh")];
             effects.push(...abortActive("summary"), ...abortActive("trends"));
             fullGeneration = { id: generation, pending: new Set(["summary", "trends"]) };
-            effects.push(requestSource("summary", generation), requestSource("trends", generation));
+            effects.push(requestSource("summary", generation), requestSource("trends", generation, knownHosts.length ? selectedHost : ""));
             return effects;
         }
 
@@ -103,6 +262,12 @@
                 }
                 case "manualRefresh":
                     return pageVisible ? startFullRefresh() : [];
+                case "retrySource": {
+                    const source = event.source === "trends" ? "trends" : "summary";
+                    if (!pageVisible || sources[source].requestID !== null) return [];
+                    generation += 1;
+                    return [requestSource(source, generation)];
+                }
                 case "timerFired":
                     return pageVisible ? startFullRefresh() : [];
                 case "windowChanged": {
@@ -112,14 +277,24 @@
                 }
                 case "hostChanged": {
                     selectedHost = String(event.host || "").trim();
+                    page = 1;
                     if (!pageVisible) return [effect("render")];
                     generation += 1;
                     const effects = abortActive("trends");
                     effects.push(requestSource("trends", generation, selectedHost));
                     return effects;
                 }
-                case "sourceSucceeded":
-                    return settle(event.source, event.requestID, state => {
+                case "filtersChanged":
+                    search = String(event.search ?? search).trim();
+                    attention = validAttentionFilters.has(event.attention) ? event.attention : attention;
+                    sort = validSorts.has(event.sort) ? event.sort : sort;
+                    page = 1;
+                    return [effect("render")];
+                case "pageChanged":
+                    page = Math.max(1, Number.parseInt(event.page, 10) || 1);
+                    return [effect("render")];
+                case "sourceSucceeded": {
+                    const effects = settle(event.source, event.requestID, state => {
                         state.status = "fresh";
                         state.data = clone(event.data);
                         state.error = null;
@@ -128,6 +303,19 @@
                             if (selectedHost && !knownHosts.includes(selectedHost)) selectedHost = "";
                         }
                     });
+                    if (!effects.length) return effects;
+                    if (event.source === "trends") {
+                        const collection = projectHealthCollection(sources.trends.data?.servers, {
+                            search, attention, sort, window: selectedWindow, page, nowMS: now(),
+                        });
+                        page = collection.page;
+                        if (event.unfiltered && selectedHost && knownHosts.includes(selectedHost)) {
+                            generation += 1;
+                            effects.push(requestSource("trends", generation, selectedHost));
+                        }
+                    }
+                    return effects;
+                }
                 case "sourceFailed":
                     if (event.error && event.error.kind === "aborted") {
                         return settle(event.source, event.requestID, state => {
@@ -145,13 +333,29 @@
         }
 
         function getView() {
+            const health = projectHealthCollection(sources.trends.data?.servers, {
+                search, attention, sort, window: selectedWindow, page, nowMS: now(),
+            });
             return clone({
                 selectedWindow,
                 selectedHost,
                 knownHosts,
+                search,
+                attention,
+                sort,
+                page,
                 pageVisible,
                 summary: sources.summary,
                 trends: sources.trends,
+                summaryLifecycle: projectSourceLifecycle("summary", sources.summary),
+                trendsLifecycle: projectSourceLifecycle("trends", sources.trends),
+                health,
+                trendSeries: {
+                    packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages"),
+                    security: projectFleetTrendSeries(sources.trends.data?.servers, "security"),
+                    disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk"),
+                    failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures"),
+                },
                 refreshing: sources.summary.status === "refreshing" || sources.trends.status === "refreshing"
             });
         }
@@ -159,5 +363,12 @@
         return Object.freeze({ dispatch, getView });
     }
 
-    return Object.freeze({ createStore });
+    return Object.freeze({
+        createStore,
+        projectFleetHealth,
+        projectDurationConfidence,
+        projectSourceLifecycle,
+        projectHealthCollection,
+        projectFleetTrendSeries,
+    });
 }));

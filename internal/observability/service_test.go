@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,9 @@ func TestServiceBuildSummaryAggregatesAndSorts(t *testing.T) {
 	}
 	if len(summary.FailureCauses) != 2 || summary.FailureCauses[0].Cause != "precheck:apt_health" || summary.FailureCauses[1].Cause != "retry_exhausted" {
 		t.Fatalf("failure causes = %+v, want deterministic causes", summary.FailureCauses)
+	}
+	if !slices.Equal(summary.FailureCauses[0].Servers, []string{"srv-b"}) || !slices.Equal(summary.FailureCauses[1].Servers, []string{"srv-c"}) {
+		t.Fatalf("failure cause servers = %+v, want affected servers grouped by cause", summary.FailureCauses)
 	}
 }
 
@@ -651,8 +655,48 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 	if len(missing.Servers) != 0 || missing.Fleet["samples"] != 0 {
 		t.Fatalf("deleted server trends = %+v fleet=%+v, want empty", missing.Servers, missing.Fleet)
 	}
-	if _, _, err := ParseHealthTrendWindow("24h"); !errors.Is(err, ErrInvalidWindow) {
-		t.Fatalf("ParseHealthTrendWindow(24h) error = %v, want ErrInvalidWindow", err)
+	window, span, err := ParseHealthTrendWindow("24h")
+	if err != nil || window != "24h" || span != 24*time.Hour {
+		t.Fatalf("ParseHealthTrendWindow(24h) = %q/%s/%v, want 24h/24h/nil", window, span, err)
+	}
+}
+
+func TestServiceBuildHealthTrendsDoesNotDeriveDiskDeltaFromMissingObservation(t *testing.T) {
+	db, path := newTestDB(t, "health-trends-missing-disk.db")
+	if err := health.EnsureServerFactsSchema(db); err != nil {
+		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName: "srv-a",
+		CapturedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+		Source:     "facts",
+		DiskFreeKB: 0,
+	})
+	insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+		ServerName: "srv-a",
+		CapturedAt: now.Add(-time.Hour).Format(time.RFC3339),
+		Source:     "facts",
+		DiskFreeKB: 1024,
+	})
+	service := NewService(ServiceDeps{
+		DB:                    func() *sql.DB { return db },
+		DBPath:                func() string { return path },
+		HostHealthObservation: health.SQLiteObservation{DB: func() *sql.DB { return db }},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-a"}}, nil
+		},
+	})
+
+	trends, err := service.BuildHealthTrends("24h", "", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends() error = %v", err)
+	}
+	if len(trends.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one server", trends.Servers)
+	}
+	if got := trends.Servers[0].DiskFreeDeltaKB; got != 0 {
+		t.Fatalf("DiskFreeDeltaKB = %d, want 0 when either endpoint is unavailable", got)
 	}
 }
 

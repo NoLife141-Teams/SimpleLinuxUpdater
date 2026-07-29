@@ -1301,6 +1301,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         const auditDeepLink = new URLSearchParams(window.location.search);
         document.getElementById('audit-target-filter').value = auditDeepLink.get('audit_target') || "";
         document.getElementById('audit-action-filter').value = auditDeepLink.get('audit_action') || "";
+        document.getElementById('audit-status-filter').value = auditDeepLink.get('audit_status') || "";
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();

@@ -112,18 +112,7 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 }
 
 func ParseHealthTrendWindow(raw string) (string, time.Duration, error) {
-	window := strings.TrimSpace(strings.ToLower(raw))
-	if window == "" {
-		window = "7d"
-	}
-	switch window {
-	case "7d":
-		return window, 7 * 24 * time.Hour, nil
-	case "30d":
-		return window, 30 * 24 * time.Hour, nil
-	default:
-		return "", 0, fmt.Errorf("%w: %q", ErrInvalidWindow, raw)
-	}
+	return ParseWindow(raw)
 }
 
 func ParseWindow(raw string) (string, time.Duration, error) {
@@ -249,10 +238,11 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 		{Status: "failure", Count: 0},
 	}
 	failureCauseCounts := map[string]int{}
+	failureCauseServers := map[string]map[string]struct{}{}
 
 	db := deps.DB()
 	rows, err := db.Query(
-		`SELECT status, meta_json FROM audit_events
+		`SELECT status, target_name, meta_json FROM audit_events
 		WHERE action = ? AND created_at >= ? AND created_at <= ?`,
 		deps.UpdateCompleteAction,
 		from.Format(time.RFC3339),
@@ -266,8 +256,9 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 	var durationTotal float64
 	for rows.Next() {
 		var status string
+		var targetName string
 		var metaJSON string
-		if scanErr := rows.Scan(&status, &metaJSON); scanErr != nil {
+		if scanErr := rows.Scan(&status, &targetName, &metaJSON); scanErr != nil {
 			return SummaryResponse{}, scanErr
 		}
 		normalizedStatus := strings.ToLower(strings.TrimSpace(status))
@@ -303,6 +294,13 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 		if normalizedStatus == "failure" {
 			cause := FailureCauseFromMeta(meta, metaValid)
 			failureCauseCounts[cause]++
+			targetName = strings.TrimSpace(targetName)
+			if targetName != "" {
+				if failureCauseServers[cause] == nil {
+					failureCauseServers[cause] = map[string]struct{}{}
+				}
+				failureCauseServers[cause][targetName] = struct{}{}
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -316,7 +314,12 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 	}
 	summary.FailureCauses = make([]FailureItem, 0, len(failureCauseCounts))
 	for cause, count := range failureCauseCounts {
-		summary.FailureCauses = append(summary.FailureCauses, FailureItem{Cause: cause, Count: count})
+		serverNames := make([]string, 0, len(failureCauseServers[cause]))
+		for serverName := range failureCauseServers[cause] {
+			serverNames = append(serverNames, serverName)
+		}
+		sort.Strings(serverNames)
+		summary.FailureCauses = append(summary.FailureCauses, FailureItem{Cause: cause, Count: count, Servers: serverNames})
 	}
 	sort.Slice(summary.FailureCauses, func(i, j int) bool {
 		if summary.FailureCauses[i].Count == summary.FailureCauses[j].Count {
@@ -1136,7 +1139,9 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 		summary.Latest = &latest
 		summary.PackageDelta = latest.PackageCount - first.PackageCount
 		summary.SecurityDelta = latest.SecurityCount - first.SecurityCount
-		summary.DiskFreeDeltaKB = latest.DiskFreeKB - first.DiskFreeKB
+		if latest.DiskFreeKB > 0 && first.DiskFreeKB > 0 {
+			summary.DiskFreeDeltaKB = latest.DiskFreeKB - first.DiskFreeKB
+		}
 		for _, point := range points {
 			if trendFailure(point.LastUpdateStatus) {
 				summary.UpdateFailures++

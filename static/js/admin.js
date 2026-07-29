@@ -344,6 +344,12 @@ function renderCurrentAppTime(resolvedTimezone = "") {
     const acceptedTimezone = String(resolvedTimezone || preview.dataset.timezone || "").trim() || "UTC";
     preview.dataset.timezone = acceptedTimezone;
     preview.textContent = window.AdminTimezonePicker.formatCurrentTimePreview(acceptedTimezone);
+    const source = document.getElementById("app-timezone-source");
+    if (source) {
+        source.textContent = String(adminPageView().timezone.configured || "").trim()
+            ? "Explicit timezone"
+            : "System default";
+    }
 }
 
 function populateTimezonePicker() {

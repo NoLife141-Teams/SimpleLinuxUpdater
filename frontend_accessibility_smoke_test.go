@@ -284,3 +284,20 @@ func TestOperatorStylesCoverRepresentativeViewportsAndScrollableTables(t *testin
 		}
 	}
 }
+
+func TestAdminSectionHeadingFocusDrawsVisibleOutline(t *testing.T) {
+	contents, err := os.ReadFile("static/css/admin.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(contents)
+	const expected = `.admin-workspace-section > [id$="-heading"]:focus,
+.admin-workspace-section h2:focus {
+    border-radius: 4px;
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}`
+	if !strings.Contains(css, expected) {
+		t.Error("Admin section headings must retain a visible focus indicator")
+	}
+}

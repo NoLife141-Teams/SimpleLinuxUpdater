@@ -1792,6 +1792,35 @@ test.describe.serial('setup and login flows', () => {
     await expect(saveTimezone).toBeDisabled();
     await expect(page.locator('#app-timezone-preview')).toContainText('Current app time:');
     await expect(page.locator('#app-timezone-preview')).toContainText('America/Toronto');
+    await expect(page.locator('.app-time-context')).toBeVisible();
+    await expect(page.locator('#app-timezone-source')).toHaveText('Explicit timezone');
+
+    const desktopTimeLayout = await page.evaluate(() => {
+      const context = document.querySelector('.app-time-context').getBoundingClientRect();
+      const pickerPanel = document.querySelector('.app-time-picker-panel').getBoundingClientRect();
+      return {
+        contextRight: context.right,
+        pickerLeft: pickerPanel.left,
+        pickerWidth: pickerPanel.width,
+      };
+    });
+    expect(desktopTimeLayout.pickerLeft - desktopTimeLayout.contextRight).toBeGreaterThanOrEqual(16);
+    expect(desktopTimeLayout.pickerWidth).toBeLessThanOrEqual(580);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileTimeLayout = await page.evaluate(() => {
+      const context = document.querySelector('.app-time-context').getBoundingClientRect();
+      const pickerPanel = document.querySelector('.app-time-picker-panel').getBoundingClientRect();
+      return {
+        bodyWidth: document.body.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+        contextBottom: context.bottom,
+        pickerTop: pickerPanel.top,
+      };
+    });
+    expect(mobileTimeLayout.pickerTop).toBeGreaterThanOrEqual(mobileTimeLayout.contextBottom + 12);
+    expect(mobileTimeLayout.bodyWidth).toBeLessThanOrEqual(mobileTimeLayout.viewportWidth);
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     await picker.click();
     await expect(page.locator('#app-timezone-popover')).toBeVisible();
@@ -1848,9 +1877,14 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await expect(page).toHaveURL(/#admin-section-backup$/);
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'solid');
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-width', '2px');
     await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
 
     await page.locator('[data-admin-section-link="notifications"]').click();
+    await expect(page.locator('#admin-section-notifications-heading')).toBeFocused();
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'solid');
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-width', '2px');
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
@@ -1877,6 +1911,50 @@ test.describe.serial('setup and login flows', () => {
     }));
     expect(layout.navVisible).toBe(true);
     expect(layout.bodyWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  });
+
+  test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
+    // Browser layout can report an authored 8px gap a fraction below 8px after
+    // Linux font metrics and subpixel rounding are applied.
+    const minimumVisibleGap = 7.5;
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto('/admin#admin-section-scheduled-policies');
+
+    const boxes = {};
+    for (const [name, selector] of Object.entries({
+      policyNameLabel: 'label[for="policy-name"]',
+      policyName: '#policy-name',
+      targetLabel: 'label[for="policy-target-tag"]',
+      target: '#policy-target-tag',
+      executionLabel: 'label[for="policy-execution-mode"]',
+      execution: '#policy-execution-mode',
+      packageLabel: 'label[for="policy-package-scope"]',
+      package: '#policy-package-scope',
+      blackoutAdd: '#policy-blackout-add',
+      blackoutFallback: '#policy-blackout-rows ~ .json-fallback',
+    })) {
+      boxes[name] = await page.locator(selector).boundingBox();
+      expect(boxes[name], `${name} must have a layout box`).not.toBeNull();
+    }
+
+    expect(Math.abs(boxes.targetLabel.y - boxes.policyNameLabel.y)).toBeLessThanOrEqual(2);
+    expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(2);
+    expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(2);
+    expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(2);
+    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+
+    await page.goto('/admin#admin-section-metrics');
+    const metricsOverview = await page.locator('.metrics-credential-overview').boundingBox();
+    const metricsActions = await page.locator('#metrics-token-generate').locator('..').boundingBox();
+    const metricsDanger = await page.locator('#metrics-token-danger-zone').boundingBox();
+    expect(metricsOverview).not.toBeNull();
+    expect(metricsActions).not.toBeNull();
+    expect(metricsDanger).not.toBeNull();
+    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
   });
 
   test('admin sections load heavy data lazily and recover failed sections with Retry', async ({ page }) => {

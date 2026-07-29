@@ -51,10 +51,15 @@ let refreshTimeoutId = null;
             container.dataset.state = projection.state;
             container.querySelector('.source-lifecycle-status').textContent = projection.label;
             const relative = formatRelativeTime(projection.acceptedAt);
+            const accepted = projection.acceptedAt && window.formatAppTimestamp
+                ? window.formatAppTimestamp(projection.acceptedAt, { titleUTC: true })
+                : { primary: projection.acceptedAt || '', title: projection.acceptedAt || '' };
             let detail = projection.detail;
-            if (projection.acceptedAt && projection.state === 'current') detail = `Updated ${relative}`;
-            if (projection.acceptedAt && ['refreshing', 'stale'].includes(projection.state)) detail = `Last accepted ${relative}`;
-            container.querySelector('.source-lifecycle-time').textContent = detail;
+            if (projection.acceptedAt && projection.state === 'current') detail = `Updated ${accepted.primary} · ${relative}`;
+            if (projection.acceptedAt && ['refreshing', 'stale'].includes(projection.state)) detail = `Last accepted ${accepted.primary} · ${relative}`;
+            const lifecycleTime = container.querySelector('.source-lifecycle-time');
+            lifecycleTime.textContent = detail;
+            lifecycleTime.title = projection.acceptedAt ? (accepted.title || projection.acceptedAt) : '';
             container.querySelector('.source-retry').hidden = !projection.retry;
             section.setAttribute('aria-busy', String(projection.state === 'loading' || projection.state === 'refreshing'));
         }
@@ -317,7 +322,7 @@ let refreshTimeoutId = null;
                     const causeCell = document.createElement('td');
                     const rawCause = String(row?.cause || 'unknown');
                     const link = document.createElement('a');
-                    link.href = `/manage?audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}`;
+                    link.href = `/manage?audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}#audit-trail`;
                     link.textContent = describeFailureCause(rawCause);
                     causeCell.appendChild(link);
                     if (!rawCause || rawCause === 'unknown') {
@@ -334,7 +339,7 @@ let refreshTimeoutId = null;
                         servers.forEach((server, index) => {
                             if (index) serverLinks.append(', ');
                             const serverLink = document.createElement('a');
-                            serverLink.href = `/manage?audit_target=${encodeURIComponent(server)}&audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}`;
+                            serverLink.href = `/manage?audit_target=${encodeURIComponent(server)}&audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}#audit-trail`;
                             serverLink.textContent = server;
                             serverLinks.appendChild(serverLink);
                         });
@@ -403,6 +408,13 @@ let refreshTimeoutId = null;
             if (raw === 'ok') return 'ok';
             if (!raw || raw === 'unknown') return '';
             return 'bad';
+        }
+
+        function healthStatusBadgeState(value) {
+            const state = healthStatusClass(value);
+            if (state === 'ok') return 'status-success';
+            if (state === 'bad') return 'status-error';
+            return 'status-unknown';
         }
 
         function appendTrendCell(tr, text, className = '', title = '') {
@@ -563,10 +575,6 @@ let refreshTimeoutId = null;
                 const scope = document.createElement('span');
                 scope.textContent = options.scope;
                 tooltip.append(value, timestamp, bucket, coverage, scope);
-                tooltip.style.left = `${(point.x / 360) * 100}%`;
-                tooltip.style.top = `${(point.y / 150) * 100}%`;
-                tooltip.classList.toggle('trend-tooltip-start', point.xRatio < 0.2);
-                tooltip.classList.toggle('trend-tooltip-end', point.xRatio > 0.8);
                 tooltip.hidden = false;
             };
             const hideTooltip = () => {
@@ -666,12 +674,13 @@ let refreshTimeoutId = null;
                 const tr = document.createElement('tr');
                 const hostCell = document.createElement('td');
                 const hostLink = document.createElement('a');
-                hostLink.href = `/manage?audit_target=${encodeURIComponent(server.name || '')}`;
+                hostLink.href = `/manage?server=${encodeURIComponent(server.name || '')}#server-directory`;
                 hostLink.textContent = server.name || '-';
-                hostLink.title = `${server.samples || 0} health samples; open audit investigation`;
+                hostLink.title = `${server.samples || 0} health samples; open Server directory`;
                 hostCell.appendChild(hostLink);
                 tr.appendChild(hostCell);
-                const captured = latest.captured_at_display || latest.captured_at || '-';
+                const hasObservation = Boolean(server.latest);
+                const captured = hasObservation ? (latest.captured_at_display || latest.captured_at || 'Unavailable') : 'Unavailable';
                 const latestCell = document.createElement('td');
                 latestCell.textContent = `${captured}${latest.captured_at ? ` · ${formatRelativeTime(latest.captured_at)}` : ''}`;
                 latestCell.title = latest.captured_at || '';
@@ -683,21 +692,23 @@ let refreshTimeoutId = null;
                     latestCell.append(' ', stale);
                 }
                 tr.appendChild(latestCell);
-                appendTrendCell(tr, `${latest.package_count || 0} · ${formatDelta(server.package_delta, 'package')}`);
-                appendTrendCell(tr, `${latest.security_count || 0} · ${formatDelta(server.security_delta, 'security update')}`);
+                appendTrendCell(tr, hasObservation ? `${latest.package_count || 0} · ${formatDelta(server.package_delta, 'package')}` : 'Unavailable');
+                appendTrendCell(tr, hasObservation ? `${latest.security_count || 0} · ${formatDelta(server.security_delta, 'security update')}` : 'Unavailable');
                 const latestDisk = Number(latest.disk_free_kb || 0);
                 const firstDisk = Number(server.first?.disk_free_kb || 0);
                 const diskText = latestDisk > 0
                     ? `${formatDiskKB(latestDisk)}${firstDisk > 0 ? ` (${formatDiskKB(Math.abs(server.disk_free_delta_kb || 0))} ${Number(server.disk_free_delta_kb || 0) < 0 ? 'decrease' : 'increase'})` : ''}`
                     : 'Unavailable';
                 appendTrendCell(tr, diskText, latestDisk > 0 ? '' : 'muted');
-                appendBadgeCell(tr, statusText(latest.apt_status), healthStatusClass(latest.apt_status) === 'ok' ? 'status-success' : 'status-error');
-                appendBadgeCell(tr, statusText(latest.disk_status), healthStatusClass(latest.disk_status) === 'ok' ? 'status-success' : 'status-error');
+                appendBadgeCell(tr, statusText(latest.apt_status), healthStatusBadgeState(latest.apt_status));
+                appendBadgeCell(tr, statusText(latest.disk_status), healthStatusBadgeState(latest.disk_status));
                 const signals = [];
                 if (server.update_failures) signals.push(plural(server.update_failures, 'update failure'));
                 if (server.scan_failures) signals.push(plural(server.scan_failures, 'scan failure'));
                 if (server.reboot_seen) signals.push('Reboot required');
-                appendBadgeCell(tr, signals.length ? signals.join(' · ') : 'No signals', signals.length ? 'status-error' : 'status-success');
+                const signalText = hasObservation ? (signals.length ? signals.join(' · ') : 'No signals') : 'No observation';
+                const signalState = hasObservation ? (signals.length ? 'status-error' : 'status-success') : 'status-unknown';
+                appendBadgeCell(tr, signalText, signalState);
                 body.appendChild(tr);
             });
         }

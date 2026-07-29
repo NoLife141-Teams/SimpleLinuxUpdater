@@ -279,40 +279,43 @@ test("disk trend projection preserves unavailable buckets as chart gaps", () => 
 });
 
 test("health trend CSV projection exports every accepted point with explicit missing facts", () => {
-    const projection = projectHealthTrendCSV([{
-        name: "alpha",
-        latest: { captured_at: "2026-07-29T11:00:00Z" },
-        points: [
-            {
-                captured_at: "2026-07-29T10:00:00Z",
-                captured_at_display: "Jul 29, 2026, 06:00 EDT",
-                source: "facts",
-                package_count: 4,
-                security_count: 2,
-                disk_free_kb: 1024,
-                disk_total_kb: 4096,
-                apt_status: "ok",
-                disk_status: "ok",
-                last_update_status: "success",
-                reboot_required: false,
-            },
-            {
-                captured_at: "2026-07-29T11:00:00Z",
-                captured_at_display: "Jul 29, 2026, 07:00 EDT",
-                source: "audit",
-                package_count: 3,
-                security_count: 1,
-                disk_free_kb: 0,
-                disk_total_kb: 0,
-                last_scan_status: "failure",
-                reboot_required: null,
-            },
-        ],
-    }]);
+    const projection = projectHealthTrendCSV([
+        {
+            name: "alpha",
+            latest: { captured_at: "2026-07-29T11:00:00Z" },
+            points: [
+                {
+                    captured_at: "2026-07-29T10:00:00Z",
+                    captured_at_display: "Jul 29, 2026, 06:00 EDT",
+                    source: "facts",
+                    package_count: 4,
+                    security_count: 2,
+                    disk_free_kb: 1024,
+                    disk_total_kb: 4096,
+                    apt_status: "ok",
+                    disk_status: "ok",
+                    last_update_status: "success",
+                    reboot_required: false,
+                },
+                {
+                    captured_at: "2026-07-29T11:00:00Z",
+                    captured_at_display: "Jul 29, 2026, 07:00 EDT",
+                    source: "audit",
+                    package_count: 3,
+                    security_count: 1,
+                    disk_free_kb: 0,
+                    disk_total_kb: 0,
+                    last_scan_status: "failure",
+                    reboot_required: null,
+                },
+            ],
+        },
+        { name: "missing", samples: 0, points: [] },
+    ]);
 
     assert.equal(projection.header[1], "Captured at app time");
     assert.equal(projection.header[2], "Captured at UTC");
-    assert.equal(projection.rows.length, 2);
+    assert.equal(projection.rows.length, 3);
     assert.deepEqual(projection.rows[0].slice(0, 4), [
         "alpha",
         "Jul 29, 2026, 06:00 EDT",
@@ -324,6 +327,9 @@ test("health trend CSV projection exports every accepted point with explicit mis
     assert.equal(projection.rows[1][6], "");
     assert.equal(projection.rows[1][7], "");
     assert.equal(projection.rows[1][12], "");
+    assert.deepEqual(projection.rows[2], [
+        "missing", "", "", "", "", "", "", "", "", "", "", "", "",
+    ]);
 });
 
 test("fleet buckets include only hosts observed during that period", () => {
@@ -364,7 +370,7 @@ test("hourly buckets keep both repeated DST fallback hours distinct", () => {
     ]);
 });
 
-test("adaptive trend buckets follow app-local midnight and use weeks for 90 days", () => {
+test("daily trend buckets follow app-local midnight", () => {
     const localDays = projectFleetTrendSeries([{
         name: "alpha",
         points: [
@@ -373,19 +379,6 @@ test("adaptive trend buckets follow app-local midnight and use weeks for 90 days
         ],
     }], "packages", { window: "7d", timeZone: "America/Toronto" });
     assert.deepEqual(localDays.map(point => point.bucketKey), ["2026-07-22", "2026-07-23"]);
-
-    const weeks = projectFleetTrendSeries([{
-        name: "alpha",
-        points: [
-            { captured_at: "2026-07-20T12:00:00Z", package_count: 1 },
-            { captured_at: "2026-07-26T12:00:00Z", package_count: 2 },
-            { captured_at: "2026-07-27T12:00:00Z", package_count: 3 },
-        ],
-    }], "packages", { window: "90d", timeZone: "UTC" });
-    assert.deepEqual(weeks.map(point => [point.bucketKey, point.value]), [
-        ["2026-07-20", 2],
-        ["2026-07-27", 3],
-    ]);
 });
 
 test("trend chart projection exposes a zero baseline and proportional time scale", () => {
@@ -430,6 +423,26 @@ test("health projection clamps pages and identifies stale observations determini
 
     assert.equal(result.page, 1);
     assert.deepEqual(result.staleNames, ["stale"]);
+});
+
+test("health projection distinguishes missing observations from stale observations", () => {
+    const servers = [
+        { name: "missing", samples: 0, points: [] },
+        { name: "stale", latest: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 } },
+    ];
+    const options = {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    };
+
+    assert.deepEqual(
+        projectHealthCollection(servers, { ...options, attention: "missing" }).items.map(server => server.name),
+        ["missing"]
+    );
+    assert.deepEqual(
+        projectHealthCollection(servers, { ...options, attention: "stale" }).items.map(server => server.name),
+        ["stale"]
+    );
 });
 
 test("fleet severity and duration confidence project documented boundaries", () => {

@@ -1300,13 +1300,19 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());
         document.getElementById('upload-global-key-btn').addEventListener('click', uploadGlobalKey);
         document.getElementById('clear-global-key-btn').addEventListener('click', clearGlobalKey);
-        const auditDeepLink = new URLSearchParams(window.location.search);
-        document.getElementById('audit-target-filter').value = auditDeepLink.get('audit_target') || "";
-        document.getElementById('audit-action-filter').value = auditDeepLink.get('audit_action') || "";
-        document.getElementById('audit-status-filter').value = auditDeepLink.get('audit_status') || "";
+        const manageDeepLink = new URLSearchParams(window.location.search);
+        const selectedServer = manageDeepLink.get('server') || "";
+        document.getElementById('search').value = selectedServer;
+        managePageInteraction.dispatch({
+            type: 'filtersChanged',
+            patch: { search: selectedServer },
+        });
+        document.getElementById('audit-target-filter').value = manageDeepLink.get('audit_target') || "";
+        document.getElementById('audit-action-filter').value = manageDeepLink.get('audit_action') || "";
+        document.getElementById('audit-status-filter').value = manageDeepLink.get('audit_status') || "";
         managePageInteraction.dispatch({
             type: 'auditQueryChanged',
-            patch: { failureCause: auditDeepLink.get('failure_cause') || "" },
+            patch: { failureCause: manageDeepLink.get('failure_cause') || "" },
         });
         fetchManageServers();
         fetchGlobalKeyStatus();

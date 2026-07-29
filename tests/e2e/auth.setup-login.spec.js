@@ -1133,6 +1133,10 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/observability?window=24h');
     await expect(page.locator('#summary-lifecycle')).toContainText('Current');
     await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#summary-lifecycle .source-lifecycle-time')).toContainText('2026');
+    await expect(page.locator('#summary-lifecycle .source-lifecycle-time')).toContainText('ago');
+    await expect(page.locator('#trends-lifecycle .source-lifecycle-time')).toContainText('2026');
+    await expect(page.locator('#trends-lifecycle .source-lifecycle-time')).toContainText('ago');
     await expect(page.locator('#kpi-success-rate-card')).toContainText('Critical');
     await expect(page.locator('#kpi-success-icon')).toHaveText('×');
     await expect(page.locator('#kpi-success-rate-card')).toContainText('3 successful');
@@ -1145,6 +1149,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#health-trends-body')).toContainText('Unavailable');
     await expect(page.locator('#health-trends-body')).toContainText('Stale');
     await expect(page.locator('#health-trends-body')).not.toContainText('119231880');
+    await expect(page.locator('#health-trends-body .health-signal-badge').nth(1)).toHaveClass(/status-unknown/);
+    await expect(page.locator('#failure-causes-body a[href*="failure_cause=unknown"]').first()).toHaveAttribute('href', /#audit-trail$/);
     const causeRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
       && request.url().includes('failure_cause=unknown'));
     await page.locator('#failure-causes-body a[href*="audit_target=demo-host"]').click();
@@ -1269,6 +1275,7 @@ test.describe.serial('setup and login flows', () => {
     const packagePoint = page.locator('#package-trend-chart .trend-point').first();
     await packagePoint.hover();
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeVisible();
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).not.toHaveAttribute('style', /.+/);
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Fleet total');
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 packages');
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Jul 28, 2026, 07:00 EDT');
@@ -1304,7 +1311,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page).toHaveURL(/attention=failures/);
     await expect(page.locator('#health-trends-body')).toContainText('prod-failing');
     await expect(page.locator('#health-trends-body tr')).toHaveCount(1);
-    await expect(page.locator('#health-trends-body a')).toHaveAttribute('href', /audit_target=prod-failing/);
+    await expect(page.locator('#health-trends-body a')).toHaveAttribute('href', /\/manage\?server=prod-failing#server-directory$/);
 
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#export-health-csv').click();
@@ -1330,6 +1337,10 @@ test.describe.serial('setup and login flows', () => {
     }));
     expect(mobileLayout.bodyWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
     await expect(page.locator('#health-scroll-hint')).toBeVisible();
+
+    await page.goto('/manage?server=prod-failing#server-directory');
+    await expect(page.locator('#search')).toHaveValue('prod-failing');
+    await expect(page).toHaveURL(/server=prod-failing#server-directory$/);
   });
 
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {

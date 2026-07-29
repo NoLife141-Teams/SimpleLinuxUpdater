@@ -227,9 +227,12 @@
 
 .trend-tooltip {
     position: absolute;
+    top: 8px;
+    left: 50%;
     z-index: 4;
     display: grid;
     min-width: 150px;
+    max-width: calc(100% - 16px);
     gap: 2px;
     padding: 8px 10px;
     border: 1px solid var(--accent);
@@ -240,19 +243,11 @@
     font-size: 0.72rem;
     line-height: 1.35;
     pointer-events: none;
-    transform: translate(-50%, calc(-100% - 8px));
+    transform: translateX(-50%);
 }
 
 .trend-tooltip[hidden] {
     display: none;
-}
-
-.trend-tooltip-start {
-    transform: translate(0, calc(-100% - 8px));
-}
-
-.trend-tooltip-end {
-    transform: translate(-100%, calc(-100% - 8px));
 }
 
 .trend-tooltip span {

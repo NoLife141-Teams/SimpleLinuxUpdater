@@ -605,7 +605,7 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 			return "display:" + raw, "UTC"
 		},
 		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
-			return []servers.Server{{Name: "srv-a"}, {Name: "srv-b"}}, nil
+			return []servers.Server{{Name: "srv-a"}, {Name: "srv-b"}, {Name: "srv-c"}}, nil
 		},
 		HostHealthObservation: repo,
 	})
@@ -617,8 +617,8 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 	if trends.RetentionDays != health.DefaultRetentionDays || !strings.HasPrefix(trends.FromDisplay, "display:") {
 		t.Fatalf("retention/display = %d/%q, want default retention and display", trends.RetentionDays, trends.FromDisplay)
 	}
-	if len(trends.Servers) != 2 {
-		t.Fatalf("server trends count = %d, want 2: %+v", len(trends.Servers), trends.Servers)
+	if len(trends.Servers) != 3 {
+		t.Fatalf("server trends count = %d, want 3: %+v", len(trends.Servers), trends.Servers)
 	}
 	byName := map[string]HealthTrendServerSummary{}
 	for _, item := range trends.Servers {
@@ -636,6 +636,9 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 	}
 	if byName["srv-b"].ScanFailures != 1 {
 		t.Fatalf("srv-b scan failures = %+v, want 1", byName["srv-b"])
+	}
+	if srvC := byName["srv-c"]; srvC.Samples != 0 || srvC.Latest != nil || len(srvC.Points) != 0 {
+		t.Fatalf("srv-c trend = %+v, want explicit missing observation", srvC)
 	}
 	if trends.Fleet["servers_with_samples"] != 2 || trends.Fleet["samples"] != 3 || trends.Fleet["update_failures"] != 1 || trends.Fleet["scan_failures"] != 1 || trends.Fleet["reboot_seen"] != 1 {
 		t.Fatalf("fleet = %+v, want aggregate health trend counts", trends.Fleet)

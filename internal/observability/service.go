@@ -1072,10 +1072,20 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 	fleetAptProblems := 0
 	fleetDiskProblems := 0
 	fleetRebootSeen := 0
-	for serverName, points := range byServer {
-		if len(points) == 0 {
+	fleetServersWithSamples := 0
+	for serverName := range activeServers {
+		if filter != "" && serverName != filter {
 			continue
 		}
+		points := byServer[serverName]
+		if len(points) == 0 {
+			response.Servers = append(response.Servers, HealthTrendServerSummary{
+				Name:   serverName,
+				Points: []HealthTrendPoint{},
+			})
+			continue
+		}
+		fleetServersWithSamples++
 		summary := HealthTrendServerSummary{
 			Name:    serverName,
 			Samples: len(points),
@@ -1118,7 +1128,7 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 		response.Servers = append(response.Servers, summary)
 	}
 	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
-	response.Fleet["servers_with_samples"] = len(response.Servers)
+	response.Fleet["servers_with_samples"] = fleetServersWithSamples
 	response.Fleet["samples"] = fleetSamples
 	response.Fleet["update_failures"] = fleetUpdateFailures
 	response.Fleet["scan_failures"] = fleetScanFailures

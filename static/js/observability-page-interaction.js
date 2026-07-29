@@ -63,6 +63,7 @@
     }
 
     function observationIsStale(server, windowValue, nowMS) {
+        if (!server?.latest) return false;
         const captured = Date.parse(server?.latest?.captured_at || "");
         if (!Number.isFinite(captured)) return true;
         const maximumAge = windowValue === "24h" ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000;
@@ -141,7 +142,6 @@
 
     function trendBucketUnit(windowValue) {
         if (windowValue === "24h") return "hour";
-        if (windowValue === "90d") return "week";
         return "day";
     }
 
@@ -206,18 +206,6 @@
                     bucketKey,
                     bucketUnit,
                     timestamp: canonicalStart(bucketKey, bucketUnit, offsetName),
-                };
-            }
-            if (bucketUnit === "week") {
-                const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
-                const daysSinceMonday = (localDate.getUTCDay() + 6) % 7;
-                localDate.setUTCDate(localDate.getUTCDate() - daysSinceMonday);
-                const bucketKey = localDate.toISOString().slice(0, 10);
-                return {
-                    bucketID: bucketKey,
-                    bucketKey,
-                    bucketUnit,
-                    timestamp: canonicalStart(bucketKey, bucketUnit, parts.timeZoneName),
                 };
             }
             return {
@@ -337,7 +325,7 @@
         const rows = (Array.isArray(servers) ? servers : []).flatMap(server => {
             const points = Array.isArray(server?.points) && server.points.length
                 ? server.points
-                : (server?.latest ? [server.latest] : []);
+                : [server?.latest || null];
             return points.map(point => [
                 String(server?.name || ""),
                 point?.captured_at_display || point?.captured_at || "",

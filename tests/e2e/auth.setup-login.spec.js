@@ -2100,7 +2100,9 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
-    const minimumVisibleGap = 7.5;
+    // Chromium can report an authored 8px gap almost 1px lower after Linux
+    // font metrics and subpixel rounding are applied.
+    const minimumVisibleGap = 7;
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);

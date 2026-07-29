@@ -1201,6 +1201,86 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#disk-trend-chart .trend-point')).toHaveCount(4);
   });
 
+  test('observability CSV exports neutralize spreadsheet formulas', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 2, samples: 2 },
+      servers: [
+        {
+          name: '=HYPERLINK("https://example.invalid")',
+          samples: 1,
+          first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          points: [{ captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 }],
+        },
+        {
+          name: 'safe\r=2+2',
+          samples: 1,
+          first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          points: [{ captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 }],
+        },
+      ],
+    }));
+
+    await page.goto('/observability?window=24h');
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-health-csv').click();
+    const download = await downloadPromise;
+    const csv = fs.readFileSync(await download.path(), 'utf8');
+    expect(csv).toContain(`"'=HYPERLINK(""https://example.invalid"")"`);
+    expect(csv).not.toContain(`"=HYPERLINK(""https://example.invalid"")"`);
+    expect(csv).toContain('"safe\r=2+2"');
+  });
+
+  test('observability renders an unchanged disk delta without an increase label', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: 2 },
+      servers: [{
+        name: 'steady-disk',
+        samples: 2,
+        first: { captured_at: '2026-07-28T11:00:00Z', disk_free_kb: 1024 },
+        latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+        disk_free_delta_kb: 0,
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    const diskCell = page.locator('#health-trends-body tr').filter({ hasText: 'steady-disk' }).locator('td').nth(4);
+    await expect(diskCell).toHaveText('1 MB (unchanged)');
+    await expect(diskCell).not.toContainText('increase');
+  });
+
   test('observability charts, filters, shareable URL, pagination, and CSV scale an investigation', async ({ page }) => {
     await page.route('**/api/app-settings/timezone', route => fulfillJson(route, {
       timezone: 'America/Toronto',

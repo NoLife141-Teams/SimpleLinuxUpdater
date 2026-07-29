@@ -285,6 +285,29 @@
         return series;
     }
 
+    function projectSelectedHostTrendSeries(servers, selectedHost, metric, options = {}) {
+        const server = (Array.isArray(servers) ? servers : [])
+            .find(item => String(item?.name || "") === selectedHost);
+        if (!server) return [];
+        const bucketFor = createTrendBucketKeyer(options.window || "7d", options.timeZone || "UTC");
+        return (Array.isArray(server.points) ? server.points : [])
+            .filter(point => Number.isFinite(Date.parse(point?.captured_at || "")))
+            .map(point => {
+                const timestamp = String(point.captured_at);
+                const bucket = bucketFor(timestamp);
+                return {
+                    timestamp,
+                    lastObservedAt: timestamp,
+                    value: trendMetricValue(point, metric),
+                    samples: 1,
+                    observations: 1,
+                    bucketKey: bucket.bucketKey,
+                    bucketUnit: bucket.bucketUnit,
+                };
+            })
+            .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+    }
+
     function niceChartMaximum(value, integer) {
         if (!Number.isFinite(value) || value <= 0) return 1;
         const magnitude = 10 ** Math.floor(Math.log10(value));
@@ -495,7 +518,8 @@
                     const source = event.source === "trends" ? "trends" : "summary";
                     if (!pageVisible || sources[source].requestID !== null) return [];
                     generation += 1;
-                    return [requestSource(source, generation)];
+                    const retryHost = source === "trends" && knownHosts.length ? selectedHost : "";
+                    return [requestSource(source, generation, retryHost)];
                 }
                 case "timerFired":
                     return pageVisible ? startFullRefresh() : [];
@@ -566,11 +590,23 @@
             const health = projectHealthCollection(sources.trends.data?.servers, {
                 search, attention, sort, window: selectedWindow, page, nowMS: now(),
             });
+            const projectTrendSeries = metric => selectedHost
+                ? projectSelectedHostTrendSeries(
+                    sources.trends.data?.servers,
+                    selectedHost,
+                    metric,
+                    { window: selectedWindow, timeZone }
+                )
+                : projectFleetTrendSeries(
+                    sources.trends.data?.servers,
+                    metric,
+                    { window: selectedWindow, timeZone }
+                );
             const trendSeries = {
-                packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages", { window: selectedWindow, timeZone }),
-                security: projectFleetTrendSeries(sources.trends.data?.servers, "security", { window: selectedWindow, timeZone }),
-                disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk", { window: selectedWindow, timeZone }),
-                failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures", { window: selectedWindow, timeZone }),
+                packages: projectTrendSeries("packages"),
+                security: projectTrendSeries("security"),
+                disk: projectTrendSeries("disk"),
+                failures: projectTrendSeries("failures"),
             };
             return clone({
                 selectedWindow,

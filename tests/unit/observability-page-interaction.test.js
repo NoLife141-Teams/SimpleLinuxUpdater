@@ -180,6 +180,67 @@ test("valid deep-linked host is verified by the unfiltered result before loading
     assert.equal(filteredTrends.queryWindow, "24h");
 });
 
+test("trends retry validates an unresolved deep-linked host with an unfiltered request", () => {
+    const store = createStore({ window: "24h", host: "bogus" });
+    let effects = store.dispatch({ type: "pageShown" });
+    const initialTrends = effect(effects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceFailed",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        error: { kind: "http", status: 503 },
+    });
+
+    effects = store.dispatch({ type: "retrySource", source: "trends" });
+    const retry = effect(effects, "loadSource", "trends");
+    assert.equal(retry.host, "");
+    assert.equal(retry.unfiltered, true);
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: retry.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: retry.unfiltered,
+    });
+    assert.equal(store.getView().selectedHost, "");
+});
+
+test("selected host charts preserve every accepted observation", () => {
+    const store = createStore({ window: "24h", host: "alpha" });
+    const effects = store.dispatch({ type: "pageShown" });
+    const initialTrends = effect(effects, "loadSource", "trends");
+    const hostLoadEffects = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: true,
+    });
+    const filteredTrends = effect(hostLoadEffects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filteredTrends.requestID,
+        data: {
+            servers: [{
+                name: "alpha",
+                points: [
+                    { captured_at: "2026-07-29T10:05:00Z", package_count: 1 },
+                    { captured_at: "2026-07-29T10:45:00Z", package_count: 9 },
+                ],
+            }],
+        },
+    });
+
+    assert.deepEqual(
+        store.getView().trendSeries.packages.map(point => [point.timestamp, point.value]),
+        [
+            ["2026-07-29T10:05:00Z", 1],
+            ["2026-07-29T10:45:00Z", 9],
+        ]
+    );
+});
+
 test("fleet trend projection combines staggered host samples into app-local daily buckets", () => {
     const series = projectFleetTrendSeries([
         {

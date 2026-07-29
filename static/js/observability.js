@@ -87,6 +87,12 @@ let refreshTimeoutId = null;
             return Number.isFinite(disk) && disk > 0 ? disk : null;
         }
 
+        function formatDiskDeltaKB(value) {
+            const delta = Number(value);
+            if (!Number.isFinite(delta) || delta === 0) return 'unchanged';
+            return `${formatDiskKB(Math.abs(delta))} ${delta < 0 ? 'decrease' : 'increase'}`;
+        }
+
         function appendCell(tr, text, className = '') {
             const td = document.createElement('td');
             td.textContent = text;
@@ -697,7 +703,7 @@ let refreshTimeoutId = null;
                 const latestDisk = Number(latest.disk_free_kb || 0);
                 const firstDisk = Number(server.first?.disk_free_kb || 0);
                 const diskText = latestDisk > 0
-                    ? `${formatDiskKB(latestDisk)}${firstDisk > 0 ? ` (${formatDiskKB(Math.abs(server.disk_free_delta_kb || 0))} ${Number(server.disk_free_delta_kb || 0) < 0 ? 'decrease' : 'increase'})` : ''}`
+                    ? `${formatDiskKB(latestDisk)}${firstDisk > 0 ? ` (${formatDiskDeltaKB(server.disk_free_delta_kb)})` : ''}`
                     : 'Unavailable';
                 appendTrendCell(tr, diskText, latestDisk > 0 ? '' : 'muted');
                 appendBadgeCell(tr, statusText(latest.apt_status), healthStatusBadgeState(latest.apt_status));
@@ -714,8 +720,9 @@ let refreshTimeoutId = null;
         }
 
         function csvValue(value) {
-            const text = String(value ?? '');
-            return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+            const raw = String(value ?? '');
+            const text = /^\s*[=+\-@]/.test(raw) ? `'${raw}` : raw;
+            return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
         }
 
         function downloadHealthCSV() {

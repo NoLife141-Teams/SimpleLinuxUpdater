@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/manage.css?v=edit-modal-spacing-20260719">
+    <link rel="stylesheet" href="/static/css/manage.css?v=observability-review-fixes-20260729">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -190,10 +190,14 @@
                             <option value="started">Started</option>
                             <option value="ignored">Ignored</option>
                         </select>
+                        <span id="audit-failure-cause-active" class="status-pill audit-filter-chip" hidden>
+                            Failure cause: <strong id="audit-failure-cause-value"></strong>
+                            <button class="btn-ghost inline-btn" id="audit-clear-failure-cause" type="button">Clear</button>
+                        </span>
                         <label class="sr-only" for="audit-from-filter">Audit from</label>
-                        <input type="datetime-local" id="audit-from-filter" aria-label="Audit from">
+                        <input type="datetime-local" id="audit-from-filter" aria-label="Audit from" step="1">
                         <label class="sr-only" for="audit-to-filter">Audit to</label>
-                        <input type="datetime-local" id="audit-to-filter" aria-label="Audit to">
+                        <input type="datetime-local" id="audit-to-filter" aria-label="Audit to" step="1">
                         <button class="btn-ghost inline-btn" id="audit-refresh" type="button">Refresh</button>
                         <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
                     </div>
@@ -355,6 +359,6 @@
     <script src="/static/js/manage-page-interaction.js?v=known-host-status-20260719"></script>
     <script src="/static/js/manage-modals.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=observability-review-20260729"></script>
+    <script src="/static/js/manage.js?v=observability-review-fixes-20260729"></script>
 </body>
 </html>

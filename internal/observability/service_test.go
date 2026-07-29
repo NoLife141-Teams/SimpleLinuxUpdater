@@ -61,6 +61,9 @@ func newTestDB(t *testing.T, name string) (*sql.DB, string) {
 func testHealthReader(latest func() (map[string]health.CollectedFacts, error)) health.Reader {
 	return health.ReaderFuncs{
 		LatestFunc: latest,
+		LatestSnapshotsFunc: func(string) (map[string]health.Snapshot, error) {
+			return map[string]health.Snapshot{}, nil
+		},
 		HistoryFunc: func(string, string, string) ([]health.Snapshot, error) {
 			return []health.Snapshot{}, nil
 		},
@@ -661,6 +664,141 @@ func TestServiceBuildHealthTrendsAggregatesActiveServers(t *testing.T) {
 	window, span, err := ParseHealthTrendWindow("24h")
 	if err != nil || window != "24h" || span != 24*time.Hour {
 		t.Fatalf("ParseHealthTrendWindow(24h) = %q/%s/%v, want 24h/24h/nil", window, span, err)
+	}
+}
+
+func TestServiceBuildHealthTrendsKeepsCompleteSelectedWindowSeries(t *testing.T) {
+	db, path := newTestDB(t, "health-trends-complete-series.db")
+	if err := health.EnsureServerFactsSchema(db); err != nil {
+		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	const sampleCount = 35
+	for index := range sampleCount {
+		insertHealthSnapshot(t, db, updates.HealthSnapshotRecord{
+			ServerName:   "srv-a",
+			CapturedAt:   now.Add(-time.Duration(sampleCount-index) * time.Minute).Format(time.RFC3339),
+			Source:       "facts",
+			PackageCount: index,
+		})
+	}
+	service := NewService(ServiceDeps{
+		DB:                    func() *sql.DB { return db },
+		DBPath:                func() string { return path },
+		HostHealthObservation: health.SQLiteObservation{DB: func() *sql.DB { return db }},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-a"}}, nil
+		},
+	})
+
+	trends, err := service.BuildHealthTrends("24h", "", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends() error = %v", err)
+	}
+	if len(trends.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one server", trends.Servers)
+	}
+	points := trends.Servers[0].Points
+	if len(points) != sampleCount {
+		t.Fatalf("points count = %d, want all %d selected-window observations", len(points), sampleCount)
+	}
+	if points[0].PackageCount != 0 || points[len(points)-1].PackageCount != sampleCount-1 {
+		t.Fatalf("points range = first %+v last %+v, want complete ordered series", points[0], points[len(points)-1])
+	}
+}
+
+func TestServiceBuildHealthTrendsExposesLastObservationOutsideSelectedWindow(t *testing.T) {
+	db, path := newTestDB(t, "health-trends-last-observation.db")
+	if err := health.EnsureServerFactsSchema(db); err != nil {
+		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	lastObservedAt := now.Add(-25 * time.Hour).Format(time.RFC3339)
+	repo := health.SQLiteObservation{DB: func() *sql.DB { return db }, Now: func() time.Time { return now }}
+	if err := repo.AcceptCollectedFacts(health.CollectedFacts{
+		ServerName:  "srv-stale",
+		CollectedAt: lastObservedAt,
+		DiskStatus:  "ok",
+		DiskFreeKB:  2048,
+		DiskTotalKB: 8192,
+		AptStatus:   "ok",
+	}); err != nil {
+		t.Fatalf("AcceptCollectedFacts() error = %v", err)
+	}
+	service := NewService(ServiceDeps{
+		DB:                    func() *sql.DB { return db },
+		DBPath:                func() string { return path },
+		HostHealthObservation: repo,
+		FormatTimestamp: func(raw string, _ *time.Location, _ string) (string, string) {
+			return "display:" + raw, "UTC"
+		},
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-stale"}}, nil
+		},
+	})
+
+	trends, err := service.BuildHealthTrends("24h", "", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends() error = %v", err)
+	}
+	if len(trends.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one server", trends.Servers)
+	}
+	server := trends.Servers[0]
+	if server.Samples != 0 || server.Latest != nil {
+		t.Fatalf("selected-window observations = %+v, want no 24h samples", server)
+	}
+	if server.LastObservation == nil || server.LastObservation.CapturedAt != lastObservedAt || server.LastObservation.CapturedAtDisplay != "display:"+lastObservedAt {
+		t.Fatalf("last observation = %+v, want %q and its display form", server.LastObservation, lastObservedAt)
+	}
+}
+
+func TestServiceBuildHealthTrendsUsesLatestMaintenanceObservationOutsideSelectedWindow(t *testing.T) {
+	db, path := newTestDB(t, "health-trends-last-maintenance-observation.db")
+	if err := health.EnsureServerFactsSchema(db); err != nil {
+		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	maintenanceAt := now.Add(-25 * time.Hour).Format(time.RFC3339)
+	collectedAt := maintenanceAt
+	repo := health.SQLiteObservation{DB: func() *sql.DB { return db }, Now: func() time.Time { return now }}
+	if err := repo.AcceptCollectedFacts(health.CollectedFacts{
+		ServerName:  "srv-stale",
+		CollectedAt: collectedAt,
+		DiskStatus:  "ok",
+		DiskFreeKB:  2048,
+		DiskTotalKB: 8192,
+		AptStatus:   "ok",
+	}); err != nil {
+		t.Fatalf("AcceptCollectedFacts() error = %v", err)
+	}
+	if err := repo.AcceptMaintenance(health.MaintenanceOutcome{
+		ServerName:  "srv-stale",
+		CompletedAt: maintenanceAt,
+		Kind:        health.MaintenanceKindUpdate,
+		Status:      "failure",
+	}); err != nil {
+		t.Fatalf("AcceptMaintenance() error = %v", err)
+	}
+	service := NewService(ServiceDeps{
+		DB:                    func() *sql.DB { return db },
+		DBPath:                func() string { return path },
+		HostHealthObservation: repo,
+		ServerSnapshot: func() ([]servers.Server, map[string]*servers.ServerStatus) {
+			return []servers.Server{{Name: "srv-stale"}}, nil
+		},
+	})
+
+	trends, err := service.BuildHealthTrends("24h", "", now)
+	if err != nil {
+		t.Fatalf("BuildHealthTrends() error = %v", err)
+	}
+	if len(trends.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one server", trends.Servers)
+	}
+	last := trends.Servers[0].LastObservation
+	if last == nil || last.CapturedAt != maintenanceAt || last.Source != "audit" || last.LastUpdateStatus != "failure" {
+		t.Fatalf("last observation = %+v, want latest maintenance observation at %q", last, maintenanceAt)
 	}
 }
 

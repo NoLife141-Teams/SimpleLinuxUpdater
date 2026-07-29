@@ -214,6 +214,7 @@ type HealthTrendServerSummary struct {
 	Samples            int                `json:"samples"`
 	Latest             *HealthTrendPoint  `json:"latest,omitempty"`
 	First              *HealthTrendPoint  `json:"first,omitempty"`
+	LastObservation    *HealthTrendPoint  `json:"last_observation,omitempty"`
 	PackageDelta       int                `json:"package_delta"`
 	SecurityDelta      int                `json:"security_delta"`
 	DiskFreeDeltaKB    int64              `json:"disk_free_delta_kb"`

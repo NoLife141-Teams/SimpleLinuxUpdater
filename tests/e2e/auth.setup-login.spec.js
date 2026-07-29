@@ -1090,8 +1090,8 @@ test.describe.serial('setup and login flows', () => {
     await ensureAuthenticatedSession(page);
     await page.route('**/api/observability/summary*', route => fulfillJson(route, {
       window: '24h',
-      from: '2026-07-28T12:00:00Z',
-      to: '2026-07-29T12:00:00Z',
+      from: '2026-07-28T12:00:37Z',
+      to: '2026-07-29T12:00:45Z',
       totals: { updates_total: 4, updates_success: 3, updates_failure: 1, success_rate_pct: 75 },
       duration: { avg_ms: 1250, samples_with_duration: 1, samples_without_duration: 3 },
       failure_causes: [{ cause: 'unknown', count: 1, servers: ['demo-host'] }],
@@ -1103,28 +1103,17 @@ test.describe.serial('setup and login flows', () => {
       to: '2026-07-29T12:00:00Z',
       generated_at: '2026-07-29T12:00:00Z',
       retention_days: 90,
-      fleet: { servers_with_samples: 1, samples: 2, update_failures: 1, scan_failures: 0 },
+      fleet: { servers_with_samples: 0, samples: 0, update_failures: 0, scan_failures: 0 },
       servers: [{
         name: 'demo-host',
-        samples: 2,
-        latest: {
+        samples: 0,
+        last_observation: {
           captured_at: '2026-07-26T11:00:00Z',
-          package_count: 4,
-          security_count: 2,
           disk_free_kb: 0,
           apt_status: 'ok',
           disk_status: 'unknown',
         },
-        first: {
-          captured_at: '2026-07-28T13:00:00Z',
-          package_count: 1,
-          security_count: 0,
-          disk_free_kb: 0,
-        },
-        package_delta: 3,
-        security_delta: 2,
-        disk_free_delta_kb: -119231880,
-        update_failures: 1,
+        update_failures: 0,
         scan_failures: 0,
         points: [],
       }],
@@ -1150,9 +1139,14 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#health-trends-body')).toContainText('Stale');
     await expect(page.locator('#health-trends-body')).not.toContainText('119231880');
     await expect(page.locator('#health-trends-body .health-signal-badge').nth(1)).toHaveClass(/status-unknown/);
-    await expect(page.locator('#failure-causes-body a[href*="failure_cause=unknown"]').first()).toHaveAttribute('href', /#audit-trail$/);
+    const failureCauseLink = page.locator('#failure-causes-body a[href*="failure_cause=unknown"]').first();
+    await expect(failureCauseLink).toHaveAttribute('href', /audit_from=2026-07-28T12%3A00%3A37Z/);
+    await expect(failureCauseLink).toHaveAttribute('href', /audit_to=2026-07-29T12%3A00%3A45Z/);
+    await expect(failureCauseLink).toHaveAttribute('href', /#audit-trail$/);
     const causeRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
-      && request.url().includes('failure_cause=unknown'));
+      && new URL(request.url()).searchParams.get('failure_cause') === 'unknown'
+      && new URL(request.url()).searchParams.get('from') === '2026-07-28T12:00:37Z'
+      && new URL(request.url()).searchParams.get('to') === '2026-07-29T12:00:45Z');
     await page.locator('#failure-causes-body a[href*="audit_target=demo-host"]').click();
     await causeRequest;
     await expect(page).toHaveURL(/\/manage\?/);
@@ -1160,6 +1154,13 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#audit-target-filter')).toHaveValue('demo-host');
     await expect(page.locator('#audit-action-filter')).toHaveValue('update.complete');
     await expect(page.locator('#audit-status-filter')).toHaveValue('failure');
+    await expect(page.locator('#audit-failure-cause-active')).toContainText('unknown');
+    const clearedCauseRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
+      && !new URL(request.url()).searchParams.has('failure_cause'));
+    await page.locator('#audit-clear-failure-cause').click();
+    await clearedCauseRequest;
+    await expect(page.locator('#audit-failure-cause-active')).toBeHidden();
+    await expect(page).not.toHaveURL(/failure_cause=/);
   });
 
   test('observability leaves unavailable disk intervals unconnected', async ({ page }) => {
@@ -1327,15 +1328,22 @@ test.describe.serial('setup and login flows', () => {
         { captured_at: '2026-07-29T11:00:00Z', package_count: 2, security_count: 1, disk_free_kb: 10485760, last_update_status: index === 0 ? 'failure' : 'success' },
       ],
     }));
-    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
-      window: '7d',
-      from: '2026-07-22T12:00:00Z',
-      to: '2026-07-29T12:00:00Z',
-      generated_at: '2026-07-29T12:00:00Z',
-      retention_days: 90,
-      fleet: { servers_with_samples: 28, samples: 56, update_failures: 2, scan_failures: 0 },
-      servers,
-    }));
+    let healthTrendRequestCount = 0;
+    await page.route('**/api/observability/health-trends*', route => {
+      healthTrendRequestCount += 1;
+      const responseServers = healthTrendRequestCount === 2
+        ? servers.map(server => ({ ...server, points: server.points.slice(1) }))
+        : servers;
+      return fulfillJson(route, {
+        window: '7d',
+        from: '2026-07-22T12:00:00Z',
+        to: '2026-07-29T12:00:00Z',
+        generated_at: '2026-07-29T12:00:00Z',
+        retention_days: 90,
+        fleet: { servers_with_samples: 28, samples: 56, update_failures: 2, scan_failures: 0 },
+        servers: responseServers,
+      });
+    });
 
     await page.goto('/observability?window=7d');
     await expect(page.locator('#observability-last-refresh')).toContainText('2026');
@@ -1353,6 +1361,7 @@ test.describe.serial('setup and login flows', () => {
     expect(packageLinePoints.trim().split(/\s+/)).toHaveLength(3);
     await expect(page.locator('.trend-chart-scope')).toHaveText(['Fleet total', 'Fleet total', 'Fleet total', 'Fleet total']);
     const packagePoint = page.locator('#package-trend-chart .trend-point').first();
+    await expect(packagePoint).toHaveAttribute('aria-label', /exact observation Jul 28, 2026, 07:00 EDT/);
     await packagePoint.hover();
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeVisible();
     await expect(page.locator('#package-trend-chart .trend-tooltip')).not.toHaveAttribute('style', /.+/);
@@ -1372,6 +1381,13 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeHidden();
     await packagePoint.focus();
     await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeVisible();
+    const focusedPointKey = await packagePoint.getAttribute('data-observability-focus-key');
+    expect(focusedPointKey).toBeTruthy();
+    await page.evaluate(() => {
+      executeEffects(observabilityInteraction.dispatch({ type: 'manualRefresh' }));
+    });
+    await expect(page.locator(`[data-observability-focus-key="${focusedPointKey}"]`)).toHaveCount(0);
+    await expect(page.locator('#package-trend-chart .trend-point')).toBeFocused();
     await page.locator('#health-trend-server').selectOption('prod-failing');
     await expect(page.locator('.trend-chart-scope')).toHaveText(['prod-failing', 'prod-failing', 'prod-failing', 'prod-failing']);
     await page.locator('#health-trend-server').selectOption('');

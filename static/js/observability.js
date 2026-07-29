@@ -164,6 +164,18 @@ let refreshTimeoutId = null;
             return raw;
         }
 
+        function failureInvestigationURL(summary, cause, serverName = '') {
+            const params = new URLSearchParams({
+                audit_action: 'update.complete',
+                audit_status: 'failure',
+                failure_cause: cause,
+            });
+            if (serverName) params.set('audit_target', serverName);
+            if (summary?.from) params.set('audit_from', summary.from);
+            if (summary?.to) params.set('audit_to', summary.to);
+            return `/manage?${params.toString()}#audit-trail`;
+        }
+
         function sourceError(error) {
             if (error?.name === 'AbortError') return { kind: 'aborted' };
             if (error?.kind) return error;
@@ -209,7 +221,48 @@ let refreshTimeoutId = null;
             return `${source === 'summary' ? 'Summary' : 'Health trends'} ${state.status === 'stale' ? 'is stale' : 'is unavailable'} (${detail})`;
         }
 
+        function focusedObservabilityKey() {
+            return document.activeElement?.getAttribute?.('data-observability-focus-key') || '';
+        }
+
+        function restoreObservabilityFocus(key) {
+            if (!key) return;
+            const target = Array.from(document.querySelectorAll('[data-observability-focus-key]'))
+                .find(element => element.getAttribute('data-observability-focus-key') === key);
+            if (target && document.activeElement !== target) {
+                target.focus({ preventScroll: true });
+                return;
+            }
+            const chartMatch = key.match(/^chart:([^:]+):(.+)$/);
+            if (chartMatch) {
+                const [, containerID, timestamp] = chartMatch;
+                const requestedTime = Date.parse(timestamp);
+                const candidates = Array.from(document.querySelectorAll(
+                    `[data-observability-focus-key^="chart:${containerID}:"]`
+                ));
+                const nearest = candidates.reduce((best, candidate) => {
+                    const candidateTime = Date.parse(candidate.getAttribute('data-observability-focus-key').slice(`chart:${containerID}:`.length));
+                    if (!Number.isFinite(candidateTime)) return best;
+                    if (!best || Math.abs(candidateTime - requestedTime) < best.distance) {
+                        return { element: candidate, distance: Math.abs(candidateTime - requestedTime) };
+                    }
+                    return best;
+                }, null);
+                const fallback = nearest?.element || document.getElementById(containerID);
+                fallback?.focus({ preventScroll: true });
+                return;
+            }
+            if (key.startsWith('health-host:')) {
+                healthSearch.focus({ preventScroll: true });
+                return;
+            }
+            if (key.startsWith('failure-cause:')) {
+                document.getElementById('export-failures-csv')?.focus({ preventScroll: true });
+            }
+        }
+
         function renderAcceptedView() {
+            const focusKey = focusedObservabilityKey();
             const view = observabilityInteraction.getView();
             windowSelect.value = view.selectedWindow;
             healthSearch.value = view.search;
@@ -243,6 +296,7 @@ let refreshTimeoutId = null;
                 lastRefresh.title = formatted.title || latestAccepted;
             }
             updateShareableURL(view);
+            restoreObservabilityFocus(focusKey);
         }
 
         function updateShareableURL(view) {
@@ -328,8 +382,9 @@ let refreshTimeoutId = null;
                     const causeCell = document.createElement('td');
                     const rawCause = String(row?.cause || 'unknown');
                     const link = document.createElement('a');
-                    link.href = `/manage?audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}#audit-trail`;
+                    link.href = failureInvestigationURL(summary, rawCause);
                     link.textContent = describeFailureCause(rawCause);
+                    link.setAttribute('data-observability-focus-key', `failure-cause:${rawCause}`);
                     causeCell.appendChild(link);
                     if (!rawCause || rawCause === 'unknown') {
                         const quality = document.createElement('span');
@@ -345,8 +400,9 @@ let refreshTimeoutId = null;
                         servers.forEach((server, index) => {
                             if (index) serverLinks.append(', ');
                             const serverLink = document.createElement('a');
-                            serverLink.href = `/manage?audit_target=${encodeURIComponent(server)}&audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}#audit-trail`;
+                            serverLink.href = failureInvestigationURL(summary, rawCause, server);
                             serverLink.textContent = server;
+                            serverLink.setAttribute('data-observability-focus-key', `failure-cause:${rawCause}:server:${server}`);
                             serverLinks.appendChild(serverLink);
                         });
                         causeCell.appendChild(serverLinks);
@@ -494,6 +550,7 @@ let refreshTimeoutId = null;
         function renderTrendChart(containerID, chart, options) {
             const container = document.getElementById(containerID);
             container.innerHTML = '';
+            container.setAttribute('tabindex', '-1');
             const points = Array.isArray(chart?.points) ? chart.points : [];
             if (points.length === 0) {
                 const empty = document.createElement('p');
@@ -595,9 +652,10 @@ let refreshTimeoutId = null;
                 circle.setAttribute('role', 'img');
                 circle.setAttribute(
                     'aria-label',
-                    `${options.label}: ${options.tooltipFormatter(point.value)}, ${formatTrendBucket(point)}, ${plural(point.samples, 'host')} represented, ${options.scope}`
+                    `${options.label}: ${options.tooltipFormatter(point.value)}, exact observation ${detailedTrendTimestamp(point.lastObservedAt || point.timestamp)}, ${formatTrendBucket(point)}, ${plural(point.samples, 'host')} represented, ${options.scope}`
                 );
                 circle.setAttribute('class', 'trend-point');
+                circle.setAttribute('data-observability-focus-key', `chart:${containerID}:${point.timestamp}`);
                 circle.addEventListener('mouseenter', () => showTooltip(point));
                 circle.addEventListener('mouseleave', hideTooltip);
                 circle.addEventListener('focus', () => showTooltip(point));
@@ -676,20 +734,23 @@ let refreshTimeoutId = null;
                 return;
             }
             visibleItems.forEach(server => {
-                const latest = server.latest || {};
+                const latest = server.latest || null;
+                const observation = latest || server.last_observation || null;
                 const tr = document.createElement('tr');
                 const hostCell = document.createElement('td');
                 const hostLink = document.createElement('a');
                 hostLink.href = `/manage?server=${encodeURIComponent(server.name || '')}#server-directory`;
                 hostLink.textContent = server.name || '-';
                 hostLink.title = `${server.samples || 0} health samples; open Server directory`;
+                hostLink.setAttribute('data-observability-focus-key', `health-host:${server.name || ''}`);
                 hostCell.appendChild(hostLink);
                 tr.appendChild(hostCell);
-                const hasObservation = Boolean(server.latest);
-                const captured = hasObservation ? (latest.captured_at_display || latest.captured_at || 'Unavailable') : 'Unavailable';
+                const hasWindowObservation = Boolean(latest);
+                const hasObservation = Boolean(observation);
+                const captured = hasObservation ? (observation.captured_at_display || observation.captured_at || 'Unavailable') : 'Unavailable';
                 const latestCell = document.createElement('td');
-                latestCell.textContent = `${captured}${latest.captured_at ? ` · ${formatRelativeTime(latest.captured_at)}` : ''}`;
-                latestCell.title = latest.captured_at || '';
+                latestCell.textContent = `${captured}${observation?.captured_at ? ` · ${formatRelativeTime(observation.captured_at)}` : ''}`;
+                latestCell.title = observation?.captured_at || '';
                 if (staleNames.includes(server.name)) {
                     latestCell.className = 'warning';
                     const stale = document.createElement('span');
@@ -698,22 +759,22 @@ let refreshTimeoutId = null;
                     latestCell.append(' ', stale);
                 }
                 tr.appendChild(latestCell);
-                appendTrendCell(tr, hasObservation ? `${latest.package_count || 0} · ${formatDelta(server.package_delta, 'package')}` : 'Unavailable');
-                appendTrendCell(tr, hasObservation ? `${latest.security_count || 0} · ${formatDelta(server.security_delta, 'security update')}` : 'Unavailable');
-                const latestDisk = Number(latest.disk_free_kb || 0);
+                appendTrendCell(tr, hasWindowObservation ? `${latest.package_count || 0} · ${formatDelta(server.package_delta, 'package')}` : 'Unavailable');
+                appendTrendCell(tr, hasWindowObservation ? `${latest.security_count || 0} · ${formatDelta(server.security_delta, 'security update')}` : 'Unavailable');
+                const latestDisk = Number(observation?.disk_free_kb || 0);
                 const firstDisk = Number(server.first?.disk_free_kb || 0);
                 const diskText = latestDisk > 0
-                    ? `${formatDiskKB(latestDisk)}${firstDisk > 0 ? ` (${formatDiskDeltaKB(server.disk_free_delta_kb)})` : ''}`
+                    ? `${formatDiskKB(latestDisk)}${hasWindowObservation && firstDisk > 0 ? ` (${formatDiskDeltaKB(server.disk_free_delta_kb)})` : ''}`
                     : 'Unavailable';
                 appendTrendCell(tr, diskText, latestDisk > 0 ? '' : 'muted');
-                appendBadgeCell(tr, statusText(latest.apt_status), healthStatusBadgeState(latest.apt_status));
-                appendBadgeCell(tr, statusText(latest.disk_status), healthStatusBadgeState(latest.disk_status));
+                appendBadgeCell(tr, statusText(observation?.apt_status), healthStatusBadgeState(observation?.apt_status));
+                appendBadgeCell(tr, statusText(observation?.disk_status), healthStatusBadgeState(observation?.disk_status));
                 const signals = [];
                 if (server.update_failures) signals.push(plural(server.update_failures, 'update failure'));
                 if (server.scan_failures) signals.push(plural(server.scan_failures, 'scan failure'));
                 if (server.reboot_seen) signals.push('Reboot required');
-                const signalText = hasObservation ? (signals.length ? signals.join(' · ') : 'No signals') : 'No observation';
-                const signalState = hasObservation ? (signals.length ? 'status-error' : 'status-success') : 'status-unknown';
+                const signalText = hasWindowObservation ? (signals.length ? signals.join(' · ') : 'No signals') : 'No observation in window';
+                const signalState = hasWindowObservation ? (signals.length ? 'status-error' : 'status-success') : 'status-unknown';
                 appendBadgeCell(tr, signalText, signalState);
                 body.appendChild(tr);
             });

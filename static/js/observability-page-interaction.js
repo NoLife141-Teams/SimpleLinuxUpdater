@@ -63,8 +63,9 @@
     }
 
     function observationIsStale(server, windowValue, nowMS) {
-        if (!server?.latest) return false;
-        const captured = Date.parse(server?.latest?.captured_at || "");
+        const observation = server?.latest || server?.last_observation;
+        if (!observation) return false;
+        const captured = Date.parse(observation.captured_at || "");
         if (!Number.isFinite(captured)) return true;
         const maximumAge = windowValue === "24h" ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000;
         return nowMS - captured > maximumAge;
@@ -76,7 +77,8 @@
         score += (Number(server.apt_problem_samples || 0) + Number(server.disk_problem_samples || 0)) * 20;
         if (server.reboot_seen) score += 10;
         if (observationIsStale(server, windowValue, nowMS)) score += 5;
-        if (!validDiskKB(server?.latest?.disk_free_kb)) score += 2;
+        const observation = server?.latest || server?.last_observation;
+        if (!validDiskKB(observation?.disk_free_kb)) score += 2;
         return score;
     }
 
@@ -86,7 +88,10 @@
         if (filter === "disk") return Number(server.disk_problem_samples || 0) > 0;
         if (filter === "reboot") return Boolean(server.reboot_seen);
         if (filter === "stale") return observationIsStale(server, windowValue, nowMS);
-        if (filter === "missing") return !server.latest || !validDiskKB(server.latest.disk_free_kb);
+        if (filter === "missing") {
+            const observation = server.latest || server.last_observation;
+            return !observation || !validDiskKB(observation.disk_free_kb);
+        }
         return true;
     }
 
@@ -101,11 +106,13 @@
             && matchesAttention(server, attention, windowValue, nowMS)
         );
         items.sort((left, right) => {
+            const leftObservation = left?.latest || left?.last_observation;
+            const rightObservation = right?.latest || right?.last_observation;
             if (sort === "name") return String(left.name || "").localeCompare(String(right.name || ""));
-            if (sort === "freshness") return Date.parse(right.latest?.captured_at || 0) - Date.parse(left.latest?.captured_at || 0);
+            if (sort === "freshness") return Date.parse(rightObservation?.captured_at || 0) - Date.parse(leftObservation?.captured_at || 0);
             if (sort === "packages") return Number(right.latest?.package_count || 0) - Number(left.latest?.package_count || 0);
             if (sort === "security") return Number(right.latest?.security_count || 0) - Number(left.latest?.security_count || 0);
-            if (sort === "disk") return Number(right.latest?.disk_free_kb || 0) - Number(left.latest?.disk_free_kb || 0);
+            if (sort === "disk") return Number(rightObservation?.disk_free_kb || 0) - Number(leftObservation?.disk_free_kb || 0);
             if (sort === "failures") {
                 return (Number(right.update_failures || 0) + Number(right.scan_failures || 0))
                     - (Number(left.update_failures || 0) + Number(left.scan_failures || 0));
@@ -346,16 +353,19 @@
             "Reboot required",
         ];
         const rows = (Array.isArray(servers) ? servers : []).flatMap(server => {
+            const hasWindowObservation = Boolean(
+                (Array.isArray(server?.points) && server.points.length) || server?.latest
+            );
             const points = Array.isArray(server?.points) && server.points.length
                 ? server.points
-                : [server?.latest || null];
+                : [server?.latest || server?.last_observation || null];
             return points.map(point => [
                 String(server?.name || ""),
                 point?.captured_at_display || point?.captured_at || "",
                 point?.captured_at || "",
                 point?.source || "",
-                point?.package_count ?? "",
-                point?.security_count ?? "",
+                hasWindowObservation ? (point?.package_count ?? "") : "",
+                hasWindowObservation ? (point?.security_count ?? "") : "",
                 validDiskKB(point?.disk_free_kb) ?? "",
                 validDiskKB(point?.disk_total_kb) ?? "",
                 point?.apt_status || "",

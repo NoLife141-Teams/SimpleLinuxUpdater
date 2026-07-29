@@ -16,6 +16,7 @@ const (
 
 type Reader interface {
 	Latest() (map[string]CollectedFacts, error)
+	LatestSnapshots(serverName string) (map[string]Snapshot, error)
 	History(from, to, serverName string) ([]Snapshot, error)
 	RetentionDays() (int, error)
 }
@@ -29,12 +30,16 @@ type Observation interface {
 }
 
 type ReaderFuncs struct {
-	LatestFunc        func() (map[string]CollectedFacts, error)
-	HistoryFunc       func(string, string, string) ([]Snapshot, error)
-	RetentionDaysFunc func() (int, error)
+	LatestFunc          func() (map[string]CollectedFacts, error)
+	LatestSnapshotsFunc func(string) (map[string]Snapshot, error)
+	HistoryFunc         func(string, string, string) ([]Snapshot, error)
+	RetentionDaysFunc   func() (int, error)
 }
 
 func (f ReaderFuncs) Latest() (map[string]CollectedFacts, error) { return f.LatestFunc() }
+func (f ReaderFuncs) LatestSnapshots(server string) (map[string]Snapshot, error) {
+	return f.LatestSnapshotsFunc(server)
+}
 func (f ReaderFuncs) History(from, to, server string) ([]Snapshot, error) {
 	return f.HistoryFunc(from, to, server)
 }
@@ -323,6 +328,68 @@ func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 			&record.AptStatus,
 			&record.AptDetails,
 			&reboot,
+			&record.RawJSON,
+		); err != nil {
+			return nil, err
+		}
+		if reboot.Valid {
+			required := reboot.Int64 != 0
+			record.RebootRequired = &required
+		}
+		records[record.ServerName] = record
+	}
+	return records, rows.Err()
+}
+
+func (r SQLiteObservation) LatestSnapshots(serverName string) (map[string]Snapshot, error) {
+	db := r.dbConn()
+	if db == nil {
+		return nil, errors.New("database is not initialized")
+	}
+	query := `
+		SELECT snapshot.id, snapshot.server_name, snapshot.captured_at, snapshot.source,
+		       snapshot.package_count, snapshot.security_count,
+		       snapshot.last_scan_status, snapshot.last_update_status,
+		       snapshot.disk_status, snapshot.disk_free_kb, snapshot.disk_total_kb,
+		       snapshot.apt_status, snapshot.reboot_required, snapshot.os_pretty_name,
+		       snapshot.raw_json
+		  FROM server_health_snapshots snapshot
+		 WHERE snapshot.id = (
+		       SELECT candidate.id
+		         FROM server_health_snapshots candidate
+		        WHERE candidate.server_name = snapshot.server_name
+		        ORDER BY candidate.captured_at DESC, candidate.id DESC
+		        LIMIT 1
+		       )`
+	args := []any{}
+	if strings.TrimSpace(serverName) != "" {
+		query += " AND snapshot.server_name = ?"
+		args = append(args, strings.TrimSpace(serverName))
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := map[string]Snapshot{}
+	for rows.Next() {
+		var record Snapshot
+		var reboot sql.NullInt64
+		if err := rows.Scan(
+			&record.ID,
+			&record.ServerName,
+			&record.CapturedAt,
+			&record.Source,
+			&record.PackageCount,
+			&record.SecurityCount,
+			&record.LastScanStatus,
+			&record.LastUpdateStatus,
+			&record.DiskStatus,
+			&record.DiskFreeKB,
+			&record.DiskTotalKB,
+			&record.AptStatus,
+			&reboot,
+			&record.OSPrettyName,
 			&record.RawJSON,
 		); err != nil {
 			return nil, err

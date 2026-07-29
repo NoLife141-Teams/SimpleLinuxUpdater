@@ -296,3 +296,6 @@
         width: 100%;
     }
 }
+.audit-filter-chip[hidden] {
+    display: none;
+}

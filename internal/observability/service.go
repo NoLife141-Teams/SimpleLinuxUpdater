@@ -65,6 +65,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			LatestFunc: func() (map[string]healthpkg.CollectedFacts, error) {
 				return map[string]healthpkg.CollectedFacts{}, nil
 			},
+			LatestSnapshotsFunc: func(string) (map[string]healthpkg.Snapshot, error) {
+				return map[string]healthpkg.Snapshot{}, nil
+			},
 			HistoryFunc: func(string, string, string) ([]healthpkg.Snapshot, error) {
 				return []healthpkg.Snapshot{}, nil
 			},
@@ -981,6 +984,21 @@ func healthTrendPointFromSnapshot(record updates.HealthSnapshotRecord, deps Serv
 	}
 }
 
+func healthTrendPointFromCollectedFacts(record healthpkg.CollectedFacts, deps ServiceDeps, loc *time.Location, timezoneName string) HealthTrendPoint {
+	display, _ := deps.FormatTimestamp(record.CollectedAt, loc, timezoneName)
+	return HealthTrendPoint{
+		CapturedAt:        record.CollectedAt,
+		CapturedAtDisplay: display,
+		Source:            "facts",
+		DiskStatus:        record.DiskStatus,
+		DiskFreeKB:        record.DiskFreeKB,
+		DiskTotalKB:       record.DiskTotalKB,
+		AptStatus:         record.AptStatus,
+		RebootRequired:    record.RebootRequired,
+		OSPrettyName:      record.OSPrettyName,
+	}
+}
+
 func trendStatusProblem(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "", "ok", "success", "none", "unknown":
@@ -999,11 +1017,19 @@ func trendFailure(status string) bool {
 	}
 }
 
-func trimTrendPoints(points []HealthTrendPoint, limit int) []HealthTrendPoint {
-	if limit <= 0 || len(points) <= limit {
-		return points
+func latestHealthObservation(collected, snapshot *HealthTrendPoint) *HealthTrendPoint {
+	if collected == nil {
+		return snapshot
 	}
-	return append([]HealthTrendPoint(nil), points[len(points)-limit:]...)
+	if snapshot == nil {
+		return collected
+	}
+	collectedTime, collectedErr := time.Parse(time.RFC3339, collected.CapturedAt)
+	snapshotTime, snapshotErr := time.Parse(time.RFC3339, snapshot.CapturedAt)
+	if collectedErr != nil || snapshotErr != nil || !snapshotTime.Before(collectedTime) {
+		return snapshot
+	}
+	return collected
 }
 
 func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Time) (HealthTrendResponse, error) {
@@ -1057,6 +1083,16 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 	if err != nil {
 		return HealthTrendResponse{}, err
 	}
+	latestCollectedFacts, latestErr := deps.HostHealthObservation.Latest()
+	if latestErr != nil {
+		deps.Logf("observability: failed to load last collected host facts: %v", latestErr)
+		latestCollectedFacts = map[string]healthpkg.CollectedFacts{}
+	}
+	latestSnapshots, latestSnapshotsErr := deps.HostHealthObservation.LatestSnapshots(filter)
+	if latestSnapshotsErr != nil {
+		deps.Logf("observability: failed to load last host health snapshots: %v", latestSnapshotsErr)
+		latestSnapshots = map[string]healthpkg.Snapshot{}
+	}
 	byServer := map[string][]HealthTrendPoint{}
 	for _, snapshot := range snapshots {
 		if _, ok := activeServers[snapshot.ServerName]; !ok {
@@ -1078,10 +1114,22 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 			continue
 		}
 		points := byServer[serverName]
+		var lastCollectedObservation *HealthTrendPoint
+		if facts, ok := latestCollectedFacts[serverName]; ok && strings.TrimSpace(facts.CollectedAt) != "" {
+			point := healthTrendPointFromCollectedFacts(facts, deps, loc, timezoneName)
+			lastCollectedObservation = &point
+		}
+		var lastSnapshotObservation *HealthTrendPoint
+		if snapshot, ok := latestSnapshots[serverName]; ok && strings.TrimSpace(snapshot.CapturedAt) != "" {
+			point := healthTrendPointFromSnapshot(snapshot, deps, loc, timezoneName)
+			lastSnapshotObservation = &point
+		}
+		lastObservation := latestHealthObservation(lastCollectedObservation, lastSnapshotObservation)
 		if len(points) == 0 {
 			response.Servers = append(response.Servers, HealthTrendServerSummary{
-				Name:   serverName,
-				Points: []HealthTrendPoint{},
+				Name:            serverName,
+				LastObservation: lastObservation,
+				Points:          []HealthTrendPoint{},
 			})
 			continue
 		}
@@ -1089,12 +1137,13 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 		summary := HealthTrendServerSummary{
 			Name:    serverName,
 			Samples: len(points),
-			Points:  trimTrendPoints(points, 30),
+			Points:  append([]HealthTrendPoint(nil), points...),
 		}
 		first := points[0]
 		latest := points[len(points)-1]
 		summary.First = &first
 		summary.Latest = &latest
+		summary.LastObservation = latestHealthObservation(lastObservation, &latest)
 		summary.PackageDelta = latest.PackageCount - first.PackageCount
 		summary.SecurityDelta = latest.SecurityCount - first.SecurityCount
 		if latest.DiskFreeKB > 0 && first.DiskFreeKB > 0 {

@@ -349,6 +349,17 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await fetchAuditEvents();
         });
         document.getElementById('audit-refresh').addEventListener('click', fetchAuditEvents);
+        document.getElementById('audit-clear-failure-cause').addEventListener('click', async () => {
+            managePageInteraction.dispatch({
+                type: 'auditQueryChanged',
+                patch: { failureCause: '', page: 1 },
+            });
+            const url = new URL(window.location.href);
+            url.searchParams.delete('failure_cause');
+            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+            renderAuditFailureCauseFilter();
+            await fetchAuditEvents();
+        });
         document.getElementById('audit-prune').addEventListener('click', async () => {
             if (!(await window.confirmTypedAction('Prune audit events older than the configured retention window?', 'PRUNE'))) {
                 return;
@@ -419,6 +430,36 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const parsed = new Date(raw);
             if (Number.isNaN(parsed.getTime())) return '';
             return parsed.toISOString();
+        }
+
+        function auditRFC3339ToDateTimeInput(value) {
+            const parsed = new Date(String(value || '').trim());
+            if (Number.isNaN(parsed.getTime())) return '';
+            const localTime = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+            return localTime.toISOString().slice(0, 19);
+        }
+
+        function hydrateAuditDateTimeInput(input, value) {
+            const raw = String(value || '').trim();
+            input.value = auditRFC3339ToDateTimeInput(raw);
+            input.dataset.initialRFC3339 = raw;
+            input.dataset.initialValue = input.value;
+        }
+
+        function auditDateTimeInputToRFC3339(input) {
+            if (input.value === input.dataset.initialValue && input.dataset.initialRFC3339) {
+                return input.dataset.initialRFC3339;
+            }
+            return auditDateTimeToRFC3339(input.value);
+        }
+
+        function renderAuditFailureCauseFilter() {
+            const container = document.getElementById('audit-failure-cause-active');
+            const value = document.getElementById('audit-failure-cause-value');
+            if (!container || !value) return;
+            const failureCause = managePageInteraction.getView().audit.query.failureCause;
+            container.hidden = !failureCause;
+            value.textContent = failureCause;
         }
 
         function prettyAuditMetadata(raw) {
@@ -494,6 +535,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const tbody = document.querySelector('#audit-table tbody');
             if (!tbody) return;
             const projection = managePageInteraction.getView().audit;
+            renderAuditFailureCauseFilter();
             tbody.innerHTML = '';
             if (!projection.items.length) {
                 const row = document.createElement('tr');
@@ -572,8 +614,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 action: document.getElementById('audit-action-filter').value.trim(),
                 status: document.getElementById('audit-status-filter').value,
                 failureCause: managePageInteraction.getView().audit.query.failureCause,
-                from: auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value),
-                to: auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value),
+                from: auditDateTimeInputToRFC3339(document.getElementById('audit-from-filter')),
+                to: auditDateTimeInputToRFC3339(document.getElementById('audit-to-filter')),
                 page: current.page,
                 pageSize: current.pageSize
             };
@@ -1310,10 +1352,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('audit-target-filter').value = manageDeepLink.get('audit_target') || "";
         document.getElementById('audit-action-filter').value = manageDeepLink.get('audit_action') || "";
         document.getElementById('audit-status-filter').value = manageDeepLink.get('audit_status') || "";
+        hydrateAuditDateTimeInput(document.getElementById('audit-from-filter'), manageDeepLink.get('audit_from'));
+        hydrateAuditDateTimeInput(document.getElementById('audit-to-filter'), manageDeepLink.get('audit_to'));
         managePageInteraction.dispatch({
             type: 'auditQueryChanged',
             patch: { failureCause: manageDeepLink.get('failure_cause') || "" },
         });
+        renderAuditFailureCauseFilter();
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();

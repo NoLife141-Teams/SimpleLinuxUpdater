@@ -372,11 +372,27 @@ test("health trend CSV projection exports every accepted point with explicit mis
             ],
         },
         { name: "missing", samples: 0, points: [] },
+        {
+            name: "stale",
+            samples: 0,
+            points: [],
+            last_observation: {
+                captured_at: "2026-07-20T11:00:00Z",
+                captured_at_display: "Jul 20, 2026, 07:00 EDT",
+                source: "facts",
+                package_count: 0,
+                security_count: 0,
+                disk_free_kb: 2048,
+                disk_total_kb: 8192,
+                apt_status: "ok",
+                disk_status: "ok",
+            },
+        },
     ]);
 
     assert.equal(projection.header[1], "Captured at app time");
     assert.equal(projection.header[2], "Captured at UTC");
-    assert.equal(projection.rows.length, 3);
+    assert.equal(projection.rows.length, 4);
     assert.deepEqual(projection.rows[0].slice(0, 4), [
         "alpha",
         "Jul 29, 2026, 06:00 EDT",
@@ -390,6 +406,16 @@ test("health trend CSV projection exports every accepted point with explicit mis
     assert.equal(projection.rows[1][12], "");
     assert.deepEqual(projection.rows[2], [
         "missing", "", "", "", "", "", "", "", "", "", "", "", "",
+    ]);
+    assert.deepEqual(projection.rows[3].slice(0, 8), [
+        "stale",
+        "Jul 20, 2026, 07:00 EDT",
+        "2026-07-20T11:00:00Z",
+        "facts",
+        "",
+        "",
+        2048,
+        8192,
     ]);
 });
 
@@ -473,7 +499,7 @@ test("storage labels adapt across KB, MB, GB, and TB", () => {
 
 test("health projection clamps pages and identifies stale observations deterministically", () => {
     const result = projectHealthCollection([
-        { name: "stale", latest: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 } },
+        { name: "stale", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 }, samples: 0, points: [] },
         { name: "fresh", latest: { captured_at: "2026-07-29T11:00:00Z", disk_free_kb: 100 } },
     ], {
         window: "24h",
@@ -486,10 +512,26 @@ test("health projection clamps pages and identifies stale observations determini
     assert.deepEqual(result.staleNames, ["stale"]);
 });
 
+test("freshness and disk sorts use the displayed last observation outside the window", () => {
+    const servers = [
+        { name: "older", last_observation: { captured_at: "2026-07-25T00:00:00Z", disk_free_kb: 2048 }, points: [] },
+        { name: "newer", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 1024 }, points: [] },
+    ];
+
+    assert.deepEqual(
+        projectHealthCollection(servers, { sort: "freshness" }).items.map(server => server.name),
+        ["newer", "older"]
+    );
+    assert.deepEqual(
+        projectHealthCollection(servers, { sort: "disk" }).items.map(server => server.name),
+        ["older", "newer"]
+    );
+});
+
 test("health projection distinguishes missing observations from stale observations", () => {
     const servers = [
         { name: "missing", samples: 0, points: [] },
-        { name: "stale", latest: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 } },
+        { name: "stale", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 }, samples: 0, points: [] },
     ];
     const options = {
         window: "24h",

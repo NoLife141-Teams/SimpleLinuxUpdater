@@ -1012,6 +1012,17 @@ test.describe.serial('setup and login flows', () => {
       }],
     }));
     await page.route('**/api/update-policies/*/overrides', route => fulfillJson(route, { items: [] }));
+    await page.route('**/api/update-policies/*/overrides/*', async route => {
+      state.policyOverrideSaveCount = (state.policyOverrideSaveCount || 0) + 1;
+      if (state.failPolicyOverrideSave) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'policy override unavailable' }),
+        });
+      }
+      return fulfillJson(route, { ok: true });
+    });
   }
 
   test('setup form shows mismatch error', async ({ page }) => {
@@ -3046,13 +3057,63 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
   });
 
+  test('failed policy override save keeps the accepted server editor open and dirty', async ({ page }) => {
+    const state = {
+      failPolicyOverrideSave: true,
+      servers: [{ ...makeServer('demo-host'), tags: ['prod'] }],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    const override = page.locator('#edit-policy-overrides input[data-policy-id="9"]');
+    await expect(override).toBeVisible();
+    await override.check();
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.policyOverrideSaveCount || 0).toBe(1);
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+  });
+
+  test('successful per-server-key creation clears the displayed filename', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    await page.locator('input[name="add-auth-method"][value="per-server-key"]').check();
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#trust-host-key').uncheck();
+    await page.locator('#key_file').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#server-key-file-selection')).toHaveText('id_ed25519');
+
+    await page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#server-key-file-selection')).toHaveText('No file selected');
+  });
+
   test('add-server validation failures render inline and focus the first invalid field', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await stubManageApi(page);
 
     await page.goto('/manage');
     await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
-    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+    const submit = page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true });
+    await submit.click();
 
     await expect(page.locator('#add-server-error')).toContainText('name, host, user required');
     await expect(page.locator('#name')).toHaveAttribute('aria-invalid', 'true');
@@ -3064,7 +3125,7 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#host').fill('new-host.example.test');
     await page.locator('#user').fill('root');
     await page.locator('#port').fill('70000');
-    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+    await submit.click();
 
     await expect(page.locator('#add-server-error')).toContainText('SSH port must be a whole number');
     await expect(page.locator('#port')).toHaveAttribute('aria-invalid', 'true');

@@ -41,6 +41,7 @@ function renderManageWorkspace() {
     document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
     document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
     document.getElementById("manage-summary-missing-auth").textContent = String(fleet.missing);
+    document.getElementById("manage-summary-unknown-auth").textContent = String(fleet.unknown);
     document.getElementById("manage-summary-host-trust").textContent = String(fleet.hostKeyAttention);
 
     renderAddAuthMethod();
@@ -121,7 +122,8 @@ function effectiveAuthLabel(value) {
         "per-server-key-and-password": "per-server SSH key and password",
         "global-key-and-password": "Global SSH Credential and password",
         password: "password",
-        missing: "no usable credential"
+        missing: "no usable credential",
+        unknown: "authentication status unknown"
     }[value] || "unknown authentication";
 }
 
@@ -530,7 +532,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 "global-key": ["Global SSH Credential", "pill"],
                 "per-server-key-and-password": ["Per-server key + password", "pill-warning"],
                 "global-key-and-password": ["Global SSH Credential + password", "pill-warning"],
-                missing: ["Missing credential", "pill-danger"]
+                missing: ["Missing credential", "pill-danger"],
+                unknown: ["Authentication unknown", "pill-warning"]
             };
             const trustLabels = {
                 trusted: "Host key trusted",
@@ -880,6 +883,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (keyFileInput) {
                     keyFileInput.value = '';
                     resetFileInputLabel(keyFileInput);
+                    document.getElementById('server-key-file-selection').textContent = 'No file selected';
                 }
                 e.target.reset();
                 managePageInteraction.dispatch({
@@ -1322,6 +1326,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                         window.notifyApp(message);
                         return;
                     }
+                    replacementKey.value = '';
+                    resetFileInputLabel(replacementKey);
+                    document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                    managePageInteraction.dispatch({
+                        type: 'editorCredentialIntentChanged',
+                        keyReplacement: false
+                    });
                 }
                 let overrideSaveError = null;
                 try {
@@ -1333,11 +1344,14 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 } catch (err) {
                     overrideSaveError = err;
                 }
+                if (overrideSaveError) {
+                    const message = `Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`;
+                    await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                    window.notifyApp(message);
+                    return;
+                }
                 await settleCommand('commandCompleted', execution.plan, 'Server saved.', { announce: false });
                 closeEditModal();
-                if (overrideSaveError) {
-                    window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
-                }
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to save server.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to save server.');

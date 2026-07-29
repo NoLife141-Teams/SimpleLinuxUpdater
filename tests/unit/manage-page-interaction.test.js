@@ -423,6 +423,7 @@ test("inventory projection explains effective and ambiguous authentication postu
         globalKey: 2,
         ambiguous: 2,
         missing: 0,
+        unknown: 0,
         trustedHostKeys: 3,
         hostKeyAttention: 2,
         needsAttention: 4
@@ -436,6 +437,37 @@ test("inventory projection explains effective and ambiguous authentication postu
     assert.equal(view.inventory.summary.missing, 2);
     assert.equal(view.inventory.summary.ambiguous, 1);
     assert.equal(view.inventory.summary.needsAttention, 4);
+});
+
+test("inventory projection preserves unknown Global SSH Credential availability", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [
+            { name: "unknown", host: "unknown.example", user: "root", host_key_status: "trusted" },
+            { name: "server-key", host: "key.example", user: "root", has_key: true, host_key_status: "trusted" }
+        ]
+    });
+
+    let view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "unknown");
+    assert.equal(view.inventory.allItems.find(server => server.name === "server-key").effectiveAuth, "per-server-key");
+    assert.equal(view.inventory.summary.unknown, 1);
+    assert.equal(view.inventory.summary.missing, 0);
+
+    const request = store.dispatch({ type: "snapshotRequested", stream: "globalKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "globalKey", requestID: request.requestID, error: "offline" });
+    view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "unknown");
+    assert.equal(view.inventory.summary.unknown, 1);
+    assert.equal(view.inventory.summary.missing, 0);
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "missing");
+    assert.equal(view.inventory.summary.unknown, 0);
+    assert.equal(view.inventory.summary.missing, 1);
 });
 
 test("server creation authentication choice is owned by Manage Page Interaction", () => {
@@ -501,6 +533,7 @@ test("editor command eligibility and credential intentions require a changed val
         type: "inventorySnapshotReceived",
         items: [{ name: "alpha", host: "alpha.example", user: "root", has_password: true }]
     });
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
     store.dispatch({ type: "editorOpened", name: "alpha" });
 
     let effects = store.dispatch({ type: "commandRequested", command: "saveEditor" });

@@ -12,6 +12,7 @@
         perServerKey: "per-server-key",
         globalKey: "global-key",
         missing: "missing",
+        unknown: "unknown",
         perServerKeyAndPassword: "per-server-key-and-password",
         globalKeyAndPassword: "global-key-and-password"
     });
@@ -130,6 +131,9 @@
             if (server.has_key) {
                 return server.has_password ? authentication.perServerKeyAndPassword : authentication.perServerKey;
             }
+            if (streams.globalKey.data === null) {
+                return authentication.unknown;
+            }
             if (globalKeyAvailable) {
                 return server.has_password ? authentication.globalKeyAndPassword : authentication.globalKey;
             }
@@ -154,6 +158,7 @@
                 globalKey: 0,
                 ambiguous: 0,
                 missing: 0,
+                unknown: 0,
                 trustedHostKeys: 0,
                 hostKeyAttention: 0,
                 needsAttention: 0
@@ -165,9 +170,10 @@
                 if (auth === authentication.globalKey) summary.globalKey++;
                 if (ambiguousAuthentication.has(auth)) summary.ambiguous++;
                 if (auth === authentication.missing) summary.missing++;
+                if (auth === authentication.unknown) summary.unknown++;
                 if (server.host_key_status === "trusted") summary.trustedHostKeys++;
                 else summary.hostKeyAttention++;
-                if (auth === authentication.missing || ambiguousAuthentication.has(auth) || server.host_key_status !== "trusted") summary.needsAttention++;
+                if (auth === authentication.missing || auth === authentication.unknown || ambiguousAuthentication.has(auth) || server.host_key_status !== "trusted") summary.needsAttention++;
             });
             return summary;
         }
@@ -191,7 +197,12 @@
             if (!filters.group) groups.set("", items);
             items.forEach(server => {
                 if (!filters.group) return;
-                const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "Global SSH Credential") : "no key") + " / " + (server.has_password ? "password" : "no password")];
+                const auth = effectiveAuth(server);
+                const keys = filters.group === "tag"
+                    ? (server.tags.length ? server.tags : ["untagged"])
+                    : [auth === authentication.unknown
+                        ? "authentication unknown"
+                        : ((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "Global SSH Credential") : "no key") + " / " + (server.has_password ? "password" : "no password")];
                 keys.forEach(key => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(server); });
             });
             return {

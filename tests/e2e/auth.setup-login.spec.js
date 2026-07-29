@@ -3291,4 +3291,45 @@ test.describe.serial('setup and login flows', () => {
     await expect(noScriptPage).toHaveURL('http://127.0.0.1:8080/manage');
     await noScriptContext.close();
   });
+
+  test('Manage Servers confines responsive overflow to data tables', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/manage');
+      await expect(page.locator('#manage-section-nav')).toBeVisible();
+      await expect(page.locator('#manage-section-directory-content')).toBeVisible();
+
+      const layout = await page.evaluate(() => ({
+        documentClientWidth: document.documentElement.clientWidth,
+        documentScrollWidth: document.documentElement.scrollWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+        sectionHeadDirections: Array.from(document.querySelectorAll('.manage-workspace-section .workspace-head'))
+          .map(element => getComputedStyle(element).flexDirection),
+        tables: Array.from(document.querySelectorAll('.manage-workspace-section .table-wrap')).map(element => ({
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          overflowX: getComputedStyle(element).overflowX,
+        })),
+      }));
+
+      expect(layout.documentScrollWidth, `${viewport.width}px document must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      expect(layout.bodyScrollWidth, `${viewport.width}px body must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      for (const table of layout.tables) {
+        expect(['auto', 'scroll']).toContain(table.overflowX);
+      }
+      if (viewport.width <= 640) {
+        expect(layout.sectionHeadDirections.every(direction => direction === 'column')).toBe(true);
+      }
+
+      await expect(page.getByRole('link', { name: /Add Server Create an SSH target/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
+    }
+  });
 });

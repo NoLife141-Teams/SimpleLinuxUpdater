@@ -109,9 +109,15 @@
             return effects;
         }
         function effectiveAuth(server) {
-            if (server.has_password) return "password";
             if (server.has_key) return "host-key";
-            return globalKeyAvailable ? "global-key" : "missing";
+            if (globalKeyAvailable) return "global-key";
+            return server.has_password ? "password" : "missing";
+        }
+        function effectiveAuthAfterCredentialClear(server, credential) {
+            if (credential !== "key" && server.has_key) return "host-key";
+            if (globalKeyAvailable) return "global-key";
+            if (credential !== "password" && server.has_password) return "password";
+            return "missing";
         }
         function projectedServer(server) {
             return { ...clone(server), effectiveAuth: effectiveAuth(server) };
@@ -124,7 +130,8 @@
                 globalKey: 0,
                 missing: 0,
                 trustedHostKeys: 0,
-                hostKeyAttention: 0
+                hostKeyAttention: 0,
+                needsAttention: 0
             };
             inventory.forEach(server => {
                 const auth = effectiveAuth(server);
@@ -134,6 +141,7 @@
                 if (auth === "missing") summary.missing++;
                 if (server.host_key_status === "trusted") summary.trustedHostKeys++;
                 else summary.hostKeyAttention++;
+                if (auth === "missing" || server.host_key_status !== "trusted") summary.needsAttention++;
             });
             return summary;
         }
@@ -208,7 +216,7 @@
         }
         function editorDirty() {
             if (!editor.open || !editor.originalDraft || !editor.draft) return false;
-            if (editor.draft.passwordReplacement) return true;
+            if (editor.draft.passwordReplacement || editor.keyReplacement) return true;
             const original = normalizedServerDraft(editor.originalDraft);
             const draft = normalizedServerDraft(editor.draft);
             if (JSON.stringify(original) !== JSON.stringify(draft)) return true;
@@ -223,6 +231,11 @@
             const draft = normalizedServerDraft(editor.draft || {});
             value.valid = !!draft.name && !!draft.host && !!draft.user;
             value.canSave = value.dirty && value.valid && !inFlightCommandScopes.has(`server:${editor.originalName}`);
+            const acceptedServer = inventory.find(server => server.name === editor.originalName) || {};
+            value.credentialOutcomes = {
+                clearPassword: effectiveAuthAfterCredentialClear(acceptedServer, "password"),
+                clearKey: effectiveAuthAfterCredentialClear(acceptedServer, "key")
+            };
             return value;
         }
         function projectedAudit() {
@@ -236,7 +249,12 @@
                 activeSection: workspace.activeSection,
                 sections: sectionDefinitions.map(section => {
                     let sectionSummary = "";
-                    if (section.id === "global-key") sectionSummary = globalKeyAvailable ? "Configured" : "Not configured";
+                    if (section.id === "global-key") {
+                        const stream = streams.globalKey;
+                        if (stream.lastError) sectionSummary = "Error";
+                        else if (stream.inFlight !== null || stream.data === null) sectionSummary = "Checking…";
+                        else sectionSummary = globalKeyAvailable ? "Configured" : "Not configured";
+                    }
                     if (section.id === "add-server") sectionSummary = "Create an SSH target";
                     if (section.id === "directory") sectionSummary = `${summary.total} ${summary.total === 1 ? "server" : "servers"}`;
                     if (section.id === "audit") sectionSummary = `${audit.total} recent ${audit.total === 1 ? "event" : "events"}`;
@@ -254,8 +272,11 @@
                 const errors = [!String(draft.name || "").trim() && "name", !String(draft.host || "").trim() && "host", !String(draft.user || "").trim() && "user"].filter(Boolean);
                 if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
                 if (command === "createServer") {
-                    const authMethod = String(payload.authMethod || (payload.hasKeyFile ? "host-key" : "password"));
-                    if (authMethod === "password" && !payload.hasPassword && inputRequiresExplicitAuth(payload)) {
+                    const authMethod = String(payload.authMethod || "");
+                    if (!["password", "host-key", "global-key"].includes(authMethod)) {
+                        return { enabled: false, reason: "Choose an authentication method.", invalidFields: ["auth"] };
+                    }
+                    if (authMethod === "password" && !payload.hasPassword) {
                         return { enabled: false, reason: "A password is required for password authentication.", invalidFields: ["pass"] };
                     }
                     if (authMethod === "host-key" && !payload.hasKeyFile) {
@@ -266,7 +287,8 @@
                     }
                     return { enabled: true, key, scope, command, payload: { ...draft, authMethod, trustHostKey: !!payload.trustHostKey, uploadKey: authMethod === "host-key" && !!payload.hasKeyFile } };
                 }
-                return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() } };
+                if (!editorDirty()) return { enabled: false, reason: "The server draft is unchanged." };
+                return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, keyReplacement: !!editor.keyReplacement, policyOverrides: policyOverrideChanges() } };
             }
             if (command === "trustHostKey") {
                 const hostKey = editor.hostKey;
@@ -274,9 +296,6 @@
                 return { enabled: true, key, scope, command, payload: { ...clone(hostKey), sessionID: editor.sessionID } };
             }
             return { enabled: true, key, scope, command, payload: clone(payload) };
-        }
-        function inputRequiresExplicitAuth(payload) {
-            return Object.prototype.hasOwnProperty.call(payload || {}, "authMethod");
         }
         function dispatch(event) {
             const input = event || {};
@@ -293,9 +312,10 @@
                 case "sectionCollapseToggled": if (workspace.collapsed[input.sectionID] !== undefined) workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID]; return [effect("render", { area: "workspace" })];
                 case "sectionActivated": if (workspace.collapsed[input.sectionID] !== undefined) workspace.activeSection = input.sectionID; return [effect("render", { area: "workspace" })];
                 case "sectionNavigationRequested": if (workspace.collapsed[input.sectionID] !== undefined) { workspace.activeSection = input.sectionID; workspace.collapsed[input.sectionID] = false; return [effect("render", { area: "workspace" }), effect("focusSection", { sectionID: input.sectionID })]; } return [];
-                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; const draft = { ...clone(server), tags: normalizeTags(server.tags) }; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), originalDraft: clone(draft), draft, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
+                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; const draft = { ...clone(server), tags: normalizeTags(server.tags) }; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), originalDraft: clone(draft), draft, keyReplacement: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
                 case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];
-                case "editorDiscarded": if (editor.open) { editor.draft = clone(editor.originalDraft); editor.policyContext.overrides = clone(editor.policyContext.originalOverrides); editor.hostKey = null; invalidateStream("hostKey"); } return [effect("render", { area: "editor" })];
+                case "editorCredentialIntentChanged": if (editor.open) editor.keyReplacement = !!input.keyReplacement; return [effect("render", { area: "editor" })];
+                case "editorDiscarded": if (editor.open) { editor.draft = clone(editor.originalDraft); editor.keyReplacement = false; editor.policyContext.overrides = clone(editor.policyContext.originalOverrides); editor.hostKey = null; invalidateStream("hostKey"); } return [effect("render", { area: "editor" })];
                 case "editorCloseRequested": return editorDirty() ? [effect("confirmEditorDiscard", { sessionID: editor.sessionID })] : [effect("closeEditor", { sessionID: editor.sessionID })];
                 case "editorIdentityAccepted": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.originalName = String(input.name || editor.originalName); return [effect("render", { area: "editor" })];
                 case "editorClosed": invalidateEditorStreams(); editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];

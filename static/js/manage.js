@@ -39,7 +39,7 @@ function renderManageWorkspace() {
     document.getElementById("manage-summary-total").textContent = String(fleet.total);
     document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.hostKey);
     document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
-    document.getElementById("manage-summary-attention").textContent = String(fleet.missing + fleet.hostKeyAttention);
+    document.getElementById("manage-summary-attention").textContent = String(fleet.needsAttention);
 
     const globalAuth = document.querySelector('input[name="add-auth-method"][value="global-key"]');
     const globalHelp = document.getElementById("global-auth-help");
@@ -112,6 +112,22 @@ function initializeManageWorkspace() {
 function activeEditorName() {
     const editor = managePageInteraction.getView().editor;
     return editor.open ? editor.originalName : "";
+}
+
+function effectiveAuthLabel(value) {
+    return {
+        "host-key": "per-server SSH key",
+        "global-key": "Global SSH Credential",
+        password: "password",
+        missing: "no usable credential"
+    }[value] || "unknown authentication";
+}
+
+function renderCredentialOutcomes() {
+    const outcome = document.getElementById("credential-outcome");
+    if (!outcome) return;
+    const editor = managePageInteraction.getView().editor;
+    outcome.textContent = `Clear Password → ${effectiveAuthLabel(editor.credentialOutcomes?.clearPassword)}. Clear Key → ${effectiveAuthLabel(editor.credentialOutcomes?.clearKey)}.`;
 }
 
 function commandExecution(command, payload = {}) {
@@ -826,6 +842,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 };
                 const selection = document.getElementById(selectionIDs[e.target.id]);
                 if (selection) selection.textContent = e.target.files?.[0]?.name || 'No file selected';
+                if (e.target.id === 'edit-key') {
+                    managePageInteraction.dispatch({
+                        type: 'editorCredentialIntentChanged',
+                        keyReplacement: !!e.target.files?.length
+                    });
+                    setEditSaveButtonState(false);
+                }
             }
         });
 
@@ -858,9 +881,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             document.getElementById('edit-user').value = current.user || '';
             document.getElementById('edit-tags').value = (current.tags || []).join(', ');
             document.getElementById('edit-pass').value = '';
-            document.getElementById('credential-outcome').textContent = current.effectiveAuth === 'global-key'
-                ? 'This server currently falls back to the Global SSH Credential.'
-                : `Current effective authentication: ${(current.effectiveAuth || 'missing').replace('-', ' ')}.`;
+            renderCredentialOutcomes();
             const keyInput = document.getElementById('edit-key');
             if (keyInput) {
                 keyInput.value = '';
@@ -1221,6 +1242,18 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
                 managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
+                const replacementKey = document.getElementById('edit-key');
+                if (accepted.keyReplacement && replacementKey?.files?.length) {
+                    const keyForm = new FormData();
+                    keyForm.append('key', replacementKey.files[0]);
+                    const keyResponse = await fetch(`/api/servers/${encodeURIComponent(accepted.name)}/key`, {
+                        method: 'POST',
+                        body: keyForm
+                    });
+                    if (!keyResponse.ok) {
+                        throw new Error(await parseErrorResponse(keyResponse, 'Server identity saved, but the replacement SSH key failed to upload.'));
+                    }
+                }
                 let overrideSaveError = null;
                 try {
                     const outcome = await managePolicyOverrides.save(accepted.name, accepted.policyOverrides);
@@ -1268,7 +1301,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function clearServerKey(name) {
-            if (!(await window.confirmAction('Clear this server SSH key? Effective authentication may fall back to its password or the Global SSH Credential.', { confirmLabel: 'Clear key' }))) return;
+            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearKey);
+            if (!(await window.confirmAction(`Clear this server SSH key? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear key' }))) return;
             const execution = commandExecution('clearServerKey', { serverName: name });
             if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
             try {
@@ -1282,7 +1316,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function clearServerPassword(name) {
-            if (!(await window.confirmAction('Clear this server password? Effective authentication may fall back to its per-server key or the Global SSH Credential.', { confirmLabel: 'Clear password' }))) return;
+            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearPassword);
+            if (!(await window.confirmAction(`Clear this server password? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear password' }))) return;
             const execution = commandExecution('clearServerPassword', { serverName: name });
             if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
             try {
@@ -1300,10 +1335,15 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('edit-discard').addEventListener('click', () => {
             managePageInteraction.dispatch({ type: 'editorDiscarded' });
             renderEditorFieldsFromView();
+            const keyInput = document.getElementById('edit-key');
+            keyInput.value = '';
+            resetFileInputLabel(keyInput);
+            document.getElementById('edit-key-file-selection').textContent = 'No file selected';
             clearEditValidationState();
             renderEditKnownHostState('stale');
             setEditHostKeyStatus('Draft restored. Refresh host trust if needed.');
             managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
+            renderCredentialOutcomes();
             setEditSaveButtonState(false);
         });
         document.getElementById('edit-save').addEventListener('click', saveServerEdit);
@@ -1432,6 +1472,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         async function uploadGlobalKey() {
             const input = document.getElementById('global-key-file');
             const feedback = document.getElementById('global-key-feedback');
+            const uploadButton = document.getElementById('upload-global-key-btn');
             if (!input || !input.files || input.files.length === 0) {
                 if (feedback) feedback.textContent = 'Select a private key file to upload.';
                 return;
@@ -1441,18 +1482,30 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
-            const res = await fetch('/api/keys/global', { method: 'POST', body: form });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to upload global key.');
-                if (feedback) feedback.textContent = data.error || 'Failed to upload Global SSH Credential.';
-                return;
+            const previousLabel = uploadButton?.textContent || 'Add Global Key';
+            if (feedback) feedback.textContent = 'Uploading Global SSH Credential…';
+            if (uploadButton) {
+                uploadButton.disabled = true;
+                uploadButton.textContent = 'Uploading…';
             }
-            await settleCommand('commandCompleted', execution.plan, 'Global key saved.');
-            if (feedback) feedback.textContent = 'Global SSH Credential saved.';
-            input.value = '';
-            resetFileInputLabel(input);
-            document.getElementById('global-key-file-selection').textContent = 'No file selected';
+            try {
+                const res = await fetch('/api/keys/global', { method: 'POST', body: form });
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to upload Global SSH Credential.'));
+                await settleCommand('commandCompleted', execution.plan, 'Global key saved.');
+                if (feedback) feedback.textContent = 'Global SSH Credential saved.';
+                input.value = '';
+                resetFileInputLabel(input);
+                document.getElementById('global-key-file-selection').textContent = 'No file selected';
+            } catch (error) {
+                const message = error?.message || 'Failed to upload Global SSH Credential.';
+                await settleCommand('commandFailed', execution.plan, message);
+                if (feedback) feedback.textContent = message;
+            } finally {
+                if (uploadButton && uploadButton.textContent === 'Uploading…') {
+                    uploadButton.textContent = previousLabel;
+                    uploadButton.disabled = false;
+                }
+            }
         }
 
         async function clearGlobalKey() {

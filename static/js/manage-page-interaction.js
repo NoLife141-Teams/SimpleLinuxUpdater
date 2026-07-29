@@ -7,6 +7,12 @@
 
     const pageSizes = new Set([10, 20, 25, 50, 100]);
     const streamNames = ["inventory", "globalKey", "audit", "policyContext", "hostKey"];
+    const sectionDefinitions = [
+        { id: "global-key", label: "Global SSH Credential", collapsed: true },
+        { id: "add-server", label: "Add Server", collapsed: true },
+        { id: "directory", label: "Server directory", collapsed: false },
+        { id: "audit", label: "Audit trail", collapsed: true }
+    ];
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -53,7 +59,11 @@
         let filters = defaultFilters();
         let sort = { key: "name", direction: "asc" };
         let page = 1;
-        let editor = { sessionID: 0, open: false, originalName: "", draft: null, hostKey: null, policyContext: emptyPolicyContext() };
+        let workspace = {
+            activeSection: "directory",
+            collapsed: Object.fromEntries(sectionDefinitions.map(section => [section.id, section.collapsed]))
+        };
+        let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
         let audit = { query: { targetName: "", action: "", status: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
@@ -98,6 +108,35 @@
             if (state.queued) { const queued = state.queued; state.queued = null; effects.push(...request(stream, queued)); }
             return effects;
         }
+        function effectiveAuth(server) {
+            if (server.has_password) return "password";
+            if (server.has_key) return "host-key";
+            return globalKeyAvailable ? "global-key" : "missing";
+        }
+        function projectedServer(server) {
+            return { ...clone(server), effectiveAuth: effectiveAuth(server) };
+        }
+        function inventorySummary() {
+            const summary = {
+                total: inventory.length,
+                password: 0,
+                hostKey: 0,
+                globalKey: 0,
+                missing: 0,
+                trustedHostKeys: 0,
+                hostKeyAttention: 0
+            };
+            inventory.forEach(server => {
+                const auth = effectiveAuth(server);
+                if (auth === "password") summary.password++;
+                if (auth === "host-key") summary.hostKey++;
+                if (auth === "global-key") summary.globalKey++;
+                if (auth === "missing") summary.missing++;
+                if (server.host_key_status === "trusted") summary.trustedHostKeys++;
+                else summary.hostKeyAttention++;
+            });
+            return summary;
+        }
         function projectedInventory() {
             const search = filters.search.toLowerCase();
             const tag = filters.tag.toLowerCase();
@@ -121,7 +160,16 @@
                 const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "global key") : "no key") + " / " + (server.has_password ? "password" : "no password")];
                 keys.forEach(key => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(server); });
             });
-            return { allItems: clone(inventory), items: clone(items), groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: clone(value) })), total: filtered.length, page: safePage, totalPages };
+            return {
+                allItems: inventory.map(projectedServer),
+                items: items.map(projectedServer),
+                groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: value.map(projectedServer) })),
+                total: filtered.length,
+                page: safePage,
+                totalPages,
+                activeFilterCount: ["search", "tag", "auth", "group"].filter(key => String(filters[key] || "").trim()).length,
+                summary: inventorySummary()
+            };
         }
         function normalizedServerDraft(value = {}) {
             return {
@@ -158,15 +206,43 @@
                 return [{ policyID, disabled: matches ? !!editor.policyContext.overrides[policyID] : false }];
             });
         }
+        function editorDirty() {
+            if (!editor.open || !editor.originalDraft || !editor.draft) return false;
+            if (editor.draft.passwordReplacement) return true;
+            const original = normalizedServerDraft(editor.originalDraft);
+            const draft = normalizedServerDraft(editor.draft);
+            if (JSON.stringify(original) !== JSON.stringify(draft)) return true;
+            return policyOverrideChanges().some(change => (
+                !!editor.policyContext.originalOverrides[change.policyID] !== !!change.disabled
+            ));
+        }
         function projectedEditor() {
             const value = clone(editor);
             value.policyContext.visiblePolicies = value.policyContext.policies.filter(policyMatchesDraft);
+            value.dirty = editorDirty();
+            const draft = normalizedServerDraft(editor.draft || {});
+            value.valid = !!draft.name && !!draft.host && !!draft.user;
+            value.canSave = value.dirty && value.valid && !inFlightCommandScopes.has(`server:${editor.originalName}`);
             return value;
         }
         function projectedAudit() {
             const value = clone(audit);
             value.selectedDetail = value.items.find(item => String(item.id) === value.selectedID) || null;
             return value;
+        }
+        function projectedWorkspace() {
+            const summary = inventorySummary();
+            return {
+                activeSection: workspace.activeSection,
+                sections: sectionDefinitions.map(section => {
+                    let sectionSummary = "";
+                    if (section.id === "global-key") sectionSummary = globalKeyAvailable ? "Configured" : "Not configured";
+                    if (section.id === "add-server") sectionSummary = "Create an SSH target";
+                    if (section.id === "directory") sectionSummary = `${summary.total} ${summary.total === 1 ? "server" : "servers"}`;
+                    if (section.id === "audit") sectionSummary = `${audit.total} recent ${audit.total === 1 ? "event" : "events"}`;
+                    return { id: section.id, label: section.label, collapsed: !!workspace.collapsed[section.id], summary: sectionSummary };
+                })
+            };
         }
         function commandPlan(command, payload = {}) {
             const target = String(payload.serverName || editor.originalName || "new").trim() || "new";
@@ -177,7 +253,20 @@
                 const draft = normalizedServerDraft(command === "createServer" ? payload : editor.draft);
                 const errors = [!String(draft.name || "").trim() && "name", !String(draft.host || "").trim() && "host", !String(draft.user || "").trim() && "user"].filter(Boolean);
                 if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
-                return { enabled: true, key, scope, command, payload: { ...draft, ...(command === "createServer" ? { trustHostKey: !!payload.trustHostKey, uploadKey: !!payload.hasKeyFile } : { originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() }) } };
+                if (command === "createServer") {
+                    const authMethod = String(payload.authMethod || (payload.hasKeyFile ? "host-key" : "password"));
+                    if (authMethod === "password" && !payload.hasPassword && inputRequiresExplicitAuth(payload)) {
+                        return { enabled: false, reason: "A password is required for password authentication.", invalidFields: ["pass"] };
+                    }
+                    if (authMethod === "host-key" && !payload.hasKeyFile) {
+                        return { enabled: false, reason: "Choose a per-server SSH key.", invalidFields: ["key"] };
+                    }
+                    if (authMethod === "global-key" && !globalKeyAvailable) {
+                        return { enabled: false, reason: "No Global SSH Credential is configured.", invalidFields: ["auth"] };
+                    }
+                    return { enabled: true, key, scope, command, payload: { ...draft, authMethod, trustHostKey: !!payload.trustHostKey, uploadKey: authMethod === "host-key" && !!payload.hasKeyFile } };
+                }
+                return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() } };
             }
             if (command === "trustHostKey") {
                 const hostKey = editor.hostKey;
@@ -185,6 +274,9 @@
                 return { enabled: true, key, scope, command, payload: { ...clone(hostKey), sessionID: editor.sessionID } };
             }
             return { enabled: true, key, scope, command, payload: clone(payload) };
+        }
+        function inputRequiresExplicitAuth(payload) {
+            return Object.prototype.hasOwnProperty.call(payload || {}, "authMethod");
         }
         function dispatch(event) {
             const input = event || {};
@@ -195,10 +287,16 @@
                     return received("inventory", input.requestID, { items: inventory });
                 case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
                 case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
+                case "filtersReset": filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
-                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
+                case "sectionCollapseToggled": if (workspace.collapsed[input.sectionID] !== undefined) workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID]; return [effect("render", { area: "workspace" })];
+                case "sectionActivated": if (workspace.collapsed[input.sectionID] !== undefined) workspace.activeSection = input.sectionID; return [effect("render", { area: "workspace" })];
+                case "sectionNavigationRequested": if (workspace.collapsed[input.sectionID] !== undefined) { workspace.activeSection = input.sectionID; workspace.collapsed[input.sectionID] = false; return [effect("render", { area: "workspace" }), effect("focusSection", { sectionID: input.sectionID })]; } return [];
+                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; const draft = { ...clone(server), tags: normalizeTags(server.tags) }; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), originalDraft: clone(draft), draft, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
                 case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];
+                case "editorDiscarded": if (editor.open) { editor.draft = clone(editor.originalDraft); editor.policyContext.overrides = clone(editor.policyContext.originalOverrides); editor.hostKey = null; invalidateStream("hostKey"); } return [effect("render", { area: "editor" })];
+                case "editorCloseRequested": return editorDirty() ? [effect("confirmEditorDiscard", { sessionID: editor.sessionID })] : [effect("closeEditor", { sessionID: editor.sessionID })];
                 case "editorIdentityAccepted": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.originalName = String(input.name || editor.originalName); return [effect("render", { area: "editor" })];
                 case "editorClosed": invalidateEditorStreams(); editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];
                 case "hostKeyReceived": if (editor.open && input.sessionID === editor.sessionID && input.host === String(editor.draft.host || "").trim() && normalizePort(input.port) === normalizePort(editor.draft.port)) editor.hostKey = { ...clone(input.hostKey), host: String(input.host), port: normalizePort(input.port) }; return received("hostKey", input.requestID, input.hostKey);
@@ -216,7 +314,7 @@
                 default: return [];
             }
         }
-        function getView() { return clone({ inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ workspace: projectedWorkspace(), inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

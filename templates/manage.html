@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/manage.css?v=edit-modal-spacing-20260719">
+    <link rel="stylesheet" href="/static/css/manage.css?v=admin-parity-20260728">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -26,105 +26,151 @@
                 </div>
             </section>
 
+            <nav class="manage-section-nav fade-in" id="manage-section-nav" aria-label="Manage Servers sections">
+                <div class="manage-section-nav-track">
+                    <a href="#manage-section-global-key" data-manage-section-link="global-key"><span>Global SSH Credential</span><small data-manage-section-nav-summary="global-key">Checking…</small></a>
+                    <a href="#manage-section-add-server" data-manage-section-link="add-server"><span>Add Server</span><small data-manage-section-nav-summary="add-server">Create an SSH target</small></a>
+                    <a href="#manage-section-directory" data-manage-section-link="directory" aria-current="location"><span>Server directory</span><small data-manage-section-nav-summary="directory">Loading inventory…</small></a>
+                    <a href="#manage-section-audit" data-manage-section-link="audit"><span>Audit trail</span><small data-manage-section-nav-summary="audit">Loading events…</small></a>
+                </div>
+            </nav>
+
+            <section class="metric-strip manage-summary fade-in" aria-label="Server inventory summary">
+                <article class="metric-item"><span>Total servers</span><strong id="manage-summary-total">0</strong><small>Registered SSH targets</small></article>
+                <article class="metric-item"><span>Host credentials</span><strong id="manage-summary-host-auth">0</strong><small>Password or per-server key</small></article>
+                <article class="metric-item"><span>Global fallback</span><strong id="manage-summary-global-auth">0</strong><small>Using the shared credential</small></article>
+                <article class="metric-item"><span>Needs attention</span><strong id="manage-summary-attention" class="bad">0</strong><small>Missing auth or host trust</small></article>
+            </section>
+
             <section class="manage-grid fade-in">
-                <article class="workspace global-key-panel">
+                <article class="workspace global-key-panel manage-workspace-section" id="manage-section-global-key" data-manage-section="global-key" aria-labelledby="manage-section-global-key-heading">
                     <div class="workspace-head">
                         <div>
                             <div class="eyebrow">Global key</div>
-                            <h2>Shared SSH access</h2>
-                        </div>
-                        <div class="global-key-head-meta">
-                            <div id="global-key-status" class="global-key-state is-checking" role="status" aria-live="polite" aria-atomic="true">Checking…</div>
+                            <h2 id="manage-section-global-key-heading" tabindex="-1">Shared SSH access</h2>
                             <p class="muted workspace-note">Use one SSH key for servers without a per-host key.</p>
                         </div>
+                        <div class="manage-section-controls">
+                            <div id="global-key-status" class="global-key-state is-checking" role="status" aria-live="polite" aria-atomic="true">Checking…</div>
+                            <span class="manage-section-summary" data-manage-section-summary="global-key" hidden>Checking…</span>
+                            <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="global-key" aria-expanded="false" aria-controls="manage-section-global-key-content">
+                                <span data-manage-section-toggle-label>Expand</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
+                            </button>
+                        </div>
                     </div>
-                    <div class="key-actions">
-                        <input class="file-input" type="file" id="global-key-file">
-                        <label class="file-btn" for="global-key-file">Choose global key</label>
-                        <button class="primary-action" id="upload-global-key-btn" type="button" disabled>Add Global Key</button>
-                        <button class="btn-danger" id="clear-global-key-btn" type="button" disabled title="No global key is configured">Clear Global Key</button>
+                    <div class="manage-section-content" id="manage-section-global-key-content" data-manage-section-content="global-key" hidden>
+                        <div class="key-actions">
+                            <input class="file-input" type="file" id="global-key-file">
+                            <label class="file-btn" for="global-key-file">Choose global key</label>
+                            <span class="file-selection muted" id="global-key-file-selection">No file selected</span>
+                            <button class="primary-action" id="upload-global-key-btn" type="button" disabled>Add Global Key</button>
+                            <button class="btn-danger" id="clear-global-key-btn" type="button" disabled title="No global key is configured">Clear Global Key</button>
+                        </div>
+                        <div class="form-feedback" id="global-key-feedback" role="status" aria-live="polite"></div>
                     </div>
                 </article>
 
-                <article class="workspace add-server-panel">
+                <article class="workspace add-server-panel manage-workspace-section" id="manage-section-add-server" data-manage-section="add-server" aria-labelledby="manage-section-add-server-heading">
                     <div class="workspace-head">
                         <div>
                             <div class="eyebrow">New host</div>
-                            <h2>Add server</h2>
+                            <h2 id="manage-section-add-server-heading" tabindex="-1">Add server</h2>
+                            <p class="muted workspace-note">Choose the credential explicitly, then register and verify the SSH target.</p>
                         </div>
-                        <p class="muted workspace-note">Auth is password or SSH key; a per-server key takes priority.</p>
+                        <div class="manage-section-controls">
+                            <span class="manage-section-summary" data-manage-section-summary="add-server" hidden>Create an SSH target</span>
+                            <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="add-server" aria-expanded="false" aria-controls="manage-section-add-server-content">
+                                <span data-manage-section-toggle-label>Expand</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
+                            </button>
+                        </div>
                     </div>
-                    <form id="add-server-form" class="add-server-form">
-                        <span class="muted form-note">Leave password and key empty only when the global SSH key should be used.</span>
-                        <div class="field">
-                            <label for="name">Name</label>
-                            <input type="text" id="name" placeholder="Name" required>
-                        </div>
-                        <div class="field">
-                            <label for="host">Host</label>
-                            <input type="text" id="host" placeholder="Host" required>
-                        </div>
-                        <div class="field">
-                            <label for="port">SSH Port</label>
-                            <input type="number" id="port" placeholder="SSH Port" min="1" max="65535">
-                        </div>
-                        <div class="field">
-                            <label for="user">User</label>
-                            <input type="text" id="user" placeholder="User" required>
-                        </div>
-                        <div class="field">
-                            <label for="pass">Password</label>
-                            <input type="password" id="pass" placeholder="Password (optional)">
-                        </div>
-                        <div class="field">
-                            <label for="tags">Tags</label>
-                            <input type="text" id="tags" placeholder="Tags (comma-separated)">
-                        </div>
-                        <label class="checkbox-inline"><input type="checkbox" id="trust-host-key" checked> Trust SSH host key now (confirm fingerprint)</label>
-                        <div class="form-actions">
-                            <button class="primary-action action-left" type="submit">Add Server</button>
-                            <div class="action-right">
+                    <div class="manage-section-content" id="manage-section-add-server-content" data-manage-section-content="add-server" hidden>
+                        <form id="add-server-form" class="add-server-form">
+                            <fieldset class="auth-method-fieldset">
+                                <legend>Authentication method</legend>
+                                <label><input type="radio" name="add-auth-method" value="password" checked> Password</label>
+                                <label><input type="radio" name="add-auth-method" value="host-key"> Per-server SSH key</label>
+                                <label id="global-auth-option"><input type="radio" name="add-auth-method" value="global-key" disabled> Global SSH Credential</label>
+                                <span class="muted" id="global-auth-help">Configure a Global SSH Credential to use this option.</span>
+                            </fieldset>
+                            <div class="field">
+                                <label for="name">Name</label>
+                                <input type="text" id="name" placeholder="Name" required>
+                            </div>
+                            <div class="field">
+                                <label for="host">Host</label>
+                                <input type="text" id="host" placeholder="Host" required>
+                            </div>
+                            <div class="field">
+                                <label for="port">SSH Port</label>
+                                <input type="number" id="port" placeholder="22" min="1" max="65535">
+                            </div>
+                            <div class="field">
+                                <label for="user">User</label>
+                                <input type="text" id="user" placeholder="User" required>
+                            </div>
+                            <div class="field" id="add-password-field">
+                                <label for="pass">Password</label>
+                                <input type="password" id="pass" placeholder="Password">
+                            </div>
+                            <div class="field">
+                                <label for="tags">Tags</label>
+                                <input type="text" id="tags" placeholder="Tags (comma-separated)">
+                            </div>
+                            <div class="field add-key-field" id="add-key-field" hidden>
+                                <label for="key_file">Per-server SSH key</label>
                                 <input class="file-input" type="file" id="key_file">
                                 <label class="file-btn" for="key_file">Choose host key</label>
+                                <span class="file-selection muted" id="host-key-file-selection">No file selected</span>
                             </div>
-                        </div>
-                    </form>
+                            <label class="checkbox-inline"><input type="checkbox" id="trust-host-key" checked> Trust SSH host key now after confirming its fingerprint</label>
+                            <div id="add-server-error" class="form-error full-width" role="alert" aria-live="assertive"></div>
+                            <div class="form-actions">
+                                <button class="primary-action action-left" type="submit">Add Server</button>
+                            </div>
+                        </form>
+                    </div>
                 </article>
             </section>
 
-            <section class="workspace fade-in section-spaced">
+            <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-directory" data-manage-section="directory" aria-labelledby="manage-section-directory-heading">
                 <div class="workspace-head">
                     <div>
                         <div class="eyebrow">Registry table</div>
-                        <h2>Server directory</h2>
+                        <h2 id="manage-section-directory-heading" tabindex="-1">Server directory</h2>
+                        <p class="muted workspace-note">Search, group, edit, and delete host entries without leaving the page.</p>
                     </div>
-                    <p class="muted workspace-note">Search, group, edit, and delete host entries without leaving the page.</p>
+                    <div class="manage-section-controls">
+                        <span class="manage-section-summary" data-manage-section-summary="directory" hidden>Loading inventory…</span>
+                        <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="directory" aria-expanded="true" aria-controls="manage-section-directory-content">
+                            <span data-manage-section-toggle-label>Collapse</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
+                        </button>
+                    </div>
                 </div>
+                <div class="manage-section-content" id="manage-section-directory-content" data-manage-section-content="directory">
                 <div class="control-strip">
-                    <div class="controls">
-                        <label class="sr-only" for="search">Search name, host, user, or tags</label>
-                        <input type="text" id="search" placeholder="Search name/host/user/tags">
-                        <label class="sr-only" for="tag-filter">Filter tag</label>
-                        <input type="text" id="tag-filter" placeholder="Filter tag">
-                        <label class="sr-only" for="auth-filter">Authentication</label>
-                        <select id="auth-filter" aria-label="Authentication">
+                    <div class="controls manage-filter-grid">
+                        <label class="filter-field" for="search"><span>Search</span><input type="text" id="search" placeholder="Name, host, user, or tag"></label>
+                        <label class="filter-field" for="tag-filter"><span>Tag</span><input type="text" id="tag-filter" placeholder="Exact tag or fragment"></label>
+                        <label class="filter-field" for="auth-filter"><span>Authentication</span><select id="auth-filter">
                             <option value="">All auth</option>
                             <option value="password">Has password</option>
                             <option value="key">Has key</option>
-                        </select>
-                        <label class="sr-only" for="group-by">Group by</label>
-                        <select id="group-by" aria-label="Group by">
+                        </select></label>
+                        <label class="filter-field" for="group-by"><span>Group by</span><select id="group-by">
                             <option value="">No grouping</option>
                             <option value="tag">Group by tag</option>
                             <option value="auth">Group by auth</option>
-                        </select>
-                        <label class="sr-only" for="page-size">Page size</label>
-                        <select id="page-size" aria-label="Page size">
+                        </select></label>
+                        <label class="filter-field" for="page-size"><span>Page size</span><select id="page-size">
+                            <option value="20">20 per page</option>
                             <option value="25">25 per page</option>
                             <option value="50">50 per page</option>
                             <option value="100">100 per page</option>
-                        </select>
+                        </select></label>
+                        <button class="btn-ghost inline-btn clear-filters-btn" id="clear-server-filters" type="button">Clear filters</button>
                     </div>
+                    <span class="muted filter-result" id="server-filter-result" role="status">Loading inventory…</span>
                 </div>
 
                 <div class="table-shell">
@@ -147,7 +193,7 @@
                                     <th class="sortable" data-sort-key="host"><button type="button" class="sort-header-btn" data-sort-trigger="host" aria-label="Sort by Host"><span class="col-title">Host</span></button></th>
                                     <th class="sortable" data-sort-key="user"><button type="button" class="sort-header-btn" data-sort-trigger="user" aria-label="Sort by User"><span class="col-title">User</span></button></th>
                                     <th class="sortable" data-sort-key="tags"><button type="button" class="sort-header-btn" data-sort-trigger="tags" aria-label="Sort by Tags"><span class="col-title">Tags</span></button></th>
-                                    <th>Auth</th>
+                                    <th>Access</th>
                                     <th class="actions-col">Actions</th>
                                 </tr>
                             </thead>
@@ -155,24 +201,29 @@
                         </table>
                     </div>
                 </div>
+                </div>
             </section>
 
-            <section class="workspace fade-in section-spaced" id="audit-trail">
+            <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-audit" data-manage-section="audit" aria-labelledby="manage-section-audit-heading">
                 <div class="workspace-head">
                     <div>
                         <div class="eyebrow">Activity history</div>
-                        <h2>Audit trail</h2>
+                        <h2 id="manage-section-audit-heading" tabindex="-1">Audit trail</h2>
+                        <p class="muted workspace-note">Tracks who did what and when. Entries older than 90 days are auto-pruned.</p>
                     </div>
-                    <p class="muted workspace-note">Tracks who did what and when. Entries older than 90 days are auto-pruned.</p>
+                    <div class="manage-section-controls">
+                        <span class="manage-section-summary" data-manage-section-summary="audit" hidden>Loading events…</span>
+                        <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="audit" aria-expanded="false" aria-controls="manage-section-audit-content">
+                            <span data-manage-section-toggle-label>Expand</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
+                        </button>
+                    </div>
                 </div>
+                <div class="manage-section-content" id="manage-section-audit-content" data-manage-section-content="audit" hidden>
                 <div class="control-strip">
-                    <div class="audit-controls">
-                        <label class="sr-only" for="audit-target-filter">Audit target name</label>
-                        <input type="text" id="audit-target-filter" placeholder="Target name">
-                        <label class="sr-only" for="audit-action-filter">Audit action</label>
-                        <input type="text" id="audit-action-filter" placeholder="Action (e.g. server.create)">
-                        <label class="sr-only" for="audit-action-preset">Action preset</label>
-                        <select id="audit-action-preset" aria-label="Action preset">
+                    <div class="audit-controls manage-filter-grid">
+                        <label class="filter-field" for="audit-target-filter"><span>Target</span><input type="text" id="audit-target-filter" placeholder="Target name"></label>
+                        <label class="filter-field" for="audit-action-filter"><span>Action</span><input type="text" id="audit-action-filter" placeholder="server.create"></label>
+                        <label class="filter-field" for="audit-action-preset"><span>Preset</span><select id="audit-action-preset">
                             <option value="">Action presets</option>
                             <option value="server.create">Server created</option>
                             <option value="server.update">Server updated</option>
@@ -181,20 +232,18 @@
                             <option value="update.approve">Update approved</option>
                             <option value="backup.restore">Backup restored</option>
                             <option value="auth.password.change">Password changed</option>
-                        </select>
-                        <label class="sr-only" for="audit-status-filter">Audit status</label>
-                        <select id="audit-status-filter" aria-label="Audit status">
+                        </select></label>
+                        <label class="filter-field" for="audit-status-filter"><span>Status</span><select id="audit-status-filter">
                             <option value="">All statuses</option>
                             <option value="success">Success</option>
                             <option value="failure">Failure</option>
                             <option value="started">Started</option>
                             <option value="ignored">Ignored</option>
-                        </select>
-                        <label class="sr-only" for="audit-from-filter">Audit from</label>
-                        <input type="datetime-local" id="audit-from-filter" aria-label="Audit from">
-                        <label class="sr-only" for="audit-to-filter">Audit to</label>
-                        <input type="datetime-local" id="audit-to-filter" aria-label="Audit to">
+                        </select></label>
+                        <label class="filter-field" for="audit-from-filter"><span>From</span><input type="datetime-local" id="audit-from-filter"></label>
+                        <label class="filter-field" for="audit-to-filter"><span>To</span><input type="datetime-local" id="audit-to-filter"></label>
                         <button class="btn-ghost inline-btn" id="audit-refresh" type="button">Refresh</button>
+                        <button class="btn-ghost inline-btn" id="audit-clear-filters" type="button">Clear filters</button>
                         <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
                     </div>
                 </div>
@@ -220,13 +269,13 @@
                                     <th>Target</th>
                                     <th>Status</th>
                                     <th>Message</th>
-                                    <th>Details</th>
-                                    <th>Report</th>
+                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
                         </table>
                     </div>
+                </div>
                 </div>
             </section>
         </main>
@@ -239,47 +288,64 @@
                     <div class="eyebrow">Server record</div>
                     <h3 id="edit-server-title">Edit Server</h3>
                 </div>
+                <button class="btn-ghost inline-btn modal-close-btn" id="edit-close" type="button" aria-label="Close server editor">Close</button>
             </div>
             <div class="modal-grid">
-                <div class="field">
-                    <label for="edit-name">Name</label>
-                    <input type="text" id="edit-name" placeholder="Name" required>
-                </div>
-                <div class="field">
-                    <label for="edit-host">Host</label>
-                    <input type="text" id="edit-host" placeholder="Host" required>
-                </div>
-                <div class="field">
-                    <label for="edit-port">SSH Port</label>
-                    <input type="number" id="edit-port" placeholder="SSH Port" min="1" max="65535">
-                </div>
-                <div class="field">
-                    <label for="edit-user">User</label>
-                    <input type="text" id="edit-user" placeholder="User" required>
-                </div>
-                <div class="field">
-                    <label for="edit-tags">Tags</label>
-                    <input type="text" id="edit-tags" placeholder="Tags (comma-separated)">
-                </div>
-                <div class="field">
-                    <label for="edit-pass">Password</label>
-                    <input type="password" id="edit-pass" placeholder="New password">
-                </div>
-                <div class="field">
-                    <label>&nbsp;</label>
-                    <button class="btn-danger" id="edit-clear-password" type="button">Clear Password</button>
-                </div>
+                <section class="edit-section full-width" aria-labelledby="edit-identity-heading">
+                    <div class="eyebrow" id="edit-identity-heading">Identity</div>
+                    <div class="edit-field-grid">
+                        <div class="field">
+                            <label for="edit-name">Name</label>
+                            <input type="text" id="edit-name" placeholder="Name" required>
+                        </div>
+                        <div class="field">
+                            <label for="edit-host">Host</label>
+                            <input type="text" id="edit-host" placeholder="Host" required>
+                        </div>
+                        <div class="field">
+                            <label for="edit-port">SSH Port</label>
+                            <input type="number" id="edit-port" placeholder="SSH Port" min="1" max="65535">
+                        </div>
+                        <div class="field">
+                            <label for="edit-user">User</label>
+                            <input type="text" id="edit-user" placeholder="User" required>
+                        </div>
+                        <div class="field full-width">
+                            <label for="edit-tags">Tags</label>
+                            <input type="text" id="edit-tags" placeholder="Tags (comma-separated)">
+                        </div>
+                    </div>
+                </section>
+                <section class="edit-section full-width" aria-labelledby="edit-credentials-heading">
+                    <div class="eyebrow" id="edit-credentials-heading">Credentials</div>
+                    <div class="edit-field-grid">
+                        <div class="field">
+                            <label for="edit-pass">Replacement password</label>
+                            <input type="password" id="edit-pass" placeholder="Leave empty to keep current password">
+                        </div>
+                        <div class="field">
+                            <label for="edit-key">Replacement SSH key</label>
+                            <input class="file-input" type="file" id="edit-key">
+                            <label class="file-btn small" for="edit-key">Choose key</label>
+                            <span class="file-selection muted" id="edit-key-file-selection">No file selected</span>
+                        </div>
+                    </div>
+                    <div class="credential-actions">
+                        <button class="primary-action" id="edit-upload-key" type="button">Upload selected key</button>
+                    </div>
+                    <div class="credential-danger-zone" aria-label="Credential danger zone">
+                        <div>
+                            <strong>Credential danger zone</strong>
+                            <p class="muted" id="credential-outcome">Clearing a credential can change or remove effective authentication.</p>
+                        </div>
+                        <button class="btn-danger inline-btn" id="edit-clear-password" type="button">Clear Password</button>
+                        <button class="btn-danger inline-btn" id="edit-clear-key" type="button">Clear Key</button>
+                    </div>
+                </section>
                 <div class="policy-override-section full-width">
                     <div class="eyebrow">Scheduled update opt-outs</div>
                     <p class="muted">Policies targeting this server's tags can be disabled for this specific host.</p>
                     <div id="edit-policy-overrides" class="policy-override-list"></div>
-                </div>
-                <div class="key-section full-width">
-                    <div class="eyebrow">SSH key management</div>
-                    <input class="file-input" type="file" id="edit-key">
-                    <label class="file-btn small" for="edit-key">Choose key</label>
-                    <button class="primary-action" id="edit-upload-key" type="button">Upload Key</button>
-                    <button class="btn-danger" id="edit-clear-key" type="button">Clear Key</button>
                 </div>
                 <div class="known-host-section full-width">
                     <div class="known-host-section-head">
@@ -300,9 +366,11 @@
                 </div>
                 <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>
             </div>
-            <div class="modal-actions">
-                <button class="btn-ghost inline-btn" id="edit-cancel" type="button">Cancel</button>
-                <button class="primary-action inline-btn" id="edit-save" type="button">Save</button>
+            <div class="modal-actions edit-sticky-actions">
+                <span class="draft-state" id="edit-draft-state" role="status">No unsaved changes</span>
+                <button class="btn-ghost inline-btn" id="edit-discard" type="button" disabled>Discard</button>
+                <button class="btn-ghost inline-btn" id="edit-cancel" type="button">Close</button>
+                <button class="primary-action inline-btn" id="edit-save" type="button" disabled>Save Server</button>
             </div>
         </div>
     </div>
@@ -352,9 +420,9 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=known-host-status-20260719"></script>
+    <script src="/static/js/manage-page-interaction.js?v=admin-parity-20260728"></script>
     <script src="/static/js/manage-modals.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=scheduled-run-history-20260728a"></script>
+    <script src="/static/js/manage.js?v=admin-parity-20260728"></script>
 </body>
 </html>

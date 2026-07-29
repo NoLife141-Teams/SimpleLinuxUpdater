@@ -83,6 +83,38 @@ func newTestService(repo *fakeRepo, initial []Server) (*Service, *State, *[]Serv
 	return NewService(ServiceDeps{State: state, Repository: repo}), state, &servers, &statusMap
 }
 
+func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.T) {
+	tmpDir := t.TempDir()
+	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
+	if err := os.WriteFile(knownHostsPath, []byte("trusted.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc, _, _, _ := newTestService(&fakeRepo{}, []Server{
+		{Name: "trusted", Host: "trusted.example", Port: 22, User: "root"},
+		{Name: "missing", Host: "missing.example", Port: 2222, User: "root"},
+	})
+	svc.deps.KnownHosts = KnownHostsDeps{
+		Getenv: func(key string) string {
+			if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+				return knownHostsPath
+			}
+			return ""
+		},
+		KnownHostsMu: &sync.Mutex{},
+	}
+
+	statuses := svc.ListStatuses()
+	if len(statuses) != 2 {
+		t.Fatalf("ListStatuses() length = %d, want 2", len(statuses))
+	}
+	if statuses[0].HostKeyStatus != "trusted" {
+		t.Errorf("trusted HostKeyStatus = %q, want trusted", statuses[0].HostKeyStatus)
+	}
+	if statuses[1].HostKeyStatus != "missing" {
+		t.Errorf("missing HostKeyStatus = %q, want missing", statuses[1].HostKeyStatus)
+	}
+}
+
 func TestServerInventoryServiceCRUDValidationAndRollback(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, _, stateServers, stateStatus := newTestService(repo, nil)

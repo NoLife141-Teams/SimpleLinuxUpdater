@@ -63,6 +63,7 @@ type ServerStatus struct {
 	UpgradePlan             UpgradePlan     `json:"upgrade_plan"`
 	HasPassword             bool            `json:"has_password"`
 	HasKey                  bool            `json:"has_key"`
+	HostKeyStatus           string          `json:"host_key_status"`
 	Tags                    []string        `json:"tags"`
 }
 

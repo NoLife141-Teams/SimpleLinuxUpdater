@@ -39,6 +39,40 @@ func TestOperatorPagesExposeAccessibleResponsiveShells(t *testing.T) {
 	}
 }
 
+func TestManagePageExposesStructuredInventoryWorkspace(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	cookie := app.authenticate(t)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/manage", nil)
+	request.AddCookie(cookie)
+	app.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /manage = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, contract := range []string{
+		`aria-label="Manage Servers sections"`,
+		`data-manage-section="global-key"`,
+		`data-manage-section="add-server"`,
+		`data-manage-section="directory"`,
+		`data-manage-section="audit"`,
+		`aria-label="Server inventory summary"`,
+		`name="add-auth-method" value="password"`,
+		`name="add-auth-method" value="host-key"`,
+		`name="add-auth-method" value="global-key"`,
+		`id="clear-server-filters"`,
+		`id="audit-clear-filters"`,
+		`id="edit-draft-state"`,
+		`id="edit-discard"`,
+		`aria-label="Close server editor"`,
+	} {
+		if !strings.Contains(body, contract) {
+			t.Errorf("GET /manage missing structured workspace contract %q", contract)
+		}
+	}
+	assertAccessibleHTML(t, "/manage", strings.NewReader(body))
+}
+
 func TestOperatorPagesRenderOneSharedApplicationShellContract(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	cookie := app.authenticate(t)

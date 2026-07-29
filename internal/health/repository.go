@@ -16,7 +16,7 @@ const (
 
 type Reader interface {
 	Latest() (map[string]CollectedFacts, error)
-	LatestSnapshots(serverName string) (map[string]Snapshot, error)
+	LatestObservations(serverName string) (map[string]Snapshot, error)
 	History(from, to, serverName string) ([]Snapshot, error)
 	RetentionDays() (int, error)
 }
@@ -30,15 +30,15 @@ type Observation interface {
 }
 
 type ReaderFuncs struct {
-	LatestFunc          func() (map[string]CollectedFacts, error)
-	LatestSnapshotsFunc func(string) (map[string]Snapshot, error)
-	HistoryFunc         func(string, string, string) ([]Snapshot, error)
-	RetentionDaysFunc   func() (int, error)
+	LatestFunc             func() (map[string]CollectedFacts, error)
+	LatestObservationsFunc func(string) (map[string]Snapshot, error)
+	HistoryFunc            func(string, string, string) ([]Snapshot, error)
+	RetentionDaysFunc      func() (int, error)
 }
 
 func (f ReaderFuncs) Latest() (map[string]CollectedFacts, error) { return f.LatestFunc() }
-func (f ReaderFuncs) LatestSnapshots(server string) (map[string]Snapshot, error) {
-	return f.LatestSnapshotsFunc(server)
+func (f ReaderFuncs) LatestObservations(server string) (map[string]Snapshot, error) {
+	return f.LatestObservationsFunc(server)
 }
 func (f ReaderFuncs) History(from, to, server string) ([]Snapshot, error) {
 	return f.HistoryFunc(from, to, server)
@@ -341,7 +341,7 @@ func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 	return records, rows.Err()
 }
 
-func (r SQLiteObservation) LatestSnapshots(serverName string) (map[string]Snapshot, error) {
+func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapshot, error) {
 	db := r.dbConn()
 	if db == nil {
 		return nil, errors.New("database is not initialized")
@@ -403,6 +403,60 @@ func (r SQLiteObservation) LatestSnapshots(serverName string) (map[string]Snapsh
 	return records, rows.Err()
 }
 
+func (r SQLiteObservation) LatestObservations(serverName string) (map[string]Snapshot, error) {
+	facts, err := r.Latest()
+	if err != nil {
+		return nil, err
+	}
+	snapshots, err := r.latestSnapshots(serverName)
+	if err != nil {
+		return nil, err
+	}
+	filter := strings.TrimSpace(serverName)
+	observations := make(map[string]Snapshot, len(snapshots))
+	for name, snapshot := range snapshots {
+		observations[name] = snapshot
+	}
+	for name, record := range facts {
+		if filter != "" && name != filter {
+			continue
+		}
+		candidate := snapshotFromCollectedFacts(record)
+		current, ok := observations[name]
+		if !ok || snapshotCapturedAfter(candidate, current) {
+			observations[name] = candidate
+		}
+	}
+	return observations, nil
+}
+
+func snapshotFromCollectedFacts(record CollectedFacts) Snapshot {
+	return Snapshot{
+		ServerName:     record.ServerName,
+		CapturedAt:     record.CollectedAt,
+		Source:         "facts",
+		DiskStatus:     record.DiskStatus,
+		DiskFreeKB:     record.DiskFreeKB,
+		DiskTotalKB:    record.DiskTotalKB,
+		AptStatus:      record.AptStatus,
+		RebootRequired: record.RebootRequired,
+		OSPrettyName:   record.OSPrettyName,
+		RawJSON:        record.RawJSON,
+	}
+}
+
+func snapshotCapturedAfter(candidate, current Snapshot) bool {
+	candidateTime, candidateErr := time.Parse(time.RFC3339, candidate.CapturedAt)
+	currentTime, currentErr := time.Parse(time.RFC3339, current.CapturedAt)
+	if candidateErr != nil {
+		return false
+	}
+	if currentErr != nil {
+		return true
+	}
+	return candidateTime.After(currentTime)
+}
+
 func (r SQLiteObservation) RenameServerTx(tx *sql.Tx, oldName, newName string) error {
 	if strings.TrimSpace(oldName) == "" || strings.TrimSpace(newName) == "" || oldName == newName {
 		return nil
@@ -423,33 +477,11 @@ func (r SQLiteObservation) DeleteServerTx(tx *sql.Tx, name string) error {
 }
 
 func (r SQLiteObservation) appendCollectedHistory(record CollectedFacts) error {
-	return r.saveHealthSnapshot(Snapshot{
-		ServerName:     record.ServerName,
-		CapturedAt:     record.CollectedAt,
-		Source:         "facts",
-		DiskStatus:     record.DiskStatus,
-		DiskFreeKB:     record.DiskFreeKB,
-		DiskTotalKB:    record.DiskTotalKB,
-		AptStatus:      record.AptStatus,
-		RebootRequired: record.RebootRequired,
-		OSPrettyName:   record.OSPrettyName,
-		RawJSON:        record.RawJSON,
-	})
+	return r.saveHealthSnapshot(snapshotFromCollectedFacts(record))
 }
 
 func (r SQLiteObservation) appendCollectedHistoryTx(tx *sql.Tx, record CollectedFacts) error {
-	return insertHealthSnapshot(tx, Snapshot{
-		ServerName:     record.ServerName,
-		CapturedAt:     record.CollectedAt,
-		Source:         "facts",
-		DiskStatus:     record.DiskStatus,
-		DiskFreeKB:     record.DiskFreeKB,
-		DiskTotalKB:    record.DiskTotalKB,
-		AptStatus:      record.AptStatus,
-		RebootRequired: record.RebootRequired,
-		OSPrettyName:   record.OSPrettyName,
-		RawJSON:        record.RawJSON,
-	})
+	return insertHealthSnapshot(tx, snapshotFromCollectedFacts(record))
 }
 
 func (r SQLiteObservation) saveHealthSnapshot(record Snapshot) error {

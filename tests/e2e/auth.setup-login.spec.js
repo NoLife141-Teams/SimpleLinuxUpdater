@@ -1055,6 +1055,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#summary-lifecycle')).toContainText('Current');
     await expect(page.locator('#trends-lifecycle')).toContainText('Unavailable');
     await expect(page.locator('#trends-lifecycle').getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(page.locator('#trend-hosts')).toHaveText('Unavailable');
+    await expect(page.locator('#health-trends-body')).toContainText('Host health unavailable');
   });
 
   test('observability keeps successful health trends when the summary is unavailable', async ({ page }) => {
@@ -1083,6 +1085,8 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/observability');
     await expect(page.locator('#summary-lifecycle')).toContainText('Unavailable');
     await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#kpi-success-rate')).toHaveText('Unavailable');
+    await expect(page.locator('#kpi-duration')).toHaveText('Unavailable');
     await expect(page.locator('#health-trends-body')).toContainText('healthy-host');
   });
 
@@ -1198,6 +1202,7 @@ test.describe.serial('setup and login flows', () => {
     }));
 
     await page.goto('/observability?window=24h');
+    await expect(page.locator('#kpi-duration')).toHaveText('No data');
     await expect(page.locator('#disk-trend-chart .trend-line')).toHaveCount(2);
     await expect(page.locator('#disk-trend-chart .trend-point')).toHaveCount(4);
   });

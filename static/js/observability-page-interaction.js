@@ -39,22 +39,47 @@
     function projectSourceLifecycle(source, state = {}) {
         const hasData = Boolean(state.data);
         const acceptedAt = state.data?.generated_at || state.data?.to || "";
+        let projection;
         if (state.status === "refreshing") {
-            return {
+            projection = {
                 state: hasData ? "refreshing" : "loading",
                 label: hasData ? "Refreshing" : "Loading",
                 acceptedAt,
                 detail: hasData ? "Last accepted data retained" : `Waiting for ${source === "summary" ? "update metrics" : "host health"}`,
                 retry: false,
             };
+        } else if (state.status === "fresh") {
+            projection = { state: "current", label: "Current", acceptedAt, detail: "Accepted data", retry: false };
+        } else if (state.status === "stale") {
+            projection = { state: "stale", label: "Stale", acceptedAt, detail: "Showing last accepted data", retry: true };
+        } else {
+            projection = { state: "unavailable", label: "Unavailable", acceptedAt: "", detail: "No accepted data", retry: true };
         }
-        if (state.status === "fresh") {
-            return { state: "current", label: "Current", acceptedAt, detail: "Accepted data", retry: false };
+        return {
+            ...projection,
+            empty: projectSourceEmpty(source, projection.state),
+        };
+    }
+
+    function projectSourceEmpty(source, lifecycleState) {
+        const loading = lifecycleState === "loading";
+        if (source === "summary") {
+            return {
+                stateLabel: loading ? "Loading" : "Unavailable",
+                detail: loading ? "Waiting for accepted update data" : "No accepted update data",
+                durationDetail: loading ? "Waiting for accepted duration data" : "No accepted duration data",
+                rangeLabel: loading ? "Loading update range." : "No accepted update range.",
+                tableMessage: loading ? "Loading update metrics." : "Update metrics unavailable.",
+            };
         }
-        if (state.status === "stale") {
-            return { state: "stale", label: "Stale", acceptedAt, detail: "Showing last accepted data", retry: true };
-        }
-        return { state: "unavailable", label: "Unavailable", acceptedAt: "", detail: "No accepted data", retry: true };
+        return {
+            stateLabel: loading ? "Loading" : "Unavailable",
+            detail: loading ? "Waiting for accepted data" : "No accepted data",
+            rangeLabel: loading ? "Loading host health range." : "No accepted host health range.",
+            retentionLabel: loading ? "Retention loading" : "Retention unavailable",
+            chartMessage: loading ? "Loading host health." : "Host health unavailable.",
+            tableMessage: loading ? "Loading host health." : "Host health unavailable.",
+        };
     }
 
     function validDiskKB(value) {
@@ -62,8 +87,12 @@
         return Number.isFinite(disk) && disk > 0 ? disk : null;
     }
 
+    function acceptedObservation(server) {
+        return server?.last_observation || server?.latest || null;
+    }
+
     function observationIsStale(server, windowValue, nowMS) {
-        const observation = server?.latest || server?.last_observation;
+        const observation = acceptedObservation(server);
         if (!observation) return false;
         const captured = Date.parse(observation.captured_at || "");
         if (!Number.isFinite(captured)) return true;
@@ -77,7 +106,7 @@
         score += (Number(server.apt_problem_samples || 0) + Number(server.disk_problem_samples || 0)) * 20;
         if (server.reboot_seen) score += 10;
         if (observationIsStale(server, windowValue, nowMS)) score += 5;
-        const observation = server?.latest || server?.last_observation;
+        const observation = acceptedObservation(server);
         if (!validDiskKB(observation?.disk_free_kb)) score += 2;
         return score;
     }
@@ -89,10 +118,72 @@
         if (filter === "reboot") return Boolean(server.reboot_seen);
         if (filter === "stale") return observationIsStale(server, windowValue, nowMS);
         if (filter === "missing") {
-            const observation = server.latest || server.last_observation;
+            const observation = acceptedObservation(server);
             return !observation || !validDiskKB(observation.disk_free_kb);
         }
         return true;
+    }
+
+    function projectHealthStatus(value) {
+        const label = String(value || "").trim() || "unknown";
+        const normalized = label.toLowerCase();
+        if (normalized === "ok") return { label, state: "status-success" };
+        if (normalized === "unknown") return { label, state: "status-unknown" };
+        return { label, state: "status-error" };
+    }
+
+    function countLabel(count, singular, pluralForm = `${singular}s`) {
+        return `${count} ${count === 1 ? singular : pluralForm}`;
+    }
+
+    function projectHealthRow(server, windowValue, nowMS) {
+        const latest = server?.latest || null;
+        const observation = acceptedObservation(server);
+        const hasWindowObservation = Boolean(latest);
+        const latestDiskKB = validDiskKB(observation?.disk_free_kb);
+        const firstDiskKB = validDiskKB(server?.first?.disk_free_kb);
+        const observationMatchesLatest = Boolean(
+            observation
+            && latest
+            && String(observation.captured_at || "") === String(latest.captured_at || "")
+        );
+        const signals = [];
+        if (Number(server?.update_failures || 0) > 0) {
+            signals.push(countLabel(Number(server.update_failures), "update failure"));
+        }
+        if (Number(server?.scan_failures || 0) > 0) {
+            signals.push(countLabel(Number(server.scan_failures), "scan failure"));
+        }
+        if (server?.reboot_seen) signals.push("Reboot required");
+        return {
+            name: String(server?.name || ""),
+            sampleCount: Number(server?.samples || 0),
+            observedAt: String(observation?.captured_at || ""),
+            observedAtDisplay: String(observation?.captured_at_display || observation?.captured_at || ""),
+            stale: observationIsStale(server, windowValue, nowMS),
+            packages: {
+                available: hasWindowObservation,
+                count: Number(latest?.package_count || 0),
+                delta: Number(server?.package_delta || 0),
+            },
+            security: {
+                available: hasWindowObservation,
+                count: Number(latest?.security_count || 0),
+                delta: Number(server?.security_delta || 0),
+            },
+            disk: {
+                available: latestDiskKB !== null,
+                freeKB: latestDiskKB || 0,
+                deltaAvailable: observationMatchesLatest && firstDiskKB !== null && validDiskKB(latest?.disk_free_kb) !== null,
+                deltaKB: observationMatchesLatest ? Number(server?.disk_free_delta_kb || 0) : 0,
+            },
+            apt: projectHealthStatus(observation?.apt_status),
+            diskStatus: projectHealthStatus(observation?.disk_status),
+            signals: {
+                label: hasWindowObservation ? (signals.length ? signals.join(" · ") : "No signals") : "No observation in window",
+                state: hasWindowObservation ? (signals.length ? "status-error" : "status-success") : "status-unknown",
+            },
+        };
     }
 
     function projectHealthCollection(servers, options = {}) {
@@ -106,8 +197,8 @@
             && matchesAttention(server, attention, windowValue, nowMS)
         );
         items.sort((left, right) => {
-            const leftObservation = left?.latest || left?.last_observation;
-            const rightObservation = right?.latest || right?.last_observation;
+            const leftObservation = acceptedObservation(left);
+            const rightObservation = acceptedObservation(right);
             if (sort === "name") return String(left.name || "").localeCompare(String(right.name || ""));
             if (sort === "freshness") return Date.parse(rightObservation?.captured_at || 0) - Date.parse(leftObservation?.captured_at || 0);
             if (sort === "packages") return Number(right.latest?.package_count || 0) - Number(left.latest?.package_count || 0);
@@ -123,14 +214,15 @@
         const pageSize = 25;
         const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
         const page = Math.min(Math.max(1, Number.parseInt(options.page, 10) || 1), pageCount);
+        const rows = items.map(server => projectHealthRow(server, windowValue, nowMS));
         return {
-            items,
-            visibleItems: items.slice((page - 1) * pageSize, page * pageSize),
+            rows,
+            visibleRows: rows.slice((page - 1) * pageSize, page * pageSize),
+            csv: projectHealthTrendCSV(items),
             total: items.length,
             page,
             pageCount,
             pageSize,
-            staleNames: items.filter(server => observationIsStale(server, windowValue, nowMS)).map(server => server.name),
         };
     }
 
@@ -358,7 +450,7 @@
             );
             const points = Array.isArray(server?.points) && server.points.length
                 ? server.points
-                : [server?.latest || server?.last_observation || null];
+                : [acceptedObservation(server)];
             return points.map(point => [
                 String(server?.name || ""),
                 point?.captured_at_display || point?.captured_at || "",

@@ -214,6 +214,58 @@ func TestObservationHealthSnapshotsAndRetention(t *testing.T) {
 	}
 }
 
+func TestHostHealthObservationLatestObservationsOwnsCurrentFactAndSnapshotPrecedence(t *testing.T) {
+	db, repo := openServerFactsTestRepository(t, "latest-observations.db")
+	if err := repo.AcceptCollectedFacts(CollectedFacts{
+		ServerName:  "srv-a",
+		CollectedAt: "2026-07-29T10:00:00Z",
+		DiskStatus:  "ok",
+		DiskFreeKB:  1024,
+		AptStatus:   "ok",
+	}); err != nil {
+		t.Fatalf("AcceptCollectedFacts() error = %v", err)
+	}
+	if err := repo.saveHealthSnapshot(Snapshot{
+		ServerName:       "srv-a",
+		CapturedAt:       "2026-07-29T11:00:00Z",
+		Source:           "audit",
+		LastUpdateStatus: "failure",
+		DiskStatus:       "critical",
+		DiskFreeKB:       512,
+		AptStatus:        "critical",
+	}); err != nil {
+		t.Fatalf("saveHealthSnapshot() error = %v", err)
+	}
+
+	observations, err := repo.LatestObservations("srv-a")
+	if err != nil {
+		t.Fatalf("LatestObservations() error = %v", err)
+	}
+	if got := observations["srv-a"]; got.CapturedAt != "2026-07-29T11:00:00Z" || got.Source != "audit" || got.LastUpdateStatus != "failure" {
+		t.Fatalf("latest observation = %+v, want newest maintenance snapshot", got)
+	}
+
+	if _, err := db.Exec(`
+		UPDATE server_facts
+		   SET collected_at = ?, disk_status = ?, disk_free_kb = ?, apt_status = ?
+		 WHERE server_name = ?`,
+		"2026-07-29T12:00:00Z",
+		"ok",
+		2048,
+		"ok",
+		"srv-a",
+	); err != nil {
+		t.Fatalf("update legacy current facts fixture: %v", err)
+	}
+	observations, err = repo.LatestObservations("srv-a")
+	if err != nil {
+		t.Fatalf("LatestObservations() after current facts error = %v", err)
+	}
+	if got := observations["srv-a"]; got.CapturedAt != "2026-07-29T12:00:00Z" || got.Source != "facts" || got.DiskFreeKB != 2048 {
+		t.Fatalf("latest observation = %+v, want newer current facts", got)
+	}
+}
+
 func TestServerFactsSaveWritesHealthSnapshot(t *testing.T) {
 	_, repo := openServerFactsTestRepository(t, "server-facts-snapshot.db")
 	if err := repo.AcceptCollectedFacts(CollectedFacts{

@@ -82,11 +82,6 @@ let refreshTimeoutId = null;
             return `${Math.abs(number)} ${noun} ${number > 0 ? 'increase' : 'decrease'}`;
         }
 
-        function validDiskKB(value) {
-            const disk = Number(value);
-            return Number.isFinite(disk) && disk > 0 ? disk : null;
-        }
-
         function formatDiskDeltaKB(value) {
             const delta = Number(value);
             if (!Number.isFinite(delta) || delta === 0) return 'unchanged';
@@ -270,7 +265,9 @@ let refreshTimeoutId = null;
             healthSort.value = view.sort;
             renderHealthTrendServerOptions(view.knownHosts, view.selectedHost);
             if (view.summary.data) renderSummary(view.summary.data);
+            else renderSummaryWithoutData(view.summaryLifecycle.empty);
             if (view.trends.data) renderHealthTrends(view.trends.data, view);
+            else renderHealthTrendsWithoutData(view.trendsLifecycle.empty);
             renderSourceLifecycle('summary', view.summaryLifecycle);
             renderSourceLifecycle('trends', view.trendsLifecycle);
             const errors = [errorMessage('summary', view.summary), errorMessage('trends', view.trends)].filter(Boolean);
@@ -333,6 +330,56 @@ let refreshTimeoutId = null;
             renderAcceptedView();
         }
 
+        function renderSummaryWithoutData(presentation) {
+            document.getElementById('kpi-success-rate-card').dataset.severity = 'neutral';
+            document.getElementById('kpi-success-icon').textContent = '—';
+            document.getElementById('kpi-success-rate').textContent = presentation.stateLabel;
+            document.getElementById('kpi-success-context').textContent = presentation.detail;
+            document.getElementById('kpi-total').textContent = presentation.stateLabel;
+            document.getElementById('kpi-duration-card').dataset.confidence = 'unavailable';
+            document.getElementById('kpi-duration').textContent = presentation.stateLabel;
+            document.getElementById('kpi-duration-samples').textContent = presentation.durationDetail;
+            rangeLabel.textContent = presentation.rangeLabel;
+            rangeLabel.title = '';
+            renderTableRows(document.getElementById('failure-causes-body'), [], presentation.tableMessage, () => {});
+            renderTableRows(document.getElementById('status-breakdown-body'), [], presentation.tableMessage, () => {});
+            document.getElementById('failure-breakdown-bars').innerHTML = '';
+            document.getElementById('status-breakdown-bars').innerHTML = '';
+        }
+
+        function renderHealthTrendsWithoutData(presentation) {
+            document.getElementById('trend-hosts').textContent = presentation.stateLabel;
+            document.getElementById('trend-samples').textContent = presentation.detail;
+            document.getElementById('trend-health-problems').textContent = presentation.stateLabel;
+            document.getElementById('trend-failures').textContent = presentation.stateLabel;
+            document.getElementById('trend-range-label').textContent = presentation.rangeLabel;
+            document.getElementById('trend-range-label').title = '';
+            document.getElementById('observability-retention').textContent = presentation.retentionLabel;
+            ['package', 'security', 'disk', 'failure'].forEach(key => {
+                document.getElementById(`${key}-chart-scope`).textContent = presentation.detail;
+                document.getElementById(`${key}-chart-summary`).textContent = presentation.stateLabel;
+                const container = document.getElementById(`${key}-trend-chart`);
+                container.innerHTML = '';
+                const message = document.createElement('p');
+                message.className = 'muted trend-chart-empty';
+                message.textContent = presentation.chartMessage;
+                container.appendChild(message);
+            });
+            const body = document.getElementById('health-trends-body');
+            body.innerHTML = '';
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 8;
+            cell.className = 'subtle';
+            cell.textContent = presentation.tableMessage;
+            row.appendChild(cell);
+            body.appendChild(row);
+            document.getElementById('health-result-count').textContent = '0 of 0 hosts';
+            document.getElementById('health-page-label').textContent = 'Page 1 of 1';
+            document.getElementById('health-previous-page').disabled = true;
+            document.getElementById('health-next-page').disabled = true;
+        }
+
         function renderSummary(summary) {
             const totals = summary?.totals || {};
             const duration = summary?.duration || {};
@@ -362,13 +409,14 @@ let refreshTimeoutId = null;
             document.getElementById('kpi-success-context').textContent =
                 totalRuns > 0 ? `${plural(successRuns, 'successful run')} · ${plural(failedRuns, 'failed run')}` : 'No update runs in selected window';
             document.getElementById('kpi-total').textContent = String(totalRuns);
-            document.getElementById('kpi-duration').textContent = formatDuration(avgMs);
             const durationCard = document.getElementById('kpi-duration-card');
             const confidence = window.ObservabilityPageInteraction.projectDurationConfidence({
                 samples: withDuration,
                 total: totalRuns,
             });
             durationCard.dataset.confidence = confidence.state;
+            document.getElementById('kpi-duration').textContent =
+                confidence.state === 'no-data' ? 'No data' : formatDuration(avgMs);
             document.getElementById('kpi-duration-samples').textContent =
                 `${confidence.label} · ${withDuration} of ${totalRuns} runs with duration · ${withoutDuration} missing`;
             rangeLabel.textContent = `Range: ${from.primary} to ${to.primary}`;
@@ -458,25 +506,6 @@ let refreshTimeoutId = null;
                 healthTrendServerSelect.appendChild(selectedOption);
             }
             healthTrendServerSelect.value = selected || '';
-        }
-
-        function statusText(value) {
-            const raw = String(value || '').trim();
-            return raw || 'unknown';
-        }
-
-        function healthStatusClass(value) {
-            const raw = String(value || '').trim().toLowerCase();
-            if (raw === 'ok') return 'ok';
-            if (!raw || raw === 'unknown') return '';
-            return 'bad';
-        }
-
-        function healthStatusBadgeState(value) {
-            const state = healthStatusClass(value);
-            if (state === 'ok') return 'status-success';
-            if (state === 'bad') return 'status-error';
-            return 'status-unknown';
         }
 
         function appendTrendCell(tr, text, className = '', title = '') {
@@ -718,12 +747,12 @@ let refreshTimeoutId = null;
 
             const body = document.getElementById('health-trends-body');
             body.innerHTML = '';
-            const { items, visibleItems, page, pageCount, staleNames } = view.health;
-            document.getElementById('health-result-count').textContent = `${visibleItems.length} of ${items.length} hosts`;
+            const { rows, visibleRows, page, pageCount } = view.health;
+            document.getElementById('health-result-count').textContent = `${visibleRows.length} of ${rows.length} hosts`;
             document.getElementById('health-page-label').textContent = `Page ${page} of ${pageCount}`;
             document.getElementById('health-previous-page').disabled = page <= 1;
             document.getElementById('health-next-page').disabled = page >= pageCount;
-            if (visibleItems.length === 0) {
+            if (visibleRows.length === 0) {
                 const tr = document.createElement('tr');
                 const td = document.createElement('td');
                 td.colSpan = 8;
@@ -733,25 +762,20 @@ let refreshTimeoutId = null;
                 body.appendChild(tr);
                 return;
             }
-            visibleItems.forEach(server => {
-                const latest = server.latest || null;
-                const observation = latest || server.last_observation || null;
+            visibleRows.forEach(row => {
                 const tr = document.createElement('tr');
                 const hostCell = document.createElement('td');
                 const hostLink = document.createElement('a');
-                hostLink.href = `/manage?server=${encodeURIComponent(server.name || '')}#server-directory`;
-                hostLink.textContent = server.name || '-';
-                hostLink.title = `${server.samples || 0} health samples; open Server directory`;
-                hostLink.setAttribute('data-observability-focus-key', `health-host:${server.name || ''}`);
+                hostLink.href = `/manage?server=${encodeURIComponent(row.name)}#server-directory`;
+                hostLink.textContent = row.name || '-';
+                hostLink.title = `${row.sampleCount} health samples; open Server directory`;
+                hostLink.setAttribute('data-observability-focus-key', `health-host:${row.name}`);
                 hostCell.appendChild(hostLink);
                 tr.appendChild(hostCell);
-                const hasWindowObservation = Boolean(latest);
-                const hasObservation = Boolean(observation);
-                const captured = hasObservation ? (observation.captured_at_display || observation.captured_at || 'Unavailable') : 'Unavailable';
                 const latestCell = document.createElement('td');
-                latestCell.textContent = `${captured}${observation?.captured_at ? ` · ${formatRelativeTime(observation.captured_at)}` : ''}`;
-                latestCell.title = observation?.captured_at || '';
-                if (staleNames.includes(server.name)) {
+                latestCell.textContent = `${row.observedAtDisplay || 'Unavailable'}${row.observedAt ? ` · ${formatRelativeTime(row.observedAt)}` : ''}`;
+                latestCell.title = row.observedAt;
+                if (row.stale) {
                     latestCell.className = 'warning';
                     const stale = document.createElement('span');
                     stale.className = 'status-pill pill-warning inline-quality-pill';
@@ -759,23 +783,15 @@ let refreshTimeoutId = null;
                     latestCell.append(' ', stale);
                 }
                 tr.appendChild(latestCell);
-                appendTrendCell(tr, hasWindowObservation ? `${latest.package_count || 0} · ${formatDelta(server.package_delta, 'package')}` : 'Unavailable');
-                appendTrendCell(tr, hasWindowObservation ? `${latest.security_count || 0} · ${formatDelta(server.security_delta, 'security update')}` : 'Unavailable');
-                const latestDisk = Number(observation?.disk_free_kb || 0);
-                const firstDisk = Number(server.first?.disk_free_kb || 0);
-                const diskText = latestDisk > 0
-                    ? `${formatDiskKB(latestDisk)}${hasWindowObservation && firstDisk > 0 ? ` (${formatDiskDeltaKB(server.disk_free_delta_kb)})` : ''}`
+                appendTrendCell(tr, row.packages.available ? `${row.packages.count} · ${formatDelta(row.packages.delta, 'package')}` : 'Unavailable');
+                appendTrendCell(tr, row.security.available ? `${row.security.count} · ${formatDelta(row.security.delta, 'security update')}` : 'Unavailable');
+                const diskText = row.disk.available
+                    ? `${formatDiskKB(row.disk.freeKB)}${row.disk.deltaAvailable ? ` (${formatDiskDeltaKB(row.disk.deltaKB)})` : ''}`
                     : 'Unavailable';
-                appendTrendCell(tr, diskText, latestDisk > 0 ? '' : 'muted');
-                appendBadgeCell(tr, statusText(observation?.apt_status), healthStatusBadgeState(observation?.apt_status));
-                appendBadgeCell(tr, statusText(observation?.disk_status), healthStatusBadgeState(observation?.disk_status));
-                const signals = [];
-                if (server.update_failures) signals.push(plural(server.update_failures, 'update failure'));
-                if (server.scan_failures) signals.push(plural(server.scan_failures, 'scan failure'));
-                if (server.reboot_seen) signals.push('Reboot required');
-                const signalText = hasWindowObservation ? (signals.length ? signals.join(' · ') : 'No signals') : 'No observation in window';
-                const signalState = hasWindowObservation ? (signals.length ? 'status-error' : 'status-success') : 'status-unknown';
-                appendBadgeCell(tr, signalText, signalState);
+                appendTrendCell(tr, diskText, row.disk.available ? '' : 'muted');
+                appendBadgeCell(tr, row.apt.label, row.apt.state);
+                appendBadgeCell(tr, row.diskStatus.label, row.diskStatus.state);
+                appendBadgeCell(tr, row.signals.label, row.signals.state);
                 body.appendChild(tr);
             });
         }
@@ -787,9 +803,7 @@ let refreshTimeoutId = null;
         }
 
         function downloadHealthCSV() {
-            const projection = window.ObservabilityPageInteraction.projectHealthTrendCSV(
-                observabilityInteraction.getView().health.items
-            );
+            const projection = observabilityInteraction.getView().health.csv;
             const csv = [projection.header, ...projection.rows].map(row => row.map(csvValue).join(',')).join('\n');
             downloadCSV(csv, `observability-health-${observabilityInteraction.getView().selectedWindow}.csv`);
         }

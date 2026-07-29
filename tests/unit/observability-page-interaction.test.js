@@ -85,6 +85,28 @@ test("partial failure is source-specific and keeps accepted data", () => {
     assert.equal(view.trends.error.status, 503);
 });
 
+test("source lifecycle projects loading and unavailable empty-state content", () => {
+    const store = createStore();
+    let view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Unavailable");
+    assert.equal(view.summaryLifecycle.empty.tableMessage, "Update metrics unavailable.");
+    assert.equal(view.trendsLifecycle.empty.chartMessage, "Host health unavailable.");
+
+    const effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const trends = effect(effects, "loadSource", "trends");
+    view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Loading");
+    assert.equal(view.summaryLifecycle.empty.durationDetail, "Waiting for accepted duration data");
+    assert.equal(view.trendsLifecycle.empty.retentionLabel, "Retention loading");
+
+    store.dispatch({ type: "sourceFailed", source: "summary", requestID: summary.requestID, error: { kind: "http", status: 503 } });
+    store.dispatch({ type: "sourceFailed", source: "trends", requestID: trends.requestID, error: { kind: "http", status: 503 } });
+    view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Unavailable");
+    assert.equal(view.trendsLifecycle.empty.tableMessage, "Host health unavailable.");
+});
+
 test("host selection refreshes trends only and filtered results preserve choices", () => {
     const store = createStore();
     let effects = store.dispatch({ type: "pageShown" });
@@ -509,7 +531,45 @@ test("health projection clamps pages and identifies stale observations determini
     });
 
     assert.equal(result.page, 1);
-    assert.deepEqual(result.staleNames, ["stale"]);
+    assert.deepEqual(result.rows.filter(row => row.stale).map(row => row.name), ["stale"]);
+});
+
+test("health row projection uses the accepted last observation for current host state", () => {
+    const result = projectHealthCollection([{
+        name: "alpha",
+        samples: 2,
+        first: { captured_at: "2026-07-29T08:00:00Z", disk_free_kb: 4096 },
+        latest: {
+            captured_at: "2026-07-29T09:00:00Z",
+            package_count: 4,
+            security_count: 2,
+            disk_free_kb: 2048,
+            apt_status: "critical",
+            disk_status: "critical",
+        },
+        last_observation: {
+            captured_at: "2026-07-29T11:55:00Z",
+            captured_at_display: "Jul 29, 2026, 07:55 EDT",
+            disk_free_kb: 3072,
+            apt_status: "ok",
+            disk_status: "ok",
+        },
+        package_delta: 1,
+        security_delta: 1,
+        disk_free_delta_kb: -1024,
+    }], {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    });
+
+    const row = result.visibleRows[0];
+    assert.equal(result.items, undefined);
+    assert.equal(row.observedAt, "2026-07-29T11:55:00Z");
+    assert.equal(row.observedAtDisplay, "Jul 29, 2026, 07:55 EDT");
+    assert.equal(row.stale, false);
+    assert.deepEqual(row.disk, { available: true, freeKB: 3072, deltaAvailable: false, deltaKB: 0 });
+    assert.deepEqual(row.apt, { label: "ok", state: "status-success" });
+    assert.deepEqual(row.diskStatus, { label: "ok", state: "status-success" });
 });
 
 test("freshness and disk sorts use the displayed last observation outside the window", () => {
@@ -519,11 +579,11 @@ test("freshness and disk sorts use the displayed last observation outside the wi
     ];
 
     assert.deepEqual(
-        projectHealthCollection(servers, { sort: "freshness" }).items.map(server => server.name),
+        projectHealthCollection(servers, { sort: "freshness" }).rows.map(row => row.name),
         ["newer", "older"]
     );
     assert.deepEqual(
-        projectHealthCollection(servers, { sort: "disk" }).items.map(server => server.name),
+        projectHealthCollection(servers, { sort: "disk" }).rows.map(row => row.name),
         ["older", "newer"]
     );
 });
@@ -539,11 +599,11 @@ test("health projection distinguishes missing observations from stale observatio
     };
 
     assert.deepEqual(
-        projectHealthCollection(servers, { ...options, attention: "missing" }).items.map(server => server.name),
+        projectHealthCollection(servers, { ...options, attention: "missing" }).rows.map(row => row.name),
         ["missing"]
     );
     assert.deepEqual(
-        projectHealthCollection(servers, { ...options, attention: "stale" }).items.map(server => server.name),
+        projectHealthCollection(servers, { ...options, attention: "stale" }).rows.map(row => row.name),
         ["stale"]
     );
 });
@@ -570,4 +630,7 @@ test("Observability adapter does not restore interaction state globals", () => {
     assert.doesNotMatch(source, /let\s+lastAcceptedSummary\s*=/);
     assert.doesNotMatch(source, /function\s+projectHealthServers\s*\(/);
     assert.doesNotMatch(source, /function\s+aggregateTrendSeries\s*\(/);
+    assert.doesNotMatch(source, /function\s+validDiskKB\s*\(/);
+    assert.doesNotMatch(source, /function\s+healthStatusClass\s*\(/);
+    assert.doesNotMatch(source, /server\.latest\s*\|\|\s*server\.last_observation/);
 });

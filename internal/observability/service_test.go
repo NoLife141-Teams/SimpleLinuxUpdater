@@ -61,7 +61,7 @@ func newTestDB(t *testing.T, name string) (*sql.DB, string) {
 func testHealthReader(latest func() (map[string]health.CollectedFacts, error)) health.Reader {
 	return health.ReaderFuncs{
 		LatestFunc: latest,
-		LatestSnapshotsFunc: func(string) (map[string]health.Snapshot, error) {
+		LatestObservationsFunc: func(string) (map[string]health.Snapshot, error) {
 			return map[string]health.Snapshot{}, nil
 		},
 		HistoryFunc: func(string, string, string) ([]health.Snapshot, error) {

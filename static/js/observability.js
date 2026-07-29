@@ -73,13 +73,21 @@ let refreshTimeoutId = null;
         }
 
         function formatDiskKB(value) {
-            return window.ObservabilityPageInteraction.formatStorageKB(value);
+            const kb = Number(value || 0);
+            if (!Number.isFinite(kb) || kb <= 0) return '-';
+            const tb = kb / (1024 * 1024 * 1024);
+            if (tb >= 1) return `${tb.toFixed(1)} TB`;
+            const gb = kb / (1024 * 1024);
+            if (gb >= 1) return `${gb.toFixed(1)} GB`;
+            const mb = kb / 1024;
+            if (mb >= 1) return `${mb.toFixed(0)} MB`;
+            return `${kb.toFixed(0)} KB`;
         }
 
         function formatDelta(value, noun) {
             const number = Number(value || 0);
-            if (!Number.isFinite(number) || number === 0) return `unchanged ${noun}`;
-            return `${Math.abs(number)} ${noun} ${number > 0 ? 'increase' : 'decrease'}`;
+            if (!Number.isFinite(number) || number === 0) return 'no change';
+            return `${number > 0 ? 'increase' : 'decrease'} of ${plural(Math.abs(number), noun)}`;
         }
 
         function formatDiskDeltaKB(value) {
@@ -519,7 +527,12 @@ let refreshTimeoutId = null;
         function appendBadgeCell(tr, text, state) {
             const td = document.createElement('td');
             const badge = document.createElement('span');
-            badge.className = `status-pill health-signal-badge ${state || 'status-unknown'}`;
+            const stateClass = {
+                success: 'status-success',
+                error: 'status-error',
+                unknown: 'status-unknown',
+            }[state] || 'status-unknown';
+            badge.className = `status-pill health-signal-badge ${stateClass}`;
             badge.textContent = text;
             td.appendChild(badge);
             tr.appendChild(td);

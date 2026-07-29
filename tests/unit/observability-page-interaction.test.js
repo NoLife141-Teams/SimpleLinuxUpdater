@@ -10,7 +10,6 @@ const {
     projectHealthCollection,
     projectHealthTrendCSV,
     projectTrendChart,
-    formatStorageKB,
 } = require("../../static/js/observability-page-interaction.js");
 
 function effect(effects, type, source) {
@@ -186,9 +185,16 @@ test("validated shareable selections and source retry stay inside Observability 
 test("valid deep-linked host is verified by the unfiltered result before loading its 24h trend", () => {
     const store = createStore({ window: "24h", host: "alpha" });
     const effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
     const firstTrends = effect(effects, "loadSource", "trends");
     assert.equal(firstTrends.host, "");
     assert.equal(firstTrends.queryWindow, "24h");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: summary.requestID,
+        data: { totals: {} },
+    });
 
     const settled = store.dispatch({
         type: "sourceSucceeded",
@@ -200,6 +206,15 @@ test("valid deep-linked host is verified by the unfiltered result before loading
     const filteredTrends = settled.filter(item => item.type === "loadSource" && item.source === "trends").at(-1);
     assert.equal(filteredTrends.host, "alpha");
     assert.equal(filteredTrends.queryWindow, "24h");
+    assert.equal(effect(settled, "scheduleRefresh"), undefined);
+
+    const filteredSettled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filteredTrends.requestID,
+        data: { servers: [{ name: "alpha", points: [] }] },
+    });
+    assert.equal(effect(filteredSettled, "scheduleRefresh").delayMs, 15000);
 });
 
 test("trends retry validates an unresolved deep-linked host with an unfiltered request", () => {
@@ -225,6 +240,47 @@ test("trends retry validates an unresolved deep-linked host with an unfiltered r
         unfiltered: retry.unfiltered,
     });
     assert.equal(store.getView().selectedHost, "");
+});
+
+test("source retry resets automatic scheduling until its accepted result settles", () => {
+    const store = createStore({ host: "alpha" });
+    let effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const initialTrends = effect(effects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceFailed",
+        source: "summary",
+        requestID: summary.requestID,
+        error: { kind: "http", status: 503 },
+    });
+    effects = store.dispatch({
+        type: "sourceFailed",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        error: { kind: "http", status: 503 },
+    });
+    assert.equal(effect(effects, "scheduleRefresh").delayMs, 15000);
+
+    effects = store.dispatch({ type: "retrySource", source: "trends" });
+    assert.ok(effect(effects, "cancelRefresh"));
+    const retry = effect(effects, "loadSource", "trends");
+    const validated = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: retry.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: true,
+    });
+    assert.equal(effect(validated, "scheduleRefresh"), undefined);
+    const filtered = effect(validated, "loadSource", "trends");
+
+    const settled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filtered.requestID,
+        data: { servers: [{ name: "alpha", points: [] }] },
+    });
+    assert.equal(effect(settled, "scheduleRefresh").delayMs, 15000);
 });
 
 test("selected host charts preserve every accepted observation", () => {
@@ -512,13 +568,6 @@ test("trend chart projection exposes a zero baseline and proportional time scale
     ]);
 });
 
-test("storage labels adapt across KB, MB, GB, and TB", () => {
-    assert.equal(formatStorageKB(512), "512 KB");
-    assert.equal(formatStorageKB(1024), "1 MB");
-    assert.equal(formatStorageKB(1024 * 1024), "1.0 GB");
-    assert.equal(formatStorageKB(1024 * 1024 * 1024), "1.0 TB");
-});
-
 test("health projection clamps pages and identifies stale observations deterministically", () => {
     const result = projectHealthCollection([
         { name: "stale", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 }, samples: 0, points: [] },
@@ -568,8 +617,36 @@ test("health row projection uses the accepted last observation for current host 
     assert.equal(row.observedAtDisplay, "Jul 29, 2026, 07:55 EDT");
     assert.equal(row.stale, false);
     assert.deepEqual(row.disk, { available: true, freeKB: 3072, deltaAvailable: false, deltaKB: 0 });
-    assert.deepEqual(row.apt, { label: "ok", state: "status-success" });
-    assert.deepEqual(row.diskStatus, { label: "ok", state: "status-success" });
+    assert.deepEqual(row.apt, { label: "ok", state: "success" });
+    assert.deepEqual(row.diskStatus, { label: "ok", state: "success" });
+});
+
+test("health attention signals explain historical APT and disk matches", () => {
+    const server = {
+        name: "recovered",
+        samples: 3,
+        latest: {
+            captured_at: "2026-07-29T11:00:00Z",
+            disk_free_kb: 4096,
+            apt_status: "ok",
+            disk_status: "ok",
+        },
+        apt_problem_samples: 2,
+        disk_problem_samples: 1,
+        points: [],
+    };
+    const options = {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    };
+
+    const apt = projectHealthCollection([server], { ...options, attention: "apt" }).visibleRows[0];
+    assert.equal(apt.signals.label, "2 APT problem observations · 1 disk problem observation");
+    assert.equal(apt.signals.state, "error");
+    assert.equal(apt.apt.label, "ok");
+
+    const disk = projectHealthCollection([server], { ...options, attention: "disk" }).visibleRows[0];
+    assert.equal(disk.name, "recovered");
 });
 
 test("freshness and disk sorts use the displayed last observation outside the window", () => {
@@ -633,4 +710,10 @@ test("Observability adapter does not restore interaction state globals", () => {
     assert.doesNotMatch(source, /function\s+validDiskKB\s*\(/);
     assert.doesNotMatch(source, /function\s+healthStatusClass\s*\(/);
     assert.doesNotMatch(source, /server\.latest\s*\|\|\s*server\.last_observation/);
+});
+
+test("Observability Page Interaction keeps CSS and storage presentation in the adapter", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/observability-page-interaction.js"), "utf8");
+    assert.doesNotMatch(source, /status-(?:success|unknown|error)/);
+    assert.doesNotMatch(source, /function\s+formatStorageKB\s*\(/);
 });

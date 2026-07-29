@@ -1320,7 +1320,7 @@ test.describe.serial('setup and login flows', () => {
         security_count: 0,
         disk_free_kb: 11534336,
       },
-      package_delta: 1,
+      package_delta: 2,
       security_delta: index % 3,
       disk_free_delta_kb: -1048576,
       update_failures: index === 0 ? 2 : 0,
@@ -1402,6 +1402,9 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#status-breakdown-bars progress')).toHaveCount(2);
     await expect(page.locator('#health-result-count')).toContainText('25 of 28');
     await expect(page.locator('#health-trends-body tr')).toHaveCount(25);
+    const failingHostRow = page.locator('#health-trends-body tr').filter({ hasText: 'prod-failing' });
+    await expect(failingHostRow).toContainText('increase of 2 packages');
+    await expect(failingHostRow).toContainText('10.0 GB');
     await page.locator('#health-next-page').click();
     await expect(page).toHaveURL(/page=2/);
     await expect(page.locator('#health-result-count')).toContainText('3 of 28');

@@ -127,9 +127,9 @@
     function projectHealthStatus(value) {
         const label = String(value || "").trim() || "unknown";
         const normalized = label.toLowerCase();
-        if (normalized === "ok") return { label, state: "status-success" };
-        if (normalized === "unknown") return { label, state: "status-unknown" };
-        return { label, state: "status-error" };
+        if (normalized === "ok") return { label, state: "success" };
+        if (normalized === "unknown") return { label, state: "unknown" };
+        return { label, state: "error" };
     }
 
     function countLabel(count, singular, pluralForm = `${singular}s`) {
@@ -153,6 +153,12 @@
         }
         if (Number(server?.scan_failures || 0) > 0) {
             signals.push(countLabel(Number(server.scan_failures), "scan failure"));
+        }
+        if (Number(server?.apt_problem_samples || 0) > 0) {
+            signals.push(countLabel(Number(server.apt_problem_samples), "APT problem observation"));
+        }
+        if (Number(server?.disk_problem_samples || 0) > 0) {
+            signals.push(countLabel(Number(server.disk_problem_samples), "disk problem observation"));
         }
         if (server?.reboot_seen) signals.push("Reboot required");
         return {
@@ -181,7 +187,7 @@
             diskStatus: projectHealthStatus(observation?.disk_status),
             signals: {
                 label: hasWindowObservation ? (signals.length ? signals.join(" · ") : "No signals") : "No observation in window",
-                state: hasWindowObservation ? (signals.length ? "status-error" : "status-success") : "status-unknown",
+                state: hasWindowObservation ? (signals.length ? "error" : "success") : "unknown",
             },
         };
     }
@@ -416,18 +422,6 @@
         return factor * magnitude;
     }
 
-    function formatStorageKB(value) {
-        const kb = Number(value || 0);
-        if (!Number.isFinite(kb) || kb <= 0) return "-";
-        const tb = kb / (1024 * 1024 * 1024);
-        if (tb >= 1) return `${tb.toFixed(1)} TB`;
-        const gb = kb / (1024 * 1024);
-        if (gb >= 1) return `${gb.toFixed(1)} GB`;
-        const mb = kb / 1024;
-        if (mb >= 1) return `${mb.toFixed(0)} MB`;
-        return `${kb.toFixed(0)} KB`;
-    }
-
     function projectHealthTrendCSV(servers) {
         const header = [
             "Host",
@@ -578,13 +572,13 @@
             return effects;
         }
 
-        function settle(source, requestID, update) {
+        function settle(source, requestID, update, keepPending = false) {
             const state = sources[source];
             if (!state || state.requestID !== requestID) return [];
             state.requestID = null;
             update(state);
             const effects = [effect("render")];
-            if (fullGeneration && fullGeneration.pending.has(source)) {
+            if (!keepPending && fullGeneration && fullGeneration.pending.has(source)) {
                 fullGeneration.pending.delete(source);
                 if (fullGeneration.pending.size === 0) {
                     fullGeneration = null;
@@ -620,8 +614,13 @@
                     const source = event.source === "trends" ? "trends" : "summary";
                     if (!pageVisible || sources[source].requestID !== null) return [];
                     generation += 1;
+                    if (fullGeneration) {
+                        fullGeneration.pending.add(source);
+                    } else {
+                        fullGeneration = { id: generation, pending: new Set([source]) };
+                    }
                     const retryHost = source === "trends" && knownHosts.length ? selectedHost : "";
-                    return [requestSource(source, generation, retryHost)];
+                    return [effect("cancelRefresh"), requestSource(source, generation, retryHost)];
                 }
                 case "timerFired":
                     return pageVisible ? startFullRefresh() : [];
@@ -649,25 +648,34 @@
                     page = Math.max(1, Number.parseInt(event.page, 10) || 1);
                     return [effect("render")];
                 case "sourceSucceeded": {
+                    const unfilteredHosts = event.source === "trends" && event.unfiltered
+                        ? hostNames(event.data)
+                        : [];
+                    const continueWithSelectedHost = Boolean(
+                        event.source === "trends"
+                        && event.unfiltered
+                        && selectedHost
+                        && unfilteredHosts.includes(selectedHost)
+                    );
+                    const continuationGeneration = sources[event.source]?.generation || generation;
                     const effects = settle(event.source, event.requestID, state => {
                         if (event.timeZone) timeZone = String(event.timeZone);
                         state.status = "fresh";
                         state.data = clone(event.data);
                         state.error = null;
                         if (event.source === "trends" && event.unfiltered) {
-                            knownHosts = hostNames(event.data);
+                            knownHosts = unfilteredHosts;
                             if (selectedHost && !knownHosts.includes(selectedHost)) selectedHost = "";
                         }
-                    });
+                    }, continueWithSelectedHost);
                     if (!effects.length) return effects;
                     if (event.source === "trends") {
                         const collection = projectHealthCollection(sources.trends.data?.servers, {
                             search, attention, sort, window: selectedWindow, page, nowMS: now(),
                         });
                         page = collection.page;
-                        if (event.unfiltered && selectedHost && knownHosts.includes(selectedHost)) {
-                            generation += 1;
-                            effects.push(requestSource("trends", generation, selectedHost));
+                        if (continueWithSelectedHost) {
+                            effects.push(requestSource("trends", continuationGeneration, selectedHost));
                         }
                     }
                     return effects;
@@ -748,6 +756,5 @@
         projectHealthTrendCSV,
         projectFleetTrendSeries,
         projectTrendChart,
-        formatStorageKB,
     });
 }));

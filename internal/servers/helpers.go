@@ -1,6 +1,8 @@
 package servers
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -418,6 +420,66 @@ func KnownHostEntryExists(deps KnownHostsDeps, host string, port int) (bool, err
 	if err != nil {
 		return false, fmt.Errorf("read known_hosts: %w", err)
 	}
+	return knownHostEntryExistsInData(data, token), nil
+}
+
+type knownHostsRemoteAddr string
+
+func (a knownHostsRemoteAddr) Network() string { return "tcp" }
+func (a knownHostsRemoteAddr) String() string  { return string(a) }
+
+func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, error), error) {
+	knownHostsMu := deps.knownHostsMu()
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
+
+	existingPaths := make([]string, 0)
+	for _, path := range KnownHostsPaths(deps) {
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect known_hosts %q: %w", path, err)
+		}
+		existingPaths = append(existingPaths, path)
+	}
+	if len(existingPaths) == 0 {
+		return func(string, int) (bool, error) { return false, nil }, nil
+	}
+
+	checkHostKey, err := knownhosts.New(existingPaths...)
+	if err != nil {
+		return nil, fmt.Errorf("load known_hosts: %w", err)
+	}
+	publicProbeKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate known_hosts probe key: %w", err)
+	}
+	probeKey, err := ssh.NewPublicKey(publicProbeKey)
+	if err != nil {
+		return nil, fmt.Errorf("create known_hosts probe key: %w", err)
+	}
+
+	return func(host string, port int) (bool, error) {
+		cleanHost := strings.Trim(strings.TrimSpace(host), "[]")
+		if cleanHost == "" {
+			return false, errors.New("host is required")
+		}
+		address := net.JoinHostPort(cleanHost, strconv.Itoa(NormalizePort(port)))
+		err := checkHostKey(address, knownHostsRemoteAddr(address), probeKey)
+		if err == nil {
+			return true, nil
+		}
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) {
+			return len(keyErr.Want) > 0, nil
+		}
+		return false, err
+	}, nil
+}
+
+func knownHostEntryExistsInData(data []byte, token string) bool {
 	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -429,11 +491,11 @@ func KnownHostEntryExists(deps KnownHostsDeps, host string, port int) (bool, err
 		}
 		for _, hostToken := range strings.Split(fields[0], ",") {
 			if strings.TrimSpace(hostToken) == token {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
 }
 
 func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, error) {

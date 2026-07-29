@@ -148,12 +148,12 @@ Record each item as pass, fail, or skipped with the exact reason.
 
 ### Manage Servers
 
-- [ ] Manage renders add-server form, global key panel, server table, and activity history.
-- [ ] Global key status clearly reports whether a key is saved.
-- [ ] Uploading an invalid, non-secret disposable key file is rejected without replacing the current global key.
-- [ ] Uploading a valid disposable global key updates the saved status without revealing key material.
-- [ ] A server with no per-server password or key is shown as using the global key in effective-auth grouping/status.
-- [ ] Global key clear requires typing `CLEAR GLOBAL KEY`, only runs against disposable data, and updates effective-auth state.
+- [ ] Manage renders the add-server form, Global SSH Credential panel, server table, and activity history.
+- [ ] Global SSH Credential status clearly reports whether a credential is saved.
+- [ ] Uploading an invalid, non-secret disposable key file is rejected without replacing the current Global SSH Credential.
+- [ ] Uploading a valid disposable Global SSH Credential updates the saved status without revealing key material.
+- [ ] A server with no per-server password or key is shown as using the Global SSH Credential in effective-auth grouping/status.
+- [ ] Clearing the Global SSH Credential requires typing `CLEAR GLOBAL SSH CREDENTIAL`, only runs against disposable data, and updates effective-auth state.
 - [ ] Missing required fields are rejected before a server is saved.
 - [ ] Duplicate server name or duplicate host is rejected.
 - [ ] Add a disposable UI-only server such as `cu-demo-local`.

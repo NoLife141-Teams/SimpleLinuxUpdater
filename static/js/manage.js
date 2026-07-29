@@ -3,10 +3,138 @@ let hostKeyModalPromise = null;
 let hostKeyModalResolvers = [];
 let editKnownHostCheckPromise = null;
 let auditFetchHadError = false;
+let manageSectionObserver = null;
+let manageSectionNavigationLockUntil = 0;
+
+function renderManageWorkspace() {
+    const view = managePageInteraction.getView();
+    const workspace = view.workspace;
+    workspace.sections.forEach((section) => {
+        const root = document.querySelector(`[data-manage-section="${section.id}"]`);
+        const link = document.querySelector(`[data-manage-section-link="${section.id}"]`);
+        const navSummary = document.querySelector(`[data-manage-section-nav-summary="${section.id}"]`);
+        const summary = document.querySelector(`[data-manage-section-summary="${section.id}"]`);
+        const toggle = document.querySelector(`[data-manage-section-toggle="${section.id}"]`);
+        const content = document.querySelector(`[data-manage-section-content="${section.id}"]`);
+        root?.classList.toggle("is-collapsed", section.collapsed);
+        if (link) {
+            if (workspace.activeSection === section.id) link.setAttribute("aria-current", "location");
+            else link.removeAttribute("aria-current");
+        }
+        if (navSummary) navSummary.textContent = section.summary;
+        if (summary) {
+            summary.textContent = section.summary;
+            summary.hidden = !section.collapsed;
+        }
+        if (toggle) {
+            toggle.setAttribute("aria-expanded", String(!section.collapsed));
+            toggle.setAttribute("aria-label", `${section.collapsed ? "Expand" : "Collapse"} ${section.label}`);
+            const label = toggle.querySelector("[data-manage-section-toggle-label]");
+            if (label) label.textContent = section.collapsed ? "Expand" : "Collapse";
+        }
+        if (content) content.hidden = section.collapsed;
+    });
+
+    const fleet = view.inventory.summary;
+    document.getElementById("manage-summary-total").textContent = String(fleet.total);
+    document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.serverKey);
+    document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
+    document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
+    document.getElementById("manage-summary-missing-auth").textContent = String(fleet.missing);
+    document.getElementById("manage-summary-unknown-auth").textContent = String(fleet.unknown);
+    document.getElementById("manage-summary-host-trust").textContent = String(fleet.hostKeyAttention);
+
+    renderAddAuthMethod();
+}
+
+function runManageWorkspaceEffects(effects) {
+    for (const effect of effects || []) {
+        if (effect.type === "render" && effect.area === "workspace") renderManageWorkspace();
+        if (effect.type === "focusSection") {
+            const section = document.querySelector(`[data-manage-section="${effect.sectionID}"]`);
+            const heading = document.getElementById(`manage-section-${effect.sectionID}-heading`);
+            section?.scrollIntoView({ behavior: "auto", block: "start" });
+            heading?.focus({ preventScroll: true });
+        }
+    }
+}
+
+function manageSectionIDFromHash() {
+    const prefix = "#manage-section-";
+    if (window.location.hash.startsWith(prefix)) return window.location.hash.slice(prefix.length);
+    if (window.location.hash === "#audit-trail") return "audit";
+    if (window.location.hash === "#server-directory") return "directory";
+    return "";
+}
+
+function navigateManageSection(sectionID, updateHistory = false) {
+    const effects = managePageInteraction.dispatch({ type: "sectionNavigationRequested", sectionID });
+    if (!effects.length) return;
+    manageSectionNavigationLockUntil = Date.now() + 750;
+    if (updateHistory) history.pushState(null, "", `#manage-section-${sectionID}`);
+    runManageWorkspaceEffects(effects);
+}
+
+function initializeManageWorkspace() {
+    document.getElementById("add-server-action")?.addEventListener("click", () => {
+        navigateManageSection("add-server", true);
+    });
+    document.getElementById("manage-section-nav")?.addEventListener("click", (event) => {
+        const link = event.target.closest("[data-manage-section-link]");
+        if (!link) return;
+        event.preventDefault();
+        navigateManageSection(link.dataset.manageSectionLink, true);
+    });
+    document.querySelectorAll("[data-manage-section-toggle]").forEach((toggle) => {
+        toggle.addEventListener("click", () => {
+            runManageWorkspaceEffects(managePageInteraction.dispatch({
+                type: "sectionCollapseToggled",
+                sectionID: toggle.dataset.manageSectionToggle
+            }));
+        });
+    });
+    window.addEventListener("hashchange", () => {
+        const sectionID = manageSectionIDFromHash();
+        if (sectionID) navigateManageSection(sectionID);
+    });
+    if ("IntersectionObserver" in window) {
+        manageSectionObserver = new IntersectionObserver((entries) => {
+            if (Date.now() < manageSectionNavigationLockUntil) return;
+            const visible = entries.filter(entry => entry.isIntersecting)
+                .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+            const sectionID = visible?.target?.dataset?.manageSection;
+            if (!sectionID) return;
+            runManageWorkspaceEffects(managePageInteraction.dispatch({ type: "sectionActivated", sectionID }));
+        }, { rootMargin: "-150px 0px -55% 0px", threshold: [0.01, 0.25, 0.5] });
+        document.querySelectorAll("[data-manage-section]").forEach(section => manageSectionObserver.observe(section));
+    }
+    const deepLink = manageSectionIDFromHash();
+    if (deepLink) window.requestAnimationFrame(() => navigateManageSection(deepLink));
+    else renderManageWorkspace();
+}
 
 function activeEditorName() {
     const editor = managePageInteraction.getView().editor;
     return editor.open ? editor.originalName : "";
+}
+
+function effectiveAuthLabel(value) {
+    return {
+        "per-server-key": "per-server SSH key",
+        "global-key": "Global SSH Credential",
+        "per-server-key-and-password": "per-server SSH key and password",
+        "global-key-and-password": "Global SSH Credential and password",
+        password: "password",
+        missing: "no usable credential",
+        unknown: "authentication status unknown"
+    }[value] || "unknown authentication";
+}
+
+function renderCredentialOutcomes() {
+    const outcome = document.getElementById("credential-outcome");
+    if (!outcome) return;
+    const editor = managePageInteraction.getView().editor;
+    outcome.textContent = `Clear Password → ${effectiveAuthLabel(editor.credentialOutcomes?.clearPassword)}. Clear Key → ${effectiveAuthLabel(editor.credentialOutcomes?.clearKey)}.`;
 }
 
 function commandExecution(command, payload = {}) {
@@ -216,6 +344,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             tbody.innerHTML = '';
             const projection = managePageInteraction.getView().inventory;
             document.getElementById('page-info').textContent = `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
+            document.getElementById('server-filter-result').textContent = projection.activeFilterCount
+                ? `${projection.total} matching ${projection.total === 1 ? "server" : "servers"} · ${projection.activeFilterCount} active ${projection.activeFilterCount === 1 ? "filter" : "filters"}`
+                : `${projection.total} ${projection.total === 1 ? "server" : "servers"} visible`;
+            document.getElementById('clear-server-filters').disabled = projection.activeFilterCount === 0;
             const groups = projection.groups;
             groups.forEach(group => {
                 if (group.key) {
@@ -233,18 +365,22 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     const safeDataName = escapeHtml(server.name);
                     row.innerHTML = `
                         <td>${safeName}</td>
-                        <td>${safeHost}</td>
+                        <td><span class="server-endpoint"><span>${safeHost}</span><small>SSH port ${escapeHtml(server.port || 22)}</small></span></td>
                         <td>${safeUser}</td>
                         <td>${renderTags(server.tags)}</td>
-                        <td>${renderAuth(server)}</td>
-                        <td>
+                        <td>${renderAccessPosture(server)}</td>
+                        <td><div class="row-actions">
                             <button type="button" class="btn-ghost" data-action="edit-server" data-name="${safeDataName}">Edit</button>
-                            <button type="button" class="btn-danger" data-action="delete-server" data-name="${safeDataName}">Delete</button>
-                        </td>
+                            <details class="row-actions-menu">
+                                <summary class="btn-ghost inline-btn" aria-label="More actions for ${safeName}">More</summary>
+                                <div><button type="button" class="btn-danger inline-btn" data-action="delete-server" data-name="${safeDataName}">Delete</button></div>
+                            </details>
+                        </div></td>
                     `;
                     tbody.appendChild(row);
                 });
             });
+            renderManageWorkspace();
         }
 
         document.querySelector('#manage-servers-table tbody').addEventListener('click', (e) => {
@@ -297,6 +433,15 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('auth-filter').addEventListener('change', syncInventoryFilters);
         document.getElementById('group-by').addEventListener('change', syncInventoryFilters);
         document.getElementById('page-size').addEventListener('change', syncInventoryFilters);
+        document.getElementById('clear-server-filters').addEventListener('click', () => {
+            document.getElementById('search').value = '';
+            document.getElementById('tag-filter').value = '';
+            document.getElementById('auth-filter').value = '';
+            document.getElementById('group-by').value = '';
+            document.getElementById('page-size').value = '20';
+            managePageInteraction.dispatch({ type: 'filtersReset' });
+            renderTable();
+        });
 
         document.getElementById('prev-page').addEventListener('click', () => {
             managePageInteraction.dispatch({ type: 'pageChanged', page: Math.max(1, managePageInteraction.getView().inventory.page - 1) });
@@ -349,6 +494,22 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await fetchAuditEvents();
         });
         document.getElementById('audit-refresh').addEventListener('click', fetchAuditEvents);
+        document.getElementById('audit-clear-filters').addEventListener('click', async () => {
+            for (const id of ['audit-target-filter', 'audit-action-filter', 'audit-action-preset', 'audit-status-filter', 'audit-from-filter', 'audit-to-filter']) {
+                document.getElementById(id).value = '';
+            }
+            managePageInteraction.dispatch({
+                type: 'auditQueryChanged',
+                patch: { targetName: '', action: '', status: '', failureCause: '', from: '', to: '', page: 1 }
+            });
+            const url = new URL(window.location.href);
+            for (const parameter of ['audit_target', 'audit_action', 'audit_status', 'failure_cause', 'audit_from', 'audit_to']) {
+                url.searchParams.delete(parameter);
+            }
+            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+            renderAuditFailureCauseFilter();
+            await fetchAuditEvents();
+        });
         document.getElementById('audit-clear-failure-cause').addEventListener('click', async () => {
             managePageInteraction.dispatch({
                 type: 'auditQueryChanged',
@@ -384,21 +545,25 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             openAuditDetailDrawer(auditEventByID(button.dataset.auditDetail));
         });
 
-        function renderAuth(server) {
-            const bits = [];
-            if (server.has_password) {
-                bits.push('<span class="pill pill-success">Password</span>');
-            } else {
-                bits.push('<span class="pill pill-muted">No Password</span>');
-            }
-            if (server.has_key) {
-                bits.push('<span class="pill pill-success">Key</span>');
-            } else if (managePageInteraction.getView().globalKeyAvailable && !server.has_key) {
-                bits.push('<span class="pill pill-success">Global Key</span>');
-            } else {
-                bits.push('<span class="pill pill-muted">No Key</span>');
-            }
-            return bits.join(' ');
+        function renderAccessPosture(server) {
+            const authLabels = {
+                password: ["Password", "pill-success"],
+                "per-server-key": ["Per-server key", "pill-success"],
+                "global-key": ["Global SSH Credential", "pill"],
+                "per-server-key-and-password": ["Per-server key + password", "pill-warning"],
+                "global-key-and-password": ["Global SSH Credential + password", "pill-warning"],
+                missing: ["Missing credential", "pill-danger"],
+                unknown: ["Authentication unknown", "pill-warning"]
+            };
+            const trustLabels = {
+                trusted: "Host key trusted",
+                missing: "Host key not trusted",
+                changed: "Host key changed",
+                unknown: "Trust not checked"
+            };
+            const [label, className] = authLabels[server.effectiveAuth] || authLabels.missing;
+            const trust = trustLabels[server.host_key_status] || trustLabels.unknown;
+            return `<span class="access-posture"><span class="pill ${className}">${label}</span><small>${escapeHtml(trust)}</small></span>`;
         }
 
         function renderTags(tags) {
@@ -539,7 +704,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             tbody.innerHTML = '';
             if (!projection.items.length) {
                 const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="8" class="subtle">No activity yet.</td>';
+                row.innerHTML = '<td colspan="7" class="subtle">No activity yet.</td>';
                 tbody.appendChild(row);
             } else {
                 projection.items.forEach(evt => {
@@ -556,8 +721,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                         <td>${escapeHtml(evt.target_type || '')}: ${escapeHtml(evt.target_name || '')}</td>
                         <td><span class="status-badge ${statusClass}">${status}</span></td>
                         <td>${escapeHtml(evt.message || '')}</td>
-                        <td><button class="inline-btn btn-ghost" type="button" data-audit-detail="${escapeHtml(String(evt.id))}">Details</button></td>
-                        <td><a class="inline-btn btn-ghost" href="/api/reports/audit/${encodeURIComponent(evt.id)}">Report</a></td>
+                        <td><div class="audit-event-actions"><button class="inline-btn btn-ghost" type="button" data-audit-detail="${escapeHtml(String(evt.id))}">Details</button><a class="inline-btn btn-ghost" href="/api/reports/audit/${encodeURIComponent(evt.id)}">Report</a></div></td>
                     `;
                     tbody.appendChild(row);
                 });
@@ -565,6 +729,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const totalPages = Math.max(1, Math.ceil(projection.total / projection.query.pageSize));
             const currentPage = Math.min(projection.query.page, totalPages);
             document.getElementById('audit-page-info').textContent = `Page ${currentPage} of ${totalPages} (${projection.total} events)`;
+            renderManageWorkspace();
         }
 
         async function performAuditRequest(request, silent) {
@@ -627,37 +792,112 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await performAuditRequest(request, !!options.silent);
         }
 
+        function renderAddAuthMethod() {
+            const creation = managePageInteraction.getView().creation;
+            document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
+                input.checked = input.value === creation.authenticationMethod;
+                if (input.value === 'global-key') input.disabled = !creation.globalCredentialAvailable;
+            });
+            document.getElementById('add-password-field').hidden = !creation.passwordFieldVisible;
+            document.getElementById('add-key-field').hidden = !creation.keyFieldVisible;
+            document.getElementById('pass').required = creation.passwordFieldVisible;
+            document.getElementById('global-auth-help').textContent = creation.globalCredentialAvailable
+                ? 'Uses the configured Global SSH Credential.'
+                : 'Configure a Global SSH Credential to use this option.';
+        }
+
+        const addServerFieldIDs = {
+            name: 'name',
+            host: 'host',
+            port: 'port',
+            user: 'user',
+            pass: 'pass',
+            key: 'key_file',
+            auth: 'add-auth-methods'
+        };
+
+        function addServerField(field) {
+            return document.getElementById(addServerFieldIDs[field]);
+        }
+
+        function setAddServerFieldInvalidState(field, invalid) {
+            const input = addServerField(field);
+            if (!input) return;
+            input.classList.toggle('is-invalid', !!invalid);
+            if (invalid) input.setAttribute('aria-invalid', 'true');
+            else input.removeAttribute('aria-invalid');
+        }
+
+        function clearAddServerValidation() {
+            Object.keys(addServerFieldIDs).forEach(field => setAddServerFieldInvalidState(field, false));
+            document.getElementById('add-server-error').textContent = '';
+        }
+
+        function showAddServerValidation(rejection = {}) {
+            clearAddServerValidation();
+            const invalidFields = rejection.invalidFields || [];
+            invalidFields.forEach(field => setAddServerFieldInvalidState(field, true));
+            document.getElementById('add-server-error').textContent = rejection.reason || 'Server creation is unavailable.';
+            const firstInvalid = addServerField(invalidFields[0]);
+            if (firstInvalid?.matches('fieldset')) firstInvalid.querySelector('input:not(:disabled)')?.focus();
+            else firstInvalid?.focus();
+        }
+
+        function clearEditedAddServerField(field) {
+            setAddServerFieldInvalidState(field, false);
+            const hasInvalidField = Object.keys(addServerFieldIDs).some(key => addServerField(key)?.hasAttribute('aria-invalid'));
+            if (!hasInvalidField) document.getElementById('add-server-error').textContent = '';
+        }
+
+        document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
+            input.addEventListener('change', () => {
+                managePageInteraction.dispatch({
+                    type: 'creationAuthenticationChanged',
+                    authenticationMethod: input.value
+                });
+                for (const field of ['auth', 'pass', 'key']) clearEditedAddServerField(field);
+                renderAddAuthMethod();
+            });
+        });
+        for (const field of ['name', 'host', 'port', 'user', 'pass']) {
+            addServerField(field).addEventListener('input', () => clearEditedAddServerField(field));
+        }
+        addServerField('key').addEventListener('change', () => clearEditedAddServerField('key'));
+
         document.getElementById('add-server-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const name = document.getElementById('name').value;
             const host = document.getElementById('host').value;
             const portValue = document.getElementById('port').value;
-            const port = portValue ? parseInt(portValue, 10) : 0;
             const user = document.getElementById('user').value;
             const pass = document.getElementById('pass').value;
             const tagsRaw = document.getElementById('tags').value;
             const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const keyFileInput = document.getElementById('key_file');
             const trimmedName = name.trim();
-            const execution = commandExecution('createServer', {
+            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'createServer', payload: {
                 name,
                 host,
-                port,
+                port: portValue,
                 user,
                 tags,
+                hasPassword: !!pass,
                 hasKeyFile: !!keyFileInput?.files?.length,
                 trustHostKey: document.getElementById('trust-host-key').checked
-            });
+            } });
+            const execution = command.find(effect => effect.type === 'executeCommand');
             if (!execution) {
-                window.notifyApp('Name, host, and user are required, or a server create is already in progress.');
+                const rejection = command.find(effect => effect.type === 'commandRejected');
+                showAddServerValidation(rejection);
                 return;
             }
+            clearAddServerValidation();
             try {
                 const accepted = execution.plan.payload;
                 const createRes = await fetch('/api/servers', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass, tags: accepted.tags })
+                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: accepted.authMethod === 'password' ? pass : '', tags: accepted.tags })
                 });
                 if (!createRes.ok) {
                     throw new Error(await parseErrorResponse(createRes, 'Failed to add server.'));
@@ -665,7 +905,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 const created = await createRes.json().catch(() => ({
                     name: trimmedName || name,
                     host: host.trim(),
-                    port: normalizePort(port, 22)
+                    port: normalizePort(portValue, 22)
                 }));
                 if (accepted.uploadKey && keyFileInput?.files?.length) {
                     const form = new FormData();
@@ -696,18 +936,38 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (keyFileInput) {
                     keyFileInput.value = '';
                     resetFileInputLabel(keyFileInput);
+                    document.getElementById('server-key-file-selection').textContent = 'No file selected';
                 }
                 e.target.reset();
+                managePageInteraction.dispatch({
+                    type: 'creationAuthenticationChanged',
+                    authenticationMethod: 'password'
+                });
                 document.getElementById('trust-host-key').checked = true;
+                renderAddAuthMethod();
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to add server.', { announce: false });
-                window.notifyApp(err?.message || 'Failed to add server.');
+                document.getElementById('add-server-error').textContent = err?.message || 'Failed to add server.';
             }
         });
 
         document.addEventListener('change', (e) => {
             if (e.target && e.target.classList.contains('file-input')) {
                 resetFileInputLabel(e.target);
+                const selectionIDs = {
+                    'global-key-file': 'global-key-file-selection',
+                    'key_file': 'server-key-file-selection',
+                    'edit-key': 'edit-key-file-selection'
+                };
+                const selection = document.getElementById(selectionIDs[e.target.id]);
+                if (selection) selection.textContent = e.target.files?.[0]?.name || 'No file selected';
+                if (e.target.id === 'edit-key') {
+                    managePageInteraction.dispatch({
+                        type: 'editorCredentialIntentChanged',
+                        keyReplacement: !!e.target.files?.length
+                    });
+                    setEditSaveButtonState(false);
+                }
             }
         });
 
@@ -740,10 +1000,12 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             document.getElementById('edit-user').value = current.user || '';
             document.getElementById('edit-tags').value = (current.tags || []).join(', ');
             document.getElementById('edit-pass').value = '';
+            renderCredentialOutcomes();
             const keyInput = document.getElementById('edit-key');
             if (keyInput) {
                 keyInput.value = '';
                 resetFileInputLabel(keyInput);
+                document.getElementById('edit-key-file-selection').textContent = 'No file selected';
                 }
                 setEditHostKeyStatus('');
                 clearEditValidationState();
@@ -757,6 +1019,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 try {
                     await managePolicyOverrides.fetchContext(name);
                     managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
+                    setEditSaveButtonState(false);
                 } catch (err) {
                     document.getElementById('edit-policy-overrides').innerHTML = `<div class="subtle">${escapeHtml(err.message || 'Failed to load scheduled policies.')}</div>`;
                 }
@@ -774,6 +1037,26 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (overrides) {
                     overrides.innerHTML = '';
                 }
+            }
+
+            async function requestCloseEditModal() {
+                const effects = managePageInteraction.dispatch({ type: 'editorCloseRequested' });
+                const confirmation = effects.find(effect => effect.type === 'confirmEditorDiscard');
+                if (confirmation) {
+                    const confirmed = await window.confirmAction('Discard unsaved server changes?', { confirmLabel: 'Discard changes' });
+                    if (!confirmed) return;
+                }
+                closeEditModal();
+            }
+
+            function renderEditorFieldsFromView() {
+                const draft = managePageInteraction.getView().editor.draft || {};
+                document.getElementById('edit-name').value = draft.name || '';
+                document.getElementById('edit-host').value = draft.host || '';
+                document.getElementById('edit-port').value = draft.port || 22;
+                document.getElementById('edit-user').value = draft.user || '';
+                document.getElementById('edit-tags').value = (draft.tags || []).join(', ');
+                document.getElementById('edit-pass').value = '';
             }
 
         function setEditHostKeyStatus(message) {
@@ -860,18 +1143,26 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 setEditValidationError('');
                 setEditFieldInvalidState('edit-name', false);
                 setEditFieldInvalidState('edit-host', false);
+                setEditFieldInvalidState('edit-port', false);
                 setEditFieldInvalidState('edit-user', false);
             }
 
             function setEditSaveButtonState(isBusy, label) {
                 const saveBtn = document.getElementById('edit-save');
                 const cancelBtn = document.getElementById('edit-cancel');
+                const closeBtn = document.getElementById('edit-close');
+                const discardBtn = document.getElementById('edit-discard');
+                const draftState = document.getElementById('edit-draft-state');
                 if (!saveBtn) return;
-                saveBtn.disabled = !!isBusy;
-                saveBtn.textContent = isBusy ? (label || 'Saving...') : 'Save';
+                const editor = managePageInteraction.getView().editor;
+                saveBtn.disabled = !!isBusy || !editor.canSave;
+                saveBtn.textContent = isBusy ? (label || 'Saving...') : 'Save Server';
                 if (cancelBtn) {
                     cancelBtn.disabled = !!isBusy;
                 }
+                if (closeBtn) closeBtn.disabled = !!isBusy;
+                if (discardBtn) discardBtn.disabled = !!isBusy || !editor.dirty;
+                if (draftState) draftState.textContent = editor.dirty ? 'Unsaved changes' : 'No unsaved changes';
             }
 
             async function checkEditKnownHostStatus() {
@@ -1046,17 +1337,11 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const execution = command.find((effect) => effect.type === 'executeCommand');
             if (!execution) {
                 const rejected = command.find((effect) => effect.type === 'commandRejected') || {};
-                const fieldIDs = { name: 'edit-name', host: 'edit-host', user: 'edit-user' };
+                const fieldIDs = { name: 'edit-name', host: 'edit-host', port: 'edit-port', user: 'edit-user' };
                 for (const field of rejected.invalidFields || []) {
                     setEditFieldInvalidState(fieldIDs[field], true);
                 }
-                const invalidFields = rejected.invalidFields || [];
-                if (invalidFields.length) {
-                    const labels = invalidFields.map(field => field.charAt(0).toUpperCase() + field.slice(1)).join(', ');
-                    setEditValidationError(`${labels} ${invalidFields.length === 1 ? 'is' : 'are'} required.`);
-                } else {
-                    setEditValidationError(rejected.reason || 'This server action is already in progress.');
-                }
+                setEditValidationError(rejected.reason || 'This server action is already in progress.');
                 const firstInvalid = document.getElementById(fieldIDs[(rejected.invalidFields || [])[0]]);
                 if (firstInvalid) firstInvalid.focus();
                 return;
@@ -1070,7 +1355,38 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: newPass, tags: accepted.tags })
                 });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
-                managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
+                managePageInteraction.dispatch({ type: 'editorServerAccepted', sessionID: accepted.sessionID, server: accepted });
+                document.getElementById('edit-pass').value = '';
+                const replacementKey = document.getElementById('edit-key');
+                if (accepted.keyReplacement && replacementKey?.files?.length) {
+                    let keyUploadError = '';
+                    try {
+                        const keyForm = new FormData();
+                        keyForm.append('key', replacementKey.files[0]);
+                        const keyResponse = await fetch(`/api/servers/${encodeURIComponent(accepted.name)}/key`, {
+                            method: 'POST',
+                            body: keyForm
+                        });
+                        if (!keyResponse.ok) {
+                            keyUploadError = await parseErrorResponse(keyResponse, 'replacement key rejected');
+                        }
+                    } catch (err) {
+                        keyUploadError = err?.message || 'unknown error';
+                    }
+                    if (keyUploadError) {
+                        const message = `Server saved, but the replacement SSH key failed to upload: ${keyUploadError}`;
+                        await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                        window.notifyApp(message);
+                        return;
+                    }
+                    replacementKey.value = '';
+                    resetFileInputLabel(replacementKey);
+                    document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                    managePageInteraction.dispatch({
+                        type: 'editorCredentialIntentChanged',
+                        keyReplacement: false
+                    });
+                }
                 let overrideSaveError = null;
                 try {
                     const outcome = await managePolicyOverrides.save(accepted.name, accepted.policyOverrides);
@@ -1081,11 +1397,14 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 } catch (err) {
                     overrideSaveError = err;
                 }
+                if (overrideSaveError) {
+                    const message = `Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`;
+                    await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                    window.notifyApp(message);
+                    return;
+                }
                 await settleCommand('commandCompleted', execution.plan, 'Server saved.', { announce: false });
                 closeEditModal();
-                if (overrideSaveError) {
-                    window.notifyApp(`Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`);
-                }
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to save server.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to save server.');
@@ -1111,6 +1430,12 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 await settleCommand('commandCompleted', execution.plan, 'Server key uploaded.', { announce: false });
                 input.value = '';
                 resetFileInputLabel(input);
+                document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                managePageInteraction.dispatch({
+                    type: 'editorCredentialIntentChanged',
+                    keyReplacement: false
+                });
+                setEditSaveButtonState(false);
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to upload key.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to upload key.');
@@ -1118,6 +1443,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function clearServerKey(name) {
+            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearKey);
+            if (!(await window.confirmAction(`Clear this server SSH key? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear key' }))) return;
             const execution = commandExecution('clearServerKey', { serverName: name });
             if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
             try {
@@ -1131,6 +1458,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function clearServerPassword(name) {
+            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearPassword);
+            if (!(await window.confirmAction(`Clear this server password? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear password' }))) return;
             const execution = commandExecution('clearServerPassword', { serverName: name });
             if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
             try {
@@ -1143,7 +1472,22 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
         }
 
-        document.getElementById('edit-cancel').addEventListener('click', closeEditModal);
+        document.getElementById('edit-cancel').addEventListener('click', requestCloseEditModal);
+        document.getElementById('edit-close').addEventListener('click', requestCloseEditModal);
+        document.getElementById('edit-discard').addEventListener('click', () => {
+            managePageInteraction.dispatch({ type: 'editorDiscarded' });
+            renderEditorFieldsFromView();
+            const keyInput = document.getElementById('edit-key');
+            keyInput.value = '';
+            resetFileInputLabel(keyInput);
+            document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+            clearEditValidationState();
+            renderEditKnownHostState('stale');
+            setEditHostKeyStatus('Draft restored. Refresh host trust if needed.');
+            managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
+            renderCredentialOutcomes();
+            setEditSaveButtonState(false);
+        });
         document.getElementById('edit-save').addEventListener('click', saveServerEdit);
         document.getElementById('edit-upload-key').addEventListener('click', () => {
             if (activeEditorName()) {
@@ -1164,6 +1508,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { name: document.getElementById('edit-name').value } });
                 setEditFieldInvalidState('edit-name', false);
                 maybeClearEditValidationError();
+                setEditSaveButtonState(false);
             });
             document.getElementById('edit-host').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { host: document.getElementById('edit-host').value } });
@@ -1174,29 +1519,45 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     renderEditKnownHostState('stale');
                     setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
                 }
+                setEditSaveButtonState(false);
             });
             document.getElementById('edit-port').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
+                setEditFieldInvalidState('edit-port', false);
+                maybeClearEditValidationError();
                 if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
                     renderEditKnownHostState('stale');
                     setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
                 }
+                setEditSaveButtonState(false);
             });
             document.getElementById('edit-tags').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { tags: document.getElementById('edit-tags').value } });
                 if (activeEditorName()) {
                     managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
                 }
+                setEditSaveButtonState(false);
             });
             document.getElementById('edit-policy-overrides').addEventListener('change', (event) => {
                 const checkbox = event.target.closest('input[data-policy-id]');
-                if (checkbox) managePolicyOverrides.change(checkbox.dataset.policyId, checkbox.checked);
+                if (checkbox) {
+                    managePolicyOverrides.change(checkbox.dataset.policyId, checkbox.checked);
+                    setEditSaveButtonState(false);
+                }
             });
             document.getElementById('edit-user').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { user: document.getElementById('edit-user').value } });
                 setEditFieldInvalidState('edit-user', false);
                 maybeClearEditValidationError();
+                setEditSaveButtonState(false);
+            });
+            document.getElementById('edit-pass').addEventListener('input', () => {
+                managePageInteraction.dispatch({
+                    type: 'editorChanged',
+                    patch: { passwordReplacement: !!document.getElementById('edit-pass').value }
+                });
+                setEditSaveButtonState(false);
             });
             document.getElementById('edit-check-known-host').addEventListener('click', () => {
                 if (activeEditorName()) {
@@ -1247,47 +1608,64 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     if (managePageInteraction.getView().commands.inFlight.some((key) => key.startsWith('saveEditor:'))) {
                         return;
                     }
-                    closeEditModal();
+                    void requestCloseEditModal();
                 }
             }
         });
 
         async function uploadGlobalKey() {
             const input = document.getElementById('global-key-file');
+            const feedback = document.getElementById('global-key-feedback');
+            const uploadButton = document.getElementById('upload-global-key-btn');
             if (!input || !input.files || input.files.length === 0) {
-                window.notifyApp('Select a private key file to upload.');
+                if (feedback) feedback.textContent = 'Select a private key file to upload.';
                 return;
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyUpload' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
-            const res = await fetch('/api/keys/global', { method: 'POST', body: form });
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to upload global key.');
-                return;
+            const previousLabel = uploadButton?.textContent || 'Add Global SSH Credential';
+            if (feedback) feedback.textContent = 'Uploading Global SSH Credential…';
+            if (uploadButton) {
+                uploadButton.disabled = true;
+                uploadButton.textContent = 'Uploading…';
             }
-            await settleCommand('commandCompleted', execution.plan, 'Global key saved.');
-            input.value = '';
-            resetFileInputLabel(input);
+            try {
+                const res = await fetch('/api/keys/global', { method: 'POST', body: form });
+                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to upload Global SSH Credential.'));
+                await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential saved.');
+                if (feedback) feedback.textContent = 'Global SSH Credential saved.';
+                input.value = '';
+                resetFileInputLabel(input);
+                document.getElementById('global-key-file-selection').textContent = 'No file selected';
+            } catch (error) {
+                const message = error?.message || 'Failed to upload Global SSH Credential.';
+                await settleCommand('commandFailed', execution.plan, message);
+                if (feedback) feedback.textContent = message;
+            } finally {
+                if (uploadButton && uploadButton.textContent === 'Uploading…') {
+                    uploadButton.textContent = previousLabel;
+                    uploadButton.disabled = false;
+                }
+            }
         }
 
         async function clearGlobalKey() {
-            if (!(await window.confirmTypedAction('Clear the global SSH key?', 'CLEAR GLOBAL KEY'))) {
+            if (!(await window.confirmTypedAction('Clear the Global SSH Credential?', 'CLEAR GLOBAL SSH CREDENTIAL'))) {
                 return;
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyClear' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
             const res = await fetch('/api/keys/global', { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear global key.');
+                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear Global SSH Credential.');
                 return;
             }
-            await settleCommand('commandCompleted', execution.plan, 'Global key cleared.');
+            await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential cleared.');
         }
 
         function renderGlobalKeyState(state, detail = '') {
@@ -1307,10 +1685,11 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             status.textContent = current.label;
             status.title = detail || current.label;
 
-            uploadButton.textContent = current.hasKey ? 'Replace Global Key' : 'Add Global Key';
+            uploadButton.textContent = current.hasKey ? 'Replace Global SSH Credential' : 'Add Global SSH Credential';
             uploadButton.disabled = state === 'checking';
             clearButton.disabled = current.hasKey !== true;
-            clearButton.title = current.hasKey ? 'Remove the configured global SSH key' : 'No global key is configured';
+            clearButton.title = current.hasKey ? 'Remove the configured Global SSH Credential' : 'No Global SSH Credential is configured';
+            renderManageWorkspace();
         }
 
         async function performGlobalKeyRequest(request) {
@@ -1325,7 +1704,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (followup) await performGlobalKeyRequest(followup);
             } catch (err) {
                 const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
-                renderGlobalKeyState('error', err.message || 'Unable to check the global key status');
+                renderGlobalKeyState('error', err.message || 'Unable to check the Global SSH Credential status');
                 const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
                 if (followup) await performGlobalKeyRequest(followup);
             }
@@ -1359,6 +1738,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             patch: { failureCause: manageDeepLink.get('failure_cause') || "" },
         });
         renderAuditFailureCauseFilter();
+        initializeManageWorkspace();
+        renderAddAuthMethod();
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();

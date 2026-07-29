@@ -48,6 +48,14 @@ func (s Server) MarshalJSON() ([]byte, error) {
 	})
 }
 
+type HostKeyStatus string
+
+const (
+	HostKeyStatusTrusted HostKeyStatus = "trusted"
+	HostKeyStatusMissing HostKeyStatus = "missing"
+	HostKeyStatusUnknown HostKeyStatus = "unknown"
+)
+
 type ServerStatus struct {
 	Name                    string          `json:"name"`
 	JobID                   string          `json:"job_id,omitempty"`
@@ -63,6 +71,7 @@ type ServerStatus struct {
 	UpgradePlan             UpgradePlan     `json:"upgrade_plan"`
 	HasPassword             bool            `json:"has_password"`
 	HasKey                  bool            `json:"has_key"`
+	HostKeyStatus           HostKeyStatus   `json:"host_key_status"`
 	Tags                    []string        `json:"tags"`
 }
 

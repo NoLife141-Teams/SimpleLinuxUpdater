@@ -897,8 +897,36 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function stubManageApi(page, state = {}) {
-    await page.route('**/api/servers', route => fulfillJson(route, state.servers || [makeServer('demo-host')]));
+    await page.route('**/api/servers', route => {
+      state.inventoryLoadCount = (state.inventoryLoadCount || 0) + 1;
+      return fulfillJson(route, state.servers || [makeServer('demo-host')]);
+    });
+    await page.route('**/api/servers/*/key', async route => {
+      if (route.request().method() === 'POST') {
+        state.uploadServerKeyCount = (state.uploadServerKeyCount || 0) + 1;
+        if (state.failServerKeyUpload) {
+          return route.fulfill({
+            status: 422,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'replacement key rejected' }),
+          });
+        }
+        return fulfillJson(route, { ok: true });
+      }
+      return route.fallback();
+    });
     await page.route('**/api/servers/*', async route => {
+      if (route.request().method() === 'PUT') {
+        const update = route.request().postDataJSON();
+        const existing = (state.servers || [makeServer('demo-host')])[0];
+        state.serverUpdateCount = (state.serverUpdateCount || 0) + 1;
+        state.servers = [{
+          ...existing,
+          ...update,
+          has_password: !!update.pass || !!existing.has_password,
+        }];
+        return fulfillJson(route, state.servers[0]);
+      }
       if (route.request().method() === 'DELETE') {
         state.deleteServerCount = (state.deleteServerCount || 0) + 1;
         state.deletedServerUrl = route.request().url();
@@ -984,6 +1012,17 @@ test.describe.serial('setup and login flows', () => {
       }],
     }));
     await page.route('**/api/update-policies/*/overrides', route => fulfillJson(route, { items: [] }));
+    await page.route('**/api/update-policies/*/overrides/*', async route => {
+      state.policyOverrideSaveCount = (state.policyOverrideSaveCount || 0) + 1;
+      if (state.failPolicyOverrideSave) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'policy override unavailable' }),
+        });
+      }
+      return fulfillJson(route, { ok: true });
+    });
   }
 
   test('setup form shows mismatch error', async ({ page }) => {
@@ -3243,9 +3282,11 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
     await expect(page.locator('#global-key-status')).toHaveText('Configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-configured/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global SSH Credential');
     await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
     await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
+    await page.getByRole('link', { name: /Audit trail/ }).click();
+    await expect(page.locator('#manage-section-audit-content')).toBeVisible();
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
     await page.locator('#audit-table button[data-audit-detail="55"]').click();
     await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
@@ -3280,25 +3321,35 @@ test.describe.serial('setup and login flows', () => {
       window.alert = () => {};
     });
     const deleteServerButton = page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]');
+    const deleteServerMenu = deleteServerButton.locator('xpath=ancestor::details');
+    const openDeleteServerMenu = async () => {
+      if (!(await deleteServerMenu.evaluate(menu => menu.open))) {
+        await deleteServerMenu.locator('summary').click();
+      }
+    };
     const auditPruneButton = page.locator('#audit-prune');
     const clearGlobalKeyButton = page.locator('#clear-global-key-btn');
+    await openDeleteServerMenu();
     await dismissTypedConfirm(page, deleteServerButton);
     await dismissTypedConfirm(page, auditPruneButton);
+    await page.getByRole('link', { name: /Global SSH Credential/ }).click();
+    await expect(page.locator('#manage-section-global-key-content')).toBeVisible();
     await dismissTypedConfirm(page, clearGlobalKeyButton);
     await expect.poll(() => state.deleteServerCount || 0).toBe(0);
     await expect.poll(() => state.auditPruneCount || 0).toBe(0);
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(0);
 
+    await openDeleteServerMenu();
     await acceptTypedConfirm(page, deleteServerButton, 'demo-host');
     await acceptTypedConfirm(page, auditPruneButton, 'PRUNE');
     await expect.poll(() => state.deleteServerCount || 0).toBe(1);
     await expect.poll(() => state.auditPruneCount || 0).toBe(1);
 
-    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
+    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL SSH CREDENTIAL');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
     await expect(page.locator('#global-key-status')).toHaveText('Not configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-missing/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global SSH Credential');
     await expect(clearGlobalKeyButton).toBeDisabled();
   });
 
@@ -3339,6 +3390,140 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="Demo-Host"]').click();
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
+  });
+
+  test('successful immediate server-key upload accepts the editor credential intent', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-key').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-upload-key').click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#edit-key-file-selection')).toHaveText('No file selected');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+    await expect(page.locator('#edit-save')).toBeDisabled();
+  });
+
+  test('failed replacement-key upload retains the accepted server edit and refreshes inventory', async ({ page }) => {
+    const state = {
+      failServerKeyUpload: true,
+      servers: [makeServer('demo-host')],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-name').fill('renamed-host');
+    await page.locator('#edit-host').fill('renamed-host.example.test');
+    await page.locator('#edit-pass').fill('replacement-password');
+    await page.locator('#edit-key').setInputFiles({
+      name: 'invalid_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('invalid-private-key'),
+    });
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect.poll(() => state.inventoryLoadCount || 0).toBeGreaterThan(1);
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('renamed-host');
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-pass')).toHaveValue('');
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-discard').click();
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+  });
+
+  test('failed policy override save keeps the accepted server editor open and dirty', async ({ page }) => {
+    const state = {
+      failPolicyOverrideSave: true,
+      servers: [{ ...makeServer('demo-host'), tags: ['prod'] }],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    const override = page.locator('#edit-policy-overrides input[data-policy-id="9"]');
+    await expect(override).toBeVisible();
+    await override.check();
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.policyOverrideSaveCount || 0).toBe(1);
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+  });
+
+  test('successful per-server-key creation clears the displayed filename', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    await page.locator('input[name="add-auth-method"][value="per-server-key"]').check();
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#trust-host-key').uncheck();
+    await page.locator('#key_file').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#server-key-file-selection')).toHaveText('id_ed25519');
+
+    await page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#server-key-file-selection')).toHaveText('No file selected');
+  });
+
+  test('add-server validation failures render inline and focus the first invalid field', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    const submit = page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true });
+    await submit.click();
+
+    await expect(page.locator('#add-server-error')).toContainText('name, host, user required');
+    await expect(page.locator('#name')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#host')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#user')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#name')).toBeFocused();
+
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#port').fill('70000');
+    await submit.click();
+
+    await expect(page.locator('#add-server-error')).toContainText('SSH port must be a whole number');
+    await expect(page.locator('#port')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#port')).toBeFocused();
   });
 
   test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {
@@ -3684,5 +3869,91 @@ test.describe.serial('setup and login flows', () => {
     await noScriptPage.getByRole('link', { name: 'Manage Servers' }).click();
     await expect(noScriptPage).toHaveURL('http://127.0.0.1:8080/manage');
     await noScriptContext.close();
+  });
+
+  test('Manage Servers confines responsive overflow to data tables', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/manage');
+      await expect(page.locator('#manage-section-nav')).toBeVisible();
+      await expect(page.locator('#manage-section-directory-content')).toBeVisible();
+
+      const layout = await page.evaluate(() => ({
+        documentClientWidth: document.documentElement.clientWidth,
+        documentScrollWidth: document.documentElement.scrollWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+        sectionHeadDirections: Array.from(document.querySelectorAll('.manage-workspace-section .workspace-head'))
+          .map(element => getComputedStyle(element).flexDirection),
+        tables: Array.from(document.querySelectorAll('.manage-workspace-section .table-wrap')).map(element => ({
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          overflowX: getComputedStyle(element).overflowX,
+        })),
+      }));
+
+      expect(layout.documentScrollWidth, `${viewport.width}px document must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      expect(layout.bodyScrollWidth, `${viewport.width}px body must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      for (const table of layout.tables) {
+        expect(['auto', 'scroll']).toContain(table.overflowX);
+      }
+      if (viewport.width <= 640) {
+        expect(layout.sectionHeadDirections.every(direction => direction === 'column')).toBe(true);
+      }
+
+      await expect(page.getByRole('link', { name: /Add Server Create an SSH target/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
+    }
+  });
+
+  test('Manage Servers section navigation leaves visible focus on the destination heading', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+
+    const heading = page.locator('#manage-section-add-server-heading');
+    await expect(heading).toBeFocused();
+    const focusStyle = await heading.evaluate(element => {
+      const style = getComputedStyle(element);
+      return {
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth),
+      };
+    });
+    expect(focusStyle.outlineStyle).not.toBe('none');
+    expect(focusStyle.outlineWidth).toBeGreaterThan(0);
+  });
+
+  test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect(page.locator('#manage-section-add-server-content')).toBeVisible();
+    await expect(page.locator('#manage-section-add-server-heading')).toBeFocused();
+  });
+
+  test('Manage Servers summary distinguishes missing authentication from host trust issues', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, {
+      hasGlobalKey: false,
+      servers: [
+        makeServer('missing-auth', 'idle', [], { host_key_status: 'missing' }),
+        makeServer('trusted-password', 'idle', [], { has_password: true, host_key_status: 'trusted' }),
+        makeServer('untrusted-key', 'idle', [], { has_key: true, host_key_status: 'missing' }),
+      ],
+    });
+    await page.goto('/manage');
+
+    await expect(page.locator('#manage-summary-missing-auth')).toHaveText('1');
+    await expect(page.locator('#manage-summary-host-trust')).toHaveText('2');
   });
 });

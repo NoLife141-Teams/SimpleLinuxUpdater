@@ -3,6 +3,7 @@ package audit
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -197,6 +198,41 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 	if len(result.Items) != 0 || result.Total != len(seed) || result.Page != maxInt {
 		t.Fatalf("overflowing page result = %+v, want empty page with preserved metadata", result)
+	}
+}
+
+func TestSQLiteRepositoryListRejectsInvalidBoundsWithoutAllocating(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewSQLiteRepository(func() *sql.DB { return db })
+
+	for _, test := range []struct {
+		name   string
+		limit  int
+		offset int
+	}{
+		{name: "negative limit", limit: -1},
+		{name: "oversized limit", limit: 201},
+		{name: "negative offset", limit: 1, offset: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := repo.List(ListFilter{}, test.limit, test.offset)
+			if !errors.Is(err, errInvalidListBounds) {
+				t.Fatalf("List(limit=%d, offset=%d) error = %v, want %v", test.limit, test.offset, err, errInvalidListBounds)
+			}
+		})
+	}
+}
+
+func TestSQLiteRepositoryListDoesNotPreallocateFromLimit(t *testing.T) {
+	db := newTestDB(t)
+	repo := NewSQLiteRepository(func() *sql.DB { return db })
+
+	items, err := repo.List(ListFilter{}, 200, 0)
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if items == nil || cap(items) != 0 {
+		t.Fatalf("List() empty items = %#v with capacity %d, want non-nil empty slice without caller-sized preallocation", items, cap(items))
 	}
 }
 

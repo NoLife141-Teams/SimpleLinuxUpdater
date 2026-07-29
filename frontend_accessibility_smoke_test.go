@@ -284,3 +284,18 @@ func TestOperatorStylesCoverRepresentativeViewportsAndScrollableTables(t *testin
 		}
 	}
 }
+
+func TestAdminSectionHeadingFocusDoesNotDrawOutline(t *testing.T) {
+	contents, err := os.ReadFile("static/css/admin.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(contents)
+	const expected = `.admin-workspace-section > [id$="-heading"]:focus,
+.admin-workspace-section h2:focus {
+    outline: none;
+}`
+	if !strings.Contains(css, expected) {
+		t.Error("Admin section headings must explicitly suppress the browser's native focus outline")
+	}
+}

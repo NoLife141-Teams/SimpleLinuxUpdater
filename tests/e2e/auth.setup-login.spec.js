@@ -898,6 +898,13 @@ test.describe.serial('setup and login flows', () => {
 
   async function stubManageApi(page, state = {}) {
     await page.route('**/api/servers', route => fulfillJson(route, state.servers || [makeServer('demo-host')]));
+    await page.route('**/api/servers/*/key', async route => {
+      if (route.request().method() === 'POST') {
+        state.uploadServerKeyCount = (state.uploadServerKeyCount || 0) + 1;
+        return fulfillJson(route, { ok: true });
+      }
+      return route.fallback();
+    });
     await page.route('**/api/servers/*', async route => {
       if (route.request().method() === 'DELETE') {
         state.deleteServerCount = (state.deleteServerCount || 0) + 1;
@@ -2959,6 +2966,29 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
+  test('successful immediate server-key upload accepts the editor credential intent', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-key').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-upload-key').click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#edit-key-file-selection')).toHaveText('No file selected');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+    await expect(page.locator('#edit-save')).toBeDisabled();
+  });
+
   test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {
     const state = { hostKeyState: 'missing' };
     await ensureAuthenticatedSession(page);
@@ -3343,5 +3373,24 @@ test.describe.serial('setup and login flows', () => {
       await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
     }
+  });
+
+  test('Manage Servers section navigation leaves visible focus on the destination heading', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+
+    const heading = page.locator('#manage-section-add-server-heading');
+    await expect(heading).toBeFocused();
+    const focusStyle = await heading.evaluate(element => {
+      const style = getComputedStyle(element);
+      return {
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth),
+      };
+    });
+    expect(focusStyle.outlineStyle).not.toBe('none');
+    expect(focusStyle.outlineWidth).toBeGreaterThan(0);
   });
 });

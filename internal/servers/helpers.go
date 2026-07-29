@@ -418,6 +418,41 @@ func KnownHostEntryExists(deps KnownHostsDeps, host string, port int) (bool, err
 	if err != nil {
 		return false, fmt.Errorf("read known_hosts: %w", err)
 	}
+	return knownHostEntryExistsInData(data, token), nil
+}
+
+func knownHostEntryExistsInPaths(deps KnownHostsDeps, host string, port int) (bool, error) {
+	token := KnownHostsHostToken(host, port)
+	if strings.TrimSpace(token) == "" {
+		return false, errors.New("host is required")
+	}
+	knownHostsMu := deps.knownHostsMu()
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
+	var firstReadErr error
+	found := false
+	for _, path := range KnownHostsPaths(deps) {
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			if firstReadErr == nil {
+				firstReadErr = fmt.Errorf("read known_hosts %q: %w", path, err)
+			}
+			continue
+		}
+		if knownHostEntryExistsInData(data, token) {
+			found = true
+		}
+	}
+	if firstReadErr != nil {
+		return false, firstReadErr
+	}
+	return found, nil
+}
+
+func knownHostEntryExistsInData(data []byte, token string) bool {
 	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -429,11 +464,11 @@ func KnownHostEntryExists(deps KnownHostsDeps, host string, port int) (bool, err
 		}
 		for _, hostToken := range strings.Split(fields[0], ",") {
 			if strings.TrimSpace(hostToken) == token {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
 }
 
 func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, error) {

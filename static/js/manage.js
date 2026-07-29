@@ -37,8 +37,9 @@ function renderManageWorkspace() {
 
     const fleet = view.inventory.summary;
     document.getElementById("manage-summary-total").textContent = String(fleet.total);
-    document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.hostKey);
+    document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.serverKey);
     document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
+    document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
     document.getElementById("manage-summary-attention").textContent = String(fleet.needsAttention);
 
     const globalAuth = document.querySelector('input[name="add-auth-method"][value="global-key"]');
@@ -116,8 +117,10 @@ function activeEditorName() {
 
 function effectiveAuthLabel(value) {
     return {
-        "host-key": "per-server SSH key",
+        "per-server-key": "per-server SSH key",
         "global-key": "Global SSH Credential",
+        "per-server-key-and-password": "per-server SSH key and password",
+        "global-key-and-password": "Global SSH Credential and password",
         password: "password",
         missing: "no usable credential"
     }[value] || "unknown authentication";
@@ -524,8 +527,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         function renderAccessPosture(server) {
             const authLabels = {
                 password: ["Password", "pill-success"],
-                "host-key": ["Per-server key", "pill-success"],
+                "per-server-key": ["Per-server key", "pill-success"],
                 "global-key": ["Global key", "pill"],
+                "per-server-key-and-password": ["Per-server key + password", "pill-warning"],
+                "global-key-and-password": ["Global key + password", "pill-warning"],
                 missing: ["Missing credential", "pill-danger"]
             };
             const trustLabels = {
@@ -739,7 +744,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         function renderAddAuthMethod() {
             const method = selectedAddAuthMethod();
             document.getElementById('add-password-field').hidden = method !== 'password';
-            document.getElementById('add-key-field').hidden = method !== 'host-key';
+            document.getElementById('add-key-field').hidden = method !== 'per-server-key';
             document.getElementById('pass').required = method === 'password';
         }
 
@@ -837,7 +842,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 resetFileInputLabel(e.target);
                 const selectionIDs = {
                     'global-key-file': 'global-key-file-selection',
-                    'key_file': 'host-key-file-selection',
+                    'key_file': 'server-key-file-selection',
                     'edit-key': 'edit-key-file-selection'
                 };
                 const selection = document.getElementById(selectionIDs[e.target.id]);
@@ -1294,6 +1299,12 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 await settleCommand('commandCompleted', execution.plan, 'Server key uploaded.', { announce: false });
                 input.value = '';
                 resetFileInputLabel(input);
+                document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                managePageInteraction.dispatch({
+                    type: 'editorCredentialIntentChanged',
+                    keyReplacement: false
+                });
+                setEditSaveButtonState(false);
             } catch (err) {
                 await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to upload key.', { announce: false });
                 window.notifyApp(err?.message || 'Failed to upload key.');

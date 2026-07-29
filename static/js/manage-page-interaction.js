@@ -7,6 +7,23 @@
 
     const pageSizes = new Set([10, 20, 25, 50, 100]);
     const streamNames = ["inventory", "globalKey", "audit", "policyContext", "hostKey"];
+    const authentication = Object.freeze({
+        password: "password",
+        perServerKey: "per-server-key",
+        globalKey: "global-key",
+        missing: "missing",
+        perServerKeyAndPassword: "per-server-key-and-password",
+        globalKeyAndPassword: "global-key-and-password"
+    });
+    const creationAuthenticationMethods = new Set([
+        authentication.password,
+        authentication.perServerKey,
+        authentication.globalKey
+    ]);
+    const ambiguousAuthentication = new Set([
+        authentication.perServerKeyAndPassword,
+        authentication.globalKeyAndPassword
+    ]);
     const sectionDefinitions = [
         { id: "global-key", label: "Global SSH Credential", collapsed: true },
         { id: "add-server", label: "Add Server", collapsed: true },
@@ -109,25 +126,32 @@
             return effects;
         }
         function effectiveAuth(server) {
-            if (server.has_key) return "host-key";
-            if (globalKeyAvailable) return "global-key";
-            return server.has_password ? "password" : "missing";
+            if (server.has_key) {
+                return server.has_password ? authentication.perServerKeyAndPassword : authentication.perServerKey;
+            }
+            if (globalKeyAvailable) {
+                return server.has_password ? authentication.globalKeyAndPassword : authentication.globalKey;
+            }
+            return server.has_password ? authentication.password : authentication.missing;
         }
         function effectiveAuthAfterCredentialClear(server, credential) {
-            if (credential !== "key" && server.has_key) return "host-key";
-            if (globalKeyAvailable) return "global-key";
-            if (credential !== "password" && server.has_password) return "password";
-            return "missing";
+            return effectiveAuth({
+                ...server,
+                has_key: credential === "key" ? false : !!server.has_key,
+                has_password: credential === "password" ? false : !!server.has_password
+            });
         }
         function projectedServer(server) {
-            return { ...clone(server), effectiveAuth: effectiveAuth(server) };
+            const auth = effectiveAuth(server);
+            return { ...clone(server), effectiveAuth: auth, authenticationAmbiguous: ambiguousAuthentication.has(auth) };
         }
         function inventorySummary() {
             const summary = {
                 total: inventory.length,
                 password: 0,
-                hostKey: 0,
+                serverKey: 0,
                 globalKey: 0,
+                ambiguous: 0,
                 missing: 0,
                 trustedHostKeys: 0,
                 hostKeyAttention: 0,
@@ -135,13 +159,14 @@
             };
             inventory.forEach(server => {
                 const auth = effectiveAuth(server);
-                if (auth === "password") summary.password++;
-                if (auth === "host-key") summary.hostKey++;
-                if (auth === "global-key") summary.globalKey++;
-                if (auth === "missing") summary.missing++;
+                if (auth === authentication.password) summary.password++;
+                if (auth === authentication.perServerKey) summary.serverKey++;
+                if (auth === authentication.globalKey) summary.globalKey++;
+                if (ambiguousAuthentication.has(auth)) summary.ambiguous++;
+                if (auth === authentication.missing) summary.missing++;
                 if (server.host_key_status === "trusted") summary.trustedHostKeys++;
                 else summary.hostKeyAttention++;
-                if (auth === "missing" || server.host_key_status !== "trusted") summary.needsAttention++;
+                if (auth === authentication.missing || ambiguousAuthentication.has(auth) || server.host_key_status !== "trusted") summary.needsAttention++;
             });
             return summary;
         }
@@ -273,19 +298,19 @@
                 if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
                 if (command === "createServer") {
                     const authMethod = String(payload.authMethod || "");
-                    if (!["password", "host-key", "global-key"].includes(authMethod)) {
+                    if (!creationAuthenticationMethods.has(authMethod)) {
                         return { enabled: false, reason: "Choose an authentication method.", invalidFields: ["auth"] };
                     }
-                    if (authMethod === "password" && !payload.hasPassword) {
+                    if (authMethod === authentication.password && !payload.hasPassword) {
                         return { enabled: false, reason: "A password is required for password authentication.", invalidFields: ["pass"] };
                     }
-                    if (authMethod === "host-key" && !payload.hasKeyFile) {
+                    if (authMethod === authentication.perServerKey && !payload.hasKeyFile) {
                         return { enabled: false, reason: "Choose a per-server SSH key.", invalidFields: ["key"] };
                     }
-                    if (authMethod === "global-key" && !globalKeyAvailable) {
+                    if (authMethod === authentication.globalKey && !globalKeyAvailable) {
                         return { enabled: false, reason: "No Global SSH Credential is configured.", invalidFields: ["auth"] };
                     }
-                    return { enabled: true, key, scope, command, payload: { ...draft, authMethod, trustHostKey: !!payload.trustHostKey, uploadKey: authMethod === "host-key" && !!payload.hasKeyFile } };
+                    return { enabled: true, key, scope, command, payload: { ...draft, authMethod, trustHostKey: !!payload.trustHostKey, uploadKey: authMethod === authentication.perServerKey && !!payload.hasKeyFile } };
                 }
                 if (!editorDirty()) return { enabled: false, reason: "The server draft is unchanged." };
                 return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, keyReplacement: !!editor.keyReplacement, policyOverrides: policyOverrideChanges() } };

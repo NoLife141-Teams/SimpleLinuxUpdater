@@ -86,7 +86,11 @@ func newTestService(repo *fakeRepo, initial []Server) (*Service, *State, *[]Serv
 func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.T) {
 	tmpDir := t.TempDir()
 	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte("trusted.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
+	fallbackKnownHostsPath := filepath.Join(tmpDir, "fallback_known_hosts")
+	if err := os.WriteFile(knownHostsPath, []byte("primary.example ssh-ed25519 AAAAPRIMARY\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fallbackKnownHostsPath, []byte("trusted.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	svc, _, _, _ := newTestService(&fakeRepo{}, []Server{
@@ -96,7 +100,7 @@ func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.
 	svc.deps.KnownHosts = KnownHostsDeps{
 		Getenv: func(key string) string {
 			if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
-				return knownHostsPath
+				return knownHostsPath + ":" + fallbackKnownHostsPath
 			}
 			return ""
 		},
@@ -112,6 +116,38 @@ func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.
 	}
 	if statuses[1].HostKeyStatus != "missing" {
 		t.Errorf("missing HostKeyStatus = %q, want missing", statuses[1].HostKeyStatus)
+	}
+}
+
+func TestServerInventoryServiceListStatusesReportsUnknownWhenKnownHostsCannotBeRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	readablePath := filepath.Join(tmpDir, "known_hosts")
+	if err := os.WriteFile(readablePath, []byte("unknown.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unreadablePath := filepath.Join(tmpDir, "unreadable")
+	if err := os.Mkdir(unreadablePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	svc, _, _, _ := newTestService(&fakeRepo{}, []Server{{
+		Name: "unknown", Host: "unknown.example", Port: 22, User: "root",
+	}})
+	svc.deps.KnownHosts = KnownHostsDeps{
+		Getenv: func(key string) string {
+			if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+				return readablePath + ":" + unreadablePath
+			}
+			return ""
+		},
+		KnownHostsMu: &sync.Mutex{},
+	}
+
+	statuses := svc.ListStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("ListStatuses() length = %d, want 1", len(statuses))
+	}
+	if statuses[0].HostKeyStatus != "unknown" {
+		t.Errorf("HostKeyStatus = %q, want unknown", statuses[0].HostKeyStatus)
 	}
 }
 

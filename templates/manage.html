@@ -39,7 +39,8 @@
                 <article class="metric-item"><span>Total servers</span><strong id="manage-summary-total">0</strong><small>Registered SSH targets</small></article>
                 <article class="metric-item"><span>Host credentials</span><strong id="manage-summary-host-auth">0</strong><small>Password or per-server key</small></article>
                 <article class="metric-item"><span>Global fallback</span><strong id="manage-summary-global-auth">0</strong><small>Using the shared credential</small></article>
-                <article class="metric-item"><span>Needs attention</span><strong id="manage-summary-attention" class="bad">0</strong><small>Missing auth or host trust</small></article>
+                <article class="metric-item"><span>Multiple credentials</span><strong id="manage-summary-ambiguous" class="warning">0</strong><small>Review authentication intent</small></article>
+                <article class="metric-item"><span>Needs attention</span><strong id="manage-summary-attention" class="bad">0</strong><small>Missing auth, multiple credentials, or host trust</small></article>
             </section>
 
             <section class="manage-grid fade-in">
@@ -89,7 +90,7 @@
                             <fieldset class="auth-method-fieldset">
                                 <legend>Authentication method</legend>
                                 <label><input type="radio" name="add-auth-method" value="password" checked> Password</label>
-                                <label><input type="radio" name="add-auth-method" value="host-key"> Per-server SSH key</label>
+                                <label><input type="radio" name="add-auth-method" value="per-server-key"> Per-server SSH key</label>
                                 <label id="global-auth-option"><input type="radio" name="add-auth-method" value="global-key" disabled> Global SSH Credential</label>
                                 <span class="muted" id="global-auth-help">Configure a Global SSH Credential to use this option.</span>
                             </fieldset>
@@ -120,8 +121,8 @@
                             <div class="field add-key-field" id="add-key-field" hidden>
                                 <label for="key_file">Per-server SSH key</label>
                                 <input class="file-input" type="file" id="key_file">
-                                <label class="file-btn" for="key_file">Choose host key</label>
-                                <span class="file-selection muted" id="host-key-file-selection">No file selected</span>
+                                <label class="file-btn" for="key_file">Choose per-server key</label>
+                                <span class="file-selection muted" id="server-key-file-selection">No file selected</span>
                             </div>
                             <label class="checkbox-inline"><input type="checkbox" id="trust-host-key" checked> Trust SSH host key now after confirming its fingerprint</label>
                             <div id="add-server-error" class="form-error full-width" role="alert" aria-live="assertive"></div>

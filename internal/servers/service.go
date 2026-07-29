@@ -234,7 +234,7 @@ func (s *Service) SaveOrRollbackLocked(prevServers []Server, prevStatusMap map[s
 func (s *Service) ListStatuses() []ServerStatus {
 	statuses := s.state().ListStatuses()
 	for i := range statuses {
-		exists, err := KnownHostEntryExists(s.deps.KnownHosts, statuses[i].Host, statuses[i].Port)
+		exists, err := knownHostEntryExistsInPaths(s.deps.KnownHosts, statuses[i].Host, statuses[i].Port)
 		switch {
 		case err != nil:
 			statuses[i].HostKeyStatus = "unknown"

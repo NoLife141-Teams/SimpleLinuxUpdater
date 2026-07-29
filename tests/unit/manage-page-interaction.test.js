@@ -171,7 +171,7 @@ test("server command eligibility is owned at the Manage Page Interaction seam", 
     const validCreate = store.dispatch({
         type: "commandRequested",
         command: "createServer",
-        payload: { name: " alpha ", host: " host ", port: "2222", user: " root ", tags: ["prod", "prod"], authMethod: "host-key", hasKeyFile: true, trustHostKey: true }
+        payload: { name: " alpha ", host: " host ", port: "2222", user: " root ", tags: ["prod", "prod"], authMethod: "per-server-key", hasKeyFile: true, trustHostKey: true }
     }).find(effect => effect.type === "executeCommand");
     assert.deepEqual(validCreate.plan.payload, {
         name: "alpha",
@@ -179,7 +179,7 @@ test("server command eligibility is owned at the Manage Page Interaction seam", 
         port: 2222,
         user: "root",
         tags: ["prod"],
-        authMethod: "host-key",
+        authMethod: "per-server-key",
         trustHostKey: true,
         uploadKey: true
     });
@@ -397,7 +397,7 @@ test("Manage workspace navigation expands and focuses the requested section", ()
     });
 });
 
-test("inventory projection explains effective authentication and fleet posture", () => {
+test("inventory projection explains effective and ambiguous authentication posture", () => {
     const store = createStore();
     store.dispatch({
         type: "inventorySnapshotReceived",
@@ -412,25 +412,29 @@ test("inventory projection explains effective authentication and fleet posture",
 
     store.dispatch({ type: "globalKeySnapshotReceived", hasKey: true });
     let view = store.getView();
-    assert.equal(view.inventory.allItems.find(server => server.name === "password").effectiveAuth, "global-key");
-    assert.equal(view.inventory.allItems.find(server => server.name === "host-key-and-password").effectiveAuth, "host-key");
+    assert.equal(view.inventory.allItems.find(server => server.name === "password").effectiveAuth, "global-key-and-password");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key").effectiveAuth, "per-server-key");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key-and-password").effectiveAuth, "per-server-key-and-password");
     assert.deepEqual(view.inventory.summary, {
         total: 5,
         password: 0,
-        hostKey: 2,
-        globalKey: 3,
+        serverKey: 1,
+        globalKey: 2,
+        ambiguous: 2,
         missing: 0,
         trustedHostKeys: 3,
         hostKeyAttention: 2,
-        needsAttention: 2
+        needsAttention: 4
     });
 
     store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
     view = store.getView();
     assert.equal(view.inventory.allItems.find(server => server.name === "missing").effectiveAuth, "missing");
     assert.equal(view.inventory.allItems.find(server => server.name === "password").effectiveAuth, "password");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key-and-password").effectiveAuth, "per-server-key-and-password");
     assert.equal(view.inventory.summary.missing, 2);
-    assert.equal(view.inventory.summary.needsAttention, 3);
+    assert.equal(view.inventory.summary.ambiguous, 1);
+    assert.equal(view.inventory.summary.needsAttention, 4);
 });
 
 test("server creation requires the explicitly selected authentication method", () => {
@@ -461,10 +465,10 @@ test("server creation requires the explicitly selected authentication method", (
     effects = store.dispatch({
         type: "commandRequested",
         command: "createServer",
-        payload: { ...draft, authMethod: "host-key", hasKeyFile: true }
+        payload: { ...draft, authMethod: "per-server-key", hasKeyFile: true }
     });
     assert.equal(effects[0].type, "executeCommand");
-    assert.equal(effects[0].plan.payload.authMethod, "host-key");
+    assert.equal(effects[0].plan.payload.authMethod, "per-server-key");
     store.dispatch({ type: "commandCompleted", plan: effects[0].plan });
 
     effects = store.dispatch({

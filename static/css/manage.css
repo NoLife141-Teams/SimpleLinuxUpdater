@@ -80,7 +80,7 @@
     scroll-margin-top: 164px;
 }
 
-.manage-workspace-section > [id$="-heading"]:focus {
+.manage-workspace-section [id$="-heading"]:focus {
     border-radius: 4px;
     outline: 2px solid var(--accent);
     outline-offset: 4px;

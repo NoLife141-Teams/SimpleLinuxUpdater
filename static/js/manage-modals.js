@@ -72,7 +72,7 @@ function fileInputEmptyLabel(input) {
         case 'global-key-file':
             return 'Choose global key';
         case 'key_file':
-            return 'Choose host key';
+            return 'Choose per-server key';
         case 'edit-key':
             return 'Choose key';
         default:

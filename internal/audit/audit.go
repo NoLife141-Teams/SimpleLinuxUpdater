@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -56,6 +57,13 @@ type ListFilter struct {
 }
 
 const ListCategoryAdminActivity = "admin_activity"
+
+const (
+	defaultAuditPageSize = 50
+	maxAuditPageSize     = 200
+)
+
+var errInvalidListBounds = errors.New("invalid audit list bounds")
 
 type ListResult struct {
 	Items    []Event `json:"items"`
@@ -144,6 +152,9 @@ func (r *SQLiteRepository) Count(filter ListFilter) (int, error) {
 }
 
 func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, error) {
+	if limit < 1 || limit > maxAuditPageSize || offset < 0 {
+		return nil, &ListError{Stage: "validate", Err: errInvalidListBounds}
+	}
 	whereClause, args := auditWhereClause(filter)
 	query := `SELECT id, created_at, actor, action, target_type, target_name, status, message, meta_json, request_id, client_ip
 			FROM audit_events` + whereClause + ` ORDER BY id DESC`
@@ -158,7 +169,7 @@ func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, 
 	}
 	defer rows.Close()
 
-	items := make([]Event, 0, limit)
+	items := make([]Event, 0)
 	matched := 0
 	for rows.Next() {
 		var evt Event
@@ -427,10 +438,10 @@ func (s *Service) List(filter ListFilter) (ListResult, error) {
 	}
 	pageSize := filter.PageSize
 	if pageSize < 1 {
-		pageSize = 50
+		pageSize = defaultAuditPageSize
 	}
-	if pageSize > 200 {
-		pageSize = 200
+	if pageSize > maxAuditPageSize {
+		pageSize = maxAuditPageSize
 	}
 	total, err := s.repo.Count(filter)
 	if err != nil {

@@ -523,6 +523,61 @@ test("editor command eligibility and credential intentions require a changed val
     assert.equal(store.getView().editor.dirty, false);
 });
 
+test("partial editor saves accept persisted server facts while preserving failed key intent", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", port: 22, user: "root" }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    store.dispatch({
+        type: "editorChanged",
+        patch: { name: "beta", host: "beta.example", passwordReplacement: true }
+    });
+    store.dispatch({ type: "editorCredentialIntentChanged", keyReplacement: true });
+
+    const execution = store.dispatch({ type: "commandRequested", command: "saveEditor" })
+        .find(effect => effect.type === "executeCommand");
+    store.dispatch({
+        type: "editorServerAccepted",
+        sessionID: execution.plan.payload.sessionID,
+        server: execution.plan.payload
+    });
+
+    let view = store.getView();
+    assert.equal(view.editor.originalName, "beta");
+    assert.equal(view.editor.originalDraft.name, "beta");
+    assert.equal(view.editor.originalDraft.host, "beta.example");
+    assert.equal(view.editor.draft.passwordReplacement, false);
+    assert.equal(view.editor.keyReplacement, true);
+    assert.equal(view.editor.dirty, true);
+
+    const effects = store.dispatch({
+        type: "commandPartiallyCompleted",
+        plan: execution.plan,
+        message: "Server saved, but the replacement SSH key failed."
+    });
+    assert.deepEqual(effects, [
+        {
+            type: "announce",
+            message: "Server saved, but the replacement SSH key failed.",
+            error: true
+        },
+        {
+            type: "refresh",
+            streams: ["inventory", "globalKey", "audit"]
+        }
+    ]);
+    assert.deepEqual(store.getView().commands, { inFlight: [], scopes: [] });
+
+    store.dispatch({ type: "editorDiscarded" });
+    view = store.getView();
+    assert.equal(view.editor.draft.name, "beta");
+    assert.equal(view.editor.draft.host, "beta.example");
+    assert.equal(view.editor.keyReplacement, false);
+    assert.equal(view.editor.dirty, false);
+});
+
 test("editor validity preserves and rejects invalid raw SSH fields", () => {
     const store = createStore();
     store.dispatch({

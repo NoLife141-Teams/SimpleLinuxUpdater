@@ -897,15 +897,36 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function stubManageApi(page, state = {}) {
-    await page.route('**/api/servers', route => fulfillJson(route, state.servers || [makeServer('demo-host')]));
+    await page.route('**/api/servers', route => {
+      state.inventoryLoadCount = (state.inventoryLoadCount || 0) + 1;
+      return fulfillJson(route, state.servers || [makeServer('demo-host')]);
+    });
     await page.route('**/api/servers/*/key', async route => {
       if (route.request().method() === 'POST') {
         state.uploadServerKeyCount = (state.uploadServerKeyCount || 0) + 1;
+        if (state.failServerKeyUpload) {
+          return route.fulfill({
+            status: 422,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'replacement key rejected' }),
+          });
+        }
         return fulfillJson(route, { ok: true });
       }
       return route.fallback();
     });
     await page.route('**/api/servers/*', async route => {
+      if (route.request().method() === 'PUT') {
+        const update = route.request().postDataJSON();
+        const existing = (state.servers || [makeServer('demo-host')])[0];
+        state.serverUpdateCount = (state.serverUpdateCount || 0) + 1;
+        state.servers = [{
+          ...existing,
+          ...update,
+          has_password: !!update.pass || !!existing.has_password,
+        }];
+        return fulfillJson(route, state.servers[0]);
+      }
       if (route.request().method() === 'DELETE') {
         state.deleteServerCount = (state.deleteServerCount || 0) + 1;
         state.deletedServerUrl = route.request().url();
@@ -2987,6 +3008,67 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-key-file-selection')).toHaveText('No file selected');
     await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
     await expect(page.locator('#edit-save')).toBeDisabled();
+  });
+
+  test('failed replacement-key upload retains the accepted server edit and refreshes inventory', async ({ page }) => {
+    const state = {
+      failServerKeyUpload: true,
+      servers: [makeServer('demo-host')],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-name').fill('renamed-host');
+    await page.locator('#edit-host').fill('renamed-host.example.test');
+    await page.locator('#edit-pass').fill('replacement-password');
+    await page.locator('#edit-key').setInputFiles({
+      name: 'invalid_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('invalid-private-key'),
+    });
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect.poll(() => state.inventoryLoadCount || 0).toBeGreaterThan(1);
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('renamed-host');
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-pass')).toHaveValue('');
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-discard').click();
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+  });
+
+  test('add-server validation failures render inline and focus the first invalid field', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect(page.locator('#add-server-error')).toContainText('name, host, user required');
+    await expect(page.locator('#name')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#host')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#user')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#name')).toBeFocused();
+
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#port').fill('70000');
+    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect(page.locator('#add-server-error')).toContainText('SSH port must be a whole number');
+    await expect(page.locator('#port')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#port')).toBeFocused();
   });
 
   test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {

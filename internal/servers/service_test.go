@@ -136,16 +136,16 @@ func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.
 	if knownHostsConfigReads != 1 {
 		t.Fatalf("known_hosts config reads = %d, want one inventory-level load", knownHostsConfigReads)
 	}
-	if statuses[0].HostKeyStatus != "trusted" {
+	if statuses[0].HostKeyStatus != HostKeyStatusTrusted {
 		t.Errorf("trusted HostKeyStatus = %q, want trusted", statuses[0].HostKeyStatus)
 	}
-	if statuses[1].HostKeyStatus != "trusted" {
+	if statuses[1].HostKeyStatus != HostKeyStatusTrusted {
 		t.Errorf("pattern HostKeyStatus = %q, want trusted", statuses[1].HostKeyStatus)
 	}
-	if statuses[2].HostKeyStatus != "trusted" {
+	if statuses[2].HostKeyStatus != HostKeyStatusTrusted {
 		t.Errorf("certificate HostKeyStatus = %q, want trusted", statuses[2].HostKeyStatus)
 	}
-	if statuses[3].HostKeyStatus != "missing" {
+	if statuses[3].HostKeyStatus != HostKeyStatusMissing {
 		t.Errorf("missing HostKeyStatus = %q, want missing", statuses[3].HostKeyStatus)
 	}
 }
@@ -177,7 +177,7 @@ func TestServerInventoryServiceListStatusesReportsUnknownWhenKnownHostsCannotBeR
 	if len(statuses) != 1 {
 		t.Fatalf("ListStatuses() length = %d, want 1", len(statuses))
 	}
-	if statuses[0].HostKeyStatus != "unknown" {
+	if statuses[0].HostKeyStatus != HostKeyStatusUnknown {
 		t.Errorf("HostKeyStatus = %q, want unknown", statuses[0].HostKeyStatus)
 	}
 }

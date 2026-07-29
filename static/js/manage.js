@@ -746,15 +746,63 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 : 'Configure a Global SSH Credential to use this option.';
         }
 
+        const addServerFieldIDs = {
+            name: 'name',
+            host: 'host',
+            port: 'port',
+            user: 'user',
+            pass: 'pass',
+            key: 'key_file',
+            auth: 'add-auth-methods'
+        };
+
+        function addServerField(field) {
+            return document.getElementById(addServerFieldIDs[field]);
+        }
+
+        function setAddServerFieldInvalidState(field, invalid) {
+            const input = addServerField(field);
+            if (!input) return;
+            input.classList.toggle('is-invalid', !!invalid);
+            if (invalid) input.setAttribute('aria-invalid', 'true');
+            else input.removeAttribute('aria-invalid');
+        }
+
+        function clearAddServerValidation() {
+            Object.keys(addServerFieldIDs).forEach(field => setAddServerFieldInvalidState(field, false));
+            document.getElementById('add-server-error').textContent = '';
+        }
+
+        function showAddServerValidation(rejection = {}) {
+            clearAddServerValidation();
+            const invalidFields = rejection.invalidFields || [];
+            invalidFields.forEach(field => setAddServerFieldInvalidState(field, true));
+            document.getElementById('add-server-error').textContent = rejection.reason || 'Server creation is unavailable.';
+            const firstInvalid = addServerField(invalidFields[0]);
+            if (firstInvalid?.matches('fieldset')) firstInvalid.querySelector('input:not(:disabled)')?.focus();
+            else firstInvalid?.focus();
+        }
+
+        function clearEditedAddServerField(field) {
+            setAddServerFieldInvalidState(field, false);
+            const hasInvalidField = Object.keys(addServerFieldIDs).some(key => addServerField(key)?.hasAttribute('aria-invalid'));
+            if (!hasInvalidField) document.getElementById('add-server-error').textContent = '';
+        }
+
         document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
             input.addEventListener('change', () => {
                 managePageInteraction.dispatch({
                     type: 'creationAuthenticationChanged',
                     authenticationMethod: input.value
                 });
+                for (const field of ['auth', 'pass', 'key']) clearEditedAddServerField(field);
                 renderAddAuthMethod();
             });
         });
+        for (const field of ['name', 'host', 'port', 'user', 'pass']) {
+            addServerField(field).addEventListener('input', () => clearEditedAddServerField(field));
+        }
+        addServerField('key').addEventListener('change', () => clearEditedAddServerField('key'));
 
         document.getElementById('add-server-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -780,10 +828,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const execution = command.find(effect => effect.type === 'executeCommand');
             if (!execution) {
                 const rejection = command.find(effect => effect.type === 'commandRejected');
-                document.getElementById('add-server-error').textContent = rejection?.reason || 'Server creation is unavailable.';
+                showAddServerValidation(rejection);
                 return;
             }
-            document.getElementById('add-server-error').textContent = '';
+            clearAddServerValidation();
             try {
                 const accepted = execution.plan.payload;
                 const createRes = await fetch('/api/servers', {
@@ -1246,17 +1294,29 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: newPass, tags: accepted.tags })
                 });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
-                managePageInteraction.dispatch({ type: 'editorIdentityAccepted', sessionID: accepted.sessionID, name: accepted.name });
+                managePageInteraction.dispatch({ type: 'editorServerAccepted', sessionID: accepted.sessionID, server: accepted });
+                document.getElementById('edit-pass').value = '';
                 const replacementKey = document.getElementById('edit-key');
                 if (accepted.keyReplacement && replacementKey?.files?.length) {
-                    const keyForm = new FormData();
-                    keyForm.append('key', replacementKey.files[0]);
-                    const keyResponse = await fetch(`/api/servers/${encodeURIComponent(accepted.name)}/key`, {
-                        method: 'POST',
-                        body: keyForm
-                    });
-                    if (!keyResponse.ok) {
-                        throw new Error(await parseErrorResponse(keyResponse, 'Server identity saved, but the replacement SSH key failed to upload.'));
+                    let keyUploadError = '';
+                    try {
+                        const keyForm = new FormData();
+                        keyForm.append('key', replacementKey.files[0]);
+                        const keyResponse = await fetch(`/api/servers/${encodeURIComponent(accepted.name)}/key`, {
+                            method: 'POST',
+                            body: keyForm
+                        });
+                        if (!keyResponse.ok) {
+                            keyUploadError = await parseErrorResponse(keyResponse, 'replacement key rejected');
+                        }
+                    } catch (err) {
+                        keyUploadError = err?.message || 'unknown error';
+                    }
+                    if (keyUploadError) {
+                        const message = `Server saved, but the replacement SSH key failed to upload: ${keyUploadError}`;
+                        await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                        window.notifyApp(message);
+                        return;
                     }
                 }
                 let overrideSaveError = null;

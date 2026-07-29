@@ -24,7 +24,7 @@ This UI checklist can be run without a real SSH target. For release validation t
 - [ ] Add-host form renders all fields and the Global SSH Credential panel.
 - [ ] Server list table renders empty state and populated rows.
 - [ ] Delete server prompt requires typing the server name.
-- [ ] Audit table includes a `Report` column.
+- [ ] Audit table groups `Details` and `Report` under one `Actions` column.
 - [ ] Audit report links point to `/api/reports/audit/:id`.
 - [ ] Audit prune requires typed confirmation `PRUNE`.
 - [ ] Clearing the Global SSH Credential requires typed confirmation `CLEAR GLOBAL SSH CREDENTIAL`.

@@ -86,8 +86,8 @@
                         </div>
                     </div>
                     <div class="manage-section-content" id="manage-section-add-server-content" data-manage-section-content="add-server" hidden>
-                        <form id="add-server-form" class="add-server-form">
-                            <fieldset class="auth-method-fieldset">
+                        <form id="add-server-form" class="add-server-form" novalidate>
+                            <fieldset class="auth-method-fieldset" id="add-auth-methods">
                                 <legend>Authentication method</legend>
                                 <label><input type="radio" name="add-auth-method" value="password" checked> Password</label>
                                 <label><input type="radio" name="add-auth-method" value="per-server-key"> Per-server SSH key</label>

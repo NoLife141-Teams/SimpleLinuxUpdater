@@ -1157,6 +1157,11 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('observability charts, filters, shareable URL, pagination, and CSV scale an investigation', async ({ page }) => {
+    await page.route('**/api/app-settings/timezone', route => fulfillJson(route, {
+      timezone: 'America/Toronto',
+      resolved_timezone: 'America/Toronto',
+      editable_timezone: 'America/Toronto',
+    }));
     await ensureAuthenticatedSession(page);
     await page.route('**/api/observability/summary*', route => fulfillJson(route, {
       window: '7d',

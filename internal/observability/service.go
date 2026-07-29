@@ -133,44 +133,6 @@ func ParseWindow(raw string) (string, time.Duration, error) {
 	}
 }
 
-func metaStringValue(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return ""
-	}
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
-	}
-}
-
-func metaBoolValue(meta map[string]any, key string) (bool, bool) {
-	if meta == nil {
-		return false, false
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return false, false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, true
-	case string:
-		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-		if err != nil {
-			return false, false
-		}
-		return parsed, true
-	default:
-		return false, false
-	}
-}
-
 func MetaDurationMS(meta map[string]any) (float64, bool) {
 	if meta == nil {
 		return 0, false

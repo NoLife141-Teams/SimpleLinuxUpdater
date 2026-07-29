@@ -1134,6 +1134,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#summary-lifecycle')).toContainText('Current');
     await expect(page.locator('#trends-lifecycle')).toContainText('Current');
     await expect(page.locator('#kpi-success-rate-card')).toContainText('Critical');
+    await expect(page.locator('#kpi-success-icon')).toHaveText('×');
     await expect(page.locator('#kpi-success-rate-card')).toContainText('3 successful');
     await expect(page.locator('#kpi-success-rate-card')).toContainText('1 failed');
     await expect(page.locator('#kpi-duration-card')).toContainText('Low confidence');
@@ -1144,8 +1145,12 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#health-trends-body')).toContainText('Unavailable');
     await expect(page.locator('#health-trends-body')).toContainText('Stale');
     await expect(page.locator('#health-trends-body')).not.toContainText('119231880');
+    const causeRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
+      && request.url().includes('failure_cause=unknown'));
     await page.locator('#failure-causes-body a[href*="audit_target=demo-host"]').click();
+    await causeRequest;
     await expect(page).toHaveURL(/\/manage\?/);
+    await expect(page).toHaveURL(/failure_cause=unknown/);
     await expect(page.locator('#audit-target-filter')).toHaveValue('demo-host');
     await expect(page.locator('#audit-action-filter')).toHaveValue('update.complete');
     await expect(page.locator('#audit-status-filter')).toHaveValue('failure');
@@ -1203,6 +1208,8 @@ test.describe.serial('setup and login flows', () => {
     }));
 
     await page.goto('/observability?window=7d');
+    await expect(page.locator('#observability-last-refresh')).toContainText('2026');
+    await expect(page.locator('#observability-last-refresh')).toContainText('ago');
     await expect(page.getByRole('img', { name: /Package count trend/ })).toBeVisible();
     await expect(page.getByRole('img', { name: /Disk free trend/ })).toBeVisible();
     await expect(page.locator('#failure-breakdown-bars progress')).toHaveCount(1);

@@ -776,6 +776,19 @@ func handleAuditEvents(c *gin.Context) {
 	handleAuditEventsWithService(c, defaultAuditService())
 }
 
+func validAuditFailureCause(value string) bool {
+	if value == "unknown" || value == "retry_exhausted" {
+		return true
+	}
+	for _, prefix := range []string{"precheck:", "postcheck:", "error_class:"} {
+		if strings.HasPrefix(value, prefix) {
+			suffix := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+			return suffix != "" && len(suffix) <= 96
+		}
+	}
+	return false
+}
+
 func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	if service == nil {
 		service = defaultAuditService()
@@ -794,11 +807,16 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	targetName := strings.TrimSpace(c.Query("target_name"))
 	action := strings.TrimSpace(c.Query("action"))
 	status := strings.TrimSpace(c.Query("status"))
+	failureCause := strings.TrimSpace(c.Query("failure_cause"))
 	category := strings.TrimSpace(c.Query("category"))
 	from := strings.TrimSpace(c.Query("from"))
 	to := strings.TrimSpace(c.Query("to"))
 	if category != "" && category != AuditListCategoryAdminActivity {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit category"})
+		return
+	}
+	if failureCause != "" && !validAuditFailureCause(failureCause) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid failure cause"})
 		return
 	}
 
@@ -820,14 +838,15 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	}
 
 	result, err := service.List(AuditListFilter{
-		Page:       page,
-		PageSize:   pageSize,
-		Category:   category,
-		TargetName: targetName,
-		Action:     action,
-		Status:     status,
-		From:       from,
-		To:         to,
+		Page:         page,
+		PageSize:     pageSize,
+		Category:     category,
+		TargetName:   targetName,
+		Action:       action,
+		Status:       status,
+		FailureCause: failureCause,
+		From:         from,
+		To:           to,
 	})
 	if err != nil {
 		message := "failed to load audit events"

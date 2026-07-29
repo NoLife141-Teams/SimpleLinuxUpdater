@@ -43,14 +43,15 @@ type Event struct {
 }
 
 type ListFilter struct {
-	Page       int
-	PageSize   int
-	Category   string
-	TargetName string
-	Action     string
-	Status     string
-	From       string
-	To         string
+	Page         int
+	PageSize     int
+	Category     string
+	TargetName   string
+	Action       string
+	Status       string
+	FailureCause string
+	From         string
+	To           string
 }
 
 const ListCategoryAdminActivity = "admin_activity"
@@ -217,6 +218,20 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 	if filter.Status != "" {
 		whereParts = append(whereParts, "status = ?")
 		args = append(args, filter.Status)
+	}
+	if filter.FailureCause != "" {
+		whereParts = append(whereParts, `(CASE
+			WHEN json_valid(meta_json) = 0 THEN 'unknown'
+			WHEN TRIM(COALESCE(json_extract(meta_json, '$.precheck_failed'), '')) <> ''
+				THEN 'precheck:' || TRIM(json_extract(meta_json, '$.precheck_failed'))
+			WHEN TRIM(COALESCE(json_extract(meta_json, '$.postcheck_failed'), '')) <> ''
+				THEN 'postcheck:' || TRIM(json_extract(meta_json, '$.postcheck_failed'))
+			WHEN COALESCE(json_extract(meta_json, '$.retry_exhausted'), 0) = 1 THEN 'retry_exhausted'
+			WHEN LOWER(TRIM(COALESCE(json_extract(meta_json, '$.last_error_class'), ''))) NOT IN ('', 'none')
+				THEN 'error_class:' || LOWER(TRIM(json_extract(meta_json, '$.last_error_class')))
+			ELSE 'unknown'
+		END) = ?`)
+		args = append(args, filter.FailureCause)
 	}
 	if filter.From != "" {
 		whereParts = append(whereParts, "created_at >= ?")

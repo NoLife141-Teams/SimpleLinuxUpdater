@@ -200,6 +200,35 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 }
 
+func TestServiceListFiltersByDerivedFailureCause(t *testing.T) {
+	db := newTestDB(t)
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
+	seed := []Event{
+		{CreatedAt: "2026-02-10T08:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "alpha", Status: "failure", Message: "retry", MetaJSON: `{"retry_exhausted":true,"last_error_class":"transient"}`},
+		{CreatedAt: "2026-02-10T09:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "beta", Status: "failure", Message: "precheck", MetaJSON: `{"precheck_failed":"disk-space","retry_exhausted":true}`},
+		{CreatedAt: "2026-02-10T10:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "gamma", Status: "failure", Message: "unknown", MetaJSON: `{not-json`},
+	}
+	for _, event := range seed {
+		if err := svc.Write(event); err != nil {
+			t.Fatalf("Write() seed error = %v", err)
+		}
+	}
+
+	for cause, wantTarget := range map[string]string{
+		"retry_exhausted":     "alpha",
+		"precheck:disk-space": "beta",
+		"unknown":             "gamma",
+	} {
+		result, err := svc.List(ListFilter{Page: 1, PageSize: 20, FailureCause: cause})
+		if err != nil {
+			t.Fatalf("List(FailureCause=%q) error = %v", cause, err)
+		}
+		if result.Total != 1 || len(result.Items) != 1 || result.Items[0].TargetName != wantTarget {
+			t.Fatalf("List(FailureCause=%q) = %+v, want target %q", cause, result, wantTarget)
+		}
+	}
+}
+
 func TestServiceListAdminActivityCategoryFiltersOrdersAndBoundsExistingAuditEvents(t *testing.T) {
 	db := newTestDB(t)
 	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})

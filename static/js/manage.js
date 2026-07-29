@@ -538,6 +538,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (query.targetName) params.set('target_name', query.targetName);
                 if (query.action) params.set('action', query.action);
                 if (query.status) params.set('status', query.status);
+                if (query.failureCause) params.set('failure_cause', query.failureCause);
                 if (query.from) params.set('from', query.from);
                 if (query.to) params.set('to', query.to);
                 const res = await fetch(`/api/audit-events?${params.toString()}`);
@@ -570,6 +571,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 targetName: document.getElementById('audit-target-filter').value.trim(),
                 action: document.getElementById('audit-action-filter').value.trim(),
                 status: document.getElementById('audit-status-filter').value,
+                failureCause: managePageInteraction.getView().audit.query.failureCause,
                 from: auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value),
                 to: auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value),
                 page: current.page,
@@ -1302,6 +1304,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('audit-target-filter').value = auditDeepLink.get('audit_target') || "";
         document.getElementById('audit-action-filter').value = auditDeepLink.get('audit_action') || "";
         document.getElementById('audit-status-filter').value = auditDeepLink.get('audit_status') || "";
+        managePageInteraction.dispatch({
+            type: 'auditQueryChanged',
+            patch: { failureCause: auditDeepLink.get('failure_cause') || "" },
+        });
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();

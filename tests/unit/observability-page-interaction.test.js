@@ -189,6 +189,31 @@ test("fleet trend projection carries each host's latest value across staggered s
     ]);
 });
 
+test("failure trend projection counts events only at their actual timestamps", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-29T10:00:00Z", last_update_status: "failure" },
+                { captured_at: "2026-07-29T12:00:00Z", last_update_status: "success" },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-29T11:00:00Z", last_scan_status: "failure" },
+                { captured_at: "2026-07-29T12:00:00Z", last_scan_status: "failure" },
+            ],
+        },
+    ], "failures");
+
+    assert.deepEqual(series, [
+        { timestamp: "2026-07-29T10:00:00Z", value: 1 },
+        { timestamp: "2026-07-29T11:00:00Z", value: 1 },
+        { timestamp: "2026-07-29T12:00:00Z", value: 1 },
+    ]);
+});
+
 test("health projection clamps pages and identifies stale observations deterministically", () => {
     const result = projectHealthCollection([
         { name: "stale", latest: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 } },

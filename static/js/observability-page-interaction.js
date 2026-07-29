@@ -139,7 +139,6 @@
     }
 
     function projectFleetTrendSeries(servers, metric) {
-        const latestByServer = new Map();
         const events = [];
         (Array.isArray(servers) ? servers : []).forEach(server => {
             (Array.isArray(server.points) ? server.points : []).forEach(point => {
@@ -148,6 +147,15 @@
             });
         });
         events.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp) || left.server.localeCompare(right.server));
+        if (metric === "failures") {
+            const counts = new Map();
+            events.forEach(event => {
+                const value = trendMetricValue(event.point, metric);
+                if (value) counts.set(event.timestamp, (counts.get(event.timestamp) || 0) + value);
+            });
+            return [...counts.entries()].map(([timestamp, value]) => ({ timestamp, value }));
+        }
+        const latestByServer = new Map();
         const series = [];
         events.forEach(event => {
             latestByServer.set(event.server, event.point);

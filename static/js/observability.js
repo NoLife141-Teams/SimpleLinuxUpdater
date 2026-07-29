@@ -222,8 +222,13 @@ let refreshTimeoutId = null;
                 view.trends.data?.generated_at || view.trends.data?.to,
             ].map(Date.parse).filter(Number.isFinite);
             if (acceptedTimes.length) {
-                document.getElementById('observability-last-refresh').textContent =
-                    `Latest accepted · ${formatRelativeTime(new Date(Math.max(...acceptedTimes)).toISOString())}`;
+                const latestAccepted = new Date(Math.max(...acceptedTimes)).toISOString();
+                const formatted = window.formatAppTimestamp
+                    ? window.formatAppTimestamp(latestAccepted, { titleUTC: true })
+                    : { primary: latestAccepted, title: latestAccepted };
+                const lastRefresh = document.getElementById('observability-last-refresh');
+                lastRefresh.textContent = `Latest accepted · ${formatted.primary} · ${formatRelativeTime(latestAccepted)}`;
+                lastRefresh.title = formatted.title || latestAccepted;
             }
             updateShareableURL(view);
         }
@@ -283,8 +288,10 @@ let refreshTimeoutId = null;
                 updatesTotal: totalRuns,
                 successRate,
             });
+            const severityIcons = { healthy: '✓', degraded: '!', critical: '×', neutral: '—' };
             const successCard = document.getElementById('kpi-success-rate-card');
             successCard.dataset.severity = severity.state;
+            document.getElementById('kpi-success-icon').textContent = severityIcons[severity.state] || '—';
             document.getElementById('kpi-success-rate').textContent = totalRuns > 0 ? `${successRate.toFixed(2)}% · ${severity.label}` : 'No data';
             document.getElementById('kpi-success-context').textContent =
                 totalRuns > 0 ? `${plural(successRuns, 'successful run')} · ${plural(failedRuns, 'failed run')}` : 'No update runs in selected window';
@@ -309,7 +316,7 @@ let refreshTimeoutId = null;
                     const causeCell = document.createElement('td');
                     const rawCause = String(row?.cause || 'unknown');
                     const link = document.createElement('a');
-                    link.href = '/manage?audit_action=update.complete&audit_status=failure';
+                    link.href = `/manage?audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}`;
                     link.textContent = describeFailureCause(rawCause);
                     causeCell.appendChild(link);
                     if (!rawCause || rawCause === 'unknown') {
@@ -326,7 +333,7 @@ let refreshTimeoutId = null;
                         servers.forEach((server, index) => {
                             if (index) serverLinks.append(', ');
                             const serverLink = document.createElement('a');
-                            serverLink.href = `/manage?audit_target=${encodeURIComponent(server)}&audit_action=update.complete&audit_status=failure`;
+                            serverLink.href = `/manage?audit_target=${encodeURIComponent(server)}&audit_action=update.complete&audit_status=failure&failure_cause=${encodeURIComponent(rawCause)}`;
                             serverLink.textContent = server;
                             serverLinks.appendChild(serverLink);
                         });

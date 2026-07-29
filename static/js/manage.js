@@ -40,7 +40,8 @@ function renderManageWorkspace() {
     document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.serverKey);
     document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
     document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
-    document.getElementById("manage-summary-attention").textContent = String(fleet.needsAttention);
+    document.getElementById("manage-summary-missing-auth").textContent = String(fleet.missing);
+    document.getElementById("manage-summary-host-trust").textContent = String(fleet.hostKeyAttention);
 
     renderAddAuthMethod();
 }
@@ -71,6 +72,9 @@ function navigateManageSection(sectionID, updateHistory = false) {
 }
 
 function initializeManageWorkspace() {
+    document.getElementById("add-server-action")?.addEventListener("click", () => {
+        navigateManageSection("add-server", true);
+    });
     document.getElementById("manage-section-nav")?.addEventListener("click", (event) => {
         const link = event.target.closest("[data-manage-section-link]");
         if (!link) return;

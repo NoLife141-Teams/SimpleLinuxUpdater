@@ -3475,4 +3475,30 @@ test.describe.serial('setup and login flows', () => {
     expect(focusStyle.outlineStyle).not.toBe('none');
     expect(focusStyle.outlineWidth).toBeGreaterThan(0);
   });
+
+  test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect(page.locator('#manage-section-add-server-content')).toBeVisible();
+    await expect(page.locator('#manage-section-add-server-heading')).toBeFocused();
+  });
+
+  test('Manage Servers summary distinguishes missing authentication from host trust issues', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, {
+      hasGlobalKey: false,
+      servers: [
+        makeServer('missing-auth', 'idle', [], { host_key_status: 'missing' }),
+        makeServer('trusted-password', 'idle', [], { has_password: true, host_key_status: 'trusted' }),
+        makeServer('untrusted-key', 'idle', [], { has_key: true, host_key_status: 'missing' }),
+      ],
+    });
+    await page.goto('/manage');
+
+    await expect(page.locator('#manage-summary-missing-auth')).toHaveText('1');
+    await expect(page.locator('#manage-summary-host-trust')).toHaveText('2');
+  });
 });

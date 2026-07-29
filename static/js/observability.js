@@ -526,20 +526,26 @@ let refreshTimeoutId = null;
             axisLine.setAttribute('y2', String(bounds.bottom));
             axisLine.setAttribute('class', 'trend-axis-line');
             svg.appendChild(axisLine);
-            const positions = points.map(point => ({
+            const positionedSegments = (Array.isArray(chart?.segments) && chart.segments.length
+                ? chart.segments
+                : [points]
+            ).map(segment => segment.map(point => ({
                 ...point,
                 x: bounds.left + point.xRatio * (bounds.right - bounds.left),
                 y: yFor(point.value),
-            }));
-            const line = document.createElementNS(namespace, 'polyline');
-            const stepPoints = [];
-            positions.forEach((point, index) => {
-                if (index > 0) stepPoints.push(`${point.x},${positions[index - 1].y}`);
-                stepPoints.push(`${point.x},${point.y}`);
+            })));
+            const positions = positionedSegments.flat();
+            positionedSegments.forEach(segment => {
+                const line = document.createElementNS(namespace, 'polyline');
+                const stepPoints = [];
+                segment.forEach((point, index) => {
+                    if (index > 0) stepPoints.push(`${point.x},${segment[index - 1].y}`);
+                    stepPoints.push(`${point.x},${point.y}`);
+                });
+                line.setAttribute('points', stepPoints.join(' '));
+                line.setAttribute('class', 'trend-line');
+                svg.appendChild(line);
             });
-            line.setAttribute('points', stepPoints.join(' '));
-            line.setAttribute('class', 'trend-line');
-            svg.appendChild(line);
             const tooltip = document.createElement('div');
             tooltip.className = 'trend-tooltip';
             tooltip.setAttribute('role', 'tooltip');
@@ -702,24 +708,10 @@ let refreshTimeoutId = null;
         }
 
         function downloadHealthCSV() {
-            const header = ['Host', 'Captured at app time', 'Captured at UTC', 'Packages', 'Security updates', 'Disk free KB', 'APT status', 'Disk status', 'Update failures', 'Scan failures', 'Reboot required'];
-            const rows = observabilityInteraction.getView().health.items.map(server => {
-                const latest = server.latest || {};
-                return [
-                    server.name,
-                    latest.captured_at_display || '',
-                    latest.captured_at,
-                    latest.package_count,
-                    latest.security_count,
-                    validDiskKB(latest.disk_free_kb) || '',
-                    latest.apt_status,
-                    latest.disk_status,
-                    server.update_failures,
-                    server.scan_failures,
-                    server.reboot_seen ? 'yes' : 'no',
-                ];
-            });
-            const csv = [header, ...rows].map(row => row.map(csvValue).join(',')).join('\n');
+            const projection = window.ObservabilityPageInteraction.projectHealthTrendCSV(
+                observabilityInteraction.getView().health.items
+            );
+            const csv = [projection.header, ...projection.rows].map(row => row.map(csvValue).join(',')).join('\n');
             downloadCSV(csv, `observability-health-${observabilityInteraction.getView().selectedWindow}.csv`);
         }
 

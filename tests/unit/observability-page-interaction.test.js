@@ -8,6 +8,7 @@ const {
     projectDurationConfidence,
     projectFleetTrendSeries,
     projectHealthCollection,
+    projectHealthTrendCSV,
     projectTrendChart,
     formatStorageKB,
 } = require("../../static/js/observability-page-interaction.js");
@@ -259,6 +260,70 @@ test("failure trend projection sums events and preserves zeroes in hourly bucket
             bucketUnit: "hour",
         },
     ]);
+});
+
+test("disk trend projection preserves unavailable buckets as chart gaps", () => {
+    const servers = [{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-07-29T09:00:00Z", disk_free_kb: 1024 },
+            { captured_at: "2026-07-29T10:00:00Z", disk_free_kb: 0 },
+            { captured_at: "2026-07-29T11:00:00Z", disk_free_kb: 768 },
+        ],
+    }];
+    const series = projectFleetTrendSeries(servers, "disk", { window: "24h", timeZone: "UTC" });
+    assert.deepEqual(series.map(point => point.value), [1024, null, 768]);
+
+    const chart = projectTrendChart(series);
+    assert.deepEqual(chart.segments.map(segment => segment.map(point => point.value)), [[1024], [768]]);
+});
+
+test("health trend CSV projection exports every accepted point with explicit missing facts", () => {
+    const projection = projectHealthTrendCSV([{
+        name: "alpha",
+        latest: { captured_at: "2026-07-29T11:00:00Z" },
+        points: [
+            {
+                captured_at: "2026-07-29T10:00:00Z",
+                captured_at_display: "Jul 29, 2026, 06:00 EDT",
+                source: "facts",
+                package_count: 4,
+                security_count: 2,
+                disk_free_kb: 1024,
+                disk_total_kb: 4096,
+                apt_status: "ok",
+                disk_status: "ok",
+                last_update_status: "success",
+                reboot_required: false,
+            },
+            {
+                captured_at: "2026-07-29T11:00:00Z",
+                captured_at_display: "Jul 29, 2026, 07:00 EDT",
+                source: "audit",
+                package_count: 3,
+                security_count: 1,
+                disk_free_kb: 0,
+                disk_total_kb: 0,
+                last_scan_status: "failure",
+                reboot_required: null,
+            },
+        ],
+    }]);
+
+    assert.equal(projection.header[1], "Captured at app time");
+    assert.equal(projection.header[2], "Captured at UTC");
+    assert.equal(projection.rows.length, 2);
+    assert.deepEqual(projection.rows[0].slice(0, 4), [
+        "alpha",
+        "Jul 29, 2026, 06:00 EDT",
+        "2026-07-29T10:00:00Z",
+        "facts",
+    ]);
+    assert.equal(projection.rows[0][6], 1024);
+    assert.equal(projection.rows[0][12], "no");
+    assert.equal(projection.rows[1][6], "");
+    assert.equal(projection.rows[1][7], "");
+    assert.equal(projection.rows[1][12], "");
 });
 
 test("fleet buckets include only hosts observed during that period", () => {

@@ -297,6 +297,19 @@ func FailureCauseFromMeta(meta map[string]any, valid bool) string {
 	return "unknown"
 }
 
+func ValidFailureCause(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "unknown" || value == "retry_exhausted" {
+		return true
+	}
+	for _, prefix := range []string{"precheck:", "postcheck:", "error_class:"} {
+		if strings.HasPrefix(value, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(value, prefix)) != ""
+		}
+	}
+	return false
+}
+
 func failureMetaString(meta map[string]any, key string) string {
 	raw, ok := meta[key]
 	if !ok {

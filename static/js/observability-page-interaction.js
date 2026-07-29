@@ -270,7 +270,20 @@
                 total += value;
                 samples += 1;
             });
-            if (samples === 0) return;
+            if (samples === 0) {
+                if (metric === "disk") {
+                    series.push({
+                        timestamp: bucket.timestamp,
+                        lastObservedAt: bucket.events[bucket.events.length - 1].timestamp,
+                        value: null,
+                        samples: 0,
+                        observations: bucket.events.length,
+                        bucketKey: bucket.bucketKey,
+                        bucketUnit: bucket.bucketUnit,
+                    });
+                }
+                return;
+            }
             series.push({
                 timestamp: bucket.timestamp,
                 lastObservedAt: bucket.events[bucket.events.length - 1].timestamp,
@@ -305,30 +318,92 @@
         return `${kb.toFixed(0)} KB`;
     }
 
+    function projectHealthTrendCSV(servers) {
+        const header = [
+            "Host",
+            "Captured at app time",
+            "Captured at UTC",
+            "Source",
+            "Packages",
+            "Security updates",
+            "Disk free KB",
+            "Disk total KB",
+            "APT status",
+            "Disk status",
+            "Update status",
+            "Scan status",
+            "Reboot required",
+        ];
+        const rows = (Array.isArray(servers) ? servers : []).flatMap(server => {
+            const points = Array.isArray(server?.points) && server.points.length
+                ? server.points
+                : (server?.latest ? [server.latest] : []);
+            return points.map(point => [
+                String(server?.name || ""),
+                point?.captured_at_display || point?.captured_at || "",
+                point?.captured_at || "",
+                point?.source || "",
+                point?.package_count ?? "",
+                point?.security_count ?? "",
+                validDiskKB(point?.disk_free_kb) ?? "",
+                validDiskKB(point?.disk_total_kb) ?? "",
+                point?.apt_status || "",
+                point?.disk_status || "",
+                point?.last_update_status || "",
+                point?.last_scan_status || "",
+                point?.reboot_required == null ? "" : (point.reboot_required ? "yes" : "no"),
+            ]);
+        });
+        return { header, rows };
+    }
+
     function projectTrendChart(series, options = {}) {
-        const points = (Array.isArray(series) ? series : [])
-            .filter(point => Number.isFinite(Number(point?.value)) && Number.isFinite(Date.parse(point?.timestamp || "")))
-            .map(point => ({ ...clone(point), value: Number(point.value), timeMS: Date.parse(point.timestamp) }))
+        const timeline = (Array.isArray(series) ? series : [])
+            .filter(point => Number.isFinite(Date.parse(point?.timestamp || "")))
+            .map(point => {
+                const rawValue = point?.value;
+                const value = rawValue === null || rawValue === undefined || rawValue === ""
+                    ? null
+                    : Number(rawValue);
+                return {
+                    ...clone(point),
+                    value: Number.isFinite(value) ? value : null,
+                    timeMS: Date.parse(point.timestamp),
+                };
+            })
             .sort((left, right) => left.timeMS - right.timeMS);
-        if (points.length === 0) {
-            return { points: [], xTicks: [], yTicks: [], yMin: 0, yMax: 1 };
+        const valuedPoints = timeline.filter(point => point.value !== null);
+        if (valuedPoints.length === 0) {
+            return { points: [], segments: [], xTicks: [], yTicks: [], yMin: 0, yMax: 1 };
         }
         const yMax = Math.max(
-            niceChartMaximum(Math.max(...points.map(point => point.value)), Boolean(options.integer)),
+            niceChartMaximum(Math.max(...valuedPoints.map(point => point.value)), Boolean(options.integer)),
             Number(options.minimumMax) || 0
         );
         const middle = options.integer ? Math.round(yMax / 2) : yMax / 2;
         const yTicks = [...new Set([0, middle, yMax])].sort((left, right) => left - right);
-        const xMin = points[0].timeMS;
-        const xMax = points[points.length - 1].timeMS;
+        const xMin = timeline[0].timeMS;
+        const xMax = timeline[timeline.length - 1].timeMS;
         const xSpan = xMax - xMin;
         const xTickTimes = xSpan > 0 ? [xMin, xMin + xSpan / 2, xMax] : [xMin];
-        return {
-            points: points.map(({ timeMS, ...point }) => ({
+        const segments = [];
+        let segment = [];
+        timeline.forEach(({ timeMS, ...point }) => {
+            if (point.value === null) {
+                if (segment.length) segments.push(segment);
+                segment = [];
+                return;
+            }
+            segment.push({
                 ...point,
                 xRatio: xSpan > 0 ? (timeMS - xMin) / xSpan : 0.5,
                 yRatio: point.value / yMax,
-            })),
+            });
+        });
+        if (segment.length) segments.push(segment);
+        return {
+            points: segments.flat(),
+            segments,
             xTicks: xTickTimes.map(timeMS => new Date(timeMS).toISOString()),
             yTicks,
             yMin: 0,
@@ -544,6 +619,7 @@
         projectDurationConfidence,
         projectSourceLifecycle,
         projectHealthCollection,
+        projectHealthTrendCSV,
         projectFleetTrendSeries,
         projectTrendChart,
         formatStorageKB,

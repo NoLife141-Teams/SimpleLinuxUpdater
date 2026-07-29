@@ -776,19 +776,6 @@ func handleAuditEvents(c *gin.Context) {
 	handleAuditEventsWithService(c, defaultAuditService())
 }
 
-func validAuditFailureCause(value string) bool {
-	if value == "unknown" || value == "retry_exhausted" {
-		return true
-	}
-	for _, prefix := range []string{"precheck:", "postcheck:", "error_class:"} {
-		if strings.HasPrefix(value, prefix) {
-			suffix := strings.TrimSpace(strings.TrimPrefix(value, prefix))
-			return suffix != "" && len(suffix) <= 96
-		}
-	}
-	return false
-}
-
 func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	if service == nil {
 		service = defaultAuditService()
@@ -815,7 +802,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit category"})
 		return
 	}
-	if failureCause != "" && !validAuditFailureCause(failureCause) {
+	if failureCause != "" && !auditpkg.ValidFailureCause(failureCause) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid failure cause"})
 		return
 	}

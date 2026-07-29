@@ -1156,6 +1156,45 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#audit-status-filter')).toHaveValue('failure');
   });
 
+  test('observability leaves unavailable disk intervals unconnected', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    const points = [
+      { captured_at: '2026-07-29T08:00:00Z', disk_free_kb: 1024 },
+      { captured_at: '2026-07-29T09:00:00Z', disk_free_kb: 896 },
+      { captured_at: '2026-07-29T10:00:00Z', disk_free_kb: 0 },
+      { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 768 },
+      { captured_at: '2026-07-29T12:00:00Z', disk_free_kb: 640 },
+    ];
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: points.length },
+      servers: [{
+        name: 'disk-gap-host',
+        samples: points.length,
+        first: points[0],
+        latest: points.at(-1),
+        points,
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    await expect(page.locator('#disk-trend-chart .trend-line')).toHaveCount(2);
+    await expect(page.locator('#disk-trend-chart .trend-point')).toHaveCount(4);
+  });
+
   test('observability charts, filters, shareable URL, pagination, and CSV scale an investigation', async ({ page }) => {
     await page.route('**/api/app-settings/timezone', route => fulfillJson(route, {
       timezone: 'America/Toronto',
@@ -1271,6 +1310,14 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#export-health-csv').click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/^observability-health-7d\.csv$/);
+    const healthCSV = fs.readFileSync(await download.path(), 'utf8');
+    const healthCSVLines = healthCSV.trim().split('\n');
+    expect(healthCSVLines).toHaveLength(3);
+    expect(healthCSVLines[0]).toContain('Captured at app time,Captured at UTC');
+    expect(healthCSVLines[1]).toContain('prod-failing');
+    expect(healthCSVLines[1]).toContain('2026-07-28T11:00:00Z');
+    expect(healthCSVLines[2]).toContain('prod-failing');
+    expect(healthCSVLines[2]).toContain('2026-07-29T11:00:00Z');
     const failuresDownloadPromise = page.waitForEvent('download');
     await page.locator('#export-failures-csv').click();
     const failuresDownload = await failuresDownloadPromise;

@@ -236,6 +236,22 @@ func TestServiceListFiltersByDerivedFailureCause(t *testing.T) {
 	}
 }
 
+func TestValidFailureCauseAcceptsEveryDerivedCause(t *testing.T) {
+	longCheckName := strings.Repeat("disk-space-", 16)
+	causes := []string{
+		FailureCauseFromMeta(map[string]any{"precheck_failed": longCheckName}, true),
+		FailureCauseFromMeta(map[string]any{"postcheck_failed": longCheckName}, true),
+		FailureCauseFromMeta(map[string]any{"retry_exhausted": true}, true),
+		FailureCauseFromMeta(map[string]any{"last_error_class": longCheckName}, true),
+		FailureCauseFromMeta(nil, false),
+	}
+	for _, cause := range causes {
+		if !ValidFailureCause(cause) {
+			t.Errorf("ValidFailureCause(%q) = false for a cause produced by FailureCauseFromMeta", cause)
+		}
+	}
+}
+
 func TestServiceListAdminActivityCategoryFiltersOrdersAndBoundsExistingAuditEvents(t *testing.T) {
 	db := newTestDB(t)
 	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})

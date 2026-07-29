@@ -2852,6 +2852,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
     await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
     await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
+    await page.getByRole('link', { name: /Audit trail/ }).click();
+    await expect(page.locator('#manage-section-audit-content')).toBeVisible();
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
     await page.locator('#audit-table button[data-audit-detail="55"]').click();
     await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
@@ -2886,15 +2888,25 @@ test.describe.serial('setup and login flows', () => {
       window.alert = () => {};
     });
     const deleteServerButton = page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]');
+    const deleteServerMenu = deleteServerButton.locator('xpath=ancestor::details');
+    const openDeleteServerMenu = async () => {
+      if (!(await deleteServerMenu.evaluate(menu => menu.open))) {
+        await deleteServerMenu.locator('summary').click();
+      }
+    };
     const auditPruneButton = page.locator('#audit-prune');
     const clearGlobalKeyButton = page.locator('#clear-global-key-btn');
+    await openDeleteServerMenu();
     await dismissTypedConfirm(page, deleteServerButton);
     await dismissTypedConfirm(page, auditPruneButton);
+    await page.getByRole('link', { name: /Global SSH Credential/ }).click();
+    await expect(page.locator('#manage-section-global-key-content')).toBeVisible();
     await dismissTypedConfirm(page, clearGlobalKeyButton);
     await expect.poll(() => state.deleteServerCount || 0).toBe(0);
     await expect.poll(() => state.auditPruneCount || 0).toBe(0);
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(0);
 
+    await openDeleteServerMenu();
     await acceptTypedConfirm(page, deleteServerButton, 'demo-host');
     await acceptTypedConfirm(page, auditPruneButton, 'PRUNE');
     await expect.poll(() => state.deleteServerCount || 0).toBe(1);

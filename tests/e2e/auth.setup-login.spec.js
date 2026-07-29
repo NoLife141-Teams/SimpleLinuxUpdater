@@ -1877,12 +1877,14 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await expect(page).toHaveURL(/#admin-section-backup$/);
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'none');
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'solid');
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-width', '2px');
     await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
 
     await page.locator('[data-admin-section-link="notifications"]').click();
     await expect(page.locator('#admin-section-notifications-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'none');
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'solid');
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-width', '2px');
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();

@@ -412,7 +412,9 @@
 
 .admin-workspace-section > [id$="-heading"]:focus,
 .admin-workspace-section h2:focus {
-    outline: none;
+    border-radius: 4px;
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
 }
 
 .app-time-card {

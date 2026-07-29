@@ -68,13 +68,7 @@ let refreshTimeoutId = null;
         }
 
         function formatDiskKB(value) {
-            const kb = Number(value || 0);
-            if (!Number.isFinite(kb) || kb <= 0) return '-';
-            const gb = kb / (1024 * 1024);
-            if (gb >= 1) return `${gb.toFixed(1)} GB`;
-            const mb = kb / 1024;
-            if (mb >= 1) return `${mb.toFixed(0)} MB`;
-            return `${kb.toFixed(0)} KB`;
+            return window.ObservabilityPageInteraction.formatStorageKB(value);
         }
 
         function formatDelta(value, noun) {
@@ -421,11 +415,39 @@ let refreshTimeoutId = null;
             tr.appendChild(td);
         }
 
-        function renderTrendChart(containerID, series, label, formatter = value => String(value)) {
+        function formatTrendAxisTimestamp(raw, windowValue) {
+            const parsed = new Date(raw);
+            if (!Number.isFinite(parsed.getTime())) return raw;
+            const timeZone = window.getAppTimezoneResolved ? window.getAppTimezoneResolved() : undefined;
+            const options = windowValue === '24h'
+                ? { hour: 'numeric', minute: '2-digit' }
+                : { month: 'short', day: 'numeric' };
+            try {
+                return new Intl.DateTimeFormat('en-US', { ...options, timeZone }).format(parsed);
+            } catch (_) {
+                return new Intl.DateTimeFormat('en-US', options).format(parsed);
+            }
+        }
+
+        function detailedTrendTimestamp(raw) {
+            if (window.formatAppTimestamp) return window.formatAppTimestamp(raw, { titleUTC: true }).primary;
+            return raw;
+        }
+
+        function appendSVGText(svg, namespace, value, attributes, className) {
+            const text = document.createElementNS(namespace, 'text');
+            Object.entries(attributes).forEach(([name, attribute]) => text.setAttribute(name, String(attribute)));
+            text.setAttribute('class', className);
+            text.textContent = value;
+            svg.appendChild(text);
+            return text;
+        }
+
+        function renderTrendChart(containerID, chart, options) {
             const container = document.getElementById(containerID);
             container.innerHTML = '';
-            const valid = series.filter(point => Number.isFinite(point.value));
-            if (valid.length === 0) {
+            const points = Array.isArray(chart?.points) ? chart.points : [];
+            if (points.length === 0) {
                 const empty = document.createElement('p');
                 empty.className = 'muted trend-chart-empty';
                 empty.textContent = 'No chart samples in this window.';
@@ -433,42 +455,116 @@ let refreshTimeoutId = null;
                 return;
             }
             const namespace = 'http://www.w3.org/2000/svg';
+            const bounds = { left: 54, right: 348, top: 18, bottom: 112 };
             const svg = document.createElementNS(namespace, 'svg');
-            svg.setAttribute('viewBox', '0 0 320 100');
-            svg.setAttribute('role', 'img');
-            svg.setAttribute('aria-label', `${label} trend, ${valid.length} time points`);
-            const minimum = Math.min(...valid.map(point => point.value));
-            const maximum = Math.max(...valid.map(point => point.value));
-            const span = maximum - minimum || 1;
-            const positions = valid.map((point, index) => ({
+            svg.setAttribute('viewBox', '0 0 360 150');
+            svg.setAttribute('role', 'group');
+            svg.setAttribute('aria-label', `${options.label} trend for ${options.scope}, ${points.length} time points`);
+            const yFor = value => bounds.bottom - (value / chart.yMax) * (bounds.bottom - bounds.top);
+            chart.yTicks.forEach(value => {
+                const y = yFor(value);
+                const gridLine = document.createElementNS(namespace, 'line');
+                gridLine.setAttribute('x1', String(bounds.left));
+                gridLine.setAttribute('x2', String(bounds.right));
+                gridLine.setAttribute('y1', String(y));
+                gridLine.setAttribute('y2', String(y));
+                gridLine.setAttribute('class', 'trend-grid-line');
+                svg.appendChild(gridLine);
+                appendSVGText(svg, namespace, options.axisFormatter(value), {
+                    x: bounds.left - 8,
+                    y: y + 4,
+                    'text-anchor': 'end',
+                }, 'trend-axis-label trend-y-axis-label');
+            });
+            appendSVGText(svg, namespace, options.axisUnit, {
+                x: 8,
+                y: 12,
+            }, 'trend-axis-unit');
+            const xAnchors = ['start', 'middle', 'end'];
+            chart.xTicks.forEach((timestamp, index) => {
+                const ratio = chart.xTicks.length === 1 ? 0.5 : index / (chart.xTicks.length - 1);
+                appendSVGText(svg, namespace, formatTrendAxisTimestamp(timestamp, options.windowValue), {
+                    x: bounds.left + ratio * (bounds.right - bounds.left),
+                    y: 138,
+                    'text-anchor': xAnchors[index] || 'middle',
+                }, 'trend-axis-label trend-x-axis-label');
+            });
+            const axisLine = document.createElementNS(namespace, 'line');
+            axisLine.setAttribute('x1', String(bounds.left));
+            axisLine.setAttribute('x2', String(bounds.left));
+            axisLine.setAttribute('y1', String(bounds.top));
+            axisLine.setAttribute('y2', String(bounds.bottom));
+            axisLine.setAttribute('class', 'trend-axis-line');
+            svg.appendChild(axisLine);
+            const positions = points.map(point => ({
                 ...point,
-                x: valid.length === 1 ? 160 : 10 + (index / (valid.length - 1)) * 300,
-                y: 90 - ((point.value - minimum) / span) * 80,
+                x: bounds.left + point.xRatio * (bounds.right - bounds.left),
+                y: yFor(point.value),
             }));
             const line = document.createElementNS(namespace, 'polyline');
             line.setAttribute('points', positions.map(point => `${point.x},${point.y}`).join(' '));
             line.setAttribute('class', 'trend-line');
             svg.appendChild(line);
+            const tooltip = document.createElement('div');
+            tooltip.className = 'trend-tooltip';
+            tooltip.setAttribute('role', 'tooltip');
+            tooltip.hidden = true;
+            const showTooltip = point => {
+                tooltip.innerHTML = '';
+                const value = document.createElement('strong');
+                value.textContent = options.tooltipFormatter(point.value);
+                const timestamp = document.createElement('span');
+                timestamp.textContent = detailedTrendTimestamp(point.timestamp);
+                const scope = document.createElement('span');
+                scope.textContent = options.scope;
+                tooltip.append(value, timestamp, scope);
+                tooltip.style.left = `${(point.x / 360) * 100}%`;
+                tooltip.style.top = `${(point.y / 150) * 100}%`;
+                tooltip.classList.toggle('trend-tooltip-start', point.xRatio < 0.2);
+                tooltip.classList.toggle('trend-tooltip-end', point.xRatio > 0.8);
+                tooltip.hidden = false;
+            };
+            const hideTooltip = () => {
+                tooltip.hidden = true;
+            };
             positions.forEach(point => {
                 const circle = document.createElementNS(namespace, 'circle');
                 circle.setAttribute('cx', String(point.x));
                 circle.setAttribute('cy', String(point.y));
                 circle.setAttribute('r', '3.5');
                 circle.setAttribute('tabindex', '0');
-                circle.setAttribute('role', 'button');
-                circle.setAttribute('aria-label', `${label}: ${formatter(point.value)} at ${point.timestamp}`);
+                circle.setAttribute('role', 'img');
+                circle.setAttribute('aria-label', `${options.label}: ${options.tooltipFormatter(point.value)} at ${detailedTrendTimestamp(point.timestamp)}, ${options.scope}`);
                 circle.setAttribute('class', 'trend-point');
+                circle.addEventListener('mouseenter', () => showTooltip(point));
+                circle.addEventListener('mouseleave', hideTooltip);
+                circle.addEventListener('focus', () => showTooltip(point));
+                circle.addEventListener('blur', hideTooltip);
                 svg.appendChild(circle);
             });
-            container.appendChild(svg);
+            container.append(svg, tooltip);
         }
 
-        function renderTrendCharts(series) {
+        function renderTrendCharts(charts, series, selectedHost, windowValue) {
             const { packages, security, disk, failures } = series;
-            renderTrendChart('package-trend-chart', packages, 'Package count');
-            renderTrendChart('security-trend-chart', security, 'Security update count');
-            renderTrendChart('disk-trend-chart', disk, 'Disk free', formatDiskKB);
-            renderTrendChart('failure-trend-chart', failures, 'Failure event count');
+            const scope = selectedHost || 'Fleet total';
+            const chartDefinitions = [
+                ['package', charts.packages, 'Package count', 'packages', value => String(Math.round(value)), value => plural(value, 'package')],
+                ['security', charts.security, 'Security update count', 'updates', value => String(Math.round(value)), value => plural(value, 'security update')],
+                ['disk', charts.disk, 'Disk free', 'disk free', value => value === 0 ? '0 GB' : formatDiskKB(value), formatDiskKB],
+                ['failure', charts.failures, 'Failure event count', 'events', value => String(Math.round(value)), value => plural(value, 'failure event')],
+            ];
+            chartDefinitions.forEach(([key, chart, label, axisUnit, axisFormatter, tooltipFormatter]) => {
+                document.getElementById(`${key}-chart-scope`).textContent = scope;
+                renderTrendChart(`${key}-trend-chart`, chart, {
+                    label,
+                    axisUnit,
+                    axisFormatter,
+                    tooltipFormatter,
+                    scope,
+                    windowValue,
+                });
+            });
             const summaries = [
                 ['package-chart-summary', packages, value => plural(value, 'package')],
                 ['security-chart-summary', security, value => plural(value, 'security update')],
@@ -498,7 +594,7 @@ let refreshTimeoutId = null;
             trendRangeLabel.textContent = `Range: ${from.primary} to ${to.primary}; retention ${trends?.retention_days || 90}d`;
             trendRangeLabel.title = `UTC range: ${trends?.from || '-'} to ${trends?.to || '-'}`;
             document.getElementById('observability-retention').textContent = `Retention · ${trends?.retention_days || 90}d`;
-            renderTrendCharts(view.trendSeries);
+            renderTrendCharts(view.trendCharts, view.trendSeries, view.selectedHost, view.selectedWindow);
 
             const body = document.getElementById('health-trends-body');
             body.innerHTML = '';

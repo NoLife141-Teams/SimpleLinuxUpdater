@@ -179,6 +179,58 @@
         return series;
     }
 
+    function niceChartMaximum(value, integer) {
+        if (!Number.isFinite(value) || value <= 0) return 1;
+        const magnitude = 10 ** Math.floor(Math.log10(value));
+        const normalized = value / magnitude;
+        const factors = integer ? [1, 2, 5, 10] : [1, 1.25, 1.5, 2, 2.5, 5, 10];
+        const factor = factors.find(candidate => candidate >= normalized) || 10;
+        return factor * magnitude;
+    }
+
+    function formatStorageKB(value) {
+        const kb = Number(value || 0);
+        if (!Number.isFinite(kb) || kb <= 0) return "-";
+        const tb = kb / (1024 * 1024 * 1024);
+        if (tb >= 1) return `${tb.toFixed(1)} TB`;
+        const gb = kb / (1024 * 1024);
+        if (gb >= 1) return `${gb.toFixed(1)} GB`;
+        const mb = kb / 1024;
+        if (mb >= 1) return `${mb.toFixed(0)} MB`;
+        return `${kb.toFixed(0)} KB`;
+    }
+
+    function projectTrendChart(series, options = {}) {
+        const points = (Array.isArray(series) ? series : [])
+            .filter(point => Number.isFinite(Number(point?.value)) && Number.isFinite(Date.parse(point?.timestamp || "")))
+            .map(point => ({ ...clone(point), value: Number(point.value), timeMS: Date.parse(point.timestamp) }))
+            .sort((left, right) => left.timeMS - right.timeMS);
+        if (points.length === 0) {
+            return { points: [], xTicks: [], yTicks: [], yMin: 0, yMax: 1 };
+        }
+        const yMax = Math.max(
+            niceChartMaximum(Math.max(...points.map(point => point.value)), Boolean(options.integer)),
+            Number(options.minimumMax) || 0
+        );
+        const middle = options.integer ? Math.round(yMax / 2) : yMax / 2;
+        const yTicks = [...new Set([0, middle, yMax])].sort((left, right) => left - right);
+        const xMin = points[0].timeMS;
+        const xMax = points[points.length - 1].timeMS;
+        const xSpan = xMax - xMin;
+        const xTickTimes = xSpan > 0 ? [xMin, xMin + xSpan / 2, xMax] : [xMin];
+        return {
+            points: points.map(({ timeMS, ...point }) => ({
+                ...point,
+                xRatio: xSpan > 0 ? (timeMS - xMin) / xSpan : 0.5,
+                yRatio: point.value / yMax,
+            })),
+            xTicks: xTickTimes.map(timeMS => new Date(timeMS).toISOString()),
+            yTicks,
+            yMin: 0,
+            yMax,
+        };
+    }
+
     function createStore(options = {}) {
         const refreshDelayMs = Number(options.refreshDelayMs) > 0 ? Number(options.refreshDelayMs) : 15000;
         const now = typeof options.now === "function" ? options.now : Date.now;
@@ -344,6 +396,12 @@
             const health = projectHealthCollection(sources.trends.data?.servers, {
                 search, attention, sort, window: selectedWindow, page, nowMS: now(),
             });
+            const trendSeries = {
+                packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages"),
+                security: projectFleetTrendSeries(sources.trends.data?.servers, "security"),
+                disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk"),
+                failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures"),
+            };
             return clone({
                 selectedWindow,
                 selectedHost,
@@ -358,11 +416,12 @@
                 summaryLifecycle: projectSourceLifecycle("summary", sources.summary),
                 trendsLifecycle: projectSourceLifecycle("trends", sources.trends),
                 health,
-                trendSeries: {
-                    packages: projectFleetTrendSeries(sources.trends.data?.servers, "packages"),
-                    security: projectFleetTrendSeries(sources.trends.data?.servers, "security"),
-                    disk: projectFleetTrendSeries(sources.trends.data?.servers, "disk"),
-                    failures: projectFleetTrendSeries(sources.trends.data?.servers, "failures"),
+                trendSeries,
+                trendCharts: {
+                    packages: projectTrendChart(trendSeries.packages, { integer: true }),
+                    security: projectTrendChart(trendSeries.security, { integer: true }),
+                    disk: projectTrendChart(trendSeries.disk),
+                    failures: projectTrendChart(trendSeries.failures, { integer: true, minimumMax: 2 }),
                 },
                 refreshing: sources.summary.status === "refreshing" || sources.trends.status === "refreshing"
             });
@@ -378,5 +437,7 @@
         projectSourceLifecycle,
         projectHealthCollection,
         projectFleetTrendSeries,
+        projectTrendChart,
+        formatStorageKB,
     });
 }));

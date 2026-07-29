@@ -8,6 +8,8 @@ const {
     projectDurationConfidence,
     projectFleetTrendSeries,
     projectHealthCollection,
+    projectTrendChart,
+    formatStorageKB,
 } = require("../../static/js/observability-page-interaction.js");
 
 function effect(effects, type, source) {
@@ -212,6 +214,35 @@ test("failure trend projection counts events only at their actual timestamps", (
         { timestamp: "2026-07-29T11:00:00Z", value: 1 },
         { timestamp: "2026-07-29T12:00:00Z", value: 1 },
     ]);
+});
+
+test("trend chart projection exposes a zero baseline and proportional time scale", () => {
+    const chart = projectTrendChart([
+        { timestamp: "2026-07-22T00:00:00Z", value: 0 },
+        { timestamp: "2026-07-23T00:00:00Z", value: 18 },
+        { timestamp: "2026-07-29T00:00:00Z", value: 4 },
+    ], { integer: true });
+
+    assert.deepEqual(chart.yTicks, [0, 10, 20]);
+    assert.equal(chart.yMin, 0);
+    assert.equal(chart.yMax, 20);
+    assert.deepEqual(chart.xTicks, [
+        "2026-07-22T00:00:00.000Z",
+        "2026-07-25T12:00:00.000Z",
+        "2026-07-29T00:00:00.000Z",
+    ]);
+    assert.deepEqual(chart.points.map(point => [point.xRatio, point.yRatio]), [
+        [0, 0],
+        [1 / 7, 0.9],
+        [1, 0.2],
+    ]);
+});
+
+test("storage labels adapt across KB, MB, GB, and TB", () => {
+    assert.equal(formatStorageKB(512), "512 KB");
+    assert.equal(formatStorageKB(1024), "1 MB");
+    assert.equal(formatStorageKB(1024 * 1024), "1.0 GB");
+    assert.equal(formatStorageKB(1024 * 1024 * 1024), "1.0 TB");
 });
 
 test("health projection clamps pages and identifies stale observations deterministically", () => {

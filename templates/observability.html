@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Observability</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/observability.css?v=actionable-workspace-20260729">
+    <link rel="stylesheet" href="/static/css/observability.css?v=chart-axes-20260729">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -115,28 +115,40 @@
                 <div class="trend-chart-grid" aria-label="Host health charts">
                     <article class="trend-chart-card">
                         <div class="trend-chart-head">
-                            <h3>Package count</h3>
+                            <div class="trend-chart-title">
+                                <h3>Package count</h3>
+                                <span class="trend-chart-scope" id="package-chart-scope">Fleet total</span>
+                            </div>
                             <span class="muted" id="package-chart-summary">Waiting for samples</span>
                         </div>
                         <div id="package-trend-chart" class="trend-chart"></div>
                     </article>
                     <article class="trend-chart-card">
                         <div class="trend-chart-head">
-                            <h3>Security updates</h3>
+                            <div class="trend-chart-title">
+                                <h3>Security updates</h3>
+                                <span class="trend-chart-scope" id="security-chart-scope">Fleet total</span>
+                            </div>
                             <span class="muted" id="security-chart-summary">Waiting for samples</span>
                         </div>
                         <div id="security-trend-chart" class="trend-chart"></div>
                     </article>
                     <article class="trend-chart-card">
                         <div class="trend-chart-head">
-                            <h3>Disk free</h3>
+                            <div class="trend-chart-title">
+                                <h3>Disk free</h3>
+                                <span class="trend-chart-scope" id="disk-chart-scope">Fleet total</span>
+                            </div>
                             <span class="muted" id="disk-chart-summary">Waiting for samples</span>
                         </div>
                         <div id="disk-trend-chart" class="trend-chart"></div>
                     </article>
                     <article class="trend-chart-card">
                         <div class="trend-chart-head">
-                            <h3>Failure events</h3>
+                            <div class="trend-chart-title">
+                                <h3>Failure events</h3>
+                                <span class="trend-chart-scope" id="failure-chart-scope">Fleet total</span>
+                            </div>
                             <span class="muted" id="failure-chart-summary">Waiting for samples</span>
                         </div>
                         <div id="failure-trend-chart" class="trend-chart"></div>
@@ -264,7 +276,7 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/observability-page-interaction.js?v=actionable-workspace-20260729"></script>
-    <script src="/static/js/observability.js?v=actionable-workspace-20260729"></script>
+    <script src="/static/js/observability-page-interaction.js?v=chart-axes-20260729"></script>
+    <script src="/static/js/observability.js?v=chart-axes-20260729"></script>
 </body>
 </html>

@@ -649,3 +649,12 @@
         flex: 1 1 100%;
     }
 }
+.audit-filter-chip {
+    grid-column: 1 / -1;
+    justify-self: start;
+    max-width: 100%;
+}
+
+.audit-filter-chip[hidden] {
+    display: none;
+}

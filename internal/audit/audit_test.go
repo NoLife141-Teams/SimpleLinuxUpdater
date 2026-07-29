@@ -200,6 +200,58 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 }
 
+func TestServiceListFiltersByDerivedFailureCause(t *testing.T) {
+	db := newTestDB(t)
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
+	seed := []Event{
+		{CreatedAt: "2026-02-10T08:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "alpha", Status: "failure", Message: "retry", MetaJSON: `{"retry_exhausted":true,"last_error_class":"transient"}`},
+		{CreatedAt: "2026-02-10T08:30:00Z", Action: "update.complete", TargetType: "server", TargetName: "alpha-legacy", Status: "failure", Message: "retry legacy", MetaJSON: `{"retry_exhausted":"true","last_error_class":"transient"}`},
+		{CreatedAt: "2026-02-10T09:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "beta", Status: "failure", Message: "precheck", MetaJSON: `{"precheck_failed":"disk-space","retry_exhausted":true}`},
+		{CreatedAt: "2026-02-10T09:30:00Z", Action: "update.complete", TargetType: "server", TargetName: "beta-primitive", Status: "failure", Message: "precheck primitive", MetaJSON: `{"precheck_failed":true}`},
+		{CreatedAt: "2026-02-10T10:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "gamma", Status: "failure", Message: "unknown", MetaJSON: `{not-json`},
+	}
+	for _, event := range seed {
+		if err := svc.Write(event); err != nil {
+			t.Fatalf("Write() seed error = %v", err)
+		}
+	}
+
+	for cause, wantTargets := range map[string][]string{
+		"retry_exhausted":     {"alpha-legacy", "alpha"},
+		"precheck:disk-space": {"beta"},
+		"precheck:true":       {"beta-primitive"},
+		"unknown":             {"gamma"},
+	} {
+		result, err := svc.List(ListFilter{Page: 1, PageSize: 20, FailureCause: cause})
+		if err != nil {
+			t.Fatalf("List(FailureCause=%q) error = %v", cause, err)
+		}
+		gotTargets := make([]string, 0, len(result.Items))
+		for _, item := range result.Items {
+			gotTargets = append(gotTargets, item.TargetName)
+		}
+		if result.Total != len(wantTargets) || strings.Join(gotTargets, ",") != strings.Join(wantTargets, ",") {
+			t.Fatalf("List(FailureCause=%q) = %+v, want targets %v", cause, result, wantTargets)
+		}
+	}
+}
+
+func TestValidFailureCauseAcceptsEveryDerivedCause(t *testing.T) {
+	longCheckName := strings.Repeat("disk-space-", 16)
+	causes := []string{
+		FailureCauseFromMeta(map[string]any{"precheck_failed": longCheckName}, true),
+		FailureCauseFromMeta(map[string]any{"postcheck_failed": longCheckName}, true),
+		FailureCauseFromMeta(map[string]any{"retry_exhausted": true}, true),
+		FailureCauseFromMeta(map[string]any{"last_error_class": longCheckName}, true),
+		FailureCauseFromMeta(nil, false),
+	}
+	for _, cause := range causes {
+		if !ValidFailureCause(cause) {
+			t.Errorf("ValidFailureCause(%q) = false for a cause produced by FailureCauseFromMeta", cause)
+		}
+	}
+}
+
 func TestServiceListAdminActivityCategoryFiltersOrdersAndBoundsExistingAuditEvents(t *testing.T) {
 	db := newTestDB(t)
 	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})

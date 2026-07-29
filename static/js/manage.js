@@ -61,7 +61,10 @@ function runManageWorkspaceEffects(effects) {
 
 function manageSectionIDFromHash() {
     const prefix = "#manage-section-";
-    return window.location.hash.startsWith(prefix) ? window.location.hash.slice(prefix.length) : "";
+    if (window.location.hash.startsWith(prefix)) return window.location.hash.slice(prefix.length);
+    if (window.location.hash === "#audit-trail") return "audit";
+    if (window.location.hash === "#server-directory") return "directory";
+    return "";
 }
 
 function navigateManageSection(sectionID, updateHistory = false) {
@@ -105,7 +108,7 @@ function initializeManageWorkspace() {
         }, { rootMargin: "-150px 0px -55% 0px", threshold: [0.01, 0.25, 0.5] });
         document.querySelectorAll("[data-manage-section]").forEach(section => manageSectionObserver.observe(section));
     }
-    const deepLink = manageSectionIDFromHash() || (window.location.hash === "#audit-trail" ? "audit" : "");
+    const deepLink = manageSectionIDFromHash();
     if (deepLink) window.requestAnimationFrame(() => navigateManageSection(deepLink));
     else renderManageWorkspace();
 }
@@ -497,8 +500,25 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
             managePageInteraction.dispatch({
                 type: 'auditQueryChanged',
-                patch: { targetName: '', action: '', status: '', from: '', to: '', page: 1 }
+                patch: { targetName: '', action: '', status: '', failureCause: '', from: '', to: '', page: 1 }
             });
+            const url = new URL(window.location.href);
+            for (const parameter of ['audit_target', 'audit_action', 'audit_status', 'failure_cause', 'audit_from', 'audit_to']) {
+                url.searchParams.delete(parameter);
+            }
+            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+            renderAuditFailureCauseFilter();
+            await fetchAuditEvents();
+        });
+        document.getElementById('audit-clear-failure-cause').addEventListener('click', async () => {
+            managePageInteraction.dispatch({
+                type: 'auditQueryChanged',
+                patch: { failureCause: '', page: 1 },
+            });
+            const url = new URL(window.location.href);
+            url.searchParams.delete('failure_cause');
+            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+            renderAuditFailureCauseFilter();
             await fetchAuditEvents();
         });
         document.getElementById('audit-prune').addEventListener('click', async () => {
@@ -577,6 +597,36 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             return parsed.toISOString();
         }
 
+        function auditRFC3339ToDateTimeInput(value) {
+            const parsed = new Date(String(value || '').trim());
+            if (Number.isNaN(parsed.getTime())) return '';
+            const localTime = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+            return localTime.toISOString().slice(0, 19);
+        }
+
+        function hydrateAuditDateTimeInput(input, value) {
+            const raw = String(value || '').trim();
+            input.value = auditRFC3339ToDateTimeInput(raw);
+            input.dataset.initialRFC3339 = raw;
+            input.dataset.initialValue = input.value;
+        }
+
+        function auditDateTimeInputToRFC3339(input) {
+            if (input.value === input.dataset.initialValue && input.dataset.initialRFC3339) {
+                return input.dataset.initialRFC3339;
+            }
+            return auditDateTimeToRFC3339(input.value);
+        }
+
+        function renderAuditFailureCauseFilter() {
+            const container = document.getElementById('audit-failure-cause-active');
+            const value = document.getElementById('audit-failure-cause-value');
+            if (!container || !value) return;
+            const failureCause = managePageInteraction.getView().audit.query.failureCause;
+            container.hidden = !failureCause;
+            value.textContent = failureCause;
+        }
+
         function prettyAuditMetadata(raw) {
             const text = String(raw || '').trim();
             if (!text) return '{}';
@@ -650,6 +700,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const tbody = document.querySelector('#audit-table tbody');
             if (!tbody) return;
             const projection = managePageInteraction.getView().audit;
+            renderAuditFailureCauseFilter();
             tbody.innerHTML = '';
             if (!projection.items.length) {
                 const row = document.createElement('tr');
@@ -694,6 +745,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (query.targetName) params.set('target_name', query.targetName);
                 if (query.action) params.set('action', query.action);
                 if (query.status) params.set('status', query.status);
+                if (query.failureCause) params.set('failure_cause', query.failureCause);
                 if (query.from) params.set('from', query.from);
                 if (query.to) params.set('to', query.to);
                 const res = await fetch(`/api/audit-events?${params.toString()}`);
@@ -726,8 +778,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 targetName: document.getElementById('audit-target-filter').value.trim(),
                 action: document.getElementById('audit-action-filter').value.trim(),
                 status: document.getElementById('audit-status-filter').value,
-                from: auditDateTimeToRFC3339(document.getElementById('audit-from-filter').value),
-                to: auditDateTimeToRFC3339(document.getElementById('audit-to-filter').value),
+                failureCause: managePageInteraction.getView().audit.query.failureCause,
+                from: auditDateTimeInputToRFC3339(document.getElementById('audit-from-filter')),
+                to: auditDateTimeInputToRFC3339(document.getElementById('audit-to-filter')),
                 page: current.page,
                 pageSize: current.pageSize
             };
@@ -1668,9 +1721,23 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         document.getElementById('logout-btn').addEventListener('click', () => window.logout());
         document.getElementById('upload-global-key-btn').addEventListener('click', uploadGlobalKey);
         document.getElementById('clear-global-key-btn').addEventListener('click', clearGlobalKey);
-        const auditDeepLink = new URLSearchParams(window.location.search);
-        document.getElementById('audit-target-filter').value = auditDeepLink.get('audit_target') || "";
-        document.getElementById('audit-action-filter').value = auditDeepLink.get('audit_action') || "";
+        const manageDeepLink = new URLSearchParams(window.location.search);
+        const selectedServer = manageDeepLink.get('server') || "";
+        document.getElementById('search').value = selectedServer;
+        managePageInteraction.dispatch({
+            type: 'filtersChanged',
+            patch: { search: selectedServer },
+        });
+        document.getElementById('audit-target-filter').value = manageDeepLink.get('audit_target') || "";
+        document.getElementById('audit-action-filter').value = manageDeepLink.get('audit_action') || "";
+        document.getElementById('audit-status-filter').value = manageDeepLink.get('audit_status') || "";
+        hydrateAuditDateTimeInput(document.getElementById('audit-from-filter'), manageDeepLink.get('audit_from'));
+        hydrateAuditDateTimeInput(document.getElementById('audit-to-filter'), manageDeepLink.get('audit_to'));
+        managePageInteraction.dispatch({
+            type: 'auditQueryChanged',
+            patch: { failureCause: manageDeepLink.get('failure_cause') || "" },
+        });
+        renderAuditFailureCauseFilter();
         initializeManageWorkspace();
         renderAddAuthMethod();
         fetchManageServers();

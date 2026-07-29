@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/manage.css?v=admin-parity-20260728">
+    <link rel="stylesheet" href="/static/css/manage.css?v=manage-observability-merge-20260729">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -244,8 +244,12 @@
                             <option value="started">Started</option>
                             <option value="ignored">Ignored</option>
                         </select></label>
-                        <label class="filter-field" for="audit-from-filter"><span>From</span><input type="datetime-local" id="audit-from-filter"></label>
-                        <label class="filter-field" for="audit-to-filter"><span>To</span><input type="datetime-local" id="audit-to-filter"></label>
+                        <span id="audit-failure-cause-active" class="status-pill audit-filter-chip" hidden>
+                            Failure cause: <strong id="audit-failure-cause-value"></strong>
+                            <button class="btn-ghost inline-btn" id="audit-clear-failure-cause" type="button">Clear</button>
+                        </span>
+                        <label class="filter-field" for="audit-from-filter"><span>From</span><input type="datetime-local" id="audit-from-filter" step="1"></label>
+                        <label class="filter-field" for="audit-to-filter"><span>To</span><input type="datetime-local" id="audit-to-filter" step="1"></label>
                         <button class="btn-ghost inline-btn" id="audit-refresh" type="button">Refresh</button>
                         <button class="btn-ghost inline-btn" id="audit-clear-filters" type="button">Clear filters</button>
                         <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
@@ -424,9 +428,9 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=admin-parity-20260729b"></script>
+    <script src="/static/js/manage-page-interaction.js?v=manage-observability-merge-20260729"></script>
     <script src="/static/js/manage-modals.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=admin-parity-20260729b"></script>
+    <script src="/static/js/manage.js?v=manage-observability-merge-20260729"></script>
 </body>
 </html>

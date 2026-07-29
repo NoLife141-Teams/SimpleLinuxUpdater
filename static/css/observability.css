@@ -13,6 +13,55 @@
     min-width: 100%;
 }
 
+.breakdown-bars {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.breakdown-bar {
+    display: grid;
+    gap: 5px;
+}
+
+.breakdown-bar-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.breakdown-bar-heading strong {
+    color: var(--text);
+    font-family: var(--mono);
+}
+
+.breakdown-bar progress {
+    width: 100%;
+    height: 8px;
+    border: 0;
+    border-radius: 999px;
+    overflow: hidden;
+    color: var(--accent);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.breakdown-bar progress::-webkit-progress-bar {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.breakdown-bar progress::-webkit-progress-value {
+    border-radius: 999px;
+    background: var(--accent);
+}
+
+.breakdown-bar progress::-moz-progress-bar {
+    border-radius: 999px;
+    background: var(--accent);
+}
+
 .kpi-grid {
     margin: 12px 0 0;
 }
@@ -21,16 +70,244 @@
     justify-content: flex-end;
 }
 
+.workspace-head-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.source-lifecycle {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.source-lifecycle[data-state="current"] .status-pill {
+    color: var(--success);
+    border-color: rgba(var(--success-rgb), 0.28);
+    background: rgba(var(--success-rgb), 0.09);
+}
+
+.source-lifecycle[data-state="stale"] .status-pill,
+.source-lifecycle[data-state="refreshing"] .status-pill {
+    color: var(--warning);
+    border-color: rgba(var(--warning-rgb), 0.3);
+    background: rgba(var(--warning-rgb), 0.09);
+}
+
+.source-lifecycle[data-state="unavailable"] .status-pill {
+    color: var(--danger);
+    border-color: rgba(var(--danger-rgb), 0.3);
+    background: rgba(var(--danger-rgb), 0.09);
+}
+
+#kpi-success-rate-card[data-severity="healthy"] .kpi-value {
+    color: var(--success);
+}
+
+#kpi-success-rate-card[data-severity="degraded"] .kpi-value,
+#kpi-duration-card[data-confidence="low"] .kpi-value {
+    color: var(--warning);
+}
+
+#kpi-success-rate-card[data-severity="critical"] .kpi-value {
+    color: var(--danger);
+}
+
+.inline-quality-pill {
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
 .health-trend-kpis {
     margin-bottom: 14px;
+}
+
+.trend-chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.trend-chart-card {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.trend-chart-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.trend-chart-title {
+    display: grid;
+    gap: 2px;
+}
+
+.trend-chart-scope {
+    color: var(--subtle);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.trend-chart {
+    position: relative;
+    min-height: 150px;
+    border-radius: var(--radius-sm);
+    background: rgba(var(--field-rgb), 0.52);
+}
+
+.trend-chart svg {
+    display: block;
+    width: 100%;
+    height: 150px;
+    overflow: visible;
+}
+
+.trend-grid-line {
+    stroke: var(--subtle);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+    opacity: 0.18;
+}
+
+.trend-axis-line {
+    stroke: var(--subtle);
+    stroke-width: 1;
+    opacity: 0.35;
+}
+
+.trend-axis-label,
+.trend-axis-unit {
+    fill: var(--subtle);
+    font-family: inherit;
+    font-size: 9px;
+}
+
+.trend-axis-unit {
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.trend-line {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.trend-point {
+    fill: var(--accent-text);
+    stroke: var(--bg);
+    stroke-width: 2;
+    cursor: crosshair;
+}
+
+.trend-point:focus {
+    outline: none;
+    filter: drop-shadow(0 0 5px var(--accent));
+    stroke: #ffffff;
+}
+
+.trend-tooltip {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    z-index: 4;
+    display: grid;
+    min-width: 150px;
+    max-width: calc(100% - 16px);
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font-size: 0.72rem;
+    line-height: 1.35;
+    pointer-events: none;
+    transform: translateX(-50%);
+}
+
+.trend-tooltip[hidden] {
+    display: none;
+}
+
+.trend-tooltip span {
+    color: var(--subtle);
+}
+
+.trend-chart-empty {
+    margin: 0;
+    padding: 36px 12px;
+    text-align: center;
 }
 
 .health-trend-table {
     margin-top: 0;
 }
 
+.health-table-controls {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) repeat(2, minmax(150px, 0.28fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.health-table-controls input,
+.health-table-controls select {
+    width: 100%;
+}
+
+.health-table-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+#health-scroll-hint {
+    display: none;
+    margin: 0 0 8px;
+}
+
 .health-trend-table table {
     min-width: 900px;
+}
+
+.health-trend-table th:first-child,
+.health-trend-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: rgba(var(--field-rgb), 0.98);
+}
+
+.health-trend-table th:first-child {
+    z-index: 2;
+}
+
+.health-signal-badge {
+    min-height: 24px;
+    font-size: 11px;
 }
 
 .kpi-value.accent,
@@ -53,6 +330,36 @@
 
     .compact-controls {
         justify-content: flex-start;
+        width: 100%;
+    }
+
+    .workspace-head-actions,
+    .source-lifecycle {
+        justify-content: flex-start;
+        width: 100%;
+    }
+
+    .trend-chart-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .health-table-controls {
+        grid-template-columns: 1fr;
+    }
+
+    #health-scroll-hint {
+        display: block;
+    }
+}
+
+@media (max-width: 560px) {
+    .trend-chart-head,
+    .health-table-footer {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .health-table-footer .pagination {
         width: 100%;
     }
 }

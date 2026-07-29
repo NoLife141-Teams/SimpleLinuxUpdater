@@ -21,8 +21,9 @@ const (
 var ErrInvalidWindow = errors.New("invalid observability window")
 
 type FailureItem struct {
-	Cause string `json:"cause"`
-	Count int    `json:"count"`
+	Cause   string   `json:"cause"`
+	Count   int      `json:"count"`
+	Servers []string `json:"servers,omitempty"`
 }
 
 type StatusItem struct {
@@ -213,6 +214,7 @@ type HealthTrendServerSummary struct {
 	Samples            int                `json:"samples"`
 	Latest             *HealthTrendPoint  `json:"latest,omitempty"`
 	First              *HealthTrendPoint  `json:"first,omitempty"`
+	LastObservation    *HealthTrendPoint  `json:"last_observation,omitempty"`
 	PackageDelta       int                `json:"package_delta"`
 	SecurityDelta      int                `json:"security_delta"`
 	DiskFreeDeltaKB    int64              `json:"disk_free_delta_kb"`

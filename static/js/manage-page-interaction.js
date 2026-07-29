@@ -54,7 +54,7 @@
         let sort = { key: "name", direction: "asc" };
         let page = 1;
         let editor = { sessionID: 0, open: false, originalName: "", draft: null, hostKey: null, policyContext: emptyPolicyContext() };
-        let audit = { query: { targetName: "", action: "", status: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
+        let audit = { query: { targetName: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));

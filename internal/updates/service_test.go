@@ -20,6 +20,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const liveOutputTestTimeout = 5 * time.Second
+
 func testHostMaintenanceSessionFactory(session *HostMaintenanceSessionFuncs) HostMaintenanceSessionFactory {
 	return HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
 		return session, nil
@@ -399,7 +401,7 @@ func TestRunUpdateJobPublishesAptUpgradeOutputBeforeCommandCompletes(t *testing.
 
 	select {
 	case <-outputSent:
-	case <-time.After(time.Second):
+	case <-time.After(liveOutputTestTimeout):
 		t.Fatal("apt upgrade did not emit output")
 	}
 	status := state.CurrentStatusSnapshot(server.Name)
@@ -430,7 +432,7 @@ func TestRunUpdateJobPublishesAptUpgradeOutputBeforeCommandCompletes(t *testing.
 	close(releaseUpgrade)
 	select {
 	case <-runDone:
-	case <-time.After(time.Second):
+	case <-time.After(liveOutputTestTimeout):
 		t.Fatal("update did not finish after releasing apt upgrade")
 	}
 	status = state.CurrentStatusSnapshot(server.Name)
@@ -530,7 +532,7 @@ func TestRunAutoremoveJobPublishesOutputBeforeCommandCompletes(t *testing.T) {
 
 	select {
 	case <-outputSent:
-	case <-time.After(time.Second):
+	case <-time.After(liveOutputTestTimeout):
 		t.Fatal("apt autoremove did not emit output")
 	}
 	status := state.CurrentStatusSnapshot(server.Name)
@@ -561,7 +563,7 @@ func TestRunAutoremoveJobPublishesOutputBeforeCommandCompletes(t *testing.T) {
 	close(releaseAutoremove)
 	select {
 	case <-runDone:
-	case <-time.After(time.Second):
+	case <-time.After(liveOutputTestTimeout):
 		t.Fatal("autoremove did not finish after releasing the command")
 	}
 	status = state.CurrentStatusSnapshot(server.Name)

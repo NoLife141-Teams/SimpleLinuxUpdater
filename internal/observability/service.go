@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	auditpkg "debian-updater/internal/audit"
 	healthpkg "debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
@@ -64,6 +65,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			LatestFunc: func() (map[string]healthpkg.CollectedFacts, error) {
 				return map[string]healthpkg.CollectedFacts{}, nil
 			},
+			LatestObservationsFunc: func(string) (map[string]healthpkg.Snapshot, error) {
+				return map[string]healthpkg.Snapshot{}, nil
+			},
 			HistoryFunc: func(string, string, string) ([]healthpkg.Snapshot, error) {
 				return []healthpkg.Snapshot{}, nil
 			},
@@ -112,18 +116,7 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 }
 
 func ParseHealthTrendWindow(raw string) (string, time.Duration, error) {
-	window := strings.TrimSpace(strings.ToLower(raw))
-	if window == "" {
-		window = "7d"
-	}
-	switch window {
-	case "7d":
-		return window, 7 * 24 * time.Hour, nil
-	case "30d":
-		return window, 30 * 24 * time.Hour, nil
-	default:
-		return "", 0, fmt.Errorf("%w: %q", ErrInvalidWindow, raw)
-	}
+	return ParseWindow(raw)
 }
 
 func ParseWindow(raw string) (string, time.Duration, error) {
@@ -140,44 +133,6 @@ func ParseWindow(raw string) (string, time.Duration, error) {
 		return window, 30 * 24 * time.Hour, nil
 	default:
 		return "", 0, fmt.Errorf("%w: %q", ErrInvalidWindow, raw)
-	}
-}
-
-func metaStringValue(meta map[string]any, key string) string {
-	if meta == nil {
-		return ""
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return ""
-	}
-	switch v := raw.(type) {
-	case string:
-		return strings.TrimSpace(v)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", v))
-	}
-}
-
-func metaBoolValue(meta map[string]any, key string) (bool, bool) {
-	if meta == nil {
-		return false, false
-	}
-	raw, ok := meta[key]
-	if !ok {
-		return false, false
-	}
-	switch v := raw.(type) {
-	case bool:
-		return v, true
-	case string:
-		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
-		if err != nil {
-			return false, false
-		}
-		return parsed, true
-	default:
-		return false, false
 	}
 }
 
@@ -210,22 +165,7 @@ func MetaDurationMS(meta map[string]any) (float64, bool) {
 }
 
 func FailureCauseFromMeta(meta map[string]any, metaValid bool) string {
-	if !metaValid {
-		return "unknown"
-	}
-	if precheck := metaStringValue(meta, "precheck_failed"); precheck != "" {
-		return "precheck:" + precheck
-	}
-	if postcheck := metaStringValue(meta, "postcheck_failed"); postcheck != "" {
-		return "postcheck:" + postcheck
-	}
-	if retryExhausted, ok := metaBoolValue(meta, "retry_exhausted"); ok && retryExhausted {
-		return "retry_exhausted"
-	}
-	if errClass := strings.ToLower(metaStringValue(meta, "last_error_class")); errClass != "" && errClass != "none" {
-		return "error_class:" + errClass
-	}
-	return "unknown"
+	return auditpkg.FailureCauseFromMeta(meta, metaValid)
 }
 
 func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse, error) {
@@ -249,10 +189,11 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 		{Status: "failure", Count: 0},
 	}
 	failureCauseCounts := map[string]int{}
+	failureCauseServers := map[string]map[string]struct{}{}
 
 	db := deps.DB()
 	rows, err := db.Query(
-		`SELECT status, meta_json FROM audit_events
+		`SELECT status, target_name, meta_json FROM audit_events
 		WHERE action = ? AND created_at >= ? AND created_at <= ?`,
 		deps.UpdateCompleteAction,
 		from.Format(time.RFC3339),
@@ -266,8 +207,9 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 	var durationTotal float64
 	for rows.Next() {
 		var status string
+		var targetName string
 		var metaJSON string
-		if scanErr := rows.Scan(&status, &metaJSON); scanErr != nil {
+		if scanErr := rows.Scan(&status, &targetName, &metaJSON); scanErr != nil {
 			return SummaryResponse{}, scanErr
 		}
 		normalizedStatus := strings.ToLower(strings.TrimSpace(status))
@@ -303,6 +245,13 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 		if normalizedStatus == "failure" {
 			cause := FailureCauseFromMeta(meta, metaValid)
 			failureCauseCounts[cause]++
+			targetName = strings.TrimSpace(targetName)
+			if targetName != "" {
+				if failureCauseServers[cause] == nil {
+					failureCauseServers[cause] = map[string]struct{}{}
+				}
+				failureCauseServers[cause][targetName] = struct{}{}
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -316,7 +265,12 @@ func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse
 	}
 	summary.FailureCauses = make([]FailureItem, 0, len(failureCauseCounts))
 	for cause, count := range failureCauseCounts {
-		summary.FailureCauses = append(summary.FailureCauses, FailureItem{Cause: cause, Count: count})
+		serverNames := make([]string, 0, len(failureCauseServers[cause]))
+		for serverName := range failureCauseServers[cause] {
+			serverNames = append(serverNames, serverName)
+		}
+		sort.Strings(serverNames)
+		summary.FailureCauses = append(summary.FailureCauses, FailureItem{Cause: cause, Count: count, Servers: serverNames})
 	}
 	sort.Slice(summary.FailureCauses, func(i, j int) bool {
 		if summary.FailureCauses[i].Count == summary.FailureCauses[j].Count {
@@ -1048,13 +1002,6 @@ func trendFailure(status string) bool {
 	}
 }
 
-func trimTrendPoints(points []HealthTrendPoint, limit int) []HealthTrendPoint {
-	if limit <= 0 || len(points) <= limit {
-		return points
-	}
-	return append([]HealthTrendPoint(nil), points[len(points)-limit:]...)
-}
-
 func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Time) (HealthTrendResponse, error) {
 	deps := s.EnsureDeps()
 	window, span, err := ParseHealthTrendWindow(rawWindow)
@@ -1106,6 +1053,11 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 	if err != nil {
 		return HealthTrendResponse{}, err
 	}
+	latestObservations, latestErr := deps.HostHealthObservation.LatestObservations(filter)
+	if latestErr != nil {
+		deps.Logf("observability: failed to load last host health observations: %v", latestErr)
+		latestObservations = map[string]healthpkg.Snapshot{}
+	}
 	byServer := map[string][]HealthTrendPoint{}
 	for _, snapshot := range snapshots {
 		if _, ok := activeServers[snapshot.ServerName]; !ok {
@@ -1121,22 +1073,41 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 	fleetAptProblems := 0
 	fleetDiskProblems := 0
 	fleetRebootSeen := 0
-	for serverName, points := range byServer {
-		if len(points) == 0 {
+	fleetServersWithSamples := 0
+	for serverName := range activeServers {
+		if filter != "" && serverName != filter {
 			continue
 		}
+		points := byServer[serverName]
+		var lastObservation *HealthTrendPoint
+		if snapshot, ok := latestObservations[serverName]; ok && strings.TrimSpace(snapshot.CapturedAt) != "" {
+			point := healthTrendPointFromSnapshot(snapshot, deps, loc, timezoneName)
+			lastObservation = &point
+		}
+		if len(points) == 0 {
+			response.Servers = append(response.Servers, HealthTrendServerSummary{
+				Name:            serverName,
+				LastObservation: lastObservation,
+				Points:          []HealthTrendPoint{},
+			})
+			continue
+		}
+		fleetServersWithSamples++
 		summary := HealthTrendServerSummary{
 			Name:    serverName,
 			Samples: len(points),
-			Points:  trimTrendPoints(points, 30),
+			Points:  append([]HealthTrendPoint(nil), points...),
 		}
 		first := points[0]
 		latest := points[len(points)-1]
 		summary.First = &first
 		summary.Latest = &latest
+		summary.LastObservation = lastObservation
 		summary.PackageDelta = latest.PackageCount - first.PackageCount
 		summary.SecurityDelta = latest.SecurityCount - first.SecurityCount
-		summary.DiskFreeDeltaKB = latest.DiskFreeKB - first.DiskFreeKB
+		if latest.DiskFreeKB > 0 && first.DiskFreeKB > 0 {
+			summary.DiskFreeDeltaKB = latest.DiskFreeKB - first.DiskFreeKB
+		}
 		for _, point := range points {
 			if trendFailure(point.LastUpdateStatus) {
 				summary.UpdateFailures++
@@ -1165,7 +1136,7 @@ func (s *Service) BuildHealthTrends(rawWindow, serverFilter string, now time.Tim
 		response.Servers = append(response.Servers, summary)
 	}
 	sort.Slice(response.Servers, func(i, j int) bool { return response.Servers[i].Name < response.Servers[j].Name })
-	response.Fleet["servers_with_samples"] = len(response.Servers)
+	response.Fleet["servers_with_samples"] = fleetServersWithSamples
 	response.Fleet["samples"] = fleetSamples
 	response.Fleet["update_failures"] = fleetUpdateFailures
 	response.Fleet["scan_failures"] = fleetScanFailures

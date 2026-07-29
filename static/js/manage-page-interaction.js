@@ -7,6 +7,30 @@
 
     const pageSizes = new Set([10, 20, 25, 50, 100]);
     const streamNames = ["inventory", "globalKey", "audit", "policyContext", "hostKey"];
+    const authentication = Object.freeze({
+        password: "password",
+        perServerKey: "per-server-key",
+        globalKey: "global-key",
+        missing: "missing",
+        unknown: "unknown",
+        perServerKeyAndPassword: "per-server-key-and-password",
+        globalKeyAndPassword: "global-key-and-password"
+    });
+    const creationAuthenticationMethods = new Set([
+        authentication.password,
+        authentication.perServerKey,
+        authentication.globalKey
+    ]);
+    const ambiguousAuthentication = new Set([
+        authentication.perServerKeyAndPassword,
+        authentication.globalKeyAndPassword
+    ]);
+    const sectionDefinitions = [
+        { id: "global-key", label: "Global SSH Credential", collapsed: true },
+        { id: "add-server", label: "Add Server", collapsed: true },
+        { id: "directory", label: "Server directory", collapsed: false },
+        { id: "audit", label: "Audit trail", collapsed: true }
+    ];
 
     function clone(value) {
         if (Array.isArray(value)) return value.map(clone);
@@ -50,11 +74,16 @@
     function createStore() {
         let inventory = [];
         let globalKeyAvailable = false;
+        let creationAuthenticationMethod = authentication.password;
         let filters = defaultFilters();
         let sort = { key: "name", direction: "asc" };
         let page = 1;
-        let editor = { sessionID: 0, open: false, originalName: "", draft: null, hostKey: null, policyContext: emptyPolicyContext() };
-        let audit = { query: { targetName: "", action: "", status: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
+        let workspace = {
+            activeSection: "directory",
+            collapsed: Object.fromEntries(sectionDefinitions.map(section => [section.id, section.collapsed]))
+        };
+        let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
+        let audit = { query: { targetName: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -98,6 +127,56 @@
             if (state.queued) { const queued = state.queued; state.queued = null; effects.push(...request(stream, queued)); }
             return effects;
         }
+        function effectiveAuth(server) {
+            if (server.has_key) {
+                return server.has_password ? authentication.perServerKeyAndPassword : authentication.perServerKey;
+            }
+            if (streams.globalKey.data === null) {
+                return authentication.unknown;
+            }
+            if (globalKeyAvailable) {
+                return server.has_password ? authentication.globalKeyAndPassword : authentication.globalKey;
+            }
+            return server.has_password ? authentication.password : authentication.missing;
+        }
+        function effectiveAuthAfterCredentialClear(server, credential) {
+            return effectiveAuth({
+                ...server,
+                has_key: credential === "key" ? false : !!server.has_key,
+                has_password: credential === "password" ? false : !!server.has_password
+            });
+        }
+        function projectedServer(server) {
+            const auth = effectiveAuth(server);
+            return { ...clone(server), effectiveAuth: auth, authenticationAmbiguous: ambiguousAuthentication.has(auth) };
+        }
+        function inventorySummary() {
+            const summary = {
+                total: inventory.length,
+                password: 0,
+                serverKey: 0,
+                globalKey: 0,
+                ambiguous: 0,
+                missing: 0,
+                unknown: 0,
+                trustedHostKeys: 0,
+                hostKeyAttention: 0,
+                needsAttention: 0
+            };
+            inventory.forEach(server => {
+                const auth = effectiveAuth(server);
+                if (auth === authentication.password) summary.password++;
+                if (auth === authentication.perServerKey) summary.serverKey++;
+                if (auth === authentication.globalKey) summary.globalKey++;
+                if (ambiguousAuthentication.has(auth)) summary.ambiguous++;
+                if (auth === authentication.missing) summary.missing++;
+                if (auth === authentication.unknown) summary.unknown++;
+                if (server.host_key_status === "trusted") summary.trustedHostKeys++;
+                else summary.hostKeyAttention++;
+                if (auth === authentication.missing || auth === authentication.unknown || ambiguousAuthentication.has(auth) || server.host_key_status !== "trusted") summary.needsAttention++;
+            });
+            return summary;
+        }
         function projectedInventory() {
             const search = filters.search.toLowerCase();
             const tag = filters.tag.toLowerCase();
@@ -118,16 +197,80 @@
             if (!filters.group) groups.set("", items);
             items.forEach(server => {
                 if (!filters.group) return;
-                const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "global key") : "no key") + " / " + (server.has_password ? "password" : "no password")];
+                const auth = effectiveAuth(server);
+                const keys = filters.group === "tag"
+                    ? (server.tags.length ? server.tags : ["untagged"])
+                    : [auth === authentication.unknown
+                        ? "authentication unknown"
+                        : ((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "Global SSH Credential") : "no key") + " / " + (server.has_password ? "password" : "no password")];
                 keys.forEach(key => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(server); });
             });
-            return { allItems: clone(inventory), items: clone(items), groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: clone(value) })), total: filtered.length, page: safePage, totalPages };
+            return {
+                allItems: inventory.map(projectedServer),
+                items: items.map(projectedServer),
+                groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: value.map(projectedServer) })),
+                total: filtered.length,
+                page: safePage,
+                totalPages,
+                activeFilterCount: ["search", "tag", "auth", "group"].filter(key => String(filters[key] || "").trim()).length,
+                summary: inventorySummary()
+            };
+        }
+        function parseDraftPort(value) {
+            const raw = String(value ?? "").trim();
+            if (raw === "") return { valid: true, value: 22, comparable: 22 };
+            const valid = /^\d+$/.test(raw) && Number(raw) >= 1 && Number(raw) <= 65535;
+            return {
+                valid,
+                value: valid ? Number(raw) : 22,
+                comparable: valid ? Number(raw) : `invalid:${raw}`
+            };
+        }
+        function serverDraftValidation(value = {}) {
+            const missingFields = [
+                !String(value.name || "").trim() && "name",
+                !String(value.host || "").trim() && "host",
+                !String(value.user || "").trim() && "user"
+            ].filter(Boolean);
+            if (missingFields.length) {
+                return {
+                    valid: false,
+                    invalidFields: missingFields,
+                    reason: `${missingFields.join(", ")} required.`
+                };
+            }
+
+            const invalidFields = [];
+            const reasons = [];
+            if (!parseDraftPort(value.port).valid) {
+                invalidFields.push("port");
+                reasons.push("SSH port must be a whole number from 1 to 65535.");
+            }
+            const user = String(value.user || "").trim();
+            if (user.length > 64 || !/^[A-Za-z0-9_.-]+$/.test(user)) {
+                invalidFields.push("user");
+                reasons.push("SSH username may contain only letters, digits, periods, hyphens, and underscores.");
+            }
+            return {
+                valid: invalidFields.length === 0,
+                invalidFields,
+                reason: reasons.join(" ")
+            };
         }
         function normalizedServerDraft(value = {}) {
             return {
                 name: String(value.name || "").trim(),
                 host: String(value.host || "").trim(),
-                port: normalizePort(value.port, 22),
+                port: parseDraftPort(value.port).value,
+                user: String(value.user || "").trim(),
+                tags: normalizeTags(value.tags)
+            };
+        }
+        function comparableServerDraft(value = {}) {
+            return {
+                name: String(value.name || "").trim(),
+                host: String(value.host || "").trim(),
+                port: parseDraftPort(value.port).comparable,
                 user: String(value.user || "").trim(),
                 tags: normalizeTags(value.tags)
             };
@@ -158,15 +301,60 @@
                 return [{ policyID, disabled: matches ? !!editor.policyContext.overrides[policyID] : false }];
             });
         }
+        function editorDirty() {
+            if (!editor.open || !editor.originalDraft || !editor.draft) return false;
+            if (editor.draft.passwordReplacement || editor.keyReplacement) return true;
+            const original = comparableServerDraft(editor.originalDraft);
+            const draft = comparableServerDraft(editor.draft);
+            if (JSON.stringify(original) !== JSON.stringify(draft)) return true;
+            return policyOverrideChanges().some(change => (
+                !!editor.policyContext.originalOverrides[change.policyID] !== !!change.disabled
+            ));
+        }
         function projectedEditor() {
             const value = clone(editor);
             value.policyContext.visiblePolicies = value.policyContext.policies.filter(policyMatchesDraft);
+            value.dirty = editorDirty();
+            value.valid = serverDraftValidation(editor.draft || {}).valid;
+            value.canSave = value.dirty && value.valid && !inFlightCommandScopes.has(`server:${editor.originalName}`);
+            const acceptedServer = inventory.find(server => server.name === editor.originalName) || {};
+            value.credentialOutcomes = {
+                clearPassword: effectiveAuthAfterCredentialClear(acceptedServer, "password"),
+                clearKey: effectiveAuthAfterCredentialClear(acceptedServer, "key")
+            };
             return value;
+        }
+        function projectedCreation() {
+            return {
+                authenticationMethod: creationAuthenticationMethod,
+                globalCredentialAvailable: globalKeyAvailable,
+                passwordFieldVisible: creationAuthenticationMethod === authentication.password,
+                keyFieldVisible: creationAuthenticationMethod === authentication.perServerKey
+            };
         }
         function projectedAudit() {
             const value = clone(audit);
             value.selectedDetail = value.items.find(item => String(item.id) === value.selectedID) || null;
             return value;
+        }
+        function projectedWorkspace() {
+            const summary = inventorySummary();
+            return {
+                activeSection: workspace.activeSection,
+                sections: sectionDefinitions.map(section => {
+                    let sectionSummary = "";
+                    if (section.id === "global-key") {
+                        const stream = streams.globalKey;
+                        if (stream.lastError) sectionSummary = "Error";
+                        else if (stream.inFlight !== null || stream.data === null) sectionSummary = "Checking…";
+                        else sectionSummary = globalKeyAvailable ? "Configured" : "Not configured";
+                    }
+                    if (section.id === "add-server") sectionSummary = "Create an SSH target";
+                    if (section.id === "directory") sectionSummary = `${summary.total} ${summary.total === 1 ? "server" : "servers"}`;
+                    if (section.id === "audit") sectionSummary = `${audit.total} recent ${audit.total === 1 ? "event" : "events"}`;
+                    return { id: section.id, label: section.label, collapsed: !!workspace.collapsed[section.id], summary: sectionSummary };
+                })
+            };
         }
         function commandPlan(command, payload = {}) {
             const target = String(payload.serverName || editor.originalName || "new").trim() || "new";
@@ -174,10 +362,25 @@
             const scope = command === "auditPrune" ? "audit" : (command.startsWith("globalKey") ? "globalKey" : (command === "createServer" ? "server:create" : `server:${target}`));
             if (inFlightCommands.has(key) || inFlightCommandScopes.has(scope)) return { enabled: false, reason: "This Manage action is already in progress." };
             if (command === "createServer" || command === "saveEditor") {
-                const draft = normalizedServerDraft(command === "createServer" ? payload : editor.draft);
-                const errors = [!String(draft.name || "").trim() && "name", !String(draft.host || "").trim() && "host", !String(draft.user || "").trim() && "user"].filter(Boolean);
-                if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
-                return { enabled: true, key, scope, command, payload: { ...draft, ...(command === "createServer" ? { trustHostKey: !!payload.trustHostKey, uploadKey: !!payload.hasKeyFile } : { originalName: editor.originalName, sessionID: editor.sessionID, policyOverrides: policyOverrideChanges() }) } };
+                const rawDraft = command === "createServer" ? payload : editor.draft;
+                const validation = serverDraftValidation(rawDraft);
+                if (!validation.valid) return { enabled: false, reason: validation.reason, invalidFields: validation.invalidFields };
+                const draft = normalizedServerDraft(rawDraft);
+                if (command === "createServer") {
+                    const authMethod = creationAuthenticationMethod;
+                    if (authMethod === authentication.password && !payload.hasPassword) {
+                        return { enabled: false, reason: "A password is required for password authentication.", invalidFields: ["pass"] };
+                    }
+                    if (authMethod === authentication.perServerKey && !payload.hasKeyFile) {
+                        return { enabled: false, reason: "Choose a per-server SSH key.", invalidFields: ["key"] };
+                    }
+                    if (authMethod === authentication.globalKey && !globalKeyAvailable) {
+                        return { enabled: false, reason: "No Global SSH Credential is configured.", invalidFields: ["auth"] };
+                    }
+                    return { enabled: true, key, scope, command, payload: { ...draft, authMethod, trustHostKey: !!payload.trustHostKey, uploadKey: authMethod === authentication.perServerKey && !!payload.hasKeyFile } };
+                }
+                if (!editorDirty()) return { enabled: false, reason: "The server draft is unchanged." };
+                return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, keyReplacement: !!editor.keyReplacement, policyOverrides: policyOverrideChanges() } };
             }
             if (command === "trustHostKey") {
                 const hostKey = editor.hostKey;
@@ -193,13 +396,21 @@
                     if (input.requestID && streams.inventory.inFlight !== input.requestID) return [];
                     inventory = (Array.isArray(input.items) ? input.items : []).map(normalizeServer).filter(Boolean);
                     return received("inventory", input.requestID, { items: inventory });
-                case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
+                case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; if (!globalKeyAvailable && creationAuthenticationMethod === authentication.globalKey) creationAuthenticationMethod = authentication.password; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
+                case "creationAuthenticationChanged": { const method = String(input.authenticationMethod || ""); if (creationAuthenticationMethods.has(method) && (method !== authentication.globalKey || globalKeyAvailable)) creationAuthenticationMethod = method; return [effect("render", { area: "creation" })]; }
                 case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
+                case "filtersReset": filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
-                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), draft: { ...clone(server), tags: normalizeTags(server.tags) }, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
+                case "sectionCollapseToggled": if (workspace.collapsed[input.sectionID] !== undefined) workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID]; return [effect("render", { area: "workspace" })];
+                case "sectionActivated": if (workspace.collapsed[input.sectionID] !== undefined) workspace.activeSection = input.sectionID; return [effect("render", { area: "workspace" })];
+                case "sectionNavigationRequested": if (workspace.collapsed[input.sectionID] !== undefined) { workspace.activeSection = input.sectionID; workspace.collapsed[input.sectionID] = false; return [effect("render", { area: "workspace" }), effect("focusSection", { sectionID: input.sectionID })]; } return [];
+                case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; const draft = { ...clone(server), tags: normalizeTags(server.tags) }; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), originalDraft: clone(draft), draft, keyReplacement: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
                 case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];
-                case "editorIdentityAccepted": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.originalName = String(input.name || editor.originalName); return [effect("render", { area: "editor" })];
+                case "editorCredentialIntentChanged": if (editor.open) editor.keyReplacement = !!input.keyReplacement; return [effect("render", { area: "editor" })];
+                case "editorDiscarded": if (editor.open) { editor.draft = clone(editor.originalDraft); editor.keyReplacement = false; editor.policyContext.overrides = clone(editor.policyContext.originalOverrides); editor.hostKey = null; invalidateStream("hostKey"); } return [effect("render", { area: "editor" })];
+                case "editorCloseRequested": return editorDirty() ? [effect("confirmEditorDiscard", { sessionID: editor.sessionID })] : [effect("closeEditor", { sessionID: editor.sessionID })];
+                case "editorServerAccepted": if (editor.open && input.server && input.sessionID === editor.sessionID) { const acceptedDraft = { ...editor.draft, ...normalizedServerDraft(input.server), passwordReplacement: false }; editor.originalName = acceptedDraft.name; editor.originalDraft = clone(acceptedDraft); editor.draft = acceptedDraft; } return [effect("render", { area: "editor" })];
                 case "editorClosed": invalidateEditorStreams(); editor = { ...editor, sessionID: editor.sessionID + 1, open: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })];
                 case "hostKeyReceived": if (editor.open && input.sessionID === editor.sessionID && input.host === String(editor.draft.host || "").trim() && normalizePort(input.port) === normalizePort(editor.draft.port)) editor.hostKey = { ...clone(input.hostKey), host: String(input.host), port: normalizePort(input.port) }; return received("hostKey", input.requestID, input.hostKey);
                 case "hostKeyCleared": if (editor.open && (!input.sessionID || input.sessionID === editor.sessionID)) editor.hostKey = { host: String(input.host || "").trim(), port: normalizePort(input.port), checked: true, alreadyTrusted: false, fingerprint: "" }; return [effect("render", { area: "editor" })];
@@ -212,11 +423,11 @@
                 case "snapshotRequested": return request(input.stream, input.payload);
                 case "snapshotFailed": return failed(input.stream, input.requestID, input.error);
                 case "commandRequested": { const plan = commandPlan(input.command, input.payload); if (!plan.enabled) return [effect("commandRejected", plan)]; inFlightCommands.add(plan.key); inFlightCommandScopes.add(plan.scope); return [effect("executeCommand", { plan })]; }
-                case "commandCompleted": case "commandFailed": { const plan = input.plan || {}; inFlightCommands.delete(plan.key); inFlightCommandScopes.delete(plan.scope); const error = input.type === "commandFailed"; return [effect("announce", { message: input.message || (error ? "Manage action failed." : "Manage action completed."), error }), ...(error ? [] : [effect("refresh", { streams: ["inventory", "globalKey", "audit"] })])]; }
+                case "commandCompleted": case "commandPartiallyCompleted": case "commandFailed": { const plan = input.plan || {}; inFlightCommands.delete(plan.key); inFlightCommandScopes.delete(plan.scope); const failed = input.type === "commandFailed"; const partial = input.type === "commandPartiallyCompleted"; const error = failed || partial; return [effect("announce", { message: input.message || (partial ? "Manage action partially completed." : (failed ? "Manage action failed." : "Manage action completed.")), error }), ...(failed ? [] : [effect("refresh", { streams: ["inventory", "globalKey", "audit"] })])]; }
                 default: return [];
             }
         }
-        function getView() { return clone({ inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ workspace: projectedWorkspace(), inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

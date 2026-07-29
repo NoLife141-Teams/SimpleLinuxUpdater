@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,14 +44,15 @@ type Event struct {
 }
 
 type ListFilter struct {
-	Page       int
-	PageSize   int
-	Category   string
-	TargetName string
-	Action     string
-	Status     string
-	From       string
-	To         string
+	Page         int
+	PageSize     int
+	Category     string
+	TargetName   string
+	Action       string
+	Status       string
+	FailureCause string
+	From         string
+	To           string
 }
 
 const ListCategoryAdminActivity = "admin_activity"
@@ -118,6 +120,24 @@ func (r *SQLiteRepository) Write(evt Event) error {
 
 func (r *SQLiteRepository) Count(filter ListFilter) (int, error) {
 	whereClause, args := auditWhereClause(filter)
+	if filter.FailureCause != "" {
+		rows, err := r.db().Query("SELECT meta_json FROM audit_events"+whereClause, args...)
+		if err != nil {
+			return 0, err
+		}
+		defer rows.Close()
+		total := 0
+		for rows.Next() {
+			var metaJSON string
+			if err := rows.Scan(&metaJSON); err != nil {
+				return 0, err
+			}
+			if FailureCauseFromMetaJSON(metaJSON) == filter.FailureCause {
+				total++
+			}
+		}
+		return total, rows.Err()
+	}
 	var total int
 	err := r.db().QueryRow("SELECT COUNT(*) FROM audit_events"+whereClause, args...).Scan(&total)
 	return total, err
@@ -126,8 +146,12 @@ func (r *SQLiteRepository) Count(filter ListFilter) (int, error) {
 func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, error) {
 	whereClause, args := auditWhereClause(filter)
 	query := `SELECT id, created_at, actor, action, target_type, target_name, status, message, meta_json, request_id, client_ip
-			FROM audit_events` + whereClause + ` ORDER BY id DESC LIMIT ? OFFSET ?`
-	queryArgs := append(append([]any{}, args...), limit, offset)
+			FROM audit_events` + whereClause + ` ORDER BY id DESC`
+	queryArgs := append([]any{}, args...)
+	if filter.FailureCause == "" {
+		query += ` LIMIT ? OFFSET ?`
+		queryArgs = append(queryArgs, limit, offset)
+	}
 	rows, err := r.db().Query(query, queryArgs...)
 	if err != nil {
 		return nil, &ListError{Stage: "load", Err: err}
@@ -135,6 +159,7 @@ func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, 
 	defer rows.Close()
 
 	items := make([]Event, 0, limit)
+	matched := 0
 	for rows.Next() {
 		var evt Event
 		if err := rows.Scan(
@@ -151,6 +176,19 @@ func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, 
 			&evt.ClientIP,
 		); err != nil {
 			return nil, &ListError{Stage: "parse", Err: err}
+		}
+		if filter.FailureCause != "" {
+			if FailureCauseFromMetaJSON(evt.MetaJSON) != filter.FailureCause {
+				continue
+			}
+			if matched < offset {
+				matched++
+				continue
+			}
+			if len(items) >= limit {
+				break
+			}
+			matched++
 		}
 		items = append(items, evt)
 	}
@@ -230,6 +268,70 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(whereParts, " AND "), args
+}
+
+func FailureCauseFromMetaJSON(raw string) string {
+	meta := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		return "unknown"
+	}
+	return FailureCauseFromMeta(meta, true)
+}
+
+func FailureCauseFromMeta(meta map[string]any, valid bool) string {
+	if !valid {
+		return "unknown"
+	}
+	if precheck := failureMetaString(meta, "precheck_failed"); precheck != "" {
+		return "precheck:" + precheck
+	}
+	if postcheck := failureMetaString(meta, "postcheck_failed"); postcheck != "" {
+		return "postcheck:" + postcheck
+	}
+	if retryExhausted, ok := failureMetaBool(meta, "retry_exhausted"); ok && retryExhausted {
+		return "retry_exhausted"
+	}
+	if errorClass := strings.ToLower(failureMetaString(meta, "last_error_class")); errorClass != "" && errorClass != "none" {
+		return "error_class:" + errorClass
+	}
+	return "unknown"
+}
+
+func ValidFailureCause(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "unknown" || value == "retry_exhausted" {
+		return true
+	}
+	for _, prefix := range []string{"precheck:", "postcheck:", "error_class:"} {
+		if strings.HasPrefix(value, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(value, prefix)) != ""
+		}
+	}
+	return false
+}
+
+func failureMetaString(meta map[string]any, key string) string {
+	raw, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", raw))
+}
+
+func failureMetaBool(meta map[string]any, key string) (bool, bool) {
+	raw, ok := meta[key]
+	if !ok {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return parsed, err == nil
+	default:
+		return false, false
+	}
 }
 
 type ServiceOptions struct {

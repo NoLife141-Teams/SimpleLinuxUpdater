@@ -21,13 +21,13 @@ This UI checklist can be run without a real SSH target. For release validation t
 
 ## Manage Hosts
 
-- [ ] Add-host form renders all fields and the global key panel.
+- [ ] Add-host form renders all fields and the Global SSH Credential panel.
 - [ ] Server list table renders empty state and populated rows.
 - [ ] Delete server prompt requires typing the server name.
-- [ ] Audit table includes a `Report` column.
+- [ ] Audit table groups `Details` and `Report` under one `Actions` column.
 - [ ] Audit report links point to `/api/reports/audit/:id`.
 - [ ] Audit prune requires typed confirmation `PRUNE`.
-- [ ] Clear global key requires typed confirmation `CLEAR GLOBAL KEY`.
+- [ ] Clearing the Global SSH Credential requires typed confirmation `CLEAR GLOBAL SSH CREDENTIAL`.
 - [ ] Edit modal opens and traps focus.
 - [ ] Policy override list updates when tags are edited before save.
 - [ ] Explicit-server policy override matching is case-insensitive.

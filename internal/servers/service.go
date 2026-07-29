@@ -232,7 +232,27 @@ func (s *Service) SaveOrRollbackLocked(prevServers []Server, prevStatusMap map[s
 }
 
 func (s *Service) ListStatuses() []ServerStatus {
-	return s.state().ListStatuses()
+	statuses := s.state().ListStatuses()
+	if len(statuses) == 0 {
+		return statuses
+	}
+	checkKnownHostEntry, checkerErr := newKnownHostEntryChecker(s.deps.KnownHosts)
+	for i := range statuses {
+		if checkerErr != nil {
+			statuses[i].HostKeyStatus = HostKeyStatusUnknown
+			continue
+		}
+		exists, err := checkKnownHostEntry(statuses[i].Host, statuses[i].Port)
+		switch {
+		case err != nil:
+			statuses[i].HostKeyStatus = HostKeyStatusUnknown
+		case exists:
+			statuses[i].HostKeyStatus = HostKeyStatusTrusted
+		default:
+			statuses[i].HostKeyStatus = HostKeyStatusMissing
+		}
+	}
+	return statuses
 }
 
 func (s *Service) Create(server Server) (Server, error) {

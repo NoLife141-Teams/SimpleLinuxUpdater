@@ -2,7 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createStore } = require("../../static/js/observability-page-interaction.js");
+const {
+    createStore,
+    projectFleetHealth,
+    projectDurationConfidence,
+    projectFleetTrendSeries,
+    projectHealthCollection,
+    projectHealthTrendCSV,
+    projectTrendChart,
+} = require("../../static/js/observability-page-interaction.js");
 
 function effect(effects, type, source) {
     return effects.find(item => item.type === type && (!source || item.source === source));
@@ -36,10 +44,24 @@ test("full refresh retains accepted data and ignores superseded source results",
     const nextSummary = effect(effects, "loadSource", "summary");
     assert.equal(store.getView().summary.status, "refreshing");
     assert.equal(store.getView().summary.data.version, 1);
-    store.dispatch({ type: "sourceSucceeded", source: "summary", requestID: firstSummary.requestID, data: { version: 0 } });
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: firstSummary.requestID,
+        data: { version: 0 },
+        timeZone: "Asia/Tokyo",
+    });
     assert.equal(store.getView().summary.data.version, 1);
-    store.dispatch({ type: "sourceSucceeded", source: "summary", requestID: nextSummary.requestID, data: { version: 2 } });
+    assert.equal(store.getView().timeZone, "UTC");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: nextSummary.requestID,
+        data: { version: 2 },
+        timeZone: "America/Toronto",
+    });
     assert.equal(store.getView().summary.data.version, 2);
+    assert.equal(store.getView().timeZone, "America/Toronto");
 });
 
 test("partial failure is source-specific and keeps accepted data", () => {
@@ -60,6 +82,28 @@ test("partial failure is source-specific and keeps accepted data", () => {
     assert.equal(view.trends.status, "stale");
     assert.equal(view.trends.data.version, 1);
     assert.equal(view.trends.error.status, 503);
+});
+
+test("source lifecycle projects loading and unavailable empty-state content", () => {
+    const store = createStore();
+    let view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Unavailable");
+    assert.equal(view.summaryLifecycle.empty.tableMessage, "Update metrics unavailable.");
+    assert.equal(view.trendsLifecycle.empty.chartMessage, "Host health unavailable.");
+
+    const effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const trends = effect(effects, "loadSource", "trends");
+    view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Loading");
+    assert.equal(view.summaryLifecycle.empty.durationDetail, "Waiting for accepted duration data");
+    assert.equal(view.trendsLifecycle.empty.retentionLabel, "Retention loading");
+
+    store.dispatch({ type: "sourceFailed", source: "summary", requestID: summary.requestID, error: { kind: "http", status: 503 } });
+    store.dispatch({ type: "sourceFailed", source: "trends", requestID: trends.requestID, error: { kind: "http", status: 503 } });
+    view = store.getView();
+    assert.equal(view.summaryLifecycle.empty.stateLabel, "Unavailable");
+    assert.equal(view.trendsLifecycle.empty.tableMessage, "Host health unavailable.");
 });
 
 test("host selection refreshes trends only and filtered results preserve choices", () => {
@@ -97,8 +141,579 @@ test("automatic refresh waits for settlement and visibility cancellation is sile
     assert.equal(effects.filter(item => item.type === "loadSource").length, 2);
 });
 
+test("validated shareable selections and source retry stay inside Observability Page Interaction", () => {
+    assert.equal(createStore({ window: "90d" }).getView().selectedWindow, "7d");
+    const store = createStore({
+        window: "24h",
+        host: "alpha",
+        search: "prod",
+        attention: "failures",
+        sort: "freshness",
+        page: 3,
+    });
+    let view = store.getView();
+    assert.equal(view.selectedWindow, "24h");
+    assert.equal(view.selectedHost, "alpha");
+    assert.equal(view.search, "prod");
+    assert.equal(view.attention, "failures");
+    assert.equal(view.sort, "freshness");
+    assert.equal(view.page, 3);
+
+    let effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const trends = effect(effects, "loadSource", "trends");
+    assert.equal(trends.queryWindow, "24h");
+    assert.equal(trends.host, "");
+    store.dispatch({ type: "sourceFailed", source: "summary", requestID: summary.requestID, error: { kind: "http", status: 503 } });
+    store.dispatch({ type: "sourceSucceeded", source: "trends", requestID: trends.requestID, data: { generated_at: "2026-07-29T01:00:00Z", servers: [] }, unfiltered: true });
+    assert.equal(store.getView().selectedHost, "");
+    assert.equal(store.getView().page, 1);
+
+    effects = store.dispatch({ type: "retrySource", source: "summary" });
+    assert.equal(effects.filter(item => item.type === "loadSource").length, 1);
+    assert.equal(effect(effects, "loadSource", "summary").window, "24h");
+    assert.equal(store.getView().summary.status, "refreshing");
+
+    store.dispatch({ type: "filtersChanged", search: "db", attention: "disk", sort: "disk", page: 4 });
+    view = store.getView();
+    assert.equal(view.search, "db");
+    assert.equal(view.attention, "disk");
+    assert.equal(view.sort, "disk");
+    assert.equal(view.page, 1);
+});
+
+test("valid deep-linked host is verified by the unfiltered result before loading its 24h trend", () => {
+    const store = createStore({ window: "24h", host: "alpha" });
+    const effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const firstTrends = effect(effects, "loadSource", "trends");
+    assert.equal(firstTrends.host, "");
+    assert.equal(firstTrends.queryWindow, "24h");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "summary",
+        requestID: summary.requestID,
+        data: { totals: {} },
+    });
+
+    const settled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: firstTrends.requestID,
+        data: { servers: [{ name: "alpha" }, { name: "beta" }] },
+        unfiltered: true,
+    });
+    const filteredTrends = settled.filter(item => item.type === "loadSource" && item.source === "trends").at(-1);
+    assert.equal(filteredTrends.host, "alpha");
+    assert.equal(filteredTrends.queryWindow, "24h");
+    assert.equal(effect(settled, "scheduleRefresh"), undefined);
+
+    const filteredSettled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filteredTrends.requestID,
+        data: { servers: [{ name: "alpha", points: [] }] },
+    });
+    assert.equal(effect(filteredSettled, "scheduleRefresh").delayMs, 15000);
+});
+
+test("trends retry validates an unresolved deep-linked host with an unfiltered request", () => {
+    const store = createStore({ window: "24h", host: "bogus" });
+    let effects = store.dispatch({ type: "pageShown" });
+    const initialTrends = effect(effects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceFailed",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        error: { kind: "http", status: 503 },
+    });
+
+    effects = store.dispatch({ type: "retrySource", source: "trends" });
+    const retry = effect(effects, "loadSource", "trends");
+    assert.equal(retry.host, "");
+    assert.equal(retry.unfiltered, true);
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: retry.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: retry.unfiltered,
+    });
+    assert.equal(store.getView().selectedHost, "");
+});
+
+test("source retry resets automatic scheduling until its accepted result settles", () => {
+    const store = createStore({ host: "alpha" });
+    let effects = store.dispatch({ type: "pageShown" });
+    const summary = effect(effects, "loadSource", "summary");
+    const initialTrends = effect(effects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceFailed",
+        source: "summary",
+        requestID: summary.requestID,
+        error: { kind: "http", status: 503 },
+    });
+    effects = store.dispatch({
+        type: "sourceFailed",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        error: { kind: "http", status: 503 },
+    });
+    assert.equal(effect(effects, "scheduleRefresh").delayMs, 15000);
+
+    effects = store.dispatch({ type: "retrySource", source: "trends" });
+    assert.ok(effect(effects, "cancelRefresh"));
+    const retry = effect(effects, "loadSource", "trends");
+    const validated = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: retry.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: true,
+    });
+    assert.equal(effect(validated, "scheduleRefresh"), undefined);
+    const filtered = effect(validated, "loadSource", "trends");
+
+    const settled = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filtered.requestID,
+        data: { servers: [{ name: "alpha", points: [] }] },
+    });
+    assert.equal(effect(settled, "scheduleRefresh").delayMs, 15000);
+});
+
+test("selected host charts preserve every accepted observation", () => {
+    const store = createStore({ window: "24h", host: "alpha" });
+    const effects = store.dispatch({ type: "pageShown" });
+    const initialTrends = effect(effects, "loadSource", "trends");
+    const hostLoadEffects = store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: initialTrends.requestID,
+        data: { servers: [{ name: "alpha" }] },
+        unfiltered: true,
+    });
+    const filteredTrends = effect(hostLoadEffects, "loadSource", "trends");
+    store.dispatch({
+        type: "sourceSucceeded",
+        source: "trends",
+        requestID: filteredTrends.requestID,
+        data: {
+            servers: [{
+                name: "alpha",
+                points: [
+                    { captured_at: "2026-07-29T10:05:00Z", package_count: 1 },
+                    { captured_at: "2026-07-29T10:45:00Z", package_count: 9 },
+                ],
+            }],
+        },
+    });
+
+    assert.deepEqual(
+        store.getView().trendSeries.packages.map(point => [point.timestamp, point.value]),
+        [
+            ["2026-07-29T10:05:00Z", 1],
+            ["2026-07-29T10:45:00Z", 9],
+        ]
+    );
+});
+
+test("fleet trend projection combines staggered host samples into app-local daily buckets", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-22T13:00:00Z", package_count: 2 },
+                { captured_at: "2026-07-22T20:00:00Z", package_count: 3 },
+                { captured_at: "2026-07-23T16:00:00Z", package_count: 4 },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-22T15:00:00Z", package_count: 5 },
+                { captured_at: "2026-07-23T14:00:00Z", package_count: 6 },
+            ],
+        },
+    ], "packages", { window: "7d", timeZone: "America/Toronto" });
+
+    assert.deepEqual(series, [
+        {
+            timestamp: "2026-07-22T04:00:00.000Z",
+            lastObservedAt: "2026-07-22T20:00:00Z",
+            value: 8,
+            samples: 2,
+            observations: 3,
+            bucketKey: "2026-07-22",
+            bucketUnit: "day",
+        },
+        {
+            timestamp: "2026-07-23T04:00:00.000Z",
+            lastObservedAt: "2026-07-23T16:00:00Z",
+            value: 10,
+            samples: 2,
+            observations: 2,
+            bucketKey: "2026-07-23",
+            bucketUnit: "day",
+        },
+    ]);
+});
+
+test("failure trend projection sums events and preserves zeroes in hourly buckets", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-29T10:05:00Z", last_update_status: "failure", last_scan_status: "error" },
+                { captured_at: "2026-07-29T10:45:00Z", last_update_status: "interrupted" },
+                { captured_at: "2026-07-29T11:15:00Z", last_update_status: "success" },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-29T10:30:00Z", last_scan_status: "cancelled" },
+                { captured_at: "2026-07-29T11:40:00Z", last_scan_status: "success" },
+            ],
+        },
+    ], "failures", { window: "24h", timeZone: "UTC" });
+
+    assert.deepEqual(series, [
+        {
+            timestamp: "2026-07-29T10:00:00.000Z",
+            lastObservedAt: "2026-07-29T10:45:00Z",
+            value: 4,
+            samples: 2,
+            observations: 3,
+            bucketKey: "2026-07-29T10",
+            bucketUnit: "hour",
+        },
+        {
+            timestamp: "2026-07-29T11:00:00.000Z",
+            lastObservedAt: "2026-07-29T11:40:00Z",
+            value: 0,
+            samples: 2,
+            observations: 2,
+            bucketKey: "2026-07-29T11",
+            bucketUnit: "hour",
+        },
+    ]);
+});
+
+test("disk trend projection preserves unavailable buckets as chart gaps", () => {
+    const servers = [{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-07-29T09:00:00Z", disk_free_kb: 1024 },
+            { captured_at: "2026-07-29T10:00:00Z", disk_free_kb: 0 },
+            { captured_at: "2026-07-29T11:00:00Z", disk_free_kb: 768 },
+        ],
+    }];
+    const series = projectFleetTrendSeries(servers, "disk", { window: "24h", timeZone: "UTC" });
+    assert.deepEqual(series.map(point => point.value), [1024, null, 768]);
+
+    const chart = projectTrendChart(series);
+    assert.deepEqual(chart.segments.map(segment => segment.map(point => point.value)), [[1024], [768]]);
+});
+
+test("health trend CSV projection exports every accepted point with explicit missing facts", () => {
+    const projection = projectHealthTrendCSV([
+        {
+            name: "alpha",
+            latest: { captured_at: "2026-07-29T11:00:00Z" },
+            points: [
+                {
+                    captured_at: "2026-07-29T10:00:00Z",
+                    captured_at_display: "Jul 29, 2026, 06:00 EDT",
+                    source: "facts",
+                    package_count: 4,
+                    security_count: 2,
+                    disk_free_kb: 1024,
+                    disk_total_kb: 4096,
+                    apt_status: "ok",
+                    disk_status: "ok",
+                    last_update_status: "success",
+                    reboot_required: false,
+                },
+                {
+                    captured_at: "2026-07-29T11:00:00Z",
+                    captured_at_display: "Jul 29, 2026, 07:00 EDT",
+                    source: "audit",
+                    package_count: 3,
+                    security_count: 1,
+                    disk_free_kb: 0,
+                    disk_total_kb: 0,
+                    last_scan_status: "failure",
+                    reboot_required: null,
+                },
+            ],
+        },
+        { name: "missing", samples: 0, points: [] },
+        {
+            name: "stale",
+            samples: 0,
+            points: [],
+            last_observation: {
+                captured_at: "2026-07-20T11:00:00Z",
+                captured_at_display: "Jul 20, 2026, 07:00 EDT",
+                source: "facts",
+                package_count: 0,
+                security_count: 0,
+                disk_free_kb: 2048,
+                disk_total_kb: 8192,
+                apt_status: "ok",
+                disk_status: "ok",
+            },
+        },
+    ]);
+
+    assert.equal(projection.header[1], "Captured at app time");
+    assert.equal(projection.header[2], "Captured at UTC");
+    assert.equal(projection.rows.length, 4);
+    assert.deepEqual(projection.rows[0].slice(0, 4), [
+        "alpha",
+        "Jul 29, 2026, 06:00 EDT",
+        "2026-07-29T10:00:00Z",
+        "facts",
+    ]);
+    assert.equal(projection.rows[0][6], 1024);
+    assert.equal(projection.rows[0][12], "no");
+    assert.equal(projection.rows[1][6], "");
+    assert.equal(projection.rows[1][7], "");
+    assert.equal(projection.rows[1][12], "");
+    assert.deepEqual(projection.rows[2], [
+        "missing", "", "", "", "", "", "", "", "", "", "", "", "",
+    ]);
+    assert.deepEqual(projection.rows[3].slice(0, 8), [
+        "stale",
+        "Jul 20, 2026, 07:00 EDT",
+        "2026-07-20T11:00:00Z",
+        "facts",
+        "",
+        "",
+        2048,
+        8192,
+    ]);
+});
+
+test("fleet buckets include only hosts observed during that period", () => {
+    const series = projectFleetTrendSeries([
+        {
+            name: "alpha",
+            points: [
+                { captured_at: "2026-07-22T12:00:00Z", package_count: 4 },
+                { captured_at: "2026-07-23T12:00:00Z", package_count: 5 },
+            ],
+        },
+        {
+            name: "beta",
+            points: [
+                { captured_at: "2026-07-22T13:00:00Z", package_count: 10 },
+            ],
+        },
+    ], "packages", { window: "7d", timeZone: "UTC" });
+
+    assert.deepEqual(series.map(point => [point.bucketKey, point.value, point.samples]), [
+        ["2026-07-22", 14, 2],
+        ["2026-07-23", 5, 1],
+    ]);
+});
+
+test("hourly buckets keep both repeated DST fallback hours distinct", () => {
+    const series = projectFleetTrendSeries([{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-11-01T05:30:00Z", package_count: 1 },
+            { captured_at: "2026-11-01T06:30:00Z", package_count: 2 },
+        ],
+    }], "packages", { window: "24h", timeZone: "America/Toronto" });
+
+    assert.deepEqual(series.map(point => [point.bucketKey, point.timestamp, point.value]), [
+        ["2026-11-01T01", "2026-11-01T05:00:00.000Z", 1],
+        ["2026-11-01T01", "2026-11-01T06:00:00.000Z", 2],
+    ]);
+});
+
+test("daily trend buckets follow app-local midnight", () => {
+    const localDays = projectFleetTrendSeries([{
+        name: "alpha",
+        points: [
+            { captured_at: "2026-07-23T03:30:00Z", package_count: 1 },
+            { captured_at: "2026-07-23T04:30:00Z", package_count: 2 },
+        ],
+    }], "packages", { window: "7d", timeZone: "America/Toronto" });
+    assert.deepEqual(localDays.map(point => point.bucketKey), ["2026-07-22", "2026-07-23"]);
+});
+
+test("trend chart projection exposes a zero baseline and proportional time scale", () => {
+    const chart = projectTrendChart([
+        { timestamp: "2026-07-22T00:00:00Z", value: 0 },
+        { timestamp: "2026-07-23T00:00:00Z", value: 18 },
+        { timestamp: "2026-07-29T00:00:00Z", value: 4 },
+    ], { integer: true });
+
+    assert.deepEqual(chart.yTicks, [0, 10, 20]);
+    assert.equal(chart.yMin, 0);
+    assert.equal(chart.yMax, 20);
+    assert.deepEqual(chart.xTicks, [
+        "2026-07-22T00:00:00.000Z",
+        "2026-07-25T12:00:00.000Z",
+        "2026-07-29T00:00:00.000Z",
+    ]);
+    assert.deepEqual(chart.points.map(point => [point.xRatio, point.yRatio]), [
+        [0, 0],
+        [1 / 7, 0.9],
+        [1, 0.2],
+    ]);
+});
+
+test("health projection clamps pages and identifies stale observations deterministically", () => {
+    const result = projectHealthCollection([
+        { name: "stale", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 }, samples: 0, points: [] },
+        { name: "fresh", latest: { captured_at: "2026-07-29T11:00:00Z", disk_free_kb: 100 } },
+    ], {
+        window: "24h",
+        page: 99,
+        sort: "name",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    });
+
+    assert.equal(result.page, 1);
+    assert.deepEqual(result.rows.filter(row => row.stale).map(row => row.name), ["stale"]);
+});
+
+test("health row projection uses the accepted last observation for current host state", () => {
+    const result = projectHealthCollection([{
+        name: "alpha",
+        samples: 2,
+        first: { captured_at: "2026-07-29T08:00:00Z", disk_free_kb: 4096 },
+        latest: {
+            captured_at: "2026-07-29T09:00:00Z",
+            package_count: 4,
+            security_count: 2,
+            disk_free_kb: 2048,
+            apt_status: "critical",
+            disk_status: "critical",
+        },
+        last_observation: {
+            captured_at: "2026-07-29T11:55:00Z",
+            captured_at_display: "Jul 29, 2026, 07:55 EDT",
+            disk_free_kb: 3072,
+            apt_status: "ok",
+            disk_status: "ok",
+        },
+        package_delta: 1,
+        security_delta: 1,
+        disk_free_delta_kb: -1024,
+    }], {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    });
+
+    const row = result.visibleRows[0];
+    assert.equal(result.items, undefined);
+    assert.equal(row.observedAt, "2026-07-29T11:55:00Z");
+    assert.equal(row.observedAtDisplay, "Jul 29, 2026, 07:55 EDT");
+    assert.equal(row.stale, false);
+    assert.deepEqual(row.disk, { available: true, freeKB: 3072, deltaAvailable: false, deltaKB: 0 });
+    assert.deepEqual(row.apt, { label: "ok", state: "success" });
+    assert.deepEqual(row.diskStatus, { label: "ok", state: "success" });
+});
+
+test("health attention signals explain historical APT and disk matches", () => {
+    const server = {
+        name: "recovered",
+        samples: 3,
+        latest: {
+            captured_at: "2026-07-29T11:00:00Z",
+            disk_free_kb: 4096,
+            apt_status: "ok",
+            disk_status: "ok",
+        },
+        apt_problem_samples: 2,
+        disk_problem_samples: 1,
+        points: [],
+    };
+    const options = {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    };
+
+    const apt = projectHealthCollection([server], { ...options, attention: "apt" }).visibleRows[0];
+    assert.equal(apt.signals.label, "2 APT problem observations · 1 disk problem observation");
+    assert.equal(apt.signals.state, "error");
+    assert.equal(apt.apt.label, "ok");
+
+    const disk = projectHealthCollection([server], { ...options, attention: "disk" }).visibleRows[0];
+    assert.equal(disk.name, "recovered");
+});
+
+test("freshness and disk sorts use the displayed last observation outside the window", () => {
+    const servers = [
+        { name: "older", last_observation: { captured_at: "2026-07-25T00:00:00Z", disk_free_kb: 2048 }, points: [] },
+        { name: "newer", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 1024 }, points: [] },
+    ];
+
+    assert.deepEqual(
+        projectHealthCollection(servers, { sort: "freshness" }).rows.map(row => row.name),
+        ["newer", "older"]
+    );
+    assert.deepEqual(
+        projectHealthCollection(servers, { sort: "disk" }).rows.map(row => row.name),
+        ["older", "newer"]
+    );
+});
+
+test("health projection distinguishes missing observations from stale observations", () => {
+    const servers = [
+        { name: "missing", samples: 0, points: [] },
+        { name: "stale", last_observation: { captured_at: "2026-07-26T00:00:00Z", disk_free_kb: 100 }, samples: 0, points: [] },
+    ];
+    const options = {
+        window: "24h",
+        nowMS: Date.parse("2026-07-29T12:00:00Z"),
+    };
+
+    assert.deepEqual(
+        projectHealthCollection(servers, { ...options, attention: "missing" }).rows.map(row => row.name),
+        ["missing"]
+    );
+    assert.deepEqual(
+        projectHealthCollection(servers, { ...options, attention: "stale" }).rows.map(row => row.name),
+        ["stale"]
+    );
+});
+
+test("fleet severity and duration confidence project documented boundaries", () => {
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 0, successRate: 0 }), { state: "neutral", label: "No data" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 95 }), { state: "healthy", label: "Healthy" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 94.99 }), { state: "degraded", label: "Degraded" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 80 }), { state: "degraded", label: "Degraded" });
+    assert.deepEqual(projectFleetHealth({ updatesTotal: 10, successRate: 79.99 }), { state: "critical", label: "Critical" });
+
+    assert.deepEqual(projectDurationConfidence({ samples: 0, total: 4 }), { state: "no-data", label: "No duration data" });
+    assert.deepEqual(projectDurationConfidence({ samples: 1, total: 4 }), { state: "low", label: "Low confidence" });
+    assert.deepEqual(projectDurationConfidence({ samples: 2, total: 4 }), { state: "representative", label: "Representative" });
+    assert.deepEqual(projectDurationConfidence({ samples: 4, total: 4 }), { state: "representative", label: "Representative" });
+});
+
 test("Observability adapter does not restore interaction state globals", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/observability.js"), "utf8");
     assert.doesNotMatch(source, /let\s+refreshIntervalId\s*=/);
     assert.doesNotMatch(source, /let\s+knownHealthTrendServers\s*=/);
+    assert.doesNotMatch(source, /let\s+lastLifecycleAnnouncement\s*=/);
+    assert.doesNotMatch(source, /let\s+lastFilteredHealthServers\s*=/);
+    assert.doesNotMatch(source, /let\s+lastAcceptedSummary\s*=/);
+    assert.doesNotMatch(source, /function\s+projectHealthServers\s*\(/);
+    assert.doesNotMatch(source, /function\s+aggregateTrendSeries\s*\(/);
+    assert.doesNotMatch(source, /function\s+validDiskKB\s*\(/);
+    assert.doesNotMatch(source, /function\s+healthStatusClass\s*\(/);
+    assert.doesNotMatch(source, /server\.latest\s*\|\|\s*server\.last_observation/);
+});
+
+test("Observability Page Interaction keeps CSS and storage presentation in the adapter", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/observability-page-interaction.js"), "utf8");
+    assert.doesNotMatch(source, /status-(?:success|unknown|error)/);
+    assert.doesNotMatch(source, /function\s+formatStorageKB\s*\(/);
 });

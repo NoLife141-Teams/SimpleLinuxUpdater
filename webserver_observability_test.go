@@ -291,12 +291,12 @@ func TestHandleHealthTrendsValidatesWindowAndUsesAuditSnapshots(t *testing.T) {
 		t.Fatalf("Record(update.complete) error = %v", err)
 	}
 
-	invalidRec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=24h", nil, sessionCookie, false)
+	invalidRec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=1h", nil, sessionCookie, false)
 	if invalidRec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid health trends status = %d, want %d", invalidRec.Code, http.StatusBadRequest)
 	}
 
-	rec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=7d&server=srv-trend", nil, sessionCookie, false)
+	rec := performContractRequest(app.Handler, http.MethodGet, "/api/observability/health-trends?window=24h&server=srv-trend", nil, sessionCookie, false)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health trends status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -304,7 +304,7 @@ func TestHandleHealthTrendsValidatesWindowAndUsesAuditSnapshots(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v; body=%s", err, rec.Body.String())
 	}
-	if payload.Window != "7d" || payload.RetentionDays != 90 || payload.ServerFilter != server.Name {
+	if payload.Window != "24h" || payload.RetentionDays != 90 || payload.ServerFilter != server.Name {
 		t.Fatalf("payload window/retention/filter = %q/%d/%q", payload.Window, payload.RetentionDays, payload.ServerFilter)
 	}
 	if len(payload.Servers) != 1 {

@@ -168,6 +168,7 @@ test("server command eligibility is owned at the Manage Page Interaction seam", 
     assert.equal(invalidCreate[0].type, "commandRejected");
     assert.deepEqual(invalidCreate[0].invalidFields, ["name", "host", "user"]);
 
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "per-server-key" });
     const validCreate = store.dispatch({
         type: "commandRequested",
         command: "createServer",
@@ -179,6 +180,7 @@ test("server command eligibility is owned at the Manage Page Interaction seam", 
         port: 2222,
         user: "root",
         tags: ["prod"],
+        authMethod: "per-server-key",
         trustHostKey: true,
         uploadKey: true
     });
@@ -378,6 +380,314 @@ test("architecture guard keeps the transitional bridge and browser mechanics del
     assert.doesNotMatch(moduleSource, /\badapterState\b|\bplanCommand\b/);
     assert.doesNotMatch(moduleSource, /\bdocument\.|\bwindow\.|\bfetch\s*\(|\bFormData\b|\bURLSearchParams\b|\bPromise\b|\bFile\b|\bBlob\b|\bsetInterval\b|\bsetTimeout\b/);
     assert.doesNotMatch(adapterSource, /window\.managePageInteraction|\bmanageAdapterState\b|Object\.defineProperty\(globalThis/);
+});
+
+test("Manage workspace navigation expands and focuses the requested section", () => {
+    const store = createStore();
+
+    store.dispatch({ type: "sectionCollapseToggled", sectionID: "global-key" });
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "global-key").collapsed, false);
+
+    const effects = store.dispatch({ type: "sectionNavigationRequested", sectionID: "add-server" });
+    const view = store.getView();
+    assert.equal(view.workspace.activeSection, "add-server");
+    assert.equal(view.workspace.sections.find(section => section.id === "add-server").collapsed, false);
+    assert.deepEqual(effects.find(effect => effect.type === "focusSection"), {
+        type: "focusSection",
+        sectionID: "add-server"
+    });
+});
+
+test("inventory projection explains effective and ambiguous authentication posture", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [
+            { name: "password", host: "a", user: "root", has_password: true, host_key_status: "trusted" },
+            { name: "host-key", host: "b", user: "root", has_key: true, host_key_status: "missing" },
+            { name: "global", host: "c", user: "root", host_key_status: "trusted" },
+            { name: "missing", host: "d", user: "root", host_key_status: "unknown" },
+            { name: "host-key-and-password", host: "e", user: "root", has_key: true, has_password: true, host_key_status: "trusted" }
+        ]
+    });
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: true });
+    let view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "password").effectiveAuth, "global-key-and-password");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key").effectiveAuth, "per-server-key");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key-and-password").effectiveAuth, "per-server-key-and-password");
+    assert.deepEqual(view.inventory.summary, {
+        total: 5,
+        password: 0,
+        serverKey: 1,
+        globalKey: 2,
+        ambiguous: 2,
+        missing: 0,
+        unknown: 0,
+        trustedHostKeys: 3,
+        hostKeyAttention: 2,
+        needsAttention: 4
+    });
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "missing").effectiveAuth, "missing");
+    assert.equal(view.inventory.allItems.find(server => server.name === "password").effectiveAuth, "password");
+    assert.equal(view.inventory.allItems.find(server => server.name === "host-key-and-password").effectiveAuth, "per-server-key-and-password");
+    assert.equal(view.inventory.summary.missing, 2);
+    assert.equal(view.inventory.summary.ambiguous, 1);
+    assert.equal(view.inventory.summary.needsAttention, 4);
+});
+
+test("inventory projection preserves unknown Global SSH Credential availability", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [
+            { name: "unknown", host: "unknown.example", user: "root", host_key_status: "trusted" },
+            { name: "server-key", host: "key.example", user: "root", has_key: true, host_key_status: "trusted" }
+        ]
+    });
+
+    let view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "unknown");
+    assert.equal(view.inventory.allItems.find(server => server.name === "server-key").effectiveAuth, "per-server-key");
+    assert.equal(view.inventory.summary.unknown, 1);
+    assert.equal(view.inventory.summary.missing, 0);
+
+    const request = store.dispatch({ type: "snapshotRequested", stream: "globalKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "globalKey", requestID: request.requestID, error: "offline" });
+    view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "unknown");
+    assert.equal(view.inventory.summary.unknown, 1);
+    assert.equal(view.inventory.summary.missing, 0);
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    view = store.getView();
+    assert.equal(view.inventory.allItems.find(server => server.name === "unknown").effectiveAuth, "missing");
+    assert.equal(view.inventory.summary.unknown, 0);
+    assert.equal(view.inventory.summary.missing, 1);
+});
+
+test("server creation authentication choice is owned by Manage Page Interaction", () => {
+    const store = createStore();
+    const draft = { name: "alpha", host: "alpha.example", user: "root" };
+
+    assert.deepEqual(store.getView().creation, {
+        authenticationMethod: "password",
+        globalCredentialAvailable: false,
+        passwordFieldVisible: true,
+        keyFieldVisible: false
+    });
+
+    let effects = store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: draft
+    });
+    assert.match(effects[0].reason, /password/i);
+
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "certificate" });
+    assert.equal(store.getView().creation.authenticationMethod, "password");
+
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "per-server-key" });
+    assert.equal(store.getView().creation.authenticationMethod, "per-server-key");
+
+    effects = store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: { ...draft, hasKeyFile: true }
+    });
+    assert.equal(effects[0].type, "executeCommand");
+    assert.equal(effects[0].plan.payload.authMethod, "per-server-key");
+    store.dispatch({ type: "commandCompleted", plan: effects[0].plan });
+
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "global-key" });
+    assert.equal(store.getView().creation.authenticationMethod, "per-server-key");
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: true });
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "global-key" });
+    assert.deepEqual(store.getView().creation, {
+        authenticationMethod: "global-key",
+        globalCredentialAvailable: true,
+        passwordFieldVisible: false,
+        keyFieldVisible: false
+    });
+    effects = store.dispatch({
+        type: "commandRequested",
+        command: "createServer",
+        payload: draft
+    });
+    assert.equal(effects[0].type, "executeCommand");
+    assert.equal(effects[0].plan.payload.authMethod, "global-key");
+    store.dispatch({ type: "commandCompleted", plan: effects[0].plan });
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    assert.equal(store.getView().creation.authenticationMethod, "password");
+});
+
+test("editor command eligibility and credential intentions require a changed valid draft", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", user: "root", has_password: true }]
+    });
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+
+    let effects = store.dispatch({ type: "commandRequested", command: "saveEditor" });
+    assert.match(effects[0].reason, /unchanged/i);
+
+    store.dispatch({ type: "editorChanged", patch: { host: "" } });
+    effects = store.dispatch({ type: "commandRequested", command: "saveEditor" });
+    assert.match(effects[0].reason, /host required/i);
+
+    store.dispatch({ type: "editorDiscarded" });
+    store.dispatch({ type: "editorCredentialIntentChanged", keyReplacement: true });
+    assert.equal(store.getView().editor.dirty, true);
+    assert.equal(store.getView().editor.canSave, true);
+    assert.equal(store.getView().editor.credentialOutcomes.clearPassword, "missing");
+    assert.equal(store.getView().editor.credentialOutcomes.clearKey, "password");
+    assert.equal(store.dispatch({ type: "editorCloseRequested" })[0].type, "confirmEditorDiscard");
+
+    store.dispatch({ type: "editorDiscarded" });
+    assert.equal(store.getView().editor.keyReplacement, false);
+    assert.equal(store.getView().editor.dirty, false);
+});
+
+test("partial editor saves accept persisted server facts while preserving failed key intent", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", port: 22, user: "root" }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    store.dispatch({
+        type: "editorChanged",
+        patch: { name: "beta", host: "beta.example", passwordReplacement: true }
+    });
+    store.dispatch({ type: "editorCredentialIntentChanged", keyReplacement: true });
+
+    const execution = store.dispatch({ type: "commandRequested", command: "saveEditor" })
+        .find(effect => effect.type === "executeCommand");
+    store.dispatch({
+        type: "editorServerAccepted",
+        sessionID: execution.plan.payload.sessionID,
+        server: execution.plan.payload
+    });
+
+    let view = store.getView();
+    assert.equal(view.editor.originalName, "beta");
+    assert.equal(view.editor.originalDraft.name, "beta");
+    assert.equal(view.editor.originalDraft.host, "beta.example");
+    assert.equal(view.editor.draft.passwordReplacement, false);
+    assert.equal(view.editor.keyReplacement, true);
+    assert.equal(view.editor.dirty, true);
+
+    const effects = store.dispatch({
+        type: "commandPartiallyCompleted",
+        plan: execution.plan,
+        message: "Server saved, but the replacement SSH key failed."
+    });
+    assert.deepEqual(effects, [
+        {
+            type: "announce",
+            message: "Server saved, but the replacement SSH key failed.",
+            error: true
+        },
+        {
+            type: "refresh",
+            streams: ["inventory", "globalKey", "audit"]
+        }
+    ]);
+    assert.deepEqual(store.getView().commands, { inFlight: [], scopes: [] });
+
+    store.dispatch({ type: "editorDiscarded" });
+    view = store.getView();
+    assert.equal(view.editor.draft.name, "beta");
+    assert.equal(view.editor.draft.host, "beta.example");
+    assert.equal(view.editor.keyReplacement, false);
+    assert.equal(view.editor.dirty, false);
+});
+
+test("editor validity preserves and rejects invalid raw SSH fields", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", port: 22, user: "root" }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+
+    store.dispatch({ type: "editorChanged", patch: { port: "70000" } });
+    let view = store.getView();
+    assert.equal(view.editor.draft.port, "70000");
+    assert.equal(view.editor.dirty, true);
+    assert.equal(view.editor.valid, false);
+    assert.equal(view.editor.canSave, false);
+    let rejected = store.dispatch({ type: "commandRequested", command: "saveEditor" })[0];
+    assert.deepEqual(rejected.invalidFields, ["port"]);
+    assert.match(rejected.reason, /port/i);
+
+    store.dispatch({ type: "editorChanged", patch: { port: "22", user: "root!" } });
+    view = store.getView();
+    assert.equal(view.editor.valid, false);
+    assert.equal(view.editor.canSave, false);
+    rejected = store.dispatch({ type: "commandRequested", command: "saveEditor" })[0];
+    assert.deepEqual(rejected.invalidFields, ["user"]);
+    assert.match(rejected.reason, /username/i);
+});
+
+test("Global SSH Credential section summary exposes loading, accepted, and error states", () => {
+    const store = createStore();
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "global-key").summary, "Checking…");
+
+    const request = store.dispatch({ type: "snapshotRequested", stream: "globalKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "snapshotFailed", stream: "globalKey", requestID: request.requestID, error: "offline" });
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "global-key").summary, "Error");
+
+    const retry = store.dispatch({ type: "snapshotRequested", stream: "globalKey" })
+        .find(effect => effect.type === "fetchSnapshot");
+    store.dispatch({ type: "globalKeySnapshotReceived", requestID: retry.requestID, hasKey: false });
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "global-key").summary, "Not configured");
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: true });
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "global-key").summary, "Configured");
+});
+
+test("filters reset and editor draft state are owned by Manage Page Interaction", () => {
+    const store = createStore();
+    store.dispatch({ type: "filtersChanged", patch: { search: "prod", tag: "web", auth: "key" } });
+    assert.equal(store.getView().inventory.activeFilterCount, 3);
+    store.dispatch({ type: "filtersReset" });
+    assert.deepEqual(store.getView().filters, {
+        search: "",
+        tag: "",
+        auth: "",
+        group: "",
+        pageSize: 20
+    });
+
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", port: 22, user: "root", tags: ["prod"] }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+    assert.equal(store.getView().editor.dirty, false);
+    assert.equal(store.getView().editor.canSave, false);
+
+    store.dispatch({ type: "editorChanged", patch: { host: "new.example" } });
+    assert.equal(store.getView().editor.dirty, true);
+    assert.equal(store.getView().editor.canSave, true);
+    assert.deepEqual(store.dispatch({ type: "editorCloseRequested" }), [{
+        type: "confirmEditorDiscard",
+        sessionID: store.getView().editor.sessionID
+    }]);
+
+    store.dispatch({ type: "editorDiscarded" });
+    assert.equal(store.getView().editor.draft.host, "alpha.example");
+    assert.equal(store.getView().editor.dirty, false);
 });
 
 test("editor replacement invalidates host-key and policy requests from the old session", () => {

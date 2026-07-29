@@ -897,8 +897,36 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function stubManageApi(page, state = {}) {
-    await page.route('**/api/servers', route => fulfillJson(route, state.servers || [makeServer('demo-host')]));
+    await page.route('**/api/servers', route => {
+      state.inventoryLoadCount = (state.inventoryLoadCount || 0) + 1;
+      return fulfillJson(route, state.servers || [makeServer('demo-host')]);
+    });
+    await page.route('**/api/servers/*/key', async route => {
+      if (route.request().method() === 'POST') {
+        state.uploadServerKeyCount = (state.uploadServerKeyCount || 0) + 1;
+        if (state.failServerKeyUpload) {
+          return route.fulfill({
+            status: 422,
+            contentType: 'application/json',
+            body: JSON.stringify({ error: 'replacement key rejected' }),
+          });
+        }
+        return fulfillJson(route, { ok: true });
+      }
+      return route.fallback();
+    });
     await page.route('**/api/servers/*', async route => {
+      if (route.request().method() === 'PUT') {
+        const update = route.request().postDataJSON();
+        const existing = (state.servers || [makeServer('demo-host')])[0];
+        state.serverUpdateCount = (state.serverUpdateCount || 0) + 1;
+        state.servers = [{
+          ...existing,
+          ...update,
+          has_password: !!update.pass || !!existing.has_password,
+        }];
+        return fulfillJson(route, state.servers[0]);
+      }
       if (route.request().method() === 'DELETE') {
         state.deleteServerCount = (state.deleteServerCount || 0) + 1;
         state.deletedServerUrl = route.request().url();
@@ -984,6 +1012,17 @@ test.describe.serial('setup and login flows', () => {
       }],
     }));
     await page.route('**/api/update-policies/*/overrides', route => fulfillJson(route, { items: [] }));
+    await page.route('**/api/update-policies/*/overrides/*', async route => {
+      state.policyOverrideSaveCount = (state.policyOverrideSaveCount || 0) + 1;
+      if (state.failPolicyOverrideSave) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'policy override unavailable' }),
+        });
+      }
+      return fulfillJson(route, { ok: true });
+    });
   }
 
   test('setup form shows mismatch error', async ({ page }) => {
@@ -1050,8 +1089,401 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/observability');
     await expect(page.locator('#kpi-total')).toHaveText('4');
-    await expect(page.locator('#kpi-success-rate')).toHaveText('75.00%');
+    await expect(page.locator('#kpi-success-rate')).toContainText('75.00%');
     await expect(page.locator('#error-banner')).toContainText('Health trends is unavailable (HTTP 503)');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Current');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Unavailable');
+    await expect(page.locator('#trends-lifecycle').getByRole('button', { name: 'Retry' })).toBeVisible();
+    await expect(page.locator('#trend-hosts')).toHaveText('Unavailable');
+    await expect(page.locator('#health-trends-body')).toContainText('Host health unavailable');
+  });
+
+  test('observability keeps successful health trends when the summary is unavailable', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'temporarily unavailable' }),
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '7d',
+      from: '2026-07-22T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: 1 },
+      servers: [{
+        name: 'healthy-host',
+        samples: 1,
+        latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1048576, apt_status: 'ok', disk_status: 'ok' },
+        first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1048576 },
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Unavailable');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#kpi-success-rate')).toHaveText('Unavailable');
+    await expect(page.locator('#kpi-duration')).toHaveText('Unavailable');
+    await expect(page.locator('#health-trends-body')).toContainText('healthy-host');
+  });
+
+  test('observability projects source lifecycle, fleet severity, confidence, and missing health facts', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:37Z',
+      to: '2026-07-29T12:00:45Z',
+      totals: { updates_total: 4, updates_success: 3, updates_failure: 1, success_rate_pct: 75 },
+      duration: { avg_ms: 1250, samples_with_duration: 1, samples_without_duration: 3 },
+      failure_causes: [{ cause: 'unknown', count: 1, servers: ['demo-host'] }],
+      status_breakdown: [{ status: 'success', count: 3 }, { status: 'failure', count: 1 }],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 0, samples: 0, update_failures: 0, scan_failures: 0 },
+      servers: [{
+        name: 'demo-host',
+        samples: 0,
+        last_observation: {
+          captured_at: '2026-07-26T11:00:00Z',
+          disk_free_kb: 0,
+          apt_status: 'ok',
+          disk_status: 'unknown',
+        },
+        update_failures: 0,
+        scan_failures: 0,
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    await expect(page.locator('#summary-lifecycle')).toContainText('Current');
+    await expect(page.locator('#trends-lifecycle')).toContainText('Current');
+    await expect(page.locator('#summary-lifecycle .source-lifecycle-time')).toContainText('2026');
+    await expect(page.locator('#summary-lifecycle .source-lifecycle-time')).toContainText('ago');
+    await expect(page.locator('#trends-lifecycle .source-lifecycle-time')).toContainText('2026');
+    await expect(page.locator('#trends-lifecycle .source-lifecycle-time')).toContainText('ago');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('Critical');
+    await expect(page.locator('#kpi-success-icon')).toHaveText('×');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('3 successful');
+    await expect(page.locator('#kpi-success-rate-card')).toContainText('1 failed');
+    await expect(page.locator('#kpi-duration-card')).toContainText('Low confidence');
+    await expect(page.locator('#kpi-duration-card')).toContainText('1 of 4 runs');
+    await expect(page.locator('#failure-causes-body')).toContainText('Data quality issue');
+    await expect(page.locator('#failure-causes-body')).toContainText('Affected: demo-host');
+    await expect(page.locator('#failure-causes-body a[href*="audit_target=demo-host"]')).toHaveAttribute('href', /audit_status=failure/);
+    await expect(page.locator('#health-trends-body')).toContainText('Unavailable');
+    await expect(page.locator('#health-trends-body')).toContainText('Stale');
+    await expect(page.locator('#health-trends-body')).not.toContainText('119231880');
+    await expect(page.locator('#health-trends-body .health-signal-badge').nth(1)).toHaveClass(/status-unknown/);
+    const failureCauseLink = page.locator('#failure-causes-body a[href*="failure_cause=unknown"]').first();
+    await expect(failureCauseLink).toHaveAttribute('href', /audit_from=2026-07-28T12%3A00%3A37Z/);
+    await expect(failureCauseLink).toHaveAttribute('href', /audit_to=2026-07-29T12%3A00%3A45Z/);
+    await expect(failureCauseLink).toHaveAttribute('href', /#audit-trail$/);
+    const causeRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
+      && new URL(request.url()).searchParams.get('failure_cause') === 'unknown'
+      && new URL(request.url()).searchParams.get('from') === '2026-07-28T12:00:37Z'
+      && new URL(request.url()).searchParams.get('to') === '2026-07-29T12:00:45Z');
+    await page.locator('#failure-causes-body a[href*="audit_target=demo-host"]').click();
+    await causeRequest;
+    await expect(page).toHaveURL(/\/manage\?/);
+    await expect(page).toHaveURL(/failure_cause=unknown/);
+    await expect(page.locator('#audit-target-filter')).toHaveValue('demo-host');
+    await expect(page.locator('#audit-action-filter')).toHaveValue('update.complete');
+    await expect(page.locator('#audit-status-filter')).toHaveValue('failure');
+    await expect(page.locator('#audit-failure-cause-active')).toContainText('unknown');
+    const clearedCauseRequest = page.waitForRequest(request => request.url().includes('/api/audit-events?')
+      && !new URL(request.url()).searchParams.has('failure_cause'));
+    await page.locator('#audit-clear-failure-cause').click();
+    await clearedCauseRequest;
+    await expect(page.locator('#audit-failure-cause-active')).toBeHidden();
+    await expect(page).not.toHaveURL(/failure_cause=/);
+  });
+
+  test('observability leaves unavailable disk intervals unconnected', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    const points = [
+      { captured_at: '2026-07-29T08:00:00Z', disk_free_kb: 1024 },
+      { captured_at: '2026-07-29T09:00:00Z', disk_free_kb: 896 },
+      { captured_at: '2026-07-29T10:00:00Z', disk_free_kb: 0 },
+      { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 768 },
+      { captured_at: '2026-07-29T12:00:00Z', disk_free_kb: 640 },
+    ];
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: points.length },
+      servers: [{
+        name: 'disk-gap-host',
+        samples: points.length,
+        first: points[0],
+        latest: points.at(-1),
+        points,
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    await expect(page.locator('#kpi-duration')).toHaveText('No data');
+    await expect(page.locator('#disk-trend-chart .trend-line')).toHaveCount(2);
+    await expect(page.locator('#disk-trend-chart .trend-point')).toHaveCount(4);
+  });
+
+  test('observability CSV exports neutralize spreadsheet formulas', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 2, samples: 2 },
+      servers: [
+        {
+          name: '=HYPERLINK("https://example.invalid")',
+          samples: 1,
+          first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          points: [{ captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 }],
+        },
+        {
+          name: 'safe\r=2+2',
+          samples: 1,
+          first: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+          points: [{ captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 }],
+        },
+      ],
+    }));
+
+    await page.goto('/observability?window=24h');
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-health-csv').click();
+    const download = await downloadPromise;
+    const csv = fs.readFileSync(await download.path(), 'utf8');
+    expect(csv).toContain(`"'=HYPERLINK(""https://example.invalid"")"`);
+    expect(csv).not.toContain(`"=HYPERLINK(""https://example.invalid"")"`);
+    expect(csv).toContain('"safe\r=2+2"');
+  });
+
+  test('observability renders an unchanged disk delta without an increase label', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 0, updates_success: 0, updates_failure: 0, success_rate_pct: 0 },
+      duration: { avg_ms: 0, samples_with_duration: 0, samples_without_duration: 0 },
+      failure_causes: [],
+      status_breakdown: [],
+    }));
+    await page.route('**/api/observability/health-trends*', route => fulfillJson(route, {
+      window: '24h',
+      from: '2026-07-28T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      generated_at: '2026-07-29T12:00:00Z',
+      retention_days: 90,
+      fleet: { servers_with_samples: 1, samples: 2 },
+      servers: [{
+        name: 'steady-disk',
+        samples: 2,
+        first: { captured_at: '2026-07-28T11:00:00Z', disk_free_kb: 1024 },
+        latest: { captured_at: '2026-07-29T11:00:00Z', disk_free_kb: 1024 },
+        disk_free_delta_kb: 0,
+        points: [],
+      }],
+    }));
+
+    await page.goto('/observability?window=24h');
+    const diskCell = page.locator('#health-trends-body tr').filter({ hasText: 'steady-disk' }).locator('td').nth(4);
+    await expect(diskCell).toHaveText('1 MB (unchanged)');
+    await expect(diskCell).not.toContainText('increase');
+  });
+
+  test('observability charts, filters, shareable URL, pagination, and CSV scale an investigation', async ({ page }) => {
+    await page.route('**/api/app-settings/timezone', route => fulfillJson(route, {
+      timezone: 'America/Toronto',
+      resolved_timezone: 'America/Toronto',
+      editable_timezone: 'America/Toronto',
+    }));
+    await ensureAuthenticatedSession(page);
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, {
+      window: '7d',
+      from: '2026-07-22T12:00:00Z',
+      to: '2026-07-29T12:00:00Z',
+      totals: { updates_total: 10, updates_success: 9, updates_failure: 1, success_rate_pct: 90 },
+      duration: { avg_ms: 800, samples_with_duration: 10, samples_without_duration: 0 },
+      failure_causes: [{ cause: 'retry_exhausted', count: 1, servers: ['prod-failing'] }],
+      status_breakdown: [{ status: 'success', count: 9 }, { status: 'failure', count: 1 }],
+    }));
+    const servers = Array.from({ length: 28 }, (_, index) => ({
+      name: index === 0 ? 'prod-failing' : `host-${String(index).padStart(2, '0')}`,
+      samples: 2,
+      latest: {
+        captured_at: '2026-07-29T11:00:00Z',
+        package_count: index,
+        security_count: index % 3,
+        disk_free_kb: 10485760 - index * 1024,
+        apt_status: 'ok',
+        disk_status: 'ok',
+      },
+      first: {
+        captured_at: '2026-07-28T11:00:00Z',
+        package_count: Math.max(0, index - 1),
+        security_count: 0,
+        disk_free_kb: 11534336,
+      },
+      package_delta: 2,
+      security_delta: index % 3,
+      disk_free_delta_kb: -1048576,
+      update_failures: index === 0 ? 2 : 0,
+      scan_failures: 0,
+      apt_problem_samples: 0,
+      disk_problem_samples: 0,
+      reboot_seen: false,
+      points: [
+        { captured_at: '2026-07-28T11:00:00Z', package_count: 1, security_count: 0, disk_free_kb: 11534336, last_update_status: 'success' },
+        { captured_at: '2026-07-29T11:00:00Z', package_count: 2, security_count: 1, disk_free_kb: 10485760, last_update_status: index === 0 ? 'failure' : 'success' },
+      ],
+    }));
+    let healthTrendRequestCount = 0;
+    await page.route('**/api/observability/health-trends*', route => {
+      healthTrendRequestCount += 1;
+      const responseServers = healthTrendRequestCount === 2
+        ? servers.map(server => ({ ...server, points: server.points.slice(1) }))
+        : servers;
+      return fulfillJson(route, {
+        window: '7d',
+        from: '2026-07-22T12:00:00Z',
+        to: '2026-07-29T12:00:00Z',
+        generated_at: '2026-07-29T12:00:00Z',
+        retention_days: 90,
+        fleet: { servers_with_samples: 28, samples: 56, update_failures: 2, scan_failures: 0 },
+        servers: responseServers,
+      });
+    });
+
+    await page.goto('/observability?window=7d');
+    await expect(page.locator('#observability-last-refresh')).toContainText('2026');
+    await expect(page.locator('#observability-last-refresh')).toContainText('ago');
+    await expect(page.getByRole('group', { name: /Package count trend/ })).toBeVisible();
+    await expect(page.getByRole('group', { name: /Disk free trend/ })).toBeVisible();
+    await expect(page.locator('#package-trend-chart .trend-axis-unit')).toHaveText('packages');
+    await expect(page.locator('#disk-trend-chart .trend-axis-unit')).toHaveText('disk free');
+    await expect(page.locator('#package-trend-chart .trend-y-axis-label')).toHaveCount(3);
+    await expect(page.locator('#package-trend-chart .trend-x-axis-label')).toHaveCount(3);
+    await expect(page.locator('#package-trend-chart .trend-x-axis-label')).toHaveText(['Jul 28', 'Jul 28', 'Jul 29']);
+    await expect(page.locator('#package-trend-chart .trend-point')).toHaveCount(2);
+    await expect(page.getByRole('group', { name: /Package count trend/ })).toHaveAttribute('aria-label', /2 time points/);
+    const packageLinePoints = await page.locator('#package-trend-chart .trend-line').getAttribute('points');
+    expect(packageLinePoints.trim().split(/\s+/)).toHaveLength(3);
+    await expect(page.locator('.trend-chart-scope')).toHaveText(['Fleet total', 'Fleet total', 'Fleet total', 'Fleet total']);
+    const packagePoint = page.locator('#package-trend-chart .trend-point').first();
+    await expect(packagePoint).toHaveAttribute('aria-label', /exact observation Jul 28, 2026, 07:00 EDT/);
+    await packagePoint.hover();
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeVisible();
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).not.toHaveAttribute('style', /.+/);
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Fleet total');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 packages');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Jul 28, 2026, 07:00 EDT');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('Daily bucket');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 hosts represented');
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toContainText('28 observations');
+    const lastPackagePoint = page.locator('#package-trend-chart .trend-point').last();
+    await lastPackagePoint.hover();
+    const tooltipBox = await page.locator('#package-trend-chart .trend-tooltip').boundingBox();
+    const chartBox = await page.locator('#package-trend-chart').boundingBox();
+    expect(tooltipBox.x).toBeGreaterThanOrEqual(chartBox.x);
+    expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(chartBox.x + chartBox.width);
+    await page.locator('#health-search').focus();
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeHidden();
+    await packagePoint.focus();
+    await expect(page.locator('#package-trend-chart .trend-tooltip')).toBeVisible();
+    const focusedPointKey = await packagePoint.getAttribute('data-observability-focus-key');
+    expect(focusedPointKey).toBeTruthy();
+    await page.evaluate(() => {
+      executeEffects(observabilityInteraction.dispatch({ type: 'manualRefresh' }));
+    });
+    await expect(page.locator(`[data-observability-focus-key="${focusedPointKey}"]`)).toHaveCount(0);
+    await expect(page.locator('#package-trend-chart .trend-point')).toBeFocused();
+    await page.locator('#health-trend-server').selectOption('prod-failing');
+    await expect(page.locator('.trend-chart-scope')).toHaveText(['prod-failing', 'prod-failing', 'prod-failing', 'prod-failing']);
+    await page.locator('#health-trend-server').selectOption('');
+    await expect(page.locator('.trend-chart-scope')).toHaveText(['Fleet total', 'Fleet total', 'Fleet total', 'Fleet total']);
+    await expect(page.locator('#failure-breakdown-bars progress')).toHaveCount(1);
+    await expect(page.locator('#failure-causes-body a[href*="audit_target=prod-failing"]')).toHaveAttribute('href', /audit_status=failure/);
+    await expect(page.locator('#status-breakdown-bars progress')).toHaveCount(2);
+    await expect(page.locator('#health-result-count')).toContainText('25 of 28');
+    await expect(page.locator('#health-trends-body tr')).toHaveCount(25);
+    const failingHostRow = page.locator('#health-trends-body tr').filter({ hasText: 'prod-failing' });
+    await expect(failingHostRow).toContainText('increase of 2 packages');
+    await expect(failingHostRow).toContainText('10.0 GB');
+    await page.locator('#health-next-page').click();
+    await expect(page).toHaveURL(/page=2/);
+    await expect(page.locator('#health-result-count')).toContainText('3 of 28');
+
+    await page.locator('#health-search').fill('prod');
+    await page.locator('#health-attention-filter').selectOption('failures');
+    await expect(page).toHaveURL(/search=prod/);
+    await expect(page).toHaveURL(/attention=failures/);
+    await expect(page.locator('#health-trends-body')).toContainText('prod-failing');
+    await expect(page.locator('#health-trends-body tr')).toHaveCount(1);
+    await expect(page.locator('#health-trends-body a')).toHaveAttribute('href', /\/manage\?server=prod-failing#server-directory$/);
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#export-health-csv').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^observability-health-7d\.csv$/);
+    const healthCSV = fs.readFileSync(await download.path(), 'utf8');
+    const healthCSVLines = healthCSV.trim().split('\n');
+    expect(healthCSVLines).toHaveLength(3);
+    expect(healthCSVLines[0]).toContain('Captured at app time,Captured at UTC');
+    expect(healthCSVLines[1]).toContain('prod-failing');
+    expect(healthCSVLines[1]).toContain('2026-07-28T11:00:00Z');
+    expect(healthCSVLines[2]).toContain('prod-failing');
+    expect(healthCSVLines[2]).toContain('2026-07-29T11:00:00Z');
+    const failuresDownloadPromise = page.waitForEvent('download');
+    await page.locator('#export-failures-csv').click();
+    const failuresDownload = await failuresDownloadPromise;
+    expect(failuresDownload.suggestedFilename()).toBe('observability-failures-7d.csv');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => ({
+      bodyWidth: document.body.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }));
+    expect(mobileLayout.bodyWidth).toBeLessThanOrEqual(mobileLayout.viewportWidth);
+    await expect(page.locator('#health-scroll-hint')).toBeVisible();
+
+    await page.goto('/manage?server=prod-failing#server-directory');
+    await expect(page.locator('#search')).toHaveValue('prod-failing');
+    await expect(page).toHaveURL(/server=prod-failing#server-directory$/);
   });
 
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
@@ -1914,14 +2346,15 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
-    // Browser layout can report an authored 8px gap a fraction below 8px after
-    // Linux font metrics and subpixel rounding are applied.
-    const minimumVisibleGap = 7.5;
+    // Chromium can report an authored 8px gap almost 1px lower after Linux
+    // font metrics and subpixel rounding are applied.
+    const minimumVisibleGap = 7;
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/admin#admin-section-scheduled-policies');
+    await page.evaluate(() => document.fonts.ready);
 
     const boxes = {};
     for (const [name, selector] of Object.entries({
@@ -2849,9 +3282,11 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
     await expect(page.locator('#global-key-status')).toHaveText('Configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-configured/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global SSH Credential');
     await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
     await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
+    await page.getByRole('link', { name: /Audit trail/ }).click();
+    await expect(page.locator('#manage-section-audit-content')).toBeVisible();
     await expect(page.locator('#audit-table a[href="/api/reports/audit/55"]')).toBeVisible();
     await page.locator('#audit-table button[data-audit-detail="55"]').click();
     await expect(page.locator('#audit-detail-modal')).toContainText('Audit #55');
@@ -2886,25 +3321,35 @@ test.describe.serial('setup and login flows', () => {
       window.alert = () => {};
     });
     const deleteServerButton = page.locator('#manage-servers-table button[data-action="delete-server"][data-name="demo-host"]');
+    const deleteServerMenu = deleteServerButton.locator('xpath=ancestor::details');
+    const openDeleteServerMenu = async () => {
+      if (!(await deleteServerMenu.evaluate(menu => menu.open))) {
+        await deleteServerMenu.locator('summary').click();
+      }
+    };
     const auditPruneButton = page.locator('#audit-prune');
     const clearGlobalKeyButton = page.locator('#clear-global-key-btn');
+    await openDeleteServerMenu();
     await dismissTypedConfirm(page, deleteServerButton);
     await dismissTypedConfirm(page, auditPruneButton);
+    await page.getByRole('link', { name: /Global SSH Credential/ }).click();
+    await expect(page.locator('#manage-section-global-key-content')).toBeVisible();
     await dismissTypedConfirm(page, clearGlobalKeyButton);
     await expect.poll(() => state.deleteServerCount || 0).toBe(0);
     await expect.poll(() => state.auditPruneCount || 0).toBe(0);
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(0);
 
+    await openDeleteServerMenu();
     await acceptTypedConfirm(page, deleteServerButton, 'demo-host');
     await acceptTypedConfirm(page, auditPruneButton, 'PRUNE');
     await expect.poll(() => state.deleteServerCount || 0).toBe(1);
     await expect.poll(() => state.auditPruneCount || 0).toBe(1);
 
-    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
+    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL SSH CREDENTIAL');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
     await expect(page.locator('#global-key-status')).toHaveText('Not configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-missing/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global SSH Credential');
     await expect(clearGlobalKeyButton).toBeDisabled();
   });
 
@@ -2945,6 +3390,140 @@ test.describe.serial('setup and login flows', () => {
     await page.goto('/manage');
     await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="Demo-Host"]').click();
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
+  });
+
+  test('successful immediate server-key upload accepts the editor credential intent', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-key').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-upload-key').click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#edit-key-file-selection')).toHaveText('No file selected');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+    await expect(page.locator('#edit-save')).toBeDisabled();
+  });
+
+  test('failed replacement-key upload retains the accepted server edit and refreshes inventory', async ({ page }) => {
+    const state = {
+      failServerKeyUpload: true,
+      servers: [makeServer('demo-host')],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    await page.locator('#edit-name').fill('renamed-host');
+    await page.locator('#edit-host').fill('renamed-host.example.test');
+    await page.locator('#edit-pass').fill('replacement-password');
+    await page.locator('#edit-key').setInputFiles({
+      name: 'invalid_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('invalid-private-key'),
+    });
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect.poll(() => state.inventoryLoadCount || 0).toBeGreaterThan(1);
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('renamed-host');
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-pass')).toHaveValue('');
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+
+    await page.locator('#edit-discard').click();
+    await expect(page.locator('#edit-name')).toHaveValue('renamed-host');
+    await expect(page.locator('#edit-draft-state')).toHaveText('No unsaved changes');
+  });
+
+  test('failed policy override save keeps the accepted server editor open and dirty', async ({ page }) => {
+    const state = {
+      failPolicyOverrideSave: true,
+      servers: [{ ...makeServer('demo-host'), tags: ['prod'] }],
+    };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]').click();
+    const override = page.locator('#edit-policy-overrides input[data-policy-id="9"]');
+    await expect(override).toBeVisible();
+    await override.check();
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+
+    await page.locator('#edit-save').click();
+
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect.poll(() => state.policyOverrideSaveCount || 0).toBe(1);
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-draft-state')).toHaveText('Unsaved changes');
+    await expect(page.locator('#edit-save')).toBeEnabled();
+  });
+
+  test('successful per-server-key creation clears the displayed filename', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    await page.locator('input[name="add-auth-method"][value="per-server-key"]').check();
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#trust-host-key').uncheck();
+    await page.locator('#key_file').setInputFiles({
+      name: 'id_ed25519',
+      mimeType: 'application/octet-stream',
+      buffer: Buffer.from('test-private-key'),
+    });
+    await expect(page.locator('#server-key-file-selection')).toHaveText('id_ed25519');
+
+    await page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await expect(page.locator('#server-key-file-selection')).toHaveText('No file selected');
+  });
+
+  test('add-server validation failures render inline and focus the first invalid field', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page);
+
+    await page.goto('/manage');
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+    const submit = page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true });
+    await submit.click();
+
+    await expect(page.locator('#add-server-error')).toContainText('name, host, user required');
+    await expect(page.locator('#name')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#host')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#user')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#name')).toBeFocused();
+
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('root');
+    await page.locator('#port').fill('70000');
+    await submit.click();
+
+    await expect(page.locator('#add-server-error')).toContainText('SSH port must be a whole number');
+    await expect(page.locator('#port')).toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('#port')).toBeFocused();
   });
 
   test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {
@@ -3290,5 +3869,91 @@ test.describe.serial('setup and login flows', () => {
     await noScriptPage.getByRole('link', { name: 'Manage Servers' }).click();
     await expect(noScriptPage).toHaveURL('http://127.0.0.1:8080/manage');
     await noScriptContext.close();
+  });
+
+  test('Manage Servers confines responsive overflow to data tables', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 768, height: 1024 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/manage');
+      await expect(page.locator('#manage-section-nav')).toBeVisible();
+      await expect(page.locator('#manage-section-directory-content')).toBeVisible();
+
+      const layout = await page.evaluate(() => ({
+        documentClientWidth: document.documentElement.clientWidth,
+        documentScrollWidth: document.documentElement.scrollWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+        sectionHeadDirections: Array.from(document.querySelectorAll('.manage-workspace-section .workspace-head'))
+          .map(element => getComputedStyle(element).flexDirection),
+        tables: Array.from(document.querySelectorAll('.manage-workspace-section .table-wrap')).map(element => ({
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          overflowX: getComputedStyle(element).overflowX,
+        })),
+      }));
+
+      expect(layout.documentScrollWidth, `${viewport.width}px document must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      expect(layout.bodyScrollWidth, `${viewport.width}px body must not overflow`).toBeLessThanOrEqual(layout.documentClientWidth + 1);
+      for (const table of layout.tables) {
+        expect(['auto', 'scroll']).toContain(table.overflowX);
+      }
+      if (viewport.width <= 640) {
+        expect(layout.sectionHeadDirections.every(direction => direction === 'column')).toBe(true);
+      }
+
+      await expect(page.getByRole('link', { name: /Add Server Create an SSH target/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
+    }
+  });
+
+  test('Manage Servers section navigation leaves visible focus on the destination heading', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
+
+    const heading = page.locator('#manage-section-add-server-heading');
+    await expect(heading).toBeFocused();
+    const focusStyle = await heading.evaluate(element => {
+      const style = getComputedStyle(element);
+      return {
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth),
+      };
+    });
+    expect(focusStyle.outlineStyle).not.toBe('none');
+    expect(focusStyle.outlineWidth).toBeGreaterThan(0);
+  });
+
+  test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto('/manage');
+
+    await page.getByRole('button', { name: 'Add Server', exact: true }).click();
+
+    await expect(page.locator('#manage-section-add-server-content')).toBeVisible();
+    await expect(page.locator('#manage-section-add-server-heading')).toBeFocused();
+  });
+
+  test('Manage Servers summary distinguishes missing authentication from host trust issues', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, {
+      hasGlobalKey: false,
+      servers: [
+        makeServer('missing-auth', 'idle', [], { host_key_status: 'missing' }),
+        makeServer('trusted-password', 'idle', [], { has_password: true, host_key_status: 'trusted' }),
+        makeServer('untrusted-key', 'idle', [], { has_key: true, host_key_status: 'missing' }),
+      ],
+    });
+    await page.goto('/manage');
+
+    await expect(page.locator('#manage-summary-missing-auth')).toHaveText('1');
+    await expect(page.locator('#manage-summary-host-trust')).toHaveText('2');
   });
 });

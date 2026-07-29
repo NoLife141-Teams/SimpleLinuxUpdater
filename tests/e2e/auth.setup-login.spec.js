@@ -1914,6 +1914,9 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
+    // Browser layout can report an authored 8px gap a fraction below 8px after
+    // Linux font metrics and subpixel rounding are applied.
+    const minimumVisibleGap = 7.5;
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
@@ -1941,7 +1944,7 @@ test.describe.serial('setup and login flows', () => {
     expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(2);
     expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(2);
     expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(2);
-    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(8);
+    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
 
     await page.goto('/admin#admin-section-metrics');
     const metricsOverview = await page.locator('.metrics-credential-overview').boundingBox();
@@ -1950,8 +1953,8 @@ test.describe.serial('setup and login flows', () => {
     expect(metricsOverview).not.toBeNull();
     expect(metricsActions).not.toBeNull();
     expect(metricsDanger).not.toBeNull();
-    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(8);
-    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(8);
+    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
   });
 
   test('admin sections load heavy data lazily and recover failed sections with Retry', async ({ page }) => {

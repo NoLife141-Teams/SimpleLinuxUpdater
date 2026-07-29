@@ -73,6 +73,7 @@
     function createStore() {
         let inventory = [];
         let globalKeyAvailable = false;
+        let creationAuthenticationMethod = authentication.password;
         let filters = defaultFilters();
         let sort = { key: "name", direction: "asc" };
         let page = 1;
@@ -190,7 +191,7 @@
             if (!filters.group) groups.set("", items);
             items.forEach(server => {
                 if (!filters.group) return;
-                const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "global key") : "no key") + " / " + (server.has_password ? "password" : "no password")];
+                const keys = filters.group === "tag" ? (server.tags.length ? server.tags : ["untagged"]) : [((server.has_key || globalKeyAvailable) ? (server.has_key ? "key" : "Global SSH Credential") : "no key") + " / " + (server.has_password ? "password" : "no password")];
                 keys.forEach(key => { if (!groups.has(key)) groups.set(key, []); groups.get(key).push(server); });
             });
             return {
@@ -204,11 +205,61 @@
                 summary: inventorySummary()
             };
         }
+        function parseDraftPort(value) {
+            const raw = String(value ?? "").trim();
+            if (raw === "") return { valid: true, value: 22, comparable: 22 };
+            const valid = /^\d+$/.test(raw) && Number(raw) >= 1 && Number(raw) <= 65535;
+            return {
+                valid,
+                value: valid ? Number(raw) : 22,
+                comparable: valid ? Number(raw) : `invalid:${raw}`
+            };
+        }
+        function serverDraftValidation(value = {}) {
+            const missingFields = [
+                !String(value.name || "").trim() && "name",
+                !String(value.host || "").trim() && "host",
+                !String(value.user || "").trim() && "user"
+            ].filter(Boolean);
+            if (missingFields.length) {
+                return {
+                    valid: false,
+                    invalidFields: missingFields,
+                    reason: `${missingFields.join(", ")} required.`
+                };
+            }
+
+            const invalidFields = [];
+            const reasons = [];
+            if (!parseDraftPort(value.port).valid) {
+                invalidFields.push("port");
+                reasons.push("SSH port must be a whole number from 1 to 65535.");
+            }
+            const user = String(value.user || "").trim();
+            if (user.length > 64 || !/^[A-Za-z0-9_.-]+$/.test(user)) {
+                invalidFields.push("user");
+                reasons.push("SSH username may contain only letters, digits, periods, hyphens, and underscores.");
+            }
+            return {
+                valid: invalidFields.length === 0,
+                invalidFields,
+                reason: reasons.join(" ")
+            };
+        }
         function normalizedServerDraft(value = {}) {
             return {
                 name: String(value.name || "").trim(),
                 host: String(value.host || "").trim(),
-                port: normalizePort(value.port, 22),
+                port: parseDraftPort(value.port).value,
+                user: String(value.user || "").trim(),
+                tags: normalizeTags(value.tags)
+            };
+        }
+        function comparableServerDraft(value = {}) {
+            return {
+                name: String(value.name || "").trim(),
+                host: String(value.host || "").trim(),
+                port: parseDraftPort(value.port).comparable,
                 user: String(value.user || "").trim(),
                 tags: normalizeTags(value.tags)
             };
@@ -242,8 +293,8 @@
         function editorDirty() {
             if (!editor.open || !editor.originalDraft || !editor.draft) return false;
             if (editor.draft.passwordReplacement || editor.keyReplacement) return true;
-            const original = normalizedServerDraft(editor.originalDraft);
-            const draft = normalizedServerDraft(editor.draft);
+            const original = comparableServerDraft(editor.originalDraft);
+            const draft = comparableServerDraft(editor.draft);
             if (JSON.stringify(original) !== JSON.stringify(draft)) return true;
             return policyOverrideChanges().some(change => (
                 !!editor.policyContext.originalOverrides[change.policyID] !== !!change.disabled
@@ -253,8 +304,7 @@
             const value = clone(editor);
             value.policyContext.visiblePolicies = value.policyContext.policies.filter(policyMatchesDraft);
             value.dirty = editorDirty();
-            const draft = normalizedServerDraft(editor.draft || {});
-            value.valid = !!draft.name && !!draft.host && !!draft.user;
+            value.valid = serverDraftValidation(editor.draft || {}).valid;
             value.canSave = value.dirty && value.valid && !inFlightCommandScopes.has(`server:${editor.originalName}`);
             const acceptedServer = inventory.find(server => server.name === editor.originalName) || {};
             value.credentialOutcomes = {
@@ -262,6 +312,14 @@
                 clearKey: effectiveAuthAfterCredentialClear(acceptedServer, "key")
             };
             return value;
+        }
+        function projectedCreation() {
+            return {
+                authenticationMethod: creationAuthenticationMethod,
+                globalCredentialAvailable: globalKeyAvailable,
+                passwordFieldVisible: creationAuthenticationMethod === authentication.password,
+                keyFieldVisible: creationAuthenticationMethod === authentication.perServerKey
+            };
         }
         function projectedAudit() {
             const value = clone(audit);
@@ -293,14 +351,12 @@
             const scope = command === "auditPrune" ? "audit" : (command.startsWith("globalKey") ? "globalKey" : (command === "createServer" ? "server:create" : `server:${target}`));
             if (inFlightCommands.has(key) || inFlightCommandScopes.has(scope)) return { enabled: false, reason: "This Manage action is already in progress." };
             if (command === "createServer" || command === "saveEditor") {
-                const draft = normalizedServerDraft(command === "createServer" ? payload : editor.draft);
-                const errors = [!String(draft.name || "").trim() && "name", !String(draft.host || "").trim() && "host", !String(draft.user || "").trim() && "user"].filter(Boolean);
-                if (errors.length) return { enabled: false, reason: `${errors.join(", ")} required.`, invalidFields: errors };
+                const rawDraft = command === "createServer" ? payload : editor.draft;
+                const validation = serverDraftValidation(rawDraft);
+                if (!validation.valid) return { enabled: false, reason: validation.reason, invalidFields: validation.invalidFields };
+                const draft = normalizedServerDraft(rawDraft);
                 if (command === "createServer") {
-                    const authMethod = String(payload.authMethod || "");
-                    if (!creationAuthenticationMethods.has(authMethod)) {
-                        return { enabled: false, reason: "Choose an authentication method.", invalidFields: ["auth"] };
-                    }
+                    const authMethod = creationAuthenticationMethod;
                     if (authMethod === authentication.password && !payload.hasPassword) {
                         return { enabled: false, reason: "A password is required for password authentication.", invalidFields: ["pass"] };
                     }
@@ -329,7 +385,8 @@
                     if (input.requestID && streams.inventory.inFlight !== input.requestID) return [];
                     inventory = (Array.isArray(input.items) ? input.items : []).map(normalizeServer).filter(Boolean);
                     return received("inventory", input.requestID, { items: inventory });
-                case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
+                case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; if (!globalKeyAvailable && creationAuthenticationMethod === authentication.globalKey) creationAuthenticationMethod = authentication.password; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
+                case "creationAuthenticationChanged": { const method = String(input.authenticationMethod || ""); if (creationAuthenticationMethods.has(method) && (method !== authentication.globalKey || globalKeyAvailable)) creationAuthenticationMethod = method; return [effect("render", { area: "creation" })]; }
                 case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
                 case "filtersReset": filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
@@ -359,7 +416,7 @@
                 default: return [];
             }
         }
-        function getView() { return clone({ workspace: projectedWorkspace(), inventory: projectedInventory(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ workspace: projectedWorkspace(), inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

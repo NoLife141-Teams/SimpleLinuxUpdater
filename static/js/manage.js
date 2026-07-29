@@ -42,12 +42,7 @@ function renderManageWorkspace() {
     document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
     document.getElementById("manage-summary-attention").textContent = String(fleet.needsAttention);
 
-    const globalAuth = document.querySelector('input[name="add-auth-method"][value="global-key"]');
-    const globalHelp = document.getElementById("global-auth-help");
-    if (globalAuth) globalAuth.disabled = !view.globalKeyAvailable;
-    if (globalHelp) globalHelp.textContent = view.globalKeyAvailable
-        ? "Uses the configured Global SSH Credential."
-        : "Configure a Global SSH Credential to use this option.";
+    renderAddAuthMethod();
 }
 
 function runManageWorkspaceEffects(effects) {
@@ -528,9 +523,9 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const authLabels = {
                 password: ["Password", "pill-success"],
                 "per-server-key": ["Per-server key", "pill-success"],
-                "global-key": ["Global key", "pill"],
+                "global-key": ["Global SSH Credential", "pill"],
                 "per-server-key-and-password": ["Per-server key + password", "pill-warning"],
-                "global-key-and-password": ["Global key + password", "pill-warning"],
+                "global-key-and-password": ["Global SSH Credential + password", "pill-warning"],
                 missing: ["Missing credential", "pill-danger"]
             };
             const trustLabels = {
@@ -737,19 +732,28 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             await performAuditRequest(request, !!options.silent);
         }
 
-        function selectedAddAuthMethod() {
-            return document.querySelector('input[name="add-auth-method"]:checked')?.value || 'password';
-        }
-
         function renderAddAuthMethod() {
-            const method = selectedAddAuthMethod();
-            document.getElementById('add-password-field').hidden = method !== 'password';
-            document.getElementById('add-key-field').hidden = method !== 'per-server-key';
-            document.getElementById('pass').required = method === 'password';
+            const creation = managePageInteraction.getView().creation;
+            document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
+                input.checked = input.value === creation.authenticationMethod;
+                if (input.value === 'global-key') input.disabled = !creation.globalCredentialAvailable;
+            });
+            document.getElementById('add-password-field').hidden = !creation.passwordFieldVisible;
+            document.getElementById('add-key-field').hidden = !creation.keyFieldVisible;
+            document.getElementById('pass').required = creation.passwordFieldVisible;
+            document.getElementById('global-auth-help').textContent = creation.globalCredentialAvailable
+                ? 'Uses the configured Global SSH Credential.'
+                : 'Configure a Global SSH Credential to use this option.';
         }
 
         document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
-            input.addEventListener('change', renderAddAuthMethod);
+            input.addEventListener('change', () => {
+                managePageInteraction.dispatch({
+                    type: 'creationAuthenticationChanged',
+                    authenticationMethod: input.value
+                });
+                renderAddAuthMethod();
+            });
         });
 
         document.getElementById('add-server-form').addEventListener('submit', async (e) => {
@@ -757,21 +761,18 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const name = document.getElementById('name').value;
             const host = document.getElementById('host').value;
             const portValue = document.getElementById('port').value;
-            const port = portValue ? parseInt(portValue, 10) : 0;
             const user = document.getElementById('user').value;
             const pass = document.getElementById('pass').value;
             const tagsRaw = document.getElementById('tags').value;
             const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
             const keyFileInput = document.getElementById('key_file');
             const trimmedName = name.trim();
-            const authMethod = selectedAddAuthMethod();
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'createServer', payload: {
                 name,
                 host,
-                port,
+                port: portValue,
                 user,
                 tags,
-                authMethod,
                 hasPassword: !!pass,
                 hasKeyFile: !!keyFileInput?.files?.length,
                 trustHostKey: document.getElementById('trust-host-key').checked
@@ -796,7 +797,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 const created = await createRes.json().catch(() => ({
                     name: trimmedName || name,
                     host: host.trim(),
-                    port: normalizePort(port, 22)
+                    port: normalizePort(portValue, 22)
                 }));
                 if (accepted.uploadKey && keyFileInput?.files?.length) {
                     const form = new FormData();
@@ -829,6 +830,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     resetFileInputLabel(keyFileInput);
                 }
                 e.target.reset();
+                managePageInteraction.dispatch({
+                    type: 'creationAuthenticationChanged',
+                    authenticationMethod: 'password'
+                });
                 document.getElementById('trust-host-key').checked = true;
                 renderAddAuthMethod();
             } catch (err) {
@@ -1029,6 +1034,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 setEditValidationError('');
                 setEditFieldInvalidState('edit-name', false);
                 setEditFieldInvalidState('edit-host', false);
+                setEditFieldInvalidState('edit-port', false);
                 setEditFieldInvalidState('edit-user', false);
             }
 
@@ -1222,17 +1228,11 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const execution = command.find((effect) => effect.type === 'executeCommand');
             if (!execution) {
                 const rejected = command.find((effect) => effect.type === 'commandRejected') || {};
-                const fieldIDs = { name: 'edit-name', host: 'edit-host', user: 'edit-user' };
+                const fieldIDs = { name: 'edit-name', host: 'edit-host', port: 'edit-port', user: 'edit-user' };
                 for (const field of rejected.invalidFields || []) {
                     setEditFieldInvalidState(fieldIDs[field], true);
                 }
-                const invalidFields = rejected.invalidFields || [];
-                if (invalidFields.length) {
-                    const labels = invalidFields.map(field => field.charAt(0).toUpperCase() + field.slice(1)).join(', ');
-                    setEditValidationError(`${labels} ${invalidFields.length === 1 ? 'is' : 'are'} required.`);
-                } else {
-                    setEditValidationError(rejected.reason || 'This server action is already in progress.');
-                }
+                setEditValidationError(rejected.reason || 'This server action is already in progress.');
                 const firstInvalid = document.getElementById(fieldIDs[(rejected.invalidFields || [])[0]]);
                 if (firstInvalid) firstInvalid.focus();
                 return;
@@ -1392,6 +1392,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             });
             document.getElementById('edit-port').addEventListener('input', () => {
                 managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
+                setEditFieldInvalidState('edit-port', false);
+                maybeClearEditValidationError();
                 if (activeEditorName()) {
                     editKnownHostCheckPromise = null;
                     renderEditKnownHostState('stale');
@@ -1490,10 +1492,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyUpload' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
             const form = new FormData();
             form.append('key', input.files[0]);
-            const previousLabel = uploadButton?.textContent || 'Add Global Key';
+            const previousLabel = uploadButton?.textContent || 'Add Global SSH Credential';
             if (feedback) feedback.textContent = 'Uploading Global SSH Credential…';
             if (uploadButton) {
                 uploadButton.disabled = true;
@@ -1502,7 +1504,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             try {
                 const res = await fetch('/api/keys/global', { method: 'POST', body: form });
                 if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to upload Global SSH Credential.'));
-                await settleCommand('commandCompleted', execution.plan, 'Global key saved.');
+                await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential saved.');
                 if (feedback) feedback.textContent = 'Global SSH Credential saved.';
                 input.value = '';
                 resetFileInputLabel(input);
@@ -1520,19 +1522,19 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function clearGlobalKey() {
-            if (!(await window.confirmTypedAction('Clear the global SSH key?', 'CLEAR GLOBAL KEY'))) {
+            if (!(await window.confirmTypedAction('Clear the Global SSH Credential?', 'CLEAR GLOBAL SSH CREDENTIAL'))) {
                 return;
             }
             const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyClear' });
             const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global key action is already in progress.'); return; }
+            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
             const res = await fetch('/api/keys/global', { method: 'DELETE' });
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear global key.');
+                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear Global SSH Credential.');
                 return;
             }
-            await settleCommand('commandCompleted', execution.plan, 'Global key cleared.');
+            await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential cleared.');
         }
 
         function renderGlobalKeyState(state, detail = '') {
@@ -1552,10 +1554,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             status.textContent = current.label;
             status.title = detail || current.label;
 
-            uploadButton.textContent = current.hasKey ? 'Replace Global Key' : 'Add Global Key';
+            uploadButton.textContent = current.hasKey ? 'Replace Global SSH Credential' : 'Add Global SSH Credential';
             uploadButton.disabled = state === 'checking';
             clearButton.disabled = current.hasKey !== true;
-            clearButton.title = current.hasKey ? 'Remove the configured global SSH key' : 'No global key is configured';
+            clearButton.title = current.hasKey ? 'Remove the configured Global SSH Credential' : 'No Global SSH Credential is configured';
             renderManageWorkspace();
         }
 
@@ -1571,7 +1573,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 if (followup) await performGlobalKeyRequest(followup);
             } catch (err) {
                 const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
-                renderGlobalKeyState('error', err.message || 'Unable to check the global key status');
+                renderGlobalKeyState('error', err.message || 'Unable to check the Global SSH Credential status');
                 const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
                 if (followup) await performGlobalKeyRequest(followup);
             }

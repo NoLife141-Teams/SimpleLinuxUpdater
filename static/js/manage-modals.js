@@ -70,7 +70,7 @@ function fileInputEmptyLabel(input) {
     if (!input) return 'Choose file';
     switch (input.id) {
         case 'global-key-file':
-            return 'Choose global key';
+            return 'Choose credential file';
         case 'key_file':
             return 'Choose per-server key';
         case 'edit-key':

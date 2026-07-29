@@ -168,10 +168,11 @@ test("server command eligibility is owned at the Manage Page Interaction seam", 
     assert.equal(invalidCreate[0].type, "commandRejected");
     assert.deepEqual(invalidCreate[0].invalidFields, ["name", "host", "user"]);
 
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "per-server-key" });
     const validCreate = store.dispatch({
         type: "commandRequested",
         command: "createServer",
-        payload: { name: " alpha ", host: " host ", port: "2222", user: " root ", tags: ["prod", "prod"], authMethod: "per-server-key", hasKeyFile: true, trustHostKey: true }
+        payload: { name: " alpha ", host: " host ", port: "2222", user: " root ", tags: ["prod", "prod"], hasKeyFile: true, trustHostKey: true }
     }).find(effect => effect.type === "executeCommand");
     assert.deepEqual(validCreate.plan.payload, {
         name: "alpha",
@@ -437,46 +438,61 @@ test("inventory projection explains effective and ambiguous authentication postu
     assert.equal(view.inventory.summary.needsAttention, 4);
 });
 
-test("server creation requires the explicitly selected authentication method", () => {
+test("server creation authentication choice is owned by Manage Page Interaction", () => {
     const store = createStore();
     const draft = { name: "alpha", host: "alpha.example", user: "root" };
+
+    assert.deepEqual(store.getView().creation, {
+        authenticationMethod: "password",
+        globalCredentialAvailable: false,
+        passwordFieldVisible: true,
+        keyFieldVisible: false
+    });
 
     let effects = store.dispatch({
         type: "commandRequested",
         command: "createServer",
         payload: draft
     });
-    assert.match(effects[0].reason, /authentication method/i);
-
-    effects = store.dispatch({
-        type: "commandRequested",
-        command: "createServer",
-        payload: { ...draft, authMethod: "certificate" }
-    });
-    assert.match(effects[0].reason, /authentication method/i);
-
-    effects = store.dispatch({
-        type: "commandRequested",
-        command: "createServer",
-        payload: { ...draft, authMethod: "password", hasPassword: false }
-    });
     assert.match(effects[0].reason, /password/i);
 
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "certificate" });
+    assert.equal(store.getView().creation.authenticationMethod, "password");
+
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "per-server-key" });
+    assert.equal(store.getView().creation.authenticationMethod, "per-server-key");
+
     effects = store.dispatch({
         type: "commandRequested",
         command: "createServer",
-        payload: { ...draft, authMethod: "per-server-key", hasKeyFile: true }
+        payload: { ...draft, hasKeyFile: true }
     });
     assert.equal(effects[0].type, "executeCommand");
     assert.equal(effects[0].plan.payload.authMethod, "per-server-key");
     store.dispatch({ type: "commandCompleted", plan: effects[0].plan });
 
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "global-key" });
+    assert.equal(store.getView().creation.authenticationMethod, "per-server-key");
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: true });
+    store.dispatch({ type: "creationAuthenticationChanged", authenticationMethod: "global-key" });
+    assert.deepEqual(store.getView().creation, {
+        authenticationMethod: "global-key",
+        globalCredentialAvailable: true,
+        passwordFieldVisible: false,
+        keyFieldVisible: false
+    });
     effects = store.dispatch({
         type: "commandRequested",
         command: "createServer",
-        payload: { ...draft, authMethod: "global-key" }
+        payload: draft
     });
-    assert.match(effects[0].reason, /global ssh credential/i);
+    assert.equal(effects[0].type, "executeCommand");
+    assert.equal(effects[0].plan.payload.authMethod, "global-key");
+    store.dispatch({ type: "commandCompleted", plan: effects[0].plan });
+
+    store.dispatch({ type: "globalKeySnapshotReceived", hasKey: false });
+    assert.equal(store.getView().creation.authenticationMethod, "password");
 });
 
 test("editor command eligibility and credential intentions require a changed valid draft", () => {
@@ -505,6 +521,33 @@ test("editor command eligibility and credential intentions require a changed val
     store.dispatch({ type: "editorDiscarded" });
     assert.equal(store.getView().editor.keyReplacement, false);
     assert.equal(store.getView().editor.dirty, false);
+});
+
+test("editor validity preserves and rejects invalid raw SSH fields", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "inventorySnapshotReceived",
+        items: [{ name: "alpha", host: "alpha.example", port: 22, user: "root" }]
+    });
+    store.dispatch({ type: "editorOpened", name: "alpha" });
+
+    store.dispatch({ type: "editorChanged", patch: { port: "70000" } });
+    let view = store.getView();
+    assert.equal(view.editor.draft.port, "70000");
+    assert.equal(view.editor.dirty, true);
+    assert.equal(view.editor.valid, false);
+    assert.equal(view.editor.canSave, false);
+    let rejected = store.dispatch({ type: "commandRequested", command: "saveEditor" })[0];
+    assert.deepEqual(rejected.invalidFields, ["port"]);
+    assert.match(rejected.reason, /port/i);
+
+    store.dispatch({ type: "editorChanged", patch: { port: "22", user: "root!" } });
+    view = store.getView();
+    assert.equal(view.editor.valid, false);
+    assert.equal(view.editor.canSave, false);
+    rejected = store.dispatch({ type: "commandRequested", command: "saveEditor" })[0];
+    assert.deepEqual(rejected.invalidFields, ["user"]);
+    assert.match(rejected.reason, /username/i);
 });
 
 test("Global SSH Credential section summary exposes loading, accepted, and error states", () => {

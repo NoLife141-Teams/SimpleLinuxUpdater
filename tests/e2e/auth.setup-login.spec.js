@@ -2856,7 +2856,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#manage-servers-table tbody')).toContainText('demo-host');
     await expect(page.locator('#global-key-status')).toHaveText('Configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-configured/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Replace Global SSH Credential');
     await expect(page.locator('#clear-global-key-btn')).toBeEnabled();
     await expect(page.locator('body')).not.toContainText('DO-NOT-RENDER-PRIVATE-KEY');
     await page.getByRole('link', { name: /Audit trail/ }).click();
@@ -2919,11 +2919,11 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.deleteServerCount || 0).toBe(1);
     await expect.poll(() => state.auditPruneCount || 0).toBe(1);
 
-    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL KEY');
+    await acceptTypedConfirm(page, clearGlobalKeyButton, 'CLEAR GLOBAL SSH CREDENTIAL');
     await expect.poll(() => state.clearGlobalKeyCount || 0).toBe(1);
     await expect(page.locator('#global-key-status')).toHaveText('Not configured');
     await expect(page.locator('#global-key-status')).toHaveClass(/is-missing/);
-    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global Key');
+    await expect(page.locator('#upload-global-key-btn')).toHaveText('Add Global SSH Credential');
     await expect(clearGlobalKeyButton).toBeDisabled();
   });
 

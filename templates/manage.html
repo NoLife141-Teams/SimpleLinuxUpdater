@@ -38,7 +38,7 @@
             <section class="metric-strip manage-summary fade-in" aria-label="Server inventory summary">
                 <article class="metric-item"><span>Total servers</span><strong id="manage-summary-total">0</strong><small>Registered SSH targets</small></article>
                 <article class="metric-item"><span>Host credentials</span><strong id="manage-summary-host-auth">0</strong><small>Password or per-server key</small></article>
-                <article class="metric-item"><span>Global fallback</span><strong id="manage-summary-global-auth">0</strong><small>Using the shared credential</small></article>
+                <article class="metric-item"><span>Global SSH Credential</span><strong id="manage-summary-global-auth">0</strong><small>Using the app-wide credential</small></article>
                 <article class="metric-item"><span>Multiple credentials</span><strong id="manage-summary-ambiguous" class="warning">0</strong><small>Review authentication intent</small></article>
                 <article class="metric-item"><span>Needs attention</span><strong id="manage-summary-attention" class="bad">0</strong><small>Missing auth, multiple credentials, or host trust</small></article>
             </section>
@@ -47,8 +47,8 @@
                 <article class="workspace global-key-panel manage-workspace-section" id="manage-section-global-key" data-manage-section="global-key" aria-labelledby="manage-section-global-key-heading">
                     <div class="workspace-head">
                         <div>
-                            <div class="eyebrow">Global key</div>
-                            <h2 id="manage-section-global-key-heading" tabindex="-1">Shared SSH access</h2>
+                            <div class="eyebrow">Global SSH Credential</div>
+                            <h2 id="manage-section-global-key-heading" tabindex="-1">App-wide SSH access</h2>
                             <p class="muted workspace-note">Use one SSH key for servers without a per-host key.</p>
                         </div>
                         <div class="manage-section-controls">
@@ -62,10 +62,10 @@
                     <div class="manage-section-content" id="manage-section-global-key-content" data-manage-section-content="global-key" hidden>
                         <div class="key-actions">
                             <input class="file-input" type="file" id="global-key-file">
-                            <label class="file-btn" for="global-key-file">Choose global key</label>
+                            <label class="file-btn" for="global-key-file">Choose credential file</label>
                             <span class="file-selection muted" id="global-key-file-selection">No file selected</span>
-                            <button class="primary-action" id="upload-global-key-btn" type="button" disabled>Add Global Key</button>
-                            <button class="btn-danger" id="clear-global-key-btn" type="button" disabled title="No global key is configured">Clear Global Key</button>
+                            <button class="primary-action" id="upload-global-key-btn" type="button" disabled>Add Global SSH Credential</button>
+                            <button class="btn-danger" id="clear-global-key-btn" type="button" disabled title="No Global SSH Credential is configured">Clear Global SSH Credential</button>
                         </div>
                         <div class="form-feedback" id="global-key-feedback" role="status" aria-live="polite"></div>
                     </div>

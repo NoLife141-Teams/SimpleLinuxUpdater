@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 type fakeRepo struct {
@@ -83,23 +84,44 @@ func newTestService(repo *fakeRepo, initial []Server) (*Service, *State, *[]Serv
 	return NewService(ServiceDeps{State: state, Repository: repo}), state, &servers, &statusMap
 }
 
+func testKnownHostsLine(t *testing.T, hosts ...string) string {
+	t.Helper()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return knownhosts.Line(hosts, sshKey) + "\n"
+}
+
 func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.T) {
 	tmpDir := t.TempDir()
 	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
 	fallbackKnownHostsPath := filepath.Join(tmpDir, "fallback_known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte("primary.example ssh-ed25519 AAAAPRIMARY\n"), 0600); err != nil {
+	primaryData := testKnownHostsLine(t, "primary.example")
+	if err := os.WriteFile(knownHostsPath, []byte(primaryData), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fallbackKnownHostsPath, []byte("trusted.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
+	fallbackData := testKnownHostsLine(t, knownhosts.HashHostname("trusted.example")) +
+		testKnownHostsLine(t, "*.ops.example") +
+		"@cert-authority " + testKnownHostsLine(t, "cert.example")
+	if err := os.WriteFile(fallbackKnownHostsPath, []byte(fallbackData), 0600); err != nil {
 		t.Fatal(err)
 	}
 	svc, _, _, _ := newTestService(&fakeRepo{}, []Server{
 		{Name: "trusted", Host: "trusted.example", Port: 22, User: "root"},
+		{Name: "pattern", Host: "node.ops.example", Port: 22, User: "root"},
+		{Name: "certificate", Host: "cert.example", Port: 22, User: "root"},
 		{Name: "missing", Host: "missing.example", Port: 2222, User: "root"},
 	})
+	knownHostsConfigReads := 0
 	svc.deps.KnownHosts = KnownHostsDeps{
 		Getenv: func(key string) string {
 			if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+				knownHostsConfigReads++
 				return knownHostsPath + ":" + fallbackKnownHostsPath
 			}
 			return ""
@@ -108,21 +130,30 @@ func TestServerInventoryServiceListStatusesProjectsLocalHostKeyTrust(t *testing.
 	}
 
 	statuses := svc.ListStatuses()
-	if len(statuses) != 2 {
-		t.Fatalf("ListStatuses() length = %d, want 2", len(statuses))
+	if len(statuses) != 4 {
+		t.Fatalf("ListStatuses() length = %d, want 4", len(statuses))
+	}
+	if knownHostsConfigReads != 1 {
+		t.Fatalf("known_hosts config reads = %d, want one inventory-level load", knownHostsConfigReads)
 	}
 	if statuses[0].HostKeyStatus != "trusted" {
 		t.Errorf("trusted HostKeyStatus = %q, want trusted", statuses[0].HostKeyStatus)
 	}
-	if statuses[1].HostKeyStatus != "missing" {
-		t.Errorf("missing HostKeyStatus = %q, want missing", statuses[1].HostKeyStatus)
+	if statuses[1].HostKeyStatus != "trusted" {
+		t.Errorf("pattern HostKeyStatus = %q, want trusted", statuses[1].HostKeyStatus)
+	}
+	if statuses[2].HostKeyStatus != "trusted" {
+		t.Errorf("certificate HostKeyStatus = %q, want trusted", statuses[2].HostKeyStatus)
+	}
+	if statuses[3].HostKeyStatus != "missing" {
+		t.Errorf("missing HostKeyStatus = %q, want missing", statuses[3].HostKeyStatus)
 	}
 }
 
 func TestServerInventoryServiceListStatusesReportsUnknownWhenKnownHostsCannotBeRead(t *testing.T) {
 	tmpDir := t.TempDir()
 	readablePath := filepath.Join(tmpDir, "known_hosts")
-	if err := os.WriteFile(readablePath, []byte("unknown.example ssh-ed25519 AAAATEST\n"), 0600); err != nil {
+	if err := os.WriteFile(readablePath, []byte(testKnownHostsLine(t, "unknown.example")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	unreadablePath := filepath.Join(tmpDir, "unreadable")

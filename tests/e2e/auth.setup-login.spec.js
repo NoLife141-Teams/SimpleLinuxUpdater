@@ -2115,6 +2115,7 @@ test.describe.serial('setup and login flows', () => {
     await stubAdminApi(page, state);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/admin#admin-section-scheduled-policies');
+    await page.evaluate(() => document.fonts.ready);
 
     const boxes = {};
     for (const [name, selector] of Object.entries({

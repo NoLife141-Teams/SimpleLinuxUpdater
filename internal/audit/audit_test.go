@@ -205,7 +205,9 @@ func TestServiceListFiltersByDerivedFailureCause(t *testing.T) {
 	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
 	seed := []Event{
 		{CreatedAt: "2026-02-10T08:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "alpha", Status: "failure", Message: "retry", MetaJSON: `{"retry_exhausted":true,"last_error_class":"transient"}`},
+		{CreatedAt: "2026-02-10T08:30:00Z", Action: "update.complete", TargetType: "server", TargetName: "alpha-legacy", Status: "failure", Message: "retry legacy", MetaJSON: `{"retry_exhausted":"true","last_error_class":"transient"}`},
 		{CreatedAt: "2026-02-10T09:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "beta", Status: "failure", Message: "precheck", MetaJSON: `{"precheck_failed":"disk-space","retry_exhausted":true}`},
+		{CreatedAt: "2026-02-10T09:30:00Z", Action: "update.complete", TargetType: "server", TargetName: "beta-primitive", Status: "failure", Message: "precheck primitive", MetaJSON: `{"precheck_failed":true}`},
 		{CreatedAt: "2026-02-10T10:00:00Z", Action: "update.complete", TargetType: "server", TargetName: "gamma", Status: "failure", Message: "unknown", MetaJSON: `{not-json`},
 	}
 	for _, event := range seed {
@@ -214,17 +216,22 @@ func TestServiceListFiltersByDerivedFailureCause(t *testing.T) {
 		}
 	}
 
-	for cause, wantTarget := range map[string]string{
-		"retry_exhausted":     "alpha",
-		"precheck:disk-space": "beta",
-		"unknown":             "gamma",
+	for cause, wantTargets := range map[string][]string{
+		"retry_exhausted":     {"alpha-legacy", "alpha"},
+		"precheck:disk-space": {"beta"},
+		"precheck:true":       {"beta-primitive"},
+		"unknown":             {"gamma"},
 	} {
 		result, err := svc.List(ListFilter{Page: 1, PageSize: 20, FailureCause: cause})
 		if err != nil {
 			t.Fatalf("List(FailureCause=%q) error = %v", cause, err)
 		}
-		if result.Total != 1 || len(result.Items) != 1 || result.Items[0].TargetName != wantTarget {
-			t.Fatalf("List(FailureCause=%q) = %+v, want target %q", cause, result, wantTarget)
+		gotTargets := make([]string, 0, len(result.Items))
+		for _, item := range result.Items {
+			gotTargets = append(gotTargets, item.TargetName)
+		}
+		if result.Total != len(wantTargets) || strings.Join(gotTargets, ",") != strings.Join(wantTargets, ",") {
+			t.Fatalf("List(FailureCause=%q) = %+v, want targets %v", cause, result, wantTargets)
 		}
 	}
 }

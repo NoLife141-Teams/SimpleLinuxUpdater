@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	auditpkg "debian-updater/internal/audit"
 	healthpkg "debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
@@ -199,22 +200,7 @@ func MetaDurationMS(meta map[string]any) (float64, bool) {
 }
 
 func FailureCauseFromMeta(meta map[string]any, metaValid bool) string {
-	if !metaValid {
-		return "unknown"
-	}
-	if precheck := metaStringValue(meta, "precheck_failed"); precheck != "" {
-		return "precheck:" + precheck
-	}
-	if postcheck := metaStringValue(meta, "postcheck_failed"); postcheck != "" {
-		return "postcheck:" + postcheck
-	}
-	if retryExhausted, ok := metaBoolValue(meta, "retry_exhausted"); ok && retryExhausted {
-		return "retry_exhausted"
-	}
-	if errClass := strings.ToLower(metaStringValue(meta, "last_error_class")); errClass != "" && errClass != "none" {
-		return "error_class:" + errClass
-	}
-	return "unknown"
+	return auditpkg.FailureCauseFromMeta(meta, metaValid)
 }
 
 func (s *Service) BuildSummary(rawWindow string, now time.Time) (SummaryResponse, error) {

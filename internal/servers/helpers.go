@@ -70,6 +70,14 @@ func (d KnownHostsDeps) constantTimeCompare(a, b string) bool {
 }
 
 var fallbackKnownHostsMu sync.Mutex
+var errHostKeyCaptured = errors.New("host key captured")
+
+func captureHostKeyCallback(destination *ssh.PublicKey) ssh.HostKeyCallback {
+	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		*destination = key
+		return errHostKeyCaptured
+	}
+}
 
 func NormalizePort(port int) int {
 	if port <= 0 || port > 65535 {
@@ -582,27 +590,16 @@ func ScanHostKey(host string, port int, timeout time.Duration) (ssh.PublicKey, e
 	address := net.JoinHostPort(cleanHost, strconv.Itoa(NormalizePort(port)))
 	var scanned ssh.PublicKey
 	cfg := &ssh.ClientConfig{
-		User: "hostkey-scan",
-		Auth: []ssh.AuthMethod{
-			ssh.Password("invalid"),
-		},
-		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			scanned = key
-			return nil
-		},
-		Timeout: timeout,
+		User:            "hostkey-scan",
+		HostKeyCallback: captureHostKeyCallback(&scanned),
+		Timeout:         timeout,
 	}
 	client, err := ssh.Dial("tcp", address, cfg)
 	if client != nil {
 		_ = client.Close()
 	}
 	if err != nil {
-		msg := strings.ToLower(err.Error())
-		isAuthErr := strings.Contains(msg, "unable to authenticate") ||
-			strings.Contains(msg, "no auth") ||
-			strings.Contains(msg, "permission denied") ||
-			strings.Contains(msg, "authentication")
-		if scanned != nil && isAuthErr {
+		if scanned != nil && errors.Is(err, errHostKeyCaptured) {
 			return scanned, nil
 		}
 		return nil, err

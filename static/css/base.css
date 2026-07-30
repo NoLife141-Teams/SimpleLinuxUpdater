@@ -578,6 +578,30 @@ input[type="checkbox"] {
     background: rgba(255, 255, 255, 0.02);
 }
 
+.manage-section-toggle,
+.admin-section-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 94px;
+}
+
+.manage-section-toggle-icon,
+.admin-section-toggle-icon {
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(2px) rotate(225deg);
+    transition: transform 150ms ease;
+}
+
+.manage-section-toggle[aria-expanded="false"] .manage-section-toggle-icon,
+.admin-section-toggle[aria-expanded="false"] .admin-section-toggle-icon {
+    transform: translateY(-2px) rotate(45deg);
+}
+
 button:disabled,
 .inline-btn:disabled {
     cursor: not-allowed;

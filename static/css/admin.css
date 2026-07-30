@@ -154,27 +154,6 @@
     padding: 5px 9px;
 }
 
-.admin-section-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 94px;
-    justify-content: center;
-}
-
-.admin-section-toggle-icon {
-    width: 8px;
-    height: 8px;
-    border-right: 2px solid currentColor;
-    border-bottom: 2px solid currentColor;
-    transform: translateY(-2px) rotate(45deg);
-    transition: transform 150ms ease;
-}
-
-.admin-section-toggle[aria-expanded="false"] .admin-section-toggle-icon {
-    transform: translateY(2px) rotate(225deg);
-}
-
 .admin-section-content[hidden] {
     display: none;
 }

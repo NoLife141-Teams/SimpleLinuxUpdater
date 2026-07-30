@@ -3888,6 +3888,14 @@ test.describe.serial('setup and login flows', () => {
         bodyScrollWidth: document.body.scrollWidth,
         sectionHeadDirections: Array.from(document.querySelectorAll('.manage-workspace-section .workspace-head'))
           .map(element => getComputedStyle(element).flexDirection),
+        metrics: Array.from(document.querySelectorAll('.manage-summary .metric-item')).map(element => {
+          const value = element.querySelector('strong');
+          return {
+            rowTop: Math.round(element.getBoundingClientRect().top),
+            numberTop: Math.round(value.getBoundingClientRect().top),
+            numberBackground: getComputedStyle(value).backgroundColor,
+          };
+        }),
         tables: Array.from(document.querySelectorAll('.manage-workspace-section .table-wrap')).map(element => ({
           clientWidth: element.clientWidth,
           scrollWidth: element.scrollWidth,
@@ -3903,6 +3911,13 @@ test.describe.serial('setup and login flows', () => {
       if (viewport.width <= 640) {
         expect(layout.sectionHeadDirections.every(direction => direction === 'column')).toBe(true);
       }
+      const metricRows = new Map();
+      for (const metric of layout.metrics) {
+        if (!metricRows.has(metric.rowTop)) metricRows.set(metric.rowTop, new Set());
+        metricRows.get(metric.rowTop).add(metric.numberTop);
+      }
+      expect([...metricRows.values()].every(numberTops => numberTops.size === 1)).toBe(true);
+      expect(new Set(layout.metrics.map(metric => metric.numberBackground)).size).toBe(1);
 
       await expect(page.getByRole('link', { name: /Add Server Create an SSH target/ })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
@@ -3925,10 +3940,21 @@ test.describe.serial('setup and login flows', () => {
     await ensureAuthenticatedSession(page);
     await page.goto('/manage');
 
+    const toggle = page.locator('[data-manage-section-toggle="add-server"]');
+    const chevron = toggle.locator('.manage-section-toggle-icon');
+    const chevronDirection = () => chevron.evaluate(element => {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+      return Math.sign(matrix.b);
+    });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(chevronDirection).toBe(1);
+
     await page.getByRole('button', { name: 'Add Server', exact: true }).click();
 
     await expect(page.locator('#manage-section-add-server-content')).toBeVisible();
     await expect(page.locator('#manage-section-add-server-heading')).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(chevronDirection).toBe(-1);
   });
 
   test('Manage Servers summary distinguishes missing authentication from host trust issues', async ({ page }) => {

@@ -651,6 +651,8 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
 }
 
+const maxAptLockTimeoutExtensions = 3
+
 func aptPackageManagerLockActive(client sshConnection, commandTimeout time.Duration) bool {
 	probeTimeout := commandTimeout
 	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
@@ -727,13 +729,17 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
+	aptLockTimeoutExtensions := 0
 	for {
 		select {
 		case runErr := <-runErrCh:
 			_ = session.Close()
 			return stdout.String(), stderr.String(), runErr
 		case <-timer.C:
-			if updatespkg.IsAptLockProtectedCommand(cmd) && aptPackageManagerLockActive(client, timeout) {
+			if updatespkg.IsAptLockProtectedCommand(cmd) &&
+				aptLockTimeoutExtensions < maxAptLockTimeoutExtensions &&
+				aptPackageManagerLockActive(client, timeout) {
+				aptLockTimeoutExtensions++
 				timer.Reset(timeout)
 				continue
 			}

@@ -35,6 +35,7 @@ type aptLockAwareTestConnection struct {
 	lockActive      bool
 	lockProbeCount  int
 	connectionClose bool
+	commandDelay    time.Duration
 }
 
 type aptLockAwareTestSession struct {
@@ -60,7 +61,11 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 		}
 		return nil
 	}
-	time.Sleep(95 * time.Millisecond)
+	delay := s.conn.commandDelay
+	if delay <= 0 {
+		delay = 95 * time.Millisecond
+	}
+	time.Sleep(delay)
 	return nil
 }
 
@@ -149,6 +154,25 @@ func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T)
 	conn.mu.Unlock()
 	if lockProbeCount != 1 {
 		t.Fatalf("apt lock probes = %d, want 1", lockProbeCount)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutCapsAptLockExtensions(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		lockActive:   true,
+		commandDelay: 150 * time.Millisecond,
+	}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 20*time.Millisecond)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout after bounded apt lock extensions", err)
+	}
+
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount != maxAptLockTimeoutExtensions {
+		t.Fatalf("apt lock probes = %d, want %d", lockProbeCount, maxAptLockTimeoutExtensions)
 	}
 }
 

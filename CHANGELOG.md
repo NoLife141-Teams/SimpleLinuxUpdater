@@ -14,8 +14,9 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Validation
 
-- Record the completed local gate and remaining pre-tag requirements in
-  [the v0.4.2 release readiness record](docs/release-v0.4.2-readiness.md).
+- Complete the local, CI, Docker, and targeted notification gates recorded in
+  [the v0.4.2 release readiness record](docs/release-v0.4.2-readiness.md) and
+  [release smoke result](docs/release-v0.4.2-smoke.md).
 
 ## [v0.4.1] - 2026-07-29
 

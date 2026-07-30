@@ -651,6 +651,15 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
 }
 
+func aptPackageManagerLockActive(client sshConnection, commandTimeout time.Duration) bool {
+	probeTimeout := commandTimeout
+	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
+		probeTimeout = 10 * time.Second
+	}
+	_, _, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
+	return err == nil
+}
+
 func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if timeout <= 0 {
 		return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, onOutput)
@@ -718,25 +727,31 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case runErr := <-runErrCh:
-		_ = session.Close()
-		return stdout.String(), stderr.String(), runErr
-	case <-timer.C:
-		_ = session.Close()
+	for {
 		select {
 		case runErr := <-runErrCh:
-			timeoutStdout := stdout.String()
-			timeoutStderr := stderr.String()
-			if runErr == nil {
-				runErr = fmt.Errorf("command timed out after %s", timeout)
-			} else {
-				runErr = fmt.Errorf("command timed out after %s: %w", timeout, runErr)
+			_ = session.Close()
+			return stdout.String(), stderr.String(), runErr
+		case <-timer.C:
+			if updatespkg.IsAptLockProtectedCommand(cmd) && aptPackageManagerLockActive(client, timeout) {
+				timer.Reset(timeout)
+				continue
 			}
-			return timeoutStdout, timeoutStderr, runErr
-		case <-time.After(1 * time.Second):
-			go func() { <-runErrCh }()
-			return "", "", fmt.Errorf("command timed out after %s", timeout)
+			_ = session.Close()
+			select {
+			case runErr := <-runErrCh:
+				timeoutStdout := stdout.String()
+				timeoutStderr := stderr.String()
+				if runErr == nil {
+					runErr = fmt.Errorf("command timed out after %s", timeout)
+				} else {
+					runErr = fmt.Errorf("command timed out after %s: %w", timeout, runErr)
+				}
+				return timeoutStdout, timeoutStderr, runErr
+			case <-time.After(1 * time.Second):
+				go func() { <-runErrCh }()
+				return "", "", fmt.Errorf("command timed out after %s", timeout)
+			}
 		}
 	}
 }

@@ -552,10 +552,25 @@ func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, st
 	eventType := strings.TrimSpace(evt.Action)
 	if force {
 		eventType = EventTest
+	} else if isSuccessfulNoOpUpdate(evt) {
+		return settings, "", nil
 	} else if !anyDestinationEnabled(settings) || !eventEnabled(settings.EventTypes, eventType) {
 		return settings, "", nil
 	}
 	return settings, eventType, nil
+}
+
+func isSuccessfulNoOpUpdate(evt DeliveryIntent) bool {
+	if strings.TrimSpace(evt.Action) != EventUpdateComplete || !strings.EqualFold(strings.TrimSpace(evt.Status), "success") {
+		return false
+	}
+	var meta struct {
+		UpgradeCompleted *bool `json:"upgrade_completed"`
+	}
+	if err := json.Unmarshal([]byte(evt.MetaJSON), &meta); err != nil || meta.UpgradeCompleted == nil {
+		return false
+	}
+	return !*meta.UpgradeCompleted
 }
 
 func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) ([]DeliveryStatus, error) {

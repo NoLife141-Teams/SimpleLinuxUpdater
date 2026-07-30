@@ -413,6 +413,27 @@ func TestRootOrSudoCommand(t *testing.T) {
 	}
 }
 
+func TestIsAptLockProtectedCommand(t *testing.T) {
+	protected := []string{
+		AptUpdateCmd,
+		AptUpgradeCmd,
+		AptFullUpgradeCmd,
+		AptAutoremoveCmd,
+		BuildSelectedUpgradeCmd([]string{"openssl"}),
+		BuildSelectedInstallCmd([]string{"linux-image-amd64"}),
+	}
+	for _, command := range protected {
+		if !IsAptLockProtectedCommand(command) {
+			t.Fatalf("IsAptLockProtectedCommand(%q) = false, want true", command)
+		}
+	}
+	for _, command := range []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptLockProbeCmd, "true"} {
+		if IsAptLockProtectedCommand(command) {
+			t.Fatalf("IsAptLockProtectedCommand(%q) = true, want false", command)
+		}
+	}
+}
+
 func TestRetryHelpersClassifyRetryableOutput(t *testing.T) {
 	err := MarkRetryableFromOutput(errors.New("exit status 100"), "Could not get lock /var/lib/dpkg/lock-frontend")
 	if !IsRetryableError(err) {

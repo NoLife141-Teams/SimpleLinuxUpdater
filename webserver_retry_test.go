@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,53 @@ func (s *noopSession) SetStdout(io.Writer) {}
 func (s *noopSession) SetStderr(io.Writer) {}
 func (s *noopSession) Run(string) error    { return nil }
 func (s *noopSession) Close() error        { return nil }
+
+type aptLockAwareTestConnection struct {
+	mu              sync.Mutex
+	lockActive      bool
+	lockProbeCount  int
+	connectionClose bool
+}
+
+type aptLockAwareTestSession struct {
+	conn   *aptLockAwareTestConnection
+	stdout io.Writer
+}
+
+func (s *aptLockAwareTestSession) SetStdin(io.Reader)    {}
+func (s *aptLockAwareTestSession) SetStdout(w io.Writer) { s.stdout = w }
+func (s *aptLockAwareTestSession) SetStderr(io.Writer)   {}
+
+func (s *aptLockAwareTestSession) Run(command string) error {
+	if strings.Contains(command, "/usr/bin/fuser") {
+		s.conn.mu.Lock()
+		s.conn.lockProbeCount++
+		lockActive := s.conn.lockActive
+		s.conn.mu.Unlock()
+		if !lockActive {
+			return errors.New("no process uses the apt locks")
+		}
+		if s.stdout != nil {
+			_, _ = io.WriteString(s.stdout, "4242\n")
+		}
+		return nil
+	}
+	time.Sleep(95 * time.Millisecond)
+	return nil
+}
+
+func (s *aptLockAwareTestSession) Close() error { return nil }
+
+func (c *aptLockAwareTestConnection) NewSession() (sshSessionRunner, error) {
+	return &aptLockAwareTestSession{conn: c}, nil
+}
+
+func (c *aptLockAwareTestConnection) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connectionClose = true
+	return nil
+}
 
 func TestLoadRetryPolicyFromEnvDefaults(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "")
@@ -65,6 +113,42 @@ func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Fatalf("runSSHCommandWithTimeout() took too long: %v", elapsed)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutKeepsWaitingWhileAptLockIsActive(t *testing.T) {
+	conn := &aptLockAwareTestConnection{lockActive: true}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want active apt lock to extend the wait", err)
+	}
+
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	connectionClosed := conn.connectionClose
+	conn.mu.Unlock()
+	if lockProbeCount < 2 {
+		t.Fatalf("apt lock probes = %d, want at least 2", lockProbeCount)
+	}
+	if connectionClosed {
+		t.Fatal("SSH connection closed while apt lock was active")
+	}
+}
+
+func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T) {
+	conn := &aptLockAwareTestConnection{}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout without an active apt lock", err)
+	}
+
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount != 1 {
+		t.Fatalf("apt lock probes = %d, want 1", lockProbeCount)
 	}
 }
 

@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	precheckLocksCmd     = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
+	precheckLocksCmd     = AptLockProbeCmd
 	precheckDpkgAuditCmd = RootOrSudoCommand("dpkg --audit")
 	precheckAptCheckCmd  = RootOrSudoCommand("apt-get check")
 	rebootCheckErrorRe   = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
@@ -402,6 +402,6 @@ func inspectionBenignNoLockOutput(message string) bool {
 	if normalized == "" || strings.Contains(normalized, "no process found") {
 		return true
 	}
-	lockPathMentioned := strings.Contains(normalized, "/var/lib/dpkg/lock-frontend") || strings.Contains(normalized, "/var/lib/dpkg/lock") || strings.Contains(normalized, "/var/cache/apt/archives/lock")
+	lockPathMentioned := strings.Contains(normalized, "/var/lib/dpkg/lock-frontend") || strings.Contains(normalized, "/var/lib/dpkg/lock") || strings.Contains(normalized, "/var/cache/apt/archives/lock") || strings.Contains(normalized, "/var/lib/apt/lists/lock")
 	return lockPathMentioned && (strings.Contains(normalized, "does not exist") || strings.Contains(normalized, "no such file or directory"))
 }

@@ -84,7 +84,7 @@ func newInspectionSession(t *testing.T, conn *inspectionTestConnection) HostMain
 func TestProductionHostMaintenanceSessionOwnsPreUpdateInspection(t *testing.T) {
 	commands := []string{
 		"df -Pk /var / | awk 'NR>1 {print $2, $4}'",
-		RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock"),
+		AptLockProbeCmd,
 		RootOrSudoCommand("dpkg --audit"),
 		RootOrSudoCommand("apt-get check"),
 	}

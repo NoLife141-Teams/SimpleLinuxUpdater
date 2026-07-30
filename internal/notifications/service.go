@@ -21,6 +21,10 @@ import (
 const (
 	SettingsKey = "notification_hooks_settings"
 
+	DestinationWebhook  = "webhook"
+	DestinationDiscord  = "discord"
+	DestinationTelegram = "telegram"
+
 	EventUpdateComplete     = "update.complete"
 	EventScheduleRunFailed  = "schedule.run.failed"
 	EventScheduleRunSkipped = "schedule.run.skipped"
@@ -55,10 +59,16 @@ type HTTPClient interface {
 }
 
 type Settings struct {
-	Enabled      bool
-	WebhookURL   string
-	EventTypes   []string
-	LastDelivery *DeliveryStatus
+	Enabled           bool
+	WebhookURL        string
+	DiscordEnabled    bool
+	DiscordWebhookURL string
+	TelegramEnabled   bool
+	TelegramBotToken  string
+	TelegramChatID    string
+	EventTypes        []string
+	LastDelivery      *DeliveryStatus
+	LastDeliveries    map[string]*DeliveryStatus
 }
 
 type SettingsResponse struct {
@@ -68,6 +78,8 @@ type SettingsResponse struct {
 	WebhookURLIntent  WebhookURLIntent `json:"webhook_url_intent"`
 	EventTypes        []string         `json:"event_types"`
 	SupportedEvents   []string         `json:"supported_events"`
+	Discord           DiscordResponse  `json:"discord"`
+	Telegram          TelegramResponse `json:"telegram"`
 }
 
 type SettingsUpdate struct {
@@ -75,14 +87,50 @@ type SettingsUpdate struct {
 	WebhookURL       string           `json:"webhook_url,omitempty"`
 	WebhookURLIntent WebhookURLIntent `json:"webhook_url_intent,omitempty"`
 	EventTypes       []string         `json:"event_types"`
+	Discord          *DiscordUpdate   `json:"discord,omitempty"`
+	Telegram         *TelegramUpdate  `json:"telegram,omitempty"`
+}
+
+type DiscordResponse struct {
+	Enabled          bool             `json:"enabled"`
+	Configured       bool             `json:"configured"`
+	WebhookURLMasked string           `json:"webhook_url_masked,omitempty"`
+	WebhookURLIntent WebhookURLIntent `json:"webhook_url_intent"`
+}
+
+type DiscordUpdate struct {
+	Enabled          bool             `json:"enabled"`
+	WebhookURL       string           `json:"webhook_url,omitempty"`
+	WebhookURLIntent WebhookURLIntent `json:"webhook_url_intent,omitempty"`
+}
+
+type TelegramResponse struct {
+	Enabled           bool             `json:"enabled"`
+	Configured        bool             `json:"configured"`
+	BotTokenMasked    string           `json:"bot_token_masked,omitempty"`
+	ChatIDMasked      string           `json:"chat_id_masked,omitempty"`
+	CredentialsIntent WebhookURLIntent `json:"credentials_intent"`
+}
+
+type TelegramUpdate struct {
+	Enabled           bool             `json:"enabled"`
+	BotToken          string           `json:"bot_token,omitempty"`
+	ChatID            string           `json:"chat_id,omitempty"`
+	CredentialsIntent WebhookURLIntent `json:"credentials_intent,omitempty"`
 }
 
 type persistedSettings struct {
-	Enabled             bool            `json:"enabled"`
-	LegacyWebhookURL    string          `json:"webhook_url,omitempty"`
-	EncryptedWebhookURL string          `json:"webhook_url_enc,omitempty"`
-	EventTypes          []string        `json:"event_types"`
-	LastDelivery        *DeliveryStatus `json:"last_delivery,omitempty"`
+	Enabled             bool                       `json:"enabled"`
+	LegacyWebhookURL    string                     `json:"webhook_url,omitempty"`
+	EncryptedWebhookURL string                     `json:"webhook_url_enc,omitempty"`
+	DiscordEnabled      bool                       `json:"discord_enabled,omitempty"`
+	DiscordWebhookURL   string                     `json:"discord_webhook_url_enc,omitempty"`
+	TelegramEnabled     bool                       `json:"telegram_enabled,omitempty"`
+	TelegramBotToken    string                     `json:"telegram_bot_token_enc,omitempty"`
+	TelegramChatID      string                     `json:"telegram_chat_id_enc,omitempty"`
+	EventTypes          []string                   `json:"event_types"`
+	LastDelivery        *DeliveryStatus            `json:"last_delivery,omitempty"`
+	LastDeliveries      map[string]*DeliveryStatus `json:"last_deliveries,omitempty"`
 }
 
 type ValidationError struct {
@@ -105,6 +153,7 @@ const (
 )
 
 type DeliveryStatus struct {
+	Destination         string          `json:"destination,omitempty"`
 	EventType           string          `json:"event_type"`
 	Action              string          `json:"action"`
 	TargetName          string          `json:"target_name"`
@@ -122,7 +171,8 @@ type DeliveryStatus struct {
 }
 
 type DeliveryDiagnostics struct {
-	LastAttempt *DeliveryStatus `json:"last_attempt,omitempty"`
+	LastAttempt  *DeliveryStatus            `json:"last_attempt,omitempty"`
+	LastAttempts map[string]*DeliveryStatus `json:"last_attempts,omitempty"`
 }
 
 type DeliveryIntent struct {
@@ -158,6 +208,10 @@ type Lifecycle interface {
 	Accept(DeliveryIntent) Admission
 	TestDelivery(context.Context) (DeliveryStatus, error)
 	Close(context.Context) error
+}
+
+type DestinationTester interface {
+	TestDestination(context.Context, string) (DeliveryStatus, error)
 }
 
 type WebhookPayload struct {
@@ -318,7 +372,7 @@ func (s *Service) Settings() (SettingsResponse, error) {
 	if err != nil {
 		return SettingsResponse{}, err
 	}
-	return settingsResponse(settings, WebhookURLPreserve), nil
+	return settingsResponse(settings, WebhookURLPreserve, WebhookURLPreserve, WebhookURLPreserve), nil
 }
 
 func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) {
@@ -337,10 +391,16 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 		return SettingsResponse{}, err
 	}
 	settings := Settings{
-		Enabled:      update.Enabled,
-		WebhookURL:   current.WebhookURL,
-		EventTypes:   events,
-		LastDelivery: current.LastDelivery,
+		Enabled:           update.Enabled,
+		WebhookURL:        current.WebhookURL,
+		DiscordEnabled:    current.DiscordEnabled,
+		DiscordWebhookURL: current.DiscordWebhookURL,
+		TelegramEnabled:   current.TelegramEnabled,
+		TelegramBotToken:  current.TelegramBotToken,
+		TelegramChatID:    current.TelegramChatID,
+		EventTypes:        events,
+		LastDelivery:      current.LastDelivery,
+		LastDeliveries:    cloneDeliveryStatuses(current.LastDeliveries),
 	}
 	switch intent {
 	case WebhookURLReplace:
@@ -368,10 +428,78 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 	if settings.Enabled && settings.WebhookURL == "" {
 		return SettingsResponse{}, validationError("Enablement requires a configured webhook URL. Choose Replace URL first.")
 	}
+	discordIntent := WebhookURLPreserve
+	if update.Discord != nil {
+		discordIntent, err = normalizeSecretIntent(update.Discord.WebhookURLIntent)
+		if err != nil {
+			return SettingsResponse{}, err
+		}
+		settings.DiscordEnabled = update.Discord.Enabled
+		switch discordIntent {
+		case WebhookURLReplace:
+			replacement := strings.TrimSpace(update.Discord.WebhookURL)
+			if replacement == "" {
+				return SettingsResponse{}, validationError("A replacement Discord webhook URL is required.")
+			}
+			if err := validateDiscordWebhookURL(replacement); err != nil {
+				return SettingsResponse{}, err
+			}
+			settings.DiscordWebhookURL = replacement
+		case WebhookURLClear:
+			if strings.TrimSpace(update.Discord.WebhookURL) != "" {
+				return SettingsResponse{}, validationError("discord.webhook_url must be empty when clearing the configured URL.")
+			}
+			if update.Discord.Enabled {
+				return SettingsResponse{}, validationError("Disable Discord delivery before clearing the configured URL.")
+			}
+			settings.DiscordWebhookURL = ""
+		case WebhookURLPreserve:
+			if strings.TrimSpace(update.Discord.WebhookURL) != "" {
+				return SettingsResponse{}, validationError("discord.webhook_url must be empty when preserving the configured URL.")
+			}
+		}
+		if settings.DiscordEnabled && settings.DiscordWebhookURL == "" {
+			return SettingsResponse{}, validationError("Discord enablement requires a configured webhook URL.")
+		}
+	}
+	telegramIntent := WebhookURLPreserve
+	if update.Telegram != nil {
+		telegramIntent, err = normalizeSecretIntent(update.Telegram.CredentialsIntent)
+		if err != nil {
+			return SettingsResponse{}, err
+		}
+		settings.TelegramEnabled = update.Telegram.Enabled
+		switch telegramIntent {
+		case WebhookURLReplace:
+			token := strings.TrimSpace(update.Telegram.BotToken)
+			chatID := strings.TrimSpace(update.Telegram.ChatID)
+			if err := validateTelegramCredentials(token, chatID); err != nil {
+				return SettingsResponse{}, err
+			}
+			settings.TelegramBotToken = token
+			settings.TelegramChatID = chatID
+		case WebhookURLClear:
+			if strings.TrimSpace(update.Telegram.BotToken) != "" || strings.TrimSpace(update.Telegram.ChatID) != "" {
+				return SettingsResponse{}, validationError("Telegram credentials must be empty when clearing the configured integration.")
+			}
+			if update.Telegram.Enabled {
+				return SettingsResponse{}, validationError("Disable Telegram delivery before clearing the configured integration.")
+			}
+			settings.TelegramBotToken = ""
+			settings.TelegramChatID = ""
+		case WebhookURLPreserve:
+			if strings.TrimSpace(update.Telegram.BotToken) != "" || strings.TrimSpace(update.Telegram.ChatID) != "" {
+				return SettingsResponse{}, validationError("Telegram credentials must be empty when preserving the configured integration.")
+			}
+		}
+		if settings.TelegramEnabled && (settings.TelegramBotToken == "" || settings.TelegramChatID == "") {
+			return SettingsResponse{}, validationError("Telegram enablement requires a configured bot token and chat ID.")
+		}
+	}
 	if err := s.saveSettings(settings); err != nil {
 		return SettingsResponse{}, err
 	}
-	return settingsResponse(settings, intent), nil
+	return settingsResponse(settings, intent, discordIntent, telegramIntent), nil
 }
 
 func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
@@ -381,29 +509,39 @@ func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
 	if err != nil {
 		return DeliveryDiagnostics{}, err
 	}
-	return DeliveryDiagnostics{LastAttempt: safeDeliveryStatus(settings.LastDelivery)}, nil
+	return DeliveryDiagnostics{
+		LastAttempt:  latestDeliveryStatus(settings),
+		LastAttempts: cloneDeliveryStatuses(settings.LastDeliveries),
+	}, nil
 }
 
 func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
+	return s.TestDestination(ctx, DestinationWebhook)
+}
+
+func (s *Service) TestDestination(ctx context.Context, destination string) (DeliveryStatus, error) {
 	evt := DeliveryIntent{
 		CreatedAt:  s.deps.Now().UTC().Format(time.RFC3339),
 		Actor:      "admin",
 		Action:     EventTest,
 		TargetType: "notification",
-		TargetName: "webhook",
+		TargetName: strings.TrimSpace(destination),
 		Status:     "test",
 		Message:    "Notification test",
 		MetaJSON:   `{"source":"admin"}`,
 	}
-	return s.deliver(ctx, evt, true)
+	return s.deliverDestination(ctx, evt, strings.TrimSpace(destination), true)
 }
 
-func (s *Service) deliver(ctx context.Context, evt DeliveryIntent, force bool) (DeliveryStatus, error) {
+func (s *Service) deliverDestination(ctx context.Context, evt DeliveryIntent, destination string, force bool) (DeliveryStatus, error) {
 	settings, eventType, err := s.notificationPlan(evt, force)
-	if err != nil || eventType == "" {
+	if err != nil {
 		return DeliveryStatus{}, err
 	}
-	return s.deliverWithSettings(ctx, settings, evt, eventType)
+	if !destinationConfigured(settings, destination) {
+		return DeliveryStatus{}, validationError(fmt.Sprintf("%s is not configured.", destinationLabel(destination)))
+	}
+	return s.deliverToDestination(ctx, settings, evt, eventType, destination)
 }
 
 func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, string, error) {
@@ -416,31 +554,47 @@ func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, st
 	eventType := strings.TrimSpace(evt.Action)
 	if force {
 		eventType = EventTest
-	} else if !settings.Enabled || !eventEnabled(settings.EventTypes, eventType) {
+	} else if !anyDestinationEnabled(settings) || !eventEnabled(settings.EventTypes, eventType) {
 		return settings, "", nil
 	}
 	return settings, eventType, nil
 }
 
-func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) (DeliveryStatus, error) {
-	if err := validateStoredWebhookURL(settings.WebhookURL); err != nil {
-		return DeliveryStatus{}, err
+func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) ([]DeliveryStatus, error) {
+	destinations := enabledDestinations(settings)
+	statuses := make([]DeliveryStatus, 0, len(destinations))
+	var deliveryErr error
+	for _, destination := range destinations {
+		status, err := s.deliverToDestination(ctx, settings, evt, eventType, destination)
+		statuses = append(statuses, status)
+		if err != nil {
+			deliveryErr = errors.Join(deliveryErr, err)
+		}
 	}
+	return statuses, deliveryErr
+}
+
+func (s *Service) deliverToDestination(ctx context.Context, settings Settings, evt DeliveryIntent, eventType, destination string) (DeliveryStatus, error) {
 	payload, err := buildPayload(eventType, evt)
 	if err != nil {
 		return DeliveryStatus{}, err
 	}
-	body, err := json.Marshal(payload)
+	endpoint, body, err := destinationRequest(settings, destination, payload)
 	if err != nil {
 		return DeliveryStatus{}, err
 	}
 	status := DeliveryStatus{
-		EventType:  eventType,
-		Action:     evt.Action,
-		TargetName: evt.TargetName,
+		Destination: destination,
+		EventType:   eventType,
+		Action:      evt.Action,
+		TargetName:  evt.TargetName,
 	}
-	if previous := safeDeliveryStatus(settings.LastDelivery); previous != nil {
+	if previous := safeDeliveryStatus(settings.LastDeliveries[destination]); previous != nil {
 		status.ConsecutiveFailures = previous.ConsecutiveFailures
+	} else if destination == DestinationWebhook {
+		if previous := safeDeliveryStatus(settings.LastDelivery); previous != nil {
+			status.ConsecutiveFailures = previous.ConsecutiveFailures
+		}
 	}
 	var lastErr error
 	for attempt := 1; attempt <= defaultAttempts; attempt++ {
@@ -453,7 +607,7 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 		status.StatusCode = 0
 		status.Error = ""
 		status.NextRetryAt = ""
-		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, settings.WebhookURL, bytes.NewReader(body))
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if reqErr != nil {
 			lastErr = errors.New("webhook request could not be created")
 			break
@@ -477,7 +631,7 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 				status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 				status.ConsecutiveFailures = 0
 				status.NextRetryAt = ""
-				if err := s.storeLastDelivery(status); err != nil {
+				if err := s.storeLastDelivery(destination, status); err != nil {
 					return status, fmt.Errorf("record notification delivery outcome: %w", err)
 				}
 				return status, nil
@@ -498,7 +652,7 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 			}
 			status.Outcome = DeliveryOutcomeRetrying
 			status.NextRetryAt = completedAt.Add(delay).Format(time.RFC3339)
-			if err := s.storeLastDelivery(status); err != nil {
+			if err := s.storeLastDelivery(destination, status); err != nil {
 				return status, fmt.Errorf("record notification retry outcome: %w", err)
 			}
 			select {
@@ -522,7 +676,7 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 	if status.ConsecutiveFailures == 0 {
 		status.ConsecutiveFailures = 1
 	}
-	if err := s.storeLastDelivery(status); err != nil {
+	if err := s.storeLastDelivery(destination, status); err != nil {
 		if lastErr == nil {
 			lastErr = errors.New("webhook delivery failed")
 		}
@@ -560,8 +714,11 @@ func (s *Service) loadSettings() (Settings, error) {
 		return Settings{}, err
 	}
 	settings.Enabled = stored.Enabled
+	settings.DiscordEnabled = stored.DiscordEnabled
+	settings.TelegramEnabled = stored.TelegramEnabled
 	settings.EventTypes = stored.EventTypes
 	settings.LastDelivery = safeDeliveryStatus(stored.LastDelivery)
+	settings.LastDeliveries = cloneDeliveryStatuses(stored.LastDeliveries)
 	legacyURLStored := strings.TrimSpace(stored.EncryptedWebhookURL) == "" &&
 		strings.TrimSpace(stored.LegacyWebhookURL) != ""
 	switch {
@@ -587,6 +744,24 @@ func (s *Service) loadSettings() (Settings, error) {
 		settings.EventTypes = events
 	}
 	settings.WebhookURL = strings.TrimSpace(settings.WebhookURL)
+	if strings.TrimSpace(stored.DiscordWebhookURL) != "" {
+		settings.DiscordWebhookURL, err = s.decryptStoredSecret(stored.DiscordWebhookURL)
+		if err != nil {
+			return Settings{}, errors.New("protected Discord webhook URL cannot be loaded")
+		}
+	}
+	if strings.TrimSpace(stored.TelegramBotToken) != "" {
+		settings.TelegramBotToken, err = s.decryptStoredSecret(stored.TelegramBotToken)
+		if err != nil {
+			return Settings{}, errors.New("protected Telegram bot token cannot be loaded")
+		}
+	}
+	if strings.TrimSpace(stored.TelegramChatID) != "" {
+		settings.TelegramChatID, err = s.decryptStoredSecret(stored.TelegramChatID)
+		if err != nil {
+			return Settings{}, errors.New("protected Telegram chat ID cannot be loaded")
+		}
+	}
 	if legacyURLStored {
 		if err := s.saveSettings(settings); err != nil {
 			return Settings{}, errors.New("legacy webhook URL could not be protected")
@@ -604,10 +779,14 @@ func (s *Service) saveSettings(settings Settings) error {
 		return nil
 	}
 	stored := persistedSettings{
-		Enabled:      settings.Enabled,
-		EventTypes:   append([]string(nil), settings.EventTypes...),
-		LastDelivery: safeDeliveryStatus(settings.LastDelivery),
+		Enabled:         settings.Enabled,
+		DiscordEnabled:  settings.DiscordEnabled,
+		TelegramEnabled: settings.TelegramEnabled,
+		EventTypes:      append([]string(nil), settings.EventTypes...),
+		LastDelivery:    safeDeliveryStatus(settings.LastDelivery),
+		LastDeliveries:  cloneDeliveryStatuses(settings.LastDeliveries),
 	}
+	var err error
 	if strings.TrimSpace(settings.WebhookURL) != "" {
 		if s.deps.EncryptSecret == nil {
 			return errors.New("webhook URL protection is unavailable")
@@ -617,6 +796,15 @@ func (s *Service) saveSettings(settings Settings) error {
 			return errors.New("webhook URL could not be protected")
 		}
 		stored.EncryptedWebhookURL = encrypted
+	}
+	if stored.DiscordWebhookURL, err = s.encryptStoredSecret(settings.DiscordWebhookURL); err != nil {
+		return errors.New("Discord webhook URL could not be protected")
+	}
+	if stored.TelegramBotToken, err = s.encryptStoredSecret(settings.TelegramBotToken); err != nil {
+		return errors.New("Telegram bot token could not be protected")
+	}
+	if stored.TelegramChatID, err = s.encryptStoredSecret(settings.TelegramChatID); err != nil {
+		return errors.New("Telegram chat ID could not be protected")
 	}
 	body, err := json.Marshal(stored)
 	if err != nil {
@@ -630,15 +818,43 @@ func (s *Service) saveSettings(settings Settings) error {
 	return err
 }
 
-func (s *Service) storeLastDelivery(status DeliveryStatus) error {
+func (s *Service) storeLastDelivery(destination string, status DeliveryStatus) error {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
 	settings, err := s.loadSettings()
 	if err != nil {
 		return err
 	}
-	settings.LastDelivery = &status
+	if settings.LastDeliveries == nil {
+		settings.LastDeliveries = map[string]*DeliveryStatus{}
+	}
+	settings.LastDeliveries[destination] = safeDeliveryStatus(&status)
+	if destination == DestinationWebhook {
+		settings.LastDelivery = safeDeliveryStatus(&status)
+	}
 	return s.saveSettings(settings)
+}
+
+func (s *Service) decryptStoredSecret(ciphertext string) (string, error) {
+	if s.deps.DecryptSecret == nil {
+		return "", errors.New("secret decryption is unavailable")
+	}
+	value, err := s.deps.DecryptSecret(ciphertext)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+
+func (s *Service) encryptStoredSecret(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if s.deps.EncryptSecret == nil {
+		return "", errors.New("secret encryption is unavailable")
+	}
+	return s.deps.EncryptSecret(value)
 }
 
 func ReencryptStoredWebhookURL(
@@ -682,6 +898,32 @@ func ReencryptStoredWebhookURL(
 		if err != nil {
 			return errors.New("encrypt restored notification webhook")
 		}
+	}
+	rewrap := func(ciphertext string) (string, error) {
+		if strings.TrimSpace(ciphertext) == "" {
+			return "", nil
+		}
+		if decrypt == nil || encrypt == nil {
+			return "", errors.New("notification integration secret protection is unavailable")
+		}
+		plaintext, err := decrypt(ciphertext)
+		if err != nil {
+			return "", errors.New("decrypt restored notification integration secret")
+		}
+		protected, err := encrypt(plaintext)
+		if err != nil {
+			return "", errors.New("encrypt restored notification integration secret")
+		}
+		return protected, nil
+	}
+	if stored.DiscordWebhookURL, err = rewrap(stored.DiscordWebhookURL); err != nil {
+		return err
+	}
+	if stored.TelegramBotToken, err = rewrap(stored.TelegramBotToken); err != nil {
+		return err
+	}
+	if stored.TelegramChatID, err = rewrap(stored.TelegramChatID); err != nil {
+		return err
 	}
 	body, err := json.Marshal(stored)
 	if err != nil {
@@ -810,7 +1052,7 @@ func isLocalWebhookHost(host string) bool {
 	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
-func settingsResponse(settings Settings, intent WebhookURLIntent) SettingsResponse {
+func settingsResponse(settings Settings, intent, discordIntent, telegramIntent WebhookURLIntent) SettingsResponse {
 	configured := strings.TrimSpace(settings.WebhookURL) != ""
 	return SettingsResponse{
 		Enabled:           settings.Enabled,
@@ -819,6 +1061,19 @@ func settingsResponse(settings Settings, intent WebhookURLIntent) SettingsRespon
 		WebhookURLIntent:  intent,
 		EventTypes:        append([]string(nil), settings.EventTypes...),
 		SupportedEvents:   SupportedEvents(),
+		Discord: DiscordResponse{
+			Enabled:          settings.DiscordEnabled,
+			Configured:       strings.TrimSpace(settings.DiscordWebhookURL) != "",
+			WebhookURLMasked: maskWebhookURL(settings.DiscordWebhookURL),
+			WebhookURLIntent: discordIntent,
+		},
+		Telegram: TelegramResponse{
+			Enabled:           settings.TelegramEnabled,
+			Configured:        strings.TrimSpace(settings.TelegramBotToken) != "" && strings.TrimSpace(settings.TelegramChatID) != "",
+			BotTokenMasked:    maskTelegramToken(settings.TelegramBotToken),
+			ChatIDMasked:      maskTelegramChatID(settings.TelegramChatID),
+			CredentialsIntent: telegramIntent,
+		},
 	}
 }
 

@@ -75,11 +75,23 @@ test("notification administration owns settings, delivery, and command lifecycle
     assert.deepEqual(store.getView().notifications.eventTypes, ["update.complete"]);
     store.dispatch({ type: "notificationDraftChanged", patch: { enabled: false } });
     const save = effect(store.dispatch({ type: "commandRequested", command: "saveNotifications" }), "executeCommand");
-    assert.deepEqual(save.plan.payload, { enabled: false, webhook_url_intent: "preserve", event_types: ["update.complete"] });
+    assert.deepEqual(save.plan.payload, {
+        enabled: false,
+        webhook_url_intent: "preserve",
+        event_types: ["update.complete"],
+        discord: { enabled: false, webhook_url_intent: "preserve" },
+        telegram: { enabled: false, credentials_intent: "preserve" },
+    });
     store.dispatch({ type: "commandCompleted", plan: save.plan, data: { enabled: false, webhook_configured: true, webhook_url_masked: "https://hooks.example.test/••••", event_types: ["update.complete"] } });
     store.dispatch({ type: "notificationDraftChanged", patch: { webhookURLIntent: "replace", replacementProvided: true, replacementValid: true } });
     const replace = store.planCommand("saveNotifications");
-    assert.deepEqual(replace.payload, { enabled: false, webhook_url_intent: "replace", event_types: ["update.complete"] });
+    assert.deepEqual(replace.payload, {
+        enabled: false,
+        webhook_url_intent: "replace",
+        event_types: ["update.complete"],
+        discord: { enabled: false, webhook_url_intent: "preserve" },
+        telegram: { enabled: false, credentials_intent: "preserve" },
+    });
     assert.equal(JSON.stringify(store.getView()).includes("hooks.example.test/y"), false);
     const delivery = effect(store.dispatch({ type: "commandRequested", command: "testNotification" }), "executeCommand");
     store.dispatch({ type: "commandFailed", plan: delivery.plan, data: { last_attempt: { outcome: "failed", attempts: 3, consecutive_failures: 3, error: "Webhook delivery failed." } }, message: "Notification test failed." });
@@ -179,6 +191,8 @@ test("notification URL intents preserve accepted configuration and never retain 
         enabled: false,
         webhook_url_intent: "preserve",
         event_types: ["update.complete"],
+        discord: { enabled: false, webhook_url_intent: "preserve" },
+        telegram: { enabled: false, credentials_intent: "preserve" },
     });
 
     store.dispatch({ type: "notificationDraftChanged", patch: {
@@ -202,7 +216,58 @@ test("notification URL intents preserve accepted configuration and never retain 
         enabled: false,
         webhook_url_intent: "clear",
         event_types: ["update.complete"],
+        discord: { enabled: false, webhook_url_intent: "preserve" },
+        telegram: { enabled: false, credentials_intent: "preserve" },
     });
+});
+
+test("Discord and Telegram drafts validate independently and exclude credentials", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "notificationSnapshotReceived",
+        data: {
+            enabled: false,
+            event_types: ["update.complete"],
+            discord: {
+                enabled: true,
+                configured: true,
+                webhook_url_masked: "https://discord.com/••••",
+                webhook_url: "https://discord.com/api/webhooks/1/server-secret",
+            },
+            telegram: {
+                enabled: false,
+                configured: true,
+                bot_token_masked: "123456:••••",
+                chat_id_masked: "••••7890",
+                bot_token: "server-token",
+                chat_id: "-1001234567890",
+            },
+        },
+    });
+    assert.equal(JSON.stringify(store.getView()).includes("server-secret"), false);
+    assert.equal(JSON.stringify(store.getView()).includes("server-token"), false);
+
+    store.dispatch({ type: "notificationDraftChanged", patch: {
+        discordWebhookURLIntent: "replace",
+        discordReplacementProvided: true,
+        discordReplacementValid: true,
+        telegramEnabled: true,
+    } });
+    const plan = store.planCommand("saveNotifications");
+    assert.equal(plan.enabled, true);
+    assert.deepEqual(plan.payload.discord, { enabled: true, webhook_url_intent: "replace" });
+    assert.deepEqual(plan.payload.telegram, { enabled: true, credentials_intent: "preserve" });
+
+    store.dispatch({ type: "notificationDraftChanged", patch: {
+        telegramCredentialsIntent: "replace",
+        telegramReplacementProvided: true,
+        telegramReplacementValid: false,
+    } });
+    assert.equal(store.planCommand("saveNotifications").enabled, false);
+    assert.match(store.planCommand("saveNotifications").reason, /Telegram/i);
+
+    const testPlan = store.planCommand("testNotification", { destination: "telegram" });
+    assert.deepEqual(testPlan.payload, { destination: "telegram" });
 });
 
 test("section drafts normalize accepted values, discard independently, and exclude secrets", () => {
@@ -612,7 +677,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
     const summaries = Object.fromEntries(store.getView().workspace.sections.map(section => [section.id, section.summary]));
     assert.deepEqual(summaries, {
         "app-time": "America/Toronto",
-        "notifications": "Webhook enabled",
+        "notifications": "1 destination enabled",
         "account-security": "5 active sessions",
         "recent-activity": "1 recent event",
         "scheduled-policies": "2 saved policies",

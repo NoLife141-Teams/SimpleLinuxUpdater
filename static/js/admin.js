@@ -507,7 +507,10 @@ function renderNotificationDiagnostics() {
         outcome.dataset.outcome = status.outcome || "unknown";
     }
     if (attempt) attempt.textContent = formatAdminRefreshTime(status.attemptedAt) || "Unavailable";
-    if (event) event.textContent = status.eventType || status.action || "Notification";
+    if (event) {
+        const eventName = status.eventType || status.action || "Notification";
+        event.textContent = status.destination ? `${status.destination} · ${eventName}` : eventName;
+    }
     if (http) http.textContent = status.statusCode ? `HTTP ${status.statusCode}` : "Not applicable";
     if (duration) duration.textContent = formatNotificationDuration(status.durationMS);
     if (failures) failures.textContent = String(status.consecutiveFailures || 0);
@@ -544,6 +547,48 @@ function renderNotificationSettings() {
     if (replace) replace.disabled = view.webhookURLIntent === "replace";
     if (clear) clear.disabled = !view.webhookConfigured || view.webhookURLIntent === "clear";
     if (webhookURL && view.webhookURLIntent !== "replace") webhookURL.value = "";
+    const discordEnabled = document.getElementById("notification-discord-enabled");
+    const discordMasked = document.getElementById("notification-discord-masked");
+    const discordEditor = document.getElementById("notification-discord-editor");
+    const discordReplace = document.getElementById("notification-discord-replace");
+    const discordClear = document.getElementById("notification-discord-clear");
+    const discordURL = document.getElementById("notification-discord-url");
+    if (discordEnabled) discordEnabled.checked = view.discordEnabled;
+    if (discordMasked) {
+        discordMasked.textContent = view.discordWebhookURLIntent === "clear"
+            ? "Will be cleared when saved"
+            : view.discordConfigured ? view.discordWebhookURLMasked || "Configured Discord webhook (masked)" : "Not configured";
+    }
+    if (discordEditor) discordEditor.hidden = view.discordWebhookURLIntent !== "replace";
+    if (discordReplace) discordReplace.disabled = view.discordWebhookURLIntent === "replace";
+    if (discordClear) discordClear.disabled = !view.discordConfigured || view.discordWebhookURLIntent === "clear";
+    if (discordURL && view.discordWebhookURLIntent !== "replace") discordURL.value = "";
+    const telegramEnabled = document.getElementById("notification-telegram-enabled");
+    const telegramMasked = document.getElementById("notification-telegram-masked");
+    const telegramEditor = document.getElementById("notification-telegram-editor");
+    const telegramReplace = document.getElementById("notification-telegram-replace");
+    const telegramClear = document.getElementById("notification-telegram-clear");
+    const telegramToken = document.getElementById("notification-telegram-token");
+    const telegramChatID = document.getElementById("notification-telegram-chat-id");
+    if (telegramEnabled) telegramEnabled.checked = view.telegramEnabled;
+    if (telegramMasked) {
+        telegramMasked.textContent = view.telegramCredentialsIntent === "clear"
+            ? "Will be cleared when saved"
+            : view.telegramConfigured
+                ? `${view.telegramBotTokenMasked || "Bot configured"} · ${view.telegramChatIDMasked || "chat configured"}`
+                : "Not configured";
+    }
+    if (telegramEditor) telegramEditor.hidden = view.telegramCredentialsIntent !== "replace";
+    if (telegramReplace) telegramReplace.disabled = view.telegramCredentialsIntent === "replace";
+    if (telegramClear) telegramClear.disabled = !view.telegramConfigured || view.telegramCredentialsIntent === "clear";
+    if (telegramToken && view.telegramCredentialsIntent !== "replace") telegramToken.value = "";
+    if (telegramChatID && view.telegramCredentialsIntent !== "replace") telegramChatID.value = "";
+    document.querySelectorAll("[data-notification-test]").forEach((button) => {
+        const destination = button.dataset.notificationTest;
+        button.disabled = destination === "webhook" ? !view.webhookConfigured
+            : destination === "discord" ? !view.discordConfigured
+                : !view.telegramConfigured;
+    });
     document.querySelectorAll("[data-notification-event]").forEach((input) => {
         input.checked = eventTypes.includes(input.dataset.notificationEvent);
     });
@@ -591,18 +636,83 @@ function notificationReplacementPolicyValid(raw) {
     }
 }
 
+function discordReplacementPolicyValid(raw) {
+    try {
+        const parsed = new URL(String(raw || "").trim());
+        const host = parsed.hostname.toLowerCase();
+        const officialHost = host === "discord.com" || host.endsWith(".discord.com") ||
+            host === "discordapp.com" || host.endsWith(".discordapp.com");
+        return parsed.protocol === "https:" && !parsed.username && !parsed.password &&
+            officialHost && /\/webhooks\/[^/]+\/[^/]+/.test(parsed.pathname);
+    } catch {
+        return false;
+    }
+}
+
+function telegramReplacementPolicyValid(token, chatID) {
+    const normalizedToken = String(token || "").trim();
+    const normalizedChatID = String(chatID || "").trim();
+    return /^[0-9]+:[A-Za-z0-9_-]{20,}$/.test(normalizedToken) &&
+        (/^-?[0-9]+$/.test(normalizedChatID) || /^@[A-Za-z][A-Za-z0-9_]{4,31}$/.test(normalizedChatID));
+}
+
 function syncNotificationDraftFromDOM() {
     const current = adminPageView().notifications;
     const replacement = document.getElementById("notification-webhook-url")?.value?.trim() || "";
+    const discordReplacement = document.getElementById("notification-discord-url")?.value?.trim() || "";
+    const telegramToken = document.getElementById("notification-telegram-token")?.value?.trim() || "";
+    const telegramChatID = document.getElementById("notification-telegram-chat-id")?.value?.trim() || "";
     adminPageInteraction.dispatch({ type: "notificationDraftChanged", patch: {
         enabled: Boolean(document.getElementById("notification-enabled")?.checked),
         webhookURLIntent: current.webhookURLIntent,
         replacementProvided: current.webhookURLIntent === "replace" && replacement !== "",
         replacementValid: current.webhookURLIntent !== "replace" || notificationReplacementPolicyValid(replacement),
+        discordEnabled: Boolean(document.getElementById("notification-discord-enabled")?.checked),
+        discordWebhookURLIntent: current.discordWebhookURLIntent,
+        discordReplacementProvided: current.discordWebhookURLIntent === "replace" && discordReplacement !== "",
+        discordReplacementValid: current.discordWebhookURLIntent !== "replace" || discordReplacementPolicyValid(discordReplacement),
+        telegramEnabled: Boolean(document.getElementById("notification-telegram-enabled")?.checked),
+        telegramCredentialsIntent: current.telegramCredentialsIntent,
+        telegramReplacementProvided: current.telegramCredentialsIntent === "replace" && telegramToken !== "" && telegramChatID !== "",
+        telegramReplacementValid: current.telegramCredentialsIntent !== "replace" || telegramReplacementPolicyValid(telegramToken, telegramChatID),
         eventTypes: selectedNotificationEvents()
     } });
     setNotificationFeedback("", "");
     renderNotificationDraftState();
+}
+
+function setDiscordWebhookIntent(intent) {
+    const input = document.getElementById("notification-discord-url");
+    if (input) input.value = "";
+    adminPageInteraction.dispatch({
+        type: "notificationDraftChanged",
+        patch: {
+            discordWebhookURLIntent: intent,
+            discordReplacementProvided: false,
+            discordReplacementValid: true
+        }
+    });
+    setNotificationFeedback("", "");
+    renderNotificationSettings();
+    if (intent === "replace") input?.focus();
+}
+
+function setTelegramCredentialsIntent(intent) {
+    const token = document.getElementById("notification-telegram-token");
+    const chatID = document.getElementById("notification-telegram-chat-id");
+    if (token) token.value = "";
+    if (chatID) chatID.value = "";
+    adminPageInteraction.dispatch({
+        type: "notificationDraftChanged",
+        patch: {
+            telegramCredentialsIntent: intent,
+            telegramReplacementProvided: false,
+            telegramReplacementValid: true
+        }
+    });
+    setNotificationFeedback("", "");
+    renderNotificationSettings();
+    if (intent === "replace") token?.focus();
 }
 
 function setNotificationWebhookIntent(intent) {
@@ -625,6 +735,12 @@ function discardNotificationDraft() {
     adminPageInteraction.dispatch({ type: "notificationDiscardRequested" });
     const webhookURL = document.getElementById("notification-webhook-url");
     if (webhookURL) webhookURL.value = "";
+    const discordURL = document.getElementById("notification-discord-url");
+    const telegramToken = document.getElementById("notification-telegram-token");
+    const telegramChatID = document.getElementById("notification-telegram-chat-id");
+    if (discordURL) discordURL.value = "";
+    if (telegramToken) telegramToken.value = "";
+    if (telegramChatID) telegramChatID.value = "";
     renderNotificationSettings();
     setNotificationFeedback("", "");
 }
@@ -709,6 +825,13 @@ async function saveNotificationSettings() {
         if (payload.webhook_url_intent === "replace") {
             payload.webhook_url = document.getElementById("notification-webhook-url")?.value?.trim() || "";
         }
+        if (payload.discord?.webhook_url_intent === "replace") {
+            payload.discord.webhook_url = document.getElementById("notification-discord-url")?.value?.trim() || "";
+        }
+        if (payload.telegram?.credentials_intent === "replace") {
+            payload.telegram.bot_token = document.getElementById("notification-telegram-token")?.value?.trim() || "";
+            payload.telegram.chat_id = document.getElementById("notification-telegram-chat-id")?.value?.trim() || "";
+        }
         const res = await fetch("/api/notifications/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -738,15 +861,15 @@ async function saveNotificationSettings() {
     }
 }
 
-async function sendNotificationTest() {
-    const button = document.getElementById("notification-test");
+async function sendNotificationTest(destination = "webhook") {
+    const button = document.querySelector(`[data-notification-test="${destination}"]`);
     let plan;
     try {
         setNotificationFeedback("", "");
         if (button) button.disabled = true;
-        plan = beginAdminCommand("testNotification");
+        plan = beginAdminCommand("testNotification", { destination });
         if (!plan) return;
-        const res = await fetch("/api/notifications/test", { method: "POST" });
+        const res = await fetch(`/api/notifications/test?destination=${encodeURIComponent(plan.payload.destination)}`, { method: "POST" });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
             finishAdminCommand(plan, payload, "Notification test failed.", true);
@@ -756,7 +879,8 @@ async function sendNotificationTest() {
         }
         finishAdminCommand(plan, payload, "Notification test delivered.");
         renderNotificationDiagnostics();
-        setNotificationFeedback("Notification test delivered.", "");
+        const destinationLabel = destination.charAt(0).toUpperCase() + destination.slice(1);
+        setNotificationFeedback(`${destinationLabel} test delivered.`, "");
     } catch (err) {
         console.error("Failed to send notification test:", err);
         finishAdminCommand(plan, null, "Notification test failed.", true);
@@ -3576,13 +3700,26 @@ document.getElementById("app-timezone-input").addEventListener("input", (event) 
 });
 document.getElementById("notification-save").addEventListener("click", saveNotificationSettings);
 document.getElementById("notification-discard").addEventListener("click", discardNotificationDraft);
-document.getElementById("notification-test").addEventListener("click", sendNotificationTest);
+document.querySelectorAll("[data-notification-test]").forEach(button => {
+    button.addEventListener("click", () => sendNotificationTest(button.dataset.notificationTest || "webhook"));
+});
 document.getElementById("notification-diagnostics-retry").addEventListener("click", fetchNotificationDeliveryDiagnostics);
 document.getElementById("notification-webhook-url").addEventListener("input", syncNotificationDraftFromDOM);
 document.getElementById("notification-webhook-replace").addEventListener("click", () => setNotificationWebhookIntent("replace"));
 document.getElementById("notification-webhook-clear").addEventListener("click", () => setNotificationWebhookIntent("clear"));
 document.getElementById("notification-webhook-cancel").addEventListener("click", () => setNotificationWebhookIntent("preserve"));
 document.getElementById("notification-enabled").addEventListener("change", syncNotificationDraftFromDOM);
+document.getElementById("notification-discord-url").addEventListener("input", syncNotificationDraftFromDOM);
+document.getElementById("notification-discord-replace").addEventListener("click", () => setDiscordWebhookIntent("replace"));
+document.getElementById("notification-discord-clear").addEventListener("click", () => setDiscordWebhookIntent("clear"));
+document.getElementById("notification-discord-cancel").addEventListener("click", () => setDiscordWebhookIntent("preserve"));
+document.getElementById("notification-discord-enabled").addEventListener("change", syncNotificationDraftFromDOM);
+document.getElementById("notification-telegram-token").addEventListener("input", syncNotificationDraftFromDOM);
+document.getElementById("notification-telegram-chat-id").addEventListener("input", syncNotificationDraftFromDOM);
+document.getElementById("notification-telegram-replace").addEventListener("click", () => setTelegramCredentialsIntent("replace"));
+document.getElementById("notification-telegram-clear").addEventListener("click", () => setTelegramCredentialsIntent("clear"));
+document.getElementById("notification-telegram-cancel").addEventListener("click", () => setTelegramCredentialsIntent("preserve"));
+document.getElementById("notification-telegram-enabled").addEventListener("change", syncNotificationDraftFromDOM);
 document.querySelectorAll("[data-notification-event]").forEach(input => input.addEventListener("change", syncNotificationDraftFromDOM));
 document.getElementById("auth-password-save").addEventListener("click", changeAdminPassword);
 ["auth-current-password", "auth-new-password", "auth-confirm-password"].forEach(id => {

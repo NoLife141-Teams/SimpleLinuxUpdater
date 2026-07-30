@@ -139,7 +139,7 @@
                 <div>
                     <div class="eyebrow">Reliability hooks</div>
                     <h2 id="admin-section-notifications-heading" tabindex="-1">Notification Hooks</h2>
-                    <p class="muted workspace-note">Send best-effort webhook notifications for selected update, schedule, and backup events.</p>
+                    <p class="muted workspace-note">Send best-effort notifications to webhooks, Discord, or Telegram for selected update, schedule, and backup events.</p>
                 </div>
                 <div class="admin-section-controls">
                     <span class="admin-section-summary" data-admin-section-summary="notifications" hidden>Notification settings unavailable</span>
@@ -156,29 +156,85 @@
             <div class="admin-section-content" id="admin-section-notifications-content" data-admin-section-content="notifications">
             <div class="admin-grid">
                 <div class="admin-block">
-                    <h3>Webhook</h3>
-                    <label class="checkbox-inline"><input type="checkbox" id="notification-enabled"> Enable webhook delivery</label>
-                    <div class="notification-webhook-state" aria-live="polite">
+                    <h3>Destinations</h3>
+                    <p class="muted">Configure each destination independently. Event selection applies to every enabled destination.</p>
+                    <div class="notification-destination">
+                        <div class="notification-destination-head">
+                            <label class="checkbox-inline"><input type="checkbox" id="notification-enabled"> Generic webhook</label>
+                            <button class="btn-ghost inline-btn" type="button" id="notification-test" data-notification-test="webhook">Send Test</button>
+                        </div>
+                        <div class="notification-webhook-state" aria-live="polite">
+                            <div>
+                                <span class="form-label">Configured endpoint</span>
+                                <strong id="notification-webhook-masked">Not configured</strong>
+                            </div>
+                            <div class="policy-actions">
+                                <button class="btn-ghost inline-btn" type="button" id="notification-webhook-replace">Replace URL</button>
+                                <button class="btn-ghost inline-btn" type="button" id="notification-webhook-clear">Clear URL</button>
+                            </div>
+                        </div>
+                        <div class="notification-webhook-editor" id="notification-webhook-editor" hidden>
+                            <label for="notification-webhook-url" class="form-label">Replacement webhook URL</label>
+                            <input type="url" id="notification-webhook-url" placeholder="https://hooks.example.internal/simplelinuxupdater" autocomplete="off" spellcheck="false" aria-describedby="notification-webhook-policy notification-error">
+                            <button class="btn-ghost inline-btn" type="button" id="notification-webhook-cancel">Cancel replacement</button>
+                        </div>
+                        <p class="muted notification-webhook-policy" id="notification-webhook-policy">Use HTTPS for public endpoints. HTTP is accepted only for localhost, private IP addresses, and <code>.local</code> or <code>.internal</code> hosts.</p>
+                    </div>
+
+                    <div class="notification-destination">
+                        <div class="notification-destination-head">
+                            <label class="checkbox-inline"><input type="checkbox" id="notification-discord-enabled"> Discord</label>
+                            <button class="btn-ghost inline-btn" type="button" id="notification-discord-test" data-notification-test="discord">Send Test</button>
+                        </div>
+                        <div class="notification-webhook-state" aria-live="polite">
+                            <div>
+                                <span class="form-label">Incoming webhook</span>
+                                <strong id="notification-discord-masked">Not configured</strong>
+                            </div>
+                            <div class="policy-actions">
+                                <button class="btn-ghost inline-btn" type="button" id="notification-discord-replace">Replace URL</button>
+                                <button class="btn-ghost inline-btn" type="button" id="notification-discord-clear">Clear URL</button>
+                            </div>
+                        </div>
+                        <div class="notification-webhook-editor" id="notification-discord-editor" hidden>
+                            <label for="notification-discord-url" class="form-label">Discord webhook URL</label>
+                            <input type="url" id="notification-discord-url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" spellcheck="false" aria-describedby="notification-discord-policy notification-error">
+                            <button class="btn-ghost inline-btn" type="button" id="notification-discord-cancel">Cancel replacement</button>
+                        </div>
+                        <p class="muted notification-webhook-policy" id="notification-discord-policy">Create an incoming webhook in the target Discord channel, then paste its official HTTPS URL here.</p>
+                    </div>
+
+                    <div class="notification-destination">
+                        <div class="notification-destination-head">
+                            <label class="checkbox-inline"><input type="checkbox" id="notification-telegram-enabled"> Telegram</label>
+                            <button class="btn-ghost inline-btn" type="button" id="notification-telegram-test" data-notification-test="telegram">Send Test</button>
+                        </div>
+                        <div class="notification-webhook-state" aria-live="polite">
+                            <div>
+                                <span class="form-label">Bot and target chat</span>
+                                <strong id="notification-telegram-masked">Not configured</strong>
+                            </div>
+                            <div class="policy-actions">
+                                <button class="btn-ghost inline-btn" type="button" id="notification-telegram-replace">Replace credentials</button>
+                                <button class="btn-ghost inline-btn" type="button" id="notification-telegram-clear">Clear</button>
+                            </div>
+                        </div>
+                        <div class="notification-webhook-editor notification-telegram-editor" id="notification-telegram-editor" hidden>
+                            <label for="notification-telegram-token" class="form-label">Bot token</label>
+                            <input type="password" id="notification-telegram-token" placeholder="123456789:AA…" autocomplete="new-password" spellcheck="false" aria-describedby="notification-telegram-policy notification-error">
+                            <label for="notification-telegram-chat-id" class="form-label">Chat ID or public channel</label>
+                            <input type="text" id="notification-telegram-chat-id" placeholder="-1001234567890 or @channel" autocomplete="off" spellcheck="false" aria-describedby="notification-telegram-policy notification-error">
+                            <button class="btn-ghost inline-btn" type="button" id="notification-telegram-cancel">Cancel replacement</button>
+                        </div>
+                        <p class="muted notification-webhook-policy" id="notification-telegram-policy">Create the bot with BotFather, add it to the target chat, then provide its token and the numeric chat ID or <code>@channel</code>.</p>
+                    </div>
+
+                    <div class="policy-actions notification-save-actions">
                         <div>
-                            <span class="form-label">Configured endpoint</span>
-                            <strong id="notification-webhook-masked">Not configured</strong>
+                            <span class="draft-state" id="notification-draft-state">No unsaved changes</span>
                         </div>
-                        <div class="policy-actions">
-                            <button class="btn-ghost inline-btn" type="button" id="notification-webhook-replace">Replace URL</button>
-                            <button class="btn-ghost inline-btn" type="button" id="notification-webhook-clear">Clear URL</button>
-                        </div>
-                    </div>
-                    <div class="notification-webhook-editor" id="notification-webhook-editor" hidden>
-                        <label for="notification-webhook-url" class="form-label">Replacement webhook URL</label>
-                        <input type="url" id="notification-webhook-url" placeholder="https://hooks.example.internal/simplelinuxupdater" autocomplete="off" spellcheck="false" aria-describedby="notification-webhook-policy notification-error">
-                        <button class="btn-ghost inline-btn" type="button" id="notification-webhook-cancel">Cancel replacement</button>
-                    </div>
-                    <p class="muted notification-webhook-policy" id="notification-webhook-policy">Use HTTPS for public endpoints. HTTP is accepted only for localhost, private IP addresses, and <code>.local</code> or <code>.internal</code> hosts. Embedded URL credentials are not supported.</p>
-                    <div class="policy-actions">
-                        <span class="draft-state" id="notification-draft-state">No unsaved changes</span>
                         <button class="btn-ghost" type="button" id="notification-discard" disabled>Discard</button>
                         <button class="primary-action" type="button" id="notification-save" disabled>Save Notifications</button>
-                        <button class="btn-ghost" type="button" id="notification-test">Send Test</button>
                     </div>
                     <div id="notification-error" class="form-feedback form-feedback-error" aria-live="polite" aria-atomic="true"></div>
                     <div id="notification-status" class="form-feedback form-feedback-success" role="status" aria-live="polite" aria-atomic="true"></div>

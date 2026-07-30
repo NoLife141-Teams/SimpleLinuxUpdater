@@ -516,7 +516,7 @@ test.describe.serial('setup and login flows', () => {
         last_attempt: state.notificationDiagnosticsResponse || null,
       });
     });
-    await page.route('**/api/notifications/test', async route => {
+    await page.route('**/api/notifications/test*', async route => {
       state.notificationTestCount = (state.notificationTestCount || 0) + 1;
       const lastAttempt = state.notificationTestResponse || {
           event_type: 'notification.test',
@@ -2319,7 +2319,7 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
     await expect(page.locator('[data-admin-section-content="notifications"]')).toBeHidden();
-    await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Webhook');
+    await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Notifications disabled');
     await expect.poll(() => page.evaluate(() => JSON.parse(
       localStorage.getItem('simplelinuxupdater.admin.collapsed-sections.v1') || '[]',
     ))).toEqual(['notifications']);
@@ -2778,7 +2778,7 @@ test.describe.serial('setup and login flows', () => {
       consecutive_failures: 0,
     };
     await page.locator('#notification-test').click();
-    await expect(page.locator('#notification-status')).toContainText('Notification test delivered');
+    await expect(page.locator('#notification-status')).toContainText('Webhook test delivered');
     await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Succeeded');
     await expect(page.locator('#notification-diagnostics-failures')).toHaveText('0');
     await expect(page.locator('#notification-diagnostics-error-row')).toBeHidden();

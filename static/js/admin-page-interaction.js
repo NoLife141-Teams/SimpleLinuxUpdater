@@ -66,6 +66,8 @@
     }
 
     function normalizeNotifications(data = {}) {
+        const discord = data.discord && typeof data.discord === "object" ? data.discord : {};
+        const telegram = data.telegram && typeof data.telegram === "object" ? data.telegram : {};
         return {
             enabled: Boolean(data.enabled),
             webhookConfigured: Boolean(data.webhook_configured ?? data.webhookConfigured),
@@ -73,13 +75,30 @@
             webhookURLIntent: "preserve",
             replacementProvided: false,
             replacementValid: true,
+            discordEnabled: Boolean(discord.enabled),
+            discordConfigured: Boolean(discord.configured),
+            discordWebhookURLMasked: String(discord.webhook_url_masked ?? discord.webhookURLMasked ?? "").trim(),
+            discordWebhookURLIntent: "preserve",
+            discordReplacementProvided: false,
+            discordReplacementValid: true,
+            telegramEnabled: Boolean(telegram.enabled),
+            telegramConfigured: Boolean(telegram.configured),
+            telegramBotTokenMasked: String(telegram.bot_token_masked ?? telegram.botTokenMasked ?? "").trim(),
+            telegramChatIDMasked: String(telegram.chat_id_masked ?? telegram.chatIDMasked ?? "").trim(),
+            telegramCredentialsIntent: "preserve",
+            telegramReplacementProvided: false,
+            telegramReplacementValid: true,
             eventTypes: uniqueStrings(data.event_types ?? data.eventTypes),
             supportedEvents: uniqueStrings(data.supported_events ?? data.supportedEvents)
         };
     }
 
     function normalizeDeliveryDiagnostics(data = {}) {
-        const raw = data.last_attempt ?? data.lastAttempt ?? data.last_delivery ?? data.lastDelivery ?? null;
+        const attempts = data.last_attempts ?? data.lastAttempts ?? {};
+        const latestAttempt = Object.values(attempts && typeof attempts === "object" ? attempts : {})
+            .filter(item => item && typeof item === "object")
+            .sort((left, right) => String(right.attempted_at ?? right.attemptedAt ?? "").localeCompare(String(left.attempted_at ?? left.attemptedAt ?? "")))[0];
+        const raw = data.last_attempt ?? data.lastAttempt ?? data.last_delivery ?? data.lastDelivery ?? latestAttempt ?? null;
         if (!raw || typeof raw !== "object") return { lastAttempt: null };
         const rawOutcome = String(raw.outcome || "").trim().toLowerCase();
         const outcome = ["succeeded", "retrying", "failed"].includes(rawOutcome)
@@ -87,6 +106,7 @@
             : raw.success ? "succeeded" : "failed";
         return {
             lastAttempt: {
+                destination: String(raw.destination || "").trim(),
                 eventType: String(raw.event_type ?? raw.eventType ?? "").trim(),
                 action: String(raw.action || "").trim(),
                 targetName: String(raw.target_name ?? raw.targetName ?? "").trim(),
@@ -376,6 +396,12 @@
                 enabled: Boolean(value.enabled),
                 webhookURLIntent: String(value.webhookURLIntent || "preserve"),
                 replacementProvided: Boolean(value.replacementProvided),
+                discordEnabled: Boolean(value.discordEnabled),
+                discordWebhookURLIntent: String(value.discordWebhookURLIntent || "preserve"),
+                discordReplacementProvided: Boolean(value.discordReplacementProvided),
+                telegramEnabled: Boolean(value.telegramEnabled),
+                telegramCredentialsIntent: String(value.telegramCredentialsIntent || "preserve"),
+                telegramReplacementProvided: Boolean(value.telegramReplacementProvided),
                 eventTypes: uniqueStrings(value.eventTypes).sort()
             };
         }
@@ -395,6 +421,32 @@
             }
             if (intent === "preserve" && notificationDraft.enabled && !acceptedNotifications.webhookConfigured) {
                 return { valid: false, message: "Choose Replace URL before enabling webhook delivery." };
+            }
+            const discordIntent = String(notificationDraft.discordWebhookURLIntent || "preserve");
+            if (discordIntent === "replace" && !notificationDraft.discordReplacementProvided) {
+                return { valid: false, message: "Enter the Discord webhook URL." };
+            }
+            if (discordIntent === "replace" && !notificationDraft.discordReplacementValid) {
+                return { valid: false, message: "Use an official Discord HTTPS webhook URL." };
+            }
+            if (discordIntent === "clear" && notificationDraft.discordEnabled) {
+                return { valid: false, message: "Disable Discord delivery before clearing its URL." };
+            }
+            if (discordIntent === "preserve" && notificationDraft.discordEnabled && !acceptedNotifications.discordConfigured) {
+                return { valid: false, message: "Configure Discord before enabling delivery." };
+            }
+            const telegramIntent = String(notificationDraft.telegramCredentialsIntent || "preserve");
+            if (telegramIntent === "replace" && !notificationDraft.telegramReplacementProvided) {
+                return { valid: false, message: "Enter the Telegram bot token and chat ID." };
+            }
+            if (telegramIntent === "replace" && !notificationDraft.telegramReplacementValid) {
+                return { valid: false, message: "Check the Telegram bot token and chat ID." };
+            }
+            if (telegramIntent === "clear" && notificationDraft.telegramEnabled) {
+                return { valid: false, message: "Disable Telegram delivery before clearing its credentials." };
+            }
+            if (telegramIntent === "preserve" && notificationDraft.telegramEnabled && !acceptedNotifications.telegramConfigured) {
+                return { valid: false, message: "Configure Telegram before enabling delivery." };
             }
             return { valid: true, message: "" };
         }
@@ -505,6 +557,14 @@
                 error: errorState?.error || ""
             };
         }
+        function notificationSummary() {
+            const count = [
+                acceptedNotifications.enabled,
+                acceptedNotifications.discordEnabled,
+                acceptedNotifications.telegramEnabled
+            ].filter(Boolean).length;
+            return count === 0 ? "Notifications disabled" : countSummary(count, "destination enabled", "destinations enabled");
+        }
         function workspaceView(scheduledView) {
             const scheduledSnapshots = scheduledView?.snapshots || {};
             const policyItems = scheduledSnapshots.policies?.data?.items;
@@ -525,7 +585,7 @@
             };
             const summaries = {
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
-                notifications: streams.notifications.accepted ? freshnessSummary(acceptedNotifications.enabled ? "Webhook enabled" : "Webhook disabled", streams.notifications.freshness === "stale") : "Notification settings unavailable",
+                notifications: streams.notifications.accepted ? freshnessSummary(notificationSummary(), streams.notifications.freshness === "stale") : "Notification settings unavailable",
                 "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
                 "recent-activity": streams.activity.accepted ? freshnessSummary(countSummary(activity.items.length, "recent event"), streams.activity.freshness === "stale") : "Recent activity unavailable",
                 "scheduled-policies": Array.isArray(policyItems) ? freshnessSummary(countSummary(policyItems.length, "saved policy", "saved policies"), Boolean(scheduledSnapshots.policies?.lastError)) : "Policy data unavailable",
@@ -577,8 +637,20 @@
                 case "saveNotifications":
                     if (!notificationsDirty()) return { enabled: false, command, key, reason: "Notification settings are unchanged." };
                     if (!notificationValidation().valid) return { enabled: false, command, key, reason: notificationValidation().message };
-                    return { enabled: true, command, key, payload: { enabled: notificationDraft.enabled, webhook_url_intent: notificationDraft.webhookURLIntent, event_types: clone(notificationDraft.eventTypes) } };
-                case "testNotification": return { enabled: true, command, key, payload: {} };
+                    return { enabled: true, command, key, payload: {
+                        enabled: notificationDraft.enabled,
+                        webhook_url_intent: notificationDraft.webhookURLIntent,
+                        event_types: clone(notificationDraft.eventTypes),
+                        discord: {
+                            enabled: notificationDraft.discordEnabled,
+                            webhook_url_intent: notificationDraft.discordWebhookURLIntent
+                        },
+                        telegram: {
+                            enabled: notificationDraft.telegramEnabled,
+                            credentials_intent: notificationDraft.telegramCredentialsIntent
+                        }
+                    } };
+                case "testNotification": return { enabled: true, command, key, payload: { destination: String(payload.destination || "webhook") } };
                 case "changePassword": {
                     if (!payload.hasCurrentPassword) return { enabled: false, command, key, reason: "Current password is required." };
                     if (!payload.hasNewPassword) return { enabled: false, command, key, reason: "A new password is required." };
@@ -694,13 +766,31 @@
                         webhookURLIntent: event.patch?.webhookURLIntent ?? notificationDraft.webhookURLIntent,
                         replacementProvided: event.patch?.replacementProvided ?? notificationDraft.replacementProvided,
                         replacementValid: event.patch?.replacementValid ?? notificationDraft.replacementValid,
+                        discordEnabled: event.patch?.discordEnabled ?? notificationDraft.discordEnabled,
+                        discordWebhookURLIntent: event.patch?.discordWebhookURLIntent ?? notificationDraft.discordWebhookURLIntent,
+                        discordReplacementProvided: event.patch?.discordReplacementProvided ?? notificationDraft.discordReplacementProvided,
+                        discordReplacementValid: event.patch?.discordReplacementValid ?? notificationDraft.discordReplacementValid,
+                        telegramEnabled: event.patch?.telegramEnabled ?? notificationDraft.telegramEnabled,
+                        telegramCredentialsIntent: event.patch?.telegramCredentialsIntent ?? notificationDraft.telegramCredentialsIntent,
+                        telegramReplacementProvided: event.patch?.telegramReplacementProvided ?? notificationDraft.telegramReplacementProvided,
+                        telegramReplacementValid: event.patch?.telegramReplacementValid ?? notificationDraft.telegramReplacementValid,
                         eventTypes: event.patch?.eventTypes ?? notificationDraft.eventTypes
                     };
                     notificationDraft.webhookURLIntent = ["preserve", "replace", "clear"].includes(notificationDraft.webhookURLIntent)
                         ? notificationDraft.webhookURLIntent
                         : "preserve";
+                    notificationDraft.discordWebhookURLIntent = ["preserve", "replace", "clear"].includes(notificationDraft.discordWebhookURLIntent)
+                        ? notificationDraft.discordWebhookURLIntent
+                        : "preserve";
+                    notificationDraft.telegramCredentialsIntent = ["preserve", "replace", "clear"].includes(notificationDraft.telegramCredentialsIntent)
+                        ? notificationDraft.telegramCredentialsIntent
+                        : "preserve";
                     notificationDraft.replacementProvided = Boolean(notificationDraft.replacementProvided);
                     notificationDraft.replacementValid = notificationDraft.replacementValid !== false;
+                    notificationDraft.discordReplacementProvided = Boolean(notificationDraft.discordReplacementProvided);
+                    notificationDraft.discordReplacementValid = notificationDraft.discordReplacementValid !== false;
+                    notificationDraft.telegramReplacementProvided = Boolean(notificationDraft.telegramReplacementProvided);
+                    notificationDraft.telegramReplacementValid = notificationDraft.telegramReplacementValid !== false;
                     notificationDraft.eventTypes = uniqueStrings(notificationDraft.eventTypes);
                     feedback.notifications = { message: "", error: false };
                     return [effect("render", { area: "notifications" })];

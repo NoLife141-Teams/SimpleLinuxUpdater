@@ -176,6 +176,63 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	}
 }
 
+func TestNativeNotificationSettingsAPIProtectsSecrets(t *testing.T) {
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "native-notification-api.db")})
+	sessionCookie := app.authenticate(t)
+	const (
+		discordURL    = "https://discord.com/api/webhooks/123456/api-discord-secret"
+		telegramToken = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
+		telegramChat  = "-1001234567890"
+	)
+	body := `{
+		"enabled":false,
+		"webhook_url_intent":"preserve",
+		"event_types":["update.complete"],
+		"discord":{
+			"enabled":true,
+			"webhook_url_intent":"replace",
+			"webhook_url":"` + discordURL + `"
+		},
+		"telegram":{
+			"enabled":true,
+			"credentials_intent":"replace",
+			"bot_token":"` + telegramToken + `",
+			"chat_id":"` + telegramChat + `"
+		}
+	}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", bytes.NewBufferString(body))
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	req.Header.Set("Content-Type", "application/json")
+	app.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("native notification settings status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var settings NotificationSettingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &settings); err != nil {
+		t.Fatalf("decode native notification settings: %v", err)
+	}
+	if !settings.Discord.Enabled || !settings.Discord.Configured ||
+		!settings.Telegram.Enabled || !settings.Telegram.Configured {
+		t.Fatalf("settings = %+v, want enabled native destinations", settings)
+	}
+	for _, secret := range []string{discordURL, "api-discord-secret", telegramToken, telegramChat} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("settings response leaked %q: %s", secret, rec.Body.String())
+		}
+	}
+	var persisted string
+	if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", notificationpkg.SettingsKey).Scan(&persisted); err != nil {
+		t.Fatalf("load native notification persistence: %v", err)
+	}
+	for _, secret := range []string{discordURL, "api-discord-secret", telegramToken, telegramChat} {
+		if strings.Contains(persisted, secret) {
+			t.Fatalf("settings persistence leaked %q: %s", secret, persisted)
+		}
+	}
+}
+
 func TestNotificationDeliveryDiagnosticsRedactRemoteFailureDetails(t *testing.T) {
 	const secret = "remote-body-secret"
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

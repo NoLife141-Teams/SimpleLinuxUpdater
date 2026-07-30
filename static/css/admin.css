@@ -244,6 +244,40 @@
     border-bottom: 1px solid var(--border);
 }
 
+.notification-destination {
+    padding: 1rem 0;
+    border-top: 1px solid var(--border);
+}
+
+.notification-destination:first-of-type {
+    margin-top: 0.85rem;
+}
+
+.notification-destination-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.7rem;
+}
+
+.notification-destination-head .checkbox-inline {
+    font-weight: 700;
+}
+
+.notification-telegram-editor {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.notification-save-actions {
+    justify-content: flex-end;
+    margin-top: 0.35rem;
+}
+
+.notification-save-actions > div:first-child {
+    margin-right: auto;
+}
+
 .notification-webhook-state > div:first-child {
     display: grid;
     gap: 4px;

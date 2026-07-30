@@ -86,10 +86,14 @@ func handleNotificationSettingsUpdate(c *gin.Context, service NotificationDelive
 		return
 	}
 	audit(c, "notifications.settings", "settings", "notifications", "success", "Notification settings saved", map[string]any{
-		"enabled":            settings.Enabled,
-		"event_count":        len(settings.EventTypes),
-		"webhook_configured": settings.WebhookConfigured,
-		"webhook_url_intent": settings.WebhookURLIntent,
+		"enabled":             settings.Enabled,
+		"event_count":         len(settings.EventTypes),
+		"webhook_configured":  settings.WebhookConfigured,
+		"webhook_url_intent":  settings.WebhookURLIntent,
+		"discord_enabled":     settings.Discord.Enabled,
+		"discord_configured":  settings.Discord.Configured,
+		"telegram_enabled":    settings.Telegram.Enabled,
+		"telegram_configured": settings.Telegram.Configured,
 	})
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, settings)
@@ -113,13 +117,30 @@ func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycl
 		service = defaultNotificationService()
 	}
 	testCtx := c.Request.Context()
-	status, err := service.TestDelivery(testCtx)
+	destination := c.DefaultQuery("destination", notificationpkg.DestinationWebhook)
+	switch destination {
+	case notificationpkg.DestinationWebhook, notificationpkg.DestinationDiscord, notificationpkg.DestinationTelegram:
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "notification destination is not supported"})
+		return
+	}
+	var status NotificationDeliveryStatus
+	var err error
+	if destination == notificationpkg.DestinationWebhook {
+		status, err = service.TestDelivery(testCtx)
+	} else if tester, ok := service.(notificationpkg.DestinationTester); ok {
+		status, err = tester.TestDestination(testCtx, destination)
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "notification destination is not supported"})
+		return
+	}
 	if err != nil {
 		audit(c, "notifications.test", "settings", "notifications", "failure", "Notification test failed", map[string]any{
 			"outcome":              status.Outcome,
 			"attempts":             status.Attempts,
 			"status_code":          status.StatusCode,
 			"consecutive_failures": status.ConsecutiveFailures,
+			"destination":          destination,
 		})
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":         "notification test failed",
@@ -134,6 +155,7 @@ func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycl
 		"status_code":          status.StatusCode,
 		"duration_ms":          status.DurationMS,
 		"consecutive_failures": status.ConsecutiveFailures,
+		"destination":          destination,
 	})
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"last_attempt": status, "last_delivery": status})

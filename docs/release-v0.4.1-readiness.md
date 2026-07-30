@@ -1,15 +1,12 @@
 # v0.4.1 Release Readiness
 
-This record tracks the pre-tag validation for `v0.4.1`. It is intentionally a
-readiness record, not a completed smoke result: the release tag must not be
-created until every blocking item below is completed and the final commit SHA
-is recorded.
+This record tracks the pre-tag validation for `v0.4.1`.
 
 ## Candidate
 
 - Prepared: 2026-07-29 America/Toronto
 - Release version: `v0.4.1`
-- Final release commit: pending
+- Release implementation commit: `bb05c8ab29a0bbbf3aadb24bfc7e6b9db579fec4`
 - Release tag: not created
 
 ## Local Automated Gate
@@ -52,18 +49,16 @@ The release candidate was validated on the configured remote Docker daemon:
 - A container restart preserved the volume and `/setup` returned HTTP `200`
   again.
 
-## Blocking Before Tag
+## Final Gate
 
-- [ ] Record the final release commit SHA above.
-- [ ] Confirm CI jobs `unit`, `race`, `cover`, and `ui-e2e` are green on that
-      exact commit.
-- [ ] Complete the disposable-host workflow in
-      [Release Smoke Checklist](release-smoke.md), using a disposable database,
-      `known_hosts` file, and Debian/Ubuntu SSH target.
-- [ ] Record the live host, scheduled policy, audit/report, backup, and timeout
-      guard outcomes in a final `v0.4.1` smoke result.
+- [x] CI jobs `unit`, `race`, `cover`, `ui-e2e`, `quality`, `frontend-unit`,
+      `npm-audit`, and `ci-required` are green for PR #343.
+- [x] CodeQL analyses for Go, JavaScript/TypeScript, and Actions are green.
+- [x] The disposable-host workflow in
+      [Release Smoke Checklist](release-smoke.md) is complete.
+- [x] Live host, scheduled policy, audit/report, observability, backup, timeout,
+      and Docker outcomes are recorded in
+      [the v0.4.1 release smoke result](release-v0.4.1-smoke.md).
 
-The disposable-host smoke is currently pending because no disposable target
-and release-owner safety confirmation were supplied for this preparation.
-That missing external prerequisite must not be interpreted as a skipped or
-passing check.
+The release tag must target the commit containing this readiness record and the
+linked smoke result.

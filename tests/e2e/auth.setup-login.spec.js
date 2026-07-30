@@ -516,7 +516,7 @@ test.describe.serial('setup and login flows', () => {
         last_attempt: state.notificationDiagnosticsResponse || null,
       });
     });
-    await page.route('**/api/notifications/test', async route => {
+    await page.route('**/api/notifications/test*', async route => {
       state.notificationTestCount = (state.notificationTestCount || 0) + 1;
       const lastAttempt = state.notificationTestResponse || {
           event_type: 'notification.test',

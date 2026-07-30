@@ -798,13 +798,13 @@ func (s *Service) saveSettings(settings Settings) error {
 		stored.EncryptedWebhookURL = encrypted
 	}
 	if stored.DiscordWebhookURL, err = s.encryptStoredSecret(settings.DiscordWebhookURL); err != nil {
-		return errors.New("Discord webhook URL could not be protected")
+		return errors.New("discord webhook URL could not be protected")
 	}
 	if stored.TelegramBotToken, err = s.encryptStoredSecret(settings.TelegramBotToken); err != nil {
-		return errors.New("Telegram bot token could not be protected")
+		return errors.New("telegram bot token could not be protected")
 	}
 	if stored.TelegramChatID, err = s.encryptStoredSecret(settings.TelegramChatID); err != nil {
-		return errors.New("Telegram chat ID could not be protected")
+		return errors.New("telegram chat ID could not be protected")
 	}
 	body, err := json.Marshal(stored)
 	if err != nil {

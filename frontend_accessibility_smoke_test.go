@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -321,19 +322,146 @@ func TestOperatorStylesCoverRepresentativeViewportsAndScrollableTables(t *testin
 	}
 }
 
-func TestAdminSectionHeadingFocusDrawsVisibleOutline(t *testing.T) {
-	contents, err := os.ReadFile("static/css/admin.css")
+func TestProgrammaticallyFocusedSectionHeadingsSuppressTheBrowserOutline(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected string
+	}{
+		{
+			path: "static/css/admin.css",
+			expected: `.admin-workspace-section > [id$="-heading"],
+.admin-workspace-section h2 {
+    outline: none;
+}`,
+		},
+		{
+			path: "static/css/manage.css",
+			expected: `.manage-workspace-section [id$="-heading"] {
+    outline: none;
+}`,
+		},
+	}
+	for _, tt := range tests {
+		contents, err := os.ReadFile(tt.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(contents), tt.expected) {
+			t.Errorf("%s must suppress the browser outline on programmatically focused section headings", tt.path)
+		}
+	}
+}
+
+func TestProgrammaticallyFocusedSectionHeadingsDoNotRestoreAccentOutline(t *testing.T) {
+	for _, path := range []string{"static/css/admin.css", "static/css/manage.css"} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		css := string(contents)
+		if strings.Contains(css, `[id$="-heading"]:focus`) || strings.Contains(css, `h2:focus`) {
+			t.Errorf("%s must not draw an outline around programmatically focused section headings", path)
+		}
+	}
+}
+
+func TestManageSummaryKeepsMetricValuesAlignedWithoutStatusSurfaces(t *testing.T) {
+	templateContents, err := os.ReadFile("templates/manage.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := string(templateContents)
+	for _, id := range []string{"manage-summary-ambiguous", "manage-summary-unknown-auth"} {
+		expected := `id="` + id + `" class="manage-metric-warning"`
+		if !strings.Contains(template, expected) {
+			t.Errorf("%s must use the Manage metric warning text treatment", id)
+		}
+	}
+
+	cssContents, err := os.ReadFile("static/css/manage.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssContents)
+	rules := []struct {
+		name       string
+		selector   string
+		properties []string
+	}{
+		{
+			name:       "label slot",
+			selector:   ".manage-summary .metric-item > span",
+			properties: []string{"display: block", "min-height: 2.7em", "line-height: 1.35"},
+		},
+		{
+			name:       "warning value",
+			selector:   ".manage-summary .manage-metric-warning",
+			properties: []string{"color: var(--warning)"},
+		},
+	}
+	for _, rule := range rules {
+		t.Run(rule.name, func(t *testing.T) {
+			body := cssRuleBody(t, css, rule.selector)
+			for _, property := range rule.properties {
+				if !strings.Contains(body, property) {
+					t.Errorf("%s must include %q", rule.selector, property)
+				}
+			}
+		})
+	}
+}
+
+func cssRuleBody(t *testing.T, css, selectors string) string {
+	t.Helper()
+	pattern := regexp.MustCompile(regexp.QuoteMeta(selectors) + `\s*\{([^}]*)\}`)
+	matches := pattern.FindStringSubmatch(css)
+	if len(matches) != 2 {
+		t.Fatalf("CSS rule %q not found", selectors)
+	}
+	return matches[1]
+}
+
+func TestSectionToggleChevronsMatchDisclosureState(t *testing.T) {
+	contents, err := os.ReadFile("static/css/base.css")
 	if err != nil {
 		t.Fatal(err)
 	}
 	css := string(contents)
-	const expected = `.admin-workspace-section > [id$="-heading"]:focus,
-.admin-workspace-section h2:focus {
-    border-radius: 4px;
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
-}`
-	if !strings.Contains(css, expected) {
-		t.Error("Admin section headings must retain a visible focus indicator")
+	tests := []struct {
+		name      string
+		selectors string
+		transform string
+	}{
+		{
+			name: "Collapse points upward",
+			selectors: `.manage-section-toggle-icon,
+.admin-section-toggle-icon`,
+			transform: "translateY(2px) rotate(225deg)",
+		},
+		{
+			name: "Expand points downward",
+			selectors: `.manage-section-toggle[aria-expanded="false"] .manage-section-toggle-icon,
+.admin-section-toggle[aria-expanded="false"] .admin-section-toggle-icon`,
+			transform: "translateY(-2px) rotate(45deg)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := cssRuleBody(t, css, tt.selectors)
+			if !strings.Contains(body, "transform: "+tt.transform) {
+				t.Errorf("%s must use transform %s", tt.name, tt.transform)
+			}
+		})
+	}
+	for _, path := range []string{"static/css/manage.css", "static/css/admin.css"} {
+		t.Run(path+" uses shared chevron", func(t *testing.T) {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(contents), "section-toggle-icon") {
+				t.Errorf("%s must not redefine the shared disclosure chevron", path)
+			}
+		})
 	}
 }

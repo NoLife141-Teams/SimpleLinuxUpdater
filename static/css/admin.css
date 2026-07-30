@@ -154,27 +154,6 @@
     padding: 5px 9px;
 }
 
-.admin-section-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 94px;
-    justify-content: center;
-}
-
-.admin-section-toggle-icon {
-    width: 8px;
-    height: 8px;
-    border-right: 2px solid currentColor;
-    border-bottom: 2px solid currentColor;
-    transform: translateY(-2px) rotate(45deg);
-    transition: transform 150ms ease;
-}
-
-.admin-section-toggle[aria-expanded="false"] .admin-section-toggle-icon {
-    transform: translateY(2px) rotate(225deg);
-}
-
 .admin-section-content[hidden] {
     display: none;
 }
@@ -410,11 +389,9 @@
     font-size: 12px;
 }
 
-.admin-workspace-section > [id$="-heading"]:focus,
-.admin-workspace-section h2:focus {
-    border-radius: 4px;
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
+.admin-workspace-section > [id$="-heading"],
+.admin-workspace-section h2 {
+    outline: none;
 }
 
 .app-time-card {
@@ -1175,7 +1152,7 @@
 }
 
 .json-fallback {
-    margin-top: 8px;
+    margin-top: 9px;
     padding: 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);

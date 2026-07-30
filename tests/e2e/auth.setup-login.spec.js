@@ -2309,14 +2309,12 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await expect(page).toHaveURL(/#admin-section-backup$/);
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'solid');
-    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-width', '2px');
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'none');
     await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
 
     await page.locator('[data-admin-section-link="notifications"]').click();
     await expect(page.locator('#admin-section-notifications-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'solid');
-    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-width', '2px');
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'none');
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
@@ -2346,48 +2344,72 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
-    // Chromium can report an authored 8px gap almost 1px lower after Linux
-    // font metrics and subpixel rounding are applied.
+    // Capture one stable layout snapshot. Sequential boundingBox calls can
+    // otherwise observe different animation frames while sticky navigation
+    // settles. The epsilon only absorbs floating-point representation noise.
+    const maximumAlignmentDrift = 2;
     const minimumVisibleGap = 7;
+    const layoutEpsilon = 0.01;
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/admin#admin-section-scheduled-policies');
-    await page.evaluate(() => document.fonts.ready);
+    const boxes = await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const selectors = {
+        policyNameLabel: 'label[for="policy-name"]',
+        policyName: '#policy-name',
+        targetLabel: 'label[for="policy-target-tag"]',
+        target: '#policy-target-tag',
+        executionLabel: 'label[for="policy-execution-mode"]',
+        execution: '#policy-execution-mode',
+        packageLabel: 'label[for="policy-package-scope"]',
+        package: '#policy-package-scope',
+        blackoutAdd: '#policy-blackout-add',
+        blackoutFallback: '#policy-blackout-rows ~ .json-fallback',
+      };
+      return Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
+        const element = document.querySelector(selector);
+        if (!element) return [name, null];
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return [name, { x, y, width, height }];
+      }));
+    });
 
-    const boxes = {};
-    for (const [name, selector] of Object.entries({
-      policyNameLabel: 'label[for="policy-name"]',
-      policyName: '#policy-name',
-      targetLabel: 'label[for="policy-target-tag"]',
-      target: '#policy-target-tag',
-      executionLabel: 'label[for="policy-execution-mode"]',
-      execution: '#policy-execution-mode',
-      packageLabel: 'label[for="policy-package-scope"]',
-      package: '#policy-package-scope',
-      blackoutAdd: '#policy-blackout-add',
-      blackoutFallback: '#policy-blackout-rows ~ .json-fallback',
-    })) {
-      boxes[name] = await page.locator(selector).boundingBox();
-      expect(boxes[name], `${name} must have a layout box`).not.toBeNull();
+    for (const [name, box] of Object.entries(boxes)) {
+      expect(box, `${name} must have a layout box`).not.toBeNull();
     }
 
-    expect(Math.abs(boxes.targetLabel.y - boxes.policyNameLabel.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(2);
-    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(Math.abs(boxes.targetLabel.y - boxes.policyNameLabel.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
 
     await page.goto('/admin#admin-section-metrics');
-    const metricsOverview = await page.locator('.metrics-credential-overview').boundingBox();
-    const metricsActions = await page.locator('#metrics-token-generate').locator('..').boundingBox();
-    const metricsDanger = await page.locator('#metrics-token-danger-zone').boundingBox();
+    const metricsBoxes = await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return Object.fromEntries(Object.entries({
+        metricsOverview: '.metrics-credential-overview',
+        metricsActions: '#metrics-token-generate',
+        metricsDanger: '#metrics-token-danger-zone',
+      }).map(([name, selector]) => {
+        let element = document.querySelector(selector);
+        if (name === 'metricsActions') element = element?.parentElement;
+        if (!element) return [name, null];
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return [name, { x, y, width, height }];
+      }));
+    });
+    const { metricsOverview, metricsActions, metricsDanger } = metricsBoxes;
     expect(metricsOverview).not.toBeNull();
     expect(metricsActions).not.toBeNull();
     expect(metricsDanger).not.toBeNull();
-    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
-    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
+    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
   });
 
   test('admin sections load heavy data lazily and recover failed sections with Retry', async ({ page }) => {
@@ -3392,6 +3414,50 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
+  test('manage server editor locks background scrolling while its content remains scrollable', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.evaluate(() => window.scrollTo(0, 300));
+    const editServerButton = page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]');
+    await editServerButton.evaluate((element) => {
+      element.addEventListener('click', () => {
+        document.documentElement.dataset.testScrollBeforeModal = String(window.scrollY);
+      }, { capture: true, once: true });
+    });
+
+    await editServerButton.click();
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('html')).toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).toHaveCSS('position', 'fixed');
+    const backgroundScrollTopBeforeOpen = Number.parseFloat(
+      await page.locator('html').getAttribute('data-test-scroll-before-modal'),
+    );
+    const lockedBackgroundScrollTop = await page.evaluate(() => window.scrollY);
+
+    const modalGrid = page.locator('#edit-modal .modal-grid');
+    await expect(modalGrid).toHaveCSS('overflow-y', 'auto');
+    const modalScroll = await modalGrid.evaluate((element) => {
+      const before = element.scrollTop;
+      element.scrollTop = before + 200;
+      return { before, after: element.scrollTop };
+    });
+    expect(modalScroll.after).toBeGreaterThan(modalScroll.before);
+
+    await page.mouse.move(5, 5);
+    await page.mouse.wheel(0, 500);
+    await page.waitForTimeout(100);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(lockedBackgroundScrollTop);
+
+    await page.locator('#edit-cancel').click();
+    await expect(page.locator('html')).not.toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).not.toHaveClass(/manage-modal-open/);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(backgroundScrollTopBeforeOpen);
+  });
+
   test('successful immediate server-key upload accepts the editor credential intent', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);
@@ -3890,6 +3956,14 @@ test.describe.serial('setup and login flows', () => {
         bodyScrollWidth: document.body.scrollWidth,
         sectionHeadDirections: Array.from(document.querySelectorAll('.manage-workspace-section .workspace-head'))
           .map(element => getComputedStyle(element).flexDirection),
+        metrics: Array.from(document.querySelectorAll('.manage-summary .metric-item')).map(element => {
+          const value = element.querySelector('strong');
+          return {
+            rowTop: Math.round(element.getBoundingClientRect().top),
+            numberTop: Math.round(value.getBoundingClientRect().top),
+            numberBackground: getComputedStyle(value).backgroundColor,
+          };
+        }),
         tables: Array.from(document.querySelectorAll('.manage-workspace-section .table-wrap')).map(element => ({
           clientWidth: element.clientWidth,
           scrollWidth: element.scrollWidth,
@@ -3905,6 +3979,13 @@ test.describe.serial('setup and login flows', () => {
       if (viewport.width <= 640) {
         expect(layout.sectionHeadDirections.every(direction => direction === 'column')).toBe(true);
       }
+      const metricRows = new Map();
+      for (const metric of layout.metrics) {
+        if (!metricRows.has(metric.rowTop)) metricRows.set(metric.rowTop, new Set());
+        metricRows.get(metric.rowTop).add(metric.numberTop);
+      }
+      expect([...metricRows.values()].every(numberTops => numberTops.size === 1)).toBe(true);
+      expect(new Set(layout.metrics.map(metric => metric.numberBackground)).size).toBe(1);
 
       await expect(page.getByRole('link', { name: /Add Server Create an SSH target/ })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Prev', exact: true })).toBeVisible();
@@ -3912,7 +3993,7 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
-  test('Manage Servers section navigation leaves visible focus on the destination heading', async ({ page }) => {
+  test('Manage Servers section navigation focuses the destination heading without an outline', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await page.goto('/manage');
 
@@ -3920,25 +4001,75 @@ test.describe.serial('setup and login flows', () => {
 
     const heading = page.locator('#manage-section-add-server-heading');
     await expect(heading).toBeFocused();
-    const focusStyle = await heading.evaluate(element => {
-      const style = getComputedStyle(element);
-      return {
-        outlineStyle: style.outlineStyle,
-        outlineWidth: Number.parseFloat(style.outlineWidth),
-      };
+    await expect(heading).toHaveCSS('outline-style', 'none');
+  });
+
+  test('Manage Servers section navigation follows the visible workspace while scrolling', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, {
+      servers: Array.from({ length: 12 }, (_, index) => makeServer(`scroll-host-${index + 1}`)),
     });
-    expect(focusStyle.outlineStyle).not.toBe('none');
-    expect(focusStyle.outlineWidth).toBeGreaterThan(0);
+    await page.goto('/manage');
+
+    const addServerLink = page.getByRole('link', { name: /Add Server Create an SSH target/ });
+    const directoryLink = page.getByRole('link', { name: /Server directory \d+ servers/ });
+    const auditLink = page.locator('[data-manage-section-link="audit"]');
+    await addServerLink.click();
+    await expect(addServerLink).toHaveAttribute('aria-current', 'location');
+
+    await page.locator('#manage-servers-table').evaluate((element) => {
+      element.scrollIntoView({ block: 'start' });
+    });
+
+    await expect(directoryLink).toHaveAttribute('aria-current', 'location');
+    await expect(addServerLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-directory$/);
+
+    await page.locator('[data-manage-section-toggle="directory"]').evaluate((button) => button.click());
+
+    await expect(auditLink).toHaveAttribute('aria-current', 'location');
+    await expect(directoryLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-audit$/);
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+    await expect(auditLink).toHaveAttribute('aria-current', 'location');
+    await expect(directoryLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-audit$/);
+  });
+
+  test('Manage Servers keeps its initial section on a non-scrollable tall viewport', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [] });
+    await page.setViewportSize({ width: 1440, height: 2000 });
+    await page.goto('/manage');
+    await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+
+    await expect(page.locator('[data-manage-section-link="directory"]')).toHaveAttribute('aria-current', 'location');
+    await expect(page.locator('[data-manage-section-link="audit"]')).not.toHaveAttribute('aria-current', 'location');
   });
 
   test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await page.goto('/manage');
 
+    const toggle = page.locator('[data-manage-section-toggle="add-server"]');
+    const chevron = toggle.locator('.manage-section-toggle-icon');
+    const chevronDirection = () => chevron.evaluate(element => {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+      return Math.sign(matrix.b);
+    });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect.poll(chevronDirection).toBe(1);
+
     await page.getByRole('button', { name: 'Add Server', exact: true }).click();
 
     await expect(page.locator('#manage-section-add-server-content')).toBeVisible();
     await expect(page.locator('#manage-section-add-server-heading')).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(chevronDirection).toBe(-1);
   });
 
   test('Manage Servers summary distinguishes missing authentication from host trust issues', async ({ page }) => {

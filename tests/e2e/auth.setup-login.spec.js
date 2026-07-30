@@ -2319,7 +2319,7 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
     await expect(page.locator('[data-admin-section-content="notifications"]')).toBeHidden();
-    await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Webhook');
+    await expect(page.locator('[data-admin-section-summary="notifications"]')).toContainText('Notifications disabled');
     await expect.poll(() => page.evaluate(() => JSON.parse(
       localStorage.getItem('simplelinuxupdater.admin.collapsed-sections.v1') || '[]',
     ))).toEqual(['notifications']);

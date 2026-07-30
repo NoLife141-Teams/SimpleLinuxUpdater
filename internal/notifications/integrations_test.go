@@ -164,9 +164,18 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 		t.Fatalf("Telegram body = %+v", telegramBody)
 	}
 
-	diagnostics, err := svc.DeliveryDiagnostics()
-	if err != nil {
-		t.Fatalf("DeliveryDiagnostics() error = %v", err)
+	deadline := time.Now().Add(time.Second)
+	var diagnostics DeliveryDiagnostics
+	for time.Now().Before(deadline) {
+		diagnostics, err = svc.DeliveryDiagnostics()
+		if err != nil {
+			t.Fatalf("DeliveryDiagnostics() error = %v", err)
+		}
+		if diagnostics.LastAttempts[DestinationDiscord] != nil &&
+			diagnostics.LastAttempts[DestinationTelegram] != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if diagnostics.LastAttempts[DestinationDiscord] == nil || diagnostics.LastAttempts[DestinationTelegram] == nil {
 		t.Fatalf("last attempts = %+v, want Discord and Telegram outcomes", diagnostics.LastAttempts)

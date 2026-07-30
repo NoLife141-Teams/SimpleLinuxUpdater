@@ -1,17 +1,14 @@
 # v0.4.3 Release Readiness
 
 This record tracks the pre-tag validation for `v0.4.3`. It is intentionally a
-readiness record, not a completed smoke result: the release tag must not be
-created until every blocking item below is completed and the final commit SHA
-is recorded.
+readiness record; the targeted smoke result is recorded separately.
 
 ## Candidate
 
 - Prepared: 2026-07-30 America/Toronto
 - Release version: `v0.4.3`
-- Release source commit:
-  `30dfbaafc41676b14eef79661402ed373c144f4b`
-- Final release commit: pending
+- Release implementation commit:
+  `fa3af95747922438adfe4afa2bda82044b1d959d`
 - Release tag: not created
 
 ## Scope
@@ -88,11 +85,15 @@ These behaviors were exercised with:
 - `go test -count=1 -v ./internal/notifications -run
   'TestNotificationDeliveryLifecycleSkipsNoOpUpdate'`
 
-## Blocking Before Tag
+## Final Gate
 
-- [ ] Record the final release commit SHA above.
-- [ ] Confirm CI jobs are green on that exact commit.
-- [x] Complete targeted smoke coverage for bounded APT timeout extension,
-      legacy sudoers compatibility, and no-op notification suppression.
+- [x] PR #349 checks are green, including `ci-required`, frontend unit tests,
+      npm audit, Playwright, and the Go, JavaScript/TypeScript, and Actions
+      CodeQL analyses.
+- [x] The post-merge `main` CI and CodeQL runs are green on the release
+      implementation commit above.
+- [x] Bounded APT timeout extension, legacy sudoers compatibility, and no-op
+      notification suppression are covered by the targeted smoke recorded in
+      [the v0.4.3 release smoke result](release-v0.4.3-smoke.md).
 
 No `v0.4.3` tag has been created by this preparation.

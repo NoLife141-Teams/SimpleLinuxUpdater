@@ -37,6 +37,23 @@ func (c *capturingNotificationClient) Do(req *http.Request) (*http.Response, err
 	}, nil
 }
 
+type firstDestinationTimeoutClient struct {
+	successes chan string
+}
+
+func (c *firstDestinationTimeoutClient) Do(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() == "hooks.example.test" {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	}
+	c.successes <- req.URL.Hostname()
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+		Header:     make(http.Header),
+	}, nil
+}
+
 func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "native-integrations.db"))
 	if err != nil {
@@ -153,6 +170,78 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 	}
 	if diagnostics.LastAttempts[DestinationDiscord] == nil || diagnostics.LastAttempts[DestinationTelegram] == nil {
 		t.Fatalf("last attempts = %+v, want Discord and Telegram outcomes", diagnostics.LastAttempts)
+	}
+}
+
+func TestNativeIntegrationFanOutUsesIndependentDestinationTimeouts(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "native-integration-timeouts.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create settings table: %v", err)
+	}
+	client := &firstDestinationTimeoutClient{successes: make(chan string, 2)}
+	encrypt, decrypt := testWebhookCodec()
+	svc := NewService(ServiceDeps{
+		DB:              func() *sql.DB { return db },
+		HTTPClient:      client,
+		EncryptSecret:   encrypt,
+		DecryptSecret:   decrypt,
+		Backoff:         func(int) time.Duration { return 0 },
+		DeliveryTimeout: 10 * time.Millisecond,
+		Logf:            func(string, ...any) {},
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = svc.Close(ctx)
+	})
+
+	if _, err := svc.SaveSettings(SettingsUpdate{
+		Enabled:          true,
+		WebhookURL:       "https://hooks.example.test/notify",
+		WebhookURLIntent: WebhookURLReplace,
+		EventTypes:       []string{EventUpdateComplete},
+		Discord: &DiscordUpdate{
+			Enabled:          true,
+			WebhookURL:       "https://discord.com/api/webhooks/123456/discord-secret",
+			WebhookURLIntent: WebhookURLReplace,
+		},
+		Telegram: &TelegramUpdate{
+			Enabled:           true,
+			BotToken:          "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+			ChatID:            "-1001234567890",
+			CredentialsIntent: WebhookURLReplace,
+		},
+	}); err != nil {
+		t.Fatalf("SaveSettings() error = %v", err)
+	}
+
+	if admission := svc.Accept(DeliveryIntent{
+		CreatedAt:  "2026-07-30T12:00:00Z",
+		Action:     EventUpdateComplete,
+		Status:     "success",
+		TargetType: "server",
+		TargetName: "srv-timeout",
+		Message:    "Update completed",
+		MetaJSON:   `{}`,
+	}); admission.State != AdmissionAdmitted {
+		t.Fatalf("Accept() = %+v, want admitted", admission)
+	}
+
+	got := map[string]bool{}
+	for len(got) < 2 {
+		select {
+		case host := <-client.successes:
+			got[host] = true
+		case <-time.After(time.Second):
+			t.Fatalf("successful destinations = %v, want Discord and Telegram after webhook timeout", got)
+		}
+	}
+	if !got["discord.com"] || !got["api.telegram.org"] {
+		t.Fatalf("successful destinations = %v, want Discord and Telegram", got)
 	}
 }
 

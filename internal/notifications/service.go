@@ -304,9 +304,7 @@ func (s *Service) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			deliveryCtx, cancel := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
-			_, err := s.deliverWithSettings(deliveryCtx, delivery.settings, delivery.intent, delivery.eventType)
-			cancel()
+			_, err := s.deliverWithSettings(ctx, delivery.settings, delivery.intent, delivery.eventType)
 			if err != nil && s.deps.Logf != nil {
 				s.deps.Logf("notification delivery failed for action=%q target=%q: %v", delivery.intent.Action, delivery.intent.TargetName, err)
 			}
@@ -565,7 +563,9 @@ func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, ev
 	statuses := make([]DeliveryStatus, 0, len(destinations))
 	var deliveryErr error
 	for _, destination := range destinations {
-		status, err := s.deliverToDestination(ctx, settings, evt, eventType, destination)
+		deliveryCtx, cancel := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
+		status, err := s.deliverToDestination(deliveryCtx, settings, evt, eventType, destination)
+		cancel()
 		statuses = append(statuses, status)
 		if err != nil {
 			deliveryErr = errors.Join(deliveryErr, err)

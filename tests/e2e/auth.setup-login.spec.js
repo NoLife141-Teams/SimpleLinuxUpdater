@@ -2778,7 +2778,7 @@ test.describe.serial('setup and login flows', () => {
       consecutive_failures: 0,
     };
     await page.locator('#notification-test').click();
-    await expect(page.locator('#notification-status')).toContainText('Notification test delivered');
+    await expect(page.locator('#notification-status')).toContainText('Webhook test delivered');
     await expect(page.locator('#notification-diagnostics-outcome')).toHaveText('Succeeded');
     await expect(page.locator('#notification-diagnostics-failures')).toHaveText('0');
     await expect(page.locator('#notification-diagnostics-error-row')).toBeHidden();

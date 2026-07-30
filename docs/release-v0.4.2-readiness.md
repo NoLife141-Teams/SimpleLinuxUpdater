@@ -1,15 +1,14 @@
 # v0.4.2 Release Readiness
 
 This record tracks the pre-tag validation for `v0.4.2`. It is intentionally a
-readiness record, not a completed smoke result: the release tag must not be
-created until every blocking item below is completed and the final commit SHA
-is recorded.
+readiness record; the targeted smoke result is recorded separately.
 
 ## Candidate
 
 - Prepared: 2026-07-30 America/Toronto
 - Release version: `v0.4.2`
-- Final release commit: pending
+- Release implementation commit:
+  `472661bb7a8fa913831289bec45a3a2ae7e2228e`
 - Release tag: not created
 
 ## Scope
@@ -61,12 +60,16 @@ The release candidate was validated on the configured remote Docker daemon:
   same volume.
 - The temporary container and anonymous volume were removed after the gate.
 
-## Blocking Before Tag
+## Final Gate
 
-- [ ] Record the final release commit SHA above.
-- [ ] Confirm CI jobs are green on that exact commit.
-- [ ] Complete the release smoke appropriate to the Discord and Telegram
-      notification delta without recording webhook URLs, bot tokens, chat IDs,
-      or message contents that contain secrets.
+- [x] PR #346 checks are green, including `ci-required`, frontend unit tests,
+      npm audit, Playwright, and the Go, JavaScript/TypeScript, and Actions
+      CodeQL analyses.
+- [x] The post-merge `main` CI and CodeQL runs are green on the release
+      implementation commit above.
+- [x] The Discord and Telegram notification delta is covered by the targeted
+      credential, fan-out, formatting, timeout-isolation, API authentication,
+      diagnostics-redaction, and unsafe-input smoke recorded in
+      [the v0.4.2 release smoke result](release-v0.4.2-smoke.md).
 
 No `v0.4.2` tag has been created by this preparation.

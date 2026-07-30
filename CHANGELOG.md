@@ -6,9 +6,16 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.2] - 2026-07-30
+
 ### Added
 
 - Add native Discord and Telegram notification destinations with encrypted credentials, independent enablement and test delivery, destination-aware diagnostics, and formatted messages.
+
+### Validation
+
+- Record the completed local gate and remaining pre-tag requirements in
+  [the v0.4.2 release readiness record](docs/release-v0.4.2-readiness.md).
 
 ## [v0.4.1] - 2026-07-29
 

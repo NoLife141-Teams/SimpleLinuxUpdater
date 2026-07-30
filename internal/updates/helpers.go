@@ -806,6 +806,22 @@ func RootOrSudoCommand(command string) string {
 	return fmt.Sprintf("if [ \"$(id -u)\" -eq 0 ]; then %s; else sudo -n %s; fi", command, command)
 }
 
+func IsAptLockProtectedCommand(command string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(command))
+	for _, aptCommand := range []string{
+		"apt-get update",
+		"apt-get -y upgrade",
+		"apt-get -y full-upgrade",
+		"apt-get -y autoremove",
+		"apt-get -y install",
+	} {
+		if strings.Contains(normalized, aptCommand) {
+			return true
+		}
+	}
+	return false
+}
+
 func BuildSelectedUpgradeCmd(packages []string) string {
 	return buildSelectedInstallCmd(packages, true)
 }

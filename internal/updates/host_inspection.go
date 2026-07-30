@@ -23,11 +23,12 @@ const (
 )
 
 var (
-	precheckLocksCmd     = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
-	precheckDpkgAuditCmd = RootOrSudoCommand("dpkg --audit")
-	precheckAptCheckCmd  = RootOrSudoCommand("apt-get check")
-	rebootCheckErrorRe   = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
-	rebootRequiredRe     = regexp.MustCompile(`\b(reboot required|requires reboot|restart required|system restart required|needs reboot|need reboot)\b`)
+	precheckLocksCmd       = AptExtendedLockProbeCmd
+	precheckLegacyLocksCmd = AptLockProbeCmd
+	precheckDpkgAuditCmd   = RootOrSudoCommand("dpkg --audit")
+	precheckAptCheckCmd    = RootOrSudoCommand("apt-get check")
+	rebootCheckErrorRe     = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
+	rebootRequiredRe       = regexp.MustCompile(`\b(reboot required|requires reboot|restart required|system restart required|needs reboot|need reboot)\b`)
 )
 
 func (s *productionHostMaintenanceSession) runInspectionCommand(ctx context.Context, command string) (string, string, error) {
@@ -92,6 +93,10 @@ func diskSpaceCheckResult(stdout, stderr string, err error) PrecheckResult {
 func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) PrecheckResult {
 	stdout, stderr, err := s.runInspectionCommand(ctx, precheckLocksCmd)
 	output := compactInspectionOutput(stdout, stderr)
+	if err != nil && inspectionSudoPolicyError(output+"\n"+err.Error()) {
+		stdout, stderr, err = s.runInspectionCommand(ctx, precheckLegacyLocksCmd)
+		output = compactInspectionOutput(stdout, stderr)
+	}
 	if err == nil {
 		return PrecheckResult{Name: "apt_locks", Details: "APT/DPKG lock files are currently in use.", Output: output}
 	}
@@ -402,6 +407,6 @@ func inspectionBenignNoLockOutput(message string) bool {
 	if normalized == "" || strings.Contains(normalized, "no process found") {
 		return true
 	}
-	lockPathMentioned := strings.Contains(normalized, "/var/lib/dpkg/lock-frontend") || strings.Contains(normalized, "/var/lib/dpkg/lock") || strings.Contains(normalized, "/var/cache/apt/archives/lock")
+	lockPathMentioned := strings.Contains(normalized, "/var/lib/dpkg/lock-frontend") || strings.Contains(normalized, "/var/lib/dpkg/lock") || strings.Contains(normalized, "/var/cache/apt/archives/lock") || strings.Contains(normalized, "/var/lib/apt/lists/lock")
 	return lockPathMentioned && (strings.Contains(normalized, "does not exist") || strings.Contains(normalized, "no such file or directory"))
 }

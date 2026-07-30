@@ -99,6 +99,66 @@ func TestNotificationDeliveryLifecycleAcceptsAndDeliversAuditIntent(t *testing.T
 	}
 }
 
+func TestNotificationDeliveryLifecycleSkipsNoOpUpdate(t *testing.T) {
+	svc, payloads := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	admission := svc.Accept(DeliveryIntent{
+		CreatedAt:  "2026-05-17T12:00:00Z",
+		Action:     EventUpdateComplete,
+		TargetType: "server",
+		TargetName: "srv-current",
+		Status:     "success",
+		Message:    "Final status: done",
+		MetaJSON:   `{"upgrade_completed":false,"approved_package_count":0}`,
+	})
+	if admission.State != AdmissionSkipped {
+		t.Fatalf("Accept() = %+v, want no-op update skipped", admission)
+	}
+	select {
+	case payload := <-payloads:
+		t.Fatalf("unexpected no-op update notification: %+v", payload)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	failedAdmission := svc.Accept(DeliveryIntent{
+		Action:     EventUpdateComplete,
+		TargetName: "srv-current",
+		Status:     "failure",
+		MetaJSON:   `{"upgrade_completed":false,"approved_package_count":0}`,
+	})
+	if failedAdmission.State != AdmissionAdmitted {
+		t.Fatalf("failed no-op Accept() = %+v, want failure admitted", failedAdmission)
+	}
+	select {
+	case payload := <-payloads:
+		if payload.Status != "failure" {
+			t.Fatalf("failure payload = %+v, want failure notification", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed update notification was not delivered")
+	}
+
+	completedAdmission := svc.Accept(DeliveryIntent{
+		Action:     EventUpdateComplete,
+		TargetName: "srv-updated",
+		Status:     "success",
+		MetaJSON:   `{"upgrade_completed":true,"approved_package_count":3}`,
+	})
+	if completedAdmission.State != AdmissionAdmitted {
+		t.Fatalf("completed update Accept() = %+v, want admitted", completedAdmission)
+	}
+	select {
+	case payload := <-payloads:
+		if payload.TargetName != "srv-updated" {
+			t.Fatalf("completed update payload = %+v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completed update notification was not delivered")
+	}
+}
+
 func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})

@@ -155,6 +155,18 @@ func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 		t.Fatalf("timed out waiting for audit webhook")
 	}
 
+	if err := app.Deps.AuditService.Record("admin", "127.0.0.1", updateCompleteAction, "server", "srv-current", "success", "Final status: done", map[string]any{
+		"upgrade_completed":      false,
+		"approved_package_count": 0,
+	}); err != nil {
+		t.Fatalf("Record(no-op update) error = %v", err)
+	}
+	select {
+	case payload := <-received:
+		t.Fatalf("unexpected no-op update webhook: %+v", payload)
+	case <-time.After(150 * time.Millisecond):
+	}
+
 	clearRec := httptest.NewRecorder()
 	clearReq := httptest.NewRequest(http.MethodPut, "/api/notifications/settings", bytes.NewBufferString(`{
 		"enabled":false,

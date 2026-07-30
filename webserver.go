@@ -651,6 +651,30 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
 }
 
+const maxAptLockTimeoutExtensions = 3
+
+func aptPackageManagerLockActive(client sshConnection, commandTimeout time.Duration) bool {
+	probeTimeout := commandTimeout
+	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
+		probeTimeout = 10 * time.Second
+	}
+	stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptExtendedLockProbeCmd, nil, probeTimeout, nil)
+	if err == nil {
+		return true
+	}
+	probeFailure := strings.ToLower(strings.Join([]string{stdout, stderr, err.Error()}, "\n"))
+	if !strings.Contains(probeFailure, "a password is required") &&
+		!strings.Contains(probeFailure, "not allowed to run sudo") &&
+		!strings.Contains(probeFailure, "is not in the sudoers file") {
+		return false
+	}
+	// Releases before the extended probe granted passwordless sudo only for
+	// this exact legacy command. Fall back so upgraded non-root hosts retain
+	// their existing lock protection until the helper is enabled again.
+	_, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
+	return err == nil
+}
+
 func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if timeout <= 0 {
 		return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, onOutput)
@@ -718,25 +742,35 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case runErr := <-runErrCh:
-		_ = session.Close()
-		return stdout.String(), stderr.String(), runErr
-	case <-timer.C:
-		_ = session.Close()
+	aptLockTimeoutExtensions := 0
+	for {
 		select {
 		case runErr := <-runErrCh:
-			timeoutStdout := stdout.String()
-			timeoutStderr := stderr.String()
-			if runErr == nil {
-				runErr = fmt.Errorf("command timed out after %s", timeout)
-			} else {
-				runErr = fmt.Errorf("command timed out after %s: %w", timeout, runErr)
+			_ = session.Close()
+			return stdout.String(), stderr.String(), runErr
+		case <-timer.C:
+			if updatespkg.IsAptLockProtectedCommand(cmd) &&
+				aptLockTimeoutExtensions < maxAptLockTimeoutExtensions &&
+				aptPackageManagerLockActive(client, timeout) {
+				aptLockTimeoutExtensions++
+				timer.Reset(timeout)
+				continue
 			}
-			return timeoutStdout, timeoutStderr, runErr
-		case <-time.After(1 * time.Second):
-			go func() { <-runErrCh }()
-			return "", "", fmt.Errorf("command timed out after %s", timeout)
+			_ = session.Close()
+			select {
+			case runErr := <-runErrCh:
+				timeoutStdout := stdout.String()
+				timeoutStderr := stderr.String()
+				if runErr == nil {
+					runErr = fmt.Errorf("command timed out after %s", timeout)
+				} else {
+					runErr = fmt.Errorf("command timed out after %s: %w", timeout, runErr)
+				}
+				return timeoutStdout, timeoutStderr, runErr
+			case <-time.After(1 * time.Second):
+				go func() { <-runErrCh }()
+				return "", "", fmt.Errorf("command timed out after %s", timeout)
+			}
 		}
 	}
 }

@@ -6,6 +6,25 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.3] - 2026-07-30
+
+### Changed
+
+- Refresh the README product demo to reflect the current operator interface.
+
+### Fixed
+
+- Keep long-running mutating APT commands alive across bounded timeout
+  checkpoints while package-manager locks confirm that work is still active,
+  including compatibility with the legacy lock-probe sudoers rule.
+- Skip update-complete notifications when a successful run did not actually
+  install an upgrade.
+
+### Validation
+
+- Record the automated and Docker checks plus remaining pre-tag requirements in
+  [the v0.4.3 release readiness record](docs/release-v0.4.3-readiness.md).
+
 ## [v0.4.2] - 2026-07-30
 
 ### Added

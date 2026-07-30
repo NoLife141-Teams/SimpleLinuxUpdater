@@ -22,8 +22,8 @@ Use the published image from GHCR (recommended):
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.2
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.2
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.3
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.3
 ```
 
 Open the UI:

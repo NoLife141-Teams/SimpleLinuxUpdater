@@ -410,11 +410,9 @@
     font-size: 12px;
 }
 
-.admin-workspace-section > [id$="-heading"]:focus,
-.admin-workspace-section h2:focus {
-    border-radius: 4px;
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
+.admin-workspace-section > [id$="-heading"],
+.admin-workspace-section h2 {
+    outline: none;
 }
 
 .app-time-card {

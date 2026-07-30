@@ -321,19 +321,45 @@ func TestOperatorStylesCoverRepresentativeViewportsAndScrollableTables(t *testin
 	}
 }
 
-func TestAdminSectionHeadingFocusDrawsVisibleOutline(t *testing.T) {
-	contents, err := os.ReadFile("static/css/admin.css")
-	if err != nil {
-		t.Fatal(err)
+func TestProgrammaticallyFocusedSectionHeadingsSuppressTheBrowserOutline(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected string
+	}{
+		{
+			path: "static/css/admin.css",
+			expected: `.admin-workspace-section > [id$="-heading"],
+.admin-workspace-section h2 {
+    outline: none;
+}`,
+		},
+		{
+			path: "static/css/manage.css",
+			expected: `.manage-workspace-section [id$="-heading"] {
+    outline: none;
+}`,
+		},
 	}
-	css := string(contents)
-	const expected = `.admin-workspace-section > [id$="-heading"]:focus,
-.admin-workspace-section h2:focus {
-    border-radius: 4px;
-    outline: 2px solid var(--accent);
-    outline-offset: 4px;
-}`
-	if !strings.Contains(css, expected) {
-		t.Error("Admin section headings must retain a visible focus indicator")
+	for _, tt := range tests {
+		contents, err := os.ReadFile(tt.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(contents), tt.expected) {
+			t.Errorf("%s must suppress the browser outline on programmatically focused section headings", tt.path)
+		}
+	}
+}
+
+func TestProgrammaticallyFocusedSectionHeadingsDoNotRestoreAccentOutline(t *testing.T) {
+	for _, path := range []string{"static/css/admin.css", "static/css/manage.css"} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		css := string(contents)
+		if strings.Contains(css, `[id$="-heading"]:focus`) || strings.Contains(css, `h2:focus`) {
+			t.Errorf("%s must not draw an outline around programmatically focused section headings", path)
+		}
 	}
 }

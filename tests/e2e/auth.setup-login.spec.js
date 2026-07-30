@@ -2309,14 +2309,12 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('[data-admin-section-link="backup"]').click();
     await expect(page).toHaveURL(/#admin-section-backup$/);
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'solid');
-    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-width', '2px');
+    await expect(page.locator('#admin-section-backup-heading')).toHaveCSS('outline-style', 'none');
     await expect(page.locator('[data-admin-section-link="backup"]')).toHaveAttribute('aria-current', 'location');
 
     await page.locator('[data-admin-section-link="notifications"]').click();
     await expect(page.locator('#admin-section-notifications-heading')).toBeFocused();
-    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'solid');
-    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-width', '2px');
+    await expect(page.locator('#admin-section-notifications-heading')).toHaveCSS('outline-style', 'none');
     await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
     await page.locator('[data-admin-section-link="backup"]').click();
     await page.locator('[data-admin-section-toggle="notifications"]').click();
@@ -3912,7 +3910,7 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
-  test('Manage Servers section navigation leaves visible focus on the destination heading', async ({ page }) => {
+  test('Manage Servers section navigation focuses the destination heading without an outline', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await page.goto('/manage');
 
@@ -3920,15 +3918,7 @@ test.describe.serial('setup and login flows', () => {
 
     const heading = page.locator('#manage-section-add-server-heading');
     await expect(heading).toBeFocused();
-    const focusStyle = await heading.evaluate(element => {
-      const style = getComputedStyle(element);
-      return {
-        outlineStyle: style.outlineStyle,
-        outlineWidth: Number.parseFloat(style.outlineWidth),
-      };
-    });
-    expect(focusStyle.outlineStyle).not.toBe('none');
-    expect(focusStyle.outlineWidth).toBeGreaterThan(0);
+    await expect(heading).toHaveCSS('outline-style', 'none');
   });
 
   test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {

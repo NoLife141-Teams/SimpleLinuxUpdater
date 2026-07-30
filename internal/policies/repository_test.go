@@ -98,6 +98,18 @@ func TestSQLiteRepositoryQueryRunsFiltersAndPaginatesDeterministically(t *testin
 	}
 }
 
+func TestSQLiteRepositoryQueryRunsDoesNotPreallocateFromPageSize(t *testing.T) {
+	repo, _ := newTestRepository(t)
+
+	page, err := repo.QueryRuns(RunQuery{Page: 1, PageSize: MaxRunsLimit})
+	if err != nil {
+		t.Fatalf("QueryRuns() error = %v", err)
+	}
+	if page.Items == nil || cap(page.Items) != 0 {
+		t.Fatalf("QueryRuns() empty items = %#v with capacity %d, want non-nil empty slice without request-sized preallocation", page.Items, cap(page.Items))
+	}
+}
+
 func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	repo, _ := newTestRepository(t)
 	policy, err := repo.CreatePolicy(Policy{

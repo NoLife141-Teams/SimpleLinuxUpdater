@@ -866,7 +866,7 @@ func (r *SQLiteRepository) QueryRuns(query RunQuery) (RunPage, error) {
 		return RunPage{}, err
 	}
 	defer rows.Close()
-	items := make([]Run, 0, query.PageSize)
+	items := make([]Run, 0)
 	for rows.Next() {
 		run, err := scanRunRow(rows)
 		if err != nil {

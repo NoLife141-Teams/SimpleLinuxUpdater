@@ -3390,6 +3390,50 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-policy-overrides')).toContainText('Disable "Explicit server policy"');
   });
 
+  test('manage server editor locks background scrolling while its content remains scrollable', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+
+    await page.goto('/manage');
+    await page.evaluate(() => window.scrollTo(0, 300));
+    const editServerButton = page.locator('#manage-servers-table button[data-action="edit-server"][data-name="demo-host"]');
+    await editServerButton.evaluate((element) => {
+      element.addEventListener('click', () => {
+        document.documentElement.dataset.testScrollBeforeModal = String(window.scrollY);
+      }, { capture: true, once: true });
+    });
+
+    await editServerButton.click();
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('html')).toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).toHaveCSS('position', 'fixed');
+    const backgroundScrollTopBeforeOpen = Number.parseFloat(
+      await page.locator('html').getAttribute('data-test-scroll-before-modal'),
+    );
+    const lockedBackgroundScrollTop = await page.evaluate(() => window.scrollY);
+
+    const modalGrid = page.locator('#edit-modal .modal-grid');
+    await expect(modalGrid).toHaveCSS('overflow-y', 'auto');
+    const modalScroll = await modalGrid.evaluate((element) => {
+      const before = element.scrollTop;
+      element.scrollTop = before + 200;
+      return { before, after: element.scrollTop };
+    });
+    expect(modalScroll.after).toBeGreaterThan(modalScroll.before);
+
+    await page.mouse.move(5, 5);
+    await page.mouse.wheel(0, 500);
+    await page.waitForTimeout(100);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(lockedBackgroundScrollTop);
+
+    await page.locator('#edit-cancel').click();
+    await expect(page.locator('html')).not.toHaveClass(/manage-modal-open/);
+    await expect(page.locator('body')).not.toHaveClass(/manage-modal-open/);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(backgroundScrollTopBeforeOpen);
+  });
+
   test('successful immediate server-key upload accepts the editor credential intent', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

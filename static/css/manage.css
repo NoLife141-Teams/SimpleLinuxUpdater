@@ -345,6 +345,7 @@
 
 #edit-modal .modal-grid {
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding-right: 4px;
 }
 

@@ -776,8 +776,18 @@ tbody tr:last-child td {
     display: flex;
 }
 
-body.modal-open {
+body.modal-open,
+html.manage-modal-open {
     overflow: hidden;
+}
+
+body.manage-modal-open {
+    overflow: hidden;
+    position: fixed;
+    top: calc(-1 * var(--manage-modal-scroll-y, 0px));
+    right: 0;
+    left: 0;
+    width: 100%;
 }
 
 .app-feedback-region {

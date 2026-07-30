@@ -658,7 +658,20 @@ func aptPackageManagerLockActive(client sshConnection, commandTimeout time.Durat
 	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
 		probeTimeout = 10 * time.Second
 	}
-	_, _, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
+	stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptExtendedLockProbeCmd, nil, probeTimeout, nil)
+	if err == nil {
+		return true
+	}
+	probeFailure := strings.ToLower(strings.Join([]string{stdout, stderr, err.Error()}, "\n"))
+	if !strings.Contains(probeFailure, "a password is required") &&
+		!strings.Contains(probeFailure, "not allowed to run sudo") &&
+		!strings.Contains(probeFailure, "is not in the sudoers file") {
+		return false
+	}
+	// Releases before the extended probe granted passwordless sudo only for
+	// this exact legacy command. Fall back so upgraded non-root hosts retain
+	// their existing lock protection until the helper is enabled again.
+	_, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
 	return err == nil
 }
 

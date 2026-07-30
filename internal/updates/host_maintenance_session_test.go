@@ -84,7 +84,7 @@ func newInspectionSession(t *testing.T, conn *inspectionTestConnection) HostMain
 func TestProductionHostMaintenanceSessionOwnsPreUpdateInspection(t *testing.T) {
 	commands := []string{
 		"df -Pk /var / | awk 'NR>1 {print $2, $4}'",
-		AptLockProbeCmd,
+		AptExtendedLockProbeCmd,
 		RootOrSudoCommand("dpkg --audit"),
 		RootOrSudoCommand("apt-get check"),
 	}
@@ -101,6 +101,31 @@ func TestProductionHostMaintenanceSessionOwnsPreUpdateInspection(t *testing.T) {
 	}
 	if !reflect.DeepEqual(conn.commands, commands) {
 		t.Fatalf("commands = %#v, want %#v", conn.commands, commands)
+	}
+}
+
+func TestProductionHostMaintenanceSessionFallsBackToLegacyLockProbe(t *testing.T) {
+	commands := []string{
+		precheckDiskSpaceCmd,
+		AptExtendedLockProbeCmd,
+		AptLockProbeCmd,
+		precheckDpkgAuditCmd,
+		precheckAptCheckCmd,
+	}
+	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{
+		commands[0]: {stdout: "2097152\n"},
+		commands[1]: {stderr: "sudo: a password is required", err: inspectionExitError{code: 1}},
+		commands[2]: {err: inspectionExitError{code: 1}},
+		commands[3]: {},
+		commands[4]: {},
+	}}
+
+	summary := newInspectionSession(t, conn).RunUpdatePrechecks(context.Background())
+	if !summary.AllPassed {
+		t.Fatalf("RunUpdatePrechecks() = %+v, want legacy sudoers lock probe to pass", summary)
+	}
+	if !reflect.DeepEqual(conn.commands, commands) {
+		t.Fatalf("commands = %#v, want extended probe followed by legacy fallback %#v", conn.commands, commands)
 	}
 }
 
@@ -245,12 +270,13 @@ func TestProductionHostMaintenanceSessionPreUpdateFailuresAreSafeAndOrdered(t *t
 		{
 			name: "lock check requires passwordless sudo",
 			results: map[string]inspectionCommandResult{
-				precheckDiskSpaceCmd: {stdout: "2097152\n"},
-				precheckLocksCmd:     {stderr: "sudo: a password is required", err: inspectionExitError{code: 1}},
+				precheckDiskSpaceCmd:   {stdout: "2097152\n"},
+				precheckLocksCmd:       {stderr: "sudo: a password is required", err: inspectionExitError{code: 1}},
+				precheckLegacyLocksCmd: {stderr: "sudo: a password is required", err: inspectionExitError{code: 1}},
 			},
 			failedCheck: "apt_locks",
 			detail:      "passwordless sudo",
-			commands:    2,
+			commands:    3,
 		},
 		{
 			name: "active package-manager lock",

@@ -24,7 +24,7 @@ const serverFactsUptimeCmd = "cat /proc/uptime"
 const postcheckNameFailedUnits = updatespkg.PostcheckNameFailedUnits
 const postcheckNameRebootRequired = updatespkg.PostcheckNameRebootNeeded
 
-var precheckLocksCmd = updatespkg.AptLockProbeCmd
+var precheckLocksCmd = updatespkg.AptExtendedLockProbeCmd
 var precheckDpkgAuditCmd = updatespkg.RootOrSudoCommand("dpkg --audit")
 var precheckAptCheckCmd = updatespkg.RootOrSudoCommand("apt-get check")
 

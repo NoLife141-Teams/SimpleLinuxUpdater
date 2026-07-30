@@ -11,11 +11,14 @@ import (
 )
 
 var (
-	AptUpdateCmd         = RootOrSudoCommand("apt-get update")
-	AptUpgradeCmd        = RootOrSudoCommand("apt-get -y upgrade")
-	AptFullUpgradeCmd    = RootOrSudoCommand("apt-get -y full-upgrade")
-	AptAutoremoveCmd     = RootOrSudoCommand("apt-get -y autoremove")
-	AptLockProbeCmd      = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock")
+	AptUpdateCmd            = RootOrSudoCommand("apt-get update")
+	AptUpgradeCmd           = RootOrSudoCommand("apt-get -y upgrade")
+	AptFullUpgradeCmd       = RootOrSudoCommand("apt-get -y full-upgrade")
+	AptAutoremoveCmd        = RootOrSudoCommand("apt-get -y autoremove")
+	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
+	AptExtendedLockProbeCmd = RootOrSudoCommand(
+		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
+	)
 	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
 	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
 	AptFullUpgradeSimCmd = "LC_ALL=C apt-get -s full-upgrade"

@@ -427,7 +427,7 @@ func TestIsAptLockProtectedCommand(t *testing.T) {
 			t.Fatalf("IsAptLockProtectedCommand(%q) = false, want true", command)
 		}
 	}
-	for _, command := range []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptLockProbeCmd, "true"} {
+	for _, command := range []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptLockProbeCmd, AptExtendedLockProbeCmd, "true"} {
 		if IsAptLockProtectedCommand(command) {
 			t.Fatalf("IsAptLockProtectedCommand(%q) = true, want false", command)
 		}

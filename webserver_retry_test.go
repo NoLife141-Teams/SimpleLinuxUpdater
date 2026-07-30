@@ -33,6 +33,7 @@ func (s *noopSession) Close() error        { return nil }
 type aptLockAwareTestConnection struct {
 	mu              sync.Mutex
 	lockActive      bool
+	extendedAllowed bool
 	lockProbeCount  int
 	connectionClose bool
 	commandDelay    time.Duration
@@ -52,7 +53,11 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 		s.conn.mu.Lock()
 		s.conn.lockProbeCount++
 		lockActive := s.conn.lockActive
+		extendedAllowed := s.conn.extendedAllowed
 		s.conn.mu.Unlock()
+		if strings.Contains(command, "/var/lib/apt/lists/lock") && !extendedAllowed {
+			return errors.New("sudo: a password is required")
+		}
 		if !lockActive {
 			return errors.New("no process uses the apt locks")
 		}
@@ -122,7 +127,7 @@ func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 }
 
 func TestRunSSHCommandWithTimeoutKeepsWaitingWhileAptLockIsActive(t *testing.T) {
-	conn := &aptLockAwareTestConnection{lockActive: true}
+	conn := &aptLockAwareTestConnection{lockActive: true, extendedAllowed: true}
 
 	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
 	if err != nil {
@@ -141,8 +146,24 @@ func TestRunSSHCommandWithTimeoutKeepsWaitingWhileAptLockIsActive(t *testing.T) 
 	}
 }
 
+func TestRunSSHCommandWithTimeoutFallsBackToLegacyAptLockProbe(t *testing.T) {
+	conn := &aptLockAwareTestConnection{lockActive: true}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want legacy sudoers probe to extend the wait", err)
+	}
+
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount < 2 {
+		t.Fatalf("apt lock probes = %d, want extended probe plus legacy fallback", lockProbeCount)
+	}
+}
+
 func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T) {
-	conn := &aptLockAwareTestConnection{}
+	conn := &aptLockAwareTestConnection{extendedAllowed: true}
 
 	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
@@ -159,8 +180,9 @@ func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T)
 
 func TestRunSSHCommandWithTimeoutCapsAptLockExtensions(t *testing.T) {
 	conn := &aptLockAwareTestConnection{
-		lockActive:   true,
-		commandDelay: 150 * time.Millisecond,
+		lockActive:      true,
+		extendedAllowed: true,
+		commandDelay:    150 * time.Millisecond,
 	}
 
 	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 20*time.Millisecond)

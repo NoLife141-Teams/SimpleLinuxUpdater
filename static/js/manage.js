@@ -3,8 +3,10 @@ let hostKeyModalPromise = null;
 let hostKeyModalResolvers = [];
 let editKnownHostCheckPromise = null;
 let auditFetchHadError = false;
-let manageSectionObserver = null;
 let manageSectionNavigationLockUntil = 0;
+let manageSectionSyncTimer = null;
+let manageSectionScrollFrame = null;
+let manageSectionResizeObserver = null;
 
 function renderManageWorkspace() {
     const view = managePageInteraction.getView();
@@ -75,6 +77,44 @@ function navigateManageSection(sectionID, updateHistory = false) {
     runManageWorkspaceEffects(effects);
 }
 
+function syncVisibleManageSection() {
+    const lockRemaining = manageSectionNavigationLockUntil - Date.now();
+    if (lockRemaining > 0) {
+        window.clearTimeout(manageSectionSyncTimer);
+        manageSectionSyncTimer = window.setTimeout(syncVisibleManageSection, lockRemaining + 16);
+        return;
+    }
+    manageSectionSyncTimer = null;
+    const sections = Array.from(document.querySelectorAll("[data-manage-section]"));
+    if (!sections.length) return;
+    const activeSection = managePageInteraction.getView().workspace.activeSection;
+    const documentIsScrollable = document.documentElement.scrollHeight > window.innerHeight + 1;
+    const atDocumentEnd = documentIsScrollable
+        && window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
+    let sectionID = atDocumentEnd ? sections[sections.length - 1].dataset.manageSection : "";
+    if (!sectionID) {
+        const navBottom = document.getElementById("manage-section-nav")?.getBoundingClientRect().bottom || 0;
+        const anchorY = navBottom + 8;
+        const sectionsAtAnchor = sections.filter((section) => {
+            const bounds = section.getBoundingClientRect();
+            return bounds.top <= anchorY && bounds.bottom > anchorY;
+        });
+        const activeAtAnchor = sectionsAtAnchor.find(section => section.dataset.manageSection === activeSection);
+        sectionID = (activeAtAnchor || sectionsAtAnchor[0])?.dataset.manageSection || "";
+    }
+    if (!sectionID || sectionID === activeSection) return;
+    history.replaceState(null, "", `#manage-section-${sectionID}`);
+    runManageWorkspaceEffects(managePageInteraction.dispatch({ type: "sectionActivated", sectionID }));
+}
+
+function scheduleVisibleManageSectionSync() {
+    if (manageSectionScrollFrame !== null) return;
+    manageSectionScrollFrame = window.requestAnimationFrame(() => {
+        manageSectionScrollFrame = null;
+        syncVisibleManageSection();
+    });
+}
+
 function initializeManageWorkspace() {
     document.getElementById("add-server-action")?.addEventListener("click", () => {
         navigateManageSection("add-server", true);
@@ -91,22 +131,20 @@ function initializeManageWorkspace() {
                 type: "sectionCollapseToggled",
                 sectionID: toggle.dataset.manageSectionToggle
             }));
+            scheduleVisibleManageSectionSync();
         });
     });
     window.addEventListener("hashchange", () => {
         const sectionID = manageSectionIDFromHash();
         if (sectionID) navigateManageSection(sectionID);
     });
-    if ("IntersectionObserver" in window) {
-        manageSectionObserver = new IntersectionObserver((entries) => {
-            if (Date.now() < manageSectionNavigationLockUntil) return;
-            const visible = entries.filter(entry => entry.isIntersecting)
-                .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-            const sectionID = visible?.target?.dataset?.manageSection;
-            if (!sectionID) return;
-            runManageWorkspaceEffects(managePageInteraction.dispatch({ type: "sectionActivated", sectionID }));
-        }, { rootMargin: "-150px 0px -55% 0px", threshold: [0.01, 0.25, 0.5] });
-        document.querySelectorAll("[data-manage-section]").forEach(section => manageSectionObserver.observe(section));
+    window.addEventListener("scroll", scheduleVisibleManageSectionSync, { passive: true });
+    window.addEventListener("resize", scheduleVisibleManageSectionSync);
+    if ("ResizeObserver" in window) {
+        manageSectionResizeObserver = new ResizeObserver(scheduleVisibleManageSectionSync);
+        document.querySelectorAll("[data-manage-section]").forEach(section => {
+            manageSectionResizeObserver.observe(section);
+        });
     }
     const deepLink = manageSectionIDFromHash();
     if (deepLink) window.requestAnimationFrame(() => navigateManageSection(deepLink));

@@ -3980,6 +3980,53 @@ test.describe.serial('setup and login flows', () => {
     await expect(heading).toHaveCSS('outline-style', 'none');
   });
 
+  test('Manage Servers section navigation follows the visible workspace while scrolling', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, {
+      servers: Array.from({ length: 12 }, (_, index) => makeServer(`scroll-host-${index + 1}`)),
+    });
+    await page.goto('/manage');
+
+    const addServerLink = page.getByRole('link', { name: /Add Server Create an SSH target/ });
+    const directoryLink = page.getByRole('link', { name: /Server directory \d+ servers/ });
+    const auditLink = page.locator('[data-manage-section-link="audit"]');
+    await addServerLink.click();
+    await expect(addServerLink).toHaveAttribute('aria-current', 'location');
+
+    await page.locator('#manage-servers-table').evaluate((element) => {
+      element.scrollIntoView({ block: 'start' });
+    });
+
+    await expect(directoryLink).toHaveAttribute('aria-current', 'location');
+    await expect(addServerLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-directory$/);
+
+    await page.locator('[data-manage-section-toggle="directory"]').evaluate((button) => button.click());
+
+    await expect(auditLink).toHaveAttribute('aria-current', 'location');
+    await expect(directoryLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-audit$/);
+
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+
+    await expect(auditLink).toHaveAttribute('aria-current', 'location');
+    await expect(directoryLink).not.toHaveAttribute('aria-current', 'location');
+    await expect(page).toHaveURL(/#manage-section-audit$/);
+  });
+
+  test('Manage Servers keeps its initial section on a non-scrollable tall viewport', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [] });
+    await page.setViewportSize({ width: 1440, height: 2000 });
+    await page.goto('/manage');
+    await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+
+    await expect(page.locator('[data-manage-section-link="directory"]')).toHaveAttribute('aria-current', 'location');
+    await expect(page.locator('[data-manage-section-link="audit"]')).not.toHaveAttribute('aria-current', 'location');
+  });
+
   test('Manage Servers dedicated Add Server action opens the creation workspace', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await page.goto('/manage');

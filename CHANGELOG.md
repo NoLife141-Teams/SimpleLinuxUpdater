@@ -6,6 +6,33 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.1] - 2026-07-29
+
+### Added
+
+- Add a navigable Admin workspace with protected drafts, explicit data-freshness states, standardized danger confirmations, a searchable timezone picker, recent administrative activity, and richer password and session controls.
+- Add temporary session-IP reveal, restore-readiness review, backup recovery health, notification webhook diagnostics, and complete Metrics API credential lifecycle management.
+- Add scheduled-policy occurrence previews, conflict explanations, and investigable scheduled-run history.
+- Add an actionable Observability investigation workspace with fleet severity and confidence signals, host and fleet trends, chart axes and tooltips, shareable filters, pagination, and CSV export.
+
+### Changed
+
+- Bring Manage Servers to the same interaction model as Admin, with explicit authentication posture, improved credential and known-host workflows, responsive inventory controls, modal focus and scroll isolation, and section navigation that follows the visible workspace.
+- Refine Admin layout context and accessibility focus states while keeping section controls and adjacent action groups consistently aligned.
+- Stream `apt autoremove` output while it runs so operators can follow cleanup progress without waiting for command completion.
+- Refresh Go, npm, and GitHub Actions dependencies and expand Dependabot coverage across the supported dependency ecosystems.
+
+### Fixed
+
+- Abort SSH host-key scans before authentication when the request is cancelled and remove request-sized repository allocations identified by CodeQL.
+- Preserve accepted frontend state through delayed or failed Admin, Manage, Observability, notification, backup, policy, and session requests.
+- Fix Manage metric alignment, disclosure chevrons, unwanted section-heading focus outlines, modal background scrolling, and stale section highlighting.
+- Stabilize Observability trend bucketing, investigation state, failure semantics, chart rendering, and responsive layout behavior.
+
+### Validation
+
+- Record the completed local gate and remaining pre-tag requirements in [the v0.4.1 release readiness record](docs/release-v0.4.1-readiness.md).
+
 ## [v0.4.0] - 2026-07-26
 
 ### Added

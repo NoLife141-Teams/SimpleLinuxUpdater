@@ -2344,48 +2344,72 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('admin policy fields align and adjacent action groups keep visible spacing', async ({ page }) => {
-    // Chromium can report an authored 8px gap almost 1px lower after Linux
-    // font metrics and subpixel rounding are applied.
+    // Capture one stable layout snapshot. Sequential boundingBox calls can
+    // otherwise observe different animation frames while sticky navigation
+    // settles. The epsilon only absorbs floating-point representation noise.
+    const maximumAlignmentDrift = 2;
     const minimumVisibleGap = 7;
+    const layoutEpsilon = 0.01;
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/admin#admin-section-scheduled-policies');
-    await page.evaluate(() => document.fonts.ready);
+    const boxes = await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const selectors = {
+        policyNameLabel: 'label[for="policy-name"]',
+        policyName: '#policy-name',
+        targetLabel: 'label[for="policy-target-tag"]',
+        target: '#policy-target-tag',
+        executionLabel: 'label[for="policy-execution-mode"]',
+        execution: '#policy-execution-mode',
+        packageLabel: 'label[for="policy-package-scope"]',
+        package: '#policy-package-scope',
+        blackoutAdd: '#policy-blackout-add',
+        blackoutFallback: '#policy-blackout-rows ~ .json-fallback',
+      };
+      return Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
+        const element = document.querySelector(selector);
+        if (!element) return [name, null];
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return [name, { x, y, width, height }];
+      }));
+    });
 
-    const boxes = {};
-    for (const [name, selector] of Object.entries({
-      policyNameLabel: 'label[for="policy-name"]',
-      policyName: '#policy-name',
-      targetLabel: 'label[for="policy-target-tag"]',
-      target: '#policy-target-tag',
-      executionLabel: 'label[for="policy-execution-mode"]',
-      execution: '#policy-execution-mode',
-      packageLabel: 'label[for="policy-package-scope"]',
-      package: '#policy-package-scope',
-      blackoutAdd: '#policy-blackout-add',
-      blackoutFallback: '#policy-blackout-rows ~ .json-fallback',
-    })) {
-      boxes[name] = await page.locator(selector).boundingBox();
-      expect(boxes[name], `${name} must have a layout box`).not.toBeNull();
+    for (const [name, box] of Object.entries(boxes)) {
+      expect(box, `${name} must have a layout box`).not.toBeNull();
     }
 
-    expect(Math.abs(boxes.targetLabel.y - boxes.policyNameLabel.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(2);
-    expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(2);
-    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(Math.abs(boxes.targetLabel.y - boxes.policyNameLabel.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.target.y - boxes.policyName.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.packageLabel.y - boxes.executionLabel.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(Math.abs(boxes.package.y - boxes.execution.y)).toBeLessThanOrEqual(maximumAlignmentDrift + layoutEpsilon);
+    expect(boxes.blackoutFallback.y - (boxes.blackoutAdd.y + boxes.blackoutAdd.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
 
     await page.goto('/admin#admin-section-metrics');
-    const metricsOverview = await page.locator('.metrics-credential-overview').boundingBox();
-    const metricsActions = await page.locator('#metrics-token-generate').locator('..').boundingBox();
-    const metricsDanger = await page.locator('#metrics-token-danger-zone').boundingBox();
+    const metricsBoxes = await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return Object.fromEntries(Object.entries({
+        metricsOverview: '.metrics-credential-overview',
+        metricsActions: '#metrics-token-generate',
+        metricsDanger: '#metrics-token-danger-zone',
+      }).map(([name, selector]) => {
+        let element = document.querySelector(selector);
+        if (name === 'metricsActions') element = element?.parentElement;
+        if (!element) return [name, null];
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return [name, { x, y, width, height }];
+      }));
+    });
+    const { metricsOverview, metricsActions, metricsDanger } = metricsBoxes;
     expect(metricsOverview).not.toBeNull();
     expect(metricsActions).not.toBeNull();
     expect(metricsDanger).not.toBeNull();
-    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
-    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap);
+    expect(metricsActions.y - (metricsOverview.y + metricsOverview.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
+    expect(metricsDanger.y - (metricsActions.y + metricsActions.height)).toBeGreaterThanOrEqual(minimumVisibleGap - layoutEpsilon);
   });
 
   test('admin sections load heavy data lazily and recover failed sections with Retry', async ({ page }) => {

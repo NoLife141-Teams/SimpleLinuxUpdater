@@ -128,6 +128,8 @@ Notes:
 
 The Status page shows current state and allows you to inspect logs. Logs are updated automatically as the updater runs.
 
+Each selected server also shows a **Recommended action**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
+
 ### Passwordless apt toggle
 
 From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so apt commands can be executed via sudo without prompting. Root SSH sessions run apt commands directly.

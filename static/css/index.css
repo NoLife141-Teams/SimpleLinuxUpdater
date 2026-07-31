@@ -800,6 +800,55 @@ th.resizing .col-resize-handle::before {
     padding-top: 7px;
 }
 
+.recommended-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 10px;
+    border-left: 3px solid rgba(var(--accent-rgb), 0.72);
+    background: rgba(var(--accent-rgb), 0.07);
+}
+
+.recommended-action-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.recommended-action-copy strong {
+    font-size: 13px;
+}
+
+.recommended-action-copy p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.recommended-action.recommended-repair_package_state {
+    border-left-color: var(--warning);
+    background: rgba(var(--warning-rgb), 0.08);
+}
+
+.recommended-action.recommended-healthy {
+    border-left-color: var(--success);
+    background: rgba(var(--success-rgb), 0.06);
+}
+
+.recommended-row-action {
+    color: var(--accent-soft);
+    font-weight: 700;
+}
+
+@media (max-width: 720px) {
+    .recommended-action {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}
+
 .selected-status-row,
 .inspector-actions,
 .chip-list {

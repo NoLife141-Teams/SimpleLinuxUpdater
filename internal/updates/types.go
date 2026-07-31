@@ -15,6 +15,7 @@ var (
 	AptUpgradeCmd           = RootOrSudoCommand("apt-get -y upgrade")
 	AptFullUpgradeCmd       = RootOrSudoCommand("apt-get -y full-upgrade")
 	AptAutoremoveCmd        = RootOrSudoCommand("apt-get -y autoremove")
+	AptRepairCmd            = "if " + AptExtendedLockProbeCmd + "; then echo 'APT/DPKG repair blocked: package-manager lock is active.' >&2; exit 75; fi; " + RootOrSudoCommand("dpkg --configure -a") + " && " + RootOrSudoCommand("apt-get -y -f install") + " && " + RootOrSudoCommand("dpkg --audit") + " && " + RootOrSudoCommand("apt-get check")
 	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
 	AptExtendedLockProbeCmd = RootOrSudoCommand(
 		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
@@ -89,7 +90,8 @@ func (e RetryableTaggedError) Retryable() bool {
 }
 
 type NonRetryableTaggedError struct {
-	Err error
+	Err                    error
+	ReconciliationRequired bool
 }
 
 func (e NonRetryableTaggedError) Error() string {
@@ -109,6 +111,10 @@ func (e NonRetryableTaggedError) Retryable() bool {
 
 func (e NonRetryableTaggedError) Transient() bool {
 	return true
+}
+
+func (e NonRetryableTaggedError) RequiresReconciliation() bool {
+	return e.ReconciliationRequired
 }
 
 type SSHSessionRunner interface {
@@ -187,6 +193,14 @@ type UpdateRunRequest struct {
 }
 
 type AutoremoveRunRequest struct {
+	Server   servers.Server
+	Actor    string
+	ClientIP string
+	Policy   RetryPolicy
+	JobID    string
+}
+
+type AptRepairRunRequest struct {
 	Server   servers.Server
 	Actor    string
 	ClientIP string

@@ -434,6 +434,17 @@ func TestIsAptLockProtectedCommand(t *testing.T) {
 	}
 }
 
+func TestIsAptMutationCommandExcludesMetadataRefresh(t *testing.T) {
+	if IsAptMutationCommand(AptUpdateCmd) {
+		t.Fatal("apt update must not require dpkg reconciliation")
+	}
+	for _, command := range []string{AptUpgradeCmd, AptFullUpgradeCmd, AptAutoremoveCmd, AptRepairCmd} {
+		if !IsAptMutationCommand(command) {
+			t.Fatalf("IsAptMutationCommand(%q) = false, want true", command)
+		}
+	}
+}
+
 func TestRetryHelpersClassifyRetryableOutput(t *testing.T) {
 	err := MarkRetryableFromOutput(errors.New("exit status 100"), "Could not get lock /var/lib/dpkg/lock-frontend")
 	if !IsRetryableError(err) {

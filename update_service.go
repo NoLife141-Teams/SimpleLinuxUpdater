@@ -18,6 +18,7 @@ type UpdateServiceDeps = updatespkg.ServiceDeps
 type UpdateService = updatespkg.Service
 type UpdateRunRequest = updatespkg.UpdateRunRequest
 type AutoremoveRunRequest = updatespkg.AutoremoveRunRequest
+type AptRepairRunRequest = updatespkg.AptRepairRunRequest
 type SudoersRunRequest = updatespkg.SudoersRunRequest
 type ScheduledScanRunRequest = updatespkg.ScheduledScanRunRequest
 type PackageDiscoveryOutcome = updatespkg.PackageDiscoveryOutcome

@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Persist uncertain APT outcomes as `needs_reconciliation`, block further package
+  mutations, and provide an explicitly confirmed APT/DPKG inspection and repair job.
+- Add a per-server Recommended action signal to Status, including Monitor APT,
+  Repair package state, Review approval, Reboot and verify, and Healthy guidance.
+
 ### Fixed
 
 - Keep a lock-confirmed APT mutation attached beyond the previous three-checkpoint

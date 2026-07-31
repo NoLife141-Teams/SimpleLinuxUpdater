@@ -812,12 +812,17 @@ func RootOrSudoCommand(command string) string {
 
 func IsAptLockProtectedCommand(command string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(command))
+	return strings.Contains(normalized, "apt-get update") || IsAptMutationCommand(command)
+}
+
+func IsAptMutationCommand(command string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(command))
 	for _, aptCommand := range []string{
-		"apt-get update",
 		"apt-get -y upgrade",
 		"apt-get -y full-upgrade",
 		"apt-get -y autoremove",
 		"apt-get -y install",
+		"apt-get -y -f install",
 	} {
 		if strings.Contains(normalized, aptCommand) {
 			return true

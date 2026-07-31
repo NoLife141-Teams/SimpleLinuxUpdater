@@ -297,13 +297,21 @@ func (s *State) ActionStatusInProgress(name string) (bool, string) {
 }
 
 func (s *State) BeginAction(name, newStatus string) (Server, error) {
+	return s.beginAction(name, newStatus, false)
+}
+
+func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
+	return s.beginAction(name, newStatus, true)
+}
+
+func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
 	s.Lock()
 	defer s.Unlock()
 	status, exists := (*s.statusMap)[name]
 	if !exists || status == nil {
 		return Server{}, sql.ErrNoRows
 	}
-	if s.statusInProgress(status.Status) {
+	if s.statusInProgress(status.Status) || (packageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
 		return Server{}, ErrActionInProgress
 	}
 	server, found := s.FindByNameLocked(name)

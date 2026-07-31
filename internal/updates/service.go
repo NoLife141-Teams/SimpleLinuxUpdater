@@ -300,6 +300,19 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 	})
 }
 
+func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
+	var reconciliation interface{ RequiresReconciliation() bool }
+	if errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation() {
+		r.lastErrClass = "reconciliation_required"
+		_ = r.withStatus(func(status *servers.ServerStatus) {
+			status.Status = runtimepkg.StatusNeedsReconciliation
+			status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
+		})
+		return
+	}
+	r.setErrorLogs(logs)
+}
+
 func (r *withActorRunner) currentLogs() string {
 	deps := r.deps()
 	if deps.ServerState == nil {
@@ -660,7 +673,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if err != nil {
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
+				r.setCommandErrorLogs(logs, err)
 				return
 			}
 
@@ -854,7 +867,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if err != nil {
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
+				r.setCommandErrorLogs(logs, err)
 				return
 			}
 			r.upgradeCompleted = true
@@ -962,7 +975,7 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", r.server.User)
+		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", r.server.User)
 		escapedLine := ShellEscapeSingleQuotes(line)
 		cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
@@ -987,6 +1000,13 @@ func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 	})
 }
 
+func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...", func(r *withActorRunner) {
+		r.setJobPhase(jobs.PhaseReconcile)
+		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, nil, "\nAPT/DPKG repair completed and package health checks passed.")
+	})
+}
+
 func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, jobKind string, policy RetryPolicy, auditAction, dialOpName, description string, runSteps func(*withActorRunner)) {
 	s.runWithActorShared(
 		server,
@@ -999,6 +1019,8 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 		func(status *servers.ServerStatus, policy RetryPolicy) {
 			if jobKind == jobs.KindAutoremove {
 				status.Status = "autoremove"
+			} else if jobKind == jobs.KindAptRepair {
+				status.Status = runtimepkg.StatusRepairing
 			} else {
 				status.Status = "sudoers"
 			}
@@ -1052,7 +1074,7 @@ func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, s
 	if err != nil {
 		r.markErrorClass(err)
 		logs += fmt.Sprintf("\nError: %v", err)
-		r.setErrorLogs(logs)
+		r.setCommandErrorLogs(logs, err)
 		return
 	}
 	_ = r.withStatus(func(status *servers.ServerStatus) {

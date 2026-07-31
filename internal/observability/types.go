@@ -142,6 +142,13 @@ type DashboardActionInfo struct {
 	Counts         map[string]int `json:"counts,omitempty"`
 }
 
+type DashboardRecommendedActionInfo struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Detail string `json:"detail"`
+	Action string `json:"action,omitempty"`
+}
+
 type DashboardApprovalTriageInfo struct {
 	Eligible                   bool   `json:"eligible"`
 	PendingPackages            int    `json:"pending_packages"`
@@ -169,19 +176,20 @@ type DashboardApprovalTriageInfo struct {
 }
 
 type DashboardServerSummary struct {
-	Name             string                         `json:"name"`
-	LastUpdate       *DashboardUpdateHistory        `json:"last_update,omitempty"`
-	LastFailedUpdate *DashboardUpdateHistory        `json:"last_failed_update,omitempty"`
-	AvgDurationMS    float64                        `json:"avg_duration_ms"`
-	DurationSamples  int                            `json:"duration_samples"`
-	NextRun          DashboardScheduleInfo          `json:"next_run"`
-	NoRun            DashboardNoRunInfo             `json:"no_run"`
-	Health           DashboardHealthInfo            `json:"health"`
-	Risk             DashboardRiskInfo              `json:"risk"`
-	Timeline         DashboardTimelineInfo          `json:"timeline"`
-	Actions          map[string]DashboardActionInfo `json:"actions"`
-	ApprovalTriage   DashboardApprovalTriageInfo    `json:"approval_triage"`
-	CommandHistory   []DashboardCommandHistoryItem  `json:"command_history"`
+	Name              string                         `json:"name"`
+	LastUpdate        *DashboardUpdateHistory        `json:"last_update,omitempty"`
+	LastFailedUpdate  *DashboardUpdateHistory        `json:"last_failed_update,omitempty"`
+	AvgDurationMS     float64                        `json:"avg_duration_ms"`
+	DurationSamples   int                            `json:"duration_samples"`
+	NextRun           DashboardScheduleInfo          `json:"next_run"`
+	NoRun             DashboardNoRunInfo             `json:"no_run"`
+	Health            DashboardHealthInfo            `json:"health"`
+	Risk              DashboardRiskInfo              `json:"risk"`
+	Timeline          DashboardTimelineInfo          `json:"timeline"`
+	Actions           map[string]DashboardActionInfo `json:"actions"`
+	RecommendedAction DashboardRecommendedActionInfo `json:"recommended_action"`
+	ApprovalTriage    DashboardApprovalTriageInfo    `json:"approval_triage"`
+	CommandHistory    []DashboardCommandHistoryItem  `json:"command_history"`
 }
 
 type DashboardSummaryResponse struct {

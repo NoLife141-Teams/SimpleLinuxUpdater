@@ -250,7 +250,7 @@ func TestRunUpdateWithActorCommandTimeoutSetsError(t *testing.T) {
 	}
 }
 
-func TestRunAutoremoveWithActorCommandTimeoutSetsError(t *testing.T) {
+func TestRunAutoremoveWithActorCommandTimeoutRequiresReconciliation(t *testing.T) {
 	setupTimeoutRunnerEnv(t, "autoremove-timeout.db")
 
 	server := Server{Name: "srv-autoremove-timeout", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
@@ -279,11 +279,14 @@ func TestRunAutoremoveWithActorCommandTimeoutSetsError(t *testing.T) {
 	finalStatus := statusMap[server.Name].Status
 	logs := statusMap[server.Name].Logs
 	mu.Unlock()
-	if finalStatus != "error" {
-		t.Fatalf("final status = %q, want error", finalStatus)
+	if finalStatus != "needs_reconciliation" {
+		t.Fatalf("final status = %q, want needs_reconciliation", finalStatus)
 	}
 	if !strings.Contains(strings.ToLower(logs), "timed out") {
 		t.Fatalf("expected timeout in logs, got: %s", logs)
+	}
+	if !strings.Contains(strings.ToLower(logs), "requires reconciliation") {
+		t.Fatalf("expected reconciliation guidance in logs, got: %s", logs)
 	}
 }
 

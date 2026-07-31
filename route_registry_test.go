@@ -77,6 +77,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPost, "/api/hostkeys/clear"},
 		{http.MethodPost, "/api/update/:name"},
 		{http.MethodPost, "/api/autoremove/:name"},
+		{http.MethodPost, "/api/repair/:name"},
 		{http.MethodPost, "/api/sudoers/:name"},
 		{http.MethodPost, "/api/sudoers/disable/:name"},
 		{http.MethodPost, "/api/approve/:name"},

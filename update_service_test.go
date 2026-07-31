@@ -221,6 +221,61 @@ func TestUpdateServiceAutoremoveUsesCommandHookAndAuditsSuccess(t *testing.T) {
 	}
 }
 
+func TestUpdateServiceAptRepairUsesGuardedRepairCommand(t *testing.T) {
+	server := Server{Name: "srv-apt-repair", Host: "127.0.0.1", Port: 22, User: "root"}
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "needs_reconciliation", Logs: "Uncertain APT outcome"}})
+
+	var request HostCommandRequest
+	deps := testUpdateServiceDeps(t)
+	deps.ServerState = state
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+			request = req
+			return HostCommandResult{Stdout: "package health ok", Attempts: 1}, nil
+		},
+	})
+
+	NewUpdateService(deps).RunAptRepairJob(AptRepairRunRequest{
+		Server: server,
+		Actor:  "tester",
+		Policy: RetryPolicy{MaxAttempts: 1},
+	})
+
+	if request.Operation != "apt_repair.command" || request.Command != updatespkg.AptRepairCmd {
+		t.Fatalf("repair request = operation %q command %q", request.Operation, request.Command)
+	}
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "done" || !strings.Contains(status.Logs, "package health checks passed") {
+		t.Fatalf("repair status = %+v, want successful verified repair", status)
+	}
+}
+
+func TestUpdateServicePersistsReconciliationRequiredCommandError(t *testing.T) {
+	server := Server{Name: "srv-apt-uncertain", Host: "127.0.0.1", Port: 22, User: "root"}
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "needs_reconciliation"}})
+
+	deps := testUpdateServiceDeps(t)
+	deps.ServerState = state
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+			return HostCommandResult{Stderr: "lock holder may still be active", Attempts: 1}, updatespkg.NonRetryableTaggedError{
+				Err:                    errors.New("APT command outcome is unknown"),
+				ReconciliationRequired: true,
+			}
+		},
+	})
+
+	NewUpdateService(deps).RunAptRepairJob(AptRepairRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "needs_reconciliation" || !strings.Contains(status.Logs, "requires reconciliation") {
+		t.Fatalf("uncertain repair status = %+v, want persisted reconciliation requirement", status)
+	}
+}
+
 func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
 	if err != nil {

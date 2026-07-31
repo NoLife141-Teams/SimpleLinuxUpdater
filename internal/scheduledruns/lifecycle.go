@@ -195,7 +195,7 @@ func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Pol
 
 func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
-	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
+	serverForRun, err := l.deps.ServerState.BeginPackageMutation(server.Name, "updating")
 	if err != nil {
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing

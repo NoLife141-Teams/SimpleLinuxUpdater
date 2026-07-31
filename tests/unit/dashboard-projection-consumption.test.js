@@ -51,6 +51,29 @@ test("missing and malformed canonical facts use deterministic compatibility fall
     assert.equal(view.selectedHost.risk.label, "1 CVE");
 });
 
+test("reconciliation recommendation exposes only the canonical repair action", () => {
+    const server = { name: "apt-host", status: "needs_reconciliation", pending_updates: [] };
+    const view = project({ statusView: statusView({
+        servers: [server],
+        dashboardServers: [{
+            name: "apt-host",
+            recommended_action: {
+                key: "repair_package_state",
+                label: "Repair package state",
+                detail: "The last APT outcome was uncertain.",
+                action: "repair_apt"
+            }
+        }],
+        actionViews: { "apt-host": { repair_apt: { enabled: true, reason: "Ready", readiness: "ready" } } }
+    }) });
+
+    assert.equal(view.selectedHost.recommendedAction.key, "repair_package_state");
+    assert.equal(view.selectedHost.recommendedAction.action, "repair_apt");
+    assert.equal(view.selectedHost.canRepairApt, true);
+    assert.equal(view.selectedHost.canRunUpdate, false);
+    assert.equal(view.selectedHost.canRunSudoers, true);
+});
+
 test("unknown data stays explicit and optional extras degrade independently", () => {
     const server = { name: "unknown", status: "", pending_updates: [] };
     const view = project({ statusView: statusView({ servers: [server], dashboardServers: [{ name: "unknown", health: {} }] }), extras: { recentActivity: null, policySummary: null } });

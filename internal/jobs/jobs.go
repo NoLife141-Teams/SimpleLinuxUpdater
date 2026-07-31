@@ -14,6 +14,7 @@ import (
 const (
 	KindUpdate         = "update"
 	KindAutoremove     = "autoremove"
+	KindAptRepair      = "apt_repair"
 	KindSudoersEnable  = "sudoers_enable"
 	KindSudoersDisable = "sudoers_disable"
 	KindCVEEnrichment  = "cve_enrichment"
@@ -36,6 +37,7 @@ const (
 	PhaseAptUpgrade   = "apt_upgrade"
 	PhasePostchecks   = "postchecks"
 	PhaseAutoremove   = "autoremove"
+	PhaseReconcile    = "reconcile"
 	PhaseApply        = "apply"
 	PhaseSnapshot     = "snapshot"
 	PhaseEncrypt      = "encrypt"

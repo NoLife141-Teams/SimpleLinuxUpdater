@@ -19,10 +19,31 @@ var (
 	AptExtendedLockProbeCmd = RootOrSudoCommand(
 		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
 	)
+	AptRepairCmd = buildAptRepairLockGuard(AptExtendedLockProbeCmd) + "; " +
+		RootOrSudoCommand("dpkg --configure -a") + " && " +
+		RootOrSudoCommand("apt-get -y -f install") + " && " +
+		buildAptRepairAuditGuard(RootOrSudoCommand("dpkg --audit")) + " && " +
+		RootOrSudoCommand("apt-get check")
 	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
 	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
 	AptFullUpgradeSimCmd = "LC_ALL=C apt-get -s full-upgrade"
 )
+
+func buildAptRepairLockGuard(lockProbeCmd string) string {
+	return "apt_lock_probe_output=$(" + lockProbeCmd + " 2>&1); apt_lock_probe_status=$?; " +
+		"if [ \"$apt_lock_probe_status\" -eq 0 ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock is active.' \"$apt_lock_probe_output\" >&2; exit 75; fi; " +
+		"if [ \"$apt_lock_probe_status\" -ne 1 ] || [ -n \"$apt_lock_probe_output\" ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock probe failed.' \"$apt_lock_probe_output\" >&2; exit 76; fi"
+}
+
+func buildAptRepairAuditGuard(auditCmd string) string {
+	return "{ dpkg_audit_output=$(" + auditCmd + " 2>&1); dpkg_audit_status=$?; " +
+		"if [ \"$dpkg_audit_status\" -ne 0 ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair verification failed: dpkg audit command failed.' \"$dpkg_audit_output\" >&2; exit \"$dpkg_audit_status\"; fi; " +
+		"if [ -n \"$dpkg_audit_output\" ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair verification failed: dpkg audit still reports package-state problems.' \"$dpkg_audit_output\" >&2; exit 77; fi; }"
+}
 
 const (
 	DefaultSSHCommandTimeout = 5 * time.Minute
@@ -89,7 +110,8 @@ func (e RetryableTaggedError) Retryable() bool {
 }
 
 type NonRetryableTaggedError struct {
-	Err error
+	Err                    error
+	ReconciliationRequired bool
 }
 
 func (e NonRetryableTaggedError) Error() string {
@@ -109,6 +131,10 @@ func (e NonRetryableTaggedError) Retryable() bool {
 
 func (e NonRetryableTaggedError) Transient() bool {
 	return true
+}
+
+func (e NonRetryableTaggedError) RequiresReconciliation() bool {
+	return e.ReconciliationRequired
 }
 
 type SSHSessionRunner interface {
@@ -187,6 +213,14 @@ type UpdateRunRequest struct {
 }
 
 type AutoremoveRunRequest struct {
+	Server   servers.Server
+	Actor    string
+	ClientIP string
+	Policy   RetryPolicy
+	JobID    string
+}
+
+type AptRepairRunRequest struct {
 	Server   servers.Server
 	Actor    string
 	ClientIP string

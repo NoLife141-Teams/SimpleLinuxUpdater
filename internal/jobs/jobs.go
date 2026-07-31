@@ -14,6 +14,7 @@ import (
 const (
 	KindUpdate         = "update"
 	KindAutoremove     = "autoremove"
+	KindAptRepair      = "apt_repair"
 	KindSudoersEnable  = "sudoers_enable"
 	KindSudoersDisable = "sudoers_disable"
 	KindCVEEnrichment  = "cve_enrichment"
@@ -36,6 +37,7 @@ const (
 	PhaseAptUpgrade   = "apt_upgrade"
 	PhasePostchecks   = "postchecks"
 	PhaseAutoremove   = "autoremove"
+	PhaseReconcile    = "reconcile"
 	PhaseApply        = "apply"
 	PhaseSnapshot     = "snapshot"
 	PhaseEncrypt      = "encrypt"
@@ -121,6 +123,7 @@ type Repository interface {
 	AppendActiveLog(id, logText, updatedAt string) (bool, error)
 	Get(id string) (Record, error)
 	FindLatestActiveByServerAndKind(serverName, kind string) (*Record, error)
+	ListReconciliationRequired() ([]Record, error)
 	ListUnfinishedServerNames() ([]string, error)
 	MarkUnfinishedInterrupted(now string) error
 }
@@ -211,6 +214,20 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 		return err
 	}
 	return nil
+}
+
+// RenameServerTx keeps persisted job history and recovery state attached to a renamed server.
+func RenameServerTx(tx *sql.Tx, oldServerName, newServerName string) error {
+	if tx == nil {
+		return errors.New("job rename transaction is not initialized")
+	}
+	oldServerName = strings.TrimSpace(oldServerName)
+	newServerName = strings.TrimSpace(newServerName)
+	if oldServerName == "" || newServerName == "" {
+		return errors.New("job rename requires both server names")
+	}
+	_, err := tx.Exec("UPDATE jobs SET server_name = ? WHERE server_name = ?", newServerName, oldServerName)
+	return err
 }
 
 func ensureRevisionColumn(db *sql.DB) error {
@@ -499,6 +516,22 @@ func (m *Manager) MarkUnfinishedJobsInterrupted() error {
 		m.opts.SyncInterruptedServer(affected)
 	}
 	m.notify("job.update")
+	return nil
+}
+
+func (m *Manager) RestoreReconciliationRequiredJobs() error {
+	if m == nil || m.repo == nil {
+		return nil
+	}
+	records, err := m.repo.ListReconciliationRequired()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if m.opts.SyncRuntime != nil {
+			m.opts.SyncRuntime(record)
+		}
+	}
 	return nil
 }
 
@@ -949,16 +982,102 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 	return serverNames, nil
 }
 
+func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("job repository is not initialized")
+	}
+	rows, err := r.db.Query(`
+		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
+		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
+		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
+		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision
+		  FROM jobs AS candidate
+		 WHERE candidate.status = ?
+		   AND candidate.error_class = ?
+		   AND candidate.kind IN (?, ?, ?)
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM jobs AS later_success
+		        WHERE later_success.server_name = candidate.server_name
+		          AND later_success.kind IN (?, ?, ?)
+		          AND later_success.status = ?
+		          AND later_success.created_at > candidate.created_at
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM jobs AS later_reconciliation
+		        WHERE later_reconciliation.server_name = candidate.server_name
+		          AND later_reconciliation.status = ?
+		          AND later_reconciliation.error_class = ?
+		          AND later_reconciliation.kind IN (?, ?, ?)
+		          AND later_reconciliation.created_at > candidate.created_at
+		   )
+		 ORDER BY candidate.created_at DESC
+	`,
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []Record
+	for rows.Next() {
+		var record Record
+		if err := rows.Scan(
+			&record.ID, &record.Kind, &record.ParentJobID, &record.ServerName, &record.Actor, &record.ClientIP,
+			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
+			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
+			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
-	_, err := r.db.Exec(`
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
+		UPDATE jobs
+		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
+		 WHERE status = ?
+		   AND (
+		       (kind = ? AND phase = ?)
+		       OR (kind = ? AND phase = ?)
+		       OR (kind = ? AND phase = ?)
+		   )
+	`,
+		StatusFailed, PhaseComplete, "APT reconciliation required after restart interruption", "reconciliation_required", now, now,
+		StatusRunning,
+		KindUpdate, PhaseAptUpgrade,
+		KindAutoremove, PhaseAutoremove,
+		KindAptRepair, PhaseReconcile,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
 		UPDATE jobs
 		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
 		 WHERE status IN (?, ?, ?)
-	`, StatusInterrupted, PhaseComplete, "Interrupted during restart recovery", "restart", now, now, StatusQueued, StatusRunning, StatusWaitingApproval)
-	return err
+	`, StatusInterrupted, PhaseComplete, "Interrupted during restart recovery", "restart", now, now, StatusQueued, StatusRunning, StatusWaitingApproval); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func truncateString(s string, maxLen int) string {

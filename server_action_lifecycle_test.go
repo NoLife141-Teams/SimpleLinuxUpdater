@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"path/filepath"
@@ -133,6 +134,104 @@ func TestServerActionLifecycleStartUpdateSuccessDispatchesRunner(t *testing.T) {
 	}
 	if len(h.auditEvents) != 1 || h.auditEvents[0].status != "started" || h.auditEvents[0].message != "Update started" {
 		t.Fatalf("audit events = %+v, want started update audit", h.auditEvents)
+	}
+}
+
+func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationState(t *testing.T) {
+	server := Server{Name: "srv-repair", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+
+	t.Run("confirmation required", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", false)
+		if result.statusCode != http.StatusBadRequest || result.body["error"] != "APT repair confirmation required" {
+			t.Fatalf("result = %+v, want explicit confirmation error", result)
+		}
+	})
+
+	t.Run("healthy state rejected", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "idle"})
+		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true)
+		if result.statusCode != http.StatusConflict || result.body["error"] != "Server does not require APT repair" {
+			t.Fatalf("result = %+v, want current-state conflict", result)
+		}
+	})
+
+	t.Run("package mutation remains blocked", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+		result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+		if result.statusCode != http.StatusConflict || result.body["error"] != "APT reconciliation is required before another package mutation" {
+			t.Fatalf("result = %+v, want package mutation conflict", result)
+		}
+	})
+
+	t.Run("reconciliation state dispatches repair job", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true)
+		if result.statusCode != http.StatusOK || result.body["message"] != "APT repair started" {
+			t.Fatalf("result = %+v, want repair start", result)
+		}
+		status := h.state.CurrentStatusSnapshot(server.Name)
+		if status == nil || status.Status != "repairing" {
+			t.Fatalf("runtime status = %+v, want repairing", status)
+		}
+		var kind string
+		if err := h.db.QueryRow("SELECT kind FROM jobs WHERE id = ?", result.body["job_id"]).Scan(&kind); err != nil {
+			t.Fatalf("query repair job: %v", err)
+		}
+		if kind != jobKindAptRepair || h.runnerRun == nil {
+			t.Fatalf("repair job kind/run = %q/%t, want %q/true", kind, h.runnerRun != nil, jobKindAptRepair)
+		}
+	})
+}
+
+func TestServerActionLifecycleSudoersRecoveryPreservesReconciliationRequirement(t *testing.T) {
+	server := Server{Name: "srv-sudoers-recovery", Host: "example.org", Port: 22, User: "operator", Pass: "pw"}
+	tests := []struct {
+		name  string
+		start func(*serverActionLifecycle) serverActionLifecycleResult
+	}{
+		{name: "enable", start: func(lifecycle *serverActionLifecycle) serverActionLifecycleResult {
+			return lifecycle.StartSudoersEnable(server.Name, "alice", "192.0.2.10", "sudo-password")
+		}},
+		{name: "disable", start: func(lifecycle *serverActionLifecycle) serverActionLifecycleResult {
+			return lifecycle.StartSudoersDisable(server.Name, "alice", "192.0.2.10", "sudo-password")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newLifecycleTestHarness(t, server, &ServerStatus{
+				Name:   server.Name,
+				Status: "needs_reconciliation",
+				Logs:   "APT outcome uncertain",
+			})
+			h.updateSvc = NewUpdateService(UpdateServiceDeps{
+				ServerState: h.state,
+				CurrentJobManager: func() *JobManager {
+					return h.jobManager
+				},
+				HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+					RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+						return HostCommandResult{Attempts: 1}, nil
+					},
+				}),
+				LoadCommandTimeout: func() time.Duration { return time.Second },
+			})
+
+			result := tt.start(h.lifecycle())
+			if result.statusCode != http.StatusOK || h.runnerRun == nil {
+				t.Fatalf("sudoers %s result = %+v, runner configured? %t", tt.name, result, h.runnerRun != nil)
+			}
+			h.runnerRun()
+
+			status := h.state.CurrentStatusSnapshot(server.Name)
+			if status == nil || status.Status != "needs_reconciliation" {
+				t.Fatalf("status after sudoers %s = %+v, want reconciliation requirement preserved", tt.name, status)
+			}
+			blocked := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+			if blocked.statusCode != http.StatusConflict || blocked.body["error"] != "APT reconciliation is required before another package mutation" {
+				t.Fatalf("StartUpdate after sudoers %s = %+v, want reconciliation conflict", tt.name, blocked)
+			}
+		})
 	}
 }
 

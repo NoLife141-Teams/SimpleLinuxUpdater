@@ -743,14 +743,16 @@ func TestBulkUpdateRouteHandlesConcurrentStarts(t *testing.T) {
 
 func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 	tests := []struct {
-		name       string
-		path       string
-		body       string
-		kind       string
-		statusName string
+		name          string
+		path          string
+		body          string
+		kind          string
+		statusName    string
+		initialStatus string
 	}{
 		{name: "update", path: "/api/update/%s", body: "", kind: jobKindUpdate, statusName: "updating"},
 		{name: "autoremove", path: "/api/autoremove/%s", body: "", kind: jobKindAutoremove, statusName: "autoremove"},
+		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, kind: jobKindAptRepair, statusName: "repairing", initialStatus: "needs_reconciliation"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, kind: jobKindSudoersEnable, statusName: "sudoers"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, kind: jobKindSudoersDisable, statusName: "sudoers"},
 	}
@@ -766,12 +768,16 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 			handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 
 			server := Server{Name: "srv-" + strings.ReplaceAll(tc.kind, "_", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+			initialStatus := tc.initialStatus
+			if initialStatus == "" {
+				initialStatus = "idle"
+			}
 			func() {
 				mu.Lock()
 				defer mu.Unlock()
 				servers = []Server{server}
 				statusMap = map[string]*ServerStatus{
-					server.Name: {Name: server.Name, Status: "idle", Upgradable: []string{}},
+					server.Name: {Name: server.Name, Status: initialStatus, Upgradable: []string{}},
 				}
 			}()
 
@@ -830,13 +836,15 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 
 func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 	tests := []struct {
-		name    string
-		path    string
-		body    string
-		wantErr string
+		name          string
+		path          string
+		body          string
+		wantErr       string
+		initialStatus string
 	}{
 		{name: "update", path: "/api/update/%s", wantErr: "Failed to create update job"},
 		{name: "autoremove", path: "/api/autoremove/%s", wantErr: "Failed to create autoremove job"},
+		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, wantErr: "Failed to create APT repair job", initialStatus: "needs_reconciliation"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers job"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers disable job"},
 	}
@@ -891,12 +899,16 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 			handler := app.Handler
 
 			server := Server{Name: "srv-" + strings.ReplaceAll(tc.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+			initialStatus := tc.initialStatus
+			if initialStatus == "" {
+				initialStatus = "idle"
+			}
 			original := &ServerStatus{
 				Name:           server.Name,
 				Host:           server.Host,
 				Port:           server.Port,
 				User:           server.User,
-				Status:         "idle",
+				Status:         initialStatus,
 				Logs:           "",
 				ApprovalScope:  "all",
 				Upgradable:     []string{"held-package"},

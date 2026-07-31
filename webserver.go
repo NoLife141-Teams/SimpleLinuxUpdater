@@ -660,7 +660,10 @@ func classifyCommandTimeout(cmd string, err error) error {
 	if err == nil || !updatespkg.IsAptLockProtectedCommand(cmd) {
 		return err
 	}
-	return updatespkg.NonRetryableTaggedError{Err: fmt.Errorf("APT command outcome is unknown; automatic replay disabled: %w", err)}
+	return updatespkg.NonRetryableTaggedError{
+		Err:                    fmt.Errorf("APT command outcome is unknown; automatic replay disabled: %w", err),
+		ReconciliationRequired: updatespkg.IsAptMutationCommand(cmd),
+	}
 }
 
 type aptLockProbeResult struct {
@@ -2304,6 +2307,22 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
 		writeServerActionLifecycleResult(c, lifecycle.StartAutoremove(c.Param("name"), actorFromContext(c), clientIPFromContext(c)))
+	})
+
+	r.POST("/api/repair/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		var req struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			audit(c, "apt_repair.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+			return
+		}
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
+		})
+		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm))
 	})
 
 	r.POST("/api/sudoers/:name", func(c *gin.Context) {

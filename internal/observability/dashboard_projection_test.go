@@ -49,6 +49,48 @@ func requireDashboardAction(t *testing.T, server DashboardServerSummary, key str
 	return action
 }
 
+func TestDashboardProjectionRecommendsSafeNextMaintenanceAction(t *testing.T) {
+	rebootRequired := true
+	tests := []struct {
+		name       string
+		status     string
+		timeline   DashboardTimelineInfo
+		health     DashboardHealthInfo
+		wantKey    string
+		wantAction string
+	}{
+		{name: "active", status: "upgrading", timeline: testCollectedTimeline("upgrade", "active", "Upgrading"), wantKey: "monitor_apt"},
+		{name: "reconciliation", status: "needs_reconciliation", timeline: testCollectedTimeline("done_error", "error", "APT uncertain"), wantKey: "repair_package_state", wantAction: dashboardActionRepairApt},
+		{name: "approval", status: "pending_approval", timeline: testCollectedTimeline("pending_approval", "waiting", "Waiting"), wantKey: "review_approval"},
+		{name: "reboot", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok", RebootRequired: &rebootRequired}, wantKey: "reboot_and_verify"},
+		{name: "healthy", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok"}, wantKey: "healthy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := testDashboardProjection(time.Now()).Project(dashboardProjectionInput{
+				servers: []dashboardServerProjectionInput{{
+					server:   servers.Server{Name: "srv"},
+					status:   &servers.ServerStatus{Name: "srv", Status: tt.status},
+					timeline: tt.timeline,
+					health:   tt.health,
+				}},
+			})
+			got := summary.Servers[0].RecommendedAction
+			if got.Key != tt.wantKey || got.Action != tt.wantAction {
+				t.Fatalf("recommended action = %+v, want key %q action %q", got, tt.wantKey, tt.wantAction)
+			}
+			if tt.status == "needs_reconciliation" {
+				if action := requireDashboardAction(t, summary.Servers[0], dashboardActionUpdate); action.Enabled || action.BlockingStatus != "needs_reconciliation" {
+					t.Fatalf("update action = %+v, want reconciliation block", action)
+				}
+				if action := requireDashboardAction(t, summary.Servers[0], dashboardActionEnableApt); !action.Enabled {
+					t.Fatalf("enable apt action = %+v, want sudoers recovery available", action)
+				}
+			}
+		})
+	}
+}
+
 func TestDashboardProjectionUsesCollectedRuntimeSourceFacts(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
@@ -252,6 +294,7 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 		dashboardActionRefreshFacts,
 		dashboardActionEnableApt,
 		dashboardActionDisableApt,
+		dashboardActionRepairApt,
 	}
 	for _, key := range actionKeys {
 		requireDashboardAction(t, pendingServer, key)

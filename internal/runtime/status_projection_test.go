@@ -17,6 +17,7 @@ func TestStatusInProgress(t *testing.T) {
 		{"approved", StatusApproved, true},
 		{"upgrading", StatusUpgrading, true},
 		{"autoremove", StatusAutoremove, true},
+		{"repairing", StatusRepairing, true},
 		{"sudoers", StatusSudoers, true},
 		{"facts refresh", StatusFactsRefresh, true},
 		{"idle", StatusIdle, false},
@@ -41,6 +42,7 @@ func TestBlocksTransientAction(t *testing.T) {
 		{"normalizes active status", " UPDATING ", true},
 		{"normalizes pending approval", " pending_approval ", true},
 		{"blocks approved", StatusApproved, true},
+		{"allows reconciliation workflow", StatusNeedsReconciliation, false},
 		{"allows idle", StatusIdle, false},
 		{"allows terminal", " DONE ", false},
 	}
@@ -50,6 +52,15 @@ func TestBlocksTransientAction(t *testing.T) {
 				t.Fatalf("BlocksTransientAction(%q) = %t, want %t", tt.status, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBlocksPackageMutationRequiresReconciliation(t *testing.T) {
+	if !BlocksPackageMutation(StatusNeedsReconciliation) {
+		t.Fatal("needs_reconciliation must block package mutations")
+	}
+	if BlocksPackageMutation(StatusDone) {
+		t.Fatal("done must allow package mutations")
 	}
 }
 
@@ -63,6 +74,7 @@ func TestRuntimeStatusFromJob(t *testing.T) {
 		{"waiting approval wins", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusWaitingApproval}, StatusPendingApproval},
 		{"succeeded", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusSucceeded}, StatusDone},
 		{"failed", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusFailed}, StatusError},
+		{"failed reconciliation", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusFailed, ErrorClass: "reconciliation_required"}, StatusNeedsReconciliation},
 		{"cancelled", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusCancelled}, StatusCancelled},
 		{"interrupted", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusInterrupted}, StatusIdle},
 		{"update approval phase", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusRunning, Phase: jobs.PhaseApprovalWait}, StatusPendingApproval},
@@ -71,6 +83,7 @@ func TestRuntimeStatusFromJob(t *testing.T) {
 		{"update complete phase", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusRunning, Phase: jobs.PhaseComplete}, StatusUpgrading},
 		{"update default", jobs.Record{Kind: jobs.KindUpdate, Status: jobs.StatusRunning}, StatusUpdating},
 		{"autoremove", jobs.Record{Kind: jobs.KindAutoremove, Status: jobs.StatusRunning}, StatusAutoremove},
+		{"apt repair", jobs.Record{Kind: jobs.KindAptRepair, Status: jobs.StatusRunning, Phase: jobs.PhaseReconcile}, StatusRepairing},
 		{"sudoers enable", jobs.Record{Kind: jobs.KindSudoersEnable, Status: jobs.StatusRunning}, StatusSudoers},
 		{"sudoers disable", jobs.Record{Kind: jobs.KindSudoersDisable, Status: jobs.StatusRunning}, StatusSudoers},
 	}

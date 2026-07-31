@@ -7,17 +7,19 @@ import (
 )
 
 const (
-	StatusIdle            = "idle"
-	StatusUpdating        = "updating"
-	StatusPendingApproval = "pending_approval"
-	StatusApproved        = "approved"
-	StatusUpgrading       = "upgrading"
-	StatusAutoremove      = "autoremove"
-	StatusSudoers         = "sudoers"
-	StatusFactsRefresh    = "facts_refresh"
-	StatusDone            = "done"
-	StatusError           = "error"
-	StatusCancelled       = "cancelled"
+	StatusIdle                = "idle"
+	StatusUpdating            = "updating"
+	StatusPendingApproval     = "pending_approval"
+	StatusApproved            = "approved"
+	StatusUpgrading           = "upgrading"
+	StatusAutoremove          = "autoremove"
+	StatusRepairing           = "repairing"
+	StatusNeedsReconciliation = "needs_reconciliation"
+	StatusSudoers             = "sudoers"
+	StatusFactsRefresh        = "facts_refresh"
+	StatusDone                = "done"
+	StatusError               = "error"
+	StatusCancelled           = "cancelled"
 
 	TimelinePhasePendingApproval = "pending_approval"
 	TimelinePhasePrechecks       = "prechecks"
@@ -53,6 +55,7 @@ func StatusInProgress(status string) bool {
 		StatusApproved,
 		StatusUpgrading,
 		StatusAutoremove,
+		StatusRepairing,
 		StatusSudoers,
 		StatusFactsRefresh:
 		return true
@@ -68,6 +71,7 @@ func BlocksTransientAction(status string) bool {
 		StatusApproved,
 		StatusUpgrading,
 		StatusAutoremove,
+		StatusRepairing,
 		StatusSudoers,
 		StatusFactsRefresh:
 		return true
@@ -76,9 +80,13 @@ func BlocksTransientAction(status string) bool {
 	}
 }
 
+func BlocksPackageMutation(status string) bool {
+	return BlocksTransientAction(status) || strings.EqualFold(strings.TrimSpace(status), StatusNeedsReconciliation)
+}
+
 func RuntimeStatusFromJob(record jobs.Record) string {
 	switch record.Kind {
-	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindSudoersEnable, jobs.KindSudoersDisable:
+	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair, jobs.KindSudoersEnable, jobs.KindSudoersDisable:
 	default:
 		return ""
 	}
@@ -89,6 +97,9 @@ func RuntimeStatusFromJob(record jobs.Record) string {
 	case jobs.StatusSucceeded:
 		return StatusDone
 	case jobs.StatusFailed:
+		if strings.EqualFold(strings.TrimSpace(record.ErrorClass), "reconciliation_required") {
+			return StatusNeedsReconciliation
+		}
 		return StatusError
 	case jobs.StatusCancelled:
 		return StatusCancelled
@@ -107,6 +118,8 @@ func RuntimeStatusFromJob(record jobs.Record) string {
 		}
 	case jobs.KindAutoremove:
 		return StatusAutoremove
+	case jobs.KindAptRepair:
+		return StatusRepairing
 	case jobs.KindSudoersEnable, jobs.KindSudoersDisable:
 		return StatusSudoers
 	default:
@@ -116,7 +129,7 @@ func RuntimeStatusFromJob(record jobs.Record) string {
 
 func ServerStatusFinishesJob(status string) bool {
 	switch status {
-	case StatusDone, StatusError, StatusCancelled:
+	case StatusDone, StatusError, StatusNeedsReconciliation, StatusCancelled:
 		return true
 	default:
 		return false
@@ -155,6 +168,16 @@ func JobTransitionIntentFromServerStatus(status string, options ServerStatusJobU
 		if errorClass != "" {
 			update.ErrorClass = &errorClass
 		}
+	case StatusNeedsReconciliation:
+		update.Kind = jobs.IntentFail
+		status := jobs.StatusFailed
+		phase := jobs.PhaseComplete
+		summary := "APT reconciliation required"
+		errorClass := "reconciliation_required"
+		update.Status = &status
+		update.Phase = &phase
+		update.Summary = &summary
+		update.ErrorClass = &errorClass
 	case StatusCancelled:
 		update.Kind = jobs.IntentCancel
 		status := jobs.StatusCancelled
@@ -191,7 +214,7 @@ func TimelinePhaseFromJobPhase(phase string) string {
 		return TimelinePhaseAptUpdate
 	case jobs.PhaseApprovalWait:
 		return TimelinePhasePendingApproval
-	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseApply:
+	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseReconcile, jobs.PhaseApply:
 		return TimelinePhaseUpgrade
 	case jobs.PhasePostchecks:
 		return TimelinePhasePostchecks
@@ -210,11 +233,11 @@ func TimelineProjectionFromServerStatus(status string) TimelineProjection {
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
 	case StatusSudoers, StatusFactsRefresh:
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
-	case StatusUpgrading, StatusAutoremove:
+	case StatusUpgrading, StatusAutoremove, StatusRepairing:
 		return TimelineProjection{CurrentPhase: TimelinePhaseUpgrade, State: TimelineStateActive}
 	case StatusDone, "success", StatusApproved:
 		return TimelineProjection{CurrentPhase: TimelinePhaseDoneError, State: TimelineStateDone}
-	case StatusError, "failure", "failed", StatusCancelled:
+	case StatusError, StatusNeedsReconciliation, "failure", "failed", StatusCancelled:
 		return TimelineProjection{CurrentPhase: TimelinePhaseDoneError, State: TimelineStateError}
 	default:
 		return TimelineProjection{State: TimelineStateIdle}

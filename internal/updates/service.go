@@ -300,6 +300,19 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 	})
 }
 
+func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
+	var reconciliation interface{ RequiresReconciliation() bool }
+	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
+		r.lastErrClass = "reconciliation_required"
+		_ = r.withStatus(func(status *servers.ServerStatus) {
+			status.Status = runtimepkg.StatusNeedsReconciliation
+			status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
+		})
+		return
+	}
+	r.setErrorLogs(logs)
+}
+
 func (r *withActorRunner) currentLogs() string {
 	deps := r.deps()
 	if deps.ServerState == nil {
@@ -315,6 +328,26 @@ func (r *withActorRunner) setJobPhase(phase string) {
 			r.deps().Logf("failed to update job %q phase to %q: %v", r.jobID, r.jobPhase, err)
 		}
 	}
+}
+
+func (r *withActorRunner) requireMutationPhase(phase string) bool {
+	phase = strings.TrimSpace(phase)
+	var err error
+	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && phase != "" {
+		status := jobs.StatusRunning
+		err = jm.Transition(r.jobID, jobs.Intent{Status: &status, Phase: &phase})
+	} else {
+		r.jobPhase = phase
+	}
+	if err != nil {
+		r.deps().Logf("failed to persist job %q APT mutation phase %q: %v", r.jobID, phase, err)
+		r.lastErrClass = "persistence"
+		logs := r.currentLogs() + fmt.Sprintf("\nUnable to persist the APT mutation phase; command aborted before execution: %v", err)
+		r.setCommandErrorLogs(logs, err)
+		return false
+	}
+	r.jobPhase = phase
+	return true
 }
 
 func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
@@ -376,11 +409,11 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		r.markErrorClass(err)
 		switch HostMaintenanceErrorStageOf(err) {
 		case HostMaintenanceStageAuth:
-			r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("Auth setup failed: %v", err), err)
 		case HostMaintenanceStageHostKey:
-			r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err), err)
 		default:
-			r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("SSH connection failed: %v", err), err)
 		}
 		return false
 	}
@@ -660,7 +693,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if err != nil {
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
+				r.setCommandErrorLogs(logs, err)
 				return
 			}
 
@@ -814,7 +847,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			r.setJobPhase(jobs.PhaseAptUpgrade)
+			if !r.requireMutationPhase(jobs.PhaseAptUpgrade) {
+				return
+			}
 			_ = r.withStatus(func(status *servers.ServerStatus) {
 				status.Status = "upgrading"
 				status.ApprovalScope = ""
@@ -854,7 +889,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if err != nil {
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
-				r.setErrorLogs(logs)
+				r.setCommandErrorLogs(logs, err)
 				return
 			}
 			r.upgradeCompleted = true
@@ -962,7 +997,7 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", r.server.User)
+		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", r.server.User)
 		escapedLine := ShellEscapeSingleQuotes(line)
 		cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
@@ -982,8 +1017,19 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 
 func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...", func(r *withActorRunner) {
-		r.setJobPhase(jobs.PhaseAutoremove)
+		if !r.requireMutationPhase(jobs.PhaseAutoremove) {
+			return
+		}
 		r.runSingleCommand("autoremove.command", "\nautoremove attempt %d/%d failed: %v; retrying in %s", AptAutoremoveCmd, nil, "\nAutoremove completed.")
+	})
+}
+
+func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...", func(r *withActorRunner) {
+		if !r.requireMutationPhase(jobs.PhaseReconcile) {
+			return
+		}
+		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, nil, "\nAPT/DPKG repair completed and package health checks passed.")
 	})
 }
 
@@ -999,6 +1045,8 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 		func(status *servers.ServerStatus, policy RetryPolicy) {
 			if jobKind == jobs.KindAutoremove {
 				status.Status = "autoremove"
+			} else if jobKind == jobs.KindAptRepair {
+				status.Status = runtimepkg.StatusRepairing
 			} else {
 				status.Status = "sudoers"
 			}
@@ -1052,7 +1100,7 @@ func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, s
 	if err != nil {
 		r.markErrorClass(err)
 		logs += fmt.Sprintf("\nError: %v", err)
-		r.setErrorLogs(logs)
+		r.setCommandErrorLogs(logs, err)
 		return
 	}
 	_ = r.withStatus(func(status *servers.ServerStatus) {

@@ -348,6 +348,120 @@ func TestJobManagerMarkUnfinishedJobsInterrupted(t *testing.T) {
 	}
 }
 
+func TestJobManagerMarksInterruptedAptMutationsForReconciliation(t *testing.T) {
+	db := openJobTestDB(t)
+	var restored []Record
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		SyncRuntime: func(record Record) {
+			restored = append(restored, record)
+		},
+		Now: func() time.Time { return time.Date(2026, 5, 17, 16, 0, 0, 0, time.UTC) },
+	})
+	records := []Record{
+		{ID: "update-mutation", Kind: KindUpdate, ServerName: "srv-update", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpgrade},
+		{ID: "autoremove-mutation", Kind: KindAutoremove, ServerName: "srv-autoremove", Actor: "admin", Status: StatusRunning, Phase: PhaseAutoremove},
+		{ID: "repair-mutation", Kind: KindAptRepair, ServerName: "srv-repair", Actor: "admin", Status: StatusRunning, Phase: PhaseReconcile},
+		{ID: "metadata-refresh", Kind: KindUpdate, ServerName: "srv-update-metadata", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpdate},
+	}
+	for _, record := range records {
+		if err := manager.ImportJobRecord(record); err != nil {
+			t.Fatalf("ImportJobRecord(%s) error = %v", record.ID, err)
+		}
+	}
+	restored = nil
+
+	if err := manager.MarkUnfinishedJobsInterrupted(); err != nil {
+		t.Fatalf("MarkUnfinishedJobsInterrupted() error = %v", err)
+	}
+	for _, id := range []string{"update-mutation", "autoremove-mutation", "repair-mutation"} {
+		got, err := manager.GetJob(id)
+		if err != nil {
+			t.Fatalf("GetJob(%s) error = %v", id, err)
+		}
+		if got.Status != StatusFailed || got.Phase != PhaseComplete || got.ErrorClass != "reconciliation_required" {
+			t.Fatalf("interrupted mutation %s = %+v, want failed reconciliation requirement", id, got)
+		}
+	}
+	metadataRefresh, err := manager.GetJob("metadata-refresh")
+	if err != nil {
+		t.Fatalf("GetJob(metadata-refresh) error = %v", err)
+	}
+	if metadataRefresh.Status != StatusInterrupted || metadataRefresh.ErrorClass != "restart" {
+		t.Fatalf("metadata refresh = %+v, want ordinary restart interruption", metadataRefresh)
+	}
+
+	if err := manager.RestoreReconciliationRequiredJobs(); err != nil {
+		t.Fatalf("RestoreReconciliationRequiredJobs() error = %v", err)
+	}
+	if len(restored) != 3 {
+		t.Fatalf("restored = %+v, want three interrupted APT mutations", restored)
+	}
+}
+
+func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T) {
+	db := openJobTestDB(t)
+	var restored []Record
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		SyncRuntime: func(record Record) {
+			restored = append(restored, record)
+		},
+	})
+	records := []Record{
+		{ID: "unresolved", Kind: KindUpdate, ServerName: "srv-unresolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "resolved-failure", Kind: KindUpdate, ServerName: "srv-resolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "resolved-repair", Kind: KindAptRepair, ServerName: "srv-resolved", Actor: "admin", Status: StatusSucceeded, CreatedAt: "2026-05-17T15:00:00.000000000Z"},
+	}
+	for _, record := range records {
+		if err := manager.ImportJobRecord(record); err != nil {
+			t.Fatalf("ImportJobRecord(%s) error = %v", record.ID, err)
+		}
+	}
+	restored = nil
+
+	if err := manager.RestoreReconciliationRequiredJobs(); err != nil {
+		t.Fatalf("RestoreReconciliationRequiredJobs() error = %v", err)
+	}
+	if len(restored) != 1 || restored[0].ID != "unresolved" {
+		t.Fatalf("restored = %+v, want only unresolved reconciliation job", restored)
+	}
+}
+
+func TestRenameServerTxKeepsReconciliationJobAttachedToRenamedServer(t *testing.T) {
+	db := openJobTestDB(t)
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{})
+	record := Record{
+		ID:         "reconciliation-job",
+		Kind:       KindUpdate,
+		ServerName: "srv-old",
+		Actor:      "admin",
+		Status:     StatusFailed,
+		ErrorClass: "reconciliation_required",
+		CreatedAt:  "2026-05-17T14:00:00.000000000Z",
+	}
+	if err := manager.ImportJobRecord(record); err != nil {
+		t.Fatalf("ImportJobRecord() error = %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := RenameServerTx(tx, "srv-old", "srv-new"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("RenameServerTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	got, err := manager.GetJob(record.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if got.ServerName != "srv-new" {
+		t.Fatalf("renamed job server = %q, want srv-new", got.ServerName)
+	}
+}
+
 func TestJobManagerDoesNotDispatchCallbacksAfterRepositoryFailure(t *testing.T) {
 	repo := &failingRepository{err: errors.New("write failed")}
 	var notifications []string
@@ -417,6 +531,10 @@ func (r *failingRepository) Get(string) (Record, error) {
 }
 
 func (r *failingRepository) FindLatestActiveByServerAndKind(string, string) (*Record, error) {
+	return nil, r.err
+}
+
+func (r *failingRepository) ListReconciliationRequired() ([]Record, error) {
 	return nil, r.err
 }
 

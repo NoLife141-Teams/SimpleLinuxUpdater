@@ -5,8 +5,8 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function dashboardProjectionConsumptionFactory() {
     "use strict";
 
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
-    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh", "done"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"]);
+    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh", "done"]);
     const fallbackRiskOrder = Object.freeze({ critical: 4, high: 4, elevated: 3, warning: 2, normal: 1, routine: 1 });
 
     function clone(value) {
@@ -191,7 +191,9 @@
         }
         const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "normal").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
-        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "sudoers", "facts_refresh"].includes(text(server.status).toLowerCase());
+        const statusValue = text(server.status).toLowerCase();
+        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"].includes(statusValue);
+        const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
         const triage = {
             ...clone(rawTriage),
             eligible: Object.hasOwn(rawTriage, "eligible") ? !!rawTriage.eligible : (pendingApproval && pendingPackages > 0),
@@ -213,7 +215,7 @@
             can_approve_full: actionEnabled(actionViews, "approve_full", runtimePending && approvalCounts.fullPlanAvailable),
             can_cancel: actionEnabled(actionViews, "cancel", runtimePending),
             can_refresh_facts: actionEnabled(actionViews, "refresh_facts", transientFallback),
-            can_run_checks: actionEnabled(actionViews, "update", transientFallback)
+            can_run_checks: actionEnabled(actionViews, "update", packageMutationFallback)
         };
         const auth = authFacts(server, globalKeyAvailable);
         let driftReason = "";
@@ -224,14 +226,24 @@
                 : ". Run a fresh update check or inspect logs before approving";
             driftReason = `Timeline is waiting for approval, but runtime status is ${statusLabel(server.status)}${suffix}`;
         }
-        const failed = text(server.status).toLowerCase() === "error" || timeline.state === "error";
+        const failed = ["error", "needs_reconciliation"].includes(text(server.status).toLowerCase()) || timeline.state === "error";
         const failureReason = failed
             ? [timeline.summary, record(intelligence.last_update).failure_cause, record(intelligence.last_failed_update).failure_cause, record(intelligence.last_failed).failure_cause, record(intelligence.last_failure).failure_cause, server.failure_cause]
                 .map(value => text(value))
                 .find(value => value && value.toLowerCase() !== "no maintenance activity") || "Completed with errors"
             : "";
-        const actions = Object.fromEntries(["update", "autoremove", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
+        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
+        const rawRecommendedAction = record(intelligence.recommended_action);
+        const reconciliationFallback = statusValue === "needs_reconciliation";
+        const recommendedAction = {
+            key: text(rawRecommendedAction.key, reconciliationFallback ? "repair_package_state" : "healthy"),
+            label: text(rawRecommendedAction.label, reconciliationFallback ? "Repair package state" : "Healthy"),
+            detail: text(rawRecommendedAction.detail, reconciliationFallback
+                ? "The last APT outcome was uncertain. Inspect and repair package-manager state before retrying."
+                : "No immediate maintenance action is required."),
+            action: text(rawRecommendedAction.action, reconciliationFallback ? "repair_apt" : "")
+        };
 
         return {
             name: text(server.name),
@@ -262,8 +274,10 @@
             rebootRequired: health.reboot_required === true,
             busy: inFlightNames.has(text(server.name)) || !transientFallback,
             actions,
-            canRunUpdate: actionEnabled(actionViews, "update", transientFallback),
-            canRunAutoremove: actionEnabled(actionViews, "autoremove", transientFallback),
+            recommendedAction,
+            canRunUpdate: actionEnabled(actionViews, "update", packageMutationFallback),
+            canRunAutoremove: actionEnabled(actionViews, "autoremove", packageMutationFallback),
+            canRepairApt: actionEnabled(actionViews, "repair_apt", false),
             canRunSudoers: actionEnabled(actionViews, "enable_apt", transientFallback),
             canRefreshFacts: actionEnabled(actionViews, "refresh_facts", transientFallback)
         };

@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -431,6 +432,74 @@ func TestIsAptLockProtectedCommand(t *testing.T) {
 		if IsAptLockProtectedCommand(command) {
 			t.Fatalf("IsAptLockProtectedCommand(%q) = true, want false", command)
 		}
+	}
+}
+
+func TestIsAptMutationCommandExcludesMetadataRefresh(t *testing.T) {
+	if IsAptMutationCommand(AptUpdateCmd) {
+		t.Fatal("apt update must not require dpkg reconciliation")
+	}
+	for _, command := range []string{AptUpgradeCmd, AptFullUpgradeCmd, AptAutoremoveCmd, AptRepairCmd} {
+		if !IsAptMutationCommand(command) {
+			t.Fatalf("IsAptMutationCommand(%q) = false, want true", command)
+		}
+	}
+}
+
+func TestAptRepairLockGuardFailsClosedOnProbeErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		probe       string
+		wantProceed bool
+	}{
+		{name: "no lock holder", probe: "sh -c 'exit 1'", wantProceed: true},
+		{name: "active lock holder", probe: "sh -c 'printf 1234; exit 0'"},
+		{name: "probe diagnostic", probe: "sh -c 'printf permission-denied >&2; exit 1'"},
+		{name: "unexpected probe exit", probe: "sh -c 'exit 2'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := buildAptRepairLockGuard(tt.probe) + "; printf repair-started"
+			output, err := exec.Command("sh", "-c", command).CombinedOutput()
+			proceeded := strings.Contains(string(output), "repair-started")
+			if proceeded != tt.wantProceed {
+				t.Fatalf("repair proceeded = %v, want %v; output = %q; error = %v", proceeded, tt.wantProceed, output, err)
+			}
+			if tt.wantProceed && err != nil {
+				t.Fatalf("lock guard error = %v, want success; output = %q", err, output)
+			}
+			if !tt.wantProceed && err == nil {
+				t.Fatalf("lock guard succeeded, want blocking error; output = %q", output)
+			}
+		})
+	}
+}
+
+func TestAptRepairAuditGuardRequiresEmptySuccessfulAudit(t *testing.T) {
+	tests := []struct {
+		name        string
+		audit       string
+		wantProceed bool
+	}{
+		{name: "clean audit", audit: "sh -c 'exit 0'", wantProceed: true},
+		{name: "reported package problem", audit: "sh -c 'printf partially-installed-package; exit 0'"},
+		{name: "audit command failure", audit: "sh -c 'printf audit-failed >&2; exit 2'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := buildAptRepairAuditGuard(tt.audit) + " && printf repair-complete"
+			output, err := exec.Command("sh", "-c", command).CombinedOutput()
+			proceeded := strings.Contains(string(output), "repair-complete")
+			if proceeded != tt.wantProceed {
+				t.Fatalf("repair proceeded = %v, want %v; output = %q; error = %v", proceeded, tt.wantProceed, output, err)
+			}
+			if tt.wantProceed && err != nil {
+				t.Fatalf("audit guard error = %v, want success; output = %q", err, output)
+			}
+			if !tt.wantProceed && err == nil {
+				t.Fatalf("audit guard succeeded, want blocking error; output = %q", output)
+			}
+		})
 	}
 }
 

@@ -50,7 +50,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
         const allowedStatuses = new Set([
             "idle", "updating", "pending_approval", "approved", "cancelled",
-            "upgrading", "autoremove", "sudoers", "done", "error", "success",
+            "upgrading", "autoremove", "repairing", "needs_reconciliation", "sudoers", "done", "error", "success",
             "failure", "failed", "started", "ignored", "running", "queued", "skipped",
             "facts_refresh"
         ]);
@@ -935,6 +935,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const securityCount = getSecurityUpdateCount(server);
             const approvalCounts = getPendingApprovalCounts(server);
             const intelligence = getServerIntelligence(server.name);
+            const recommendedAction = selected.recommendedAction || { key: "healthy", label: "Healthy", detail: "No immediate maintenance action is required.", action: "" };
             const timeline = getServerTimeline(server);
             const triage = getServerApprovalTriage(server);
             const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
@@ -952,6 +953,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
 		            const canRunUpdate = canRunUpdateAction(server);
 		            const canRunAutoremove = canRunAutoremoveAction(server);
+		            const canRepairApt = canRepairAptAction(server);
 		            const canRefreshFacts = canRefreshFactsAction(server);
 		            const canRunSudoers = canRunSudoersAction(server);
 		            const driftReason = pendingApprovalDriftReason(server);
@@ -977,6 +979,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
+                <section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
+                    <div class="recommended-action-copy">
+                        <span class="mini-label">Recommended action</span>
+                        <strong>${escapeHtml(recommendedAction.label || "Healthy")}</strong>
+                        <p>${escapeHtml(recommendedAction.detail || "No immediate maintenance action is required.")}</p>
+                    </div>
+                    ${recommendedAction.action === "repair_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="repair-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRepairApt, "Inspect and repair APT/DPKG state", "APT repair is not available for the current state")}>Repair APT</button>` : ""}
+                </section>
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
@@ -1529,6 +1539,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		                return "Updating…";
 		            case "autoremove":
 		                return "Autoremoving…";
+		            case "repairing":
+		                return "Repairing APT…";
 		            case "sudoers":
 		                return "Configuring…";
 		            case "facts_refresh":
@@ -1564,6 +1576,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function canRunAutoremoveAction(server) {
 	            return !!serverPresentation(server)?.canRunAutoremove;
+	        }
+
+	        function canRepairAptAction(server) {
+	            return !!serverPresentation(server)?.canRepairApt;
 	        }
 
 	        function canRunSudoersAction(server) {
@@ -1830,6 +1846,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const intelligence = presentation.intelligence;
 	                    const timeline = presentation.timeline;
 	                    const triage = presentation.triage;
+	                    const recommendedAction = presentation.recommendedAction || { label: "Healthy", detail: "No immediate maintenance action is required.", action: "" };
 	                    const lastUpdate = intelligence?.last_update;
 	                    const nextRun = intelligence?.next_run;
 	                    const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
@@ -1846,6 +1863,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const canApproveSecurity = !!triage.can_approve_security;
 	                    const canCancel = !!triage.can_cancel;
 	                    const canUpdate = presentation.canRunUpdate;
+	                    const canRepairApt = presentation.canRepairApt;
 	                    const failureReason = presentation.failureReason;
 	                    const driftReason = presentation.driftReason;
 	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
@@ -1865,7 +1883,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
                         : "";
                     const cancelButton = `<button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>`;
-                    const actionButtons = server.status === 'pending_approval'
+					const actionButtons = recommendedAction.action === "repair_apt" && canRepairApt
+						? `
+							<div class="actions-grid timeline-actions">
+								<button type="button" class="btn-warning" data-action="repair-apt" data-name="${safeDataName}">Repair APT</button>
+								<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+							</div>
+						  `
+						: server.status === 'pending_approval'
 	                        ? `
 	                            <div class="actions-grid timeline-actions">
 	                                <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>
@@ -1912,6 +1937,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             <div class="timeline-progress-copy">
                                 <strong>${escapeHtml(timelineLabel)}</strong>
                                 <span>${escapeHtml(timelineSummary)}</span>
+								<span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label || "Healthy")}</span>
                                 ${failureReasonHtml}
                                 ${driftReasonHtml}
                                 <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
@@ -2026,6 +2052,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
             if (action === "run-autoremove") {
                 runAutoremove(name);
+                return;
+            }
+            if (action === "repair-apt") {
+                repairApt(name);
                 return;
             }
             if (action === "enable-apt") {
@@ -2240,6 +2270,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        async function runAutoremove(name) {
 	            await runSingleHostAction(name, "autoremove", "autoremove", () => (
 	                postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')
+	            ));
+	        }
+
+	        async function repairApt(name) {
+	            if (!canRepairAptAction(getServerByName(name))) {
+	                statusActionAdapter.notify("APT repair is not available for the current server state.");
+	                return;
+	            }
+	            const confirmed = await statusActionAdapter.confirm(
+	                `Repair APT/DPKG state on ${name}?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`
+	            );
+	            if (!confirmed) return;
+	            await runSingleHostAction(name, "repair_apt", "repair APT", () => (
+	                postServerAction(`/api/repair/${encodeURIComponent(name)}`, "Failed to start APT repair.", {
+	                    headers: { "Content-Type": "application/json" },
+	                    body: JSON.stringify({ confirm: true })
+	                })
 	            ));
 	        }
 

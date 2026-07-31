@@ -22,6 +22,7 @@
         "approved",
         "upgrading",
         "autoremove",
+        "repairing",
         "sudoers",
         "facts_refresh"
     ]);
@@ -36,13 +37,13 @@
         refresh_facts: "can_refresh_facts"
     });
 
-    const allowedStatusFilters = new Set(["", "idle", "updating", "pending_approval", "upgrading", "autoremove", "done", "error"]);
+    const allowedStatusFilters = new Set(["", "idle", "updating", "pending_approval", "upgrading", "autoremove", "repairing", "needs_reconciliation", "done", "error"]);
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
-    const dashboardActionKeys = ["update", "autoremove", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
+    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "sudoers", "facts_refresh"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
 
     function cloneValue(value) {
@@ -123,6 +124,7 @@
             if (key === "approve_full") return `${pluralized(counts.full, "full-upgrade package")} ready for approval.`;
             if (key === "cancel") return "Ready to cancel pending approval.";
             if (key === "autoremove") return "Ready to run apt autoremove.";
+            if (key === "repair_apt") return "Ready to inspect and repair APT/DPKG state.";
             if (key === "refresh_facts") return "Ready to refresh host facts.";
             return "Ready.";
         }
@@ -142,7 +144,13 @@
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
         let enabled;
-        if (["update", "autoremove", "refresh_facts", "enable_apt", "disable_apt"].includes(key)) {
+        if (key === "repair_apt") {
+			const status = String(server && server.status || "").trim().toLowerCase();
+			enabled = !!server && status === "needs_reconciliation";
+		} else if (["update", "autoremove"].includes(key)) {
+			const status = String(server && server.status || "").trim().toLowerCase();
+			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
+		} else if (["refresh_facts", "enable_apt", "disable_apt"].includes(key)) {
             const status = String(server && server.status || "").trim().toLowerCase();
             enabled = !!server && !transientBlockingStatuses.has(status);
         } else if (field && triage && typeof triage === "object" && typeof triage[field] === "boolean") {

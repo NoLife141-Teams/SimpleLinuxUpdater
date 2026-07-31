@@ -338,6 +338,29 @@ test("malformed canonical actions fall back to legacy eligibility", () => {
     assert.equal(store.getAction("alpha", "update").enabled, true);
 });
 
+test("legacy APT repair eligibility matches the reconciliation-only API contract", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "generic-error", status: "error" },
+            { name: "uncertain-apt", status: "needs_reconciliation" }
+        ]
+    });
+    store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: {
+            servers: [
+                { name: "generic-error", actions: { repair_apt: { enabled: "yes" } } },
+                { name: "uncertain-apt", actions: { repair_apt: { enabled: "yes" } } }
+            ]
+        }
+    });
+
+    assert.equal(store.getAction("generic-error", "repair_apt").enabled, false);
+    assert.equal(store.getAction("uncertain-apt", "repair_apt").enabled, true);
+});
+
 test("accepted view exposes action facts for application-level dashboard consumption", () => {
     const store = createStore();
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });

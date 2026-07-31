@@ -97,6 +97,9 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 		return fmt.Errorf("reload restored Server inventory: %w", err)
 	}
 	initializeServerStateStatuses(deps.ServerState)
+	if err := jm.RestoreReconciliationRequiredJobs(); err != nil {
+		return fmt.Errorf("restore APT reconciliation state: %w", err)
+	}
 	if deps.GlobalSSHCredential != nil {
 		deps.GlobalSSHCredential.ResetCache()
 		_, _ = deps.GlobalSSHCredential.Resolve(ctx, "")

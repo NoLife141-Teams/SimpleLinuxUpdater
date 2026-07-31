@@ -93,6 +93,17 @@ After installing `psmisc`, rerun the app's passwordless apt helper or add a sudo
 
 If the host intentionally uses root SSH without `sudo` (common on Proxmox), connect as `root`; the updater will run apt and pre-check commands directly.
 
+## `needs_reconciliation` after an APT timeout
+
+This status means a mutating APT command timed out while its final outcome could not be proven. Do not immediately retry the update: the original `apt-get` or `dpkg` process may have continued after the SSH command timed out.
+
+1. Open the server in Status and follow **Recommended action → Repair package state**.
+2. Review the logs and verify no external maintenance session is active.
+3. Confirm **Repair APT**. The repair refuses to start its dpkg work while an APT/DPKG lock holder is detected.
+4. Retry the update only after the repair job reports that package health checks passed.
+
+For non-root SSH users configured before this feature was added, run **Enable apt** again so the managed sudoers rule also permits the exact `dpkg --configure -a` repair command.
+
 ## Pre-check failures
 
 Common reasons:

@@ -146,7 +146,7 @@
         let enabled;
         if (key === "repair_apt") {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && ["needs_reconciliation", "error"].includes(status);
+			enabled = !!server && status === "needs_reconciliation";
 		} else if (["update", "autoremove"].includes(key)) {
 			const status = String(server && server.status || "").trim().toLowerCase();
 			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);

@@ -15,15 +15,27 @@ var (
 	AptUpgradeCmd           = RootOrSudoCommand("apt-get -y upgrade")
 	AptFullUpgradeCmd       = RootOrSudoCommand("apt-get -y full-upgrade")
 	AptAutoremoveCmd        = RootOrSudoCommand("apt-get -y autoremove")
-	AptRepairCmd            = "if " + AptExtendedLockProbeCmd + "; then echo 'APT/DPKG repair blocked: package-manager lock is active.' >&2; exit 75; fi; " + RootOrSudoCommand("dpkg --configure -a") + " && " + RootOrSudoCommand("apt-get -y -f install") + " && " + RootOrSudoCommand("dpkg --audit") + " && " + RootOrSudoCommand("apt-get check")
 	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
 	AptExtendedLockProbeCmd = RootOrSudoCommand(
 		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
 	)
+	AptRepairCmd = buildAptRepairLockGuard(AptExtendedLockProbeCmd) + "; " +
+		RootOrSudoCommand("dpkg --configure -a") + " && " +
+		RootOrSudoCommand("apt-get -y -f install") + " && " +
+		RootOrSudoCommand("dpkg --audit") + " && " +
+		RootOrSudoCommand("apt-get check")
 	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
 	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
 	AptFullUpgradeSimCmd = "LC_ALL=C apt-get -s full-upgrade"
 )
+
+func buildAptRepairLockGuard(lockProbeCmd string) string {
+	return "apt_lock_probe_output=$(" + lockProbeCmd + " 2>&1); apt_lock_probe_status=$?; " +
+		"if [ \"$apt_lock_probe_status\" -eq 0 ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock is active.' \"$apt_lock_probe_output\" >&2; exit 75; fi; " +
+		"if [ \"$apt_lock_probe_status\" -ne 1 ] || [ -n \"$apt_lock_probe_output\" ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock probe failed.' \"$apt_lock_probe_output\" >&2; exit 76; fi"
+}
 
 const (
 	DefaultSSHCommandTimeout = 5 * time.Minute

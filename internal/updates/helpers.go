@@ -491,7 +491,27 @@ func BuildUpgradePlan(pending []servers.PendingUpdate, fullUpgradeStdout string,
 			plan.TotalSecurityCount++
 		}
 	}
+	estimate := EstimatePlanDiskSpace(plan)
+	plan.DiskSpaceRequiredKB = estimate.RequiredKB
+	plan.DiskSpacePackageCount = estimate.PackageCount
+	plan.DiskSpaceNewPackageCount = estimate.NewPackageCount
 	return plan
+}
+
+func EstimatePlanDiskSpace(plan servers.UpgradePlan) PlanDiskSpaceEstimate {
+	packageCount := plan.FullUpgradePackageCount
+	if fallback := plan.StandardPackageCount + plan.KeptBackPackageCount; packageCount < fallback {
+		packageCount = fallback
+	}
+	newPackageCount := len(plan.FullUpgradeNewPackages)
+	if keptBackNew := len(plan.KeptBackSecurityNewPackages); newPackageCount < keptBackNew {
+		newPackageCount = keptBackNew
+	}
+	return PlanDiskSpaceEstimate{
+		RequiredKB:      PlanDiskBaseReserveKB + int64(packageCount)*PlanDiskPerPackageKB + int64(newPackageCount)*PlanDiskPerNewPackageKB,
+		PackageCount:    packageCount,
+		NewPackageCount: newPackageCount,
+	}
 }
 
 func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
@@ -501,6 +521,10 @@ func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
 	plan.KeptBackSecurityPlanAvailable = true
 	plan.KeptBackSecurityNewPackages = parseAptSummaryPackages(stdout, "the following new packages will be installed:")
 	plan.KeptBackSecurityRemovedPackages = parseAptSummaryPackages(stdout, "the following packages will be removed:")
+	estimate := EstimatePlanDiskSpace(*plan)
+	plan.DiskSpaceRequiredKB = estimate.RequiredKB
+	plan.DiskSpacePackageCount = estimate.PackageCount
+	plan.DiskSpaceNewPackageCount = estimate.NewPackageCount
 }
 
 func ParseAptListMetadataEntry(line string) (servers.PendingUpdate, bool) {

@@ -92,7 +92,9 @@ Before `apt-get update`, update actions run mandatory pre-checks over SSH:
 - Lock contention: checks apt/dpkg locks with `/usr/bin/fuser` from the `psmisc` package. If `fuser` is missing or not allowed by passwordless sudo, the pre-check fails instead of using the older process-name fallback.
 - APT/DPKG health: runs `dpkg --audit` and `apt-get check`.
 
-If any pre-check fails, the update stops before the approval flow and the server enters `error`.
+After `apt-get update` and the read-only package simulations, a second disk-space gate evaluates the actual upgrade plan before approval. Its conservative reserve is `1 GiB` base + `64 MiB` per planned package + `512 MiB` per newly installed package. New kernels and firmware plans therefore reserve substantially more working space than a small library-only update. The calculated requirement, package counts, free space, and result are retained in the plan and update logs.
+
+If either the baseline or plan-aware pre-check fails, the update stops before the approval flow and the server enters `error`. The simulated plan remains available as failure evidence, but no pending approval or package mutation is created.
 
 ### Post-update health checks
 

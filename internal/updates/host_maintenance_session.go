@@ -132,6 +132,7 @@ func (f HostMaintenanceSessionFactoryFunc) Open(ctx context.Context, req HostMai
 type HostMaintenanceSession interface {
 	RunCommand(context.Context, HostCommandRequest) (HostCommandResult, error)
 	RunUpdatePrechecks(context.Context) PrecheckSummary
+	RunPlanDiskPrecheck(context.Context, servers.UpgradePlan) PrecheckResult
 	ListFailedSystemdUnits(context.Context) ([]string, string, error)
 	RunPostUpdateHealthChecks(context.Context, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
 	CollectServerFacts(context.Context) ServerFactsRecord
@@ -144,6 +145,7 @@ type HostMaintenanceSession interface {
 type HostMaintenanceSessionFuncs struct {
 	RunCommandFunc                func(context.Context, HostCommandRequest) (HostCommandResult, error)
 	RunUpdatePrechecksFunc        func(context.Context) PrecheckSummary
+	RunPlanDiskPrecheckFunc       func(context.Context, servers.UpgradePlan) PrecheckResult
 	ListFailedSystemdUnitsFunc    func(context.Context) ([]string, string, error)
 	RunPostUpdateHealthChecksFunc func(context.Context, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
 	CollectServerFactsFunc        func(context.Context) ServerFactsRecord
@@ -165,6 +167,13 @@ func (s *HostMaintenanceSessionFuncs) RunUpdatePrechecks(ctx context.Context) Pr
 		return s.RunUpdatePrechecksFunc(ctx)
 	}
 	return PrecheckSummary{AllPassed: true}
+}
+
+func (s *HostMaintenanceSessionFuncs) RunPlanDiskPrecheck(ctx context.Context, plan servers.UpgradePlan) PrecheckResult {
+	if s != nil && s.RunPlanDiskPrecheckFunc != nil {
+		return s.RunPlanDiskPrecheckFunc(ctx, plan)
+	}
+	return PrecheckResult{Name: "disk_space_plan", Passed: true, Details: "Plan-aware disk space check passed."}
 }
 
 func (s *HostMaintenanceSessionFuncs) ListFailedSystemdUnits(ctx context.Context) ([]string, string, error) {
@@ -421,6 +430,10 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 
 func (s *productionHostMaintenanceSession) RunUpdatePrechecks(ctx context.Context) PrecheckSummary {
 	return s.runUpdatePrechecks(ctx)
+}
+
+func (s *productionHostMaintenanceSession) RunPlanDiskPrecheck(ctx context.Context, plan servers.UpgradePlan) PrecheckResult {
+	return s.checkPlanDiskSpace(ctx, plan)
 }
 
 func (s *productionHostMaintenanceSession) ListFailedSystemdUnits(ctx context.Context) ([]string, string, error) {

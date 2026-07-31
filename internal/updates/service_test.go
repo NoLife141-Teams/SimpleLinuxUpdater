@@ -173,6 +173,54 @@ func TestRunRebootJobDoesNotRebootWithoutUptimeBaseline(t *testing.T) {
 	}
 }
 
+func TestRunUpdateJobStopsBeforeApprovalWhenPlanDiskCheckFails(t *testing.T) {
+	server := servers.Server{Name: "srv-plan-disk", Host: "example.org", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				if req.Operation != "update.apt_update" {
+					t.Fatalf("unexpected command after disk-plan failure: %+v", req)
+				}
+				return HostCommandResult{Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{AllPassed: true, Results: []PrecheckResult{{Name: "disk_space", Passed: true}}}
+			},
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(
+					[]servers.PendingUpdate{{Package: "linux-image-amd64"}},
+					[]string{"linux-image-amd64"},
+					servers.UpgradePlan{FullUpgradePlanAvailable: true, FullUpgradePackageCount: 1, FullUpgradeNewPackages: []string{"linux-image"}},
+				), Attempts: 1}, nil
+			},
+			RunPlanDiskPrecheckFunc: func(_ context.Context, plan servers.UpgradePlan) PrecheckResult {
+				if plan.FullUpgradePackageCount != 1 {
+					t.Fatalf("plan = %+v", plan)
+				}
+				return PrecheckResult{Name: "disk_space_plan", Details: "Insufficient disk space for the planned upgrade."}
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		AuditWithActor:    func(string, string, string, string, string, string, string, map[string]any) {},
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {
+			t.Fatal("discovery metadata must not publish after plan disk failure")
+		},
+	})
+	service.RunUpdateJob(UpdateRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "error" || !strings.Contains(status.Logs, "aborted before approval or package mutation") {
+		t.Fatalf("final status = %+v, want plan disk failure", status)
+	}
+	if status.UpgradePlan.FullUpgradePackageCount != 1 || len(status.PendingUpdates) != 0 {
+		t.Fatalf("failure evidence = %+v, want retained plan and no pending approval", status)
+	}
+}
+
 func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
 	state, statuses := testState()
 	statuses["srv"].PendingUpdates = []servers.PendingUpdate{

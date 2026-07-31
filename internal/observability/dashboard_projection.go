@@ -88,7 +88,7 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 		avgDurationMS = input.updateHistory.durationSum / float64(durationSamples)
 	}
 	triage := buildApprovalTriage(input.status, health, risk, timeline, input.triageTime)
-	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage)
+	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage, health)
 	triage = mirrorApprovalTriageActions(triage, actions)
 	recommendedAction := buildDashboardRecommendedAction(input.status, timeline, health, actions)
 

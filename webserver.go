@@ -2325,6 +2325,22 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm))
 	})
 
+	r.POST("/api/reboot/:name", func(c *gin.Context) {
+		name := c.Param("name")
+		var req struct {
+			Confirm bool `json:"confirm"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			audit(c, "reboot.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+			return
+		}
+		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+			audit(c, action, targetType, targetName, status, message, meta)
+		})
+		writeServerActionLifecycleResult(c, lifecycle.StartReboot(name, actorFromContext(c), clientIPFromContext(c), req.Confirm))
+	})
+
 	r.POST("/api/sudoers/:name", func(c *gin.Context) {
 		name := c.Param("name")
 		var req struct {

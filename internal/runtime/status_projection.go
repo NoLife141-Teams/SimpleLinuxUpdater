@@ -14,6 +14,7 @@ const (
 	StatusUpgrading           = "upgrading"
 	StatusAutoremove          = "autoremove"
 	StatusRepairing           = "repairing"
+	StatusRebooting           = "rebooting"
 	StatusNeedsReconciliation = "needs_reconciliation"
 	StatusSudoers             = "sudoers"
 	StatusFactsRefresh        = "facts_refresh"
@@ -56,6 +57,7 @@ func StatusInProgress(status string) bool {
 		StatusUpgrading,
 		StatusAutoremove,
 		StatusRepairing,
+		StatusRebooting,
 		StatusSudoers,
 		StatusFactsRefresh:
 		return true
@@ -72,6 +74,7 @@ func BlocksTransientAction(status string) bool {
 		StatusUpgrading,
 		StatusAutoremove,
 		StatusRepairing,
+		StatusRebooting,
 		StatusSudoers,
 		StatusFactsRefresh:
 		return true
@@ -86,7 +89,7 @@ func BlocksPackageMutation(status string) bool {
 
 func RuntimeStatusFromJob(record jobs.Record) string {
 	switch record.Kind {
-	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair, jobs.KindSudoersEnable, jobs.KindSudoersDisable:
+	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair, jobs.KindReboot, jobs.KindSudoersEnable, jobs.KindSudoersDisable:
 	default:
 		return ""
 	}
@@ -120,6 +123,8 @@ func RuntimeStatusFromJob(record jobs.Record) string {
 		return StatusAutoremove
 	case jobs.KindAptRepair:
 		return StatusRepairing
+	case jobs.KindReboot:
+		return StatusRebooting
 	case jobs.KindSudoersEnable, jobs.KindSudoersDisable:
 		return StatusSudoers
 	default:
@@ -214,7 +219,7 @@ func TimelinePhaseFromJobPhase(phase string) string {
 		return TimelinePhaseAptUpdate
 	case jobs.PhaseApprovalWait:
 		return TimelinePhasePendingApproval
-	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseReconcile, jobs.PhaseApply:
+	case jobs.PhaseAptUpgrade, jobs.PhaseAutoremove, jobs.PhaseReconcile, jobs.PhaseReboot, jobs.PhaseVerify, jobs.PhaseApply:
 		return TimelinePhaseUpgrade
 	case jobs.PhasePostchecks:
 		return TimelinePhasePostchecks
@@ -233,7 +238,7 @@ func TimelineProjectionFromServerStatus(status string) TimelineProjection {
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
 	case StatusSudoers, StatusFactsRefresh:
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
-	case StatusUpgrading, StatusAutoremove, StatusRepairing:
+	case StatusUpgrading, StatusAutoremove, StatusRepairing, StatusRebooting:
 		return TimelineProjection{CurrentPhase: TimelinePhaseUpgrade, State: TimelineStateActive}
 	case StatusDone, "success", StatusApproved:
 		return TimelineProjection{CurrentPhase: TimelinePhaseDoneError, State: TimelineStateDone}

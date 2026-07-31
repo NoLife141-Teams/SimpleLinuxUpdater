@@ -62,7 +62,7 @@ func TestDashboardProjectionRecommendsSafeNextMaintenanceAction(t *testing.T) {
 		{name: "active", status: "upgrading", timeline: testCollectedTimeline("upgrade", "active", "Upgrading"), wantKey: "monitor_apt"},
 		{name: "reconciliation", status: "needs_reconciliation", timeline: testCollectedTimeline("done_error", "error", "APT uncertain"), wantKey: "repair_package_state", wantAction: dashboardActionRepairApt},
 		{name: "approval", status: "pending_approval", timeline: testCollectedTimeline("pending_approval", "waiting", "Waiting"), wantKey: "review_approval"},
-		{name: "reboot", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok", RebootRequired: &rebootRequired}, wantKey: "reboot_and_verify"},
+		{name: "reboot", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok", RebootRequired: &rebootRequired}, wantKey: "reboot_and_verify", wantAction: dashboardActionReboot},
 		{name: "healthy", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok"}, wantKey: "healthy"},
 	}
 	for _, tt := range tests {
@@ -295,6 +295,7 @@ func TestDashboardProjectionActionContractDelegatesApprovalScopeAndOwnsTransient
 		dashboardActionEnableApt,
 		dashboardActionDisableApt,
 		dashboardActionRepairApt,
+		dashboardActionReboot,
 	}
 	for _, key := range actionKeys {
 		requireDashboardAction(t, pendingServer, key)

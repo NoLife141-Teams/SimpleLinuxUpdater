@@ -5,8 +5,8 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function dashboardProjectionConsumptionFactory() {
     "use strict";
 
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"]);
-    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh", "done"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
+    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "done"]);
     const fallbackRiskOrder = Object.freeze({ critical: 4, high: 4, elevated: 3, warning: 2, normal: 1, routine: 1 });
 
     function clone(value) {
@@ -192,7 +192,7 @@
         const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "normal").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
         const statusValue = text(server.status).toLowerCase();
-        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"].includes(statusValue);
+        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"].includes(statusValue);
         const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
         const triage = {
             ...clone(rawTriage),
@@ -232,7 +232,7 @@
                 .map(value => text(value))
                 .find(value => value && value.toLowerCase() !== "no maintenance activity") || "Completed with errors"
             : "";
-        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
+        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
         const reconciliationFallback = statusValue === "needs_reconciliation";
@@ -278,6 +278,7 @@
             canRunUpdate: actionEnabled(actionViews, "update", packageMutationFallback),
             canRunAutoremove: actionEnabled(actionViews, "autoremove", packageMutationFallback),
             canRepairApt: actionEnabled(actionViews, "repair_apt", false),
+            canReboot: actionEnabled(actionViews, "reboot", false),
             canRunSudoers: actionEnabled(actionViews, "enable_apt", transientFallback),
             canRefreshFacts: actionEnabled(actionViews, "refresh_facts", transientFallback)
         };

@@ -606,6 +606,7 @@ body.status-page tbody tr:last-child td {
 .status-upgrading,
 .status-autoremove,
 .status-repairing,
+.status-rebooting,
 .status-facts_refresh,
 .status-waiting_approval,
 .status-skipped,

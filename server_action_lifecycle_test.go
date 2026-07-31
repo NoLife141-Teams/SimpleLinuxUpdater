@@ -235,6 +235,45 @@ func TestServerActionLifecycleSudoersRecoveryPreservesReconciliationRequirement(
 	}
 }
 
+func TestServerActionLifecycleRebootRequiresConfirmationAndReadyState(t *testing.T) {
+	server := Server{Name: "srv-reboot", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+
+	t.Run("confirmation required", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "done"})
+		result := h.lifecycle().StartReboot(server.Name, "alice", "192.0.2.10", false)
+		if result.statusCode != http.StatusBadRequest || result.body["error"] != "Reboot confirmation required" {
+			t.Fatalf("result = %+v, want explicit confirmation error", result)
+		}
+	})
+
+	t.Run("package reconciliation blocks reboot", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+		result := h.lifecycle().StartReboot(server.Name, "alice", "192.0.2.10", true)
+		if result.statusCode != http.StatusConflict || result.body["error"] != "Server is not ready for a controlled reboot" {
+			t.Fatalf("result = %+v, want current-state conflict", result)
+		}
+	})
+
+	t.Run("ready state dispatches reboot job", func(t *testing.T) {
+		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "done"})
+		result := h.lifecycle().StartReboot(server.Name, "alice", "192.0.2.10", true)
+		if result.statusCode != http.StatusOK || result.body["message"] != "Reboot started" {
+			t.Fatalf("result = %+v, want reboot start", result)
+		}
+		status := h.state.CurrentStatusSnapshot(server.Name)
+		if status == nil || status.Status != "rebooting" {
+			t.Fatalf("runtime status = %+v, want rebooting", status)
+		}
+		var kind string
+		if err := h.db.QueryRow("SELECT kind FROM jobs WHERE id = ?", result.body["job_id"]).Scan(&kind); err != nil {
+			t.Fatalf("query reboot job: %v", err)
+		}
+		if kind != jobKindReboot || h.runnerRun == nil {
+			t.Fatalf("reboot job kind/run = %q/%t, want %q/true", kind, h.runnerRun != nil, jobKindReboot)
+		}
+	})
+}
+
 func TestServerActionLifecycleStartRejectsMissingServerAndInProgress(t *testing.T) {
 	server := Server{Name: "srv-busy", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 

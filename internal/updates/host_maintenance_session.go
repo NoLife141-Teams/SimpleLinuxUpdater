@@ -70,6 +70,7 @@ const (
 type HostCommandReplayPolicy string
 
 const (
+	ReplayNever                 HostCommandReplayPolicy = "never"
 	ReplayRetryableErrors       HostCommandReplayPolicy = "retryable_errors"
 	ReplayRetryableOutputErrors HostCommandReplayPolicy = "retryable_output_errors"
 )
@@ -387,7 +388,7 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 		return HostCommandResult{}, errors.New("host command runner is not configured")
 	}
 	var stdout, stderr string
-	attempts, err := s.runWithRetry(ctx, req.Operation, func(conn SSHConnection) error {
+	run := func(conn SSHConnection) error {
 		var runErr error
 		var stdin io.Reader
 		if req.Stdin != nil {
@@ -405,7 +406,16 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 			return MarkRetryableFromOutput(runErr, stdout+"\n"+stderr)
 		}
 		return runErr
-	})
+	}
+	if req.ReplayPolicy == ReplayNever {
+		s.stats.OperationAttempts[req.Operation]++
+		err := run(s.conn)
+		if err != nil {
+			err = &HostMaintenanceError{Stage: HostMaintenanceStageCommand, Operation: req.Operation, Attempts: 1, Err: err}
+		}
+		return HostCommandResult{Stdout: stdout, Stderr: stderr, Attempts: 1}, err
+	}
+	attempts, err := s.runWithRetry(ctx, req.Operation, run)
 	return HostCommandResult{Stdout: stdout, Stderr: stderr, Attempts: attempts}, err
 }
 

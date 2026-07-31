@@ -58,6 +58,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.WaitForApprovalPoll == nil {
 		d.WaitForApprovalPoll = func() { time.Sleep(ApprovalPollInterval) }
 	}
+	if d.Sleep == nil {
+		d.Sleep = time.Sleep
+	}
 	if d.HostMaintenanceSessions == nil {
 		d.HostMaintenanceSessions = hostMaintenanceUnavailableFactory()
 	}
@@ -997,7 +1000,7 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", r.server.User)
+		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock, /usr/bin/systemctl reboot", r.server.User)
 		escapedLine := ShellEscapeSingleQuotes(line)
 		cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
@@ -1031,6 +1034,73 @@ func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
 		}
 		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, nil, "\nAPT/DPKG repair completed and package health checks passed.")
 	})
+}
+
+func (s *Service) RunRebootJob(req RebootRunRequest) {
+	s.runWithActorShared(
+		req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindReboot, req.Policy,
+		"reboot.complete",
+		func(status *servers.ServerStatus, policy RetryPolicy) {
+			status.Status = runtimepkg.StatusRebooting
+			status.Logs = fmt.Sprintf("Starting controlled reboot...\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%", policy.MaxAttempts, policy.BaseDelay, policy.MaxDelay, policy.JitterPct)
+		},
+		commandRunnerAuditMeta,
+		DoneOnlyOutcome,
+		"reboot.ssh_dial",
+		func(r *withActorRunner) {
+			baseline := r.session.CollectServerFacts(context.Background())
+			if baseline.UptimeSeconds <= 0 {
+				r.lastErrClass = "verification"
+				r.setErrorLogs(r.currentLogs() + "\nUnable to establish a positive uptime baseline; reboot was not sent.")
+				return
+			}
+			r.appendStatusLog(fmt.Sprintf("\nBaseline captured: uptime=%ds kernel=%s.", baseline.UptimeSeconds, strings.TrimSpace(baseline.RunningKernelVersion)))
+			r.setJobPhase(jobs.PhaseReboot)
+			result, err := r.session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, ReplayPolicy: ReplayNever})
+			r.commandAttempts += result.Attempts
+			if err != nil {
+				r.markErrorClass(err)
+				r.setErrorLogs(r.currentLogs() + fmt.Sprintf("\nReboot command failed before acknowledgement: %v", err))
+				return
+			}
+			r.closeSession()
+			r.setJobPhase(jobs.PhaseVerify)
+			r.appendStatusLog("\nReboot command acknowledged. Waiting for the host to restart and return over SSH...")
+			deps := r.deps()
+			verifyPolicy := r.policy
+			verifyPolicy.MaxAttempts = 1
+			for attempt := 1; attempt <= RebootVerificationAttempts; attempt++ {
+				deps.Sleep(RebootVerificationInterval)
+				session, openErr := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+					Server: r.server, RetryPolicy: verifyPolicy, DialOperation: "reboot.verify.ssh_dial", CommandTimeout: r.commandTimeout,
+				})
+				if openErr != nil {
+					r.appendStatusLog(fmt.Sprintf("\nReboot verification %d/%d: host not reachable yet.", attempt, RebootVerificationAttempts))
+					continue
+				}
+				facts := session.CollectServerFacts(context.Background())
+				_ = session.Close()
+				if facts.UptimeSeconds > 0 && facts.UptimeSeconds < baseline.UptimeSeconds {
+					if facts.RebootRequired != nil && *facts.RebootRequired {
+						r.appendStatusLog(fmt.Sprintf("\nReboot verification %d/%d: host returned, but still reports reboot required.", attempt, RebootVerificationAttempts))
+						continue
+					}
+					if err := deps.SaveServerFacts(facts); err != nil {
+						deps.Logf("failed to persist post-reboot facts for %q: %v", r.server.Name, err)
+					}
+					logs := r.currentLogs()
+					_ = r.withStatus(func(status *servers.ServerStatus) {
+						status.Status = runtimepkg.StatusDone
+						status.Logs = logs + fmt.Sprintf("\nReboot verified: SSH restored, uptime reset to %ds, running kernel=%s.", facts.UptimeSeconds, strings.TrimSpace(facts.RunningKernelVersion))
+					})
+					return
+				}
+				r.appendStatusLog(fmt.Sprintf("\nReboot verification %d/%d: SSH reachable, but uptime reset is not proven yet.", attempt, RebootVerificationAttempts))
+			}
+			r.lastErrClass = "verification"
+			r.setErrorLogs(r.currentLogs() + "\nReboot could not be verified before the verification window expired.")
+		},
+	)
 }
 
 func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, jobKind string, policy RetryPolicy, auditAction, dialOpName, description string, runSteps func(*withActorRunner)) {

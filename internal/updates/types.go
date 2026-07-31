@@ -15,6 +15,7 @@ var (
 	AptUpgradeCmd           = RootOrSudoCommand("apt-get -y upgrade")
 	AptFullUpgradeCmd       = RootOrSudoCommand("apt-get -y full-upgrade")
 	AptAutoremoveCmd        = RootOrSudoCommand("apt-get -y autoremove")
+	ControlledRebootCmd     = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then systemctl reboot; else sudo -n systemctl reboot; fi' >/dev/null 2>&1 &"
 	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
 	AptExtendedLockProbeCmd = RootOrSudoCommand(
 		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
@@ -50,14 +51,16 @@ const (
 	MinSSHCommandTimeout     = 1 * time.Second
 	MaxSSHCommandTimeout     = 30 * time.Minute
 
-	CVELookupMaxPerPackage    = 12
-	CVELookupCommandTimeout   = 20 * time.Second
-	ApprovalPollInterval      = 200 * time.Millisecond
-	PostcheckNameAptHealth    = "post_apt_health"
-	PostcheckNameFailedUnits  = "failed_units"
-	PostcheckNameRebootNeeded = "reboot_required"
-	PostcheckNameCustomCmd    = "custom_command"
-	UpdateCompleteAction      = "update.complete"
+	CVELookupMaxPerPackage     = 12
+	CVELookupCommandTimeout    = 20 * time.Second
+	ApprovalPollInterval       = 200 * time.Millisecond
+	RebootVerificationInterval = 5 * time.Second
+	RebootVerificationAttempts = 24
+	PostcheckNameAptHealth     = "post_apt_health"
+	PostcheckNameFailedUnits   = "failed_units"
+	PostcheckNameRebootNeeded  = "reboot_required"
+	PostcheckNameCustomCmd     = "custom_command"
+	UpdateCompleteAction       = "update.complete"
 )
 
 type RetryPolicy struct {
@@ -196,6 +199,7 @@ type ServiceDeps struct {
 	LoadPostUpdateCheckConfig    func() PostUpdateCheckConfig
 	LoadScheduledJobBehavior     func(string) ScheduledJobBehavior
 	WaitForApprovalPoll          func()
+	Sleep                        func(time.Duration)
 	SaveServerFacts              func(ServerFactsRecord) error
 	UpdateScheduledDiscoveryMeta func(string, PackageDiscoveryOutcome)
 	UpdatePolicyRun              func(int64, policies.RunUpdate) error
@@ -221,6 +225,14 @@ type AutoremoveRunRequest struct {
 }
 
 type AptRepairRunRequest struct {
+	Server   servers.Server
+	Actor    string
+	ClientIP string
+	Policy   RetryPolicy
+	JobID    string
+}
+
+type RebootRunRequest struct {
 	Server   servers.Server
 	Actor    string
 	ClientIP string

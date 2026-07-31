@@ -374,9 +374,31 @@ func TestBuildUpgradePlanRecordsFullSimulationAvailability(t *testing.T) {
 	if !available.FullUpgradePlanAvailable || available.FullUpgradePackageCount != 2 {
 		t.Fatalf("available plan = %+v, want available full-upgrade plan", available)
 	}
+	wantRequiredKB := PlanDiskBaseReserveKB + 2*PlanDiskPerPackageKB + PlanDiskPerNewPackageKB
+	if available.DiskSpaceRequiredKB != wantRequiredKB || available.DiskSpacePackageCount != 2 || available.DiskSpaceNewPackageCount != 1 {
+		t.Fatalf("available plan disk estimate = %+v, want required=%d packages=2 new=1", available, wantRequiredKB)
+	}
 	unavailable := BuildUpgradePlan(pending, stdout, false)
 	if unavailable.FullUpgradePlanAvailable {
 		t.Fatalf("unavailable plan = %+v, should record failed full-upgrade simulation", unavailable)
+	}
+}
+
+func TestEstimatePlanDiskSpaceUsesMostConservativeKnownScope(t *testing.T) {
+	plan := servers.UpgradePlan{
+		StandardPackageCount:        3,
+		KeptBackPackageCount:        2,
+		FullUpgradePackageCount:     4,
+		FullUpgradeNewPackages:      []string{"kernel-a"},
+		KeptBackSecurityNewPackages: []string{"kernel-a", "kernel-b"},
+	}
+	estimate := EstimatePlanDiskSpace(plan)
+	if estimate.PackageCount != 5 || estimate.NewPackageCount != 2 {
+		t.Fatalf("EstimatePlanDiskSpace() = %+v, want packages=5 new=2", estimate)
+	}
+	want := PlanDiskBaseReserveKB + 5*PlanDiskPerPackageKB + 2*PlanDiskPerNewPackageKB
+	if estimate.RequiredKB != want {
+		t.Fatalf("required KB = %d, want %d", estimate.RequiredKB, want)
 	}
 }
 

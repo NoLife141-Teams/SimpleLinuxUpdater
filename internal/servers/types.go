@@ -117,6 +117,9 @@ type UpgradePlan struct {
 	KeptBackSecurityPackageCount    int      `json:"kept_back_security_package_count"`
 	KeptBackSecurityNewPackages     []string `json:"kept_back_security_new_packages"`
 	KeptBackSecurityRemovedPackages []string `json:"kept_back_security_removed_packages"`
+	DiskSpaceRequiredKB             int64    `json:"disk_space_required_kb"`
+	DiskSpacePackageCount           int      `json:"disk_space_package_count"`
+	DiskSpaceNewPackageCount        int      `json:"disk_space_new_package_count"`
 }
 
 type HostKeyScanResult struct {

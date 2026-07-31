@@ -724,6 +724,33 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.upgradePlan = discovery.UpgradePlan
+			planDiskResult := r.session.RunPlanDiskPrecheck(context.Background(), discovery.UpgradePlan)
+			r.precheckResults = append(r.precheckResults, planDiskResult)
+			planDiskState := "PASS"
+			if !planDiskResult.Passed {
+				planDiskState = "FAIL"
+			}
+			planDiskLog := fmt.Sprintf("\nPre-check %s [%s]: %s", planDiskResult.Name, planDiskState, planDiskResult.Details)
+			if trimmed := strings.TrimSpace(planDiskResult.Output); trimmed != "" {
+				planDiskLog += fmt.Sprintf(" Output: %s", trimmed)
+			}
+			r.appendStatusLog(planDiskLog)
+			if !planDiskResult.Passed {
+				r.lastErrClass = "permanent"
+				r.prechecksPassed = false
+				r.precheckFailed = planDiskResult.Name
+				_ = r.withStatus(func(status *servers.ServerStatus) {
+					status.Status = runtimepkg.StatusError
+					status.ApprovalScope = ""
+					status.ApprovalConfirmRemovals = false
+					status.Upgradable = nil
+					status.PendingUpdates = nil
+					status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
+					status.Logs += "\nPlan-aware disk pre-check failed. Update aborted before approval or package mutation."
+				})
+				return
+			}
+			logs = r.currentLogs()
 			deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
 			_ = r.withStatus(func(status *servers.ServerStatus) {
 				status.Status = "pending_approval"

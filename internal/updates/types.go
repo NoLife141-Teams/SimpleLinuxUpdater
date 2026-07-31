@@ -56,6 +56,9 @@ const (
 	ApprovalPollInterval       = 200 * time.Millisecond
 	RebootVerificationInterval = 5 * time.Second
 	RebootVerificationAttempts = 24
+	PlanDiskBaseReserveKB      = int64(1024 * 1024)
+	PlanDiskPerPackageKB       = int64(64 * 1024)
+	PlanDiskPerNewPackageKB    = int64(512 * 1024)
 	PostcheckNameAptHealth     = "post_apt_health"
 	PostcheckNameFailedUnits   = "failed_units"
 	PostcheckNameRebootNeeded  = "reboot_required"
@@ -84,6 +87,12 @@ type PrecheckSummary struct {
 	AllPassed   bool             `json:"all_passed"`
 	FailedCheck string           `json:"failed_check,omitempty"`
 	Results     []PrecheckResult `json:"results"`
+}
+
+type PlanDiskSpaceEstimate struct {
+	RequiredKB      int64
+	PackageCount    int
+	NewPackageCount int
 }
 
 type PostcheckSummary struct {

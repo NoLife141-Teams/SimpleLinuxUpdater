@@ -39,7 +39,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 
 - `internal/audit.Service` writes audit rows, lists audit events, prunes old rows, and renders Markdown reports.
 - `internal/servers.Service` owns server CRUD, tag normalization, secret persistence, rollback behavior, and per-server known-host operations.
-- `internal/updates.Service` owns update, APT reconciliation/repair, controlled reboot and verification, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
+- `internal/updates.Service` owns update, baseline and plan-aware pre-checks, APT reconciliation/repair, controlled reboot and verification, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
 - `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, structured job-log fragments, bounded compatibility previews, log retention, runtime-status sync callbacks, and dashboard notifications after successful writes.

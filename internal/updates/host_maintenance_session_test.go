@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -255,7 +256,7 @@ func TestProductionHostMaintenanceSessionPreUpdateFailuresAreSafeAndOrdered(t *t
 				precheckDiskSpaceCmd: {stdout: "not-a-number\n"},
 			},
 			failedCheck: "disk_space",
-			detail:      "Invalid free space value",
+			detail:      "invalid free space value",
 			commands:    1,
 		},
 		{
@@ -346,6 +347,25 @@ func TestProductionHostMaintenanceSessionPreUpdateFailuresAreSafeAndOrdered(t *t
 			}
 		})
 	}
+}
+
+func TestPlanDiskSpaceCheckUsesUpgradePlanReserve(t *testing.T) {
+	plan := servers.UpgradePlan{FullUpgradePackageCount: 10, FullUpgradeNewPackages: []string{"kernel"}}
+	estimate := EstimatePlanDiskSpace(plan)
+
+	t.Run("passes with reserve", func(t *testing.T) {
+		result := planDiskSpaceCheckResult(strconv.FormatInt(estimate.RequiredKB+1, 10), "", nil, plan)
+		if !result.Passed || !strings.Contains(result.Details, "10 package(s), including 1 new") {
+			t.Fatalf("result = %+v, want passing plan-aware check", result)
+		}
+	})
+
+	t.Run("fails below reserve", func(t *testing.T) {
+		result := planDiskSpaceCheckResult(strconv.FormatInt(estimate.RequiredKB-1, 10), "", nil, plan)
+		if result.Passed || result.Name != "disk_space_plan" || !strings.Contains(result.Details, "Insufficient disk space for the planned upgrade") {
+			t.Fatalf("result = %+v, want failing plan-aware check", result)
+		}
+	})
 }
 
 func TestProductionHostMaintenanceSessionHonorsCancellationAfterInspectionStarts(t *testing.T) {

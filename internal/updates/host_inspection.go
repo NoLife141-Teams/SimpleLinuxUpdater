@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"debian-updater/internal/health"
+	"debian-updater/internal/servers"
 )
 
 const (
@@ -65,29 +66,63 @@ func (s *productionHostMaintenanceSession) checkDiskSpace(ctx context.Context) P
 	return diskSpaceCheckResult(stdout, stderr, err)
 }
 
+func (s *productionHostMaintenanceSession) checkPlanDiskSpace(ctx context.Context, plan servers.UpgradePlan) PrecheckResult {
+	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDiskSpaceCmd)
+	return planDiskSpaceCheckResult(stdout, stderr, err, plan)
+}
+
+func planDiskSpaceCheckResult(stdout, stderr string, err error, plan servers.UpgradePlan) PrecheckResult {
+	estimate := EstimatePlanDiskSpace(plan)
+	output := compactInspectionOutput(stdout, stderr)
+	if err != nil {
+		return PrecheckResult{Name: "disk_space_plan", Details: boundedInspectionDetail("Failed to read free disk space for the upgrade plan: %v", err), Output: output}
+	}
+	minFreeKB, parseErr := parseMinimumFreeDiskKB(stdout)
+	if parseErr != nil {
+		return PrecheckResult{Name: "disk_space_plan", Details: boundedInspectionDetail("%s", parseErr.Error()), Output: output}
+	}
+	details := boundedInspectionDetail(
+		"Plan requires %.2f GiB reserved: %.2f GiB free for %d package(s), including %d new (base %.2f GiB + %.2f GiB/package + %.2f GiB/new package).",
+		inspectionKBToGiB(estimate.RequiredKB), inspectionKBToGiB(minFreeKB), estimate.PackageCount, estimate.NewPackageCount,
+		inspectionKBToGiB(PlanDiskBaseReserveKB), inspectionKBToGiB(PlanDiskPerPackageKB), inspectionKBToGiB(PlanDiskPerNewPackageKB),
+	)
+	if minFreeKB < estimate.RequiredKB {
+		return PrecheckResult{Name: "disk_space_plan", Details: "Insufficient disk space for the planned upgrade. " + details, Output: output}
+	}
+	return PrecheckResult{Name: "disk_space_plan", Passed: true, Details: "Plan-aware disk space OK. " + details, Output: output}
+}
+
 func diskSpaceCheckResult(stdout, stderr string, err error) PrecheckResult {
 	output := compactInspectionOutput(stdout, stderr)
 	if err != nil {
 		return PrecheckResult{Name: "disk_space", Details: boundedInspectionDetail("Failed to read free disk space: %v", err), Output: output}
 	}
-	fields := strings.Fields(stdout)
-	if len(fields) == 0 {
-		return PrecheckResult{Name: "disk_space", Details: "Could not parse free disk space output.", Output: output}
-	}
-	minFreeKB := int64(-1)
-	for _, field := range fields {
-		value, convErr := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
-		if convErr != nil {
-			return PrecheckResult{Name: "disk_space", Details: boundedInspectionDetail("Invalid free space value %q.", field), Output: output}
-		}
-		if minFreeKB == -1 || value < minFreeKB {
-			minFreeKB = value
-		}
+	minFreeKB, parseErr := parseMinimumFreeDiskKB(stdout)
+	if parseErr != nil {
+		return PrecheckResult{Name: "disk_space", Details: boundedInspectionDetail("%s", parseErr.Error()), Output: output}
 	}
 	if minFreeKB < precheckMinFreeKB {
 		return PrecheckResult{Name: "disk_space", Details: boundedInspectionDetail("Insufficient disk space: %.2f GiB free (minimum %.2f GiB).", inspectionKBToGiB(minFreeKB), inspectionKBToGiB(precheckMinFreeKB))}
 	}
 	return PrecheckResult{Name: "disk_space", Passed: true, Details: boundedInspectionDetail("Disk space OK: %.2f GiB free (minimum %.2f GiB).", inspectionKBToGiB(minFreeKB), inspectionKBToGiB(precheckMinFreeKB))}
+}
+
+func parseMinimumFreeDiskKB(stdout string) (int64, error) {
+	fields := strings.Fields(stdout)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("could not parse free disk space output")
+	}
+	minFreeKB := int64(-1)
+	for _, field := range fields {
+		value, err := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid free space value %q", field)
+		}
+		if minFreeKB == -1 || value < minFreeKB {
+			minFreeKB = value
+		}
+	}
+	return minFreeKB, nil
 }
 
 func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) PrecheckResult {

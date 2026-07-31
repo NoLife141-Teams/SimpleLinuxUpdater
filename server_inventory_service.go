@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	healthpkg "debian-updater/internal/health"
+	jobspkg "debian-updater/internal/jobs"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
@@ -77,6 +78,7 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		PrunePolicyOverridesForServers: pruneUpdatePolicyOverridesForServersTx,
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,
 		RenamePolicyTargetServers:      renameUpdatePolicyTargetServersTx,
+		RenameJobsServer:               jobspkg.RenameServerTx,
 		RenameServerFacts:              observation.RenameServerTx,
 		DeleteServerFacts:              observation.DeleteServerTx,
 	})

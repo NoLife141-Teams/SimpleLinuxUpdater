@@ -605,6 +605,7 @@ body.status-page tbody tr:last-child td {
 .status-updating,
 .status-upgrading,
 .status-autoremove,
+.status-repairing,
 .status-facts_refresh,
 .status-waiting_approval,
 .status-skipped,
@@ -615,6 +616,7 @@ body.status-page tbody tr:last-child td {
 }
 
 .status-error,
+.status-needs_reconciliation,
 .status-failure,
 .status-failed,
 .status-cancelled,

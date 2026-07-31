@@ -376,6 +376,42 @@ func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T
 	}
 }
 
+func TestRenameServerTxKeepsReconciliationJobAttachedToRenamedServer(t *testing.T) {
+	db := openJobTestDB(t)
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{})
+	record := Record{
+		ID:         "reconciliation-job",
+		Kind:       KindUpdate,
+		ServerName: "srv-old",
+		Actor:      "admin",
+		Status:     StatusFailed,
+		ErrorClass: "reconciliation_required",
+		CreatedAt:  "2026-05-17T14:00:00.000000000Z",
+	}
+	if err := manager.ImportJobRecord(record); err != nil {
+		t.Fatalf("ImportJobRecord() error = %v", err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	if err := RenameServerTx(tx, "srv-old", "srv-new"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("RenameServerTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	got, err := manager.GetJob(record.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if got.ServerName != "srv-new" {
+		t.Fatalf("renamed job server = %q, want srv-new", got.ServerName)
+	}
+}
+
 func TestJobManagerDoesNotDispatchCallbacksAfterRepositoryFailure(t *testing.T) {
 	repo := &failingRepository{err: errors.New("write failed")}
 	var notifications []string

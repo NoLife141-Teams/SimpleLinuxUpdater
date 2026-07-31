@@ -234,11 +234,15 @@
             : "";
         const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
+        const rawRecommendedAction = record(intelligence.recommended_action);
+        const reconciliationFallback = statusValue === "needs_reconciliation";
         const recommendedAction = {
-            key: text(record(intelligence.recommended_action).key, "healthy"),
-            label: text(record(intelligence.recommended_action).label, "Healthy"),
-            detail: text(record(intelligence.recommended_action).detail, "No immediate maintenance action is required."),
-            action: text(record(intelligence.recommended_action).action)
+            key: text(rawRecommendedAction.key, reconciliationFallback ? "repair_package_state" : "healthy"),
+            label: text(rawRecommendedAction.label, reconciliationFallback ? "Repair package state" : "Healthy"),
+            detail: text(rawRecommendedAction.detail, reconciliationFallback
+                ? "The last APT outcome was uncertain. Inspect and repair package-manager state before retrying."
+                : "No immediate maintenance action is required."),
+            action: text(rawRecommendedAction.action, reconciliationFallback ? "repair_apt" : "")
         };
 
         return {

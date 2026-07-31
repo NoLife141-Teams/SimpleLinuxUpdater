@@ -7,6 +7,8 @@ import (
 	"log"
 	"strings"
 
+	runtimepkg "debian-updater/internal/runtime"
+
 	"golang.org/x/crypto/ssh"
 )
 
@@ -157,6 +159,7 @@ type ServiceDeps struct {
 	PrunePolicyOverridesForServers func(*sql.Tx, []Server) error
 	RenamePolicyOverridesServer    func(*sql.Tx, string, string) error
 	RenamePolicyTargetServers      func(*sql.Tx, string, string) error
+	RenameJobsServer               func(*sql.Tx, string, string) error
 	RenameServerFacts              func(*sql.Tx, string, string) error
 	DeleteServerFacts              func(*sql.Tx, string) error
 }
@@ -333,8 +336,15 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		state.SetServers(currentServers)
 		renamedServer := server.Name != name
 		if renamedServer {
+			previousStatus := CloneServerStatus(state.StatusMap()[name])
 			delete(state.StatusMap(), name)
-			state.StatusMap()[server.Name] = NewIdleStatus(server)
+			if previousStatus != nil && strings.EqualFold(strings.TrimSpace(previousStatus.Status), runtimepkg.StatusNeedsReconciliation) {
+				previousStatus.Name = server.Name
+				state.StatusMap()[server.Name] = previousStatus
+				UpdateStatusFromServer(state.StatusMap(), server.Name, server)
+			} else {
+				state.StatusMap()[server.Name] = NewIdleStatus(server)
+			}
 		} else {
 			UpdateStatusFromServer(state.StatusMap(), name, server)
 		}
@@ -350,6 +360,11 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 				}
 				if s.deps.RenamePolicyTargetServers != nil {
 					if err := s.deps.RenamePolicyTargetServers(tx, oldServerName, newServerName); err != nil {
+						return err
+					}
+				}
+				if s.deps.RenameJobsServer != nil {
+					if err := s.deps.RenameJobsServer(tx, oldServerName, newServerName); err != nil {
 						return err
 					}
 				}

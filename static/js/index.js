@@ -50,7 +50,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
         const allowedStatuses = new Set([
             "idle", "updating", "pending_approval", "approved", "cancelled",
-            "upgrading", "autoremove", "sudoers", "done", "error", "success",
+            "upgrading", "autoremove", "repairing", "needs_reconciliation", "sudoers", "done", "error", "success",
             "failure", "failed", "started", "ignored", "running", "queued", "skipped",
             "facts_refresh"
         ]);

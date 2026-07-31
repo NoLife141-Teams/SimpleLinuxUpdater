@@ -74,6 +74,28 @@ test("reconciliation recommendation exposes only the canonical repair action", (
     assert.equal(view.selectedHost.canRunSudoers, true);
 });
 
+test("reconciliation recommendation falls back to runtime status when dashboard facts are unavailable", () => {
+    const server = { name: "apt-host", status: "needs_reconciliation", pending_updates: [] };
+    const view = project({ statusView: statusView({
+        servers: [server],
+        dashboardServers: [],
+        actionViews: { "apt-host": { repair_apt: { enabled: true, reason: "Ready", readiness: "ready" } } }
+    }) });
+
+    assert.equal(view.selectedHost.recommendedAction.key, "repair_package_state");
+    assert.equal(view.selectedHost.recommendedAction.action, "repair_apt");
+    assert.equal(view.selectedHost.canRepairApt, true);
+});
+
+test("status presentation recognizes reconciliation lifecycle classes", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/index.js"), "utf8");
+    const styles = fs.readFileSync(path.join(__dirname, "../../static/css/index.css"), "utf8");
+    assert.match(source, /allowedStatuses[\s\S]*"repairing"/);
+    assert.match(source, /allowedStatuses[\s\S]*"needs_reconciliation"/);
+    assert.match(styles, /\.status-repairing/);
+    assert.match(styles, /\.status-needs_reconciliation/);
+});
+
 test("unknown data stays explicit and optional extras degrade independently", () => {
     const server = { name: "unknown", status: "", pending_updates: [] };
     const view = project({ statusView: statusView({ servers: [server], dashboardServers: [{ name: "unknown", health: {} }] }), extras: { recentActivity: null, policySummary: null } });

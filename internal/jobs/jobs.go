@@ -216,6 +216,20 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 	return nil
 }
 
+// RenameServerTx keeps persisted job history and recovery state attached to a renamed server.
+func RenameServerTx(tx *sql.Tx, oldServerName, newServerName string) error {
+	if tx == nil {
+		return errors.New("job rename transaction is not initialized")
+	}
+	oldServerName = strings.TrimSpace(oldServerName)
+	newServerName = strings.TrimSpace(newServerName)
+	if oldServerName == "" || newServerName == "" {
+		return errors.New("job rename requires both server names")
+	}
+	_, err := tx.Exec("UPDATE jobs SET server_name = ? WHERE server_name = ?", newServerName, oldServerName)
+	return err
+}
+
 func ensureRevisionColumn(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA table_info(jobs)")
 	if err != nil {

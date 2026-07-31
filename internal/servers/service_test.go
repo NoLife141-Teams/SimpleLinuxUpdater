@@ -260,6 +260,50 @@ func TestServerInventoryServiceUpdateFallbackAndDeleteHooks(t *testing.T) {
 	}
 }
 
+func TestServerInventoryServiceRenamePreservesReconciliationAndMigratesJobs(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, stateServers, statusMap := newTestService(repo, []Server{{
+		Name: "srv-old",
+		Host: "old.example",
+		Port: 22,
+		User: "root",
+	}})
+	(*statusMap)["srv-old"] = &ServerStatus{
+		Name:   "srv-old",
+		Host:   "old.example",
+		Port:   22,
+		User:   "root",
+		Status: "needs_reconciliation",
+		Logs:   "APT outcome uncertain",
+	}
+	var renamedFrom, renamedTo string
+	svc.deps.RenameJobsServer = func(_ *sql.Tx, oldName, newName string) error {
+		renamedFrom, renamedTo = oldName, newName
+		return nil
+	}
+
+	updated, err := svc.Update("srv-old", Server{Name: "srv-new", Host: "new.example", User: "admin"})
+	if err != nil {
+		t.Fatalf("Update() unexpected error: %v", err)
+	}
+	if len(*stateServers) != 1 || updated.Name != "srv-new" {
+		t.Fatalf("renamed inventory = %+v, want srv-new", *stateServers)
+	}
+	if (*statusMap)["srv-old"] != nil {
+		t.Fatalf("old status still present: %+v", (*statusMap)["srv-old"])
+	}
+	status := (*statusMap)["srv-new"]
+	if status == nil || status.Name != "srv-new" || status.Status != "needs_reconciliation" || status.Logs != "APT outcome uncertain" {
+		t.Fatalf("renamed status = %+v, want preserved reconciliation state", status)
+	}
+	if status.Host != "new.example" || status.User != "admin" {
+		t.Fatalf("renamed status inventory facts = %+v, want updated host and user", status)
+	}
+	if renamedFrom != "srv-old" || renamedTo != "srv-new" {
+		t.Fatalf("job rename hook = %q -> %q, want srv-old -> srv-new", renamedFrom, renamedTo)
+	}
+}
+
 func TestServerStateActionApprovalAndMutationGuards(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, state, _, statusMap := newTestService(repo, []Server{{Name: "srv", Host: "srv.example", User: "root"}})

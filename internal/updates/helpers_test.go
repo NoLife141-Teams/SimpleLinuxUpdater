@@ -274,7 +274,7 @@ func TestMergePendingUpdatesWithMetadataPrefersExactArchMetadata(t *testing.T) {
 }
 
 func TestAptListUpgradableCmdForcesCLocaleWithoutSudo(t *testing.T) {
-	want := "LC_ALL=C apt-get -s upgrade"
+	want := ReadOnlyAptCommand("apt-get -s upgrade")
 	if AptListUpgradableCmd != want {
 		t.Fatalf("AptListUpgradableCmd = %q, want %q", AptListUpgradableCmd, want)
 	}
@@ -285,7 +285,7 @@ func TestAptListUpgradableCmdForcesCLocaleWithoutSudo(t *testing.T) {
 
 func TestBuildSelectedUpgradeCmdEscapesPackages(t *testing.T) {
 	got := BuildSelectedUpgradeCmd([]string{"openssl", "libfoo'bar"})
-	want := RootOrSudoCommand(`apt-get -y install --only-upgrade -- 'openssl' 'libfoo'"'"'bar'`)
+	want := NonInteractiveAptCommand(`-y install --only-upgrade -- 'openssl' 'libfoo'"'"'bar'`)
 	if got != want {
 		t.Fatalf("BuildSelectedUpgradeCmd() = %q, want %q", got, want)
 	}
@@ -339,7 +339,7 @@ func TestKeptBackSecurityPackagesUseInstallSelectorForForeignArch(t *testing.T) 
 
 func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
 	got := BuildSelectedInstallCmd([]string{"linux-image-amd64", "libfoo'bar"})
-	want := RootOrSudoCommand(`apt-get -y install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
+	want := NonInteractiveAptCommand(`-y install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
 	if got != want {
 		t.Fatalf("BuildSelectedInstallCmd() = %q, want %q", got, want)
 	}
@@ -350,7 +350,7 @@ func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
 
 func TestBuildSelectedInstallSimulationCmd(t *testing.T) {
 	got := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64", "libfoo'bar"})
-	want := `LC_ALL=C apt-get -s install -- 'linux-image-amd64' 'libfoo'"'"'bar'`
+	want := ReadOnlyAptCommand(`apt-get -s install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
 	if got != want {
 		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, want %q", got, want)
 	}
@@ -433,6 +433,46 @@ func TestRootOrSudoCommand(t *testing.T) {
 	want := `if [ "$(id -u)" -eq 0 ]; then apt-get update; else sudo -n apt-get update; fi`
 	if got != want {
 		t.Fatalf("RootOrSudoCommand() = %q, want %q", got, want)
+	}
+}
+
+func TestAptMutationCommandsDeclareNonInteractivePolicy(t *testing.T) {
+	commands := []string{
+		AptUpdateCmd,
+		AptUpgradeCmd,
+		AptFullUpgradeCmd,
+		AptAutoremoveCmd,
+		BuildSelectedUpgradeCmd([]string{"openssl"}),
+		BuildSelectedInstallCmd([]string{"linux-image-amd64"}),
+	}
+	for _, command := range commands {
+		for _, required := range []string{
+			"DEBIAN_FRONTEND=noninteractive",
+			"DEBIAN_PRIORITY=critical",
+			"APT_LISTCHANGES_FRONTEND=none",
+			"NEEDRESTART_MODE=a",
+			"UCF_FORCE_CONFFOLD=1",
+			"Dpkg::Options::=--force-confdef",
+			"Dpkg::Options::=--force-confold",
+		} {
+			if !strings.Contains(command, required) {
+				t.Fatalf("command %q does not declare %q", command, required)
+			}
+		}
+	}
+	if !strings.Contains(AptRepairCmd, NonInteractiveDpkgConfigureCommand()) || !strings.Contains(AptRepairCmd, NonInteractiveAptCommand("-y -f install")) {
+		t.Fatalf("AptRepairCmd = %q, want explicit noninteractive dpkg and apt repair", AptRepairCmd)
+	}
+}
+
+func TestNonInteractiveSudoersSpecsRestrictEnvironmentWrapper(t *testing.T) {
+	aptSpec := NonInteractiveAptSudoersSpec()
+	if !strings.HasPrefix(aptSpec, "/usr/bin/env ") || !strings.HasSuffix(aptSpec, "/usr/bin/apt-get *") || !strings.Contains(aptSpec, AptNonInteractiveEnvironment) {
+		t.Fatalf("NonInteractiveAptSudoersSpec() = %q", aptSpec)
+	}
+	dpkgSpec := NonInteractiveDpkgSudoersSpec()
+	if !strings.HasPrefix(dpkgSpec, "/usr/bin/env ") || !strings.HasSuffix(dpkgSpec, "/usr/bin/dpkg --force-confdef --force-confold --configure -a") || !strings.Contains(dpkgSpec, AptNonInteractiveEnvironment) {
+		t.Fatalf("NonInteractiveDpkgSudoersSpec() = %q", dpkgSpec)
 	}
 }
 

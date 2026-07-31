@@ -623,7 +623,8 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			status.PendingUpdates = nil
 			status.UpgradePlan = servers.UpgradePlan{}
 			status.Logs = fmt.Sprintf(
-				"Starting Linux Updater...\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%",
+				"Starting Linux Updater...\n%s\nRetries enabled: max_attempts=%d base_delay=%s max_delay=%s jitter=%d%%",
+				AptInteractionStrategySummary,
 				policy.MaxAttempts,
 				policy.BaseDelay,
 				policy.MaxDelay,
@@ -1027,7 +1028,7 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock, /usr/bin/systemctl reboot", r.server.User)
+		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, %s, %s, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock, /usr/bin/systemctl reboot", r.server.User, NonInteractiveAptSudoersSpec(), NonInteractiveDpkgSudoersSpec())
 		escapedLine := ShellEscapeSingleQuotes(line)
 		cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
 		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
@@ -1046,7 +1047,7 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 }
 
 func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...", func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
 		if !r.requireMutationPhase(jobs.PhaseAutoremove) {
 			return
 		}
@@ -1055,7 +1056,7 @@ func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 }
 
 func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...", func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
 		if !r.requireMutationPhase(jobs.PhaseReconcile) {
 			return
 		}

@@ -380,7 +380,7 @@ func TestBuildSelectedUpgradeCmd(t *testing.T) {
 		{
 			name:  "multiple packages with escaping",
 			input: []string{"openssl", "python3.11", "libfoo'bar"},
-			want:  updatespkg.RootOrSudoCommand("apt-get -y install --only-upgrade -- 'openssl' 'python3.11' 'libfoo'\"'\"'bar'"),
+			want:  updatespkg.NonInteractiveAptCommand("-y install --only-upgrade -- 'openssl' 'python3.11' 'libfoo'\"'\"'bar'"),
 		},
 		{
 			name:  "nil input",

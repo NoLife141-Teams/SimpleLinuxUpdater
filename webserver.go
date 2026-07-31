@@ -774,6 +774,12 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 		case <-timer.C:
 			if updatespkg.IsAptLockProtectedCommand(cmd) {
 				probe := aptPackageManagerLockState(client, timeout)
+				select {
+				case runErr := <-runErrCh:
+					_ = session.Close()
+					return stdout.String(), stderr.String(), runErr
+				default:
+				}
 				if probe.active {
 					aptLivenessCheckpoints++
 					elapsed := time.Since(commandStarted).Round(time.Millisecond)

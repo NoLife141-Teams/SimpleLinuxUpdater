@@ -37,6 +37,7 @@ type aptLockAwareTestConnection struct {
 	lockProbeCount  int
 	connectionClose bool
 	commandDelay    time.Duration
+	lockProbeDelay  time.Duration
 }
 
 type aptLockAwareTestSession struct {
@@ -54,7 +55,11 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 		s.conn.lockProbeCount++
 		lockActive := s.conn.lockActive
 		extendedAllowed := s.conn.extendedAllowed
+		lockProbeDelay := s.conn.lockProbeDelay
 		s.conn.mu.Unlock()
+		if lockProbeDelay > 0 {
+			time.Sleep(lockProbeDelay)
+		}
 		if strings.Contains(command, "/var/lib/apt/lists/lock") && !extendedAllowed {
 			return errors.New("sudo: a password is required")
 		}
@@ -184,6 +189,19 @@ func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T)
 	conn.mu.Unlock()
 	if lockProbeCount != 1 {
 		t.Fatalf("apt lock probes = %d, want 1", lockProbeCount)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		extendedAllowed: true,
+		commandDelay:    15 * time.Millisecond,
+		lockProbeDelay:  30 * time.Millisecond,
+	}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want completion during lock probe to succeed", err)
 	}
 }
 

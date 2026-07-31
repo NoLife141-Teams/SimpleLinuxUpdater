@@ -445,6 +445,17 @@ func TestRetryHelpersClassifyRetryableOutput(t *testing.T) {
 	}
 }
 
+func TestRetryHelpersHonorExplicitNonRetryableClassification(t *testing.T) {
+	err := NonRetryableTaggedError{Err: errors.New("command timed out after 5m0s")}
+	if IsRetryableError(err) {
+		t.Fatalf("IsRetryableError(%v) = true, want explicit non-retryable classification", err)
+	}
+	marked := MarkRetryableFromOutput(err, "E: Could not get lock /var/lib/dpkg/lock-frontend")
+	if IsRetryableError(marked) {
+		t.Fatalf("MarkRetryableFromOutput(%v) became retryable, want replay-disabled classification to win", marked)
+	}
+}
+
 func TestRetryHelpersNeverReplayContextTermination(t *testing.T) {
 	for _, err := range []error{context.Canceled, context.DeadlineExceeded} {
 		if IsRetryableError(err) {

@@ -95,8 +95,8 @@ func IsRetryableError(err error) bool {
 		return false
 	}
 	var tagged interface{ Retryable() bool }
-	if errors.As(err, &tagged) && tagged.Retryable() {
-		return true
+	if errors.As(err, &tagged) {
+		return tagged.Retryable()
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -108,6 +108,10 @@ func IsRetryableError(err error) bool {
 func MarkRetryableFromOutput(err error, output string) error {
 	if err == nil {
 		return nil
+	}
+	var tagged interface{ Retryable() bool }
+	if errors.As(err, &tagged) && !tagged.Retryable() {
+		return err
 	}
 	if IsRetryableMessage(output) {
 		return RetryableTaggedError{Err: err}

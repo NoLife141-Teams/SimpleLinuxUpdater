@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep a lock-confirmed APT mutation attached beyond the previous three-checkpoint
+  limit, publish cumulative liveness checkpoints with lock-holder PIDs, and prevent
+  an ambiguous timeout from replaying a second APT mutation against the first
+  process's lock.
+
 ## [v0.4.3] - 2026-07-30
 
 ### Changed

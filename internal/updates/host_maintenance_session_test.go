@@ -437,6 +437,46 @@ func TestProductionHostMaintenanceSessionDeadlineInterruptsRetryBackoff(t *testi
 	}
 }
 
+func TestProductionHostMaintenanceSessionDoesNotReplayUnknownAptOutcome(t *testing.T) {
+	conn := &maintenanceTestConnection{}
+	commands := 0
+	retryEvents := 0
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+			commands++
+			return "Setting up kernel...", "E: Could not get lock /var/lib/dpkg/lock-frontend", NonRetryableTaggedError{Err: errors.New("APT command outcome is unknown; automatic replay disabled: command timed out")}
+		},
+		Sleep: func(time.Duration) {},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         servers.Server{User: "root"},
+		RetryPolicy:    RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		CommandTimeout: time.Minute,
+		OnRetry: func(HostRetryEvent) {
+			retryEvents++
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	result, err := session.RunCommand(context.Background(), HostCommandRequest{
+		Operation:    "update.apt_upgrade",
+		Command:      AptFullUpgradeCmd,
+		ReplayPolicy: ReplayRetryableOutputErrors,
+	})
+	if err == nil || !strings.Contains(err.Error(), "automatic replay disabled") {
+		t.Fatalf("RunCommand() error = %v, want unknown APT outcome", err)
+	}
+	if commands != 1 || result.Attempts != 1 || retryEvents != 0 {
+		t.Fatalf("commands=%d attempts=%d retry_events=%d, want one attempt and no replay", commands, result.Attempts, retryEvents)
+	}
+}
+
 func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testing.T) {
 	conn := &maintenanceTestConnection{}
 	fallbackCalls := 0

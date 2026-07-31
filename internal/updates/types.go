@@ -88,6 +88,29 @@ func (e RetryableTaggedError) Retryable() bool {
 	return true
 }
 
+type NonRetryableTaggedError struct {
+	Err error
+}
+
+func (e NonRetryableTaggedError) Error() string {
+	if e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e NonRetryableTaggedError) Unwrap() error {
+	return e.Err
+}
+
+func (e NonRetryableTaggedError) Retryable() bool {
+	return false
+}
+
+func (e NonRetryableTaggedError) Transient() bool {
+	return true
+}
+
 type SSHSessionRunner interface {
 	SetStdin(io.Reader)
 	SetStdout(io.Writer)

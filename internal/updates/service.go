@@ -342,6 +342,12 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
 }
 
 func (r *withActorRunner) markErrorClass(err error) {
+	var classified interface{ Transient() bool }
+	if errors.As(err, &classified) && classified.Transient() {
+		r.lastErrClass = "transient"
+		r.retryExhausted = true
+		return
+	}
 	if IsRetryableError(err) {
 		r.lastErrClass = "transient"
 		r.retryExhausted = true

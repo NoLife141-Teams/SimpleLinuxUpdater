@@ -125,6 +125,9 @@ func initializeJobManager() error {
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return err
 	}
+	if err := jm.RestoreReconciliationRequiredJobs(); err != nil {
+		return err
+	}
 	if _, err := jm.PurgeExpiredLogs(); err != nil {
 		return err
 	}

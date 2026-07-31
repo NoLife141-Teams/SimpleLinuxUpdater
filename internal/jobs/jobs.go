@@ -123,6 +123,7 @@ type Repository interface {
 	AppendActiveLog(id, logText, updatedAt string) (bool, error)
 	Get(id string) (Record, error)
 	FindLatestActiveByServerAndKind(serverName, kind string) (*Record, error)
+	ListReconciliationRequired() ([]Record, error)
 	ListUnfinishedServerNames() ([]string, error)
 	MarkUnfinishedInterrupted(now string) error
 }
@@ -501,6 +502,22 @@ func (m *Manager) MarkUnfinishedJobsInterrupted() error {
 		m.opts.SyncInterruptedServer(affected)
 	}
 	m.notify("job.update")
+	return nil
+}
+
+func (m *Manager) RestoreReconciliationRequiredJobs() error {
+	if m == nil || m.repo == nil {
+		return nil
+	}
+	records, err := m.repo.ListReconciliationRequired()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if m.opts.SyncRuntime != nil {
+			m.opts.SyncRuntime(record)
+		}
+	}
 	return nil
 }
 
@@ -949,6 +966,67 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 		return nil, err
 	}
 	return serverNames, nil
+}
+
+func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("job repository is not initialized")
+	}
+	rows, err := r.db.Query(`
+		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
+		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
+		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
+		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision
+		  FROM jobs AS candidate
+		 WHERE candidate.status = ?
+		   AND candidate.error_class = ?
+		   AND candidate.kind IN (?, ?, ?)
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM jobs AS later_success
+		        WHERE later_success.server_name = candidate.server_name
+		          AND later_success.kind IN (?, ?, ?)
+		          AND later_success.status = ?
+		          AND later_success.created_at > candidate.created_at
+		   )
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM jobs AS later_reconciliation
+		        WHERE later_reconciliation.server_name = candidate.server_name
+		          AND later_reconciliation.status = ?
+		          AND later_reconciliation.error_class = ?
+		          AND later_reconciliation.kind IN (?, ?, ?)
+		          AND later_reconciliation.created_at > candidate.created_at
+		   )
+		 ORDER BY candidate.created_at DESC
+	`,
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []Record
+	for rows.Next() {
+		var record Record
+		if err := rows.Scan(
+			&record.ID, &record.Kind, &record.ParentJobID, &record.ServerName, &record.Actor, &record.ClientIP,
+			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
+			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
+			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {

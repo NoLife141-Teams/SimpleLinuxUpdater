@@ -417,6 +417,41 @@ func TestInitializeJobManagerMarksUnfinishedJobsInterrupted(t *testing.T) {
 	}
 }
 
+func TestInitializeJobManagerRestoresReconciliationRequiredStatus(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "jobs-reconciliation.db"))
+
+	server := Server{Name: "srv-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	mu.Lock()
+	servers = []Server{server}
+	statusMap = map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	}
+	mu.Unlock()
+
+	jm := newJobManager(getDB())
+	if _, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		Status:     jobStatusFailed,
+		ErrorClass: "reconciliation_required",
+		LogsText:   "APT outcome uncertain",
+	}); err != nil {
+		t.Fatalf("CreateJob(reconciliation required) unexpected error: %v", err)
+	}
+
+	if err := initializeJobManager(); err != nil {
+		t.Fatalf("initializeJobManager() unexpected error: %v", err)
+	}
+
+	status := currentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "needs_reconciliation" || status.Logs != "APT outcome uncertain" {
+		t.Fatalf("runtime status after recovery = %+v, want restored reconciliation requirement", status)
+	}
+}
+
 func TestPruneAuditEventsSkipsDuringMaintenance(t *testing.T) {
 	t.Skip("audit maintenance admission is covered by coordinator-backed audit tests")
 	preserveDBState(t)

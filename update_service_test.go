@@ -276,6 +276,46 @@ func TestUpdateServicePersistsReconciliationRequiredCommandError(t *testing.T) {
 	}
 }
 
+func TestUpdateServiceAptRepairFailureKeepsReconciliationRequired(t *testing.T) {
+	server := Server{Name: "srv-apt-repair-failed", Host: "127.0.0.1", Port: 22, User: "root"}
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "needs_reconciliation"}})
+
+	deps := testUpdateServiceDeps(t)
+	deps.ServerState = state
+	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+			return HostCommandResult{Stderr: "dpkg configuration failed", Attempts: 1}, errors.New("exit status 1")
+		},
+	})
+
+	NewUpdateService(deps).RunAptRepairJob(AptRepairRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "needs_reconciliation" {
+		t.Fatalf("failed repair status = %+v, want reconciliation requirement to remain latched", status)
+	}
+}
+
+func TestUpdateServiceAptRepairDialFailureKeepsReconciliationRequired(t *testing.T) {
+	server := Server{Name: "srv-apt-repair-dial-failed", Host: "127.0.0.1", Port: 22, User: "root"}
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "needs_reconciliation"}})
+
+	deps := testUpdateServiceDeps(t)
+	deps.ServerState = state
+	deps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		return nil, errors.New("connection refused")
+	})
+
+	NewUpdateService(deps).RunAptRepairJob(AptRepairRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "needs_reconciliation" {
+		t.Fatalf("failed repair dial status = %+v, want reconciliation requirement to remain latched", status)
+	}
+}
+
 func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
 	if err != nil {

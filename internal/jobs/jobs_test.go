@@ -348,6 +348,34 @@ func TestJobManagerMarkUnfinishedJobsInterrupted(t *testing.T) {
 	}
 }
 
+func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T) {
+	db := openJobTestDB(t)
+	var restored []Record
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		SyncRuntime: func(record Record) {
+			restored = append(restored, record)
+		},
+	})
+	records := []Record{
+		{ID: "unresolved", Kind: KindUpdate, ServerName: "srv-unresolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "resolved-failure", Kind: KindUpdate, ServerName: "srv-resolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "resolved-repair", Kind: KindAptRepair, ServerName: "srv-resolved", Actor: "admin", Status: StatusSucceeded, CreatedAt: "2026-05-17T15:00:00.000000000Z"},
+	}
+	for _, record := range records {
+		if err := manager.ImportJobRecord(record); err != nil {
+			t.Fatalf("ImportJobRecord(%s) error = %v", record.ID, err)
+		}
+	}
+	restored = nil
+
+	if err := manager.RestoreReconciliationRequiredJobs(); err != nil {
+		t.Fatalf("RestoreReconciliationRequiredJobs() error = %v", err)
+	}
+	if len(restored) != 1 || restored[0].ID != "unresolved" {
+		t.Fatalf("restored = %+v, want only unresolved reconciliation job", restored)
+	}
+}
+
 func TestJobManagerDoesNotDispatchCallbacksAfterRepositoryFailure(t *testing.T) {
 	repo := &failingRepository{err: errors.New("write failed")}
 	var notifications []string
@@ -417,6 +445,10 @@ func (r *failingRepository) Get(string) (Record, error) {
 }
 
 func (r *failingRepository) FindLatestActiveByServerAndKind(string, string) (*Record, error) {
+	return nil, r.err
+}
+
+func (r *failingRepository) ListReconciliationRequired() ([]Record, error) {
 	return nil, r.err
 }
 

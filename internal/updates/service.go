@@ -302,7 +302,7 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 	var reconciliation interface{ RequiresReconciliation() bool }
-	if errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation() {
+	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
 		r.lastErrClass = "reconciliation_required"
 		_ = r.withStatus(func(status *servers.ServerStatus) {
 			status.Status = runtimepkg.StatusNeedsReconciliation
@@ -389,11 +389,11 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		r.markErrorClass(err)
 		switch HostMaintenanceErrorStageOf(err) {
 		case HostMaintenanceStageAuth:
-			r.setErrorLogs(fmt.Sprintf("Auth setup failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("Auth setup failed: %v", err), err)
 		case HostMaintenanceStageHostKey:
-			r.setErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("Host key verification setup failed: %v", err), err)
 		default:
-			r.setErrorLogs(fmt.Sprintf("SSH connection failed: %v", err))
+			r.setCommandErrorLogs(fmt.Sprintf("SSH connection failed: %v", err), err)
 		}
 		return false
 	}

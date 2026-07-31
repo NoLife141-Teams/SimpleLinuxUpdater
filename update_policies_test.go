@@ -129,6 +129,10 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 		"time_local":"02:15",
 		"weekdays":[],
 		"approval_timeout_minutes":720,
+		"rollout_mode":"canary_waves",
+		"canary_count":1,
+		"wave_size":10,
+		"wave_delay_minutes":15,
 		"policy_blackouts":[{"weekdays":["sun"],"start_time":"01:00","end_time":"04:00"}]
 	}`)
 	createRec := httptest.NewRecorder()
@@ -158,6 +162,9 @@ func TestUpdatePolicyAPIValidationAndCRUD(t *testing.T) {
 	}
 	if created.UpgradeMode != updatePolicyUpgradeModeStandard {
 		t.Fatalf("created UpgradeMode = %q, want default %q", created.UpgradeMode, updatePolicyUpgradeModeStandard)
+	}
+	if created.RolloutMode != policypkg.RolloutCanaryWaves || created.CanaryCount != 1 || created.WaveSize != 10 || created.WaveDelayMinutes != 15 {
+		t.Fatalf("created rollout = %+v", created)
 	}
 
 	listRec := httptest.NewRecorder()

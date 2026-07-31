@@ -113,15 +113,19 @@ func TestSQLiteRepositoryQueryRunsDoesNotPreallocateFromPageSize(t *testing.T) {
 func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	repo, _ := newTestRepository(t)
 	policy, err := repo.CreatePolicy(Policy{
-		Name:            "Nightly",
-		Enabled:         true,
-		TargetServers:   []string{"srv-a"},
-		PackageScope:    PackageScopeSecurity,
-		ExecutionMode:   ExecutionScanOnly,
-		CadenceKind:     CadenceDaily,
-		TimeLocal:       "03:00",
-		Weekdays:        []string{},
-		PolicyBlackouts: []BlackoutWindow{},
+		Name:             "Nightly",
+		Enabled:          true,
+		TargetServers:    []string{"srv-a"},
+		PackageScope:     PackageScopeSecurity,
+		ExecutionMode:    ExecutionScanOnly,
+		RolloutMode:      RolloutCanaryWaves,
+		CanaryCount:      1,
+		WaveSize:         4,
+		WaveDelayMinutes: 12,
+		CadenceKind:      CadenceDaily,
+		TimeLocal:        "03:00",
+		Weekdays:         []string{},
+		PolicyBlackouts:  []BlackoutWindow{},
 	})
 	if err != nil {
 		t.Fatalf("CreatePolicy() error = %v", err)
@@ -131,6 +135,9 @@ func TestSQLiteRepositoryPolicyCRUDOverridesAndRuns(t *testing.T) {
 	}
 	if policy.UpgradeMode != UpgradeModeStandard {
 		t.Fatalf("CreatePolicy().UpgradeMode = %q, want default %q", policy.UpgradeMode, UpgradeModeStandard)
+	}
+	if policy.RolloutMode != RolloutCanaryWaves || policy.CanaryCount != 1 || policy.WaveSize != 4 || policy.WaveDelayMinutes != 12 {
+		t.Fatalf("CreatePolicy() rollout = %+v", policy)
 	}
 
 	policy.Name = "Morning"

@@ -10,6 +10,7 @@
 - [Run updates with approval](#run-updates-with-approval)
 - [CVE-aware pending approval](#cve-aware-pending-approval)
 - [Logs and status](#logs-and-status)
+- [Scheduled canary and wave rollouts](#scheduled-canary-and-wave-rollouts)
 - [Audit trail](#audit-trail)
 - [Observability and metrics](#observability-and-metrics)
 - [Backup and restore](#backup-and-restore)
@@ -148,6 +149,18 @@ When current host facts report that a reboot is required, **Recommended action �
 ### Passwordless apt toggle
 
 From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so the managed apt/dpkg commands and the exact `systemctl reboot` command can be executed via sudo without prompting. Root SSH sessions run those commands directly. Re-run **Enable apt** once on non-root hosts configured before the explicit non-interactive strategy so their managed sudoers rule permits the restricted `/usr/bin/env … /usr/bin/apt-get` and dpkg command forms.
+
+## Scheduled canary and wave rollouts
+
+In **Admin → Scheduled Update Policies → Execution**, choose **Canary, then waves** to avoid releasing one scheduled policy to the whole matched fleet at once. Configure:
+
+- the number of canary servers (`1–50`);
+- the maximum servers in each following wave (`1–200`);
+- the minimum delay between wave release times (`1–1440` minutes).
+
+Matched servers are sorted deterministically by name, so the preview and scheduler use the same canary and wave membership. Wave 1 cannot start until every canary run reaches `succeeded`; each later wave similarly waits for every earlier run. `queued`, `running`, and `waiting_approval` hold the gate. A failed, skipped, cancelled, or interrupted earlier run stops downstream waves and records them with reason `rollout_gate` rather than silently applying the rest of the fleet.
+
+The policy preview labels each matched server as canary or wave N. The policy list and calendar expose the stored rollout settings. Use **All matched servers** when no staged rollout is desired.
 
 ## Audit trail
 

@@ -137,6 +137,116 @@ func TestServiceNormalizePolicyRequiresTarget(t *testing.T) {
 	}
 }
 
+func TestServiceNormalizesCanaryWavePolicy(t *testing.T) {
+	policy := Policy{
+		Name: "Waves", Enabled: true, TargetServers: []string{"srv-a"}, PackageScope: PackageScopeSecurity,
+		ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves,
+	}
+	if err := NewService(testServiceDeps()).NormalizePolicy(&policy); err != nil {
+		t.Fatalf("NormalizePolicy() error = %v", err)
+	}
+	if policy.CanaryCount != DefaultCanaryCount || policy.WaveSize != DefaultWaveSize || policy.WaveDelayMinutes != DefaultWaveDelayMinutes {
+		t.Fatalf("normalized rollout = %+v", policy)
+	}
+	policy.WaveDelayMinutes = 1441
+	if err := NewService(testServiceDeps()).NormalizePolicy(&policy); err == nil || !strings.Contains(err.Error(), "wave_delay_minutes") {
+		t.Fatalf("NormalizePolicy() error = %v, want wave delay validation", err)
+	}
+}
+
+func TestBuildRolloutBatchesIsDeterministic(t *testing.T) {
+	policy := Policy{RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 10}
+	batches := BuildRolloutBatches(policy, []string{"srv-d", "srv-b", "srv-a", "srv-c"})
+	if len(batches) != 3 || strings.Join(batches[0].Servers, ",") != "srv-a" || strings.Join(batches[1].Servers, ",") != "srv-b,srv-c" || strings.Join(batches[2].Servers, ",") != "srv-d" {
+		t.Fatalf("BuildRolloutBatches() = %+v", batches)
+	}
+	if batches[0].Stage != "canary" || batches[1].ReleaseDelayMinutes != 10 || batches[2].ReleaseDelayMinutes != 20 {
+		t.Fatalf("batch stages/delays = %+v", batches)
+	}
+}
+
+func TestProcessDueSlotReleasesWavesOnlyAfterPreviousSuccess(t *testing.T) {
+	policy := Policy{
+		ID: 42, Name: "Fleet waves", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity,
+		ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00",
+		RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 5,
+	}
+	serversSnapshot := []servers.Server{
+		{Name: "srv-d", Tags: []string{"prod"}}, {Name: "srv-b", Tags: []string{"prod"}},
+		{Name: "srv-a", Tags: []string{"prod"}}, {Name: "srv-c", Tags: []string{"prod"}},
+	}
+	var runs []Run
+	var dispatched []ScheduledRunRequest
+	service := NewService(ServiceDeps{
+		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		SnapshotServers:     func() []servers.Server { return serversSnapshot },
+		ListRuns:            func(int) ([]Run, error) { return append([]Run(nil), runs...), nil },
+		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
+			dispatched = append(dispatched, req)
+			runs = append(runs, Run{PolicyID: req.Policy.ID, ServerName: req.Server.Name, ScheduledForUTC: req.ScheduledForUTC, Status: RunRunning})
+			return ScheduledRunResult{Handled: true, Inserted: true}
+		},
+		CurrentLocation: func() *time.Location { return time.UTC },
+	})
+	slot := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 1 || dispatched[0].Server.Name != "srv-a" {
+		t.Fatalf("canary dispatch = %+v", dispatched)
+	}
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(5 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 1 {
+		t.Fatalf("wave dispatched before canary success: %+v", dispatched)
+	}
+	runs[0].Status = RunSucceeded
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(6 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 3 || dispatched[1].Server.Name != "srv-b" || dispatched[2].Server.Name != "srv-c" {
+		t.Fatalf("first wave dispatch = %+v", dispatched)
+	}
+	for index := 1; index < len(runs); index++ {
+		runs[index].Status = RunSucceeded
+	}
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(11 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatched) != 4 || dispatched[3].Server.Name != "srv-d" {
+		t.Fatalf("second wave dispatch = %+v", dispatched)
+	}
+}
+
+func TestProcessDueSlotStopsWavesAfterCanaryFailure(t *testing.T) {
+	policy := Policy{ID: 7, Name: "Guarded", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 5}
+	slot := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
+	scheduled := CanonicalScheduledForUTC(slot, DefaultTimestampLayout, func() *time.Location { return time.UTC })
+	runs := []Run{{PolicyID: policy.ID, ServerName: "srv-a", ScheduledForUTC: scheduled, Status: RunFailed}}
+	var requests []ScheduledRunRequest
+	service := NewService(ServiceDeps{
+		ListPolicies: func() ([]Policy, error) { return []Policy{policy}, nil }, LoadOverrides: func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil }, ListRuns: func(int) ([]Run, error) { return runs, nil },
+		SnapshotServers: func() []servers.Server {
+			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}, {Name: "srv-b", Tags: []string{"prod"}}, {Name: "srv-c", Tags: []string{"prod"}}}
+		},
+		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
+			requests = append(requests, req)
+			return ScheduledRunResult{Handled: true, Inserted: true}
+		},
+		CurrentLocation: func() *time.Location { return time.UTC },
+	})
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(6 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 || requests[0].Outcome != RunReasonRolloutGate || requests[1].Outcome != RunReasonRolloutGate {
+		t.Fatalf("downstream requests = %+v, want rollout-gate skips", requests)
+	}
+}
+
 func TestServiceMatchesServersWithTargetsAndOverrides(t *testing.T) {
 	service := NewService(testServiceDeps())
 	server := servers.Server{Name: "srv-a", Tags: []string{"prod", "db"}}

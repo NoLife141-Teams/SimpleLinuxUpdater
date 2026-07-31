@@ -598,6 +598,28 @@
                                     <label for="policy-approval-timeout" class="form-label">Approval timeout (minutes)</label>
                                     <input type="number" id="policy-approval-timeout" min="1" placeholder="720">
                                 </div>
+                                <div>
+                                    <label for="policy-rollout-mode" class="form-label">Rollout strategy</label>
+                                    <select id="policy-rollout-mode">
+                                        <option value="immediate">All matched servers</option>
+                                        <option value="canary_waves">Canary, then waves</option>
+                                    </select>
+                                </div>
+                                <div id="policy-rollout-fields" class="field-span section-grid">
+                                    <div>
+                                        <label for="policy-canary-count" class="form-label">Canary servers</label>
+                                        <input type="number" id="policy-canary-count" min="1" max="50" value="1">
+                                    </div>
+                                    <div>
+                                        <label for="policy-wave-size" class="form-label">Servers per wave</label>
+                                        <input type="number" id="policy-wave-size" min="1" max="200" value="10">
+                                    </div>
+                                    <div>
+                                        <label for="policy-wave-delay" class="form-label">Wave delay (minutes)</label>
+                                        <input type="number" id="policy-wave-delay" min="1" max="1440" value="15">
+                                    </div>
+                                    <p class="field-span muted">Servers are ordered deterministically by name. Each wave waits for every earlier server to succeed; failure stops downstream waves.</p>
+                                </div>
                             </div>
                         </div>
                         <div class="field-span form-section">
@@ -1031,8 +1053,8 @@
     <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-run-history-20260728a"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=canary-waves-20260731"></script>
     <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
-    <script src="/static/js/admin.js?v=app-time-context-20260728a"></script>
+    <script src="/static/js/admin.js?v=canary-waves-20260731"></script>
 </body>
 </html>

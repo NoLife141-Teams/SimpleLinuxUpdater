@@ -12,6 +12,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   mutations, and provide an explicitly confirmed APT/DPKG inspection and repair job.
 - Add a per-server Recommended action signal to Status, including Monitor APT,
   Repair package state, Review approval, Reboot and verify, and Healthy guidance.
+- Add an explicitly confirmed controlled reboot job that never replays the reboot
+  command and verifies SSH recovery, uptime reset, and the reboot-required flag.
 
 ### Fixed
 

@@ -52,7 +52,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             "idle", "updating", "pending_approval", "approved", "cancelled",
             "upgrading", "autoremove", "repairing", "needs_reconciliation", "sudoers", "done", "error", "success",
             "failure", "failed", "started", "ignored", "running", "queued", "skipped",
-            "facts_refresh"
+            "facts_refresh", "rebooting"
         ]);
 
         function getStatusView() {
@@ -954,6 +954,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		            const canRunUpdate = canRunUpdateAction(server);
 		            const canRunAutoremove = canRunAutoremoveAction(server);
 		            const canRepairApt = canRepairAptAction(server);
+		            const canReboot = canRebootAction(server);
 		            const canRefreshFacts = canRefreshFactsAction(server);
 		            const canRunSudoers = canRunSudoersAction(server);
 		            const driftReason = pendingApprovalDriftReason(server);
@@ -986,6 +987,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <p>${escapeHtml(recommendedAction.detail || "No immediate maintenance action is required.")}</p>
                     </div>
                     ${recommendedAction.action === "repair_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="repair-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRepairApt, "Inspect and repair APT/DPKG state", "APT repair is not available for the current state")}>Repair APT</button>` : ""}
+                    ${recommendedAction.action === "reboot" ? `<button type="button" class="inline-btn btn-warning" data-action="reboot-server" data-name="${safeDataName}" ${buttonStateAttrs(canReboot, "Reboot and verify this host", "Controlled reboot is not available for the current state")}>Reboot and verify</button>` : ""}
                 </section>
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
@@ -1541,6 +1543,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		                return "Autoremoving…";
 		            case "repairing":
 		                return "Repairing APT…";
+		            case "rebooting":
+		                return "Rebooting and verifying…";
 		            case "sudoers":
 		                return "Configuring…";
 		            case "facts_refresh":
@@ -1580,6 +1584,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 	        function canRepairAptAction(server) {
 	            return !!serverPresentation(server)?.canRepairApt;
+	        }
+
+	        function canRebootAction(server) {
+	            return !!serverPresentation(server)?.canReboot;
 	        }
 
 	        function canRunSudoersAction(server) {
@@ -1864,6 +1872,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const canCancel = !!triage.can_cancel;
 	                    const canUpdate = presentation.canRunUpdate;
 	                    const canRepairApt = presentation.canRepairApt;
+	                    const canReboot = presentation.canReboot;
 	                    const failureReason = presentation.failureReason;
 	                    const driftReason = presentation.driftReason;
 	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
@@ -1890,6 +1899,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
 								<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 							</div>
 						  `
+						: recommendedAction.action === "reboot" && canReboot
+							? `
+								<div class="actions-grid timeline-actions">
+									<button type="button" class="btn-warning" data-action="reboot-server" data-name="${safeDataName}">Reboot and verify</button>
+									<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+								</div>
+							  `
 						: server.status === 'pending_approval'
 	                        ? `
 	                            <div class="actions-grid timeline-actions">
@@ -2056,6 +2072,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
             if (action === "repair-apt") {
                 repairApt(name);
+                return;
+            }
+            if (action === "reboot-server") {
+                rebootServer(name);
                 return;
             }
             if (action === "enable-apt") {
@@ -2284,6 +2304,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            if (!confirmed) return;
 	            await runSingleHostAction(name, "repair_apt", "repair APT", () => (
 	                postServerAction(`/api/repair/${encodeURIComponent(name)}`, "Failed to start APT repair.", {
+	                    headers: { "Content-Type": "application/json" },
+	                    body: JSON.stringify({ confirm: true })
+	                })
+	            ));
+	        }
+
+	        async function rebootServer(name) {
+	            if (!canRebootAction(getServerByName(name))) {
+	                statusActionAdapter.notify("Controlled reboot is not available for the current server state.");
+	                return;
+	            }
+	            const confirmed = await statusActionAdapter.confirm(
+	                `Reboot ${name} now?\n\nThe host will become temporarily unreachable. SimpleLinuxUpdater will wait for SSH to return, verify that uptime reset, and confirm that the reboot-required flag cleared.`
+	            );
+	            if (!confirmed) return;
+	            await runSingleHostAction(name, "reboot", "reboot and verify", () => (
+	                postServerAction(`/api/reboot/${encodeURIComponent(name)}`, "Failed to start controlled reboot.", {
 	                    headers: { "Content-Type": "application/json" },
 	                    body: JSON.stringify({ confirm: true })
 	                })

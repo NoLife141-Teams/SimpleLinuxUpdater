@@ -93,6 +93,86 @@ func TestServiceApproveCancelUsesInjectedServerState(t *testing.T) {
 	}
 }
 
+func TestRunRebootJobVerifiesSSHRecoveryAndUptimeReset(t *testing.T) {
+	server := servers.Server{Name: "srv-reboot", Host: "example.org", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "done"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	rebootRequired := false
+	opens := 0
+	commandSent := false
+	saved := false
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			opens++
+			if opens == 1 {
+				return &HostMaintenanceSessionFuncs{
+					CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+						return ServerFactsRecord{ServerName: server.Name, UptimeSeconds: 7200, RunningKernelVersion: "6.12.1"}
+					},
+					RunCommandFunc: func(_ context.Context, command HostCommandRequest) (HostCommandResult, error) {
+						if command.Command != ControlledRebootCmd || command.ReplayPolicy != ReplayNever {
+							t.Fatalf("reboot command = %+v", command)
+						}
+						commandSent = true
+						return HostCommandResult{Attempts: 1}, nil
+					},
+				}, nil
+			}
+			if req.RetryPolicy.MaxAttempts != 1 || req.DialOperation != "reboot.verify.ssh_dial" {
+				t.Fatalf("verification request = %+v", req)
+			}
+			return &HostMaintenanceSessionFuncs{CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+				return ServerFactsRecord{ServerName: server.Name, UptimeSeconds: 15, RunningKernelVersion: "6.12.2", RebootRequired: &rebootRequired}
+			}}, nil
+		}),
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		AuditWithActor:    func(string, string, string, string, string, string, string, map[string]any) {},
+		Sleep:             func(time.Duration) {},
+		SaveServerFacts: func(facts ServerFactsRecord) error {
+			saved = facts.UptimeSeconds == 15
+			return nil
+		},
+	})
+	service.RunRebootJob(RebootRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 2, BaseDelay: time.Second, MaxDelay: 2 * time.Second}})
+
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "done" || !strings.Contains(status.Logs, "Reboot verified") {
+		t.Fatalf("final reboot status = %+v", status)
+	}
+	if opens != 2 || !commandSent || !saved {
+		t.Fatalf("opens=%d commandSent=%t saved=%t, want 2/true/true", opens, commandSent, saved)
+	}
+}
+
+func TestRunRebootJobDoesNotRebootWithoutUptimeBaseline(t *testing.T) {
+	server := servers.Server{Name: "srv-no-baseline", Host: "example.org", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "done"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	commandSent := false
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			CollectServerFactsFunc: func(context.Context) ServerFactsRecord { return ServerFactsRecord{} },
+			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+				commandSent = true
+				return HostCommandResult{}, nil
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		AuditWithActor:    func(string, string, string, string, string, string, string, map[string]any) {},
+		Sleep:             func(time.Duration) {},
+	})
+	service.RunRebootJob(RebootRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "error" || !strings.Contains(status.Logs, "reboot was not sent") || commandSent {
+		t.Fatalf("final reboot status = %+v commandSent=%t", status, commandSent)
+	}
+}
+
 func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
 	state, statuses := testState()
 	statuses["srv"].PendingUpdates = []servers.PendingUpdate{

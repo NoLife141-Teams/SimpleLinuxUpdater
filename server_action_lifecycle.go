@@ -144,6 +144,37 @@ func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, con
 	})
 }
 
+func (l *serverActionLifecycle) StartReboot(name, actor, clientIP string, confirmed bool) serverActionLifecycleResult {
+	if !confirmed {
+		l.recordAudit("reboot.start", name, "failure", "Reboot confirmation required", retryPolicyMeta(l.retryPolicy()))
+		return jsonResult(http.StatusBadRequest, "Reboot confirmation required")
+	}
+	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
+		status:         runtimepkg.StatusRebooting,
+		jobKind:        jobKindReboot,
+		auditAction:    "reboot.start",
+		startFailure:   "Failed to start reboot",
+		createFailure:  "Failed to create reboot job",
+		successMessage: "Reboot started",
+		allowedStatuses: map[string]bool{
+			runtimepkg.StatusIdle:      true,
+			runtimepkg.StatusDone:      true,
+			runtimepkg.StatusError:     true,
+			runtimepkg.StatusCancelled: true,
+		},
+		invalidStatus: "Server is not ready for a controlled reboot",
+		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
+			service.RunRebootJob(RebootRunRequest{
+				Server:   server,
+				Actor:    actor,
+				ClientIP: clientIP,
+				Policy:   policy,
+				JobID:    jobID,
+			})
+		},
+	})
+}
+
 func (l *serverActionLifecycle) StartSudoersEnable(name, actor, clientIP, sudoPassword string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, sudoPassword, serverActionStartSpec{
 		status:                 "sudoers",

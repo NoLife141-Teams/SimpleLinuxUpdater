@@ -477,6 +477,42 @@ func TestProductionHostMaintenanceSessionDoesNotReplayUnknownAptOutcome(t *testi
 	}
 }
 
+func TestProductionHostMaintenanceSessionNeverReplaysControlledCommand(t *testing.T) {
+	conn := &maintenanceTestConnection{}
+	commands := 0
+	retryEvents := 0
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+			commands++
+			return "", "connection reset by peer", errors.New("connection reset by peer")
+		},
+		Sleep: func(time.Duration) {},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{
+		Server:         servers.Server{User: "root"},
+		RetryPolicy:    RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		CommandTimeout: time.Minute,
+		OnRetry: func(HostRetryEvent) {
+			retryEvents++
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	result, err := session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, ReplayPolicy: ReplayNever})
+	if err == nil {
+		t.Fatal("RunCommand() error = nil, want controlled command failure")
+	}
+	if commands != 1 || result.Attempts != 1 || retryEvents != 0 {
+		t.Fatalf("commands=%d attempts=%d retry_events=%d, want one attempt and no replay", commands, result.Attempts, retryEvents)
+	}
+}
+
 func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testing.T) {
 	conn := &maintenanceTestConnection{}
 	fallbackCalls := 0

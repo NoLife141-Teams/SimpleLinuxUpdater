@@ -19,6 +19,7 @@ const (
 	jobKindUpdate         = internaljobs.KindUpdate
 	jobKindAutoremove     = internaljobs.KindAutoremove
 	jobKindAptRepair      = internaljobs.KindAptRepair
+	jobKindReboot         = internaljobs.KindReboot
 	jobKindSudoersEnable  = internaljobs.KindSudoersEnable
 	jobKindSudoersDisable = internaljobs.KindSudoersDisable
 	jobKindCVEEnrichment  = internaljobs.KindCVEEnrichment
@@ -45,6 +46,8 @@ const (
 	jobPhasePostchecks   = internaljobs.PhasePostchecks
 	jobPhaseAutoremove   = internaljobs.PhaseAutoremove
 	jobPhaseReconcile    = internaljobs.PhaseReconcile
+	jobPhaseReboot       = internaljobs.PhaseReboot
+	jobPhaseVerify       = internaljobs.PhaseVerify
 	jobPhaseApply        = internaljobs.PhaseApply
 	jobPhaseSnapshot     = internaljobs.PhaseSnapshot
 	jobPhaseEncrypt      = internaljobs.PhaseEncrypt

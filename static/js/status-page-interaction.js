@@ -24,7 +24,7 @@
         "autoremove",
         "repairing",
         "sudoers",
-        "facts_refresh"
+        "facts_refresh", "rebooting"
     ]);
 
     const legacyActionFields = Object.freeze({
@@ -41,9 +41,9 @@
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
-    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
+    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "sudoers", "facts_refresh"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
 
     function cloneValue(value) {
@@ -125,6 +125,7 @@
             if (key === "cancel") return "Ready to cancel pending approval.";
             if (key === "autoremove") return "Ready to run apt autoremove.";
             if (key === "repair_apt") return "Ready to inspect and repair APT/DPKG state.";
+            if (key === "reboot") return "Ready for a controlled reboot and verification.";
             if (key === "refresh_facts") return "Ready to refresh host facts.";
             return "Ready.";
         }
@@ -144,9 +145,11 @@
         const triage = dashboardServer && dashboardServer.approval_triage;
         const field = legacyActionFields[key];
         let enabled;
-        if (key === "repair_apt") {
+		if (key === "repair_apt") {
 			const status = String(server && server.status || "").trim().toLowerCase();
 			enabled = !!server && status === "needs_reconciliation";
+		} else if (key === "reboot") {
+			enabled = false;
 		} else if (["update", "autoremove"].includes(key)) {
 			const status = String(server && server.status || "").trim().toLowerCase();
 			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
@@ -166,12 +169,11 @@
         } else {
             return null;
         }
-
-        const status = String(server && server.status || "").trim().toLowerCase();
-        return {
-            enabled,
-            reason: "",
-            readiness: "",
+		const status = String(server && server.status || "").trim().toLowerCase();
+		return {
+			enabled,
+			reason: key === "reboot" ? "Controlled reboot requires current dashboard host facts" : "",
+			readiness: key === "reboot" ? "unavailable" : "",
             blocking_status: enabled ? "" : status
         };
     }

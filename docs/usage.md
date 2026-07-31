@@ -130,9 +130,11 @@ The Status page shows current state and allows you to inspect logs. Logs are upd
 
 Each selected server also shows a **Recommended action**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
 
+When current host facts report that a reboot is required, **Recommended action → Reboot and verify** offers a deliberately confirmed controlled reboot. The reboot command is sent once and is never automatically replayed. SimpleLinuxUpdater then waits for SSH to return and only reports success after proving that uptime reset and the reboot-required marker cleared. A missing uptime baseline or an unverified restart leaves the job in `error` for operator review.
+
 ### Passwordless apt toggle
 
-From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so apt commands can be executed via sudo without prompting. Root SSH sessions run apt commands directly.
+From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so the managed apt/dpkg commands and the exact `systemctl reboot` command can be executed via sudo without prompting. Root SSH sessions run those commands directly. Re-run **Enable apt** once on non-root hosts configured before controlled reboot support so their managed sudoers rule includes that exact reboot command.
 
 ## Audit trail
 

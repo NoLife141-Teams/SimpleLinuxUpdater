@@ -753,6 +753,7 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 		{name: "update", path: "/api/update/%s", body: "", kind: jobKindUpdate, statusName: "updating"},
 		{name: "autoremove", path: "/api/autoremove/%s", body: "", kind: jobKindAutoremove, statusName: "autoremove"},
 		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, kind: jobKindAptRepair, statusName: "repairing", initialStatus: "needs_reconciliation"},
+		{name: "controlled reboot", path: "/api/reboot/%s", body: `{"confirm":true}`, kind: jobKindReboot, statusName: "rebooting", initialStatus: "done"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, kind: jobKindSudoersEnable, statusName: "sudoers"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, kind: jobKindSudoersDisable, statusName: "sudoers"},
 	}
@@ -845,6 +846,7 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 		{name: "update", path: "/api/update/%s", wantErr: "Failed to create update job"},
 		{name: "autoremove", path: "/api/autoremove/%s", wantErr: "Failed to create autoremove job"},
 		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, wantErr: "Failed to create APT repair job", initialStatus: "needs_reconciliation"},
+		{name: "controlled reboot", path: "/api/reboot/%s", body: `{"confirm":true}`, wantErr: "Failed to create reboot job", initialStatus: "done"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers job"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers disable job"},
 	}

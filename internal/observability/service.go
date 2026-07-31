@@ -733,6 +733,7 @@ const (
 	dashboardActionEnableApt               = "enable_apt"
 	dashboardActionDisableApt              = "disable_apt"
 	dashboardActionRepairApt               = "repair_apt"
+	dashboardActionReboot                  = "reboot"
 
 	dashboardActionReadinessReady       = "ready"
 	dashboardActionReadinessBlocked     = "blocked"
@@ -740,7 +741,7 @@ const (
 	dashboardActionReadinessInProgress  = "in_progress"
 )
 
-func buildDashboardActions(serverName string, status *servers.ServerStatus, timeline DashboardTimelineInfo, triage DashboardApprovalTriageInfo) map[string]DashboardActionInfo {
+func buildDashboardActions(serverName string, status *servers.ServerStatus, timeline DashboardTimelineInfo, triage DashboardApprovalTriageInfo, health DashboardHealthInfo) map[string]DashboardActionInfo {
 	statusValue := ""
 	plan := servers.UpgradePlan{}
 	if status != nil {
@@ -767,8 +768,22 @@ func buildDashboardActions(serverName string, status *servers.ServerStatus, time
 		dashboardActionEnableApt:               dashboardTransientAction(serverName, statusValue, timeline, "Ready to enable passwordless apt.", "passwordless apt change"),
 		dashboardActionDisableApt:              dashboardTransientAction(serverName, statusValue, timeline, "Ready to disable passwordless apt.", "passwordless apt change"),
 		dashboardActionRepairApt:               dashboardAptRepairAction(serverName, statusValue),
+		dashboardActionReboot:                  dashboardRebootAction(serverName, statusValue, timeline, health),
 	}
 	return actions
+}
+
+func dashboardRebootAction(serverName, statusValue string, timeline DashboardTimelineInfo, health DashboardHealthInfo) DashboardActionInfo {
+	if strings.TrimSpace(serverName) == "" {
+		return dashboardUnavailableAction("Server identity is unavailable", "")
+	}
+	if health.RebootRequired == nil || !*health.RebootRequired {
+		return dashboardUnavailableAction("Host facts do not report a required reboot", statusValue)
+	}
+	if statusValue == runtimepkg.StatusNeedsReconciliation {
+		return dashboardBlockedAction(dashboardActionReadinessBlocked, "Repair APT/DPKG state before rebooting", statusValue)
+	}
+	return dashboardTransientAction(serverName, statusValue, timeline, "Ready for a controlled reboot and verification.", "controlled reboot")
 }
 
 func dashboardAptRepairAction(serverName, statusValue string) DashboardActionInfo {
@@ -796,7 +811,7 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
 	}
-	monitoringStatus := statusValue == runtimepkg.StatusUpdating || statusValue == runtimepkg.StatusUpgrading || statusValue == runtimepkg.StatusAutoremove || statusValue == runtimepkg.StatusRepairing || statusValue == runtimepkg.StatusSudoers || statusValue == runtimepkg.StatusFactsRefresh
+	monitoringStatus := statusValue == runtimepkg.StatusUpdating || statusValue == runtimepkg.StatusUpgrading || statusValue == runtimepkg.StatusAutoremove || statusValue == runtimepkg.StatusRepairing || statusValue == runtimepkg.StatusRebooting || statusValue == runtimepkg.StatusSudoers || statusValue == runtimepkg.StatusFactsRefresh
 	if monitoringStatus || runningTimelineState(timeline.State) {
 		return DashboardRecommendedActionInfo{Key: "monitor_apt", Label: "Monitor APT", Detail: "A maintenance command is still active. Follow its live output before taking another action."}
 	}
@@ -818,7 +833,11 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 		return DashboardRecommendedActionInfo{Key: "repair_package_state", Label: "Repair package state", Detail: "APT health checks are not passing. Inspect package-manager state before the next upgrade.", Action: action}
 	}
 	if health.RebootRequired != nil && *health.RebootRequired {
-		return DashboardRecommendedActionInfo{Key: "reboot_and_verify", Label: "Reboot and verify", Detail: "A reboot is required to activate installed updates. Reboot during a maintenance window, then verify reachability and kernel state."}
+		action := ""
+		if dashboardActionEnabled(actions, dashboardActionReboot) {
+			action = dashboardActionReboot
+		}
+		return DashboardRecommendedActionInfo{Key: "reboot_and_verify", Label: "Reboot and verify", Detail: "A reboot is required to activate installed updates. The controlled workflow verifies SSH recovery, uptime reset, and reboot-required state.", Action: action}
 	}
 	return DashboardRecommendedActionInfo{Key: "healthy", Label: "Healthy", Detail: "No immediate maintenance action is required."}
 }

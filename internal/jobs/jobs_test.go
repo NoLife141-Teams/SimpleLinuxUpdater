@@ -348,6 +348,56 @@ func TestJobManagerMarkUnfinishedJobsInterrupted(t *testing.T) {
 	}
 }
 
+func TestJobManagerMarksInterruptedAptMutationsForReconciliation(t *testing.T) {
+	db := openJobTestDB(t)
+	var restored []Record
+	manager := NewManager(NewSQLiteRepository(db), ManagerOptions{
+		SyncRuntime: func(record Record) {
+			restored = append(restored, record)
+		},
+		Now: func() time.Time { return time.Date(2026, 5, 17, 16, 0, 0, 0, time.UTC) },
+	})
+	records := []Record{
+		{ID: "update-mutation", Kind: KindUpdate, ServerName: "srv-update", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpgrade},
+		{ID: "autoremove-mutation", Kind: KindAutoremove, ServerName: "srv-autoremove", Actor: "admin", Status: StatusRunning, Phase: PhaseAutoremove},
+		{ID: "repair-mutation", Kind: KindAptRepair, ServerName: "srv-repair", Actor: "admin", Status: StatusRunning, Phase: PhaseReconcile},
+		{ID: "metadata-refresh", Kind: KindUpdate, ServerName: "srv-update-metadata", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpdate},
+	}
+	for _, record := range records {
+		if err := manager.ImportJobRecord(record); err != nil {
+			t.Fatalf("ImportJobRecord(%s) error = %v", record.ID, err)
+		}
+	}
+	restored = nil
+
+	if err := manager.MarkUnfinishedJobsInterrupted(); err != nil {
+		t.Fatalf("MarkUnfinishedJobsInterrupted() error = %v", err)
+	}
+	for _, id := range []string{"update-mutation", "autoremove-mutation", "repair-mutation"} {
+		got, err := manager.GetJob(id)
+		if err != nil {
+			t.Fatalf("GetJob(%s) error = %v", id, err)
+		}
+		if got.Status != StatusFailed || got.Phase != PhaseComplete || got.ErrorClass != "reconciliation_required" {
+			t.Fatalf("interrupted mutation %s = %+v, want failed reconciliation requirement", id, got)
+		}
+	}
+	metadataRefresh, err := manager.GetJob("metadata-refresh")
+	if err != nil {
+		t.Fatalf("GetJob(metadata-refresh) error = %v", err)
+	}
+	if metadataRefresh.Status != StatusInterrupted || metadataRefresh.ErrorClass != "restart" {
+		t.Fatalf("metadata refresh = %+v, want ordinary restart interruption", metadataRefresh)
+	}
+
+	if err := manager.RestoreReconciliationRequiredJobs(); err != nil {
+		t.Fatalf("RestoreReconciliationRequiredJobs() error = %v", err)
+	}
+	if len(restored) != 3 {
+		t.Fatalf("restored = %+v, want three interrupted APT mutations", restored)
+	}
+}
+
 func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T) {
 	db := openJobTestDB(t)
 	var restored []Record

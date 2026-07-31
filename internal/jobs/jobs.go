@@ -1047,12 +1047,37 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
-	_, err := r.db.Exec(`
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
+		UPDATE jobs
+		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
+		 WHERE status = ?
+		   AND (
+		       (kind = ? AND phase = ?)
+		       OR (kind = ? AND phase = ?)
+		       OR (kind = ? AND phase = ?)
+		   )
+	`,
+		StatusFailed, PhaseComplete, "APT reconciliation required after restart interruption", "reconciliation_required", now, now,
+		StatusRunning,
+		KindUpdate, PhaseAptUpgrade,
+		KindAutoremove, PhaseAutoremove,
+		KindAptRepair, PhaseReconcile,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
 		UPDATE jobs
 		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
 		 WHERE status IN (?, ?, ?)
-	`, StatusInterrupted, PhaseComplete, "Interrupted during restart recovery", "restart", now, now, StatusQueued, StatusRunning, StatusWaitingApproval)
-	return err
+	`, StatusInterrupted, PhaseComplete, "Interrupted during restart recovery", "restart", now, now, StatusQueued, StatusRunning, StatusWaitingApproval); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func truncateString(s string, maxLen int) string {

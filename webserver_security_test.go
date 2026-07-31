@@ -452,6 +452,41 @@ func TestInitializeJobManagerRestoresReconciliationRequiredStatus(t *testing.T) 
 	}
 }
 
+func TestInitializeJobManagerRequiresReconciliationForInterruptedAptMutation(t *testing.T) {
+	preserveDBState(t)
+	preserveServerState(t)
+	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "jobs-interrupted-apt-mutation.db"))
+
+	server := Server{Name: "srv-interrupted-apt-mutation", Host: "example.org", Port: 22, User: "root"}
+	mu.Lock()
+	servers = []Server{server}
+	statusMap = map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "upgrading"},
+	}
+	mu.Unlock()
+
+	jm := newJobManager(getDB())
+	if _, err := jm.CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		Status:     jobStatusRunning,
+		Phase:      jobPhaseAptUpgrade,
+		LogsText:   "apt upgrade was active when the process stopped",
+	}); err != nil {
+		t.Fatalf("CreateJob(active APT mutation) unexpected error: %v", err)
+	}
+
+	if err := initializeJobManager(); err != nil {
+		t.Fatalf("initializeJobManager() unexpected error: %v", err)
+	}
+
+	status := currentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "needs_reconciliation" || !strings.Contains(status.Logs, "apt upgrade was active") {
+		t.Fatalf("runtime status after recovery = %+v, want reconciliation requirement", status)
+	}
+}
+
 func TestPruneAuditEventsSkipsDuringMaintenance(t *testing.T) {
 	t.Skip("audit maintenance admission is covered by coordinator-backed audit tests")
 	preserveDBState(t)

@@ -171,6 +171,8 @@ func scheduledRunSkippedSummary(reason string) string {
 		return "Scheduled run skipped due to blackout window"
 	case policies.RunReasonSuperseded:
 		return "Scheduled run superseded by higher-priority policy"
+	case policies.RunReasonRolloutGate:
+		return "Scheduled run blocked because an earlier rollout batch did not succeed"
 	default:
 		return "Scheduled run skipped"
 	}

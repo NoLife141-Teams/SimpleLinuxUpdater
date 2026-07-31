@@ -241,7 +241,71 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 	} else {
 		policy.ApprovalTimeoutMinutes = 0
 	}
+	switch strings.ToLower(strings.TrimSpace(policy.RolloutMode)) {
+	case "", RolloutImmediate:
+		policy.RolloutMode = RolloutImmediate
+		policy.CanaryCount = 0
+		policy.WaveSize = 0
+		policy.WaveDelayMinutes = 0
+	case RolloutCanaryWaves:
+		policy.RolloutMode = RolloutCanaryWaves
+		if policy.CanaryCount <= 0 {
+			policy.CanaryCount = DefaultCanaryCount
+		}
+		if policy.WaveSize <= 0 {
+			policy.WaveSize = DefaultWaveSize
+		}
+		if policy.WaveDelayMinutes <= 0 {
+			policy.WaveDelayMinutes = DefaultWaveDelayMinutes
+		}
+		if policy.CanaryCount > 50 {
+			return errors.New("canary_count must be between 1 and 50")
+		}
+		if policy.WaveSize > 200 {
+			return errors.New("wave_size must be between 1 and 200")
+		}
+		if policy.WaveDelayMinutes > 1440 {
+			return errors.New("wave_delay_minutes must be between 1 and 1440")
+		}
+	default:
+		return errors.New("rollout_mode must be 'immediate' or 'canary_waves'")
+	}
 	return nil
+}
+
+func BuildRolloutBatches(policy Policy, serverNames []string) []RolloutBatch {
+	names := append([]string(nil), serverNames...)
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+	if len(names) == 0 {
+		return []RolloutBatch{}
+	}
+	if policy.RolloutMode != RolloutCanaryWaves {
+		return []RolloutBatch{{Index: 0, Stage: RolloutImmediate, Servers: names}}
+	}
+	canaryCount := policy.CanaryCount
+	if canaryCount <= 0 {
+		canaryCount = DefaultCanaryCount
+	}
+	if canaryCount > len(names) {
+		canaryCount = len(names)
+	}
+	waveSize := policy.WaveSize
+	if waveSize <= 0 {
+		waveSize = DefaultWaveSize
+	}
+	delay := policy.WaveDelayMinutes
+	if delay <= 0 {
+		delay = DefaultWaveDelayMinutes
+	}
+	batches := []RolloutBatch{{Index: 0, Stage: "canary", Servers: append([]string(nil), names[:canaryCount]...)}}
+	for start, index := canaryCount, 1; start < len(names); start, index = start+waveSize, index+1 {
+		end := start + waveSize
+		if end > len(names) {
+			end = len(names)
+		}
+		batches = append(batches, RolloutBatch{Index: index, Stage: "wave", ReleaseDelayMinutes: index * delay, Servers: append([]string(nil), names[start:end]...)})
+	}
+	return batches
 }
 
 func (s *Service) PolicyMatchesServer(policy Policy, server servers.Server, ctx MatchContext) bool {
@@ -343,6 +407,26 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 	sortPreviewServers(response.MatchedServers)
 	sortPreviewServers(response.ExcludedServers)
 	sortPreviewServers(response.DisabledByOverride)
+	matchedNames := make([]string, 0, len(response.MatchedServers))
+	for _, server := range response.MatchedServers {
+		matchedNames = append(matchedNames, server.Name)
+	}
+	for _, batch := range BuildRolloutBatches(policy, matchedNames) {
+		for _, name := range batch.Servers {
+			for index := range response.MatchedServers {
+				if strings.EqualFold(response.MatchedServers[index].Name, name) {
+					response.MatchedServers[index].RolloutStage = batch.Stage
+					response.MatchedServers[index].Wave = batch.Index
+				}
+			}
+		}
+	}
+	if policy.RolloutMode == RolloutCanaryWaves && len(response.MatchedServers) > 0 {
+		addPreviewFact(&response, "canary_wave_rollout", fmt.Sprintf(
+			"Rollout starts with %d canary server(s), then releases up to %d server(s) every %d minute(s) only after all earlier runs succeed.",
+			policy.CanaryCount, policy.WaveSize, policy.WaveDelayMinutes,
+		))
+	}
 
 	for _, name := range policy.TargetServers {
 		if _, ok := foundServers[strings.ToLower(strings.TrimSpace(name))]; !ok {
@@ -440,13 +524,17 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 				blockedByPolicy := s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)
 				if !blockedByGlobal && !blockedByPolicy {
 					day.AllowedSlots = append(day.AllowedSlots, CalendarSlot{
-						TimeLocal:       policy.TimeLocal,
-						ScheduledForUTC: CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation),
-						TimezoneOffset:  timezoneOffset(slotLocal),
-						ExecutionMode:   policy.ExecutionMode,
-						PackageScope:    policy.PackageScope,
-						UpgradeMode:     policy.UpgradeMode,
-						MatchedServers:  append([]string(nil), matchedServers...),
+						TimeLocal:        policy.TimeLocal,
+						ScheduledForUTC:  CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation),
+						TimezoneOffset:   timezoneOffset(slotLocal),
+						ExecutionMode:    policy.ExecutionMode,
+						PackageScope:     policy.PackageScope,
+						UpgradeMode:      policy.UpgradeMode,
+						MatchedServers:   append([]string(nil), matchedServers...),
+						RolloutMode:      policy.RolloutMode,
+						CanaryCount:      policy.CanaryCount,
+						WaveSize:         policy.WaveSize,
+						WaveDelayMinutes: policy.WaveDelayMinutes,
 					})
 				} else {
 					if blockedByGlobal {
@@ -768,15 +856,34 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		return err
 	}
 	slotLocal := req.Now.In(deps.CurrentLocation()).Truncate(time.Minute)
-	scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
 	if deps.ApplicationTime != nil {
 		occurrence := deps.ApplicationTime.Current().ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
 		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
 			return nil
 		}
-		scheduledForUTC = occurrence.Instant.UTC().Format(deps.TimestampLayout)
 	}
 	serversSnapshot := deps.SnapshotServers()
+	rolloutRuns := []Run{}
+	needsRolloutRuns := false
+	for _, policy := range policies {
+		if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
+			needsRolloutRuns = true
+			break
+		}
+	}
+	if needsRolloutRuns && deps.ListRuns == nil {
+		return errors.New("policy rollout history dependency is incomplete")
+	}
+	if needsRolloutRuns {
+		rolloutRuns, err = deps.ListRuns(1000)
+		if err != nil {
+			return err
+		}
+	}
+	runByKey := make(map[string]Run, len(rolloutRuns))
+	for _, run := range rolloutRuns {
+		runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
+	}
 
 	var queueErrs []error
 	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string) {
@@ -797,26 +904,64 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 
 	candidatesByServer := make(map[string][]ScheduledCandidate)
 	for _, policy := range policies {
-		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
+		if !policy.Enabled {
 			continue
 		}
+		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
+		if !rolloutDue {
+			continue
+		}
+		policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+		matchedServers := make([]servers.Server, 0)
 		for _, server := range serversSnapshot {
 			if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
 				continue
 			}
-			if req.MaintenanceActive {
-				recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
+			matchedServers = append(matchedServers, server)
+		}
+		sort.Slice(matchedServers, func(i, j int) bool {
+			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
+		})
+		serverByName := make(map[string]servers.Server, len(matchedServers))
+		matchedNames := make([]string, 0, len(matchedServers))
+		for _, server := range matchedServers {
+			serverByName[server.Name] = server
+			matchedNames = append(matchedNames, server.Name)
+		}
+		batches := BuildRolloutBatches(policy, matchedNames)
+		elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
+		for batchIndex, batch := range batches {
+			if elapsedMinutes < batch.ReleaseDelayMinutes {
 				continue
 			}
-			if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
-				recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
+			gate := rolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
+			if gate == "waiting" {
 				continue
 			}
-			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
-				Policy:          policy,
-				Server:          server,
-				ScheduledForUTC: scheduledForUTC,
-			})
+			for _, serverName := range batch.Servers {
+				server := serverByName[serverName]
+				key := rolloutRunKey(policy.ID, policyScheduledForUTC, server.Name)
+				if _, exists := runByKey[key]; exists {
+					continue
+				}
+				if gate == "failed" {
+					recordSkipped(policy, server, policyScheduledForUTC, RunReasonRolloutGate)
+					continue
+				}
+				if req.MaintenanceActive {
+					recordSkipped(policy, server, policyScheduledForUTC, RunReasonMaintenance)
+					continue
+				}
+				if s.BlackoutApplies(rolloutSlot, globalBlackouts) || s.BlackoutApplies(rolloutSlot, policy.PolicyBlackouts) {
+					recordSkipped(policy, server, policyScheduledForUTC, RunReasonBlackout)
+					continue
+				}
+				candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
+					Policy:          policy,
+					Server:          server,
+					ScheduledForUTC: policyScheduledForUTC,
+				})
+			}
 		}
 	}
 
@@ -850,6 +995,46 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
 	}
 	return nil
+}
+
+func rolloutRunKey(policyID int64, scheduledForUTC, serverName string) string {
+	return fmt.Sprintf("%d|%s|%s", policyID, strings.TrimSpace(scheduledForUTC), strings.ToLower(strings.TrimSpace(serverName)))
+}
+
+func rolloutGateState(policyID int64, scheduledForUTC string, previous []RolloutBatch, runs map[string]Run) string {
+	for _, batch := range previous {
+		for _, serverName := range batch.Servers {
+			run, ok := runs[rolloutRunKey(policyID, scheduledForUTC, serverName)]
+			if !ok {
+				return "waiting"
+			}
+			switch run.Status {
+			case RunSucceeded:
+				continue
+			case RunFailed, RunSkipped, RunCancelled, RunInterrupted:
+				return "failed"
+			default:
+				return "waiting"
+			}
+		}
+	}
+	return "ready"
+}
+
+func (s *Service) rolloutScheduledSlot(policy Policy, nowLocal time.Time) (time.Time, bool) {
+	if policy.RolloutMode != RolloutCanaryWaves {
+		return nowLocal, s.PolicyDueAt(policy, nowLocal)
+	}
+	dayStart := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, nowLocal.Location())
+	for daysBack := 0; daysBack <= 7; daysBack++ {
+		candidateDay := dayStart.AddDate(0, 0, -daysBack)
+		candidate, ok := s.policySlotForDay(policy, candidateDay)
+		if !ok || !s.PolicyDueAt(policy, candidate) || candidate.After(nowLocal) {
+			continue
+		}
+		return candidate, true
+	}
+	return time.Time{}, false
 }
 
 func (s *Service) ProcessDue(now time.Time) error {

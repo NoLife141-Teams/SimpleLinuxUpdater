@@ -16,6 +16,8 @@ const (
 
 	UpgradeModeStandard = "standard"
 	UpgradeModeFull     = "full"
+	RolloutImmediate    = "immediate"
+	RolloutCanaryWaves  = "canary_waves"
 
 	CadenceDaily  = "daily"
 	CadenceWeekly = "weekly"
@@ -37,6 +39,7 @@ const (
 	RunReasonMissing     = "missing"
 	RunReasonMaintenance = "maintenance"
 	RunReasonPersistence = "persistence"
+	RunReasonRolloutGate = "rollout_gate"
 
 	GlobalBlackoutsSetting        = "update_policy_global_blackouts"
 	DefaultApprovalTimeoutMinutes = 720
@@ -44,6 +47,9 @@ const (
 	MaxRunsLimit                  = 200
 	DefaultRunsPageSize           = 25
 	DefaultSchedulerTickInterval  = time.Minute
+	DefaultCanaryCount            = 1
+	DefaultWaveSize               = 10
+	DefaultWaveDelayMinutes       = 15
 	DefaultTimestampLayout        = "2006-01-02T15:04:05.000000000Z"
 
 	PreviewOccurrenceLimit = 5
@@ -85,6 +91,10 @@ type Policy struct {
 	TimeLocal              string           `json:"time_local"`
 	Weekdays               []string         `json:"weekdays"`
 	ApprovalTimeoutMinutes int              `json:"approval_timeout_minutes"`
+	RolloutMode            string           `json:"rollout_mode"`
+	CanaryCount            int              `json:"canary_count"`
+	WaveSize               int              `json:"wave_size"`
+	WaveDelayMinutes       int              `json:"wave_delay_minutes"`
 	PolicyBlackouts        []BlackoutWindow `json:"policy_blackouts"`
 	CreatedAt              string           `json:"created_at"`
 	UpdatedAt              string           `json:"updated_at"`
@@ -92,9 +102,18 @@ type Policy struct {
 }
 
 type PreviewServer struct {
-	Name   string   `json:"name"`
-	Tags   []string `json:"tags,omitempty"`
-	Reason string   `json:"reason,omitempty"`
+	Name         string   `json:"name"`
+	Tags         []string `json:"tags,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	RolloutStage string   `json:"rollout_stage,omitempty"`
+	Wave         int      `json:"wave,omitempty"`
+}
+
+type RolloutBatch struct {
+	Index               int      `json:"index"`
+	Stage               string   `json:"stage"`
+	ReleaseDelayMinutes int      `json:"release_delay_minutes"`
+	Servers             []string `json:"servers"`
 }
 
 type PreviewResponse struct {
@@ -275,13 +294,17 @@ type CalendarDay struct {
 }
 
 type CalendarSlot struct {
-	TimeLocal       string   `json:"time_local"`
-	ScheduledForUTC string   `json:"scheduled_for_utc"`
-	TimezoneOffset  string   `json:"timezone_offset"`
-	ExecutionMode   string   `json:"execution_mode"`
-	PackageScope    string   `json:"package_scope"`
-	UpgradeMode     string   `json:"upgrade_mode"`
-	MatchedServers  []string `json:"matched_servers"`
+	TimeLocal        string   `json:"time_local"`
+	ScheduledForUTC  string   `json:"scheduled_for_utc"`
+	TimezoneOffset   string   `json:"timezone_offset"`
+	ExecutionMode    string   `json:"execution_mode"`
+	PackageScope     string   `json:"package_scope"`
+	UpgradeMode      string   `json:"upgrade_mode"`
+	MatchedServers   []string `json:"matched_servers"`
+	RolloutMode      string   `json:"rollout_mode"`
+	CanaryCount      int      `json:"canary_count,omitempty"`
+	WaveSize         int      `json:"wave_size,omitempty"`
+	WaveDelayMinutes int      `json:"wave_delay_minutes,omitempty"`
 }
 
 type CalendarBlockedWindow struct {

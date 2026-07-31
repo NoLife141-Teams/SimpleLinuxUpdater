@@ -2437,11 +2437,15 @@ function refreshPolicyFormVisibility() {
     const executionMode = document.getElementById("policy-execution-mode").value;
     const weekdaySection = document.getElementById("policy-weekday-section");
     const approvalWrap = document.getElementById("policy-approval-timeout-wrap");
+    const rolloutFields = document.getElementById("policy-rollout-fields");
     if (weekdaySection) {
         weekdaySection.classList.toggle("is-hidden", cadence !== "weekly");
     }
     if (approvalWrap) {
         approvalWrap.classList.toggle("is-hidden", executionMode !== "approval_required");
+    }
+    if (rolloutFields) {
+        rolloutFields.classList.toggle("is-hidden", document.getElementById("policy-rollout-mode")?.value !== "canary_waves");
     }
     if (executionMode === "approval_required") {
         const timeoutInput = document.getElementById("policy-approval-timeout");
@@ -2523,9 +2527,12 @@ function renderPolicyPreviewList(items, emptyText, includeReason = false) {
     }
     return items.map((item) => {
         const name = escapeHtml(item?.name || "");
-        const reason = includeReason && item?.reason ? ` · ${policyPreviewReasonLabel(item.reason)}` : "";
+		const reason = includeReason && item?.reason ? ` · ${policyPreviewReasonLabel(item.reason)}` : "";
+		const rollout = !includeReason && item?.rollout_stage
+			? ` · ${item.rollout_stage === "canary" ? "canary" : (item.rollout_stage === "wave" ? `wave ${item.wave}` : "immediate")}`
+			: "";
         const title = Array.isArray(item?.tags) && item.tags.length ? ` title="${escapeHtml(`Tags: ${item.tags.join(", ")}`)}"` : "";
-        return `<span class="preview-chip${includeReason ? " preview-chip-muted" : ""}"${title}>${name}${escapeHtml(reason)}</span>`;
+		return `<span class="preview-chip${includeReason ? " preview-chip-muted" : ""}"${title}>${name}${escapeHtml(reason + rollout)}</span>`;
     }).join("");
 }
 
@@ -2723,9 +2730,12 @@ function renderPolicyExecution(policy) {
 	const timeout = policy.execution_mode === "approval_required"
 		? ` · ${policy.approval_timeout_minutes || 720} minute approval window`
 		: "";
+	const rollout = policy.rollout_mode === "canary_waves"
+		? ` · canary ${policy.canary_count || 1}, waves of ${policy.wave_size || 10} / ${policy.wave_delay_minutes || 15} min`
+		: " · immediate rollout";
 	return `
 		<div>${escapeHtml(mode)}</div>
-		<div class="table-secondary">${escapeHtml(`${scope} · ${upgradeMode}${timeout}`)}</div>
+		<div class="table-secondary">${escapeHtml(`${scope} · ${upgradeMode}${timeout}${rollout}`)}</div>
 	`;
 }
 
@@ -2932,6 +2942,10 @@ function resetPolicyForm(options = {}) {
 	document.getElementById("policy-upgrade-mode").value = "standard";
 	document.getElementById("policy-cadence-kind").value = "daily";
     document.getElementById("policy-approval-timeout").value = "720";
+    document.getElementById("policy-rollout-mode").value = "immediate";
+    document.getElementById("policy-canary-count").value = "1";
+    document.getElementById("policy-wave-size").value = "10";
+    document.getElementById("policy-wave-delay").value = "15";
     document.getElementById("policy-enabled").checked = true;
     clearPolicyFieldErrors();
     setPolicyFeedback("", "");
@@ -2960,6 +2974,10 @@ function applyPolicyToForm(policy, options = {}) {
 	document.getElementById("policy-upgrade-mode").value = policy.upgrade_mode || "standard";
 	document.getElementById("policy-cadence-kind").value = policy.cadence_kind || "daily";
     document.getElementById("policy-approval-timeout").value = policy.approval_timeout_minutes || 720;
+    document.getElementById("policy-rollout-mode").value = policy.rollout_mode || "immediate";
+    document.getElementById("policy-canary-count").value = policy.canary_count || 1;
+    document.getElementById("policy-wave-size").value = policy.wave_size || 10;
+    document.getElementById("policy-wave-delay").value = policy.wave_delay_minutes || 15;
     document.getElementById("policy-enabled").checked = !!policy.enabled;
     clearPolicyFieldErrors();
     setPolicyFeedback("", "");
@@ -3413,7 +3431,11 @@ function collectPolicyPayload(options = {}) {
             package_scope: document.getElementById("policy-package-scope").value,
             upgrade_mode: document.getElementById("policy-upgrade-mode").value,
             time_local: document.getElementById("policy-time-local").value,
-            approval_timeout_minutes: document.getElementById("policy-approval-timeout").value
+            approval_timeout_minutes: document.getElementById("policy-approval-timeout").value,
+            rollout_mode: document.getElementById("policy-rollout-mode").value,
+            canary_count: document.getElementById("policy-canary-count").value,
+            wave_size: document.getElementById("policy-wave-size").value,
+            wave_delay_minutes: document.getElementById("policy-wave-delay").value
         }
     });
     const result = scheduledPolicyAdministration.validatePolicyDraft();
@@ -3639,7 +3661,11 @@ function bindPolicyFormInteractions() {
         "policy-upgrade-mode",
 		"policy-cadence-kind",
         "policy-enabled",
-        "policy-approval-timeout"
+        "policy-approval-timeout",
+        "policy-rollout-mode",
+        "policy-canary-count",
+        "policy-wave-size",
+        "policy-wave-delay"
     ];
     summaryFields.forEach((fieldId) => {
         document.getElementById(fieldId)?.addEventListener("input", () => {

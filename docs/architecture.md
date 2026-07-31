@@ -40,7 +40,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - `internal/audit.Service` writes audit rows, lists audit events, prunes old rows, and renders Markdown reports.
 - `internal/servers.Service` owns server CRUD, tag normalization, secret persistence, rollback behavior, and per-server known-host operations.
 - `internal/updates.Service` owns update, baseline and plan-aware pre-checks, the explicit non-interactive APT/dpkg policy, APT reconciliation/repair, controlled reboot and verification, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
-- `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
+- `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, deterministic canary/wave planning, success-gated batch release, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, structured job-log fragments, bounded compatibility previews, log retention, runtime-status sync callbacks, and dashboard notifications after successful writes.
 - `internal/maintenance.Coordinator` owns shared admission, exclusive backup leases, durable/public maintenance state, startup recovery, and restore handoff.
@@ -96,7 +96,7 @@ Autoremove, sudoers enable/disable, CVE enrichment, and scheduled scans use the 
 
 ## Scheduled policies
 
-Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, and per-policy blackout windows. `PolicyService` evaluates matching, due slots through Application Time Interpretation, skip reasons, missed scheduler ticks during backup restore, and run creation before handing execution to the update service. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
+Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, per-policy blackout windows, and optional canary/wave rollout settings. `PolicyService` sorts matched server names, releases the canary batch at the canonical occurrence, and releases each delayed wave only after every previous run succeeded. Terminal failure stops later waves with a persisted `rollout_gate` skip. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
 
 Policy route adapters still live in `package main` and keep the existing wire format. Matching, validation, persistence, skipped-run recording, scheduler ticks, and missed-tick replay live in `internal/policies`.
 

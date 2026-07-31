@@ -320,13 +320,17 @@ func handleUpdatePolicyCreateWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	audit(c, "update_policy.create", "update_policy", created.Name, "success", "Update policy created", map[string]any{
-		"policy_id":      created.ID,
-		"execution_mode": created.ExecutionMode,
-		"package_scope":  created.PackageScope,
-		"upgrade_mode":   created.UpgradeMode,
-		"target_tag":     created.TargetTag,
-		"cadence_kind":   created.CadenceKind,
-		"time_local":     created.TimeLocal,
+		"policy_id":          created.ID,
+		"execution_mode":     created.ExecutionMode,
+		"package_scope":      created.PackageScope,
+		"upgrade_mode":       created.UpgradeMode,
+		"target_tag":         created.TargetTag,
+		"cadence_kind":       created.CadenceKind,
+		"time_local":         created.TimeLocal,
+		"rollout_mode":       created.RolloutMode,
+		"canary_count":       created.CanaryCount,
+		"wave_size":          created.WaveSize,
+		"wave_delay_minutes": created.WaveDelayMinutes,
 	})
 	c.JSON(http.StatusCreated, created)
 }
@@ -377,7 +381,10 @@ func handleUpdatePolicyUpdateWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(statusCode, gin.H{"error": err.Error()})
 		return
 	}
-	audit(c, "update_policy.update", "update_policy", updated.Name, "success", "Update policy updated", map[string]any{"policy_id": updated.ID})
+	audit(c, "update_policy.update", "update_policy", updated.Name, "success", "Update policy updated", map[string]any{
+		"policy_id": updated.ID, "rollout_mode": updated.RolloutMode, "canary_count": updated.CanaryCount,
+		"wave_size": updated.WaveSize, "wave_delay_minutes": updated.WaveDelayMinutes,
+	})
 	c.JSON(http.StatusOK, updated)
 }
 

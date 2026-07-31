@@ -96,6 +96,10 @@ func EnsureSchema(db *sql.DB) error {
 			time_local TEXT NOT NULL,
 			weekdays_json TEXT NOT NULL DEFAULT '[]',
 			approval_timeout_minutes INTEGER NOT NULL DEFAULT 720,
+			rollout_mode TEXT NOT NULL DEFAULT 'immediate',
+			canary_count INTEGER NOT NULL DEFAULT 0,
+			wave_size INTEGER NOT NULL DEFAULT 0,
+			wave_delay_minutes INTEGER NOT NULL DEFAULT 0,
 			policy_blackouts_json TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -156,6 +160,16 @@ func EnsureSchema(db *sql.DB) error {
 	}
 	if err := ensureColumn(db, "upgrade_mode", "TEXT NOT NULL DEFAULT 'standard'"); err != nil {
 		return err
+	}
+	for name, definition := range map[string]string{
+		"rollout_mode":       "TEXT NOT NULL DEFAULT 'immediate'",
+		"canary_count":       "INTEGER NOT NULL DEFAULT 0",
+		"wave_size":          "INTEGER NOT NULL DEFAULT 0",
+		"wave_delay_minutes": "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if err := ensureColumn(db, name, definition); err != nil {
+			return err
+		}
 	}
 	if err := ensureTableColumn(db, "update_policy_runs", "upgrade_mode", "TEXT NOT NULL DEFAULT 'standard'"); err != nil {
 		return err
@@ -233,7 +247,8 @@ func (r *SQLiteRepository) ListPolicies() ([]Policy, error) {
 	rows, err := r.database().Query(`
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
-		       weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
+		       weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
+		       policy_blackouts_json, created_at, updated_at
 		  FROM update_policies
 		 ORDER BY created_at ASC, id ASC
 	`)
@@ -259,7 +274,8 @@ func (r *SQLiteRepository) GetPolicy(id int64) (Policy, error) {
 	row := r.database().QueryRow(`
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
-		       weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
+		       weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
+		       policy_blackouts_json, created_at, updated_at
 		  FROM update_policies
 		 WHERE id = ?
 	`, id)
@@ -272,8 +288,9 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 		INSERT INTO update_policies (
 			name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 			package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
-			weekdays_json, approval_timeout_minutes, policy_blackouts_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
+			policy_blackouts_json, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		policy.Name,
 		BoolToInt(policy.Enabled),
@@ -288,6 +305,10 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 		policy.TimeLocal,
 		r.json(policy.Weekdays),
 		policy.ApprovalTimeoutMinutes,
+		policy.RolloutMode,
+		policy.CanaryCount,
+		policy.WaveSize,
+		policy.WaveDelayMinutes,
 		r.json(policy.PolicyBlackouts),
 		now,
 		now,
@@ -312,6 +333,7 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 		   SET name = ?, enabled = ?, target_tag = ?, include_tags_json = ?, exclude_tags_json = ?,
 		       target_servers_json = ?, package_scope = ?, upgrade_mode = ?, execution_mode = ?,
 		       cadence_kind = ?, time_local = ?, weekdays_json = ?, approval_timeout_minutes = ?,
+		       rollout_mode = ?, canary_count = ?, wave_size = ?, wave_delay_minutes = ?,
 		       policy_blackouts_json = ?, updated_at = ?
 		 WHERE id = ?
 	`,
@@ -328,6 +350,10 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 		policy.TimeLocal,
 		r.json(policy.Weekdays),
 		policy.ApprovalTimeoutMinutes,
+		policy.RolloutMode,
+		policy.CanaryCount,
+		policy.WaveSize,
+		policy.WaveDelayMinutes,
 		r.json(policy.PolicyBlackouts),
 		now,
 		id,
@@ -394,6 +420,10 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 		&policy.TimeLocal,
 		&weekdaysJSON,
 		&policy.ApprovalTimeoutMinutes,
+		&policy.RolloutMode,
+		&policy.CanaryCount,
+		&policy.WaveSize,
+		&policy.WaveDelayMinutes,
 		&policyBlackoutsJSON,
 		&policy.CreatedAt,
 		&policy.UpdatedAt,
@@ -403,6 +433,9 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 	}
 	policy.Enabled = enabledInt != 0
 	policy.UpgradeMode = normalizedUpgradeMode(policy.UpgradeMode)
+	if strings.TrimSpace(policy.RolloutMode) == "" {
+		policy.RolloutMode = RolloutImmediate
+	}
 	policy.IncludeTags = ParseStringListJSON(includeTagsJSON)
 	policy.ExcludeTags = ParseStringListJSON(excludeTagsJSON)
 	policy.TargetServers = ParseStringListJSON(targetServersJSON)

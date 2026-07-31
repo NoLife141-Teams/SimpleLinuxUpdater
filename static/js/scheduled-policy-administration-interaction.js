@@ -110,7 +110,8 @@
         return {
             id: "", name: "", enabled: true, target_tag: "", include_tags: [], exclude_tags: [], target_servers: [],
             package_scope: "security", upgrade_mode: "standard", execution_mode: "scan_only", cadence_kind: "daily",
-            time_local: "02:00", weekdays: [], approval_timeout_minutes: 720
+            time_local: "02:00", weekdays: [], approval_timeout_minutes: 720,
+            rollout_mode: "immediate", canary_count: 0, wave_size: 0, wave_delay_minutes: 0
         };
     }
 
@@ -135,7 +136,11 @@
             cadence_kind: cadence,
             time_local: normalizeTime(source.time_local, base.time_local),
             weekdays: cadence === "weekly" ? normalizeWeekdays(source.weekdays) : [],
-            approval_timeout_minutes: execution === "approval_required" ? (Number(source.approval_timeout_minutes) || 720) : 0
+            approval_timeout_minutes: execution === "approval_required" ? (Number(source.approval_timeout_minutes) || 720) : 0,
+            rollout_mode: source.rollout_mode === "canary_waves" ? "canary_waves" : "immediate",
+            canary_count: source.rollout_mode === "canary_waves" ? (Number(source.canary_count) || 1) : 0,
+            wave_size: source.rollout_mode === "canary_waves" ? (Number(source.wave_size) || 10) : 0,
+            wave_delay_minutes: source.rollout_mode === "canary_waves" ? (Number(source.wave_delay_minutes) || 15) : 0
         };
     }
 
@@ -148,6 +153,11 @@
         }
         if (normalized.cadence_kind === "weekly" && !normalized.weekdays.length) {
             errors.weekdays = "Weekly policies require at least one weekday.";
+        }
+        if (normalized.rollout_mode === "canary_waves") {
+            if (normalized.canary_count < 1 || normalized.canary_count > 50) errors.canary_count = "Canary count must be between 1 and 50.";
+            if (normalized.wave_size < 1 || normalized.wave_size > 200) errors.wave_size = "Wave size must be between 1 and 200.";
+            if (normalized.wave_delay_minutes < 1 || normalized.wave_delay_minutes > 1440) errors.wave_delay_minutes = "Wave delay must be between 1 and 1440 minutes.";
         }
         if (Object.keys(errors).length) return { ok: false, errors, message: "Policy name and at least one target tag, included tag, or explicit server are required." };
         try {
@@ -183,10 +193,13 @@
         const scope = draft.package_scope === "full" ? "Full updates" : "Security updates";
         const upgrade = draft.upgrade_mode === "full" ? "Full upgrade" : "Standard upgrade";
         const timeout = draft.execution_mode === "approval_required" ? `, ${draft.approval_timeout_minutes || 720} minute approval window` : "";
+        const rollout = draft.rollout_mode === "canary_waves"
+            ? `Canary ${draft.canary_count}, then waves of ${draft.wave_size} every ${draft.wave_delay_minutes} minutes`
+            : "All matched servers at once";
         const windows = blackouts.length ? `${blackouts.length} no-run window${blackouts.length === 1 ? "" : "s"} configured` : "No policy no-run windows";
         return {
             title: draft.name || "Unnamed policy",
-            body: `${schedule} (${timezone || "UTC"}), ${execution.charAt(0).toUpperCase()}${execution.slice(1)}, ${scope}, ${upgrade}${timeout}, ${targets.join("; ") || "no target"}. ${windows}.`
+            body: `${schedule} (${timezone || "UTC"}), ${execution.charAt(0).toUpperCase()}${execution.slice(1)}, ${scope}, ${upgrade}${timeout}, ${rollout}, ${targets.join("; ") || "no target"}. ${windows}.`
         };
     }
 

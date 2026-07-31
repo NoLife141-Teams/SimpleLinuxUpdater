@@ -20,6 +20,23 @@ test("editor normalizes weekdays and projects a deterministic schedule summary",
     assert.match(view.editor.summary.body, /Every Mon, Wed at 02:00/);
 });
 
+test("canary and wave rollout fields are normalized, validated, and summarized", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft({
+        rollout_mode: "canary_waves", canary_count: "2", wave_size: "5", wave_delay_minutes: "10",
+    }) });
+    const view = store.getView();
+    assert.equal(view.editor.draft.rollout_mode, "canary_waves");
+    assert.equal(view.editor.draft.canary_count, 2);
+    assert.match(view.editor.summary.body, /Canary 2, then waves of 5 every 10 minutes/);
+    assert.equal(store.validatePolicyDraft().payload.wave_size, 5);
+
+    store.dispatch({ type: "editorChanged", patch: { wave_delay_minutes: 1441 } });
+    const invalid = store.validatePolicyDraft();
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.errors.wave_delay_minutes, /between 1 and 1440/);
+});
+
 test("policy and global-setting drafts expose normalized dirty, validation, discard, and save eligibility", () => {
     const store = createStore();
     assert.equal(store.getView().editor.dirty, false);

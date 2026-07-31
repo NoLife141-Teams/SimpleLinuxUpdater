@@ -96,6 +96,17 @@ After `apt-get update` and the read-only package simulations, a second disk-spac
 
 If either the baseline or plan-aware pre-check fails, the update stops before the approval flow and the server enters `error`. The simulated plan remains available as failure evidence, but no pending approval or package mutation is created.
 
+### Non-interactive package policy
+
+Every APT/dpkg mutation declares the same unattended policy instead of relying on the SSH session's missing TTY or ambient environment:
+
+- `DEBIAN_FRONTEND=noninteractive` with critical debconf priority
+- `APT_LISTCHANGES_FRONTEND=none` so changelogs cannot open a pager
+- `NEEDRESTART_MODE=a` so needrestart handles eligible service restarts automatically
+- `UCF_FORCE_CONFFOLD=1` and dpkg `--force-confdef --force-confold`, preserving the installed configuration when a conffile conflict has no default answer
+
+The chosen strategy is written near the start of update, repair, and autoremove logs. Read-only APT simulations also force the C locale and non-interactive frontends. This prevents the `Dialog → Readline → Teletype → Noninteractive` fallback warnings seen when no controlling TTY exists.
+
 ### Post-update health checks
 
 After an upgrade completes, the updater can run post-update health checks:
@@ -136,7 +147,7 @@ When current host facts report that a reboot is required, **Recommended action �
 
 ### Passwordless apt toggle
 
-From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so the managed apt/dpkg commands and the exact `systemctl reboot` command can be executed via sudo without prompting. Root SSH sessions run those commands directly. Re-run **Enable apt** once on non-root hosts configured before controlled reboot support so their managed sudoers rule includes that exact reboot command.
+From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so the managed apt/dpkg commands and the exact `systemctl reboot` command can be executed via sudo without prompting. Root SSH sessions run those commands directly. Re-run **Enable apt** once on non-root hosts configured before the explicit non-interactive strategy so their managed sudoers rule permits the restricted `/usr/bin/env … /usr/bin/apt-get` and dpkg command forms.
 
 ## Audit trail
 

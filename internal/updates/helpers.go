@@ -834,19 +834,41 @@ func RootOrSudoCommand(command string) string {
 	return fmt.Sprintf("if [ \"$(id -u)\" -eq 0 ]; then %s; else sudo -n %s; fi", command, command)
 }
 
+func NonInteractiveAptCommand(args string) string {
+	command := strings.TrimSpace(fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get %s %s", AptNonInteractiveEnvironment, AptDpkgConffileOptions, strings.TrimSpace(args)))
+	return RootOrSudoCommand(command)
+}
+
+func NonInteractiveDpkgConfigureCommand() string {
+	command := fmt.Sprintf("/usr/bin/env %s /usr/bin/dpkg --force-confdef --force-confold --configure -a", AptNonInteractiveEnvironment)
+	return RootOrSudoCommand(command)
+}
+
+func ReadOnlyAptCommand(command string) string {
+	return strings.TrimSpace(AptReadOnlyEnvironment + " " + strings.TrimSpace(command))
+}
+
+func NonInteractiveAptSudoersSpec() string {
+	return fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get *", AptNonInteractiveEnvironment)
+}
+
+func NonInteractiveDpkgSudoersSpec() string {
+	return fmt.Sprintf("/usr/bin/env %s /usr/bin/dpkg --force-confdef --force-confold --configure -a", AptNonInteractiveEnvironment)
+}
+
 func IsAptLockProtectedCommand(command string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(command))
-	return strings.Contains(normalized, "apt-get update") || IsAptMutationCommand(command)
+	return strings.Contains(normalized, "apt-get") && strings.Contains(normalized, " update") || IsAptMutationCommand(command)
 }
 
 func IsAptMutationCommand(command string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(command))
 	for _, aptCommand := range []string{
-		"apt-get -y upgrade",
-		"apt-get -y full-upgrade",
-		"apt-get -y autoremove",
-		"apt-get -y install",
-		"apt-get -y -f install",
+		" -y upgrade",
+		" -y full-upgrade",
+		" -y autoremove",
+		" -y install",
+		" -y -f install",
 	} {
 		if strings.Contains(normalized, aptCommand) {
 			return true
@@ -868,7 +890,7 @@ func BuildSelectedInstallSimulationCmd(packages []string) string {
 	if len(escaped) == 0 {
 		return ""
 	}
-	return "LC_ALL=C apt-get -s install -- " + strings.Join(escaped, " ")
+	return ReadOnlyAptCommand("apt-get -s install -- " + strings.Join(escaped, " "))
 }
 
 func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
@@ -876,7 +898,7 @@ func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
 	if args == "" {
 		return ""
 	}
-	return RootOrSudoCommand(args)
+	return NonInteractiveAptCommand(strings.TrimPrefix(args, "apt-get "))
 }
 
 func buildSelectedInstallArgs(packages []string, onlyUpgrade bool) string {

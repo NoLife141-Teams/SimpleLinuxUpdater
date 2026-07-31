@@ -11,23 +11,23 @@ import (
 )
 
 var (
-	AptUpdateCmd            = RootOrSudoCommand("apt-get update")
-	AptUpgradeCmd           = RootOrSudoCommand("apt-get -y upgrade")
-	AptFullUpgradeCmd       = RootOrSudoCommand("apt-get -y full-upgrade")
-	AptAutoremoveCmd        = RootOrSudoCommand("apt-get -y autoremove")
+	AptUpdateCmd            = NonInteractiveAptCommand("update")
+	AptUpgradeCmd           = NonInteractiveAptCommand("-y upgrade")
+	AptFullUpgradeCmd       = NonInteractiveAptCommand("-y full-upgrade")
+	AptAutoremoveCmd        = NonInteractiveAptCommand("-y autoremove")
 	ControlledRebootCmd     = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then systemctl reboot; else sudo -n systemctl reboot; fi' >/dev/null 2>&1 &"
 	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
 	AptExtendedLockProbeCmd = RootOrSudoCommand(
 		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
 	)
 	AptRepairCmd = buildAptRepairLockGuard(AptExtendedLockProbeCmd) + "; " +
-		RootOrSudoCommand("dpkg --configure -a") + " && " +
-		RootOrSudoCommand("apt-get -y -f install") + " && " +
+		NonInteractiveDpkgConfigureCommand() + " && " +
+		NonInteractiveAptCommand("-y -f install") + " && " +
 		buildAptRepairAuditGuard(RootOrSudoCommand("dpkg --audit")) + " && " +
 		RootOrSudoCommand("apt-get check")
-	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
-	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
-	AptFullUpgradeSimCmd = "LC_ALL=C apt-get -s full-upgrade"
+	AptListUpgradableCmd = ReadOnlyAptCommand("apt-get -s upgrade")
+	AptListMetadataCmd   = ReadOnlyAptCommand("apt list --upgradable") + " 2>/dev/null"
+	AptFullUpgradeSimCmd = ReadOnlyAptCommand("apt-get -s full-upgrade")
 )
 
 func buildAptRepairLockGuard(lockProbeCmd string) string {
@@ -47,6 +47,11 @@ func buildAptRepairAuditGuard(auditCmd string) string {
 }
 
 const (
+	AptNonInteractiveEnvironment  = "DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1"
+	AptDpkgConffileOptions        = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
+	AptReadOnlyEnvironment        = "LC_ALL=C DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none"
+	AptInteractionStrategySummary = "APT strategy: noninteractive frontend, changelogs disabled, automatic needrestart handling, existing config files kept on conflicts"
+
 	DefaultSSHCommandTimeout = 5 * time.Minute
 	MinSSHCommandTimeout     = 1 * time.Second
 	MaxSSHCommandTimeout     = 30 * time.Minute

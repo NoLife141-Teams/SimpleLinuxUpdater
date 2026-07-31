@@ -16,6 +16,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   command and verifies SSH recovery, uptime reset, and the reboot-required flag.
 - Add a second disk-space gate after APT simulation whose reserve scales with the
   planned package count and newly installed packages, before approval can begin.
+- Make the unattended APT/dpkg strategy explicit for updates, upgrades, repair,
+  and cleanup, including deterministic conffile and service-restart behavior.
 
 ### Fixed
 

@@ -25,6 +25,16 @@ func (r failingInventoryRepository) Load() ([]serverpkg.Server, error)          
 func (failingInventoryRepository) Save([]serverpkg.Server, serverpkg.TxHook) error { return nil }
 func (failingInventoryRepository) UpdateServerKey(string, string) error            { return nil }
 
+type fixedInventoryRepository struct {
+	servers []serverpkg.Server
+}
+
+func (r fixedInventoryRepository) Load() ([]serverpkg.Server, error) {
+	return append([]serverpkg.Server(nil), r.servers...), nil
+}
+func (fixedInventoryRepository) Save([]serverpkg.Server, serverpkg.TxHook) error { return nil }
+func (fixedInventoryRepository) UpdateServerKey(string, string) error            { return nil }
+
 func TestRuntimeCompositionReloadRestoredStateHonorsCancellation(t *testing.T) {
 	composition := newRuntimeComposition(AppDeps{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,6 +105,52 @@ func TestRuntimeCompositionReloadRestoredStateReturnsInventoryFailure(t *testing
 	err = composition.ReloadRestoredState(context.Background())
 	if !errors.Is(err, inventoryErr) || !strings.Contains(err.Error(), "reload restored Server inventory") {
 		t.Fatalf("ReloadRestoredState() error = %v, want labelled inventory failure", err)
+	}
+}
+
+func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInventory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reload-reconciliation.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := ensureSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	server := Server{Name: "restored-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	state := newServerState()
+	inventory := serverpkg.NewService(serverpkg.ServiceDeps{
+		State:      state,
+		Repository: fixedInventoryRepository{servers: []serverpkg.Server{server}},
+	})
+	composition := newRuntimeComposition(AppDeps{
+		DB:                     func() *sql.DB { return db },
+		DBPath:                 func() string { return dbPath },
+		ServerState:            state,
+		ServerInventoryService: inventory,
+	})
+	composition.resetCaches = func() {}
+	deps := composition.Compose()
+	if _, err := deps.NewJobManager(db).CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "admin",
+		Status:     jobStatusFailed,
+		ErrorClass: "reconciliation_required",
+		LogsText:   "Restored APT outcome uncertain",
+	}); err != nil {
+		t.Fatalf("create reconciliation job: %v", err)
+	}
+
+	if err := composition.ReloadRestoredState(context.Background()); err != nil {
+		t.Fatalf("ReloadRestoredState() error = %v", err)
+	}
+
+	got := state.CurrentStatusSnapshot(server.Name)
+	if got == nil || got.Status != "needs_reconciliation" || got.Logs != "Restored APT outcome uncertain" {
+		t.Fatalf("restored status = %+v, want reconciliation requirement", got)
 	}
 }
 

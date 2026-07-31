@@ -871,6 +871,50 @@ func TestAppDepsDefaultJobManagerSyncsAppScopedServerState(t *testing.T) {
 	}
 }
 
+func TestAppDepsInitializeJobManagerRestoresReconciliationRequiredStatus(t *testing.T) {
+	routeDBPath := filepath.Join(t.TempDir(), "route-job-reconciliation.db")
+	routeDB, err := sql.Open("sqlite", routeDBPath)
+	if err != nil {
+		t.Fatalf("open route db: %v", err)
+	}
+	t.Cleanup(func() { _ = routeDB.Close() })
+	if err := ensureSchema(routeDB); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	server := Server{Name: "srv-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	state := newServerState()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	})
+
+	deps := AppDeps{
+		DB:          func() *sql.DB { return routeDB },
+		DBPath:      func() string { return routeDBPath },
+		ServerState: state,
+	}.withDefaults()
+	if _, err := deps.NewJobManager(routeDB).CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: server.Name,
+		Actor:      "admin",
+		Status:     jobStatusFailed,
+		ErrorClass: "reconciliation_required",
+		LogsText:   "APT outcome uncertain",
+	}); err != nil {
+		t.Fatalf("create reconciliation job: %v", err)
+	}
+
+	if err := deps.initializeJobManager(); err != nil {
+		t.Fatalf("initialize job manager: %v", err)
+	}
+
+	got := state.CurrentStatusSnapshot(server.Name)
+	if got == nil || got.Status != "needs_reconciliation" || got.Logs != "APT outcome uncertain" {
+		t.Fatalf("restored status = %+v, want reconciliation requirement", got)
+	}
+}
+
 func TestCreateServerActionJobUsesAppScopedStatusLogs(t *testing.T) {
 	preserveServerState(t)
 	routeDB, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "action-job-logs.db"))

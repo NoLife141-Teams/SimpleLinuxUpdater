@@ -299,6 +299,105 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 	}
 }
 
+func TestRunUpdateJobAbortsBeforeAptMutationWhenPhasePersistenceFails(t *testing.T) {
+	server := servers.Server{Name: "srv-phase-failure", Host: "127.0.0.1", Port: 22, User: "root"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{
+		server.Name: {Name: server.Name, Status: "idle"},
+	}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "phase-failure-jobs.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	jobID := "phase-failure-job"
+	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{NewID: func() string { return jobID }})
+	if _, err := jm.CreateJob(jobs.CreateParams{
+		Kind:       jobs.KindUpdate,
+		ServerName: server.Name,
+		Actor:      "tester",
+		Status:     jobs.StatusRunning,
+		Phase:      jobs.PhaseDial,
+	}); err != nil {
+		t.Fatalf("create update job: %v", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TRIGGER fail_apt_upgrade_phase
+		BEFORE UPDATE ON jobs
+		WHEN NEW.phase = 'apt_upgrade'
+		BEGIN
+			SELECT RAISE(FAIL, 'phase persistence unavailable');
+		END
+	`); err != nil {
+		t.Fatalf("create phase failure trigger: %v", err)
+	}
+
+	var commands []string
+	var auditStatus, auditErrorClass string
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				commands = append(commands, req.Command)
+				return HostCommandResult{Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{AllPassed: true}
+			},
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{
+					Outcome: newPackageDiscoveryOutcome(
+						[]servers.PendingUpdate{{Package: "openssl", Raw: "Inst openssl"}},
+						[]string{"openssl"},
+						servers.UpgradePlan{StandardPackageCount: 1, FullUpgradePackageCount: 1},
+					),
+					Attempts: 1,
+				}, nil
+			},
+		}),
+		CurrentJobManager:         func() *jobs.Manager { return jm },
+		LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig { return PostUpdateCheckConfig{Enabled: false} },
+		LoadScheduledJobBehavior: func(string) ScheduledJobBehavior {
+			return ScheduledJobBehavior{ApprovalTimeout: time.Second, AutoApproveScope: ApprovalScopeAll}
+		},
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+		SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+		AuditWithActor: func(_, _, _, _, _, status, _ string, meta map[string]any) {
+			auditStatus = status
+			auditErrorClass, _ = meta["last_error_class"].(string)
+		},
+	})
+
+	service.RunUpdateJob(UpdateRunRequest{
+		Server: server,
+		Actor:  "tester",
+		Policy: RetryPolicy{MaxAttempts: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		JobID:  jobID,
+	})
+
+	if containsString(commands, AptUpgradeCmd) {
+		t.Fatalf("commands = %#v, APT upgrade must not run without a durable mutation phase", commands)
+	}
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != "error" || !strings.Contains(status.Logs, "command aborted before execution") {
+		t.Fatalf("runtime status = %+v, want persistence failure before mutation", status)
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		t.Fatalf("get update job: %v", err)
+	}
+	if job.Status != jobs.StatusFailed || job.Phase != jobs.PhaseComplete || job.ErrorClass != "persistence" {
+		t.Fatalf("job after phase failure = %+v, want terminal persistence failure", job)
+	}
+	if auditStatus != "failure" || auditErrorClass != "persistence" {
+		t.Fatalf("audit = status %q error class %q, want failure/persistence", auditStatus, auditErrorClass)
+	}
+}
+
 func TestRunUpdateJobPublishesAptUpgradeOutputBeforeCommandCompletes(t *testing.T) {
 	server := servers.Server{Name: "srv-live-output", Host: "127.0.0.1", Port: 22, User: "root"}
 	inventory := []servers.Server{server}

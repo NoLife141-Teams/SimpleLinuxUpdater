@@ -330,6 +330,26 @@ func (r *withActorRunner) setJobPhase(phase string) {
 	}
 }
 
+func (r *withActorRunner) requireMutationPhase(phase string) bool {
+	phase = strings.TrimSpace(phase)
+	var err error
+	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && phase != "" {
+		status := jobs.StatusRunning
+		err = jm.Transition(r.jobID, jobs.Intent{Status: &status, Phase: &phase})
+	} else {
+		r.jobPhase = phase
+	}
+	if err != nil {
+		r.deps().Logf("failed to persist job %q APT mutation phase %q: %v", r.jobID, phase, err)
+		r.lastErrClass = "persistence"
+		logs := r.currentLogs() + fmt.Sprintf("\nUnable to persist the APT mutation phase; command aborted before execution: %v", err)
+		r.setCommandErrorLogs(logs, err)
+		return false
+	}
+	r.jobPhase = phase
+	return true
+}
+
 func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
 	if snapshot == nil {
 		return
@@ -827,7 +847,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			r.setJobPhase(jobs.PhaseAptUpgrade)
+			if !r.requireMutationPhase(jobs.PhaseAptUpgrade) {
+				return
+			}
 			_ = r.withStatus(func(status *servers.ServerStatus) {
 				status.Status = "upgrading"
 				status.ApprovalScope = ""
@@ -995,14 +1017,18 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 
 func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...", func(r *withActorRunner) {
-		r.setJobPhase(jobs.PhaseAutoremove)
+		if !r.requireMutationPhase(jobs.PhaseAutoremove) {
+			return
+		}
 		r.runSingleCommand("autoremove.command", "\nautoremove attempt %d/%d failed: %v; retrying in %s", AptAutoremoveCmd, nil, "\nAutoremove completed.")
 	})
 }
 
 func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...", func(r *withActorRunner) {
-		r.setJobPhase(jobs.PhaseReconcile)
+		if !r.requireMutationPhase(jobs.PhaseReconcile) {
+			return
+		}
 		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, nil, "\nAPT/DPKG repair completed and package health checks passed.")
 	})
 }

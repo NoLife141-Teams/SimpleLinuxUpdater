@@ -304,6 +304,35 @@ func TestServerInventoryServiceRenamePreservesReconciliationAndMigratesJobs(t *t
 	}
 }
 
+func TestServerInventoryServiceDeletePreservesReconciliationLatch(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, stateServers, statusMap := newTestService(repo, []Server{{
+		Name: "srv-reconcile",
+		Host: "reconcile.example",
+		Port: 22,
+		User: "root",
+	}})
+	(*statusMap)["srv-reconcile"].Status = "needs_reconciliation"
+
+	err := svc.Delete("srv-reconcile")
+	if !errors.Is(err, ErrActionInProgress) {
+		t.Fatalf("Delete(needs_reconciliation) error = %v, want %v", err, ErrActionInProgress)
+	}
+	var actionErr ActionError
+	if !errors.As(err, &actionErr) || actionErr.Status != "needs_reconciliation" {
+		t.Fatalf("Delete(needs_reconciliation) action error = %+v, want preserved status", err)
+	}
+	if len(*stateServers) != 1 || (*stateServers)[0].Name != "srv-reconcile" {
+		t.Fatalf("servers after blocked delete = %+v, want reconciliation server retained", *stateServers)
+	}
+	if status := (*statusMap)["srv-reconcile"]; status == nil || status.Status != "needs_reconciliation" {
+		t.Fatalf("status after blocked delete = %+v, want reconciliation latch retained", status)
+	}
+	if repo.saveCalls != 0 {
+		t.Fatalf("repository save calls = %d, want 0", repo.saveCalls)
+	}
+}
+
 func TestServerStateActionApprovalAndMutationGuards(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, state, _, statusMap := newTestService(repo, []Server{{Name: "srv", Host: "srv.example", User: "root"}})

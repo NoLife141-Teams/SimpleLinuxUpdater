@@ -393,7 +393,8 @@ func (s *Service) Delete(name string) error {
 		if server.Name != name {
 			continue
 		}
-		if status := state.StatusMap()[name]; status != nil && state.statusInProgress(status.Status) {
+		if status := state.StatusMap()[name]; status != nil &&
+			(state.statusInProgress(status.Status) || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation)) {
 			return ActionError{Status: status.Status}
 		}
 		_ = server

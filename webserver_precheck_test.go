@@ -83,9 +83,8 @@ func (s *scriptedSSHSession) SetStderr(w io.Writer) { s.stderr = w }
 
 func (s *scriptedSSHSession) Run(cmd string) error {
 	s.conn.mu.Lock()
-	defer s.conn.mu.Unlock()
-
 	s.conn.commands = append(s.conn.commands, cmd)
+	var resp scriptedResponse
 	if seq, ok := s.conn.sequenceResponses[cmd]; ok && len(seq) > 0 {
 		if s.conn.commandCalls == nil {
 			s.conn.commandCalls = make(map[string]int)
@@ -95,22 +94,17 @@ func (s *scriptedSSHSession) Run(cmd string) error {
 		if idx >= len(seq) {
 			idx = len(seq) - 1
 		}
-		resp := seq[idx]
-		if resp.delay > 0 {
-			time.Sleep(resp.delay)
+		resp = seq[idx]
+	} else {
+		var ok bool
+		resp, ok = s.conn.responses[cmd]
+		if !ok {
+			s.conn.mu.Unlock()
+			return errors.New("unexpected command: " + cmd)
 		}
-		if s.stdout != nil && resp.stdout != "" {
-			_, _ = io.WriteString(s.stdout, resp.stdout)
-		}
-		if s.stderr != nil && resp.stderr != "" {
-			_, _ = io.WriteString(s.stderr, resp.stderr)
-		}
-		return resp.err
 	}
-	resp, ok := s.conn.responses[cmd]
-	if !ok {
-		return errors.New("unexpected command: " + cmd)
-	}
+	s.conn.mu.Unlock()
+
 	if resp.delay > 0 {
 		time.Sleep(resp.delay)
 	}

@@ -604,13 +604,16 @@ func (g *sshCommandOutputGate) close() {
 }
 
 type sshCommandOutputWriter struct {
+	mu       sync.Mutex
 	buffer   bytes.Buffer
 	stream   updatespkg.HostCommandOutputStream
 	onOutput updatespkg.HostCommandOutputHandler
 }
 
 func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
 	n, err := w.buffer.Write(p)
+	w.mu.Unlock()
 	if n > 0 && w.onOutput != nil {
 		w.onOutput(updatespkg.HostCommandOutput{Stream: w.stream, Data: string(p[:n])})
 	}
@@ -622,6 +625,8 @@ func (w *sshCommandOutputWriter) WriteString(value string) (int, error) {
 }
 
 func (w *sshCommandOutputWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.buffer.String()
 }
 
@@ -651,28 +656,45 @@ func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader,
 	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
 }
 
-const maxAptLockTimeoutExtensions = 3
+func classifyCommandTimeout(cmd string, err error) error {
+	if err == nil || !updatespkg.IsAptLockProtectedCommand(cmd) {
+		return err
+	}
+	return updatespkg.NonRetryableTaggedError{Err: fmt.Errorf("APT command outcome is unknown; automatic replay disabled: %w", err)}
+}
 
-func aptPackageManagerLockActive(client sshConnection, commandTimeout time.Duration) bool {
+type aptLockProbeResult struct {
+	active bool
+	output string
+	err    error
+}
+
+func aptPackageManagerLockState(client sshConnection, commandTimeout time.Duration) aptLockProbeResult {
 	probeTimeout := commandTimeout
 	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
 		probeTimeout = 10 * time.Second
 	}
 	stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptExtendedLockProbeCmd, nil, probeTimeout, nil)
 	if err == nil {
-		return true
+		return aptLockProbeResult{active: true, output: strings.TrimSpace(stdout)}
 	}
 	probeFailure := strings.ToLower(strings.Join([]string{stdout, stderr, err.Error()}, "\n"))
 	if !strings.Contains(probeFailure, "a password is required") &&
 		!strings.Contains(probeFailure, "not allowed to run sudo") &&
 		!strings.Contains(probeFailure, "is not in the sudoers file") {
-		return false
+		if exitCode, ok := updatespkg.SSHExitCode(err); ok && exitCode == 1 {
+			return aptLockProbeResult{}
+		}
+		return aptLockProbeResult{err: err}
 	}
 	// Releases before the extended probe granted passwordless sudo only for
 	// this exact legacy command. Fall back so upgraded non-root hosts retain
 	// their existing lock protection until the helper is enabled again.
-	_, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
-	return err == nil
+	stdout, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
+	if exitCode, ok := updatespkg.SSHExitCode(err); ok && exitCode == 1 {
+		return aptLockProbeResult{}
+	}
+	return aptLockProbeResult{active: err == nil, output: strings.TrimSpace(stdout), err: err}
 }
 
 func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
@@ -742,34 +764,61 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	aptLockTimeoutExtensions := 0
+	commandStarted := time.Now()
+	aptLivenessCheckpoints := 0
 	for {
 		select {
 		case runErr := <-runErrCh:
 			_ = session.Close()
 			return stdout.String(), stderr.String(), runErr
 		case <-timer.C:
-			if updatespkg.IsAptLockProtectedCommand(cmd) &&
-				aptLockTimeoutExtensions < maxAptLockTimeoutExtensions &&
-				aptPackageManagerLockActive(client, timeout) {
-				aptLockTimeoutExtensions++
-				timer.Reset(timeout)
-				continue
+			if updatespkg.IsAptLockProtectedCommand(cmd) {
+				probe := aptPackageManagerLockState(client, timeout)
+				select {
+				case runErr := <-runErrCh:
+					_ = session.Close()
+					return stdout.String(), stderr.String(), runErr
+				default:
+				}
+				if probe.active {
+					aptLivenessCheckpoints++
+					elapsed := time.Since(commandStarted).Round(time.Millisecond)
+					lockHolder := ""
+					if probe.output != "" {
+						lockHolder = fmt.Sprintf("; lock holder PID(s): %s", probe.output)
+					}
+					_, _ = stdout.WriteString(fmt.Sprintf(
+						"\nAPT command still active after %s (checkpoint %d%s); extending wait.\n",
+						elapsed,
+						aptLivenessCheckpoints,
+						lockHolder,
+					))
+					timer.Reset(timeout)
+					continue
+				}
+				probeDetail := "no active APT/DPKG lock was found"
+				if probe.err != nil {
+					probeDetail = fmt.Sprintf("APT/DPKG lock probe failed: %v", probe.err)
+				}
+				_, _ = stderr.WriteString(fmt.Sprintf("\nAPT liveness check stopped waiting: %s.\n", probeDetail))
 			}
 			_ = session.Close()
 			select {
 			case runErr := <-runErrCh:
 				timeoutStdout := stdout.String()
 				timeoutStderr := stderr.String()
+				elapsed := time.Since(commandStarted).Round(time.Millisecond)
 				if runErr == nil {
-					runErr = fmt.Errorf("command timed out after %s", timeout)
+					runErr = fmt.Errorf("command timed out after %s total (checkpoint window %s)", elapsed, timeout)
 				} else {
-					runErr = fmt.Errorf("command timed out after %s: %w", timeout, runErr)
+					runErr = fmt.Errorf("command timed out after %s total (checkpoint window %s): %w", elapsed, timeout, runErr)
 				}
-				return timeoutStdout, timeoutStderr, runErr
+				return timeoutStdout, timeoutStderr, classifyCommandTimeout(cmd, runErr)
 			case <-time.After(1 * time.Second):
 				go func() { <-runErrCh }()
-				return "", "", fmt.Errorf("command timed out after %s", timeout)
+				elapsed := time.Since(commandStarted).Round(time.Millisecond)
+				runErr := fmt.Errorf("command timed out after %s total (checkpoint window %s)", elapsed, timeout)
+				return stdout.String(), stderr.String(), classifyCommandTimeout(cmd, runErr)
 			}
 		}
 	}

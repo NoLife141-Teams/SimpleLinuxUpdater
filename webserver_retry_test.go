@@ -37,6 +37,7 @@ type aptLockAwareTestConnection struct {
 	lockProbeCount  int
 	connectionClose bool
 	commandDelay    time.Duration
+	lockProbeDelay  time.Duration
 }
 
 type aptLockAwareTestSession struct {
@@ -54,7 +55,11 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 		s.conn.lockProbeCount++
 		lockActive := s.conn.lockActive
 		extendedAllowed := s.conn.extendedAllowed
+		lockProbeDelay := s.conn.lockProbeDelay
 		s.conn.mu.Unlock()
+		if lockProbeDelay > 0 {
+			time.Sleep(lockProbeDelay)
+		}
 		if strings.Contains(command, "/var/lib/apt/lists/lock") && !extendedAllowed {
 			return errors.New("sudo: a password is required")
 		}
@@ -165,9 +170,18 @@ func TestRunSSHCommandWithTimeoutFallsBackToLegacyAptLockProbe(t *testing.T) {
 func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T) {
 	conn := &aptLockAwareTestConnection{extendedAllowed: true}
 
-	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	_, stderr, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout without an active apt lock", err)
+	}
+	if !strings.Contains(err.Error(), "automatic replay disabled") || !strings.Contains(err.Error(), "total (checkpoint window 30ms)") {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want unknown outcome with cumulative timeout", err)
+	}
+	if !strings.Contains(stderr, "APT liveness check stopped waiting") {
+		t.Fatalf("runSSHCommandWithTimeout() stderr = %q, want observable liveness decision", stderr)
+	}
+	if updatespkg.IsRetryableError(err) {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want ambiguous mutating APT timeout to stop replay", err)
 	}
 
 	conn.mu.Lock()
@@ -178,23 +192,42 @@ func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T)
 	}
 }
 
-func TestRunSSHCommandWithTimeoutCapsAptLockExtensions(t *testing.T) {
+func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		extendedAllowed: true,
+		commandDelay:    15 * time.Millisecond,
+		lockProbeDelay:  30 * time.Millisecond,
+	}
+
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want completion during lock probe to succeed", err)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutKeepsWaitingBeyondPreviousAptExtensionCap(t *testing.T) {
 	conn := &aptLockAwareTestConnection{
 		lockActive:      true,
 		extendedAllowed: true,
 		commandDelay:    150 * time.Millisecond,
 	}
+	var progress strings.Builder
 
-	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 20*time.Millisecond)
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
-		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout after bounded apt lock extensions", err)
+	_, _, err := runSSHCommandWithTimeoutStreaming(conn, aptUpgradeCmd, nil, 20*time.Millisecond, func(output updatespkg.HostCommandOutput) {
+		progress.WriteString(output.Data)
+	})
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeoutStreaming() error = %v, want active apt command to keep waiting", err)
 	}
 
 	conn.mu.Lock()
 	lockProbeCount := conn.lockProbeCount
 	conn.mu.Unlock()
-	if lockProbeCount != maxAptLockTimeoutExtensions {
-		t.Fatalf("apt lock probes = %d, want %d", lockProbeCount, maxAptLockTimeoutExtensions)
+	if lockProbeCount <= 3 {
+		t.Fatalf("apt lock probes = %d, want more than previous three-extension cap", lockProbeCount)
+	}
+	if got := progress.String(); !strings.Contains(got, "APT command still active") || !strings.Contains(got, "checkpoint 4") {
+		t.Fatalf("progress output = %q, want observable checkpoint beyond previous cap", got)
 	}
 }
 

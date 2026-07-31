@@ -153,8 +153,12 @@ If invalid values are provided, the updater logs a warning and falls back to def
 For mutating APT commands, the SSH command timeout is also a liveness checkpoint.
 When it expires, the updater probes the APT/DPKG lock files on a second SSH
 session. If a package-manager lock is still active, the command keeps running and
-receives another full timeout window, up to three extensions. If no lock is
-active, or the extension limit is reached, the normal timeout error is preserved.
+receives another full timeout window. Each checkpoint records the cumulative wait
+and the lock-holder PIDs in the job log. There is no fixed checkpoint limit while
+the package manager continues to hold its lock. If the probe no longer confirms
+an active lock, the updater stops waiting and reports that the command outcome is
+unknown. It does not automatically replay the mutating APT command, because the
+remote process may still be completing after the SSH session closes.
 
 ## Post-update checks
 

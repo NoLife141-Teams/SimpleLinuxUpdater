@@ -245,8 +245,8 @@ func TestRunUpdateWithActorCommandTimeoutSetsError(t *testing.T) {
 	if got, ok := meta["last_error_class"].(string); !ok || got != "transient" {
 		t.Fatalf("last_error_class = %v, want transient", meta["last_error_class"])
 	}
-	if got, ok := meta["retry_exhausted"].(bool); !ok || !got {
-		t.Fatalf("retry_exhausted = %v, want true", meta["retry_exhausted"])
+	if got, ok := meta["retry_exhausted"].(bool); !ok || got {
+		t.Fatalf("retry_exhausted = %v, want false when ambiguous APT outcome disables replay", meta["retry_exhausted"])
 	}
 }
 
@@ -261,7 +261,12 @@ func TestRunAutoremoveWithActorCommandTimeoutSetsError(t *testing.T) {
 	}
 	mu.Unlock()
 
-	conn := &slowSSHConnection{delay: 3 * time.Second}
+	conn := &scriptedSSHConnection{
+		responses: map[string]scriptedResponse{
+			aptAutoremoveCmd:                   {delay: 3 * time.Second},
+			updatespkg.AptExtendedLockProbeCmd: {err: fakeExitStatusError{code: 1, msg: "no process found"}},
+		},
+	}
 	origDial := getDialSSHConnection()
 	setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {
 		return conn, nil

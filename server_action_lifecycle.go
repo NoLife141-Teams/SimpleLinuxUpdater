@@ -28,17 +28,18 @@ type serverActionLifecycleResult struct {
 }
 
 type serverActionStartSpec struct {
-	status            string
-	jobKind           string
-	auditAction       string
-	startFailure      string
-	createFailure     string
-	successMessage    string
-	missingPasswordOK bool
-	allowedStatuses   map[string]bool
-	invalidStatus     string
-	packageMutation   bool
-	runWithJob        func(*UpdateService, Server, string, string, RetryPolicy, string, string)
+	status                 string
+	jobKind                string
+	auditAction            string
+	startFailure           string
+	createFailure          string
+	successMessage         string
+	missingPasswordOK      bool
+	allowedStatuses        map[string]bool
+	invalidStatus          string
+	packageMutation        bool
+	preserveReconciliation bool
+	runWithJob             func(*UpdateService, Server, string, string, RetryPolicy, string, string)
 }
 
 type serverActionApprovalSpec struct {
@@ -145,12 +146,13 @@ func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, con
 
 func (l *serverActionLifecycle) StartSudoersEnable(name, actor, clientIP, sudoPassword string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, sudoPassword, serverActionStartSpec{
-		status:         "sudoers",
-		jobKind:        jobKindSudoersEnable,
-		auditAction:    "sudoers.enable.start",
-		startFailure:   "Failed to start sudoers setup",
-		createFailure:  "Failed to create sudoers job",
-		successMessage: "Sudoers setup started",
+		status:                 "sudoers",
+		jobKind:                jobKindSudoersEnable,
+		auditAction:            "sudoers.enable.start",
+		startFailure:           "Failed to start sudoers setup",
+		createFailure:          "Failed to create sudoers job",
+		successMessage:         "Sudoers setup started",
+		preserveReconciliation: true,
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, sudoPassword string) {
 			service.RunSudoersBootstrapJob(SudoersRunRequest{
 				Server:       server,
@@ -166,12 +168,13 @@ func (l *serverActionLifecycle) StartSudoersEnable(name, actor, clientIP, sudoPa
 
 func (l *serverActionLifecycle) StartSudoersDisable(name, actor, clientIP, sudoPassword string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, sudoPassword, serverActionStartSpec{
-		status:         "sudoers",
-		jobKind:        jobKindSudoersDisable,
-		auditAction:    "sudoers.disable.start",
-		startFailure:   "Failed to start sudoers disable",
-		createFailure:  "Failed to create sudoers disable job",
-		successMessage: "Sudoers disable started",
+		status:                 "sudoers",
+		jobKind:                jobKindSudoersDisable,
+		auditAction:            "sudoers.disable.start",
+		startFailure:           "Failed to start sudoers disable",
+		createFailure:          "Failed to create sudoers disable job",
+		successMessage:         "Sudoers disable started",
+		preserveReconciliation: true,
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, sudoPassword string) {
 			service.RunSudoersDisableJob(SudoersRunRequest{
 				Server:       server,
@@ -234,7 +237,11 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "failure", "Failed to create job", retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)
 	}
+	preserveReconciliation := spec.preserveReconciliation && preStartStatus != nil && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation)
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
+		if preserveReconciliation {
+			defer l.serverState.RestoreStatusSnapshot(name, preStartStatus)
+		}
 		spec.runWithJob(l.updateService, server, actor, clientIP, policy, job.ID, sudoPassword)
 	}, func() {
 		l.serverState.RestoreStatusSnapshot(name, preStartStatus)

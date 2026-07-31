@@ -22,7 +22,7 @@ var (
 	AptRepairCmd = buildAptRepairLockGuard(AptExtendedLockProbeCmd) + "; " +
 		RootOrSudoCommand("dpkg --configure -a") + " && " +
 		RootOrSudoCommand("apt-get -y -f install") + " && " +
-		RootOrSudoCommand("dpkg --audit") + " && " +
+		buildAptRepairAuditGuard(RootOrSudoCommand("dpkg --audit")) + " && " +
 		RootOrSudoCommand("apt-get check")
 	AptListUpgradableCmd = "LC_ALL=C apt-get -s upgrade"
 	AptListMetadataCmd   = "LC_ALL=C apt list --upgradable 2>/dev/null"
@@ -35,6 +35,14 @@ func buildAptRepairLockGuard(lockProbeCmd string) string {
 		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock is active.' \"$apt_lock_probe_output\" >&2; exit 75; fi; " +
 		"if [ \"$apt_lock_probe_status\" -ne 1 ] || [ -n \"$apt_lock_probe_output\" ]; then " +
 		"printf '%s\\n' 'APT/DPKG repair blocked: package-manager lock probe failed.' \"$apt_lock_probe_output\" >&2; exit 76; fi"
+}
+
+func buildAptRepairAuditGuard(auditCmd string) string {
+	return "{ dpkg_audit_output=$(" + auditCmd + " 2>&1); dpkg_audit_status=$?; " +
+		"if [ \"$dpkg_audit_status\" -ne 0 ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair verification failed: dpkg audit command failed.' \"$dpkg_audit_output\" >&2; exit \"$dpkg_audit_status\"; fi; " +
+		"if [ -n \"$dpkg_audit_output\" ]; then " +
+		"printf '%s\\n' 'APT/DPKG repair verification failed: dpkg audit still reports package-state problems.' \"$dpkg_audit_output\" >&2; exit 77; fi; }"
 }
 
 const (

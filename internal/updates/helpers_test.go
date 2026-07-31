@@ -475,6 +475,34 @@ func TestAptRepairLockGuardFailsClosedOnProbeErrors(t *testing.T) {
 	}
 }
 
+func TestAptRepairAuditGuardRequiresEmptySuccessfulAudit(t *testing.T) {
+	tests := []struct {
+		name        string
+		audit       string
+		wantProceed bool
+	}{
+		{name: "clean audit", audit: "sh -c 'exit 0'", wantProceed: true},
+		{name: "reported package problem", audit: "sh -c 'printf partially-installed-package; exit 0'"},
+		{name: "audit command failure", audit: "sh -c 'printf audit-failed >&2; exit 2'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := buildAptRepairAuditGuard(tt.audit) + " && printf repair-complete"
+			output, err := exec.Command("sh", "-c", command).CombinedOutput()
+			proceeded := strings.Contains(string(output), "repair-complete")
+			if proceeded != tt.wantProceed {
+				t.Fatalf("repair proceeded = %v, want %v; output = %q; error = %v", proceeded, tt.wantProceed, output, err)
+			}
+			if tt.wantProceed && err != nil {
+				t.Fatalf("audit guard error = %v, want success; output = %q", err, output)
+			}
+			if !tt.wantProceed && err == nil {
+				t.Fatalf("audit guard succeeded, want blocking error; output = %q", output)
+			}
+		})
+	}
+}
+
 func TestRetryHelpersClassifyRetryableOutput(t *testing.T) {
 	err := MarkRetryableFromOutput(errors.New("exit status 100"), "Could not get lock /var/lib/dpkg/lock-frontend")
 	if !IsRetryableError(err) {

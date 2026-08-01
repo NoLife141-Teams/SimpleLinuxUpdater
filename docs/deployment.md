@@ -11,6 +11,8 @@
 - [Metrics scraping](#metrics-scraping)
 - [Reverse proxy and HTTPS](#reverse-proxy-and-https)
 - [Data persistence](#data-persistence)
+- [Upgrade procedure](#upgrade-procedure)
+- [Single-instance operation](#single-instance-operation)
 
 ## Docker (recommended)
 
@@ -102,3 +104,18 @@ Docker convention:
 - `/data/known_hosts`: SSH known-hosts (default)
 
 If an attacker obtains both the SQLite DB and the encryption key file, stored secrets can be decrypted. See [security.md](security.md).
+
+## Upgrade procedure
+
+1. Export an encrypted backup from Admin and verify the downloaded `.slubkp` archive.
+2. Record the currently deployed image tag or binary version so rollback is explicit.
+3. Read the target release entry in [`CHANGELOG.md`](../CHANGELOG.md).
+4. Stop the existing process or container cleanly.
+5. Deploy the new version with the same `/data` volume or binary data directory.
+6. Confirm login, server inventory, Status health, scheduled policies, notification settings, and `/metrics` credential state before starting maintenance.
+
+Prefer immutable `vX.Y.Z` image tags for controlled deployments. The `latest` tag follows the newest published release and is less suitable when rollback reproducibility matters.
+
+## Single-instance operation
+
+Run one active SimpleLinuxUpdater process per database and data directory. SQLite persistence, in-memory action coordination, scheduler ownership, rate limiting, and dashboard event delivery are designed for a single application instance; multiple replicas sharing `/data` are not a supported high-availability topology.

@@ -48,10 +48,11 @@ If you want to implement a fix or feature:
 ## Backend conventions
 
 - `setupRouter()` is the production entrypoint and delegates to `setupRouterWithDeps(NewDefaultAppDeps())`.
-- `setupRouterWithDeps(AppDeps)` owns Gin engine creation, trusted proxies, middleware, maintenance/job/session initialization, templates, static files, and route registration.
+- `setupRouterWithDeps(AppDeps)` composes runtime dependencies and delegates Gin engine creation, trusted proxies, middleware, maintenance/job/session initialization, templates, static files, and route registration to `internal/app.NewRouter`.
 - `registerRoutes(router, deps)` is the route wiring entrypoint. Public routes must stay before `authGateMiddleware`; protected write routes must stay behind `sameOriginWriteMiddleware`.
 - Use the owning internal package when adding domain behavior:
   - `internal/audit` for audit persistence, listing, pruning, and Markdown reports.
+  - `internal/app` for transport-level Gin router construction and trusted-proxy parsing.
   - `internal/auth` for users, sessions, same-origin helpers, and rate limiters.
   - `internal/backup` for backup archive/export/restore behavior and restore barriers.
   - `internal/apptime` for configured/system timezone interpretation and civil-time resolution.
@@ -61,6 +62,7 @@ If you want to implement a fix or feature:
   - `internal/runtime` for runtime status projection and job/status reconciliation facts.
   - `internal/servers` for inventory state, persistence, credentials, known_hosts, and SSH auth helpers.
   - `internal/policies` for scheduled policy validation, matching, run records, scheduler ticks, and missed-run replay.
+  - `internal/scheduledruns` for Scheduled Run admission, scan/update job creation, skipped outcomes, job reconciliation, and terminal audit publication.
   - `internal/updates` for update/autoremove/sudoers execution, approval/cancel, CVE enrichment, SSH retries, and scheduled scans.
   - `internal/observability` for dashboard summaries, observability summaries, Prometheus rendering, and the Metrics Access Credential lifecycle.
   - `internal/events` and `internal/jobs` for dashboard SSE fan-out and persisted job management.
@@ -152,7 +154,16 @@ Run tests:
 go test -count=1 ./...
 go vet ./...
 go test -race -count=1 ./...
+npm ci
+npm run test:unit
 npm run test:e2e
+```
+
+Coverage:
+
+```bash
+go test -covermode=atomic -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out | tail -n 1
 ```
 
 Optional hardening checks when tools are available:

@@ -10,7 +10,7 @@ For a detailed Codex/Computer Use execution runbook that covers both determinist
 
 - Fresh build from the release commit.
 - Disposable app DB path and disposable `known_hosts` path.
-- One reachable Debian/Ubuntu target host that may be updated, reboot-flagged, scanned, and have test audit/job records created.
+- One reachable Debian/Ubuntu target host that may be updated, scanned, and have test audit/job records created. Controlled reboot additionally requires explicit approval and a real `systemd` boot environment.
 - Target details recorded outside the repo:
   - host and SSH port;
   - username;
@@ -72,12 +72,20 @@ Evidence to capture:
 3. If updates are safe, approve the selected release-owner-approved scope.
 4. If updates are not safe after scan, cancel the pending update and record the reason.
 5. Confirm duplicate action attempts are blocked while the update is active.
+6. Confirm the baseline disk, lock, and APT/DPKG health pre-checks are recorded.
+7. Confirm the simulated plan records standard/full-upgrade counts and the plan-aware disk requirement before approval.
+8. When an upgrade runs, confirm the log records the explicit non-interactive APT strategy and does not emit debconf frontend fallback warnings.
+9. Confirm Status shows the appropriate Recommended action before, during, and after maintenance.
+10. If reboot is required and explicitly approved, run **Reboot and verify** only on a real disposable `systemd` target and confirm SSH recovery, uptime reset, and the cleared reboot-required marker. Otherwise record the exact skip reason.
 
 Evidence to capture:
 
 - Logs panel showing each transition.
 - Final server status.
 - Approval or cancel audit event.
+- Baseline and plan-aware pre-check result.
+- Non-interactive APT strategy line.
+- Recommended action and controlled reboot result or skip reason.
 
 ## 4) Scheduled Policy Smoke
 
@@ -85,12 +93,14 @@ Evidence to capture:
 2. Edit the policy to target only the disposable host using explicit `target_servers`.
 3. Use scan-only execution mode unless the release owner explicitly approves scheduled update execution.
 4. Confirm the policy list shows the disposable host in matched servers.
-5. Set the policy time to the next minute in the app timezone, save it, and leave the app running until the scheduler tick passes.
-6. Confirm the scheduled run record appears with a clear status and report link.
+5. Select **Canary, then waves**, set a one-host canary, save, and confirm the preview/policy summary retains the rollout settings. With one disposable target, it should be labelled canary; record downstream wave execution as skipped for lack of additional disposable targets.
+6. Set the policy time to the next minute in the app timezone, save it, and leave the app running until the scheduler tick passes.
+7. Confirm the scheduled run record appears with a clear status and report link.
 
 Evidence to capture:
 
 - Policy summary showing explicit target.
+- Stored rollout settings and preview label.
 - Scheduled run row and report link.
 
 ## 5) Reports, Audit, and Observability
@@ -99,24 +109,30 @@ Evidence to capture:
 2. Open an audit Markdown report from `/api/reports/audit/:id`.
 3. Open a job Markdown report from `/api/reports/jobs/:id`.
 4. Open Observability and test `24h`, `7d`, and `30d` windows.
-5. Confirm dashboard summary panels do not show stale active jobs after the run completes.
+5. Confirm host health trends contain the disposable target after facts refresh or maintenance completion.
+6. Confirm dashboard summary panels do not show stale active jobs after the run completes.
+7. If a disposable notification receiver is available, configure one destination, send a test, and verify delivery diagnostics. Otherwise record notification delivery as skipped with the exact reason.
 
 Evidence to capture:
 
 - Audit report download.
 - Job report download.
 - Observability summary screenshot.
+- Health-trend result.
+- Notification test/diagnostics result or skip reason.
 
 ## 6) Backup Export
 
 1. Open `/admin`.
 2. Export a backup with a temporary passphrase and include `known_hosts`.
 3. Confirm the `.slubkp` file downloads.
-4. Do not restore over a non-disposable app instance. If restore must be tested, start another temp app DB and restore there.
+4. Verify the downloaded archive with the same passphrase and confirm verification does not change application state.
+5. Do not restore over a non-disposable app instance. If restore must be tested, start another temp app DB and restore there.
 
 Evidence to capture:
 
 - Backup export success state.
+- Backup verification result.
 - Whether `known_hosts` was included.
 
 ## 7) Timeout Regression Guard
@@ -126,12 +142,15 @@ Run this only against a target or command path that is safe to fail.
 1. Stop the app.
 2. Restart with `DEBIAN_UPDATER_SSH_COMMAND_TIMEOUT_SECONDS=1` and the same temp DB/known-hosts files.
 3. Trigger one safe update or autoremove action expected to exceed the timeout.
-4. Confirm the action exits to `error` with timeout metadata.
-5. Confirm no server remains indefinitely in `updating`, `autoremove`, or `sudoers`.
+4. If the second SSH session confirms an APT/DPKG lock holder, confirm the original command remains attached across repeated liveness checkpoints and the logs include cumulative wait plus lock-holder PIDs.
+5. If the lock probe can no longer prove the mutating command outcome, confirm the server enters `needs_reconciliation`, the command is not replayed, and further package mutations are blocked.
+6. After proving the original package-manager process is no longer active, run the confirmed **Repair APT** workflow and verify `dpkg --audit` plus `apt-get check` pass before retrying maintenance.
+7. Confirm no server remains indefinitely in an active state. A lock-confirmed package process may legitimately remain active beyond several timeout windows while it continues to hold the lock.
 
 Evidence to capture:
 
-- Log excerpt containing the timeout.
+- Log excerpt containing timeout/liveness checkpoints and lock-holder evidence.
+- Reconciliation and repair result when the outcome becomes uncertain.
 - Activity history entry for the failed action.
 
 ## 8) Automated Final Gate
@@ -144,10 +163,13 @@ Required:
 - `govulncheck ./...` passes.
 - `actionlint` passes.
 - `go test -race -count=1 ./...` passes.
+- `go test -covermode=atomic -coverprofile=coverage.out ./...` passes and the coverage summary is recorded.
 - `go build -o webserver .` passes.
+- `npm ci` succeeds.
+- `npm run test:unit` passes.
 - `npm audit --audit-level=moderate` passes or reports only accepted advisories documented in the release notes.
 - `npm run test:e2e` passes.
-- CI (`unit`, `race`, `cover`, `ui-e2e`) is green on the release commit.
+- CI (`test (race)`, `test (cover)`, `quality`, `npm-audit`, `frontend-unit`, `ui-e2e`, and `ci-required`) is green on the release commit.
 
 ## Smoke Result
 
@@ -160,8 +182,13 @@ Record the result in the release notes or pull request:
 - Target OS:
 - Target reachability/safety check:
 - Update action result:
+- Reconciliation/repair result or skip reason:
+- Controlled reboot result or skip reason:
 - Scheduled policy result:
+- Canary/wave result:
 - Audit/report result:
+- Notification result or skip reason:
 - Backup export result:
+- Backup verification result:
 - Automated gate result:
 - Skipped steps and exact reasons:

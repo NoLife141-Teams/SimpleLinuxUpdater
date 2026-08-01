@@ -17,7 +17,9 @@ This UI checklist can be run without a real SSH target. For release validation t
 - [ ] Empty dashboard state is readable when no hosts exist.
 - [ ] Live status label shows either `Live events` or `Live polling`.
 - [ ] Dashboard data refresh does not visibly jump the table while interacting.
-- [ ] Bulk approve requires a normal confirmation before any request is sent.
+- [ ] Bulk approve immediately sends requests for eligible selected hosts without an application confirmation and reports skipped or failed hosts.
+- [ ] Recommended action renders Monitor APT, Repair package state, Review approval, Reboot and verify, and Healthy correctly for seeded states.
+- [ ] Pending updates distinguish standard, kept-back, security, new, removed, and full-upgrade plan facts.
 
 ## Manage Hosts
 
@@ -41,18 +43,22 @@ This UI checklist can be run without a real SSH target. For release validation t
 - [ ] Logout all sessions requires typed confirmation `LOGOUT ALL`.
 - [ ] Scheduled policy form accepts target tag, include tags, exclude tags, and explicit servers.
 - [ ] Policy summary reflects all targeting fields.
+- [ ] Canary/wave fields validate, persist, and produce deterministic preview labels.
 - [ ] Saved policies render target details and matched server count.
 - [ ] Policy delete requires typing the policy name.
 - [ ] Scheduled runs table includes a `Report` column.
 - [ ] Job report links point to `/api/reports/jobs/:id`.
 - [ ] Backup restore requires typed confirmation `RESTORE`.
+- [ ] Backup verification accepts a valid disposable archive and rejects a wrong passphrase without mutating state.
 - [ ] Metrics rotate requires `ROTATE TOKEN`; disable requires `DISABLE METRICS`.
+- [ ] Notification drafts cover generic webhook, Discord, and Telegram preserve/replace/clear states and mask stored secrets.
 
 ## Reports
 
 - [ ] Audit report endpoint downloads Markdown.
 - [ ] Job report endpoint downloads Markdown.
 - [ ] Missing report IDs return a normal not-found response instead of a crash.
+- [ ] Observability health trends filter by host/window and export formula-safe CSV.
 
 ## Responsive/Visual Pass
 

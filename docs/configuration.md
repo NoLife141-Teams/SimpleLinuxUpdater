@@ -7,6 +7,7 @@
 - [Authentication and sessions](#authentication-and-sessions)
 - [Codex browser annotations](#codex-browser-annotations)
 - [Metrics API token](#metrics-api-token)
+- [Notification destinations](#notification-destinations)
 - [Backup and restore](#backup-and-restore)
 - [Storage paths](#storage-paths)
 - [Job log storage and retention](#job-log-storage-and-retention)
@@ -68,6 +69,20 @@ Prometheus must send:
 Authorization: Bearer <token>
 ```
 
+## Notification destinations
+
+Notification Hooks are configured in Admin and stored in the application database. No notification environment variables are required.
+
+Available destinations:
+
+- Generic webhook: public endpoints must use HTTPS; HTTP is accepted only for localhost, private IPs, and `.local` or `.internal` hosts. Embedded URL credentials are rejected.
+- Discord: an official HTTPS incoming-webhook URL.
+- Telegram: a bot token plus a numeric chat ID or public `@channel` name.
+
+Selectable events are completed updates, failed scheduled runs, skipped scheduled runs, and backup restores. Successful update runs that install no packages do not send `update.complete` notifications.
+
+Destination secrets are encrypted before they are stored. Settings responses return only masked configuration state. Delivery is best-effort with bounded retries; Admin exposes per-destination test actions and safe diagnostics such as outcome, attempt count, HTTP status, duration, consecutive failures, and next retry time.
+
 ## Backup and restore
 
 Backup/restore is managed in-app from `/admin` (session-authenticated).
@@ -81,6 +96,7 @@ Behavior:
   - `config.json`
   - optional `known_hosts` (controlled by export toggle)
 - Restore requires the backup file + passphrase and applies immediately (no restart required).
+- Verify checks the archive manifest and decryptability without replacing the database or other application state.
 - Restore replaces `servers.db` and optional `known_hosts`; backup `config.json` is validated, but the local `config.json` remains in place and restored secrets are re-encrypted to its key.
 - Recovery health treats successful export and verification evidence as stale after 7 days (168 hours).
 - Recovery evidence comes from audit history and is retained for up to 90 days. Exported archives are downloaded to operator-managed storage; the app does not retain, schedule, rotate, or automatically delete them.

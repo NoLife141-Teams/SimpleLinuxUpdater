@@ -47,8 +47,12 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Expected: sort direction changes and rows reorder correctly.
 - [ ] Select one row and then select all page.
 - [ ] Expected: selected count/actions match the selected rows.
+- [ ] Confirm immediate bulk actions are enabled only for eligible selected hosts and do not open an application review modal.
+- [ ] Expected: eligible hosts start immediately; skipped and failed hosts are reported separately.
 - [ ] Click a server row.
 - [ ] Expected: selected host panel updates with correct server details.
+- [ ] Check Recommended action for active, pending approval, failed/APT-unhealthy, reboot-required, and healthy servers where those states exist.
+- [ ] Expected: guidance is one of Monitor APT, Review approval, Repair package state, Reboot and verify, or Healthy and links to the available safe action.
 - [ ] Check approval queue, active operations, failures, reboot required, risk exposure, audit trail, and command history panels.
 - [ ] Expected: buttons inside mini panels open the correct server/drawer.
 
@@ -88,12 +92,19 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Expected: app blocks duplicate action clearly.
 - [ ] Wait for pending approval.
 - [ ] Expected: server enters `pending_approval`; package list appears.
+- [ ] Inspect the baseline and plan-aware pre-check logs.
+- [ ] Expected: disk requirement, free space, planned packages/new packages, lock state, and APT health are explicit before approval.
 - [ ] Test Cancel on a safe pending update.
 - [ ] Expected: status clears/cancels and audit entry appears.
 - [ ] Only if intended: Approve security only.
 - [ ] Expected: only security packages are approved, logs explain result.
 - [ ] Only if intended: Approve all.
 - [ ] Expected: upgrade continues, then final status/logs are clear.
+- [ ] Expected: mutating logs state the non-interactive APT strategy and show no debconf frontend fallback sequence.
+- [ ] If a disposable server is in `needs_reconciliation`, confirm normal package actions are blocked and test Repair APT only after verifying no package manager is active.
+- [ ] Expected: repair configures pending packages, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check`.
+- [ ] Test controlled reboot only on an explicitly approved disposable `systemd` server that requires it.
+- [ ] Expected: the command is sent once and success requires SSH recovery, uptime reset, and the reboot-required marker to clear.
 - [ ] Test apt autoremove on a safe server.
 - [ ] Expected: status/logs progress and finish or show useful error.
 - [ ] Test password prompt by triggering an action needing a sudo password.
@@ -140,12 +151,17 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Expected: policy appears but does not run while disabled.
 - [ ] Edit policy cadence, weekdays, time, package scope, and approval timeout.
 - [ ] Expected: summary updates and saved values reload correctly.
+- [ ] Configure canary/waves, including canary count, wave size, and delay.
+- [ ] Expected: preview membership is deterministic, settings persist, and downstream waves wait for earlier success.
 - [ ] Add policy no-run windows using editor.
 - [ ] Expected: rows save and reload.
 - [ ] Apply blackout JSON with valid and invalid JSON.
 - [ ] Expected: valid applies; invalid shows clear error.
 - [ ] Check scheduled runs table.
 - [ ] Expected: recent runs/empty state display clearly.
+- [ ] Load Notification Hooks and review generic webhook, Discord, and Telegram masked states.
+- [ ] Save only disposable destination credentials and selected events; send a test only when a real outbound message is intended.
+- [ ] Expected: diagnostics show destination, attempt, result, HTTP status, duration, failures, and retry time without exposing secrets.
 - [ ] Delete only a test policy.
 - [ ] Expected: removed from list.
 
@@ -155,6 +171,8 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Expected: blocked with clear error.
 - [ ] Export backup with a valid passphrase.
 - [ ] Expected: encrypted `.slubkp` downloads.
+- [ ] Verify the exported archive with the same passphrase.
+- [ ] Expected: manifest/decryptability verification succeeds without changing current application state.
 - [ ] Do not restore in production unless this is an intentional disaster-recovery test.
 - [ ] Check metrics token status.
 - [ ] Generate token.
@@ -173,6 +191,8 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Open Observability.
 - [ ] Test `24h`, `7d`, and `30d` windows.
 - [ ] Expected: KPIs and tables update consistently.
+- [ ] Test host health trends at `7d` and `30d`, host filtering, pagination, and CSV export.
+- [ ] Expected: package/security and disk deltas, APT/disk health, and missing intervals remain truthful and filterable.
 - [ ] Click Refresh.
 - [ ] Expected: no duplicate/stale UI state.
 - [ ] In Manage, test Activity History filters: actor, target, action, status.

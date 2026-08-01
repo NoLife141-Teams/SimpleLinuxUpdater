@@ -19,7 +19,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 ## Runtime shape
 
 - Web server: Go + Gin, HTML templates under `templates/`, static assets under `static/`.
-- Route registry: `setupRouterWithDeps(AppDeps)` builds the engine, middleware, sessions, jobs, templates, static files, and then calls `registerRoutes`.
+- Route composition: `setupRouterWithDeps(AppDeps)` assembles runtime dependencies and an `internal/app.RouterConfig`; `internal/app.NewRouter` creates Gin, configures trusted proxies/middleware and startup initializers, loads templates/static files, and calls `registerRoutes`.
 - Dependency boundary: `AppDeps` provides injectable DB, service, job-manager, session, timezone, dashboard-event, Maintenance Coordination, server-state, and initialization dependencies.
 - Services: audit, auth, backup, events, jobs, observability, policy scheduling, server inventory, and update runner behavior live behind `internal/...` package boundaries.
 - Runtime state: default router setup creates fresh app-scoped services, broker, Maintenance Coordinator, rate limiters, job manager, server state, session manager, metrics-token service, policy service, update service, backup service, audit service, and observability service.
@@ -38,12 +38,15 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 ## Services and state
 
 - `internal/audit.Service` writes audit rows, lists audit events, prunes old rows, and renders Markdown reports.
+- `internal/app` owns transport-level Gin router construction and trusted-proxy parsing without application domain behavior.
 - `internal/servers.Service` owns server CRUD, tag normalization, secret persistence, rollback behavior, and per-server known-host operations.
 - `internal/updates.Service` owns update, baseline and plan-aware pre-checks, the explicit non-interactive APT/dpkg policy, APT reconciliation/repair, controlled reboot and verification, autoremove, sudoers, approval, scheduled-scan, job, and audit runner behavior; it consumes Host Maintenance Session for authenticated host execution.
 - `internal/policies.Service` owns scheduled-policy validation, matching, blackout handling, deterministic canary/wave planning, success-gated batch release, due-slot processing, missed-tick replay, scheduler ticks, and interrupted-run recovery.
+- `internal/scheduledruns.Lifecycle` owns one accepted Scheduled Run from persisted candidate through maintenance admission, scan/update job creation, skipped/failed recording, job reconciliation, and terminal audit publication.
 - `internal/observability.Service` owns dashboard/observability summaries, metrics rendering, metrics token persistence, and metrics cache behavior.
 - `internal/jobs.Manager` owns persisted job creation, update, recovery, structured job-log fragments, bounded compatibility previews, log retention, runtime-status sync callbacks, and dashboard notifications after successful writes.
 - `internal/maintenance.Coordinator` owns shared admission, exclusive backup leases, durable/public maintenance state, startup recovery, and restore handoff.
+- `internal/notifications.Service` owns encrypted destination settings, event admission, payload redaction and destination formatting, bounded asynchronous delivery/retry, test delivery, diagnostics, and graceful shutdown.
 - `internal/apptime.Module` owns the accepted application timezone interpretation, compatible timestamp display, and canonical local wall-clock resolution including DST gaps and overlaps.
 - `internal/backup` owns archive validation, file replacement, rollback, runtime reload, and session invalidation; it invokes the active exclusive lease at restore handoff boundaries.
 - `internal/events.Broker` owns dashboard event fan-out for SSE clients.
@@ -59,7 +62,7 @@ SQLite table ownership:
 - `internal/health`: `server_facts`, `server_health_snapshots`, and their indexes.
 - `internal/jobs`: `jobs`, `job_log_chunks`, and job/log indexes.
 - `internal/policies`: `update_policies`, `update_policy_overrides`, `update_policy_runs`, and policy-run indexes.
-- Shared main/app schema: `settings`, used by maintenance state, global SSH key storage, policy settings, app timezone/blackout settings, and metrics token state.
+- Shared main/app schema: `settings`, used by maintenance state, global SSH key storage, policy settings, app timezone/blackout settings, metrics token state, encrypted notification destination settings, and notification diagnostics.
 
 SQLite stores server inventory, encrypted credentials, audit events, auth/session state, persisted jobs, scheduled policy state, current Server facts, time-ordered health snapshots, metrics token state, backup/restore metadata, and related operational state.
 
@@ -85,12 +88,14 @@ Typical update:
 2. Host Maintenance Session builds SSH authentication and host-key verification from per-server credentials, global key fallback, and known-hosts configuration, then opens the bounded discovery session.
 3. Pre-checks run before `apt-get update`.
 4. `apt-get update` runs with retry and timeout metadata.
-5. Simulated upgrade determines pending packages.
-6. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
-7. Approval opens a fresh session, while cancellation or timeout finishes without reconnecting.
-8. Upgrade runs with all packages or scoped security packages through the active session.
-9. Post-update health checks run when enabled.
-10. Job state, status map, audit metadata, server facts, and dashboard events are updated.
+5. Standard, full-upgrade, and eligible kept-back security simulations determine pending packages and approval scopes.
+6. The plan-aware disk gate evaluates the simulated package/new-package counts before approval is exposed.
+7. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
+8. Approval opens a fresh session, while cancellation or timeout finishes without reconnecting.
+9. The approved standard, security, kept-back security, or full-upgrade command runs with the explicit non-interactive policy through the active session.
+10. A mutating APT timeout remains attached while a second session proves the lock holder is active; an outcome that becomes uncertain is persisted as `needs_reconciliation` and is never replayed automatically.
+11. Post-update health checks run when enabled.
+12. Job state, status map, audit metadata, server facts, and dashboard events are updated.
 
 Autoremove, sudoers enable/disable, CVE enrichment, and scheduled scans use the same job/status/report foundations.
 
@@ -119,6 +124,8 @@ The observability dashboard and `/metrics` endpoint derive summaries from `updat
 - policy/run/job summaries used by dashboard panels.
 
 Dashboard event streaming uses the app-scoped client event broker. The UI can fall back to polling when live events are unavailable.
+
+Notification admission consumes sanitized lifecycle intents after accepted audit/service outcomes. Delivery is asynchronous and best-effort, so destination failure is recorded diagnostically without changing the originating update, schedule, or restore result.
 
 ## Development shape
 

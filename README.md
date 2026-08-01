@@ -6,7 +6,7 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
-[![CI](https://github.com/NoLife141/SimpleLinuxUpdater/actions/workflows/ci.yml/badge.svg)](https://github.com/NoLife141/SimpleLinuxUpdater/actions/workflows/ci.yml)
+[![CI](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml/badge.svg)](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml)
 
 ![UI demo](.github/assets/ALSU-screens.gif)
 
@@ -28,9 +28,14 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 
 - Multi-server management (custom SSH ports supported)
 - `apt update` + pending package listing, gated behind approval
-- Scoped approval during pending approval: approve all updates or security-only
+- Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
 - Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
-- Pre-checks before upgrade and post-update health checks after upgrade
+- Baseline and plan-aware disk/apt pre-checks before approval, plus post-update health checks
+- Durable APT reconciliation and guided repair after uncertain package-manager outcomes
+- Controlled reboot with SSH recovery, uptime reset, and reboot-required verification
+- Per-server Recommended action guidance on Status and immediate eligibility-aware bulk actions
+- Scheduled policies with dry-run previews, maintenance windows, and success-gated canary/wave rollouts
+- Generic webhook, Discord, and Telegram notifications with delivery diagnostics
 - On-demand `apt autoremove`
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
@@ -70,6 +75,7 @@ Backup/restore flow:
   - `config.json`
   - optional `known_hosts` (toggle at export time)
 - Restore applies immediately (no restart required), replaces `servers.db` and optional `known_hosts`, validates backup `config.json`, and re-encrypts restored secrets with the local `config.json` key.
+- Verify the downloaded archive in Admin before restore; verification checks the manifest and decryptability without changing application state.
 - The backup passphrase is not stored by the app; keep it in your secret manager.
 
 Environment variables for auth/session:
@@ -100,7 +106,7 @@ VERSION="0.4.3"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 
-curl -L -o "${ARCHIVE}" "https://github.com/NoLife141/SimpleLinuxUpdater/releases/download/v${VERSION}/${ARCHIVE}"
+curl -L -o "${ARCHIVE}" "https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}/${ARCHIVE}"
 tar -xzf "${ARCHIVE}"
 cd "${APP}"
 ./webserver
@@ -110,6 +116,7 @@ For binary releases, export environment variables in your shell before starting 
 
 ## Documentation
 
+- [Documentation map](docs/README.md)
 - [Installation](docs/installation.md)
 - [Configuration](docs/configuration.md)
 - [Usage](docs/usage.md)

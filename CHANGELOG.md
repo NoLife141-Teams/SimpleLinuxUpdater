@@ -21,6 +21,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Add persistent canary-and-wave policy settings with deterministic server order,
   delayed batch release, success gates, failure stops, and rollout preview labels.
 
+### Changed
+
+- Align active operator, security, deployment, troubleshooting, QA, and release
+  documentation with the current maintenance workflows and immediate Status bulk
+  actions; add a documentation map that separates current guidance from historical records.
+
 ### Fixed
 
 - Keep a lock-confirmed APT mutation attached beyond the previous three-checkpoint

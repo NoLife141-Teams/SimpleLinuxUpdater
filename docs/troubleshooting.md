@@ -9,9 +9,13 @@
 - [Metrics authentication issues](#metrics-authentication-issues)
 - [SSH host key issues](#ssh-host-key-issues)
 - [APT locks and missing fuser](#apt-locks-and-missing-fuser)
+- [`needs_reconciliation` after an APT timeout](#needs_reconciliation-after-an-apt-timeout)
 - [Pre-check failures](#pre-check-failures)
+- [APT/DPKG health failures](#aptdpkg-health-failures)
 - [Post-check failures](#post-check-failures)
+- [Controlled reboot verification failures](#controlled-reboot-verification-failures)
 - [CVE enrichment issues](#cve-enrichment-issues)
+- [Notification delivery failures](#notification-delivery-failures)
 - [Database and file permissions](#database-and-file-permissions)
 
 ## Setup and login issues
@@ -32,12 +36,13 @@ Checks:
 For single-user deployments, password recovery is a reset flow:
 
 1. Stop the application.
-2. Remove the local auth record by deleting rows from `auth_users` (or drop/reset the whole application database if you prefer full reset).
-3. Start the application again and revisit `/setup` to create a new admin user.
+2. Back up `servers.db` before editing it.
+3. In one SQLite transaction, delete rows from `sessions` and then `auth_users`.
+4. Start the application again and revisit `/setup` to create a new admin user.
 
 Impact:
 
-- Deleting only `auth_users` resets login.
+- Deleting `sessions` and `auth_users` resets login and invalidates existing authenticated sessions while preserving inventory and operational history.
 - Dropping the entire DB also removes saved servers, audit history, and app settings.
 
 ## Metrics authentication issues
@@ -109,9 +114,12 @@ For non-root SSH users configured before this feature was added, run **Enable ap
 Common reasons:
 
 - Insufficient free disk space on `/var` or `/`
-- Disk space minimum is `1 GiB` (1048576 KB)
+- Baseline disk space below `1 GiB` (1048576 KB)
+- Plan-aware reserve is too small after simulation: `1 GiB` base + `64 MiB` per planned package + `512 MiB` per newly installed package
 - APT/DPKG health failures (`dpkg --audit` or `apt-get check`)
 - Lock contention
+
+The plan-aware failure log records required space, free space, planned packages, and newly installed packages. Free space or remove unnecessary files, then run a fresh scan so the requirement is recalculated from the new plan.
 
 ## APT/DPKG health failures
 
@@ -121,7 +129,8 @@ Notes:
 
 - This means the host already has an interrupted or inconsistent package state before the updater starts.
 - The updater stops before `apt-get update` so it does not hide or worsen the existing package problem.
-- Fix the package issue directly on the host, then rerun the update from the app.
+- Use **Recommended action → Repair package state** when available. The repair first verifies that no package-manager lock is active, completes pending dpkg configuration, repairs dependencies, and reruns both health checks.
+- If the in-app repair cannot complete, fix the reported maintainer-script or dependency problem directly on the host, then rerun the update.
 
 Common recovery command:
 
@@ -140,6 +149,16 @@ Common reasons:
 
 Blocking behavior is configurable; see [configuration.md](configuration.md).
 
+## Controlled reboot verification failures
+
+The controlled reboot command is sent once and is never retried automatically. A reboot job remains failed when SimpleLinuxUpdater cannot prove all required outcomes:
+
+- SSH became unavailable and then returned;
+- uptime reset compared with the pre-reboot baseline;
+- `/var/run/reboot-required` cleared.
+
+Check the host console or hypervisor, confirm that `systemd` is the active init system, verify SSH startup and network reachability, and inspect the reboot-required marker. Do not repeatedly click reboot until the host's actual state is known.
+
 ## CVE enrichment issues
 
 Symptom: CVE state becomes `unavailable`.
@@ -152,6 +171,20 @@ Possible causes:
 - OSV returned an invalid or incomplete response
 
 A `Coverage unknown` state is different from `unavailable`: it means an explicit installed or candidate origin is third-party or unsupported, or its local APT `InRelease` metadata could not be validated with the distribution archive keyring, so SimpleLinuxUpdater deliberately makes no vulnerability claim. Check that `gpgv` and the distribution archive keyring package are installed and that `/var/lib/apt/lists` contains current metadata. When APT no longer exposes the origin of an older installed version but the candidate is signed by the official archive, the OSV assessment still runs and is labelled `Installed provenance unverified`.
+
+## Notification delivery failures
+
+Open Admin → Notification Hooks and review Delivery diagnostics for the destination, attempt count, HTTP status, consecutive failures, and next retry time.
+
+Checks:
+
+- Generic public webhook URLs use HTTPS and contain no embedded credentials.
+- Discord webhook and Telegram bot credentials have not been rotated or revoked.
+- The Telegram bot is a member of the target chat/channel and can post there.
+- DNS, proxy, firewall, and outbound HTTPS rules permit the updater process to reach the destination.
+- The receiver accepts the destination-specific payload and returns a successful HTTP status.
+
+Use **Send Test** only after verifying the destination because it emits a real message. A notification failure does not roll back or change the triggering maintenance outcome.
 
 ## Database and file permissions
 

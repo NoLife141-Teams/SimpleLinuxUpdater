@@ -16,6 +16,10 @@ This runbook now covers the newer release-smoke surfaces that must be exercised 
 - Job detail and audit detail modals, including copy actions and Markdown report links.
 - Backup integrity verification through `/api/backup/verify` before any restore attempt.
 - Immediate bulk actions on the Status dashboard, including eligibility filtering, blocked-host reporting, and partial-failure feedback for update, approve, cancel, autoremove, and facts refresh actions.
+- Per-server Recommended action guidance, durable `needs_reconciliation` state, and confirmed APT inspection/repair.
+- Controlled reboot with one-shot command dispatch and SSH, uptime, and reboot-required verification.
+- Baseline and plan-aware disk gates plus the explicit non-interactive APT/dpkg strategy.
+- Deterministic canary/wave policy previews and success-gated rollout settings.
 - Host health trend snapshots in Observability through `/api/observability/health-trends`, including 7-day/30-day windows and optional host filtering.
 - Global SSH credential status, upload/clear controls, and effective-auth fallback for servers without per-server credentials.
 - Backup maintenance coordination, restored-runtime handoff, and session invalidation in an isolated restore-validation runtime.
@@ -124,6 +128,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Status filter, auth filter, grouping, and page size controls update visible rows and counts.
 - [ ] Sorting changes row order where sortable columns are available.
 - [ ] Selecting one row updates the selected host panel.
+- [ ] Selected-host and table presentations show the correct Recommended action among Monitor APT, Repair package state, Review approval, Reboot and verify, and Healthy for seeded states.
 - [ ] Select-all on the page updates selected count and bulk actions.
 - [ ] Before clicking a destructive bulk action, Computer Use obtains the required action-time confirmation and verifies that every selected host is disposable.
 - [ ] Bulk update, approve standard, approve standard security, approve kept-back security, cancel, autoremove, and refresh facts execute immediately without an application review modal.
@@ -142,6 +147,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Long pending-update lists scroll inside the drawer without scrolling the dashboard behind it.
 - [ ] Switching between Logs and Pending updates keeps both tabs usable.
 - [ ] Approve all, standard security, kept-back security, full upgrade, and cancel controls are visible or disabled with a useful reason according to the seeded state.
+- [ ] Upgrade-plan facts distinguish standard, kept-back, newly installed, removed, and full-upgrade counts and expose the plan-aware disk result where available.
 - [ ] Download logs produces a `.txt` file with the expected server name/content.
 - [ ] Copy logs copies visible log text when browser permissions allow it.
 - [ ] Escape and backdrop close the drawer.
@@ -181,9 +187,11 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Logout-all typed confirmation blocks incorrect text; do not execute unless the session reset is intentional.
 - [ ] Password change form renders current, new, and confirmation fields; do not submit a successful password change with Computer Use.
 - [ ] Scheduled policy form accepts target tag, include tags, exclude tags, explicit servers, package scope, execution mode, cadence, weekdays, time, approval timeout, and no-run windows.
+- [ ] Execution settings switch between all matched servers and canary/waves, validate canary size, wave size, and delay, and persist the saved values.
 - [ ] Policy summary reflects targeting fields.
 - [ ] Policy dry-run preview refreshes before save and shows matched hosts, excluded hosts, override-disabled hosts, and warnings.
 - [ ] Preview reflects include tags, exclude tags, explicit target servers, package scope, execution mode, and disabled state.
+- [ ] Canary/wave preview labels deterministic server membership and keeps downstream waves blocked until earlier batches succeed.
 - [ ] Create a disabled scan-only policy against disposable/demo hosts.
 - [ ] Edit policy fields and verify saved values reload.
 - [ ] Valid blackout JSON applies; invalid JSON shows a clear error.
@@ -198,10 +206,11 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Job report links open or download Markdown from `/api/reports/jobs/:id`.
 - [ ] Notification Hooks panel loads current settings.
 - [ ] Invalid webhook URL is rejected without navigation.
-- [ ] Enable notification hooks with a disposable HTTPS webhook URL and selected event types.
-- [ ] Save persists enabled state, URL, selected event types, and last delivery status.
-- [ ] After action-time confirmation, test notification sends only to the disposable webhook target or stubbed test endpoint.
-- [ ] Last delivery status renders event type, status code/result, and timestamp without secrets.
+- [ ] Generic webhook, Discord, and Telegram drafts preserve, replace, clear, enable, and disable destination credentials without revealing stored secrets.
+- [ ] Enable a destination with disposable credentials and selected event types.
+- [ ] Save persists enabled state, masked destination state, selected event types, and last delivery status.
+- [ ] After action-time confirmation, per-destination test sends only to the disposable target or stubbed test endpoint.
+- [ ] Delivery diagnostics render destination, event type, attempt, status code/result, duration, consecutive failures, and next retry without secrets.
 
 ### Backup, Metrics, Observability
 
@@ -249,11 +258,16 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Start update on the disposable target.
 - [ ] Duplicate action attempt while active is blocked clearly.
 - [ ] Logs begin and status transitions are visible.
+- [ ] Baseline disk, lock, and APT/DPKG health pre-checks are visible in logs.
 - [ ] If packages are available, status reaches `pending_approval`.
 - [ ] Pending updates drawer shows real package/version/risk details.
+- [ ] The simulated plan records standard/full-upgrade counts and the plan-aware disk requirement before approval.
 - [ ] If approval is safe, approve the release-owner-approved scope.
 - [ ] If approval is not safe, cancel and record the reason.
 - [ ] Final state becomes `done`, `cancelled`, or explicit `error`; it never stays indefinitely active.
+- [ ] An executed mutation logs the explicit non-interactive APT strategy and does not emit debconf frontend fallback warnings.
+- [ ] If a timeout becomes uncertain, status becomes `needs_reconciliation`, package mutations stay blocked, and the confirmed Repair APT workflow restores verified package health without replaying the original command.
+- [ ] If reboot is required and explicitly approved on a real disposable `systemd` target, controlled reboot proves SSH recovery, uptime reset, and a cleared reboot-required marker; otherwise record the exact skip reason.
 - [ ] Audit event records approval or cancel.
 - [ ] Run apt autoremove only if safe for the disposable target.
 - [ ] Autoremove finishes or shows an actionable error.
@@ -267,6 +281,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Edit the policy to target only the disposable host using explicit `target_servers`.
 - [ ] Confirm matched servers lists only the disposable target.
 - [ ] Policy dry-run preview lists only the disposable target as matched and explains any excluded hosts.
+- [ ] Enable canary/waves with a one-host canary and verify the disposable target is labelled canary; record downstream waves as skipped when no additional disposable targets exist.
 - [ ] Calendar preview for the disposable policy shows the next allowed slot and any active no-run window before the scheduler tick.
 - [ ] Set policy time to the next minute in the app timezone.
 - [ ] Use scan-only execution mode unless release owner explicitly approves scheduled update execution.
@@ -327,7 +342,7 @@ Run these from the release commit and record pass/fail output. If a tool is not 
 - [ ] `npm audit --audit-level=moderate`
 - [ ] `npm run test:e2e`
 - [ ] Remove generated `coverage.out` before committing release-prep changes, unless the release owner explicitly asks to keep it.
-- [ ] Release-commit CI is green for `test (unit)`, `test (race)`, `test (cover)`, `frontend-unit`, `ui-e2e`, `quality`, and `npm-audit`.
+- [ ] Release-commit CI is green for `test (race)`, `test (cover)`, `frontend-unit`, `ui-e2e`, `quality`, `npm-audit`, and `ci-required`.
 
 ## Smoke Result Template
 
@@ -363,6 +378,9 @@ Copy this result into the release PR or release notes. Do not include secrets.
 - Manage Servers:
 - Global SSH credential:
 - Server actions:
+- Plan-aware disk/non-interactive APT:
+- APT reconciliation/repair:
+- Controlled reboot or skip reason:
 - Admin:
 - Backup/restore:
 - Restore validation/maintenance coordination:
@@ -370,6 +388,7 @@ Copy this result into the release PR or release notes. Do not include secrets.
 - Observability/audit/reports/health trends:
 - Notifications:
 - Policy preview/calendar:
+- Canary/waves:
 - Immediate bulk actions:
 - Frontend unit tests:
 - Automated final gate:

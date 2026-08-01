@@ -11,6 +11,7 @@
 - [CVE-aware pending approval](#cve-aware-pending-approval)
 - [Logs and status](#logs-and-status)
 - [Scheduled canary and wave rollouts](#scheduled-canary-and-wave-rollouts)
+- [Notification hooks](#notification-hooks)
 - [Audit trail](#audit-trail)
 - [Observability and metrics](#observability-and-metrics)
 - [Backup and restore](#backup-and-restore)
@@ -80,10 +81,12 @@ Typical workflow:
 
 Approval actions:
 
-- Approve all pending updates
-- Approve security-only (runs a targeted `apt-get install --only-upgrade` for the approved security packages)
+- Approve standard updates from the normal `apt-get upgrade` plan
+- Approve standard security updates only (runs a targeted `apt-get install --only-upgrade`)
+- Approve kept-back security updates from the separately simulated targeted plan
+- Approve the complete `apt-get full-upgrade` plan, with explicit confirmation when packages would be removed
 
-If you approve security-only and no security packages are detected, the upgrade is skipped and the update completes without applying changes.
+If an approved security scope contains no eligible packages, the upgrade is skipped and the update completes without applying changes. Approval actions are enabled only when the corresponding fresh simulation is available.
 
 ### Pre-checks (fail fast)
 
@@ -131,20 +134,24 @@ During `pending_approval`, the UI shows a structured pending updates list:
   - `pending`: lookup in progress
   - `ready`: CVE list populated
   - `unavailable`: lookup failed or timed out
+  - `unsupported`: package provenance or candidate repository could not be verified as a supported official archive, so coverage is unknown
   - `skipped`: outside lookup budget
 
 Notes:
 
 - CVE information is best-effort and advisory. Missing CVEs does not imply a package is not security-relevant.
-- CVE lookup is derived from package changelogs (`apt-get changelog`) on the target host.
+- The target supplies package/source identities and local APT `InRelease` metadata. SimpleLinuxUpdater verifies supported Debian/Ubuntu archive metadata with `gpgv` and the distribution keyring before querying OSV for installed and candidate versions.
+- Explicit third-party, unsigned, or unsupported origins remain `Coverage unknown`; an official candidate can still be assessed when the installed version's origin is no longer exposed, with an `Installed provenance unverified` warning.
 
 ## Logs and status
 
 The Status page shows current state and allows you to inspect logs. Logs are updated automatically as the updater runs.
 
-Each selected server also shows a **Recommended action**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
+Each selected server also shows one **Recommended action**: **Monitor APT**, **Repair package state**, **Review approval**, **Reboot and verify**, or **Healthy**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
 
 When current host facts report that a reboot is required, **Recommended action → Reboot and verify** offers a deliberately confirmed controlled reboot. The reboot command is sent once and is never automatically replayed. SimpleLinuxUpdater then waits for SSH to return and only reports success after proving that uptime reset and the reboot-required marker cleared. A missing uptime baseline or an unverified restart leaves the job in `error` for operator review.
+
+Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts; there is no application review modal. Ineligible hosts are skipped, and completion feedback separates successful, skipped, and failed hosts. Verify the selection before clicking a destructive bulk action.
 
 ### Passwordless apt toggle
 
@@ -161,6 +168,19 @@ In **Admin → Scheduled Update Policies → Execution**, choose **Canary, then 
 Matched servers are sorted deterministically by name, so the preview and scheduler use the same canary and wave membership. Wave 1 cannot start until every canary run reaches `succeeded`; each later wave similarly waits for every earlier run. `queued`, `running`, and `waiting_approval` hold the gate. A failed, skipped, cancelled, or interrupted earlier run stops downstream waves and records them with reason `rollout_gate` rather than silently applying the rest of the fleet.
 
 The policy preview labels each matched server as canary or wave N. The policy list and calendar expose the stored rollout settings. Use **All matched servers** when no staged rollout is desired.
+
+## Notification hooks
+
+Admin supports a generic webhook, Discord incoming webhook, and Telegram bot destination. Configure one or more destinations, select the event types to send, save, and use the per-destination test action before relying on delivery.
+
+Supported operational events are:
+
+- completed updates that actually installed packages;
+- failed scheduled runs;
+- skipped scheduled runs;
+- backup restores.
+
+Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
 
 ## Audit trail
 
@@ -200,6 +220,8 @@ The token status distinguishes disabled, never-used, current, and stale credenti
 
 Observability KPIs are computed from `update.complete` audit events.
 
+The Host health trends panel uses persisted facts and maintenance snapshots. It supports 7-day and 30-day windows, optional host filtering, package/security and disk deltas, APT/disk health signals, pagination, and CSV export. A selected 24-hour update window uses the 7-day health window because health trends do not expose a 24-hour interval.
+
 ## Backup and restore
 
 Use `/admin` -> **Backup & Restore** for disaster recovery and host/container migration.
@@ -212,9 +234,10 @@ Export:
 
 Restore:
 
-1. Upload a `.slubkp` file.
-2. Enter the backup passphrase.
-3. Confirm replacing `servers.db` and optional `known_hosts`.
+1. Verify the `.slubkp` file and passphrase in Admin; verification does not mutate application state.
+2. Upload the verified archive for restore.
+3. Enter the backup passphrase.
+4. Confirm replacing `servers.db` and optional `known_hosts`.
 
 Notes:
 

@@ -6,15 +6,21 @@
 
 - [Requirements](#requirements)
 - [Install with Docker](#install-with-docker)
-- [Install from source (binary)](#install-from-source-binary)
+- [Install a prebuilt release](#install-a-prebuilt-release)
+- [Build from source](#build-from-source)
 - [Cross-compile (Windows)](#cross-compile-windows)
 - [Next steps](#next-steps)
 
 ## Requirements
 
 - Go 1.26+ (only required if building from source)
-- A Debian-based target host (Debian, Ubuntu, Proxmox, etc.) with `apt`; non-root SSH users also need `sudo`
+- A Debian-based target host (Debian, Ubuntu, Proxmox, etc.) with `apt`
+- `psmisc` on each target, which provides the required `/usr/bin/fuser` APT-lock check
+- `sudo` for non-root target SSH users; root SSH sessions run maintenance commands directly
+- `gpgv` and the distribution archive keyring for distribution-verified CVE coverage
+- `systemd` and `systemctl reboot` when using the controlled reboot workflow
 - Network access from the updater host to targets over SSH
+- Outbound HTTPS from the updater process to `api.osv.dev` when CVE assessment is required, and to any configured notification destinations
 
 ## Install with Docker
 
@@ -42,7 +48,13 @@ docker build -t debian-updater-web .
 docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data debian-updater-web
 ```
 
-## Install from source (binary)
+## Install a prebuilt release
+
+Download the archive for your platform from [GitHub Releases](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases). Release archives include the binary, `templates/`, `static/`, documentation, and `.env-template`.
+
+After extracting the archive, run `./webserver` from the extracted application directory. On Windows, run `webserver.exe`.
+
+## Build from source
 
 1. Build:
 

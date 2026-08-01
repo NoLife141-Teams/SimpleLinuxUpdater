@@ -17,7 +17,7 @@ This UI checklist can be run without a real SSH target. For release validation t
 - [ ] Empty dashboard state is readable when no hosts exist.
 - [ ] Live status label shows either `Live events` or `Live polling`.
 - [ ] Dashboard data refresh does not visibly jump the table while interacting.
-- [ ] Bulk approve requires a normal confirmation before any request is sent.
+- [ ] Bulk approve immediately sends requests for eligible selected hosts without an application confirmation and reports skipped or failed hosts.
 
 ## Manage Hosts
 

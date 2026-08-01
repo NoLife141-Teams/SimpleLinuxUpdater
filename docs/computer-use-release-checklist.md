@@ -15,7 +15,7 @@ This runbook now covers the newer release-smoke surfaces that must be exercised 
 - Maintenance window calendar in Admin, including allowed slots, global/policy no-run windows, overnight windows, timezone display, and optional policy filtering.
 - Job detail and audit detail modals, including copy actions and Markdown report links.
 - Backup integrity verification through `/api/backup/verify` before any restore attempt.
-- Safe bulk-action review modal on the Status dashboard before bulk update, approve, cancel, autoremove, or facts refresh actions.
+- Immediate bulk actions on the Status dashboard, including eligibility filtering, blocked-host reporting, and partial-failure feedback for update, approve, cancel, autoremove, and facts refresh actions.
 - Host health trend snapshots in Observability through `/api/observability/health-trends`, including 7-day/30-day windows and optional host filtering.
 - Global SSH credential status, upload/clear controls, and effective-auth fallback for servers without per-server credentials.
 - Backup maintenance coordination, restored-runtime handoff, and session invalidation in an isolated restore-validation runtime.
@@ -125,10 +125,10 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] Sorting changes row order where sortable columns are available.
 - [ ] Selecting one row updates the selected host panel.
 - [ ] Select-all on the page updates selected count and bulk actions.
-- [ ] Bulk update, approve standard, approve standard security, approve kept-back security, cancel, autoremove, and refresh facts open the safe review modal before executing.
-- [ ] Bulk review modal lists selected hosts, eligible actions, blocked hosts, warning text, and confirm/cancel controls.
-- [ ] Cancelling the bulk review performs no action.
-- [ ] Confirming a safe disposable bulk action executes only the hosts shown as eligible.
+- [ ] Before clicking a destructive bulk action, Computer Use obtains the required action-time confirmation and verifies that every selected host is disposable.
+- [ ] Bulk update, approve standard, approve standard security, approve kept-back security, cancel, autoremove, and refresh facts execute immediately without an application review modal.
+- [ ] An immediate bulk action executes only eligible selected hosts and skips ineligible or blocked hosts.
+- [ ] Completion feedback reports successful, skipped, and failed hosts, including partial failures.
 - [ ] Maintenance timeline, approval queue, active operations, failures, reboot/risk exposure, audit trail, and command history panels render useful state.
 - [ ] Mini-panel buttons open the intended host, drawer, or filtered view.
 
@@ -370,7 +370,7 @@ Copy this result into the release PR or release notes. Do not include secrets.
 - Observability/audit/reports/health trends:
 - Notifications:
 - Policy preview/calendar:
-- Bulk action review:
+- Immediate bulk actions:
 - Frontend unit tests:
 - Automated final gate:
 - CI gate:

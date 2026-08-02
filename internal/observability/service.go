@@ -60,6 +60,15 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 			return []servers.Server{}, map[string]*servers.ServerStatus{}
 		}
 	}
+	if d.MaintenanceReadiness == nil {
+		d.MaintenanceReadiness = func(serverList []servers.Server) map[string]servers.MaintenanceReadiness {
+			result := make(map[string]servers.MaintenanceReadiness, len(serverList))
+			for _, server := range serverList {
+				result[server.Name] = servers.MaintenanceReadiness{Ready: true, Code: servers.MaintenanceReadinessReady, Message: "Connection readiness not configured"}
+			}
+			return result
+		}
+	}
 	if d.HostHealthObservation == nil {
 		d.HostHealthObservation = healthpkg.ReaderFuncs{
 			LatestFunc: func() (map[string]healthpkg.CollectedFacts, error) {
@@ -744,7 +753,10 @@ const (
 	dashboardActionReadinessInProgress  = "in_progress"
 )
 
-func buildDashboardActions(serverName string, status *servers.ServerStatus, timeline DashboardTimelineInfo, triage DashboardApprovalTriageInfo, health DashboardHealthInfo) map[string]DashboardActionInfo {
+func buildDashboardActions(serverName string, status *servers.ServerStatus, timeline DashboardTimelineInfo, triage DashboardApprovalTriageInfo, health DashboardHealthInfo, readiness servers.MaintenanceReadiness) map[string]DashboardActionInfo {
+	if strings.TrimSpace(readiness.Code) == "" {
+		readiness = servers.MaintenanceReadiness{Ready: true, Code: servers.MaintenanceReadinessReady}
+	}
 	statusValue := ""
 	plan := servers.UpgradePlan{}
 	if status != nil {
@@ -772,6 +784,22 @@ func buildDashboardActions(serverName string, status *servers.ServerStatus, time
 		dashboardActionDisableApt:              dashboardTransientAction(serverName, statusValue, timeline, "Ready to disable passwordless apt.", "passwordless apt change"),
 		dashboardActionRepairApt:               dashboardAptRepairAction(serverName, statusValue),
 		dashboardActionReboot:                  dashboardRebootAction(serverName, statusValue, timeline, health),
+	}
+	if !readiness.Ready {
+		for _, key := range []string{
+			dashboardActionUpdate,
+			dashboardActionAutoremove,
+			dashboardActionRefreshFacts,
+			dashboardActionEnableApt,
+			dashboardActionDisableApt,
+			dashboardActionRepairApt,
+			dashboardActionReboot,
+		} {
+			action := actions[key]
+			if action.Enabled {
+				actions[key] = dashboardBlockedAction(dashboardActionReadinessUnavailable, readiness.Message, readiness.Code)
+			}
+		}
 	}
 	return actions
 }

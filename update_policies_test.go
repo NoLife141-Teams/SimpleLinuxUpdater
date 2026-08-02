@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,9 +21,26 @@ import (
 	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 var backupRestoreMu sync.RWMutex
+
+func writeTrustedKnownHostForPolicyTest(t *testing.T, path, host string) {
+	t.Helper()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate known_hosts key: %v", err)
+	}
+	sshKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("create known_hosts key: %v", err)
+	}
+	line := knownhosts.Line([]string{host}, sshKey) + "\n"
+	if err := os.WriteFile(path, []byte(line), 0600); err != nil {
+		t.Fatalf("write known_hosts: %v", err)
+	}
+}
 
 func newUpdatePolicyTestApp(t *testing.T, dbFile string) *testApp {
 	t.Helper()
@@ -1475,9 +1494,7 @@ func TestProcessDueUpdatePoliciesUsesConfiguredAppTimezone(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	t.Setenv(postchecksEnabledEnv, "false")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	if _, err := saveAppTimezone("America/Toronto"); err != nil {
@@ -1594,9 +1611,7 @@ func TestProcessDueUpdatePoliciesDedupesAndHandlesSkips(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	t.Setenv(postchecksEnabledEnv, "false")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	now := time.Now().In(time.Local).Truncate(time.Minute)
@@ -1906,9 +1921,7 @@ func TestRunUpdateJobWithActorScheduledAutoApplyUsesJobMeta(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	t.Setenv(postchecksEnabledEnv, "false")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	server := Server{Name: "srv-auto-apply", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
@@ -1995,9 +2008,7 @@ func TestRunUpdateJobWithActorScheduledApprovalRequiredCancelledKeepsMeta(t *tes
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	t.Setenv(postchecksEnabledEnv, "false")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
@@ -2145,9 +2156,7 @@ func TestScheduledScanPolicyStoresDiscoveryWithoutRuntimeMutation(t *testing.T) 
 
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	server := Server{Name: "srv-scan-only", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
@@ -2258,9 +2267,7 @@ func TestScheduledScanPolicyPanicMarksRunFailed(t *testing.T) {
 
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(knownHostsPath, []byte(""), 0600); err != nil {
-		t.Fatalf("write known_hosts: %v", err)
-	}
+	writeTrustedKnownHostForPolicyTest(t, knownHostsPath, "example.org")
 	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 
 	server := Server{Name: "srv-scan-panic", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}

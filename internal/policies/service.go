@@ -965,7 +965,20 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		}
 	}
 
-	for serverName, candidates := range candidatesByServer {
+	candidateServerNames := make([]string, 0, len(candidatesByServer))
+	for serverName := range candidatesByServer {
+		candidateServerNames = append(candidateServerNames, serverName)
+	}
+	sort.Slice(candidateServerNames, func(i, j int) bool {
+		left := strings.ToLower(candidateServerNames[i])
+		right := strings.ToLower(candidateServerNames[j])
+		if left == right {
+			return candidateServerNames[i] < candidateServerNames[j]
+		}
+		return left < right
+	})
+	for _, serverName := range candidateServerNames {
+		candidates := candidatesByServer[serverName]
 		if len(candidates) == 0 {
 			continue
 		}

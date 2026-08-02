@@ -128,6 +128,62 @@ func TestDashboardProjectionUsesCollectedRuntimeSourceFacts(t *testing.T) {
 	}
 }
 
+func TestDashboardProjectionBlocksSSHBackedActionsWhenConnectionIsNotReady(t *testing.T) {
+	rebootRequired := true
+	readiness := servers.MaintenanceReadiness{
+		Code:    servers.MaintenanceReadinessMissingAuthentication,
+		Message: "No SSH authentication is configured; review this server in Manage",
+	}
+	summary := testDashboardProjection(time.Now()).Project(dashboardProjectionInput{
+		servers: []dashboardServerProjectionInput{{
+			server:    servers.Server{Name: "srv-unready"},
+			status:    &servers.ServerStatus{Name: "srv-unready", Status: "idle"},
+			health:    DashboardHealthInfo{RebootRequired: &rebootRequired},
+			timeline:  testCollectedTimeline("done_error", "done", "Idle"),
+			readiness: readiness,
+		}},
+	})
+
+	server := summary.Servers[0]
+	for _, key := range []string{
+		dashboardActionUpdate,
+		dashboardActionAutoremove,
+		dashboardActionRefreshFacts,
+		dashboardActionEnableApt,
+		dashboardActionDisableApt,
+		dashboardActionReboot,
+	} {
+		action := requireDashboardAction(t, server, key)
+		if action.Enabled || action.Readiness != dashboardActionReadinessUnavailable || action.BlockingStatus != readiness.Code || action.Reason != readiness.Message {
+			t.Fatalf("action %q = %+v, want connection-readiness block", key, action)
+		}
+	}
+}
+
+func TestDashboardProjectionPreservesRuntimeBlockPriorityOverConnectionReadiness(t *testing.T) {
+	readiness := servers.MaintenanceReadiness{
+		Code:    servers.MaintenanceReadinessHostKeyNotTrusted,
+		Message: "SSH host key is not trusted; review this server in Manage",
+	}
+	summary := testDashboardProjection(time.Now()).Project(dashboardProjectionInput{
+		servers: []dashboardServerProjectionInput{{
+			server:    servers.Server{Name: "srv-reconcile"},
+			status:    &servers.ServerStatus{Name: "srv-reconcile", Status: "needs_reconciliation"},
+			timeline:  testCollectedTimeline("done_error", "error", "APT uncertain"),
+			readiness: readiness,
+		}},
+	})
+
+	action := requireDashboardAction(t, summary.Servers[0], dashboardActionUpdate)
+	if action.Enabled || action.BlockingStatus != "needs_reconciliation" || action.Readiness != dashboardActionReadinessBlocked {
+		t.Fatalf("update action = %+v, want reconciliation block to retain priority", action)
+	}
+	repair := requireDashboardAction(t, summary.Servers[0], dashboardActionRepairApt)
+	if repair.Enabled || repair.BlockingStatus != readiness.Code || repair.Readiness != dashboardActionReadinessUnavailable {
+		t.Fatalf("repair action = %+v, want connection-readiness block", repair)
+	}
+}
+
 func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	rebootRequired := true

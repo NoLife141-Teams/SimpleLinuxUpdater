@@ -227,8 +227,14 @@ test("Dashboard Projection Consumption preserves canonical actions while derivin
             visibleServers: [{ name: "edge-01" }],
             pageServers: [{ name: "edge-01" }],
             groups: [{ key: "", items: [{ name: "edge-01" }] }],
-            dashboardServers: [{ name: "edge-01", actions: { approve_security: { enabled: false, reason: "Policy blocked" } } }],
-            actionViews: { "edge-01": { approve_security: { enabled: false, reason: "Policy blocked" } } },
+            dashboardServers: [{ name: "edge-01", actions: {
+                approve_security: { enabled: false, reason: "Policy blocked" },
+                update: { enabled: false, readiness: "unavailable", reason: "SSH host key is not trusted", blocking_status: "host_key_not_trusted" }
+            } }],
+            actionViews: { "edge-01": {
+                approve_security: { enabled: false, reason: "Policy blocked" },
+                update: { enabled: false, readiness: "unavailable", reason: "SSH host key is not trusted", blocking_status: "host_key_not_trusted" }
+            } },
             actions: { inFlightServerNames: [] },
             primaryServerName: "edge-01"
         }
@@ -237,4 +243,7 @@ test("Dashboard Projection Consumption preserves canonical actions while derivin
     assert.equal(server.auth.label, "Global SSH key + password");
     assert.equal(server.approvalCounts.standard, 1);
     assert.equal(server.actions.approve_security.enabled, false);
+    assert.equal(server.actions.update.enabled, false);
+    assert.equal(server.actions.update.reason, "SSH host key is not trusted");
+    assert.equal(server.actions.update.blocking_status, "host_key_not_trusted");
 });

@@ -13,7 +13,9 @@ import (
 	healthpkg "debian-updater/internal/health"
 	jobspkg "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
+	policypkg "debian-updater/internal/policies"
 	scheduledrunspkg "debian-updater/internal/scheduledruns"
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 )
 
@@ -59,6 +61,13 @@ func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server
 		ServerState:       state,
 		CurrentJobManager: func() *JobManager { return jm },
 		JobTimestampNow:   func() string { return "2026-07-05T14:00:01Z" },
+		MaintenanceReadiness: func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {
+			result := make(map[string]serverpkg.MaintenanceReadiness, len(serverList))
+			for _, server := range serverList {
+				result[server.Name] = serverpkg.MaintenanceReadiness{Ready: true, Code: serverpkg.MaintenanceReadinessReady}
+			}
+			return result
+		},
 		LoadRetryPolicy: func() RetryPolicy {
 			return RetryPolicy{MaxAttempts: 4, BaseDelay: time.Second, MaxDelay: 5 * time.Second, JitterPct: 7}
 		},
@@ -92,6 +101,40 @@ func TestScheduledRunLifecycleHandleScheduledRunDuplicateNoops(t *testing.T) {
 	}
 	if job, _ := jm.FindLatestActiveJobByServerAndKind(server.Name, jobKindUpdate); job != nil {
 		t.Fatalf("latest active update job = %+v; want no job dispatched for duplicate run", job)
+	}
+}
+
+func TestScheduledRunLifecycleSkipsUnreadyConnectionBeforeRuntimeMutationOrJobCreation(t *testing.T) {
+	server := Server{Name: "srv-scheduled-unready", Host: "example.org", Port: 22, User: "root", Pass: "server-secret"}
+	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-unready.db", server, "idle")
+	deps.MaintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
+		return serverpkg.MaintenanceReadiness{
+			Code:    serverpkg.MaintenanceReadinessHostKeyNotTrusted,
+			Message: "SSH host key is not trusted; review this server in Manage",
+		}
+	}
+
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+	current := getScheduledLifecycleRun(t, deps, run.ID)
+	if current.Status != updatePolicyRunSkipped || current.Reason != policypkg.RunReasonReadiness {
+		t.Fatalf("scheduled run = %+v, want skipped connection readiness", current)
+	}
+	if got := deps.ServerState.CurrentStatusSnapshot(server.Name); got == nil || got.Status != "idle" {
+		t.Fatalf("runtime status = %+v, want unchanged idle", got)
+	}
+	var jobCount int
+	if err := getDB().QueryRow("SELECT COUNT(*) FROM jobs").Scan(&jobCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobCount != 0 {
+		t.Fatalf("job count = %d, want 0", jobCount)
+	}
+	audits, err := deps.AuditService.List(AuditListFilter{Action: "schedule.run.skipped", TargetName: server.Name})
+	if err != nil {
+		t.Fatalf("list audits: %v", err)
+	}
+	if audits.Total != 1 || audits.Items[0].Status != "ignored" || strings.Contains(audits.Items[0].Message, server.Pass) {
+		t.Fatalf("audit events = %+v, want one safe ignored result", audits.Items)
 	}
 }
 

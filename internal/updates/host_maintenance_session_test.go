@@ -369,6 +369,18 @@ func TestPlanDiskSpaceCheckUsesUpgradePlanReserve(t *testing.T) {
 	})
 }
 
+func TestPlanDiskSpaceProbeUsesEffectiveAptArchiveDirectory(t *testing.T) {
+	for _, required := range []string{
+		"/usr/bin/apt-config shell archive_dir Dir::Cache::archives/d",
+		`probe_path archive "$archive_dir"`,
+		"stat -Lc %d",
+	} {
+		if !strings.Contains(PlanDiskSpaceProbeCmd, required) {
+			t.Fatalf("PlanDiskSpaceProbeCmd = %q, want %q", PlanDiskSpaceProbeCmd, required)
+		}
+	}
+}
+
 func TestPlanDiskSpaceCheckUsesExactComponentsOnSharedFilesystem(t *testing.T) {
 	plan := BuildUpgradePlan(nil, "Need to get 200 MB of archives.\nAfter this operation, 300 MB of additional disk space will be used.\n", true)
 	estimate := EstimatePlanDiskSpace(plan)
@@ -420,6 +432,14 @@ func TestPlanDiskSpaceCheckAllocatesExactComponentsAcrossSplitFilesystems(t *tes
 		}
 	})
 
+	t.Run("configured archive path uses its own filesystem", func(t *testing.T) {
+		stdout := planDiskProbeFixtureWithArchivePath("cache", baseKB+archiveKB-1, "var", baseKB+growthKB, "root", baseKB+growthKB, "/srv/apt archives")
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+		if result.Passed || !strings.Contains(result.Details, "/srv/apt archives") {
+			t.Fatalf("result = %+v, want configured cache filesystem failure", result)
+		}
+	})
+
 	t.Run("installed growth shortage blocks var filesystem", func(t *testing.T) {
 		stdout := planDiskProbeFixture("cache", baseKB+archiveKB, "var", baseKB+growthKB-1, "root", baseKB+growthKB)
 		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
@@ -432,10 +452,10 @@ func TestPlanDiskSpaceCheckAllocatesExactComponentsAcrossSplitFilesystems(t *tes
 func TestPlanDiskSpaceCheckFailsClosedOnIncompleteFilesystemEvidence(t *testing.T) {
 	plan := servers.UpgradePlan{FullUpgradePackageCount: 1}
 	for _, stdout := range []string{
-		"/var/cache/apt/archives 100 2097152\n/var 100 2097152\n",
-		"/var/cache/apt/archives 100 nope\n/var 100 2097152\n/ 100 2097152\n",
-		"/tmp 100 2097152\n/var 100 2097152\n/ 100 2097152\n",
-		"/var/cache/apt/archives 100 2097152\n/var 100 2097152\n/var 101 2097152\n/ 100 2097152\n",
+		"archive\t100\t2097152\t/var/cache/apt/archives\nvar\t100\t2097152\t/var\n",
+		"archive\t100\tnope\t/var/cache/apt/archives\nvar\t100\t2097152\t/var\nroot\t100\t2097152\t/\n",
+		"tmp\t100\t2097152\t/tmp\nvar\t100\t2097152\t/var\nroot\t100\t2097152\t/\n",
+		"archive\t100\t2097152\t/var/cache/apt/archives\nvar\t100\t2097152\t/var\nvar\t101\t2097152\t/var\nroot\t100\t2097152\t/\n",
 	} {
 		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
 		if result.Passed || result.Name != "disk_space_plan" {
@@ -445,7 +465,11 @@ func TestPlanDiskSpaceCheckFailsClosedOnIncompleteFilesystemEvidence(t *testing.
 }
 
 func planDiskProbeFixture(cacheDevice string, cacheFreeKB int64, varDevice string, varFreeKB int64, rootDevice string, rootFreeKB int64) string {
-	return fmt.Sprintf("/var/cache/apt/archives\t%s\t%d\n/var\t%s\t%d\n/\t%s\t%d\n", cacheDevice, cacheFreeKB, varDevice, varFreeKB, rootDevice, rootFreeKB)
+	return planDiskProbeFixtureWithArchivePath(cacheDevice, cacheFreeKB, varDevice, varFreeKB, rootDevice, rootFreeKB, "/var/cache/apt/archives")
+}
+
+func planDiskProbeFixtureWithArchivePath(cacheDevice string, cacheFreeKB int64, varDevice string, varFreeKB int64, rootDevice string, rootFreeKB int64, archivePath string) string {
+	return fmt.Sprintf("archive\t%s\t%d\t%s\nvar\t%s\t%d\t/var\nroot\t%s\t%d\t/\n", cacheDevice, cacheFreeKB, archivePath, varDevice, varFreeKB, rootDevice, rootFreeKB)
 }
 
 func TestProductionHostMaintenanceSessionHonorsCancellationAfterInspectionStarts(t *testing.T) {

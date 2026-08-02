@@ -543,13 +543,10 @@ func estimatePlanDiskSpaceByPackages(plan servers.UpgradePlan) PlanDiskSpaceEsti
 }
 
 func exactPlanDiskSpaceEstimate(facts aptDiskFacts) (PlanDiskSpaceEstimate, bool) {
-	if facts.ArchiveBytes < 0 {
+	if facts.ArchiveBytes < 0 || facts.InstalledDeltaBytes < 0 {
 		return PlanDiskSpaceEstimate{}, false
 	}
 	growth := facts.InstalledDeltaBytes
-	if growth < 0 {
-		growth = 0
-	}
 	if facts.ArchiveBytes > math.MaxInt64-growth {
 		return PlanDiskSpaceEstimate{}, false
 	}

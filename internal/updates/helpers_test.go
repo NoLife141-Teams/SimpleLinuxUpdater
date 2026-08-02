@@ -431,13 +431,17 @@ func TestBuildUpgradePlanUsesExactAptDiskFacts(t *testing.T) {
 	}
 }
 
-func TestExactPlanDiskSpaceEstimateTreatsFreedSpaceAsZeroGrowth(t *testing.T) {
-	estimate, ok := exactPlanDiskSpaceEstimate(aptDiskFacts{ArchiveBytes: 25_000_000, InstalledDeltaBytes: -900_000_000})
-	if !ok || estimate.Source != PlanDiskSourceExact {
-		t.Fatalf("exactPlanDiskSpaceEstimate() = %+v, %t", estimate, ok)
+func TestExactPlanDiskSpaceEstimateRejectsFreedSpaceAsPeakEvidence(t *testing.T) {
+	if estimate, ok := exactPlanDiskSpaceEstimate(aptDiskFacts{ArchiveBytes: 25_000_000, InstalledDeltaBytes: -900_000_000}); ok {
+		t.Fatalf("exactPlanDiskSpaceEstimate() = %+v, true; want conservative fallback", estimate)
 	}
-	if estimate.InstalledDeltaBytes != -900_000_000 || estimate.InstalledGrowthBytes != 0 {
-		t.Fatalf("freed-space estimate = %+v, want negative evidence and zero growth", estimate)
+	plan := BuildUpgradePlan(
+		[]servers.PendingUpdate{{Package: "replacement"}},
+		"Need to get 25 MB of archives.\nAfter this operation, 900 MB disk space will be freed.\n",
+		true,
+	)
+	if plan.DiskSpaceSource != PlanDiskSourceEstimate || plan.DiskSpaceRequiredKB != PlanDiskBaseReserveKB+PlanDiskPerPackageKB {
+		t.Fatalf("freed-space plan = %+v, want package-based fallback", plan)
 	}
 }
 

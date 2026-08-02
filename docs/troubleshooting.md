@@ -115,7 +115,7 @@ Common reasons:
 
 - Insufficient free disk space on `/var` or `/`
 - Baseline disk space below `1 GiB` (1048576 KB)
-- Exact plan requirement is too large for the filesystem holding `/var/cache/apt/archives`, `/var`, or `/`; it includes archive bytes, positive installed growth, a bounded safety margin, and the `1 GiB` operational reserve
+- Exact plan requirement is too large for the filesystem holding the configured APT archive cache, `/var`, or `/`; it includes archive bytes, positive installed growth, a bounded safety margin, and the `1 GiB` operational reserve
 - APT did not provide trustworthy size facts and the compatibility estimate is too large: `1 GiB` base + `64 MiB` per planned package + `512 MiB` per newly installed package
 - APT/DPKG health failures (`dpkg --audit` or `apt-get check`)
 - Lock contention

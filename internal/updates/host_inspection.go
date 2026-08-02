@@ -25,7 +25,7 @@ const (
 	hostFactsUptimeCmd                = "cat /proc/uptime"
 )
 
-const PlanDiskSpaceProbeCmd = `sh -c 'for requested in /var/cache/apt/archives /var /; do probe="$requested"; while [ ! -e "$probe" ] && [ "$probe" != / ]; do probe="${probe%/*}"; [ -n "$probe" ] || probe=/; done; device=$(stat -c %d "$probe") || exit 1; available=$(df -Pk "$probe" | awk "NR==2 {print \$4}") || exit 1; printf "%s\t%s\t%s\n" "$requested" "$device" "$available"; done'`
+const PlanDiskSpaceProbeCmd = `sh -c 'archive_config=$(/usr/bin/apt-config shell archive_dir Dir::Cache::archives/d) || exit 1; eval "$archive_config" || exit 1; archive_dir="${archive_dir%/}"; [ -n "$archive_dir" ] || archive_dir=/; case "$archive_dir" in /*) ;; *) exit 1;; esac; probe_path() { label=$1; requested=$2; probe="$requested"; while [ ! -e "$probe" ] && [ "$probe" != / ]; do probe="${probe%/*}"; [ -n "$probe" ] || probe=/; done; device=$(stat -Lc %d "$probe") || exit 1; available=$(df -Pk "$probe" | awk "NR==2 {print \$4}") || exit 1; printf "%s\t%s\t%s\t%s\n" "$label" "$device" "$available" "$requested"; }; probe_path archive "$archive_dir" && probe_path var /var && probe_path root /'`
 
 var (
 	precheckLocksCmd       = AptExtendedLockProbeCmd
@@ -115,26 +115,29 @@ func parsePlanDiskFilesystems(stdout string) (map[string]planDiskFilesystem, map
 	filesystems := map[string]planDiskFilesystem{}
 	paths := map[string]string{}
 	for _, rawLine := range strings.Split(strings.ReplaceAll(stdout, "\r\n", "\n"), "\n") {
-		fields := strings.Fields(rawLine)
-		if len(fields) == 0 {
+		if strings.TrimSpace(rawLine) == "" {
 			continue
 		}
-		if len(fields) != 3 {
+		fields := strings.SplitN(rawLine, "\t", 4)
+		if len(fields) != 4 {
 			return nil, nil, fmt.Errorf("invalid plan disk filesystem output")
 		}
-		path, device := fields[0], fields[1]
-		if path != "/var/cache/apt/archives" && path != "/var" && path != "/" {
-			return nil, nil, fmt.Errorf("unexpected plan disk path %q", path)
+		label, device, path := fields[0], fields[1], fields[3]
+		if label != "archive" && label != "var" && label != "root" {
+			return nil, nil, fmt.Errorf("unexpected plan disk path label %q", label)
 		}
-		if _, exists := paths[path]; exists {
-			return nil, nil, fmt.Errorf("duplicate plan disk path %q", path)
+		if strings.TrimSpace(device) == "" || strings.TrimSpace(path) == "" {
+			return nil, nil, fmt.Errorf("invalid plan disk filesystem output")
+		}
+		if _, exists := paths[label]; exists {
+			return nil, nil, fmt.Errorf("duplicate plan disk path label %q", label)
 		}
 		availableKB, err := strconv.ParseInt(fields[2], 10, 64)
 		if err != nil || availableKB < 0 || availableKB > math.MaxInt64/1024 {
 			return nil, nil, fmt.Errorf("invalid free space value %q", fields[2])
 		}
 		availableBytes := availableKB * 1024
-		paths[path] = device
+		paths[label] = device
 		filesystem, exists := filesystems[device]
 		if !exists {
 			filesystem = planDiskFilesystem{Device: device, AvailableBytes: availableBytes}
@@ -147,9 +150,9 @@ func parsePlanDiskFilesystems(stdout string) (map[string]planDiskFilesystem, map
 		}
 		filesystems[device] = filesystem
 	}
-	for _, path := range []string{"/var/cache/apt/archives", "/var", "/"} {
-		if strings.TrimSpace(paths[path]) == "" {
-			return nil, nil, fmt.Errorf("missing plan disk filesystem for %s", path)
+	for _, label := range []string{"archive", "var", "root"} {
+		if strings.TrimSpace(paths[label]) == "" {
+			return nil, nil, fmt.Errorf("missing plan disk filesystem for %s", label)
 		}
 	}
 	return filesystems, paths, nil
@@ -179,10 +182,10 @@ func planDiskFilesystemRequirements(estimate PlanDiskSpaceEstimate, paths map[st
 	if estimate.Source != PlanDiskSourceExact {
 		return requirements, nil
 	}
-	if !addPlanDiskRequirement(requirements, paths["/var/cache/apt/archives"], estimate.ArchiveBytes) {
+	if !addPlanDiskRequirement(requirements, paths["archive"], estimate.ArchiveBytes) {
 		return nil, fmt.Errorf("exact archive disk requirement overflow")
 	}
-	installDevices := map[string]struct{}{paths["/"]: {}, paths["/var"]: {}}
+	installDevices := map[string]struct{}{paths["root"]: {}, paths["var"]: {}}
 	for device := range installDevices {
 		if !addPlanDiskRequirement(requirements, device, estimate.InstalledGrowthBytes) {
 			return nil, fmt.Errorf("exact installed disk requirement overflow")

@@ -99,7 +99,7 @@ func (s *scriptedSSHSession) Run(cmd string) error {
 		var ok bool
 		resp, ok = s.conn.responses[cmd]
 		if !ok && cmd == updatespkg.PlanDiskSpaceProbeCmd {
-			resp = scriptedResponse{stdout: "/var/cache/apt/archives 100 10485760\n/var 100 10485760\n/ 100 10485760\n"}
+			resp = scriptedResponse{stdout: "archive\t100\t10485760\t/var/cache/apt/archives\nvar\t100\t10485760\t/var\nroot\t100\t10485760\t/\n"}
 			ok = true
 		}
 		if !ok {

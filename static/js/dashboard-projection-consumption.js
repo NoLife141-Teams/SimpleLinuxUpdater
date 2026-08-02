@@ -236,13 +236,22 @@
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
         const reconciliationFallback = statusValue === "needs_reconciliation";
+        const failedFallback = statusValue === "error";
+        const staleFactsFallback = ["stale", "unknown"].includes(text(triage.facts_state).toLowerCase());
+        const fallbackRecommendation = reconciliationFallback
+            ? { key: "repair_package_state", label: "Repair package state", detail: "The last APT outcome was uncertain. Inspect and repair package-manager state before retrying.", action: "repair_apt" }
+            : failedFallback
+                ? { key: "review_failure", label: "Review failure", detail: "Review the latest job logs and failure details before retrying.", action: "" }
+                : staleFactsFallback
+                    ? { key: "refresh_host_facts", label: "Refresh host facts", detail: "Health facts are missing or stale. Refresh them before choosing a maintenance action.", action: "refresh_facts" }
+                    : { key: "healthy", label: "Healthy", detail: "No immediate maintenance action is required.", action: "" };
         const recommendedAction = {
-            key: text(rawRecommendedAction.key, reconciliationFallback ? "repair_package_state" : "healthy"),
-            label: text(rawRecommendedAction.label, reconciliationFallback ? "Repair package state" : "Healthy"),
-            detail: text(rawRecommendedAction.detail, reconciliationFallback
-                ? "The last APT outcome was uncertain. Inspect and repair package-manager state before retrying."
-                : "No immediate maintenance action is required."),
-            action: text(rawRecommendedAction.action, reconciliationFallback ? "repair_apt" : "")
+            key: text(rawRecommendedAction.key, fallbackRecommendation.key),
+            label: text(rawRecommendedAction.label, fallbackRecommendation.label),
+            detail: text(rawRecommendedAction.detail, fallbackRecommendation.detail),
+            action: Object.prototype.hasOwnProperty.call(rawRecommendedAction, "action")
+                ? text(rawRecommendedAction.action)
+                : fallbackRecommendation.action
         };
 
         return {

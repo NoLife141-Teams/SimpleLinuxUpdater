@@ -87,6 +87,46 @@ test("reconciliation recommendation falls back to runtime status when dashboard 
     assert.equal(view.selectedHost.canRepairApt, true);
 });
 
+test("compatibility recommendations never present stale or failed hosts as healthy", () => {
+    const servers = [
+        { name: "failed", status: "error", pending_updates: [] },
+        { name: "stale", status: "done", pending_updates: [] }
+    ];
+    const view = project({ statusView: statusView({
+        servers,
+        dashboardServers: [{ name: "stale", approval_triage: { facts_state: "stale" } }]
+    }) });
+
+    const byName = Object.fromEntries(view.servers.map(host => [host.name, host]));
+    assert.equal(byName.failed.recommendedAction.key, "review_failure");
+    assert.equal(byName.failed.recommendedAction.action, "");
+    assert.equal(byName.stale.recommendedAction.key, "refresh_host_facts");
+    assert.equal(byName.stale.recommendedAction.action, "refresh_facts");
+});
+
+test("new canonical recommendation keys pass through without frontend reinterpretation", () => {
+    const server = { name: "disk-host", status: "done", pending_updates: [] };
+    const view = project({ statusView: statusView({
+        servers: [server],
+        dashboardServers: [{
+            name: "disk-host",
+            recommended_action: {
+                key: "review_disk_capacity",
+                label: "Review disk capacity",
+                detail: "The upgrade plan needs more space.",
+                action: ""
+            }
+        }]
+    }) });
+
+    assert.deepEqual(view.selectedHost.recommendedAction, {
+        key: "review_disk_capacity",
+        label: "Review disk capacity",
+        detail: "The upgrade plan needs more space.",
+        action: ""
+    });
+});
+
 test("status presentation recognizes reconciliation lifecycle classes", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/index.js"), "utf8");
     const styles = fs.readFileSync(path.join(__dirname, "../../static/css/index.css"), "utf8");

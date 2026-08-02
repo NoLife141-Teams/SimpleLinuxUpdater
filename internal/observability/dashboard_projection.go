@@ -20,12 +20,18 @@ type dashboardServerProjectionInput struct {
 	server         servers.Server
 	status         *servers.ServerStatus
 	health         DashboardHealthInfo
+	failure        dashboardMaintenanceFailureFacts
 	nextRun        DashboardScheduleInfo
 	noRun          DashboardNoRunInfo
 	timeline       DashboardTimelineInfo
 	triageTime     dashboardTriageTimeFacts
 	updateHistory  dashboardUpdateHistoryProjection
 	commandHistory []DashboardCommandHistoryItem
+}
+
+type dashboardMaintenanceFailureFacts struct {
+	cause      string
+	errorClass string
 }
 
 type dashboardTimelineSourceFacts struct {
@@ -90,7 +96,7 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 	triage := buildApprovalTriage(input.status, health, risk, timeline, input.triageTime)
 	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage, health)
 	triage = mirrorApprovalTriageActions(triage, actions)
-	recommendedAction := buildDashboardRecommendedAction(input.status, timeline, health, actions)
+	recommendedAction := buildDashboardRecommendedAction(input.status, timeline, health, input.triageTime, input.failure, actions)
 
 	return DashboardServerSummary{
 		Name:              input.server.Name,

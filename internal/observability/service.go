@@ -569,6 +569,9 @@ func dashboardTimelineJobForStatus(status *servers.ServerStatus, job *jobs.Recor
 	if status == nil {
 		return runtimepkg.DashboardTimelineJobForStatus(statusValue, job)
 	}
+	if strings.TrimSpace(status.JobID) != "" && (job == nil || strings.TrimSpace(job.ID) != strings.TrimSpace(status.JobID)) {
+		return nil
+	}
 	statusValue = status.Status
 	return runtimepkg.DashboardTimelineJobForStatus(statusValue, job)
 }
@@ -806,7 +809,7 @@ func dashboardPackageMutationAction(serverName, statusValue string, timeline Das
 	return dashboardTransientAction(serverName, statusValue, timeline, readyReason, actionLabel)
 }
 
-func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline DashboardTimelineInfo, health DashboardHealthInfo, actions map[string]DashboardActionInfo) DashboardRecommendedActionInfo {
+func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline DashboardTimelineInfo, health DashboardHealthInfo, triageTime dashboardTriageTimeFacts, failure dashboardMaintenanceFailureFacts, actions map[string]DashboardActionInfo) DashboardRecommendedActionInfo {
 	statusValue := ""
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
@@ -821,11 +824,22 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	if statusValue == runtimepkg.StatusPendingApproval {
 		return DashboardRecommendedActionInfo{Key: "review_approval", Label: "Review approval", Detail: "Review the package plan and approve the safest eligible scope, or cancel the pending run."}
 	}
+	if triageTime.factsState != "fresh" || dashboardHealthFactsIncomplete(health) {
+		action := ""
+		if dashboardActionEnabled(actions, dashboardActionRefreshFacts) {
+			action = dashboardActionRefreshFacts
+		}
+		return DashboardRecommendedActionInfo{Key: "refresh_host_facts", Label: "Refresh host facts", Detail: "Health facts are missing, incomplete, or older than 24 hours. Refresh them before choosing a maintenance action.", Action: action}
+	}
+	diskStatus := strings.ToLower(strings.TrimSpace(health.DiskStatus))
+	if diskStatus != "ok" {
+		return DashboardRecommendedActionInfo{Key: "review_disk_capacity", Label: "Review disk capacity", Detail: "Disk capacity checks are not passing. Review the planned upgrade space requirements and free capacity before continuing."}
+	}
 	if statusValue == runtimepkg.StatusError {
-		return DashboardRecommendedActionInfo{Key: "repair_package_state", Label: "Repair package state", Detail: "The last maintenance run failed. Review its logs and verify APT/DPKG health before retrying."}
+		return dashboardRecommendationForFailure(failure, actions)
 	}
 	aptStatus := strings.ToLower(strings.TrimSpace(health.AptStatus))
-	if aptStatus == "failed" || aptStatus == "error" || aptStatus == "unhealthy" || aptStatus == "degraded" {
+	if aptStatus != "ok" {
 		action := ""
 		if dashboardActionEnabled(actions, dashboardActionRepairApt) {
 			action = dashboardActionRepairApt
@@ -840,6 +854,33 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 		return DashboardRecommendedActionInfo{Key: "reboot_and_verify", Label: "Reboot and verify", Detail: "A reboot is required to activate installed updates. The controlled workflow verifies SSH recovery, uptime reset, and reboot-required state.", Action: action}
 	}
 	return DashboardRecommendedActionInfo{Key: "healthy", Label: "Healthy", Detail: "No immediate maintenance action is required."}
+}
+
+func dashboardHealthFactsIncomplete(health DashboardHealthInfo) bool {
+	for _, value := range []string{health.DiskStatus, health.AptStatus} {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || value == "unknown" {
+			return true
+		}
+	}
+	return false
+}
+
+func dashboardRecommendationForFailure(failure dashboardMaintenanceFailureFacts, actions map[string]DashboardActionInfo) DashboardRecommendedActionInfo {
+	cause := strings.ToLower(strings.TrimSpace(failure.cause))
+	errorClass := strings.ToLower(strings.TrimSpace(failure.errorClass))
+	if cause == "precheck:disk_space" || cause == "precheck:disk_space_plan" {
+		return DashboardRecommendedActionInfo{Key: "review_disk_capacity", Label: "Review disk capacity", Detail: "The update was blocked by its disk-space plan. Review required and available capacity before retrying."}
+	}
+	aptFailure := cause == "precheck:apt_health" || cause == "precheck:apt_locks" || cause == "postcheck:post_apt_health" || errorClass == "reconciliation_required"
+	if aptFailure {
+		action := ""
+		if dashboardActionEnabled(actions, dashboardActionRepairApt) {
+			action = dashboardActionRepairApt
+		}
+		return DashboardRecommendedActionInfo{Key: "repair_package_state", Label: "Repair package state", Detail: "Typed failure evidence points to APT/DPKG state. Inspect package-manager state and use the repair workflow when it is eligible.", Action: action}
+	}
+	return DashboardRecommendedActionInfo{Key: "review_failure", Label: "Review failure", Detail: "Review the latest job logs and typed failure details before deciding whether to retry or repair."}
 }
 
 func dashboardTransientAction(serverName, statusValue string, timeline DashboardTimelineInfo, readyReason, actionLabel string) DashboardActionInfo {

@@ -66,6 +66,44 @@ func TestDashboardProjectionCollectionCollectsTypedUpdateHistory(t *testing.T) {
 	}
 }
 
+func TestDashboardProjectionCollectionCorrelatesFailureFactsToCurrentJob(t *testing.T) {
+	collector := newDashboardProjectionCollector(ServiceDeps{})
+	status := &servers.ServerStatus{Name: "srv-a", Status: "error", JobID: "job-current"}
+	currentJob := &jobs.Record{
+		ID:         "job-current",
+		Status:     jobs.StatusFailed,
+		ErrorClass: "transient",
+		CreatedAt:  "2026-05-01T11:00:00Z",
+	}
+	currentFailure := &DashboardUpdateHistory{
+		FailureCause: "precheck:apt_health",
+		FinishedAt:   "2026-05-01T11:05:00Z",
+	}
+
+	got := collector.collectMaintenanceFailure(status, currentJob, currentFailure)
+	if got.cause != "precheck:apt_health" || got.errorClass != "transient" {
+		t.Fatalf("current failure facts = %+v, want correlated cause and error class", got)
+	}
+
+	staleJob := *currentJob
+	staleJob.ID = "job-previous"
+	if got := collector.collectMaintenanceFailure(status, &staleJob, currentFailure); got != (dashboardMaintenanceFailureFacts{}) {
+		t.Fatalf("unrelated job failure facts = %+v, want empty", got)
+	}
+	statusWithoutJobID := *status
+	statusWithoutJobID.JobID = ""
+	if got := collector.collectMaintenanceFailure(&statusWithoutJobID, currentJob, currentFailure); got != (dashboardMaintenanceFailureFacts{}) {
+		t.Fatalf("uncorrelated failure facts = %+v, want empty", got)
+	}
+
+	previousFailure := *currentFailure
+	previousFailure.FinishedAt = "2026-05-01T10:55:00Z"
+	got = collector.collectMaintenanceFailure(status, currentJob, &previousFailure)
+	if got.cause != "" || got.errorClass != "transient" {
+		t.Fatalf("older audit failure facts = %+v, want only current job error class", got)
+	}
+}
+
 func TestDashboardProjectionCollectionCollectsTypedCommandHistory(t *testing.T) {
 	db, path := newTestDB(t, "dashboard-projection-collection-commands.db")
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)

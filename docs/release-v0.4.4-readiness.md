@@ -85,8 +85,11 @@ observability checks recorded in
 
 ## Final Gate
 
-- [ ] Release-preparation PR checks are green, including `ci-required`,
-      frontend unit tests, npm audit, Playwright, Go quality gates, and CodeQL.
+- [x] PR #358 checks are green, including `ci-required`, frontend unit tests,
+      npm audit, Playwright, and the Go, JavaScript/TypeScript, and Actions
+      CodeQL analyses. The Go `test` and `quality` jobs were correctly skipped
+      by change detection because the release-preparation diff contains no Go
+      or workflow implementation changes; the complete local Go gate passed.
 - [ ] The release-preparation PR is merged to `main`.
 - [ ] Post-merge `main` CI and CodeQL are green on the final release commit.
 - [ ] The `v0.4.4` tag points to that verified final release commit.

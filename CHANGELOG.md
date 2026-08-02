@@ -6,6 +6,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.4] - 2026-08-02
+
 ### Added
 
 - Persist uncertain APT outcomes as `needs_reconciliation`, block further package
@@ -33,6 +35,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   limit, publish cumulative liveness checkpoints with lock-holder PIDs, and prevent
   an ambiguous timeout from replaying a second APT mutation against the first
   process's lock.
+
+### Validation
+
+- Record the automated, Docker, and disposable-host requirements in
+  [the v0.4.4 release readiness record](docs/release-v0.4.4-readiness.md) and
+  [release smoke result](docs/release-v0.4.4-smoke.md).
 
 ## [v0.4.3] - 2026-07-30
 

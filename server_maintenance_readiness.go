@@ -36,10 +36,6 @@ func maintenanceReadinessForServers(deps AppDeps, serverList []Server) map[strin
 	return result
 }
 
-func maintenanceReadinessForServer(deps AppDeps, server Server) serverpkg.MaintenanceReadiness {
-	return maintenanceReadinessForServers(deps, []Server{server})[server.Name]
-}
-
 func serverByName(state *serverpkg.State, name string) (Server, bool) {
 	if state == nil {
 		return Server{}, false

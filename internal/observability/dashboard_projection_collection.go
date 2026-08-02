@@ -7,6 +7,7 @@ import (
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
+	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
 )
 
@@ -88,10 +89,12 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 		health := c.collectHealth(facts[server.Name], agg.healthOverlay)
 		timelineSource := dashboardTimelineSourceFor(status, latestUpdateJob)
 		timeline := buildDashboardTimeline(timelineSource, c.deps, loc, timezoneName)
+		failure := c.collectMaintenanceFailure(status, latestUpdateJob, agg.projection.lastFailure)
 		input.servers = append(input.servers, dashboardServerProjectionInput{
 			server:         server,
 			status:         status,
 			health:         health,
+			failure:        failure,
 			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
 			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
 			timeline:       timeline,
@@ -101,6 +104,23 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 		})
 	}
 	return input, nil
+}
+
+func (c dashboardProjectionCollector) collectMaintenanceFailure(status *servers.ServerStatus, latestJob *jobs.Record, lastFailure *DashboardUpdateHistory) dashboardMaintenanceFailureFacts {
+	selectedJob := dashboardTimelineJobForStatus(status, latestJob)
+	if status == nil || strings.TrimSpace(status.JobID) == "" || !strings.EqualFold(strings.TrimSpace(status.Status), "error") || selectedJob == nil {
+		return dashboardMaintenanceFailureFacts{}
+	}
+	failure := dashboardMaintenanceFailureFacts{errorClass: strings.ToLower(strings.TrimSpace(selectedJob.ErrorClass))}
+	if lastFailure == nil || strings.TrimSpace(lastFailure.FailureCause) == "" {
+		return failure
+	}
+	jobStarted, jobErr := c.deps.ParseAppTimestamp(selectedJob.CreatedAt)
+	failureFinished, failureErr := c.deps.ParseAppTimestamp(lastFailure.FinishedAt)
+	if jobErr == nil && failureErr == nil && !failureFinished.Before(jobStarted) {
+		failure.cause = strings.ToLower(strings.TrimSpace(lastFailure.FailureCause))
+	}
+	return failure
 }
 
 func (c dashboardProjectionCollector) collectHealth(fact updates.ServerFactsRecord, overlay dashboardHealthOverlayFacts) DashboardHealthInfo {

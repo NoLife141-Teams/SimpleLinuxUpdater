@@ -988,6 +988,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     </div>
                     ${recommendedAction.action === "repair_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="repair-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRepairApt, "Inspect and repair APT/DPKG state", "APT repair is not available for the current state")}>Repair APT</button>` : ""}
                     ${recommendedAction.action === "reboot" ? `<button type="button" class="inline-btn btn-warning" data-action="reboot-server" data-name="${safeDataName}" ${buttonStateAttrs(canReboot, "Reboot and verify this host", "Controlled reboot is not available for the current state")}>Reboot and verify</button>` : ""}
+                    ${recommendedAction.action === "refresh_facts" ? `<button type="button" class="inline-btn btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>` : ""}
                 </section>
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
@@ -1873,6 +1874,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const canUpdate = presentation.canRunUpdate;
 	                    const canRepairApt = presentation.canRepairApt;
 	                    const canReboot = presentation.canReboot;
+	                    const canRefreshFacts = presentation.canRefreshFacts;
 	                    const failureReason = presentation.failureReason;
 	                    const driftReason = presentation.driftReason;
 	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
@@ -1903,6 +1905,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
 							? `
 								<div class="actions-grid timeline-actions">
 									<button type="button" class="btn-warning" data-action="reboot-server" data-name="${safeDataName}">Reboot and verify</button>
+									<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
+								</div>
+							  `
+						: recommendedAction.action === "refresh_facts"
+							? `
+								<div class="actions-grid timeline-actions">
+									<button type="button" class="btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>
 									<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 								</div>
 							  `

@@ -56,23 +56,33 @@ func TestDashboardProjectionRecommendsSafeNextMaintenanceAction(t *testing.T) {
 		status     string
 		timeline   DashboardTimelineInfo
 		health     DashboardHealthInfo
+		triageTime dashboardTriageTimeFacts
+		failure    dashboardMaintenanceFailureFacts
 		wantKey    string
 		wantAction string
 	}{
 		{name: "active", status: "upgrading", timeline: testCollectedTimeline("upgrade", "active", "Upgrading"), wantKey: "monitor_apt"},
 		{name: "reconciliation", status: "needs_reconciliation", timeline: testCollectedTimeline("done_error", "error", "APT uncertain"), wantKey: "repair_package_state", wantAction: dashboardActionRepairApt},
 		{name: "approval", status: "pending_approval", timeline: testCollectedTimeline("pending_approval", "waiting", "Waiting"), wantKey: "review_approval"},
-		{name: "reboot", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok", RebootRequired: &rebootRequired}, wantKey: "reboot_and_verify", wantAction: dashboardActionReboot},
-		{name: "healthy", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{AptStatus: "ok"}, wantKey: "healthy"},
+		{name: "missing facts", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), triageTime: testCollectedTriageTime("stale", ""), wantKey: "refresh_host_facts", wantAction: dashboardActionRefreshFacts},
+		{name: "disk capacity", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{DiskStatus: "critical", AptStatus: "ok"}, triageTime: testCollectedTriageTime("fresh", "now"), wantKey: "review_disk_capacity"},
+		{name: "generic failure", status: "error", timeline: testCollectedTimeline("done_error", "error", "Failed"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "ok"}, triageTime: testCollectedTriageTime("fresh", "now"), wantKey: "review_failure"},
+		{name: "typed apt failure", status: "error", timeline: testCollectedTimeline("done_error", "error", "Failed"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "ok"}, triageTime: testCollectedTriageTime("fresh", "now"), failure: dashboardMaintenanceFailureFacts{cause: "precheck:apt_health"}, wantKey: "repair_package_state"},
+		{name: "typed disk failure", status: "error", timeline: testCollectedTimeline("done_error", "error", "Failed"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "ok"}, triageTime: testCollectedTriageTime("fresh", "now"), failure: dashboardMaintenanceFailureFacts{cause: "precheck:disk_space_plan"}, wantKey: "review_disk_capacity"},
+		{name: "apt warning", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "warning"}, triageTime: testCollectedTriageTime("fresh", "now"), wantKey: "repair_package_state"},
+		{name: "reboot", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "ok", RebootRequired: &rebootRequired}, triageTime: testCollectedTriageTime("fresh", "now"), wantKey: "reboot_and_verify", wantAction: dashboardActionReboot},
+		{name: "healthy", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), health: DashboardHealthInfo{DiskStatus: "ok", AptStatus: "ok"}, triageTime: testCollectedTriageTime("fresh", "now"), wantKey: "healthy"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			summary := testDashboardProjection(time.Now()).Project(dashboardProjectionInput{
 				servers: []dashboardServerProjectionInput{{
-					server:   servers.Server{Name: "srv"},
-					status:   &servers.ServerStatus{Name: "srv", Status: tt.status},
-					timeline: tt.timeline,
-					health:   tt.health,
+					server:     servers.Server{Name: "srv"},
+					status:     &servers.ServerStatus{Name: "srv", Status: tt.status},
+					timeline:   tt.timeline,
+					health:     tt.health,
+					triageTime: tt.triageTime,
+					failure:    tt.failure,
 				}},
 			})
 			got := summary.Servers[0].RecommendedAction
@@ -204,6 +214,9 @@ func TestDashboardProjectionMissingFactsDefaultsRemainDashboardSafe(t *testing.T
 	}
 	if action := requireDashboardAction(t, got, dashboardActionRefreshFacts); !action.Enabled || action.Readiness != dashboardActionReadinessReady {
 		t.Fatalf("refresh facts action = %+v, want stale facts refreshable", action)
+	}
+	if got.RecommendedAction.Key != "refresh_host_facts" || got.RecommendedAction.Action != dashboardActionRefreshFacts {
+		t.Fatalf("recommended action = %+v, want host facts refresh", got.RecommendedAction)
 	}
 }
 

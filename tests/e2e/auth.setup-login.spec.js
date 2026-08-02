@@ -1614,6 +1614,31 @@ test.describe.serial('setup and login flows', () => {
     expect(mobilePendingLayout.labels).toEqual(['Package', 'Version', 'Risk']);
   });
 
+  test('stale facts recommendation renders its refresh action in the table and inspector', async ({ page }) => {
+    const servers = [makeServer('stale-host', 'done', [], { facts_state: 'stale' })];
+    const state = { refreshFacts: 0 };
+    await stubDashboardApi(page, () => servers);
+    await page.route('**/api/servers/stale-host/facts/refresh', route => {
+      state.refreshFacts += 1;
+      return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+
+    const row = page.locator('#servers-table tbody tr[data-name="stale-host"]');
+    const tableRefresh = row.getByRole('button', { name: 'Refresh host facts' });
+    const inspector = page.locator('#selected-host-panel');
+    const inspectorRefresh = inspector.locator('.recommended-action').getByRole('button', { name: 'Refresh host facts' });
+    await expect(row.locator('.recommended-row-action')).toHaveText('Recommended: Refresh host facts');
+    await expect(tableRefresh).toBeEnabled();
+    await expect(row.getByRole('button', { name: 'Update' })).toHaveCount(0);
+    await expect(inspector.locator('.recommended-action')).toContainText('Refresh host facts');
+    await expect(inspectorRefresh).toBeEnabled();
+
+    await inspectorRefresh.click();
+    await expect.poll(() => state.refreshFacts).toBe(1);
+  });
+
   test('cancelled approval refreshes to idle after the short cancellation state', async ({ page }) => {
     let servers = [makeServer('cancelled-host', 'pending_approval', makePendingUpdates(1), { has_key: true })];
     let cancellationCompletedAt = 0;

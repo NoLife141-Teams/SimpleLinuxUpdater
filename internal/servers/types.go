@@ -316,6 +316,12 @@ func (s *State) FindByNameLocked(name string) (Server, bool) {
 	return Server{}, false
 }
 
+func (s *State) FindByName(name string) (Server, bool) {
+	s.Lock()
+	defer s.Unlock()
+	return s.FindByNameLocked(name)
+}
+
 func (s *State) ActionStatusInProgressLocked(name string) (bool, string) {
 	status := (*s.statusMap)[name]
 	if status == nil {

@@ -8,15 +8,7 @@ import (
 )
 
 func maintenanceReadinessForServers(deps AppDeps, serverList []Server) map[string]serverpkg.MaintenanceReadiness {
-	globalKeyConfigured := false
-	globalKeyKnown := false
-	if deps.GlobalSSHCredential != nil {
-		status, err := deps.GlobalSSHCredential.Status(context.Background())
-		if err == nil {
-			globalKeyConfigured = status.Configured
-			globalKeyKnown = true
-		}
-	}
+	globalKeyConfigured, globalKeyKnown := globalSSHCredentialReadiness(deps.GlobalSSHCredential)
 	hostKeyStatuses := map[string]serverpkg.HostKeyStatus{}
 	if deps.ServerInventoryService != nil {
 		for _, status := range deps.ServerInventoryService.ListStatuses() {
@@ -36,14 +28,20 @@ func maintenanceReadinessForServers(deps AppDeps, serverList []Server) map[strin
 	return result
 }
 
+func globalSSHCredentialReadiness(credential *serverpkg.GlobalSSHCredential) (configured, known bool) {
+	if credential == nil {
+		return false, false
+	}
+	resolved, err := credential.Resolve(context.Background(), "")
+	if err != nil {
+		return false, false
+	}
+	return resolved.Source == serverpkg.GlobalSSHCredentialSourceGlobal, true
+}
+
 func serverByName(state *serverpkg.State, name string) (Server, bool) {
 	if state == nil {
 		return Server{}, false
 	}
-	for _, server := range state.CloneServers() {
-		if server.Name == name {
-			return server, true
-		}
-	}
-	return Server{}, false
+	return state.FindByName(name)
 }

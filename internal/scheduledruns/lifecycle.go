@@ -22,6 +22,7 @@ type Deps struct {
 	JobTimestampNow                 func() string
 	LoadRetryPolicy                 func() updates.RetryPolicy
 	MaintenanceCoordinator          *maintenance.Coordinator
+	MaintenanceReadiness            func(servers.Server) servers.MaintenanceReadiness
 	PolicyRepository                RunRepository
 	ServerState                     *servers.State
 	StartJobRunner                  func(string, func(), ...func())
@@ -43,6 +44,11 @@ type Lifecycle struct {
 }
 
 func New(deps Deps) *Lifecycle {
+	if deps.MaintenanceReadiness == nil {
+		deps.MaintenanceReadiness = func(servers.Server) servers.MaintenanceReadiness {
+			return servers.MaintenanceReadiness{Ready: true, Code: servers.MaintenanceReadinessReady}
+		}
+	}
 	return &Lifecycle{deps: deps}
 }
 
@@ -112,12 +118,49 @@ func (l *Lifecycle) executeRun(run policies.Run, policy policies.Policy, server 
 }
 
 func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
+	if current := l.deps.ServerState.CurrentStatusSnapshot(server.Name); current != nil {
+		active, _ := l.deps.ServerState.ActionStatusInProgress(server.Name)
+		if active {
+			return l.executeByMode(run, policy, server)
+		}
+		readiness := l.deps.MaintenanceReadiness(server)
+		if !readiness.Ready {
+			return l.markReadinessSkipped(run, policy, server, readiness)
+		}
+	}
+	return l.executeByMode(run, policy, server)
+}
+
+func (l *Lifecycle) executeByMode(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	switch policy.ExecutionMode {
 	case policies.ExecutionScanOnly:
 		return l.runScan(run, policy, server)
 	default:
 		return l.runUpdate(run, policy, server)
 	}
+}
+
+func (l *Lifecycle) markReadinessSkipped(run policies.Run, policy policies.Policy, server servers.Server, readiness servers.MaintenanceReadiness) (string, string, error) {
+	status := policies.RunSkipped
+	reason := policies.RunReasonReadiness
+	summary := strings.TrimSpace(readiness.Message)
+	if summary == "" {
+		summary = "Server connection is not ready; scheduled run skipped"
+	}
+	finishedAt := l.deps.JobTimestampNow()
+	err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+		Status:     &status,
+		Reason:     &reason,
+		Summary:    &summary,
+		FinishedAt: &finishedAt,
+	})
+	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "ignored", summary, map[string]any{
+		"policy_id":         policy.ID,
+		"policy_name":       policy.Name,
+		"scheduled_for_utc": run.ScheduledForUTC,
+		"reason_code":       readiness.Code,
+	})
+	return status, "", err
 }
 
 func (l *Lifecycle) buildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) updates.ScheduledJobMeta {

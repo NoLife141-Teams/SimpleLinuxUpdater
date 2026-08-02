@@ -40,6 +40,7 @@ const (
 	RunReasonMaintenance = "maintenance"
 	RunReasonPersistence = "persistence"
 	RunReasonRolloutGate = "rollout_gate"
+	RunReasonReadiness   = "connection_readiness"
 
 	GlobalBlackoutsSetting        = "update_policy_global_blackouts"
 	DefaultApprovalTimeoutMinutes = 720

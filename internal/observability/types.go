@@ -254,6 +254,7 @@ type ServiceDeps struct {
 	CurrentLocation             func() *time.Location
 	FormatTimestamp             func(string, *time.Location, string) (string, string)
 	ServerSnapshot              func() ([]servers.Server, map[string]*servers.ServerStatus)
+	MaintenanceReadiness        func([]servers.Server) map[string]servers.MaintenanceReadiness
 	HostHealthObservation       health.Reader
 	ProjectPolicySchedule       func(policies.ScheduleProjectionRequest) (policies.ScheduleProjection, error)
 	ParseAppTimestamp           func(string) (time.Time, error)

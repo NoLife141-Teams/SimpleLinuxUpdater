@@ -20,6 +20,7 @@ import (
 
 	jobsPkg "debian-updater/internal/jobs"
 	runtimepkg "debian-updater/internal/runtime"
+	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -59,6 +60,58 @@ func TestServerFactsRefreshPropagatesRequestCancellation(t *testing.T) {
 
 	if !errors.Is(openContextErr, context.Canceled) {
 		t.Fatalf("SSH open context error = %v, want request cancellation", openContextErr)
+	}
+}
+
+func TestServerFactsRefreshRejectsUnreadyConnectionBeforeRuntimeMutation(t *testing.T) {
+	server := Server{Name: "srv-facts-unready", Host: "example.org", Port: 22, User: "root", Pass: "server-secret"}
+	state := newServerState()
+	state.Lock()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "idle"}})
+	state.Unlock()
+
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "facts-unready.db"), AppDeps{
+		ServerState: state,
+		MaintenanceReadiness: func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {
+			return map[string]serverpkg.MaintenanceReadiness{
+				server.Name: {
+					Code:    serverpkg.MaintenanceReadinessMissingAuthentication,
+					Message: "No SSH authentication is configured; review this server in Manage",
+				},
+			}
+		},
+	})
+	state.Lock()
+	state.SetServers([]Server{server})
+	state.SetStatusMap(map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "idle"}})
+	state.Unlock()
+	sessionCookie := app.authenticate(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/servers/"+server.Name+"/facts/refresh", nil)
+	req.AddCookie(sessionCookie)
+	markSameOriginAuthRequest(req)
+	app.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("facts refresh status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got := state.CurrentStatusSnapshot(server.Name); got == nil || got.Status != "idle" {
+		t.Fatalf("runtime status = %+v, want unchanged idle", got)
+	}
+	var jobCount int
+	if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM jobs").Scan(&jobCount); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if jobCount != 0 {
+		t.Fatalf("job count = %d, want 0", jobCount)
+	}
+	audits, err := app.Deps.AuditService.List(AuditListFilter{Action: serverFactsRefreshAction, TargetName: server.Name})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if audits.Total != 1 || audits.Items[0].Status != "ignored" || strings.Contains(audits.Items[0].Message, server.Pass) {
+		t.Fatalf("audit events = %+v, want one safe ignored result", audits.Items)
 	}
 }
 

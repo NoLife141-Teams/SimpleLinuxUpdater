@@ -56,6 +56,37 @@ const (
 	HostKeyStatusUnknown HostKeyStatus = "unknown"
 )
 
+const (
+	MaintenanceReadinessReady                    = "ready"
+	MaintenanceReadinessMissingAuthentication    = "missing_authentication"
+	MaintenanceReadinessAuthenticationUnknown    = "authentication_unavailable"
+	MaintenanceReadinessHostKeyNotTrusted        = "host_key_not_trusted"
+	MaintenanceReadinessHostKeyStatusUnavailable = "host_key_status_unavailable"
+)
+
+type MaintenanceReadiness struct {
+	Ready   bool
+	Code    string
+	Message string
+}
+
+func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globalKeyKnown bool, hostKeyStatus HostKeyStatus) MaintenanceReadiness {
+	if !hasPassword && !hasServerKey && !globalKeyKnown {
+		return MaintenanceReadiness{Code: MaintenanceReadinessAuthenticationUnknown, Message: "SSH authentication availability could not be verified; review this server in Manage"}
+	}
+	if !hasPassword && !hasServerKey && !hasGlobalKey {
+		return MaintenanceReadiness{Code: MaintenanceReadinessMissingAuthentication, Message: "No SSH password, server key, or Global SSH Credential is configured; review this server in Manage"}
+	}
+	switch hostKeyStatus {
+	case HostKeyStatusTrusted:
+		return MaintenanceReadiness{Ready: true, Code: MaintenanceReadinessReady, Message: "SSH authentication and host-key trust are configured"}
+	case HostKeyStatusMissing:
+		return MaintenanceReadiness{Code: MaintenanceReadinessHostKeyNotTrusted, Message: "SSH host key is not trusted; review this server in Manage"}
+	default:
+		return MaintenanceReadiness{Code: MaintenanceReadinessHostKeyStatusUnavailable, Message: "SSH host-key trust state is unavailable; review this server in Manage"}
+	}
+}
+
 type ServerStatus struct {
 	Name                    string          `json:"name"`
 	JobID                   string          `json:"job_id,omitempty"`

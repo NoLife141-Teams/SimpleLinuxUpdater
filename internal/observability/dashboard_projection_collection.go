@@ -41,6 +41,7 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	toFormatted := to.Format(time.RFC3339)
 
 	serversSnapshot, statusByName := c.deps.ServerSnapshot()
+	readinessByName := c.deps.MaintenanceReadiness(serversSnapshot)
 	facts, err := c.deps.HostHealthObservation.Latest()
 	if err != nil {
 		return dashboardProjectionInput{}, err
@@ -95,6 +96,7 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 			status:         status,
 			health:         health,
 			failure:        failure,
+			readiness:      readinessByName[server.Name],
 			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
 			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
 			timeline:       timeline,

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	serverpkg "debian-updater/internal/servers"
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 )
@@ -117,6 +119,18 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 	if opts.Deps.MetricsRateLimiter == nil {
 		opts.Deps.MetricsRateLimiter = NewAuthRateLimiter(metricsRateLimitWindow, metricsRateLimitMaxAttempts)
 		t.Cleanup(opts.Deps.MetricsRateLimiter.Stop)
+	}
+	if opts.Deps.MaintenanceReadiness == nil {
+		opts.Deps.MaintenanceReadiness = func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {
+			result := make(map[string]serverpkg.MaintenanceReadiness, len(serverList))
+			for _, server := range serverList {
+				result[server.Name] = serverpkg.MaintenanceReadiness{
+					Ready: true,
+					Code:  serverpkg.MaintenanceReadinessReady,
+				}
+			}
+			return result
+		}
 	}
 
 	knownHostsPath := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_KNOWN_HOSTS"))

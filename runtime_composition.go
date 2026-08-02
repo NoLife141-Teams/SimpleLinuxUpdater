@@ -214,6 +214,12 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.ServerInventoryService == nil {
 		deps.ServerInventoryService = newServerInventoryServiceWithHealthObservation(deps.ServerState, deps.DB, deps.DBPath, deps.HostHealthObservation)
 	}
+	if deps.MaintenanceReadiness == nil {
+		readinessDeps := deps
+		deps.MaintenanceReadiness = func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {
+			return maintenanceReadinessForServers(readinessDeps, serverList)
+		}
+	}
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		notifyLog := deps.NotifyDashboardLogEvent
@@ -357,6 +363,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 				defer deps.ServerState.Unlock()
 				return serverpkg.CloneServers(deps.ServerState.Servers()), serverpkg.CloneStatusMap(deps.ServerState.StatusMap())
 			},
+			MaintenanceReadiness:  deps.MaintenanceReadiness,
 			HostHealthObservation: factsRepo,
 			ProjectPolicySchedule: policyScheduleService.ProjectSchedule,
 		})

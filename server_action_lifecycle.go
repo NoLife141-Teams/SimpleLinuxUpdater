@@ -14,12 +14,13 @@ import (
 )
 
 type serverActionLifecycle struct {
-	serverState       *serverpkg.State
-	updateService     *UpdateService
-	currentJobManager func() *JobManager
-	startJobRunner    func(func() *JobManager, string, func(), ...func())
-	loadRetryPolicy   func() RetryPolicy
-	audit             func(action, targetType, targetName, status, message string, meta map[string]any)
+	serverState          *serverpkg.State
+	updateService        *UpdateService
+	currentJobManager    func() *JobManager
+	startJobRunner       func(func() *JobManager, string, func(), ...func())
+	loadRetryPolicy      func() RetryPolicy
+	audit                func(action, targetType, targetName, status, message string, meta map[string]any)
+	maintenanceReadiness func(Server) serverpkg.MaintenanceReadiness
 }
 
 type serverActionLifecycleResult struct {
@@ -71,6 +72,9 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 		startJobRunner:    startJobRunnerWithManager,
 		loadRetryPolicy:   loadRetryPolicyFromEnv,
 		audit:             audit,
+		maintenanceReadiness: func(server Server) serverpkg.MaintenanceReadiness {
+			return deps.MaintenanceReadiness([]Server{server})[server.Name]
+		},
 	}
 }
 
@@ -227,6 +231,10 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		return jsonResult(http.StatusBadRequest, "missing sudo password")
 	}
 	preStartStatus := l.serverState.CurrentStatusSnapshot(name)
+	if preStartStatus == nil {
+		l.recordAudit(spec.auditAction, name, "failure", "Server not found", retryMeta)
+		return jsonResult(http.StatusNotFound, "Server not found")
+	}
 	if preStartStatus != nil && spec.packageMutation && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation) {
 		retryMeta["current_status"] = preStartStatus.Status
 		l.recordAudit(spec.auditAction, name, "ignored", "APT reconciliation is required before another package mutation", retryMeta)
@@ -240,6 +248,24 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		retryMeta["current_status"] = preStartStatus.Status
 		l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 		return jsonResult(http.StatusConflict, message)
+	}
+	if preStartStatus != nil && statusInProgress(preStartStatus.Status) {
+		retryMeta["current_status"] = preStartStatus.Status
+		l.recordAudit(spec.auditAction, name, "failure", "Action already in progress", retryMeta)
+		return jsonResult(http.StatusConflict, "Update already in progress")
+	}
+	serverForReadiness, found := serverByName(l.serverState, name)
+	if !found {
+		l.recordAudit(spec.auditAction, name, "failure", "Server not found", retryMeta)
+		return jsonResult(http.StatusNotFound, "Server not found")
+	}
+	if l.maintenanceReadiness != nil {
+		readiness := l.maintenanceReadiness(serverForReadiness)
+		if !readiness.Ready {
+			retryMeta["reason_code"] = readiness.Code
+			l.recordAudit(spec.auditAction, name, "ignored", readiness.Message, retryMeta)
+			return jsonResult(http.StatusConflict, readiness.Message)
+		}
 	}
 	var server Server
 	var err error

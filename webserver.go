@@ -1143,6 +1143,28 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	if state == nil {
 		state = globalServerState()
 	}
+	if state.CurrentStatusSnapshot(name) == nil {
+		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		return
+	}
+	if active, status := state.ActionStatusInProgress(name); active {
+		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
+		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
+		return
+	}
+	serverForReadiness, found := serverByName(state, name)
+	if !found {
+		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+		return
+	}
+	readiness := deps.MaintenanceReadiness([]Server{serverForReadiness})[serverForReadiness.Name]
+	if !readiness.Ready {
+		audit(c, serverFactsRefreshAction, "server", name, "ignored", readiness.Message, map[string]any{"reason_code": readiness.Code})
+		c.JSON(http.StatusConflict, gin.H{"error": readiness.Message})
+		return
+	}
 	server, preRefreshStatus, err := state.BeginTransientAction(name, "facts_refresh")
 	if errors.Is(err, sql.ErrNoRows) {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)

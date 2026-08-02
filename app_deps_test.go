@@ -1150,9 +1150,16 @@ func TestActionRoutesUseInjectedUpdateServiceJobManager(t *testing.T) {
 		},
 	})
 	router, err := setupRouterWithDeps(AppDeps{
-		DB:            func() *sql.DB { return appDB },
-		JobManager:    globalJM,
-		ServerState:   routeState,
+		DB:          func() *sql.DB { return appDB },
+		JobManager:  globalJM,
+		ServerState: routeState,
+		MaintenanceReadiness: func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {
+			result := make(map[string]serverpkg.MaintenanceReadiness, len(serverList))
+			for _, server := range serverList {
+				result[server.Name] = serverpkg.MaintenanceReadiness{Ready: true, Code: serverpkg.MaintenanceReadinessReady}
+			}
+			return result
+		},
 		UpdateService: NewUpdateService(updateDeps),
 	})
 	if err != nil {

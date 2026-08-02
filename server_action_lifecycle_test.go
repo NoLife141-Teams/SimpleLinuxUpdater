@@ -137,6 +137,68 @@ func TestServerActionLifecycleStartUpdateSuccessDispatchesRunner(t *testing.T) {
 	}
 }
 
+func TestServerActionLifecycleRejectsUnreadyConnectionsBeforeMutationOrJobCreation(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		start  func(*serverActionLifecycle, string) serverActionLifecycleResult
+	}{
+		{name: "update", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartUpdate(name, "alice", "192.0.2.10")
+		}},
+		{name: "autoremove", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartAutoremove(name, "alice", "192.0.2.10")
+		}},
+		{name: "apt repair", status: "needs_reconciliation", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartAptRepair(name, "alice", "192.0.2.10", true)
+		}},
+		{name: "reboot", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartReboot(name, "alice", "192.0.2.10", true)
+		}},
+		{name: "sudoers enable", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartSudoersEnable(name, "alice", "192.0.2.10", "sudo-secret")
+		}},
+		{name: "sudoers disable", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
+			return l.StartSudoersDisable(name, "alice", "192.0.2.10", "sudo-secret")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := Server{Name: "srv-unready", Host: "example.org", Port: 22, User: "root", Pass: "server-secret"}
+			h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: tt.status})
+			lifecycle := h.lifecycle()
+			lifecycle.maintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
+				return serverpkg.MaintenanceReadiness{
+					Code:    serverpkg.MaintenanceReadinessHostKeyNotTrusted,
+					Message: "SSH host key is not trusted; review this server in Manage",
+				}
+			}
+
+			result := tt.start(lifecycle, server.Name)
+			if result.statusCode != http.StatusConflict {
+				t.Fatalf("start result = %+v, want 409", result)
+			}
+			if got := h.state.CurrentStatusSnapshot(server.Name); got == nil || got.Status != tt.status {
+				t.Fatalf("runtime status = %+v, want unchanged %q", got, tt.status)
+			}
+			var jobCount int
+			if err := h.db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&jobCount); err != nil {
+				t.Fatalf("count jobs: %v", err)
+			}
+			if jobCount != 0 || h.runnerRun != nil {
+				t.Fatalf("job count = %d, runner set = %t; want no admitted work", jobCount, h.runnerRun != nil)
+			}
+			if len(h.auditEvents) != 1 || h.auditEvents[0].status != "ignored" || h.auditEvents[0].meta["reason_code"] != serverpkg.MaintenanceReadinessHostKeyNotTrusted {
+				t.Fatalf("audit events = %+v, want safe ignored reason", h.auditEvents)
+			}
+			serialized := h.auditEvents[0].message
+			if strings.Contains(serialized, server.Pass) || strings.Contains(serialized, "sudo-secret") {
+				t.Fatalf("audit message leaked a credential: %q", serialized)
+			}
+		})
+	}
+}
+
 func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationState(t *testing.T) {
 	server := Server{Name: "srv-repair", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 

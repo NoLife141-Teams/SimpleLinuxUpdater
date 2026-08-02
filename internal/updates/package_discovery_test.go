@@ -213,6 +213,8 @@ func TestDiscoverPackageUpdatesEnrichesKeptBackSecurityPlanWhenNeeded(t *testing
 		"The following packages will be upgraded:",
 		"  apache2-utils linux-base linux-image-amd64 rsync",
 		"4 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.",
+		"Need to get 250 MB of archives.",
+		"After this operation, 400 MB of additional disk space will be used.",
 	}, "\n")
 	keptBackSecurityCmd := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64:amd64"})
 	keptBackSecurityStdout := strings.Join([]string{
@@ -222,6 +224,8 @@ func TestDiscoverPackageUpdatesEnrichesKeptBackSecurityPlanWhenNeeded(t *testing
 		"The following packages will be upgraded:",
 		"  linux-image-amd64",
 		"1 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.",
+		"Need to get 100 MB of archives.",
+		"After this operation, 600 MB of additional disk space will be used.",
 	}, "\n")
 	runner := &packageDiscoveryCommandRunner{
 		responses: map[string]packageDiscoveryCommandResponse{
@@ -241,6 +245,9 @@ func TestDiscoverPackageUpdatesEnrichesKeptBackSecurityPlanWhenNeeded(t *testing
 	}
 	if !reflect.DeepEqual(result.UpgradePlan.KeptBackSecurityNewPackages, []string{"linux-image-6.1.0-49-amd64"}) {
 		t.Fatalf("kept-back new packages = %#v, want kernel image", result.UpgradePlan.KeptBackSecurityNewPackages)
+	}
+	if result.UpgradePlan.DiskSpaceSource != PlanDiskSourceExact || result.UpgradePlan.DiskSpaceArchiveBytes != 250_000_000 || result.UpgradePlan.DiskSpaceInstalledGrowthBytes != 600_000_000 {
+		t.Fatalf("exact disk plan = %+v, want conservative facts from both simulations", result.UpgradePlan)
 	}
 	wantCommands := []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptListMetadataCmd, keptBackSecurityCmd}
 	if !reflect.DeepEqual(runner.commands, wantCommands) {

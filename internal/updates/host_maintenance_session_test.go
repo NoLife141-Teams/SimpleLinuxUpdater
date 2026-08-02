@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -354,18 +353,99 @@ func TestPlanDiskSpaceCheckUsesUpgradePlanReserve(t *testing.T) {
 	estimate := EstimatePlanDiskSpace(plan)
 
 	t.Run("passes with reserve", func(t *testing.T) {
-		result := planDiskSpaceCheckResult(strconv.FormatInt(estimate.RequiredKB+1, 10), "", nil, plan)
+		stdout := planDiskProbeFixture("100", estimate.RequiredKB+1, "100", estimate.RequiredKB+1, "100", estimate.RequiredKB+1)
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
 		if !result.Passed || !strings.Contains(result.Details, "10 package(s), including 1 new") {
 			t.Fatalf("result = %+v, want passing plan-aware check", result)
 		}
 	})
 
 	t.Run("fails below reserve", func(t *testing.T) {
-		result := planDiskSpaceCheckResult(strconv.FormatInt(estimate.RequiredKB-1, 10), "", nil, plan)
+		stdout := planDiskProbeFixture("100", estimate.RequiredKB-1, "100", estimate.RequiredKB-1, "100", estimate.RequiredKB-1)
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
 		if result.Passed || result.Name != "disk_space_plan" || !strings.Contains(result.Details, "Insufficient disk space for the planned upgrade") {
 			t.Fatalf("result = %+v, want failing plan-aware check", result)
 		}
 	})
+}
+
+func TestPlanDiskSpaceCheckUsesExactComponentsOnSharedFilesystem(t *testing.T) {
+	plan := BuildUpgradePlan(nil, "Need to get 200 MB of archives.\nAfter this operation, 300 MB of additional disk space will be used.\n", true)
+	estimate := EstimatePlanDiskSpace(plan)
+	for _, tt := range []struct {
+		name   string
+		freeKB int64
+		pass   bool
+	}{
+		{name: "just below", freeKB: estimate.RequiredKB - 1, pass: false},
+		{name: "at requirement", freeKB: estimate.RequiredKB, pass: true},
+		{name: "above requirement", freeKB: estimate.RequiredKB + 1, pass: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout := planDiskProbeFixture("100", tt.freeKB, "100", tt.freeKB, "100", tt.freeKB)
+			result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+			if result.Passed != tt.pass {
+				t.Fatalf("result = %+v, want pass=%t exact shared-filesystem check", result, tt.pass)
+			}
+			if tt.pass && !strings.Contains(result.Details, "Exact APT plan") || !tt.pass && !strings.Contains(result.Details, "(exact)") {
+				t.Fatalf("result = %+v, want explicit exact source", result)
+			}
+			if tt.pass && (!strings.Contains(result.Details, "1 filesystem(s)") || !strings.Contains(result.Details, "minimum free")) {
+				t.Fatalf("result = %+v, want deduplicated filesystem count", result)
+			}
+		})
+	}
+}
+
+func TestPlanDiskSpaceCheckAllocatesExactComponentsAcrossSplitFilesystems(t *testing.T) {
+	plan := BuildUpgradePlan(nil, "Need to get 200 MB of archives.\nAfter this operation, 300 MB of additional disk space will be used.\n", true)
+	estimate := EstimatePlanDiskSpace(plan)
+	baseKB := (estimate.OperationalReserveBytes + estimate.SafetyMarginBytes) / 1024
+	archiveKB := (estimate.ArchiveBytes + 1023) / 1024
+	growthKB := (estimate.InstalledGrowthBytes + 1023) / 1024
+
+	t.Run("passes when each filesystem has its component", func(t *testing.T) {
+		stdout := planDiskProbeFixture("cache", baseKB+archiveKB, "var", baseKB+growthKB, "root", baseKB+growthKB)
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+		if !result.Passed || !strings.Contains(result.Details, "3 filesystem(s)") {
+			t.Fatalf("result = %+v, want passing split-filesystem check", result)
+		}
+	})
+
+	t.Run("archive shortage blocks cache filesystem", func(t *testing.T) {
+		stdout := planDiskProbeFixture("cache", baseKB+archiveKB-1, "var", baseKB+growthKB, "root", baseKB+growthKB)
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+		if result.Passed || !strings.Contains(result.Details, "/var/cache/apt/archives") {
+			t.Fatalf("result = %+v, want cache filesystem failure", result)
+		}
+	})
+
+	t.Run("installed growth shortage blocks var filesystem", func(t *testing.T) {
+		stdout := planDiskProbeFixture("cache", baseKB+archiveKB, "var", baseKB+growthKB-1, "root", baseKB+growthKB)
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+		if result.Passed || !strings.Contains(result.Details, "/var") {
+			t.Fatalf("result = %+v, want var filesystem failure", result)
+		}
+	})
+}
+
+func TestPlanDiskSpaceCheckFailsClosedOnIncompleteFilesystemEvidence(t *testing.T) {
+	plan := servers.UpgradePlan{FullUpgradePackageCount: 1}
+	for _, stdout := range []string{
+		"/var/cache/apt/archives 100 2097152\n/var 100 2097152\n",
+		"/var/cache/apt/archives 100 nope\n/var 100 2097152\n/ 100 2097152\n",
+		"/tmp 100 2097152\n/var 100 2097152\n/ 100 2097152\n",
+		"/var/cache/apt/archives 100 2097152\n/var 100 2097152\n/var 101 2097152\n/ 100 2097152\n",
+	} {
+		result := planDiskSpaceCheckResult(stdout, "", nil, plan)
+		if result.Passed || result.Name != "disk_space_plan" {
+			t.Fatalf("result = %+v, want closed failure", result)
+		}
+	}
+}
+
+func planDiskProbeFixture(cacheDevice string, cacheFreeKB int64, varDevice string, varFreeKB int64, rootDevice string, rootFreeKB int64) string {
+	return fmt.Sprintf("/var/cache/apt/archives\t%s\t%d\n/var\t%s\t%d\n/\t%s\t%d\n", cacheDevice, cacheFreeKB, varDevice, varFreeKB, rootDevice, rootFreeKB)
 }
 
 func TestProductionHostMaintenanceSessionHonorsCancellationAfterInspectionStarts(t *testing.T) {

@@ -73,7 +73,7 @@ Evidence to capture:
 4. If updates are not safe after scan, cancel the pending update and record the reason.
 5. Confirm duplicate action attempts are blocked while the update is active.
 6. Confirm the baseline disk, lock, and APT/DPKG health pre-checks are recorded.
-7. Confirm the simulated plan records standard/full-upgrade counts and the plan-aware disk requirement before approval.
+7. Confirm the simulated plan records standard/full-upgrade counts and the plan-aware disk requirement before approval. Capture the raw `Need to get` and `After this operation` lines, calculation source and components, filesystem availability, and final pre-check decision.
 8. When an upgrade runs, confirm the log records the explicit non-interactive APT strategy and does not emit debconf frontend fallback warnings.
 9. Confirm Status shows the appropriate Recommended action before, during, and after maintenance.
 10. If reboot is required and explicitly approved, run **Reboot and verify** only on a real disposable `systemd` target and confirm SSH recovery, uptime reset, and the cleared reboot-required marker. Otherwise record the exact skip reason.

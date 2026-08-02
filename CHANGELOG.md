@@ -6,6 +6,11 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+
+- Use APT simulation archive and installed-size facts for the plan-aware disk
+  gate, with split-filesystem checks and the existing package formula as a safe fallback.
+
 ## [v0.4.4] - 2026-08-02
 
 ### Added

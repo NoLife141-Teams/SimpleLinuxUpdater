@@ -16,7 +16,7 @@ import (
 
 const (
 	MessageMaxLen = 512
-	MetaMaxLen    = 2048
+	MetaMaxLen    = 4096
 )
 
 type DBProvider func() *sql.DB

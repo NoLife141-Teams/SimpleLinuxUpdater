@@ -3,6 +3,7 @@ package updates
 import (
 	"context"
 	"errors"
+	"math"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -350,12 +351,28 @@ func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
 
 func TestBuildSelectedInstallSimulationCmd(t *testing.T) {
 	got := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64", "libfoo'bar"})
-	want := ReadOnlyAptCommand(`apt-get -s install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
+	want := ReadOnlyAptCommand(`apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
 	if got != want {
 		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, want %q", got, want)
 	}
-	if strings.Contains(got, "sudo") || strings.Contains(got, "-y") {
+	if strings.Contains(got, "sudo") || strings.Contains(got, " -y ") {
 		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, should be read-only simulation", got)
+	}
+	for _, required := range []string{"Debug::NoLocking=1", "--print-uris", "--download-only"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, want %s", got, required)
+		}
+	}
+}
+
+func TestFullUpgradePlanningCommandExposesSizesWithoutFetchingArchives(t *testing.T) {
+	for _, required := range []string{"LC_ALL=C", "Debug::NoLocking=1", "--print-uris", "--yes", "--download-only", "full-upgrade"} {
+		if !strings.Contains(AptFullUpgradeSimCmd, required) {
+			t.Fatalf("AptFullUpgradeSimCmd = %q, want %s", AptFullUpgradeSimCmd, required)
+		}
+	}
+	if strings.Contains(AptFullUpgradeSimCmd, "sudo") || strings.Contains(AptFullUpgradeSimCmd, " -y ") {
+		t.Fatalf("AptFullUpgradeSimCmd = %q, should remain read-only", AptFullUpgradeSimCmd)
 	}
 }
 
@@ -384,6 +401,92 @@ func TestBuildUpgradePlanRecordsFullSimulationAvailability(t *testing.T) {
 	}
 }
 
+func TestBuildUpgradePlanUsesExactAptDiskFacts(t *testing.T) {
+	stdout := strings.Join([]string{
+		"The following packages will be upgraded:",
+		"  openssl curl",
+		"2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+		"Need to get 100 MB of archives.",
+		"After this operation, 200 MB of additional disk space will be used.",
+	}, "\n")
+	plan := BuildUpgradePlan([]servers.PendingUpdate{{Package: "openssl"}, {Package: "curl"}}, stdout, true)
+
+	if !plan.FullUpgradeDiskFactsAvailable || plan.DiskSpaceSource != PlanDiskSourceExact {
+		t.Fatalf("plan = %+v, want exact APT disk facts", plan)
+	}
+	if plan.DiskSpacePackageCount != 2 || plan.DiskSpaceNewPackageCount != 0 {
+		t.Fatalf("exact plan compatibility counts = %+v, want packages=2 new=0", plan)
+	}
+	if plan.DiskSpaceArchiveBytes != 100_000_000 || plan.DiskSpaceInstalledDeltaBytes != 200_000_000 || plan.DiskSpaceInstalledGrowthBytes != 200_000_000 {
+		t.Fatalf("exact disk components = %+v", plan)
+	}
+	wantMargin := PlanDiskExactMarginMinBytes
+	wantRequiredBytes := int64(300_000_000) + wantMargin + PlanDiskBaseReserveKB*1024
+	wantRequiredKB := wantRequiredBytes / 1024
+	if wantRequiredBytes%1024 != 0 {
+		wantRequiredKB++
+	}
+	if plan.DiskSpaceSafetyMarginBytes != wantMargin || plan.DiskSpaceRequiredKB != wantRequiredKB {
+		t.Fatalf("exact requirement = %+v, want margin=%d requiredKB=%d", plan, wantMargin, wantRequiredKB)
+	}
+}
+
+func TestExactPlanDiskSpaceEstimateTreatsFreedSpaceAsZeroGrowth(t *testing.T) {
+	estimate, ok := exactPlanDiskSpaceEstimate(aptDiskFacts{ArchiveBytes: 25_000_000, InstalledDeltaBytes: -900_000_000})
+	if !ok || estimate.Source != PlanDiskSourceExact {
+		t.Fatalf("exactPlanDiskSpaceEstimate() = %+v, %t", estimate, ok)
+	}
+	if estimate.InstalledDeltaBytes != -900_000_000 || estimate.InstalledGrowthBytes != 0 {
+		t.Fatalf("freed-space estimate = %+v, want negative evidence and zero growth", estimate)
+	}
+}
+
+func TestBuildUpgradePlanFallsBackWhenAptDiskFactsArePartialOrMalformed(t *testing.T) {
+	for _, output := range []string{
+		"The following packages will be upgraded:\n  openssl\nNeed to get 20 MB of archives.\n",
+		"The following packages will be upgraded:\n  openssl\nNeed to get 1,141 MB of archives.\nAfter this operation, 10 MB of additional disk space will be used.\n",
+	} {
+		plan := BuildUpgradePlan([]servers.PendingUpdate{{Package: "openssl"}}, output, true)
+		want := PlanDiskBaseReserveKB + PlanDiskPerPackageKB
+		if plan.FullUpgradeDiskFactsAvailable || plan.DiskSpaceSource != PlanDiskSourceEstimate || plan.DiskSpaceRequiredKB != want {
+			t.Fatalf("fallback plan = %+v, want source=estimate requiredKB=%d", plan, want)
+		}
+	}
+}
+
+func TestEstimatePlanDiskSpaceUsesLargerExactSimulationScope(t *testing.T) {
+	plan := BuildUpgradePlan(nil, "Need to get 10 MB of archives.\nAfter this operation, 5 MB of additional disk space will be used.\n", true)
+	ApplyKeptBackSecuritySimulation(&plan, "Need to get 40 MB of archives.\nAfter this operation, 200 MB of additional disk space will be used.\n")
+
+	if plan.DiskSpaceSource != PlanDiskSourceExact || plan.DiskSpaceArchiveBytes != 40_000_000 || plan.DiskSpaceInstalledGrowthBytes != 200_000_000 {
+		t.Fatalf("selected exact scope = %+v, want larger kept-back simulation", plan)
+	}
+}
+
+func TestEstimatePlanDiskSpaceKeepsConservativeComponentsAcrossExactScopes(t *testing.T) {
+	plan := BuildUpgradePlan(nil, "Need to get 500 MB of archives.\nAfter this operation, 0 B of additional disk space will be used.\n", true)
+	ApplyKeptBackSecuritySimulation(&plan, "Need to get 0 B of archives.\nAfter this operation, 500 MB of additional disk space will be used.\n")
+
+	if plan.DiskSpaceSource != PlanDiskSourceExact || plan.DiskSpaceArchiveBytes != 500_000_000 || plan.DiskSpaceInstalledGrowthBytes != 500_000_000 {
+		t.Fatalf("combined exact components = %+v, want both per-filesystem maxima", plan)
+	}
+}
+
+func TestEstimatePlanDiskSpaceFallsBackWhenKeptBackFactsAreIncomplete(t *testing.T) {
+	plan := BuildUpgradePlan([]servers.PendingUpdate{{Package: "openssl"}}, "Need to get 10 MB of archives.\nAfter this operation, 5 MB of additional disk space will be used.\n", true)
+	ApplyKeptBackSecuritySimulation(&plan, "Need to get 40 MB of archives.\n")
+
+	if plan.DiskSpaceSource != PlanDiskSourceEstimate || plan.DiskSpaceRequiredKB != PlanDiskBaseReserveKB+PlanDiskPerPackageKB {
+		t.Fatalf("plan = %+v, want conservative package estimate", plan)
+	}
+}
+
+func TestExactPlanDiskSpaceEstimateRejectsOverflow(t *testing.T) {
+	if estimate, ok := exactPlanDiskSpaceEstimate(aptDiskFacts{ArchiveBytes: math.MaxInt64, InstalledDeltaBytes: 1}); ok {
+		t.Fatalf("exactPlanDiskSpaceEstimate() = %+v, true; want overflow rejected", estimate)
+	}
+}
+
 func TestEstimatePlanDiskSpaceUsesMostConservativeKnownScope(t *testing.T) {
 	plan := servers.UpgradePlan{
 		StandardPackageCount:        3,
@@ -395,6 +498,9 @@ func TestEstimatePlanDiskSpaceUsesMostConservativeKnownScope(t *testing.T) {
 	estimate := EstimatePlanDiskSpace(plan)
 	if estimate.PackageCount != 5 || estimate.NewPackageCount != 2 {
 		t.Fatalf("EstimatePlanDiskSpace() = %+v, want packages=5 new=2", estimate)
+	}
+	if estimate.Source != PlanDiskSourceEstimate {
+		t.Fatalf("legacy plan source = %q, want %q", estimate.Source, PlanDiskSourceEstimate)
 	}
 	want := PlanDiskBaseReserveKB + 5*PlanDiskPerPackageKB + 2*PlanDiskPerNewPackageKB
 	if estimate.RequiredKB != want {

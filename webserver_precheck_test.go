@@ -98,6 +98,10 @@ func (s *scriptedSSHSession) Run(cmd string) error {
 	} else {
 		var ok bool
 		resp, ok = s.conn.responses[cmd]
+		if !ok && cmd == updatespkg.PlanDiskSpaceProbeCmd {
+			resp = scriptedResponse{stdout: "/var/cache/apt/archives 100 10485760\n/var 100 10485760\n/ 100 10485760\n"}
+			ok = true
+		}
 		if !ok {
 			s.conn.mu.Unlock()
 			return errors.New("unexpected command: " + cmd)

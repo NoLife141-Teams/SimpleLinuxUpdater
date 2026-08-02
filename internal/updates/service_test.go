@@ -178,6 +178,12 @@ func TestRunUpdateJobStopsBeforeApprovalWhenPlanDiskCheckFails(t *testing.T) {
 	inventory := []servers.Server{server}
 	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
 	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	exactPlan := BuildUpgradePlan(
+		[]servers.PendingUpdate{{Package: "linux-image-amd64"}},
+		"The following packages will be upgraded:\n  linux-image-amd64\nNeed to get 108 MB of archives.\nAfter this operation, 1.14 GB of additional disk space will be used.\n",
+		true,
+	)
+	var auditMeta map[string]any
 	service := NewService(ServiceDeps{
 		ServerState: state,
 		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
@@ -194,18 +200,20 @@ func TestRunUpdateJobStopsBeforeApprovalWhenPlanDiskCheckFails(t *testing.T) {
 				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(
 					[]servers.PendingUpdate{{Package: "linux-image-amd64"}},
 					[]string{"linux-image-amd64"},
-					servers.UpgradePlan{FullUpgradePlanAvailable: true, FullUpgradePackageCount: 1, FullUpgradeNewPackages: []string{"linux-image"}},
+					exactPlan,
 				), Attempts: 1}, nil
 			},
 			RunPlanDiskPrecheckFunc: func(_ context.Context, plan servers.UpgradePlan) PrecheckResult {
-				if plan.FullUpgradePackageCount != 1 {
+				if plan.FullUpgradePackageCount != 1 || plan.DiskSpaceSource != PlanDiskSourceExact {
 					t.Fatalf("plan = %+v", plan)
 				}
 				return PrecheckResult{Name: "disk_space_plan", Details: "Insufficient disk space for the planned upgrade."}
 			},
 		}),
 		CurrentJobManager: func() *jobs.Manager { return nil },
-		AuditWithActor:    func(string, string, string, string, string, string, string, map[string]any) {},
+		AuditWithActor: func(_, _, _, _, _, _, _ string, meta map[string]any) {
+			auditMeta = meta
+		},
 		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {
 			t.Fatal("discovery metadata must not publish after plan disk failure")
 		},
@@ -218,6 +226,10 @@ func TestRunUpdateJobStopsBeforeApprovalWhenPlanDiskCheckFails(t *testing.T) {
 	}
 	if status.UpgradePlan.FullUpgradePackageCount != 1 || len(status.PendingUpdates) != 0 {
 		t.Fatalf("failure evidence = %+v, want retained plan and no pending approval", status)
+	}
+	auditedPlan, ok := auditMeta["upgrade_plan"].(servers.UpgradePlan)
+	if !ok || auditedPlan.DiskSpaceSource != PlanDiskSourceExact || auditedPlan.DiskSpaceArchiveBytes != 108_000_000 || auditedPlan.DiskSpaceInstalledGrowthBytes != 1_140_000_000 {
+		t.Fatalf("audit upgrade plan = %#v, want exact disk calculation metadata", auditMeta["upgrade_plan"])
 	}
 }
 

@@ -20,6 +20,8 @@ func TestParseAptByteSize(t *testing.T) {
 		{name: "binary kibibytes", raw: "1.5 KiB", want: 1536},
 		{name: "binary mebibytes", raw: "2 MiB", want: 2 * 1024 * 1024},
 		{name: "binary gibibytes", raw: "3 GiB", want: 3 * 1024 * 1024 * 1024},
+		{name: "grouped kilobytes", raw: "1,761 kB", want: 1_761_000},
+		{name: "grouped installed size", raw: "8,250 kB", want: 8_250_000},
 		{name: "fraction rounds up", raw: "0.1 B", want: 1},
 	}
 	for _, tt := range tests {
@@ -34,7 +36,9 @@ func TestParseAptByteSize(t *testing.T) {
 
 func TestParseAptByteSizeRejectsUnsafeInput(t *testing.T) {
 	for _, raw := range []string{
-		"1,141 MB",
+		"12,34 kB",
+		"1,,141 kB",
+		"1234,567 kB",
 		"-1 MB",
 		"1 TB",
 		"MB",
@@ -69,6 +73,13 @@ func TestParseAptDiskFacts(t *testing.T) {
 			wantArchive: 0,
 			wantDelta:   -64_500_000,
 		},
+		{
+			name: "debian grouped values",
+			output: "Need to get 1,761 kB of archives.\n" +
+				"After this operation, 8,250 kB of additional disk space will be used.\n",
+			wantArchive: 1_761_000,
+			wantDelta:   8_250_000,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -84,7 +95,7 @@ func TestParseAptDiskFactsRequiresOneCompleteConsistentPair(t *testing.T) {
 	tests := map[string]string{
 		"archive only":      "Need to get 12 MB of archives.\n",
 		"delta only":        "After this operation, 8 MB of additional disk space will be used.\n",
-		"malformed archive": "Need to get 1,141 MB of archives.\nAfter this operation, 8 MB of additional disk space will be used.\n",
+		"malformed archive": "Need to get 1,14 MB of archives.\nAfter this operation, 8 MB of additional disk space will be used.\n",
 		"duplicate archive": "Need to get 12 MB of archives.\nNeed to get 13 MB of archives.\nAfter this operation, 8 MB of additional disk space will be used.\n",
 		"duplicate delta":   "Need to get 12 MB of archives.\nAfter this operation, 8 MB of additional disk space will be used.\nAfter this operation, 2 MB disk space will be freed.\n",
 	}

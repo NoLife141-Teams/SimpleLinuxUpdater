@@ -448,7 +448,7 @@ func TestExactPlanDiskSpaceEstimateRejectsFreedSpaceAsPeakEvidence(t *testing.T)
 func TestBuildUpgradePlanFallsBackWhenAptDiskFactsArePartialOrMalformed(t *testing.T) {
 	for _, output := range []string{
 		"The following packages will be upgraded:\n  openssl\nNeed to get 20 MB of archives.\n",
-		"The following packages will be upgraded:\n  openssl\nNeed to get 1,141 MB of archives.\nAfter this operation, 10 MB of additional disk space will be used.\n",
+		"The following packages will be upgraded:\n  openssl\nNeed to get 1,14 MB of archives.\nAfter this operation, 10 MB of additional disk space will be used.\n",
 	} {
 		plan := BuildUpgradePlan([]servers.PendingUpdate{{Package: "openssl"}}, output, true)
 		want := PlanDiskBaseReserveKB + PlanDiskPerPackageKB

@@ -11,7 +11,7 @@ type aptDiskFacts struct {
 	InstalledDeltaBytes int64
 }
 
-var aptByteSizePattern = regexp.MustCompile(`^([0-9]+)(?:\.([0-9]+))?[[:space:]]+(B|kB|KB|MB|GB|KiB|MiB|GiB)$`)
+var aptByteSizePattern = regexp.MustCompile(`^([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.([0-9]+))?[[:space:]]+(B|kB|KB|MB|GB|KiB|MiB|GiB)$`)
 
 func parseAptByteSize(raw string) (int64, bool) {
 	matches := aptByteSizePattern.FindStringSubmatch(strings.TrimSpace(raw))
@@ -23,7 +23,7 @@ func parseAptByteSize(raw string) (int64, bool) {
 		return 0, false
 	}
 	whole := new(big.Int)
-	if _, ok := whole.SetString(matches[1], 10); !ok {
+	if _, ok := whole.SetString(strings.ReplaceAll(matches[1], ",", ""), 10); !ok {
 		return 0, false
 	}
 	value := new(big.Int).Mul(whole, big.NewInt(multiplier))

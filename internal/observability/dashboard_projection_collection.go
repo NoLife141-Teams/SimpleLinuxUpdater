@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"time"
@@ -25,6 +26,11 @@ type dashboardCollectedUpdateHistory struct {
 	projection    dashboardUpdateHistoryProjection
 	healthOverlay dashboardHealthOverlayFacts
 }
+
+const (
+	dashboardCommandHistoryPerServer = 8
+	dashboardCommandHistoryBatchSize = 500
+)
 
 func newDashboardProjectionCollector(deps ServiceDeps) dashboardProjectionCollector {
 	return dashboardProjectionCollector{deps: deps.withDefaults()}
@@ -63,7 +69,11 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
-	commandHistory, err := c.collectCommandHistory(fromFormatted, toFormatted, loc, timezoneName)
+	serverNames := make([]string, 0, len(serversSnapshot))
+	for _, server := range serversSnapshot {
+		serverNames = append(serverNames, server.Name)
+	}
+	commandHistory, err := c.collectCommandHistory(serverNames, fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
@@ -299,36 +309,74 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 	return updateByServer, nil
 }
 
-func (c dashboardProjectionCollector) collectCommandHistory(from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
+func (c dashboardProjectionCollector) collectCommandHistory(serverNames []string, from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
 	commandHistory := map[string][]DashboardCommandHistoryItem{}
-	rows, err := c.deps.DB().Query(
-		`SELECT created_at, target_name, action, status, message, actor
-		   FROM audit_events
-		  WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 400`,
-		from,
-		to,
-	)
-	if err != nil {
-		return nil, err
+	serverNames = uniqueCommandHistoryServerNames(serverNames)
+	for start := 0; start < len(serverNames); start += dashboardCommandHistoryBatchSize {
+		end := min(start+dashboardCommandHistoryBatchSize, len(serverNames))
+		batch := serverNames[start:end]
+		args := make([]any, 0, len(batch)+3)
+		args = append(args, from, to)
+		for _, serverName := range batch {
+			args = append(args, serverName)
+		}
+		args = append(args, dashboardCommandHistoryPerServer)
+		rows, err := c.deps.DB().Query(commandHistoryQuery(len(batch)), args...)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.appendCommandHistoryRows(commandHistory, rows, loc, timezoneName); err != nil {
+			return nil, err
+		}
 	}
-	defer rows.Close()
+	return commandHistory, nil
+}
 
+func commandHistoryQuery(serverCount int) string {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", serverCount), ",")
+	return `WITH ranked_commands AS (
+		SELECT id, created_at, target_name, action, status, message, actor,
+		       ROW_NUMBER() OVER (PARTITION BY target_name ORDER BY created_at DESC, id DESC) AS command_rank
+		  FROM audit_events
+		 WHERE target_type = 'server' AND created_at >= ? AND created_at <= ?
+		   AND target_name IN (` + placeholders + `)
+	)
+	SELECT created_at, target_name, action, status, message, actor
+	  FROM ranked_commands
+	 WHERE command_rank <= ?
+	 ORDER BY created_at DESC, id DESC`
+}
+
+func (c dashboardProjectionCollector) appendCommandHistoryRows(commandHistory map[string][]DashboardCommandHistoryItem, rows *sql.Rows, loc *time.Location, timezoneName string) error {
+	defer rows.Close()
 	for rows.Next() {
 		var item DashboardCommandHistoryItem
 		var targetName string
 		if err := rows.Scan(&item.CreatedAt, &targetName, &item.Action, &item.Status, &item.Message, &item.Actor); err != nil {
-			return nil, err
-		}
-		if len(commandHistory[targetName]) >= 8 {
-			continue
+			return err
 		}
 		item.CreatedAtDisplay, _ = c.deps.FormatTimestamp(item.CreatedAt, loc, timezoneName)
 		commandHistory[targetName] = append(commandHistory[targetName], item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return commandHistory, nil
+	return nil
+}
+
+func uniqueCommandHistoryServerNames(serverNames []string) []string {
+	unique := make([]string, 0, len(serverNames))
+	seen := make(map[string]struct{}, len(serverNames))
+	for _, serverName := range serverNames {
+		serverName = strings.TrimSpace(serverName)
+		if serverName == "" {
+			continue
+		}
+		if _, exists := seen[serverName]; exists {
+			continue
+		}
+		seen[serverName] = struct{}{}
+		unique = append(unique, serverName)
+	}
+	return unique
 }

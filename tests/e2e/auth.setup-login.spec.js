@@ -240,7 +240,7 @@ test.describe.serial('setup and login flows', () => {
           can_refresh_facts: true,
           can_run_checks: !['updating', 'upgrading'].includes(server.status),
         },
-        command_history: [],
+        command_history: Array.isArray(server.command_history) ? server.command_history : [],
       };
     });
     return {
@@ -3698,6 +3698,42 @@ test.describe.serial('setup and login flows', () => {
       expect(metricState.timelineGap).toBeLessThanOrEqual(24);
       expect(metricState.height).toBeLessThan(300);
     }
+  });
+
+  test('status command history keeps quiet hosts visible and noisy hosts bounded to eight items', async ({ page }) => {
+    const noisyHistory = Array.from({ length: 8 }, (_, index) => ({
+      created_at: `2026-05-28T${String(20 - index).padStart(2, '0')}:00:00Z`,
+      created_at_display: `May 28, 2026 ${String(20 - index).padStart(2, '0')}:00`,
+      action: `server.noisy.${index}`,
+      status: 'success',
+      message: `Noisy command ${index}`,
+      actor: 'operator',
+    }));
+    const servers = [
+      makeServer('noisy-host', 'idle', [], { command_history: noisyHistory }),
+      makeServer('quiet-host', 'idle', [], { command_history: [{
+        created_at: '2026-05-28T01:00:00Z',
+        created_at_display: 'May 28, 2026 01:00',
+        action: 'server.quiet.only',
+        status: 'success',
+        message: 'Quiet command remains visible',
+        actor: 'operator',
+      }] }),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.goto('/');
+
+    await expect(page.locator('#command-history-count')).toHaveText('8');
+    await expect(page.locator('#command-history-panel .activity-row')).toHaveCount(3);
+    await expect(page.locator('#command-history-panel [data-toggle-mini-list="command-history-panel"]')).toHaveText('Show all 8 commands');
+    await page.locator('#command-history-panel [data-toggle-mini-list="command-history-panel"]').click();
+    await expect(page.locator('#command-history-panel .activity-row')).toHaveCount(8);
+
+    await page.locator('#servers-table tbody tr[data-name="quiet-host"]').click();
+    await expect(page.locator('#command-history-count')).toHaveText('1');
+    await expect(page.locator('#command-history-panel')).toContainText('server.quiet.only');
+    await expect(page.locator('#command-history-panel')).not.toContainText('server.noisy.');
   });
 
   test('desktop bulk actions share one width and keep labels fully visible', async ({ page }) => {

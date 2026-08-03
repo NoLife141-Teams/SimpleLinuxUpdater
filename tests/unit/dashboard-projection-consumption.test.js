@@ -216,6 +216,25 @@ test("schedule, activity, and command history retain raw timestamps", () => {
     assert.equal(view.panels.recentActivity[0].createdAt, "2026-07-10T04:00:00Z");
 });
 
+test("command history remains isolated and bounded for quiet and noisy servers", () => {
+    const servers = [{ name: "noisy", status: "idle" }, { name: "quiet", status: "idle" }];
+    const noisyHistory = Array.from({ length: 8 }, (_, index) => ({
+        created_at: `2026-07-10T${String(20 - index).padStart(2, "0")}:00:00Z`,
+        action: `noisy-${index}`
+    }));
+    const dashboardServers = [
+        { name: "noisy", command_history: noisyHistory },
+        { name: "quiet", command_history: [{ created_at: "2026-07-10T01:00:00Z", action: "quiet-only" }] }
+    ];
+
+    const quietView = project({ statusView: statusView({ servers, dashboardServers, primaryServerName: "quiet" }) });
+    assert.deepEqual(quietView.panels.commandHistory.map(item => item.action), ["quiet-only"]);
+
+    const noisyView = project({ statusView: statusView({ servers, dashboardServers, primaryServerName: "noisy" }) });
+    assert.equal(noisyView.panels.commandHistory.length, 8);
+    assert.deepEqual(noisyView.panels.commandHistory.map(item => item.action), noisyHistory.map(item => item.action));
+});
+
 test("dashboard adapter cannot restore removed presentation derivation entry points", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../static/js/index.js"), "utf8");
     assert.doesNotMatch(source, /function\s+compareRiskPriority\s*\(/);

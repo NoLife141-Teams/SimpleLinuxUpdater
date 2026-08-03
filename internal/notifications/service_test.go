@@ -162,9 +162,14 @@ func TestNotificationDeliveryLifecycleSkipsNoOpUpdate(t *testing.T) {
 func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var delivered int32
 	svc, _ := newTestServiceWithQueue(t, func(w http.ResponseWriter, _ *http.Request) {
-		started <- struct{}{}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-release
+		atomic.AddInt32(&delivered, 1)
 		w.WriteHeader(http.StatusAccepted)
 	}, 1)
 
@@ -180,14 +185,18 @@ func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T
 	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
 		t.Fatalf("queued Accept() = %+v, want admitted", got)
 	}
-	if got := svc.Accept(intent); got.State != AdmissionRejected {
-		t.Fatalf("saturated Accept() = %+v, want rejected", got)
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		close(release)
+		t.Fatalf("saturated Accept() = %+v, want durable admission", got)
 	}
 	close(release)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := svc.Close(ctx); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+	if got := atomic.LoadInt32(&delivered); got != 3 {
+		t.Fatalf("delivered=%d, want all three durably admitted notifications", got)
 	}
 	if got := svc.Accept(intent); got.State != AdmissionClosing {
 		t.Fatalf("post-close Accept() = %+v, want closing", got)

@@ -129,6 +129,8 @@ test("notification settings, diagnostics, and test outcomes retain accepted stat
         type: "notificationDiagnosticsReceived",
         requestID: acceptedDiagnostics.requestID,
         data: {
+            pending_count: 4,
+            retrying_count: 2,
             last_attempt: {
                 outcome: "retrying",
                 event_type: "update.complete",
@@ -145,6 +147,7 @@ test("notification settings, diagnostics, and test outcomes retain accepted stat
     });
     assert.equal(store.getView().notificationDiagnostics.lastAttempt.outcome, "retrying");
     assert.equal(store.getView().notificationDiagnostics.lastAttempt.nextRetryAt, "2026-07-10T12:00:03Z");
+    assert.equal(store.getView().notificationDiagnostics.lastAttempt.statusCode, 503);
     assert.equal(JSON.stringify(store.getView()).includes("never-store"), false);
 
     const failedSettingsRefresh = effect(store.dispatch({ type: "snapshotRequested", stream: "notifications" }), "fetchSnapshot");

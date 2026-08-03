@@ -31,8 +31,10 @@ const (
 	EventBackupRestore      = "backup.restore"
 	EventTest               = "notification.test"
 
-	defaultAttempts  = 3
-	defaultQueueSize = 64
+	defaultAttempts                     = 3
+	defaultQueueSize                    = 64
+	defaultAdmissionPersistenceAttempts = 20
+	defaultOutboxPollInterval           = 250 * time.Millisecond
 )
 
 var supportedEvents = []string{
@@ -171,11 +173,14 @@ type DeliveryStatus struct {
 }
 
 type DeliveryDiagnostics struct {
-	LastAttempt  *DeliveryStatus            `json:"last_attempt,omitempty"`
-	LastAttempts map[string]*DeliveryStatus `json:"last_attempts,omitempty"`
+	LastAttempt   *DeliveryStatus            `json:"last_attempt,omitempty"`
+	LastAttempts  map[string]*DeliveryStatus `json:"last_attempts,omitempty"`
+	PendingCount  int                        `json:"pending_count,omitempty"`
+	RetryingCount int                        `json:"retrying_count,omitempty"`
 }
 
 type DeliveryIntent struct {
+	ID         string
 	CreatedAt  string
 	Actor      string
 	Action     string
@@ -237,6 +242,10 @@ type ServiceDeps struct {
 	Logf            func(string, ...any)
 	QueueSize       int
 	DeliveryTimeout time.Duration
+	PollInterval    time.Duration
+	ClaimTTL        time.Duration
+	Retention       time.Duration
+	NewID           func() string
 }
 
 type Service struct {
@@ -244,16 +253,11 @@ type Service struct {
 
 	settingsMu  sync.Mutex
 	lifecycleMu sync.Mutex
-	queue       chan queuedDelivery
+	wake        chan struct{}
 	closing     bool
 	cancel      context.CancelFunc
 	done        chan struct{}
-}
-
-type queuedDelivery struct {
-	settings  Settings
-	intent    DeliveryIntent
-	eventType string
+	initErr     error
 }
 
 func NewService(deps ServiceDeps) *Service {
@@ -280,35 +284,118 @@ func NewService(deps ServiceDeps) *Service {
 	if deps.DeliveryTimeout <= 0 {
 		deps.DeliveryTimeout = 30 * time.Second
 	}
+	if deps.PollInterval <= 0 {
+		deps.PollInterval = defaultOutboxPollInterval
+	}
+	if deps.ClaimTTL <= 0 {
+		deps.ClaimTTL = defaultOutboxClaimTTL
+	}
+	if deps.Retention <= 0 {
+		deps.Retention = defaultOutboxRetention
+	}
+	if deps.NewID == nil {
+		deps.NewID = newOutboxID
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		deps:   deps,
-		queue:  make(chan queuedDelivery, deps.QueueSize),
+		wake:   make(chan struct{}, deps.QueueSize),
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
+	hasOutstanding := false
+	if deps.DB != nil {
+		db := deps.DB()
+		s.initErr = EnsureSchema(db)
+		if s.initErr == nil {
+			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), deps.ClaimTTL)
+		}
+		if s.initErr == nil {
+			_, s.initErr = pruneOutbox(ctx, db, deps.Now(), deps.Retention)
+		}
+		if s.initErr == nil {
+			counts, err := loadOutboxCounts(ctx, db)
+			s.initErr = err
+			hasOutstanding = counts.Pending > 0 || counts.Retrying > 0
+		}
+	}
 	go s.run(ctx)
+	if s.initErr == nil && hasOutstanding {
+		s.signalWorker()
+	}
 	return s
 }
 
 func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
+	var retryTimer *time.Timer
+	var retryC <-chan time.Time
+	claimFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
+			if retryTimer != nil {
+				retryTimer.Stop()
+			}
 			return
-		case delivery, ok := <-s.queue:
-			if !ok {
-				return
+		case <-s.wake:
+			if retryTimer != nil {
+				retryTimer.Stop()
+				retryTimer = nil
+				retryC = nil
 			}
-			if ctx.Err() != nil {
-				return
-			}
-			_, err := s.deliverWithSettings(ctx, delivery.settings, delivery.intent, delivery.eventType)
-			if err != nil && s.deps.Logf != nil {
-				s.deps.Logf("notification delivery failed for action=%q target=%q: %v", delivery.intent.Action, delivery.intent.TargetName, err)
-			}
+		case <-retryC:
+			retryTimer = nil
+			retryC = nil
 		}
+		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
+			s.deps.Logf("notification outbox claim recovery failed: %v", err)
+		}
+		claimFailed := false
+		for ctx.Err() == nil {
+			row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now())
+			if err != nil {
+				s.deps.Logf("notification outbox claim failed: %v", err)
+				claimFailures++
+				claimFailed = true
+				break
+			}
+			claimFailures = 0
+			if row == nil {
+				if s.isClosing() {
+					return
+				}
+				break
+			}
+			s.processOutboxRow(ctx, *row)
+		}
+		if claimFailed && s.isClosing() {
+			return
+		}
+		if claimFailed {
+			if claimFailures < defaultAttempts {
+				delay := s.deps.PollInterval
+				if delay <= 0 {
+					delay = defaultOutboxPollInterval
+				}
+				retryTimer = time.NewTimer(delay)
+				retryC = retryTimer.C
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			continue
+		}
+		nextAt, scheduled, err := nextOutboxWake(ctx, s.database(), s.deps.ClaimTTL)
+		if err != nil || !scheduled {
+			continue
+		}
+		delay := nextAt.Sub(s.deps.Now().UTC())
+		if delay < 0 {
+			delay = 0
+		}
+		retryTimer = time.NewTimer(delay)
+		retryC = retryTimer.C
 	}
 }
 
@@ -327,25 +414,60 @@ func (s *Service) Accept(intent DeliveryIntent) Admission {
 	if eventType == "" {
 		return Admission{State: AdmissionSkipped}
 	}
-	delivery := queuedDelivery{settings: settings, intent: intent, eventType: eventType}
+	destinations := enabledDestinations(settings)
+	if strings.TrimSpace(intent.ID) == "" {
+		intent.ID = s.deps.NewID()
+	}
+	rows, err := buildOutboxRows(intent, eventType, destinations, s.deps.Now())
+	if err != nil {
+		return Admission{State: AdmissionRejected, Error: err.Error()}
+	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.closing {
 		return Admission{State: AdmissionClosing}
 	}
-	select {
-	case s.queue <- delivery:
-		return Admission{State: AdmissionAdmitted}
-	default:
-		return Admission{State: AdmissionRejected, Error: "notification delivery queue is full"}
+	if s.initErr != nil {
+		return Admission{State: AdmissionRejected, Error: "notification delivery persistence is unavailable"}
 	}
+	now := s.deps.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.persistOutboxRows(rows, now); err != nil {
+		return Admission{State: AdmissionRejected, Error: "notification delivery could not be persisted"}
+	}
+	s.signalWorker()
+	return Admission{State: AdmissionAdmitted}
+}
+
+func (s *Service) persistOutboxRows(rows []outboxRow, now string) error {
+	var err error
+	for attempt := 1; attempt <= defaultAdmissionPersistenceAttempts; attempt++ {
+		err = insertOutboxRows(context.Background(), s.database(), rows, now)
+		if err == nil || !isSQLiteContention(err) || attempt == defaultAdmissionPersistenceAttempts {
+			return err
+		}
+		delay := s.deps.Backoff(attempt)
+		if delay <= 0 || delay > 100*time.Millisecond {
+			delay = 5 * time.Millisecond
+		}
+		time.Sleep(delay)
+	}
+	return err
+}
+
+func isSQLiteContention(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") ||
+		strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked")
 }
 
 func (s *Service) Close(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	if !s.closing {
 		s.closing = true
-		close(s.queue)
+		s.signalWorker()
 	}
 	done := s.done
 	s.lifecycleMu.Unlock()
@@ -356,6 +478,195 @@ func (s *Service) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		s.cancel()
 		return ctx.Err()
+	}
+}
+
+func (s *Service) database() *sql.DB {
+	if s == nil || s.deps.DB == nil {
+		return nil
+	}
+	return s.deps.DB()
+}
+
+func (s *Service) signalWorker() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Service) isClosing() bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.closing
+}
+
+func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
+	settings, err := s.currentSettings()
+	if err != nil {
+		s.releaseClaim(row, err)
+		return
+	}
+	if !destinationEnabled(settings, row.Destination) || !destinationConfigured(settings, row.Destination) {
+		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
+		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		err := s.retrySQLiteContention(func() error {
+			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
+				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
+			}, now)
+		})
+		if err != nil {
+			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
+		}
+		return
+	}
+
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
+	status, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
+	cancelAttempt()
+	outcome := outboxOutcome{
+		Attempts:    status.Attempts,
+		AttemptedAt: status.AttemptedAt,
+		CompletedAt: status.CompletedAt,
+		StatusCode:  status.StatusCode,
+		Error:       status.Error,
+		DurationMS:  status.DurationMS,
+	}
+	if deliveryErr == nil {
+		outcome.State = outboxStateSucceeded
+	} else if status.Attempts < defaultAttempts {
+		delay := s.deps.Backoff(status.Attempts)
+		if delay < 0 {
+			delay = 0
+		}
+		outcome.State = outboxStateRetrying
+		outcome.NextAttemptAt = s.deps.Now().UTC().Add(delay).Format(time.RFC3339Nano)
+		status.Outcome = DeliveryOutcomeRetrying
+		status.NextRetryAt = outcome.NextAttemptAt
+	} else {
+		outcome.State = outboxStateFailed
+		status.Outcome = DeliveryOutcomeFailed
+		status.NextRetryAt = ""
+	}
+	persistCtx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
+	err = s.retrySQLiteContention(func() error {
+		return completeOutboxRow(persistCtx, s.database(), row.ID, outcome, s.deps.Now().UTC().Format(time.RFC3339Nano))
+	})
+	cancelPersist()
+	if err != nil {
+		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
+		return
+	}
+	if err := s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) }); err != nil {
+		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
+	}
+	if outcome.State == outboxStateRetrying {
+		s.signalWorker()
+	}
+}
+
+func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, error) {
+	status := DeliveryStatus{
+		Destination: row.Destination,
+		EventType:   row.EventType,
+		Action:      row.Intent.Action,
+		TargetName:  row.Intent.TargetName,
+		Attempts:    row.Attempts + 1,
+	}
+	attemptedAt := s.deps.Now().UTC()
+	status.AttemptedAt = attemptedAt.Format(time.RFC3339)
+	payload, err := buildPayload(row.EventType, row.Intent)
+	if err != nil {
+		return failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+	}
+	endpoint, body, err := destinationRequest(settings, row.Destination, payload)
+	if err != nil {
+		return failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+	}
+	if previous := safeDeliveryStatus(settings.LastDeliveries[row.Destination]); previous != nil {
+		status.ConsecutiveFailures = previous.ConsecutiveFailures
+	} else if row.Destination == DestinationWebhook {
+		if previous := safeDeliveryStatus(settings.LastDelivery); previous != nil {
+			status.ConsecutiveFailures = previous.ConsecutiveFailures
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		err = errors.New("webhook request could not be created")
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "SimpleLinuxUpdater/notification-hook")
+		resp, doErr := s.deps.HTTPClient.Do(req)
+		if doErr != nil {
+			err = safeWebhookRequestError(doErr)
+		} else {
+			status.StatusCode = resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				err = nil
+			} else {
+				err = fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
+			}
+		}
+	}
+	completedAt := s.deps.Now().UTC()
+	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.DeliveredAt = status.CompletedAt
+	status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
+	if err == nil {
+		status.Success = true
+		status.Outcome = DeliveryOutcomeSucceeded
+		status.ConsecutiveFailures = 0
+		return status, nil
+	}
+	status.Success = false
+	status.Error = safeDeliveryError(err)
+	status.ConsecutiveFailures++
+	return status, err
+}
+
+func failedDeliveryStatus(status DeliveryStatus, attemptedAt, completedAt time.Time, err error) (DeliveryStatus, error) {
+	status.Success = false
+	status.Outcome = DeliveryOutcomeFailed
+	status.Error = safeDeliveryError(err)
+	status.ConsecutiveFailures++
+	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.DeliveredAt = status.CompletedAt
+	status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
+	return status, err
+}
+
+func (s *Service) currentSettings() (Settings, error) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	return s.loadSettings()
+}
+
+func (s *Service) releaseClaim(row outboxRow, cause error) {
+	now := s.deps.Now().UTC()
+	nowText := now.Format(time.RFC3339Nano)
+	nextAttempt := now.Add(s.deps.PollInterval).Format(time.RFC3339Nano)
+	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.retrySQLiteContention(func() error {
+		return releaseOutboxClaim(persistCtx, s.database(), row.ID, nextAttempt, nowText)
+	}); err != nil {
+		s.deps.Logf("notification outbox claim release failed for %q after %v: %v", row.ID, cause, err)
+	}
+}
+
+func destinationEnabled(settings Settings, destination string) bool {
+	switch destination {
+	case DestinationWebhook:
+		return settings.Enabled
+	case DestinationDiscord:
+		return settings.DiscordEnabled
+	case DestinationTelegram:
+		return settings.TelegramEnabled
+	default:
+		return false
 	}
 }
 
@@ -503,14 +814,42 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
-	settings, err := s.loadSettings()
+	var settings Settings
+	err := s.retrySQLiteContention(func() error {
+		var err error
+		settings, err = s.loadSettings()
+		return err
+	})
+	if err != nil {
+		return DeliveryDiagnostics{}, err
+	}
+	var counts outboxCounts
+	err = s.retrySQLiteContention(func() error {
+		var err error
+		counts, err = loadOutboxCounts(context.Background(), s.database())
+		return err
+	})
 	if err != nil {
 		return DeliveryDiagnostics{}, err
 	}
 	return DeliveryDiagnostics{
-		LastAttempt:  latestDeliveryStatus(settings),
-		LastAttempts: cloneDeliveryStatuses(settings.LastDeliveries),
+		LastAttempt:   latestDeliveryStatus(settings),
+		LastAttempts:  cloneDeliveryStatuses(settings.LastDeliveries),
+		PendingCount:  counts.Pending,
+		RetryingCount: counts.Retrying,
 	}, nil
+}
+
+func (s *Service) retrySQLiteContention(operation func() error) error {
+	var err error
+	for attempt := 1; attempt <= defaultAttempts; attempt++ {
+		err = operation()
+		if err == nil || !isSQLiteContention(err) || attempt == defaultAttempts {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return err
 }
 
 func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
@@ -571,22 +910,6 @@ func isSuccessfulNoOpUpdate(evt DeliveryIntent) bool {
 		return false
 	}
 	return !*meta.UpgradeCompleted
-}
-
-func (s *Service) deliverWithSettings(ctx context.Context, settings Settings, evt DeliveryIntent, eventType string) ([]DeliveryStatus, error) {
-	destinations := enabledDestinations(settings)
-	statuses := make([]DeliveryStatus, 0, len(destinations))
-	var deliveryErr error
-	for _, destination := range destinations {
-		deliveryCtx, cancel := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
-		status, err := s.deliverToDestination(deliveryCtx, settings, evt, eventType, destination)
-		cancel()
-		statuses = append(statuses, status)
-		if err != nil {
-			deliveryErr = errors.Join(deliveryErr, err)
-		}
-	}
-	return statuses, deliveryErr
 }
 
 func (s *Service) deliverToDestination(ctx context.Context, settings Settings, evt DeliveryIntent, eventType, destination string) (DeliveryStatus, error) {

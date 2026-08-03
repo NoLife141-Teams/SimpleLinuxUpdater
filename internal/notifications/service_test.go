@@ -60,6 +60,11 @@ func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan We
 }
 
 func newTestServiceWithQueue(t *testing.T, handler http.HandlerFunc, queueSize int) (*Service, <-chan WebhookPayload) {
+	svc, payloads, _ := newTestServiceWithQueueAndDB(t, handler, queueSize)
+	return svc, payloads
+}
+
+func newTestServiceWithQueueAndDB(t *testing.T, handler http.HandlerFunc, queueSize int) (*Service, <-chan WebhookPayload, *sql.DB) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "notifications.db"))
 	if err != nil {
@@ -103,7 +108,7 @@ func newTestServiceWithQueue(t *testing.T, handler http.HandlerFunc, queueSize i
 	}); err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
-	return svc, payloads
+	return svc, payloads, db
 }
 
 func TestNotificationDeliveryLifecycleAcceptsAndDeliversAuditIntent(t *testing.T) {
@@ -185,6 +190,49 @@ func TestNotificationDeliveryLifecycleSkipsNoOpUpdate(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("completed update notification was not delivered")
+	}
+}
+
+func TestNotificationDeliveryLifecycleWaitsForTransientSQLiteContention(t *testing.T) {
+	svc, _, db := newTestServiceWithQueueAndDB(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}, defaultQueueSize)
+
+	lockConn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = lockConn.ExecContext(context.Background(), "ROLLBACK") }()
+
+	admission := make(chan Admission, 1)
+	go func() {
+		admission <- svc.Accept(DeliveryIntent{
+			Action:     EventUpdateComplete,
+			TargetName: "srv-current",
+			Status:     "success",
+			MetaJSON:   `{"upgrade_completed":true,"approved_package_count":3}`,
+		})
+	}()
+
+	select {
+	case got := <-admission:
+		t.Fatalf("Accept() completed during transient SQLite contention: %+v", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Fatalf("release SQLite lock: %v", err)
+	}
+	select {
+	case got := <-admission:
+		if got.State != AdmissionAdmitted {
+			t.Fatalf("Accept() = %+v, want admitted after SQLite contention cleared", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Accept() did not resume after SQLite contention cleared")
 	}
 }
 

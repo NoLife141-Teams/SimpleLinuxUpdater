@@ -667,7 +667,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if !precheckSummary.AllPassed {
 				r.precheckFailed = precheckSummary.FailedCheck
 				logs := r.currentLogs() + fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
-				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && precheckSummaryHasSudoPolicyError(precheckSummary) {
+				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(precheckSummary.Results, nil) {
 					r.setSudoPolicyErrorLogs(logs)
 					return
 				}
@@ -982,16 +982,23 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.appendStatusLog(line)
 			}
 			if !postcheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
 				r.postcheckFailed = postcheckSummary.FailedCheck
 				r.postchecksPassed = false
+				logs := r.currentLogs() + fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
+				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(postcheckSummary.Results, func(name string) bool {
+					return deps.IsPostcheckFailureBlocking(name, postcheckCfg)
+				}) {
+					r.setSudoPolicyErrorLogs(logs)
+					return
+				}
+				r.lastErrClass = "permanent"
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "error"
 					status.ApprovalScope = ""
 					status.ApprovalConfirmRemovals = false
 					status.PendingUpdates = nil
 					status.UpgradePlan = servers.UpgradePlan{}
-					status.Logs += fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
+					status.Logs = logs
 				})
 				return
 			}

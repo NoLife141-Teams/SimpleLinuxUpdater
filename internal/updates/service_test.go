@@ -314,6 +314,82 @@ func TestRunUpdateJobClassifiesPrecheckSudoPolicyFailureAndExplainsRecovery(t *t
 	}
 }
 
+func TestRunUpdateJobClassifiesOnlyBlockingPostcheckSudoPolicyFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		blockAptHealth bool
+		wantStatus     string
+		wantErrorClass string
+		wantWarnings   int
+		wantRecovery   bool
+	}{
+		{name: "blocking", blockAptHealth: true, wantStatus: runtimepkg.StatusError, wantErrorClass: "sudo_policy", wantRecovery: true},
+		{name: "warning only", blockAptHealth: false, wantStatus: runtimepkg.StatusDone, wantErrorClass: "none", wantWarnings: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := servers.Server{Name: "srv-postcheck-sudo-policy", Host: "example.org", Port: 22, User: "operator"}
+			inventory := []servers.Server{server}
+			statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+			state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+			var auditMeta map[string]any
+			service := NewService(ServiceDeps{
+				ServerState: state,
+				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+					RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+						return PrecheckSummary{AllPassed: true}
+					},
+					RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+						return HostCommandResult{Attempts: 1}, nil
+					},
+					DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+						return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(
+							[]servers.PendingUpdate{{Package: "openssl"}},
+							[]string{"openssl"},
+							servers.UpgradePlan{StandardPackageCount: 1},
+						), Attempts: 1}, nil
+					},
+					RunPostUpdateHealthChecksFunc: func(context.Context, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary {
+						return PostcheckSummary{Results: []PrecheckResult{{
+							Name:    PostcheckNameAptHealth,
+							Details: "APT health post-check requires passwordless sudo.",
+							Output:  "sudo: a password is required",
+						}}}
+					},
+				}),
+				CurrentJobManager: func() *jobs.Manager { return nil },
+				LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig {
+					return PostUpdateCheckConfig{Enabled: true, BlockOnAptHealth: tt.blockAptHealth}
+				},
+				IsPostcheckFailureBlocking: IsPostcheckFailureBlocking,
+				LoadScheduledJobBehavior: func(string) ScheduledJobBehavior {
+					return ScheduledJobBehavior{ApprovalTimeout: time.Second, AutoApproveScope: ApprovalScopeAll}
+				},
+				UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+				SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+				AuditWithActor: func(_, _, _, _, _, _, _ string, meta map[string]any) {
+					auditMeta = meta
+				},
+			})
+
+			service.RunUpdateJob(UpdateRunRequest{Server: server, Actor: "tester", Policy: RetryPolicy{MaxAttempts: 1}})
+
+			status := state.CurrentStatusSnapshot(server.Name)
+			if status == nil || status.Status != tt.wantStatus {
+				t.Fatalf("final status = %+v, want %s", status, tt.wantStatus)
+			}
+			if got, _ := auditMeta["last_error_class"].(string); got != tt.wantErrorClass {
+				t.Fatalf("last_error_class = %q, want %q", got, tt.wantErrorClass)
+			}
+			if got, _ := auditMeta["postcheck_warnings"].(int); got != tt.wantWarnings {
+				t.Fatalf("postcheck_warnings = %d, want %d", got, tt.wantWarnings)
+			}
+			if got := strings.Contains(status.Logs, "Click Enable apt"); got != tt.wantRecovery {
+				t.Fatalf("recovery guidance present = %t, want %t; logs=%q", got, tt.wantRecovery, status.Logs)
+			}
+		})
+	}
+}
+
 func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
 	state, statuses := testState()
 	statuses["srv"].PendingUpdates = []servers.PendingUpdate{

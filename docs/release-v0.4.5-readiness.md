@@ -94,7 +94,10 @@ The live candidate passed the focused Status and update checks recorded in
 
 - [x] All implementation PRs are merged to `main`.
 - [x] Post-merge `main` CI and CodeQL are green on `32995a8`.
-- [ ] The release-preparation PR checks are green.
+- [x] PR #367 checks are green, including `ci-required`, frontend unit tests,
+      npm audit, Playwright, and the Go, JavaScript/TypeScript, and Actions
+      CodeQL analyses. The transient GitHub diff-service failure in the first
+      `changes` attempt passed on the unchanged job rerun.
 - [ ] The release-preparation PR is merged to `main`.
 - [ ] Post-merge `main` CI and CodeQL are green on the final release commit.
 - [ ] The `v0.4.5` tag points to that verified final release commit.

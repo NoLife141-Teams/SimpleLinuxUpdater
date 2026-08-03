@@ -448,7 +448,7 @@ func TestExtractBackupTarGzRejectsOversizedDecompressedPayload(t *testing.T) {
 	}
 }
 
-func TestExtractBackupTarGzCountsUnknownRegularEntries(t *testing.T) {
+func TestExtractBackupTarGzRejectsUnknownRegularEntries(t *testing.T) {
 	manifest := backupManifest{
 		Format:  backupFormatName,
 		Version: backupFormatVersion,
@@ -485,10 +485,10 @@ func TestExtractBackupTarGzCountsUnknownRegularEntries(t *testing.T) {
 
 	_, _, err = extractBackupTarGzWithLimits(raw.Bytes(), 1024, 16)
 	if err == nil {
-		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want unknown entry to count against total cap")
+		t.Fatalf("extractBackupTarGzWithLimits() error = nil, want unknown entry rejection")
 	}
-	if !strings.Contains(err.Error(), "backup payload is too large") {
-		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want payload size error", err)
+	if !strings.Contains(err.Error(), `unexpected backup entry "ignored.bin"`) {
+		t.Fatalf("extractBackupTarGzWithLimits() error = %v, want unknown entry error", err)
 	}
 }
 

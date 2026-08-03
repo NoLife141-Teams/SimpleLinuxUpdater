@@ -39,6 +39,44 @@ func (r testRestoredRuntime) ReloadRestoredState(ctx context.Context) error {
 
 const testPassphrase = "very-strong-passphrase"
 
+type testArchiveEntry struct {
+	name     string
+	data     []byte
+	typeflag byte
+	linkname string
+}
+
+func buildTestTarGz(t *testing.T, entries []testArchiveEntry) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	for _, entry := range entries {
+		hdr := &tar.Header{
+			Name:     entry.name,
+			Mode:     0600,
+			Size:     int64(len(entry.data)),
+			Typeflag: entry.typeflag,
+			Linkname: entry.linkname,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write %q header: %v", entry.name, err)
+		}
+		if len(entry.data) > 0 {
+			if _, err := tw.Write(entry.data); err != nil {
+				t.Fatalf("write %q data: %v", entry.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return raw.Bytes()
+}
+
 func TestValidatePassphrase(t *testing.T) {
 	if err := ValidatePassphrase(testPassphrase); err != nil {
 		t.Fatalf("ValidatePassphrase(valid) error = %v", err)
@@ -171,39 +209,70 @@ func TestDecryptPayloadRejectsMalformedAndUnsupported(t *testing.T) {
 	}
 }
 
-func TestExtractTarGzCountsUnknownRegularEntries(t *testing.T) {
-	manifest := Manifest{
-		Format:  FormatName,
-		Version: FormatVersion,
-		Files:   map[string]ManifestFile{},
-	}
-	manifestData, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
-	var raw bytes.Buffer
-	gz := gzip.NewWriter(&raw)
-	tw := tar.NewWriter(gz)
-	for name, data := range map[string][]byte{
-		"unknown.bin":   []byte(strings.Repeat("x", 32)),
-		"manifest.json": manifestData,
-	} {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(data))}); err != nil {
-			t.Fatalf("write header: %v", err)
-		}
-		if _, err := tw.Write(data); err != nil {
-			t.Fatalf("write data: %v", err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gzip: %v", err)
-	}
-	_, _, err = ExtractTarGzWithLimits(raw.Bytes(), 1024, 16)
+func TestExtractTarGzCountsKnownEntriesAgainstTotalLimit(t *testing.T) {
+	payload := buildTestTarGz(t, []testArchiveEntry{
+		{name: "servers.db", data: []byte(strings.Repeat("x", 10))},
+		{name: "config.json", data: []byte(strings.Repeat("y", 10))},
+	})
+	_, _, err := ExtractTarGzWithLimits(payload, 1024, 16)
 	if err == nil || !strings.Contains(err.Error(), "backup payload is too large") {
 		t.Fatalf("ExtractTarGzWithLimits() error = %v, want payload size error", err)
+	}
+}
+
+func TestInspectTarGzRejectsAmbiguousArchiveEntries(t *testing.T) {
+	tests := []struct {
+		name       string
+		entries    []testArchiveEntry
+		wantDetail string
+	}{
+		{
+			name: "duplicate entry",
+			entries: []testArchiveEntry{
+				{name: "manifest.json", data: []byte(`{}`)},
+				{name: "manifest.json", data: []byte(`{}`)},
+			},
+			wantDetail: `duplicate backup entry "manifest.json"`,
+		},
+		{
+			name:       "unknown entry",
+			entries:    []testArchiveEntry{{name: "unknown.bin", data: []byte("unknown")}},
+			wantDetail: `unexpected backup entry "unknown.bin"`,
+		},
+		{
+			name:       "unknown directory",
+			entries:    []testArchiveEntry{{name: "extra/", typeflag: tar.TypeDir}},
+			wantDetail: `unexpected backup entry "extra/"`,
+		},
+		{
+			name:       "nested known entry",
+			entries:    []testArchiveEntry{{name: "nested/servers.db", data: []byte("sqlite")}},
+			wantDetail: `non-canonical backup entry "nested/servers.db"`,
+		},
+		{
+			name:       "dot-prefixed known entry",
+			entries:    []testArchiveEntry{{name: "./config.json", data: []byte(`{}`)}},
+			wantDetail: `non-canonical backup entry "./config.json"`,
+		},
+		{
+			name:       "whitespace-padded known entry",
+			entries:    []testArchiveEntry{{name: " known_hosts ", data: []byte("host key")}},
+			wantDetail: `non-canonical backup entry " known_hosts "`,
+		},
+		{
+			name:       "symlink with known name",
+			entries:    []testArchiveEntry{{name: "servers.db", typeflag: tar.TypeSymlink, linkname: "config.json"}},
+			wantDetail: `backup entry "servers.db" must be a regular file`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspection, err := InspectTarGzWithLimits(buildTestTarGz(t, tt.entries), 1024, 4096)
+			if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("InspectTarGzWithLimits() = %+v, %v; want malformed error containing %q", inspection, err, tt.wantDetail)
+			}
+		})
 	}
 }
 
@@ -469,5 +538,27 @@ func TestRestoreArchiveBeforeApplySkipsOnArchiveFailure(t *testing.T) {
 	}
 	if applyStarted {
 		t.Fatalf("BeforeApply was called before a successful decrypt/archive")
+	}
+}
+
+func TestRestoreArchiveRejectsAmbiguousTarBeforeApply(t *testing.T) {
+	payload := buildTestTarGz(t, []testArchiveEntry{{name: "unexpected.txt", data: []byte("not part of the backup format")}})
+	encrypted, err := EncryptPayload(payload, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload() error = %v", err)
+	}
+	applyStarted := false
+	service := NewService(ServiceDeps{Logf: func(string, ...any) {}})
+	_, err = service.RestoreArchiveWithOptions(context.Background(), encrypted, testPassphrase, RestoreOptions{
+		BeforeApply: func() {
+			applyStarted = true
+		},
+	})
+	var restoreErr *RestoreError
+	if !errors.As(err, &restoreErr) || restoreErr.Stage != RestoreStageArchive || !errors.Is(err, ErrMalformed) {
+		t.Fatalf("RestoreArchiveWithOptions() error = %v, want malformed archive-stage restore error", err)
+	}
+	if applyStarted {
+		t.Fatalf("BeforeApply was called for an ambiguous TAR archive")
 	}
 }

@@ -795,6 +795,7 @@ func ExtractTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 
 func InspectTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (ArchiveInspection, error) {
 	files := make(map[string][]byte)
+	seenEntries := make(map[string]struct{}, 4)
 	var totalExtracted int64
 	zr, err := gzip.NewReader(bytes.NewReader(payload))
 	if err != nil {
@@ -810,8 +811,9 @@ func InspectTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 		if err != nil {
 			return ArchiveInspection{}, err
 		}
-		if hdr.Typeflag != tar.TypeReg {
-			continue
+		name, err := validateArchiveEntryHeader(hdr, seenEntries)
+		if err != nil {
+			return ArchiveInspection{}, err
 		}
 		if hdr.Size < 0 || hdr.Size > maxFileBytes {
 			return ArchiveInspection{}, fmt.Errorf("%w: backup entry %q is too large", ErrMalformed, hdr.Name)
@@ -827,13 +829,6 @@ func InspectTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 			return ArchiveInspection{}, fmt.Errorf("%w: backup payload is too large", ErrMalformed)
 		}
 		totalExtracted += int64(len(data))
-		name := filepath.Base(strings.TrimSpace(hdr.Name))
-		if name == "" {
-			continue
-		}
-		if name != "manifest.json" && name != "servers.db" && name != "config.json" && name != "known_hosts" {
-			continue
-		}
 		files[name] = data
 	}
 
@@ -888,6 +883,37 @@ func InspectTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (
 		Compatible:       manifest.Format == FormatName && manifest.Version == FormatVersion,
 		MissingResources: missing,
 	}, nil
+}
+
+func validateArchiveEntryHeader(hdr *tar.Header, seen map[string]struct{}) (string, error) {
+	if hdr == nil {
+		return "", ErrMalformed
+	}
+	name := hdr.Name
+	if !isBackupArchiveEntryName(name) {
+		trimmedBase := filepath.Base(strings.TrimSpace(name))
+		if isBackupArchiveEntryName(trimmedBase) {
+			return "", fmt.Errorf("%w: non-canonical backup entry %q", ErrMalformed, name)
+		}
+		return "", fmt.Errorf("%w: unexpected backup entry %q", ErrMalformed, name)
+	}
+	if hdr.Typeflag != tar.TypeReg {
+		return "", fmt.Errorf("%w: backup entry %q must be a regular file", ErrMalformed, name)
+	}
+	if _, exists := seen[name]; exists {
+		return "", fmt.Errorf("%w: duplicate backup entry %q", ErrMalformed, name)
+	}
+	seen[name] = struct{}{}
+	return name, nil
+}
+
+func isBackupArchiveEntryName(name string) bool {
+	switch name {
+	case "manifest.json", "servers.db", "config.json", "known_hosts":
+		return true
+	default:
+		return false
+	}
 }
 
 func compactStrings(values []string) []string {

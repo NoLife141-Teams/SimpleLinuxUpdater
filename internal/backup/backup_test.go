@@ -198,15 +198,10 @@ func TestPayloadRoundTrip(t *testing.T) {
 }
 
 func TestExportArchiveFileUsesTemporaryArtifactsAndPreservesLegacyFormat(t *testing.T) {
-	sourceDir := t.TempDir()
 	workDir := t.TempDir()
 	databaseData := []byte(strings.Repeat("database-page-", 128))
 	configData := []byte(`{"encryption_key":"test-key"}`)
-	databasePath := filepath.Join(sourceDir, "servers.db")
-	configPath := filepath.Join(sourceDir, "config.json")
-	if err := os.WriteFile(databasePath, databaseData, 0600); err != nil {
-		t.Fatalf("write database fixture: %v", err)
-	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(configPath, configData, 0600); err != nil {
 		t.Fatalf("write config fixture: %v", err)
 	}
@@ -220,7 +215,7 @@ func TestExportArchiveFileUsesTemporaryArtifactsAndPreservesLegacyFormat(t *test
 	result, err := service.ExportArchiveFile(context.Background(), ExportRequest{
 		Passphrase:        testPassphrase,
 		IncludeKnownHosts: &includeKnownHosts,
-		DBSnapshotPath:    databasePath,
+		DBSnapshot:        databaseData,
 	})
 	if err != nil {
 		t.Fatalf("ExportArchiveFile() error = %v", err)
@@ -263,6 +258,42 @@ func TestExportArchiveFileUsesTemporaryArtifactsAndPreservesLegacyFormat(t *test
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary entries after cleanup = %v, want none", entries)
+	}
+}
+
+func TestExportArchiveFileFromSnapshotRejectsUntrustedArtifacts(t *testing.T) {
+	workDir := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.sqlite")
+	if err := os.WriteFile(outsidePath, []byte("snapshot"), 0600); err != nil {
+		t.Fatalf("write outside snapshot: %v", err)
+	}
+	symlinkPath := filepath.Join(workDir, "snapshot.sqlite")
+	if err := os.Symlink(outsidePath, symlinkPath); err != nil {
+		t.Fatalf("create snapshot symlink: %v", err)
+	}
+	service := NewService(ServiceDeps{
+		TempDir: func() string { return workDir },
+		Logf:    func(string, ...any) {},
+	})
+
+	tests := []struct {
+		name     string
+		snapshot TemporaryFile
+	}{
+		{name: "outside private temporary directory", snapshot: TemporaryFile{Path: outsidePath, Size: 8}},
+		{name: "symbolic link", snapshot: TemporaryFile{Path: symlinkPath, Size: 8}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ExportArchiveFileFromSnapshot(context.Background(), ExportRequest{Passphrase: testPassphrase}, tt.snapshot)
+			if err == nil {
+				t.Fatal("ExportArchiveFileFromSnapshot() error = nil, want untrusted artifact rejection")
+			}
+			var exportErr *ExportError
+			if !errors.As(err, &exportErr) || exportErr.Stage != ExportStageSnapshot {
+				t.Fatalf("ExportArchiveFileFromSnapshot() error = %v, want snapshot-stage error", err)
+			}
+		})
 	}
 }
 

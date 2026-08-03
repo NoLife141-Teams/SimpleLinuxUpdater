@@ -33,6 +33,7 @@ type fakeFileBackedBackupArchive struct {
 	fileSnapshotCalled bool
 	fileExportCalled   bool
 	fileRestoreCalled  bool
+	exportSnapshot     internalbackup.TemporaryFile
 }
 
 func (f *fakeFileBackedBackupArchive) CreateDBSnapshotFile() (internalbackup.TemporaryFile, error) {
@@ -40,9 +41,10 @@ func (f *fakeFileBackedBackupArchive) CreateDBSnapshotFile() (internalbackup.Tem
 	return f.snapshotFile, f.snapshotErr
 }
 
-func (f *fakeFileBackedBackupArchive) ExportArchiveFile(_ context.Context, req backupExportRequest) (internalbackup.ExportFileResult, error) {
+func (f *fakeFileBackedBackupArchive) ExportArchiveFileFromSnapshot(_ context.Context, req backupExportRequest, snapshot internalbackup.TemporaryFile) (internalbackup.ExportFileResult, error) {
 	f.fileExportCalled = true
 	f.exportRequest = req
+	f.exportSnapshot = snapshot
 	return internalbackup.ExportFileResult{File: f.exportFile, KnownHostsIncluded: true}, f.exportErr
 }
 
@@ -212,8 +214,8 @@ func TestBackupOperationLifecycleUsesFileBackedExportAndCleansSnapshot(t *testin
 	if !archive.fileSnapshotCalled || !archive.fileExportCalled || archive.snapshotCalled {
 		t.Fatalf("file-backed calls = snapshot:%v export:%v legacy:%v", archive.fileSnapshotCalled, archive.fileExportCalled, archive.snapshotCalled)
 	}
-	if archive.exportRequest.DBSnapshotPath != snapshotPath || archive.exportRequest.DBSnapshot != nil {
-		t.Fatalf("export request snapshot = %q/%d bytes, want file path only", archive.exportRequest.DBSnapshotPath, len(archive.exportRequest.DBSnapshot))
+	if archive.exportSnapshot.Path != snapshotPath || archive.exportRequest.DBSnapshot != nil {
+		t.Fatalf("export snapshot = %q and request contains %d bytes, want separate file artifact", archive.exportSnapshot.Path, len(archive.exportRequest.DBSnapshot))
 	}
 	if _, err := os.Stat(snapshotPath); !os.IsNotExist(err) {
 		t.Fatalf("snapshot still exists after Export(): %v", err)

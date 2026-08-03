@@ -442,33 +442,57 @@ func (s *Service) ExportArchiveFile(ctx context.Context, req ExportRequest) (Exp
 		return ExportFileResult{}, err
 	}
 
-	dbPath := strings.TrimSpace(req.DBSnapshotPath)
 	var snapshot TemporaryFile
-	if dbPath == "" {
-		if req.DBSnapshot != nil {
-			tmp, err := createTemporaryFile(s.deps.TempDir(), "slu-backup-db-input-*.sqlite")
-			if err != nil {
-				return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
-			}
-			if _, err := copyFileBounded(tmp, bytes.NewReader(req.DBSnapshot), MaxExtractedBytes); err != nil {
-				path := tmp.Name()
-				_ = tmp.Close()
-				_ = os.Remove(path)
-				return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
-			}
-			snapshot, err = closeTemporaryFile(tmp)
-			if err != nil {
-				return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
-			}
-		} else {
-			var err error
-			snapshot, err = s.CreateDBSnapshotFile()
-			if err != nil {
-				return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
-			}
+	if req.DBSnapshot != nil {
+		tmp, err := createTemporaryFile(s.deps.TempDir(), "slu-backup-db-input-*.sqlite")
+		if err != nil {
+			return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
 		}
-		defer snapshot.Remove()
-		dbPath = snapshot.Path
+		if _, err := copyFileBounded(tmp, bytes.NewReader(req.DBSnapshot), MaxExtractedBytes); err != nil {
+			path := tmp.Name()
+			_ = tmp.Close()
+			_ = os.Remove(path)
+			return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
+		}
+		snapshot, err = closeTemporaryFile(tmp)
+		if err != nil {
+			return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
+		}
+	} else {
+		var err error
+		snapshot, err = s.CreateDBSnapshotFile()
+		if err != nil {
+			return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
+		}
+	}
+	defer snapshot.Remove()
+	return s.ExportArchiveFileFromSnapshot(ctx, req, snapshot)
+}
+
+// ExportArchiveFileFromSnapshot packages a snapshot created by the service. The
+// snapshot must be a regular file in the service's private temporary directory.
+func (s *Service) ExportArchiveFileFromSnapshot(ctx context.Context, req ExportRequest, snapshot TemporaryFile) (ExportFileResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req.Passphrase = strings.TrimSpace(req.Passphrase)
+	if err := ValidatePassphrase(req.Passphrase); err != nil {
+		return ExportFileResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ExportFileResult{}, err
+	}
+
+	dbPath := filepath.Clean(strings.TrimSpace(snapshot.Path))
+	if err := ValidateSnapshotPathInRoot(dbPath, s.deps.TempDir()); err != nil {
+		return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
+	}
+	info, err := os.Lstat(dbPath)
+	if err != nil {
+		return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: err}
+	}
+	if !info.Mode().IsRegular() || info.Size() > MaxExtractedBytes || (snapshot.Size > 0 && snapshot.Size != info.Size()) {
+		return ExportFileResult{}, &ExportError{Stage: ExportStageSnapshot, Err: errors.New("invalid backup snapshot file")}
 	}
 
 	if _, err := os.Stat(s.deps.ConfigPath()); err != nil {

@@ -34,7 +34,7 @@ type backupArchiveRunner interface {
 
 type backupArchiveFileRunner interface {
 	CreateDBSnapshotFile() (internalbackup.TemporaryFile, error)
-	ExportArchiveFile(context.Context, backupExportRequest) (internalbackup.ExportFileResult, error)
+	ExportArchiveFileFromSnapshot(context.Context, backupExportRequest, internalbackup.TemporaryFile) (internalbackup.ExportFileResult, error)
 	RestoreArchiveFileWithOptions(context.Context, internalbackup.TemporaryFile, string, internalbackup.RestoreOptions) (internalbackup.RestoreResult, error)
 }
 
@@ -194,7 +194,6 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		snapshotFile, err = fileRunner.CreateDBSnapshotFile()
 		if err == nil {
 			defer snapshotFile.Remove()
-			cmd.Request.DBSnapshotPath = snapshotFile.Path
 		}
 	} else {
 		var dbSnapshot []byte
@@ -274,7 +273,7 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	var result internalbackup.ExportResult
 	var fileResult internalbackup.ExportFileResult
 	if fileBacked {
-		fileResult, err = fileRunner.ExportArchiveFile(ctx, cmd.Request)
+		fileResult, err = fileRunner.ExportArchiveFileFromSnapshot(ctx, cmd.Request, snapshotFile)
 	} else {
 		result, err = deps.Archive.ExportArchive(ctx, cmd.Request)
 	}

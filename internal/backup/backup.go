@@ -54,7 +54,6 @@ type ExportRequest struct {
 	Passphrase        string `json:"passphrase"`
 	IncludeKnownHosts *bool  `json:"include_known_hosts"`
 	DBSnapshot        []byte `json:"-"`
-	DBSnapshotPath    string `json:"-"`
 }
 
 type StatusResponse struct {

@@ -105,6 +105,128 @@ func TestDashboardProjectionCollectionCorrelatesFailureFactsToCurrentJob(t *test
 	}
 }
 
+func TestDashboardProjectionLatestUpdateJobsAreFairPerCurrentServer(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-projection-job-fairness.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	insertDashboardJob(t, db, "quiet-job", "srv-quiet", jobs.StatusSucceeded, jobs.PhaseComplete, "quiet latest", now.Add(-2*time.Hour))
+	insertDashboardJob(t, db, "deleted-job", "srv-deleted", jobs.StatusFailed, jobs.PhasePostchecks, "deleted latest", now.Add(-time.Hour))
+	for i := 0; i < 1001; i++ {
+		insertDashboardJob(
+			t,
+			db,
+			fmt.Sprintf("noisy-job-%04d", i),
+			"srv-noisy",
+			jobs.StatusSucceeded,
+			jobs.PhaseComplete,
+			fmt.Sprintf("noisy %d", i),
+			now.Add(time.Duration(i)*time.Second),
+		)
+	}
+
+	collector := newDashboardProjectionCollector(testService(db, path).EnsureDeps())
+	got, err := collector.collectLatestUpdateJobs([]string{"srv-noisy", "srv-quiet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("latest jobs=%+v, want one job for each current server", got)
+	}
+	if got["srv-noisy"].ID != "noisy-job-1000" {
+		t.Fatalf("noisy latest job=%q, want noisy-job-1000", got["srv-noisy"].ID)
+	}
+	if got["srv-quiet"].ID != "quiet-job" {
+		t.Fatalf("quiet latest job=%q, want quiet-job despite 1001 newer noisy jobs", got["srv-quiet"].ID)
+	}
+	if _, exists := got["srv-deleted"]; exists {
+		t.Fatalf("deleted server job leaked into Status: %+v", got["srv-deleted"])
+	}
+}
+
+func TestDashboardProjectionLatestUpdateJobsUseJobIDTieBreaker(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-projection-job-order.db")
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	insertDashboardJob(t, db, "job-a", "srv-tie", jobs.StatusFailed, jobs.PhasePostchecks, "older ID", now)
+	insertDashboardJob(t, db, "job-b", "srv-tie", jobs.StatusSucceeded, jobs.PhaseComplete, "newer ID", now)
+
+	collector := newDashboardProjectionCollector(testService(db, path).EnsureDeps())
+	got, err := collector.collectLatestUpdateJobs([]string{"srv-tie"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["srv-tie"].ID != "job-b" || got["srv-tie"].Summary != "newer ID" {
+		t.Fatalf("tie-ordered latest job=%+v, want highest job ID", got["srv-tie"])
+	}
+}
+
+func TestDashboardProjectionLatestUpdateJobsHandleEmptyAndLargeInventory(t *testing.T) {
+	t.Run("empty inventory does not query", func(t *testing.T) {
+		collector := newDashboardProjectionCollector(ServiceDeps{
+			DB: func() *sql.DB {
+				t.Fatal("database queried for empty inventory")
+				return nil
+			},
+		})
+		got, err := collector.collectLatestUpdateJobs(nil)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("empty latest jobs=%+v error=%v", got, err)
+		}
+	})
+
+	t.Run("inventory is batched beyond SQLite legacy parameter limit", func(t *testing.T) {
+		db, path := newTestDB(t, "dashboard-projection-job-large-inventory.db")
+		now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+		serverNames := make([]string, 0, 1205)
+		for i := 0; i < 1205; i++ {
+			serverNames = append(serverNames, fmt.Sprintf("srv-%04d", i))
+		}
+		for _, serverName := range []string{serverNames[0], serverNames[500], serverNames[1204]} {
+			insertDashboardJob(t, db, "job-"+serverName, serverName, jobs.StatusSucceeded, jobs.PhaseComplete, "large inventory job", now)
+		}
+		serverNames = append(serverNames, "", " ", serverNames[1204])
+
+		collector := newDashboardProjectionCollector(testService(db, path).EnsureDeps())
+		got, err := collector.collectLatestUpdateJobs(serverNames)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 || got[serverNames[0]].ID == "" || got[serverNames[500]].ID == "" || got[serverNames[1204]].ID == "" {
+			t.Fatalf("large inventory latest jobs=%+v, want one row from each query batch", got)
+		}
+	})
+}
+
+func TestDashboardProjectionLatestUpdateJobsQueryPlanUsesKindServerIndex(t *testing.T) {
+	db, _ := newTestDB(t, "dashboard-projection-job-query-plan.db")
+	for _, serverCount := range []int{1, 100, dashboardLatestJobBatchSize} {
+		args := make([]any, 0, serverCount+1)
+		args = append(args, jobs.KindUpdate)
+		for i := 0; i < serverCount; i++ {
+			args = append(args, fmt.Sprintf("srv-%04d", i))
+		}
+		rows, err := db.Query("EXPLAIN QUERY PLAN "+latestUpdateJobsQuery(serverCount), args...)
+		if err != nil {
+			t.Fatalf("EXPLAIN QUERY PLAN for %d servers: %v", serverCount, err)
+		}
+		var details []string
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			details = append(details, detail)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		plan := strings.Join(details, "\n")
+		if !strings.Contains(plan, "idx_jobs_kind_server_created_at") {
+			t.Fatalf("query plan for %d servers does not use idx_jobs_kind_server_created_at:\n%s", serverCount, plan)
+		}
+	}
+}
+
 func TestDashboardProjectionCollectionCollectsTypedCommandHistory(t *testing.T) {
 	db, path := newTestDB(t, "dashboard-projection-collection-commands.db")
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)

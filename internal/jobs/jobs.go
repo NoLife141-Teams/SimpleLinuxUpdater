@@ -210,6 +210,9 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_server_created_at ON jobs (server_name, created_at DESC)"); err != nil {
 		return err
 	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_kind_server_created_at ON jobs (kind, server_name, created_at DESC, id DESC)"); err != nil {
+		return err
+	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs (status, created_at DESC)"); err != nil {
 		return err
 	}

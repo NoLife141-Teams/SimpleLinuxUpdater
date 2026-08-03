@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,6 +24,38 @@ type fakeBackupArchive struct {
 	exportRequest  backupExportRequest
 	restoreBlob    []byte
 	beforeApply    bool
+}
+
+type fakeFileBackedBackupArchive struct {
+	*fakeBackupArchive
+	snapshotFile       internalbackup.TemporaryFile
+	exportFile         internalbackup.TemporaryFile
+	fileSnapshotCalled bool
+	fileExportCalled   bool
+	fileRestoreCalled  bool
+	exportSnapshot     internalbackup.TemporaryFile
+}
+
+func (f *fakeFileBackedBackupArchive) CreateDBSnapshotFile() (internalbackup.TemporaryFile, error) {
+	f.fileSnapshotCalled = true
+	return f.snapshotFile, f.snapshotErr
+}
+
+func (f *fakeFileBackedBackupArchive) ExportArchiveFileFromSnapshot(_ context.Context, req backupExportRequest, snapshot internalbackup.TemporaryFile) (internalbackup.ExportFileResult, error) {
+	f.fileExportCalled = true
+	f.exportRequest = req
+	f.exportSnapshot = snapshot
+	return internalbackup.ExportFileResult{File: f.exportFile, KnownHostsIncluded: true}, f.exportErr
+}
+
+func (f *fakeFileBackedBackupArchive) RestoreArchiveFileWithOptions(_ context.Context, file internalbackup.TemporaryFile, _ string, opts internalbackup.RestoreOptions) (internalbackup.RestoreResult, error) {
+	f.fileRestoreCalled = true
+	f.restoreBlob = []byte(file.Path)
+	if opts.BeforeApply != nil {
+		opts.BeforeApply()
+		f.beforeApply = true
+	}
+	return f.restoreResult, f.restoreErr
 }
 
 func (f *fakeBackupArchive) CreateDBSnapshot() ([]byte, error) {
@@ -150,6 +184,76 @@ func TestBackupOperationLifecycleExportSuccess(t *testing.T) {
 	}
 	if !strings.Contains(job.MetaJSON, `"bytes":17`) || !strings.Contains(job.MetaJSON, `"known_hosts_included":true`) {
 		t.Fatalf("job meta = %s, want bytes and known_hosts_included", job.MetaJSON)
+	}
+}
+
+func TestBackupOperationLifecycleUsesFileBackedExportAndCleansSnapshot(t *testing.T) {
+	h := newBackupLifecycleHarness(t)
+	root := t.TempDir()
+	snapshotPath := filepath.Join(root, "snapshot.sqlite")
+	exportPath := filepath.Join(root, "backup.slubkp")
+	if err := os.WriteFile(snapshotPath, []byte("snapshot"), 0600); err != nil {
+		t.Fatalf("write snapshot fixture: %v", err)
+	}
+	if err := os.WriteFile(exportPath, []byte("encrypted"), 0600); err != nil {
+		t.Fatalf("write export fixture: %v", err)
+	}
+	archive := &fakeFileBackedBackupArchive{
+		fakeBackupArchive: h.archive,
+		snapshotFile:      internalbackup.TemporaryFile{Path: snapshotPath, Size: 8},
+		exportFile:        internalbackup.TemporaryFile{Path: exportPath, Size: 9},
+	}
+	h.lifecycle.deps.Archive = archive
+
+	outcome := h.lifecycle.Export(context.Background(), backupExportCommand{
+		Actor: "admin", Request: backupExportRequest{Passphrase: "very-strong-passphrase"},
+	})
+	if outcome.Kind != backupOperationSucceeded || outcome.ExportFile.Path != exportPath || len(outcome.ExportBytes) != 0 {
+		t.Fatalf("Export() outcome = %+v, want file-backed success", outcome)
+	}
+	if !archive.fileSnapshotCalled || !archive.fileExportCalled || archive.snapshotCalled {
+		t.Fatalf("file-backed calls = snapshot:%v export:%v legacy:%v", archive.fileSnapshotCalled, archive.fileExportCalled, archive.snapshotCalled)
+	}
+	if archive.exportSnapshot.Path != snapshotPath || archive.exportRequest.DBSnapshot != nil {
+		t.Fatalf("export snapshot = %q and request contains %d bytes, want separate file artifact", archive.exportSnapshot.Path, len(archive.exportRequest.DBSnapshot))
+	}
+	if _, err := os.Stat(snapshotPath); !os.IsNotExist(err) {
+		t.Fatalf("snapshot still exists after Export(): %v", err)
+	}
+	if _, err := os.Stat(exportPath); err != nil {
+		t.Fatalf("returned export file is unavailable: %v", err)
+	}
+	if err := outcome.ExportFile.Remove(); err != nil {
+		t.Fatalf("remove returned export: %v", err)
+	}
+}
+
+func TestBackupOperationLifecycleRemovesFileExportWhenMaintenanceReleaseFails(t *testing.T) {
+	h := newBackupLifecycleHarness(t)
+	root := t.TempDir()
+	snapshotPath := filepath.Join(root, "snapshot.sqlite")
+	exportPath := filepath.Join(root, "backup.slubkp")
+	if err := os.WriteFile(snapshotPath, []byte("snapshot"), 0600); err != nil {
+		t.Fatalf("write snapshot fixture: %v", err)
+	}
+	if err := os.WriteFile(exportPath, []byte("encrypted"), 0600); err != nil {
+		t.Fatalf("write export fixture: %v", err)
+	}
+	h.lifecycle.deps.Archive = &fakeFileBackedBackupArchive{
+		fakeBackupArchive: h.archive,
+		snapshotFile:      internalbackup.TemporaryFile{Path: snapshotPath, Size: 8},
+		exportFile:        internalbackup.TemporaryFile{Path: exportPath, Size: 9},
+	}
+	h.lifecycle.deps.DeactivateMaintenance = func() error { return errors.New("release failed") }
+
+	outcome := h.lifecycle.Export(context.Background(), backupExportCommand{
+		Actor: "admin", Request: backupExportRequest{Passphrase: "very-strong-passphrase"},
+	})
+	if outcome.Kind != backupOperationMaintenanceReleaseFailed {
+		t.Fatalf("Export() kind = %q, want maintenance release failure", outcome.Kind)
+	}
+	if _, err := os.Stat(exportPath); !os.IsNotExist(err) {
+		t.Fatalf("export artifact still exists after failed release: %v", err)
 	}
 }
 

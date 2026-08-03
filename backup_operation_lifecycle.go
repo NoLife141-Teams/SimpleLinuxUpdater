@@ -32,6 +32,12 @@ type backupArchiveRunner interface {
 	RestoreArchiveWithOptions(context.Context, []byte, string, internalbackup.RestoreOptions) (internalbackup.RestoreResult, error)
 }
 
+type backupArchiveFileRunner interface {
+	CreateDBSnapshotFile() (internalbackup.TemporaryFile, error)
+	ExportArchiveFileFromSnapshot(context.Context, backupExportRequest, internalbackup.TemporaryFile) (internalbackup.ExportFileResult, error)
+	RestoreArchiveFileWithOptions(context.Context, internalbackup.TemporaryFile, string, internalbackup.RestoreOptions) (internalbackup.RestoreResult, error)
+}
+
 type backupOperationAuditRecord struct {
 	Actor      string
 	ClientIP   string
@@ -71,6 +77,7 @@ type backupRestoreCommand struct {
 	Actor      string
 	ClientIP   string
 	Blob       []byte
+	File       internalbackup.TemporaryFile
 	Passphrase string
 	Lease      *maintenancepkg.ExclusiveLease
 }
@@ -81,6 +88,7 @@ type backupOperationOutcome struct {
 	PublicError         string
 	ActiveServers       []string
 	ExportBytes         []byte
+	ExportFile          internalbackup.TemporaryFile
 	KnownHostsIncluded  bool
 	GlobalKeyPresent    bool
 	KnownHostsRestored  bool
@@ -179,7 +187,19 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		}
 	}
 
-	dbSnapshot, err := deps.Archive.CreateDBSnapshot()
+	fileRunner, fileBacked := deps.Archive.(backupArchiveFileRunner)
+	var snapshotFile internalbackup.TemporaryFile
+	var err error
+	if fileBacked {
+		snapshotFile, err = fileRunner.CreateDBSnapshotFile()
+		if err == nil {
+			defer snapshotFile.Remove()
+		}
+	} else {
+		var dbSnapshot []byte
+		dbSnapshot, err = deps.Archive.CreateDBSnapshot()
+		cmd.Request.DBSnapshot = dbSnapshot
+	}
 	if err != nil {
 		deps.RecordAudit(backupOperationAuditRecord{
 			Actor:      cmd.Actor,
@@ -193,8 +213,6 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		})
 		return backupOperationOutcome{Kind: backupOperationSnapshotFailed, PublicError: "failed to snapshot database", Err: err}
 	}
-	cmd.Request.DBSnapshot = dbSnapshot
-
 	jm := deps.CurrentJobManager()
 	if jm == nil {
 		return backupOperationOutcome{Kind: backupOperationJobManagerUnavailable, PublicError: "job manager unavailable"}
@@ -239,6 +257,7 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		}
 		if err != nil {
 			deps.Logf("backup export lifecycle: failed to clear maintenance mode: %v", err)
+			_ = outcome.ExportFile.Remove()
 			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.export", err)
 			return
 		}
@@ -251,17 +270,29 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	phase := jobPhaseEncrypt
 	summary := "Encrypting backup payload"
 	_ = jm.Transition(job.ID, JobTransitionIntent{Phase: &phase, Summary: &summary})
-	result, err := deps.Archive.ExportArchive(ctx, cmd.Request)
+	var result internalbackup.ExportResult
+	var fileResult internalbackup.ExportFileResult
+	if fileBacked {
+		fileResult, err = fileRunner.ExportArchiveFileFromSnapshot(ctx, cmd.Request, snapshotFile)
+	} else {
+		result, err = deps.Archive.ExportArchive(ctx, cmd.Request)
+	}
 	if err != nil {
 		return l.failExportArchive(jm, job.ID, cmd, err)
+	}
+	exportBytes := int64(len(result.Bytes))
+	knownHostsIncluded := result.KnownHostsIncluded
+	if fileBacked {
+		exportBytes = fileResult.File.Size
+		knownHostsIncluded = fileResult.KnownHostsIncluded
 	}
 
 	status := jobStatusSucceeded
 	phase = jobPhaseComplete
 	summary = "Backup export completed"
 	meta := deps.MarshalJobJSON(map[string]any{
-		"bytes":                len(result.Bytes),
-		"known_hosts_included": result.KnownHostsIncluded,
+		"bytes":                exportBytes,
+		"known_hosts_included": knownHostsIncluded,
 	})
 	completion = &JobTransitionIntent{
 		Status:   &status,
@@ -278,15 +309,16 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		Status:     "success",
 		Message:    "Backup exported",
 		Meta: map[string]any{
-			"bytes":                len(result.Bytes),
-			"known_hosts_included": result.KnownHostsIncluded,
+			"bytes":                exportBytes,
+			"known_hosts_included": knownHostsIncluded,
 		},
 	})
 	return backupOperationOutcome{
 		Kind:               backupOperationSucceeded,
 		JobID:              job.ID,
 		ExportBytes:        append([]byte(nil), result.Bytes...),
-		KnownHostsIncluded: result.KnownHostsIncluded,
+		ExportFile:         fileResult.File,
+		KnownHostsIncluded: knownHostsIncluded,
 	}
 }
 
@@ -425,7 +457,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		}
 	}()
 
-	result, err := deps.Archive.RestoreArchiveWithOptions(ctx, cmd.Blob, cmd.Passphrase, internalbackup.RestoreOptions{
+	restoreOptions := internalbackup.RestoreOptions{
 		BeforeApply: func() {
 			phase := jobPhaseApply
 			summary := "Applying restored backup files"
@@ -437,7 +469,13 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			}
 			return cmd.Lease.Handoff(ctx)
 		},
-	})
+	}
+	var result internalbackup.RestoreResult
+	if fileRunner, ok := deps.Archive.(backupArchiveFileRunner); ok && strings.TrimSpace(cmd.File.Path) != "" {
+		result, err = fileRunner.RestoreArchiveFileWithOptions(ctx, cmd.File, cmd.Passphrase, restoreOptions)
+	} else {
+		result, err = deps.Archive.RestoreArchiveWithOptions(ctx, cmd.Blob, cmd.Passphrase, restoreOptions)
+	}
 	if err != nil {
 		return l.failRestoreArchive(job, cmd, err)
 	}

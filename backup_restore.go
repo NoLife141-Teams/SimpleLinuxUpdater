@@ -30,6 +30,7 @@ const (
 	backupScryptR               = internalbackup.ScryptR
 	backupScryptP               = internalbackup.ScryptP
 	backupKeyLen                = internalbackup.KeyLen
+	backupMultipartMemoryBytes  = 1024 * 1024
 )
 
 type BackupService = internalbackup.Service
@@ -271,7 +272,12 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 		c.Header("Content-Type", "application/octet-stream")
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 		c.Header("Cache-Control", "no-store")
-		c.Data(http.StatusOK, "application/octet-stream", outcome.ExportBytes)
+		if strings.TrimSpace(outcome.ExportFile.Path) != "" {
+			defer outcome.ExportFile.Remove()
+			c.File(outcome.ExportFile.Path)
+		} else {
+			c.Data(http.StatusOK, "application/octet-stream", outcome.ExportBytes)
+		}
 	case backupOperationActiveServerActions:
 		c.JSON(http.StatusConflict, gin.H{
 			"error":          outcome.PublicError,
@@ -296,8 +302,8 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 	}
 }
 
-func readUploadedBackupFile(file *multipart.FileHeader) ([]byte, error) {
-	return internalbackup.ReadUploadedFile(file)
+func readUploadedBackupFileToTemp(file *multipart.FileHeader) (internalbackup.TemporaryFile, error) {
+	return internalbackup.ReadUploadedFileToTemp(file, "")
 }
 
 func handleBackupRestoreWithDeps(c *gin.Context, deps AppDeps) {
@@ -317,6 +323,13 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 	if c.Request != nil && c.Writer != nil {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
 	}
+	if c.Request == nil || c.Request.ParseMultipartForm(backupMultipartMemoryBytes) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup upload"})
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
 	passphrase := strings.TrimSpace(c.PostForm("passphrase"))
 	if err := validateBackupPassphrase(passphrase); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -328,17 +341,18 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "backup file is required"})
 		return
 	}
-	blob, err := readUploadedBackupFile(file)
+	upload, err := readUploadedBackupFileToTemp(file)
 	if err != nil {
 		audit(c, "backup.verify", "backup", "state", "failure", "Invalid backup file", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	defer upload.Remove()
 	verifyCtx := context.Background()
 	if c.Request != nil {
 		verifyCtx = c.Request.Context()
 	}
-	result, err := service.VerifyArchive(verifyCtx, blob, passphrase)
+	result, err := service.VerifyArchiveFile(verifyCtx, upload, passphrase)
 	if err != nil {
 		var restoreErr *internalbackup.RestoreError
 		stage := internalbackup.RestoreStageArchive
@@ -410,6 +424,13 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	if c.Request != nil && c.Writer != nil {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
 	}
+	if c.Request == nil || c.Request.ParseMultipartForm(backupMultipartMemoryBytes) != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup upload"})
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
 	passphrase := strings.TrimSpace(c.PostForm("passphrase"))
 	if err := validateBackupPassphrase(passphrase); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -421,12 +442,13 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 		c.JSON(http.StatusBadRequest, gin.H{"error": "backup file is required"})
 		return
 	}
-	blob, err := readUploadedBackupFile(file)
+	upload, err := readUploadedBackupFileToTemp(file)
 	if err != nil {
 		audit(c, "backup.restore", "backup", "state", "failure", "Invalid backup file", nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	defer upload.Remove()
 
 	restoreCtx := context.Background()
 	if c.Request != nil {
@@ -435,7 +457,7 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	outcome := lifecycle.Restore(restoreCtx, backupRestoreCommand{
 		Actor:      actorFromContext(c),
 		ClientIP:   clientIPFromContext(c),
-		Blob:       blob,
+		File:       upload,
 		Passphrase: passphrase,
 		Lease:      maintenanceExclusiveLeaseFromContext(c),
 	})

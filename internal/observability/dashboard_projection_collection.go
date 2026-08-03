@@ -30,6 +30,7 @@ type dashboardCollectedUpdateHistory struct {
 const (
 	dashboardCommandHistoryPerServer = 8
 	dashboardCommandHistoryBatchSize = 500
+	dashboardLatestJobBatchSize      = 500
 )
 
 func newDashboardProjectionCollector(deps ServiceDeps) dashboardProjectionCollector {
@@ -47,6 +48,10 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	toFormatted := to.Format(time.RFC3339)
 
 	serversSnapshot, statusByName := c.deps.ServerSnapshot()
+	serverNames := make([]string, 0, len(serversSnapshot))
+	for _, server := range serversSnapshot {
+		serverNames = append(serverNames, server.Name)
+	}
 	readinessByName := c.deps.MaintenanceReadiness(serversSnapshot)
 	facts, err := c.deps.HostHealthObservation.Latest()
 	if err != nil {
@@ -60,7 +65,7 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
-	latestUpdateJobs, err := c.collectLatestUpdateJobs()
+	latestUpdateJobs, err := c.collectLatestUpdateJobs(serverNames)
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
@@ -68,10 +73,6 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	updateByServer, err := c.collectUpdateHistory(fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return dashboardProjectionInput{}, err
-	}
-	serverNames := make([]string, 0, len(serversSnapshot))
-	for _, server := range serversSnapshot {
-		serverNames = append(serverNames, server.Name)
 	}
 	commandHistory, err := c.collectCommandHistory(serverNames, fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
@@ -179,27 +180,55 @@ func (c dashboardProjectionCollector) collectTriageTime(health DashboardHealthIn
 	}
 }
 
-func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs.Record, error) {
+func (c dashboardProjectionCollector) collectLatestUpdateJobs(serverNames []string) (map[string]jobs.Record, error) {
 	result := map[string]jobs.Record{}
+	serverNames = uniqueDashboardServerNames(serverNames)
+	if len(serverNames) == 0 {
+		return result, nil
+	}
 	db := c.deps.DB()
 	if db == nil {
 		return result, nil
 	}
-	rows, err := db.Query(
-		`SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		        error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
-		   FROM jobs
-		  WHERE kind = ?
-		  ORDER BY created_at DESC, id DESC
-		  LIMIT 1000`,
-		jobs.KindUpdate,
-	)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
-			return result, nil
+	for start := 0; start < len(serverNames); start += dashboardLatestJobBatchSize {
+		end := min(start+dashboardLatestJobBatchSize, len(serverNames))
+		batch := serverNames[start:end]
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, jobs.KindUpdate)
+		for _, serverName := range batch {
+			args = append(args, serverName)
 		}
-		return nil, err
+		rows, err := db.Query(latestUpdateJobsQuery(len(batch)), args...)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+				return result, nil
+			}
+			return nil, err
+		}
+		if err := appendLatestUpdateJobRows(result, rows); err != nil {
+			return nil, err
+		}
 	}
+	return result, nil
+}
+
+func latestUpdateJobsQuery(serverCount int) string {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", serverCount), ",")
+	return `WITH ranked_jobs AS (
+		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary,
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
+		       ROW_NUMBER() OVER (PARTITION BY server_name ORDER BY created_at DESC, id DESC) AS job_rank
+		  FROM jobs
+		 WHERE kind = ? AND server_name IN (` + placeholders + `)
+	)
+	SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary,
+	       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at
+	  FROM ranked_jobs
+	 WHERE job_rank = 1
+	 ORDER BY server_name ASC`
+}
+
+func appendLatestUpdateJobRows(result map[string]jobs.Record, rows *sql.Rows) error {
 	defer rows.Close()
 	for rows.Next() {
 		var record jobs.Record
@@ -213,7 +242,6 @@ func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs
 			&record.Status,
 			&record.Phase,
 			&record.Summary,
-			&record.LogsText,
 			&record.ErrorClass,
 			&record.RetryPolicyJSON,
 			&record.MetaJSON,
@@ -222,20 +250,11 @@ func (c dashboardProjectionCollector) collectLatestUpdateJobs() (map[string]jobs
 			&record.StartedAt,
 			&record.FinishedAt,
 		); err != nil {
-			return nil, err
+			return err
 		}
-		serverName := strings.TrimSpace(record.ServerName)
-		if serverName == "" {
-			continue
-		}
-		if _, exists := result[serverName]; !exists {
-			result[serverName] = record
-		}
+		result[record.ServerName] = record
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return result, nil
+	return rows.Err()
 }
 
 func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardCollectedUpdateHistory, error) {
@@ -311,7 +330,7 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 
 func (c dashboardProjectionCollector) collectCommandHistory(serverNames []string, from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
 	commandHistory := map[string][]DashboardCommandHistoryItem{}
-	serverNames = uniqueCommandHistoryServerNames(serverNames)
+	serverNames = uniqueDashboardServerNames(serverNames)
 	for start := 0; start < len(serverNames); start += dashboardCommandHistoryBatchSize {
 		end := min(start+dashboardCommandHistoryBatchSize, len(serverNames))
 		batch := serverNames[start:end]
@@ -364,7 +383,7 @@ func (c dashboardProjectionCollector) appendCommandHistoryRows(commandHistory ma
 	return nil
 }
 
-func uniqueCommandHistoryServerNames(serverNames []string) []string {
+func uniqueDashboardServerNames(serverNames []string) []string {
 	unique := make([]string, 0, len(serverNames))
 	seen := make(map[string]struct{}, len(serverNames))
 	for _, serverName := range serverNames {

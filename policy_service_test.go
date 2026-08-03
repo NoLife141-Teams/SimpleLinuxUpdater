@@ -39,6 +39,13 @@ func testPolicyServiceDeps() PolicyServiceDeps {
 	}
 }
 
+func TestPolicyServiceDepsWithDefaultsWiresRolloutHistory(t *testing.T) {
+	deps := policyServiceDepsWithDefaults(PolicyServiceDeps{})
+	if deps.ListRolloutRuns == nil {
+		t.Fatal("ListRolloutRuns is nil, want default policy repository lookup")
+	}
+}
+
 func TestPolicyServiceNormalizePolicyRequiresTarget(t *testing.T) {
 	policy := UpdatePolicy{
 		Name:          "Nightly",

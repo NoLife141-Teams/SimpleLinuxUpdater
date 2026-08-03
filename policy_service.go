@@ -48,6 +48,9 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	if deps.ListRuns == nil {
 		deps.ListRuns = listUpdatePolicyRuns
 	}
+	if deps.ListRolloutRuns == nil {
+		deps.ListRolloutRuns = defaultPolicyRepository().ListRolloutRuns
+	}
 	if deps.ReconcileRun == nil {
 		deps.ReconcileRun = func(run policypkg.Run) (policypkg.Run, error) {
 			return defaultScheduledRunLifecycle().ReconcileRun(context.Background(), run)

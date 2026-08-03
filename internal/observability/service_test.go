@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	auditpkg "debian-updater/internal/audit"
 	"debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
@@ -51,6 +52,9 @@ func newTestDB(t *testing.T, name string) (*sql.DB, string) {
 	`)
 	if err != nil {
 		t.Fatalf("create test schema: %v", err)
+	}
+	if err := auditpkg.EnsureSchema(db); err != nil {
+		t.Fatalf("create audit indexes: %v", err)
 	}
 	if err := jobs.EnsureSchema(db); err != nil {
 		t.Fatalf("create jobs schema: %v", err)

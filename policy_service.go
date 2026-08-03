@@ -36,6 +36,10 @@ func defaultPolicyService() *PolicyService {
 }
 
 func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
+	useDefaultPolicyRepository := deps.ListPolicies == nil &&
+		deps.LoadOverrides == nil &&
+		deps.LoadGlobalBlackouts == nil &&
+		deps.ListRuns == nil
 	if deps.ListPolicies == nil {
 		deps.ListPolicies = listUpdatePolicies
 	}
@@ -47,6 +51,9 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	}
 	if deps.ListRuns == nil {
 		deps.ListRuns = listUpdatePolicyRuns
+	}
+	if deps.ListRolloutRuns == nil && useDefaultPolicyRepository {
+		deps.ListRolloutRuns = defaultPolicyRepository().ListRolloutRuns
 	}
 	if deps.ReconcileRun == nil {
 		deps.ReconcileRun = func(run policypkg.Run) (policypkg.Run, error) {

@@ -298,6 +298,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			LoadOverrides:       deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts: deps.PolicyRepository.LoadGlobalBlackouts,
 			ListRuns:            deps.PolicyRepository.ListRuns,
+			ListRolloutRuns:     deps.PolicyRepository.ListRolloutRuns,
 			ReconcileRun: func(run policypkg.Run) (policypkg.Run, error) {
 				return scheduledRunLifecycleFromComposedApp(deps).ReconcileRun(deps.ScheduledRunReconciliationContext, run)
 			},

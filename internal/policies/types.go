@@ -215,6 +215,13 @@ type RunQuery struct {
 	PageSize       int
 }
 
+// RolloutRunScope identifies the complete persisted run set needed to evaluate
+// one canary-and-wave policy occurrence.
+type RolloutRunScope struct {
+	PolicyID        int64
+	ScheduledForUTC string
+}
+
 type RunPage struct {
 	Items      []Run
 	Page       int

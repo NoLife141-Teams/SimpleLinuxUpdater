@@ -3,6 +3,7 @@ package policies
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -183,7 +184,7 @@ func TestProcessDueSlotReleasesWavesOnlyAfterPreviousSuccess(t *testing.T) {
 		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
 		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
 		SnapshotServers:     func() []servers.Server { return serversSnapshot },
-		ListRuns:            func(int) ([]Run, error) { return append([]Run(nil), runs...), nil },
+		ListRolloutRuns:     func([]RolloutRunScope) ([]Run, error) { return append([]Run(nil), runs...), nil },
 		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
 			dispatched = append(dispatched, req)
 			runs = append(runs, Run{PolicyID: req.Policy.ID, ServerName: req.Server.Name, ScheduledForUTC: req.ScheduledForUTC, Status: RunRunning})
@@ -222,6 +223,70 @@ func TestProcessDueSlotReleasesWavesOnlyAfterPreviousSuccess(t *testing.T) {
 	}
 }
 
+func TestProcessDueSlotLoadsCanaryOutsideLegacyGlobalRunLimit(t *testing.T) {
+	repo, _ := newTestRepository(t)
+	policy := Policy{
+		ID: 42, Name: "Large fleet", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity,
+		ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00",
+		RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 1, WaveDelayMinutes: 5,
+	}
+	slot := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+	targetTime := CanonicalScheduledForUTC(slot, DefaultTimestampLayout, func() *time.Location { return time.UTC })
+	if _, inserted, err := repo.CreateRun(Run{
+		PolicyID: policy.ID, PolicyName: policy.Name, ServerName: "srv-a", ScheduledForUTC: targetTime,
+		ExecutionMode: ExecutionAutoApply, PackageScope: PackageScopeSecurity, Status: RunSucceeded,
+	}); err != nil || !inserted {
+		t.Fatalf("create canary = inserted %t, err %v", inserted, err)
+	}
+	for index := 0; index < 1001; index++ {
+		if _, inserted, err := repo.CreateRun(Run{
+			PolicyID: 100, PolicyName: "Unrelated", ServerName: fmt.Sprintf("noise-%04d", index),
+			ScheduledForUTC: "2026-08-04T03:00:00.000000000Z", ExecutionMode: ExecutionAutoApply,
+			PackageScope: PackageScopeSecurity, Status: RunSucceeded,
+		}); err != nil || !inserted {
+			t.Fatalf("create unrelated run %d = inserted %t, err %v", index, inserted, err)
+		}
+	}
+	legacyRuns, err := repo.ListRuns(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range legacyRuns {
+		if run.PolicyID == policy.ID && run.ScheduledForUTC == targetTime {
+			t.Fatal("regression fixture did not push the canary outside the legacy global limit")
+		}
+	}
+
+	var scopes []RolloutRunScope
+	var requests []ScheduledRunRequest
+	service := NewService(ServiceDeps{
+		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		ListRolloutRuns: func(requested []RolloutRunScope) ([]Run, error) {
+			scopes = append([]RolloutRunScope(nil), requested...)
+			return repo.ListRolloutRuns(requested)
+		},
+		SnapshotServers: func() []servers.Server {
+			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}, {Name: "srv-b", Tags: []string{"prod"}}}
+		},
+		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
+			requests = append(requests, req)
+			return ScheduledRunResult{Handled: true, Inserted: true}
+		},
+		CurrentLocation: func() *time.Location { return time.UTC },
+	})
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(6 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 || scopes[0].PolicyID != policy.ID || scopes[0].ScheduledForUTC != targetTime {
+		t.Fatalf("rollout scopes = %+v, want exact policy occurrence", scopes)
+	}
+	if len(requests) != 1 || requests[0].Server.Name != "srv-b" || requests[0].Outcome != "" {
+		t.Fatalf("requests = %+v, want the first wave released from persisted canary success", requests)
+	}
+}
+
 func TestProcessDueSlotStopsWavesAfterCanaryFailure(t *testing.T) {
 	policy := Policy{ID: 7, Name: "Guarded", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 5}
 	slot := time.Date(2026, 7, 31, 3, 0, 0, 0, time.UTC)
@@ -230,7 +295,7 @@ func TestProcessDueSlotStopsWavesAfterCanaryFailure(t *testing.T) {
 	var requests []ScheduledRunRequest
 	service := NewService(ServiceDeps{
 		ListPolicies: func() ([]Policy, error) { return []Policy{policy}, nil }, LoadOverrides: func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
-		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil }, ListRuns: func(int) ([]Run, error) { return runs, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil }, ListRolloutRuns: func([]RolloutRunScope) ([]Run, error) { return runs, nil },
 		SnapshotServers: func() []servers.Server {
 			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}, {Name: "srv-b", Tags: []string{"prod"}}, {Name: "srv-c", Tags: []string{"prod"}}}
 		},
@@ -259,7 +324,7 @@ func TestProcessDueSlotReconcilesAuthoritativeCanaryBeforeReleasingWave(t *testi
 		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
 		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
 		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
-		ListRuns:            func(int) ([]Run, error) { return runs, nil },
+		ListRolloutRuns:     func([]RolloutRunScope) ([]Run, error) { return runs, nil },
 		ReconcileRun: func(run Run) (Run, error) {
 			reconcileCalls++
 			run.Status = RunSucceeded
@@ -294,7 +359,7 @@ func TestProcessDueSlotReconcilesRestartInterruptedCanaryBeforeReleasingWave(t *
 		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
 		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
 		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
-		ListRuns:            func(int) ([]Run, error) { return runs, nil },
+		ListRolloutRuns:     func([]RolloutRunScope) ([]Run, error) { return runs, nil },
 		ReconcileRun: func(run Run) (Run, error) {
 			reconcileCalls++
 			run.Status = RunSucceeded
@@ -327,7 +392,7 @@ func TestProcessDueSlotKeepsWaveWaitingWhenGateReconciliationFails(t *testing.T)
 		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
 		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
 		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
-		ListRuns: func(int) ([]Run, error) {
+		ListRolloutRuns: func([]RolloutRunScope) ([]Run, error) {
 			return []Run{{ID: 72, PolicyID: policy.ID, ServerName: "srv-a", ScheduledForUTC: scheduled, Status: RunRunning, JobID: "canary-job"}}, nil
 		},
 		ReconcileRun: func(run Run) (Run, error) { return run, errors.New("database is locked") },

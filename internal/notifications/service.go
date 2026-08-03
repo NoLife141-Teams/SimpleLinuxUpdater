@@ -32,6 +32,8 @@ const (
 	EventTest               = "notification.test"
 
 	defaultAttempts                     = 3
+	defaultSQLiteContentionAttempts     = 20
+	defaultSQLiteContentionDelay        = 5 * time.Millisecond
 	defaultQueueSize                    = 64
 	defaultAdmissionPersistenceAttempts = 20
 	defaultOutboxPollInterval           = 250 * time.Millisecond
@@ -1041,12 +1043,12 @@ func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
 
 func (s *Service) retrySQLiteContention(operation func() error) error {
 	var err error
-	for attempt := 1; attempt <= defaultAttempts; attempt++ {
+	for attempt := 1; attempt <= defaultSQLiteContentionAttempts; attempt++ {
 		err = operation()
-		if err == nil || !isSQLiteContention(err) || attempt == defaultAttempts {
+		if err == nil || !isSQLiteContention(err) || attempt == defaultSQLiteContentionAttempts {
 			return err
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(defaultSQLiteContentionDelay)
 	}
 	return err
 }

@@ -3,6 +3,7 @@ package policies
 import (
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 
 	"debian-updater/internal/servers"
@@ -25,6 +26,7 @@ type Repository interface {
 	GetRun(id int64) (Run, error)
 	UpdateRun(id int64, update RunUpdate) error
 	ListRuns(limit int) ([]Run, error)
+	ListRolloutRuns(scopes []RolloutRunScope) ([]Run, error)
 	QueryRuns(query RunQuery) (RunPage, error)
 	MarkInterruptedRuns() error
 	LoadGlobalBlackouts() ([]BlackoutWindow, error)
@@ -147,6 +149,9 @@ func EnsureSchema(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_update_policy_runs_status ON update_policy_runs (status, scheduled_for_utc DESC)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_update_policy_runs_rollout_scope ON update_policy_runs (policy_id, scheduled_for_utc, server_name)"); err != nil {
 		return err
 	}
 	if err := ensureColumn(db, "include_tags_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
@@ -880,6 +885,77 @@ func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	return items, nil
+}
+
+func (r *SQLiteRepository) ListRolloutRuns(scopes []RolloutRunScope) ([]Run, error) {
+	if len(scopes) == 0 {
+		return []Run{}, nil
+	}
+
+	type scopeKey struct {
+		policyID        int64
+		scheduledForUTC string
+	}
+	unique := make(map[scopeKey]struct{}, len(scopes))
+	normalized := make([]scopeKey, 0, len(scopes))
+	for _, scope := range scopes {
+		key := scopeKey{
+			policyID:        scope.PolicyID,
+			scheduledForUTC: strings.TrimSpace(scope.ScheduledForUTC),
+		}
+		if key.policyID <= 0 || key.scheduledForUTC == "" {
+			return nil, errors.New("rollout run scope requires policy ID and scheduled time")
+		}
+		if _, exists := unique[key]; exists {
+			continue
+		}
+		unique[key] = struct{}{}
+		normalized = append(normalized, key)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		if normalized[i].policyID != normalized[j].policyID {
+			return normalized[i].policyID < normalized[j].policyID
+		}
+		return normalized[i].scheduledForUTC < normalized[j].scheduledForUTC
+	})
+
+	const scopesPerQuery = 400
+	items := make([]Run, 0)
+	for start := 0; start < len(normalized); start += scopesPerQuery {
+		end := min(start+scopesPerQuery, len(normalized))
+		where := make([]string, 0, end-start)
+		args := make([]any, 0, (end-start)*2)
+		for _, scope := range normalized[start:end] {
+			where = append(where, "(policy_id = ? AND scheduled_for_utc = ?)")
+			args = append(args, scope.policyID, scope.scheduledForUTC)
+		}
+		rows, err := r.database().Query(`
+			SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
+			       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+			  FROM update_policy_runs
+			 WHERE `+strings.Join(where, " OR ")+`
+			 ORDER BY policy_id ASC, scheduled_for_utc ASC, server_name ASC, id DESC
+		`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			run, scanErr := scanRunRow(rows)
+			if scanErr != nil {
+				_ = rows.Close()
+				return nil, scanErr
+			}
+			items = append(items, run)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
 	}
 	return items, nil
 }

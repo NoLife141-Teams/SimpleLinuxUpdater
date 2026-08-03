@@ -28,7 +28,6 @@ This index separates current guidance from historical implementation records. Pr
 ## Historical records
 
 - `release-v*-readiness.md` and `release-v*-smoke.md` are immutable evidence for specific releases.
-- [`plans/`](plans/) contains implementation plans and design records; consult [Architecture](architecture.md) and the current code for shipped behavior.
 - [`archive/`](archive/) contains superseded plans and one-time stabilization records.
 - [Operator application shell evidence](operator-application-shell-evidence.md) and [UI quality evidence](ui-quality-evidence.md) are dated visual evidence, not current product specifications.
 - [`CHANGELOG.md`](../CHANGELOG.md) is the chronological release history; released entries are not rewritten when behavior later changes.

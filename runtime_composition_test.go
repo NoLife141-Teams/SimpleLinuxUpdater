@@ -32,6 +32,7 @@ type fixedInventoryRepository struct {
 
 type reloadTrackingNotificationLifecycle struct {
 	reloadErr error
+	prepares  int
 	reloads   int
 }
 
@@ -56,6 +57,11 @@ func (*reloadTrackingNotificationLifecycle) TestDelivery(context.Context) (notif
 }
 
 func (*reloadTrackingNotificationLifecycle) Close(context.Context) error { return nil }
+
+func (s *reloadTrackingNotificationLifecycle) PreparePersistenceReplacement(context.Context) error {
+	s.prepares++
+	return nil
+}
 
 func (s *reloadTrackingNotificationLifecycle) ReloadPersistence(context.Context) error {
 	s.reloads++
@@ -99,6 +105,9 @@ func TestRuntimeCompositionReloadRestoredStateRehydratesNotificationPersistence(
 	}
 	if notifications.reloads != 1 {
 		t.Fatalf("notification persistence reloads=%d, want 1", notifications.reloads)
+	}
+	if notifications.prepares != 1 {
+		t.Fatalf("notification persistence preparations=%d, want 1", notifications.prepares)
 	}
 }
 

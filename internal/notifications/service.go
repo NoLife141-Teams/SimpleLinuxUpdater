@@ -224,6 +224,10 @@ type PersistenceReloader interface {
 	ReloadPersistence(context.Context) error
 }
 
+type PersistenceReplacementPreparer interface {
+	PreparePersistenceReplacement(context.Context) error
+}
+
 type WebhookPayload struct {
 	EventType  string         `json:"event_type"`
 	Action     string         `json:"action"`
@@ -252,18 +256,23 @@ type ServiceDeps struct {
 	Retention       time.Duration
 	PruneInterval   time.Duration
 	NewID           func() string
+	NextOutboxWake  func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
 }
 
 type Service struct {
 	deps ServiceDeps
 
-	settingsMu  sync.Mutex
-	lifecycleMu sync.Mutex
-	wake        chan struct{}
-	closing     bool
-	cancel      context.CancelFunc
-	done        chan struct{}
-	initErr     error
+	settingsMu          sync.Mutex
+	lifecycleMu         sync.Mutex
+	persistenceMu       sync.Mutex
+	persistencePaused   bool
+	persistenceActive   int
+	replacementOutcomes map[string]outboxOutcome
+	wake                chan struct{}
+	closing             bool
+	cancel              context.CancelFunc
+	done                chan struct{}
+	initErr             error
 }
 
 func NewService(deps ServiceDeps) *Service {
@@ -305,6 +314,9 @@ func NewService(deps ServiceDeps) *Service {
 	if deps.NewID == nil {
 		deps.NewID = newOutboxID
 	}
+	if deps.NextOutboxWake == nil {
+		deps.NextOutboxWake = nextOutboxWake
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{
 		deps:   deps,
@@ -342,6 +354,7 @@ func (s *Service) run(ctx context.Context) {
 	var retryTimer *time.Timer
 	var retryC <-chan time.Time
 	for {
+		prune := false
 		select {
 		case <-ctx.Done():
 			if retryTimer != nil {
@@ -358,6 +371,12 @@ func (s *Service) run(ctx context.Context) {
 			retryTimer = nil
 			retryC = nil
 		case <-pruneTicker.C:
+			prune = true
+		}
+		if !s.beginPersistence(ctx) {
+			return
+		}
+		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
 				s.deps.Logf("notification outbox pruning failed: %v", err)
 			}
@@ -375,6 +394,7 @@ func (s *Service) run(ctx context.Context) {
 			}
 			if row == nil {
 				if s.isClosing() {
+					s.endPersistence()
 					return
 				}
 				break
@@ -382,9 +402,11 @@ func (s *Service) run(ctx context.Context) {
 			s.processOutboxRow(ctx, *row)
 		}
 		if claimFailed && s.isClosing() {
+			s.endPersistence()
 			return
 		}
 		if claimFailed {
+			s.endPersistence()
 			delay := s.deps.PollInterval
 			if delay <= 0 {
 				delay = defaultOutboxPollInterval
@@ -394,10 +416,22 @@ func (s *Service) run(ctx context.Context) {
 			continue
 		}
 		if ctx.Err() != nil {
+			s.endPersistence()
 			continue
 		}
-		nextAt, scheduled, err := nextOutboxWake(ctx, s.database(), s.deps.ClaimTTL)
-		if err != nil || !scheduled {
+		nextAt, scheduled, err := s.deps.NextOutboxWake(ctx, s.database(), s.deps.ClaimTTL)
+		s.endPersistence()
+		if err != nil {
+			s.deps.Logf("notification outbox wake scheduling failed: %v", err)
+			delay := s.deps.PollInterval
+			if delay <= 0 {
+				delay = defaultOutboxPollInterval
+			}
+			retryTimer = time.NewTimer(delay)
+			retryC = retryTimer.C
+			continue
+		}
+		if !scheduled {
 			continue
 		}
 		delay := nextAt.Sub(s.deps.Now().UTC())
@@ -407,6 +441,87 @@ func (s *Service) run(ctx context.Context) {
 		retryTimer = time.NewTimer(delay)
 		retryC = retryTimer.C
 	}
+}
+
+func (s *Service) beginPersistence(ctx context.Context) bool {
+	for {
+		s.persistenceMu.Lock()
+		if !s.persistencePaused {
+			s.persistenceActive++
+			s.persistenceMu.Unlock()
+			return true
+		}
+		s.persistenceMu.Unlock()
+		timer := time.NewTimer(2 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Service) endPersistence() {
+	s.persistenceMu.Lock()
+	if s.persistenceActive > 0 {
+		s.persistenceActive--
+	}
+	s.persistenceMu.Unlock()
+}
+
+func (s *Service) pausePersistence(ctx context.Context) error {
+	for {
+		s.persistenceMu.Lock()
+		s.persistencePaused = true
+		active := s.persistenceActive
+		s.persistenceMu.Unlock()
+		if active == 0 {
+			return nil
+		}
+		timer := time.NewTimer(2 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			s.resumePersistence()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Service) resumePersistence() {
+	s.persistenceMu.Lock()
+	s.persistencePaused = false
+	s.persistenceMu.Unlock()
+	s.signalWorker()
+}
+
+func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
+	if s == nil {
+		return errors.New("notification delivery lifecycle is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.pausePersistence(ctx); err != nil {
+		return err
+	}
+	s.persistenceMu.Lock()
+	alreadyPrepared := s.replacementOutcomes != nil
+	s.persistenceMu.Unlock()
+	if alreadyPrepared {
+		return nil
+	}
+	outcomes, err := loadTerminalOutboxOutcomes(ctx, s.database())
+	if err != nil {
+		s.resumePersistence()
+		return err
+	}
+	s.persistenceMu.Lock()
+	s.replacementOutcomes = outcomes
+	s.persistenceMu.Unlock()
+	return nil
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has
@@ -423,6 +538,9 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if s.closing {
 		return errors.New("notification delivery lifecycle is closing")
 	}
+	if err := s.pausePersistence(ctx); err != nil {
+		return err
+	}
 	db := s.database()
 	if db == nil {
 		return errors.New("notification outbox database is unavailable")
@@ -433,11 +551,20 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL); err != nil {
 		return err
 	}
+	s.persistenceMu.Lock()
+	outcomes := s.replacementOutcomes
+	s.persistenceMu.Unlock()
+	if err := restoreTerminalOutboxOutcomes(ctx, db, outcomes, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	if _, err := pruneOutbox(ctx, db, s.deps.Now(), s.deps.Retention); err != nil {
 		return err
 	}
 	s.initErr = nil
-	s.signalWorker()
+	s.persistenceMu.Lock()
+	s.replacementOutcomes = nil
+	s.persistenceMu.Unlock()
+	s.resumePersistence()
 	return nil
 }
 
@@ -448,6 +575,10 @@ func (s *Service) Accept(intent DeliveryIntent) Admission {
 		return Admission{State: AdmissionClosing}
 	}
 	s.lifecycleMu.Unlock()
+	if !s.beginPersistence(context.Background()) {
+		return Admission{State: AdmissionClosing}
+	}
+	defer s.endPersistence()
 
 	settings, eventType, err := s.notificationPlan(intent, false)
 	if err != nil {

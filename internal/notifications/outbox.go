@@ -47,6 +47,58 @@ type outboxOutcome struct {
 	DurationMS    int64
 }
 
+func loadTerminalOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]outboxOutcome, error) {
+	outcomes := make(map[string]outboxOutcome)
+	if db == nil {
+		return outcomes, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, state, attempts, next_attempt_at, attempted_at, completed_at,
+		       status_code, error, duration_ms
+		  FROM notification_outbox
+		 WHERE state IN (?, ?, ?)
+	`, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var outcome outboxOutcome
+		if err := rows.Scan(&id, &outcome.State, &outcome.Attempts, &outcome.NextAttemptAt,
+			&outcome.AttemptedAt, &outcome.CompletedAt, &outcome.StatusCode, &outcome.Error,
+			&outcome.DurationMS); err != nil {
+			return nil, err
+		}
+		outcomes[id] = outcome
+	}
+	return outcomes, rows.Err()
+}
+
+func restoreTerminalOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map[string]outboxOutcome, now string) error {
+	if db == nil || len(outcomes) == 0 {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for id, outcome := range outcomes {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE notification_outbox
+			   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
+			       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
+			 WHERE id = ? AND state IN (?, ?, ?)
+		`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
+			outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 type outboxCounts struct {
 	Pending  int
 	Retrying int

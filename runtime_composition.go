@@ -39,6 +39,11 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("prepare persistence replacement: %w", err)
 	}
+	if preparer, ok := c.deps.NotificationService.(notificationpkg.PersistenceReplacementPreparer); ok {
+		if err := preparer.PreparePersistenceReplacement(ctx); err != nil {
+			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
+		}
+	}
 	if c.resetCaches != nil {
 		c.resetCaches()
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -231,6 +232,35 @@ func TestNotificationOutboxKeepsPollingAfterRepeatedClaimFailures(t *testing.T) 
 	}
 }
 
+func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) {
+	db := openOutboxTestDB(t, "wake-scheduling-retry.db")
+	server, requests := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	now := time.Now().UTC()
+	rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "wake-scheduling-retry", Action: EventUpdateComplete, TargetName: "srv-retry", MetaJSON: `{}`}, now)
+	if _, err := db.Exec("UPDATE notification_outbox SET state=?, next_attempt_at=? WHERE id=?", outboxStateRetrying, now.Add(25*time.Millisecond).Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := outboxTestDeps(db, 5*time.Millisecond)
+	var wakeCalls int32
+	deps.NextOutboxWake = func(ctx context.Context, db *sql.DB, ttl time.Duration) (time.Time, bool, error) {
+		if atomic.AddInt32(&wakeCalls, 1) == 1 {
+			return time.Time{}, false, errors.New("temporary wake query failure")
+		}
+		return nextOutboxWake(ctx, db, ttl)
+	}
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	waitForLatestOutboxState(t, db, outboxStateSucceeded)
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests=%d, want delivery after wake scheduling retry", got)
+	}
+	if got := atomic.LoadInt32(&wakeCalls); got < 2 {
+		t.Fatalf("wake scheduling calls=%d, want retry after failure", got)
+	}
+}
+
 func TestNotificationOutboxSkipsDestinationDisabledBeforeReplay(t *testing.T) {
 	db := openOutboxTestDB(t, "disabled.db")
 	server, requests := newOutboxHTTPServer(t)
@@ -356,6 +386,43 @@ func TestNotificationOutboxReloadPersistenceDrainsRestoredRows(t *testing.T) {
 	waitForLatestOutboxState(t, restoredDB, outboxStateSucceeded)
 	if got := atomic.LoadInt32(requests); got != 1 {
 		t.Fatalf("restored notification requests=%d, want 1", got)
+	}
+	var state string
+	if err := restoredDB.QueryRow("SELECT state FROM notification_outbox WHERE id=?", rowID).Scan(&state); err != nil || state != outboxStateSucceeded {
+		t.Fatalf("restored row state=%q error=%v, want succeeded", state, err)
+	}
+}
+
+func TestNotificationOutboxReloadPreservesCompletedDeliveryOutcome(t *testing.T) {
+	initialDB := openOutboxTestDB(t, "reload-completed-initial.db")
+	server, requests := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, initialDB, server.URL, true)
+	var currentDB atomic.Pointer[sql.DB]
+	currentDB.Store(initialDB)
+	deps := outboxTestDeps(initialDB, 5*time.Millisecond)
+	deps.DB = currentDB.Load
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	intent := DeliveryIntent{ID: "restored-completed", Action: EventUpdateComplete, TargetName: "srv-completed", MetaJSON: `{}`}
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		t.Fatalf("Accept()=%+v, want admitted", got)
+	}
+	waitForLatestOutboxState(t, initialDB, outboxStateSucceeded)
+	if err := svc.PreparePersistenceReplacement(context.Background()); err != nil {
+		t.Fatalf("PreparePersistenceReplacement() error=%v", err)
+	}
+
+	restoredDB := openOutboxTestDB(t, "reload-completed-restored.db")
+	prepareOutboxSettings(t, restoredDB, server.URL, true)
+	rowID := insertPendingOutboxIntent(t, restoredDB, intent, time.Now().UTC())
+	currentDB.Store(restoredDB)
+	if err := svc.ReloadPersistence(context.Background()); err != nil {
+		t.Fatalf("ReloadPersistence() error=%v", err)
+	}
+	waitForLatestOutboxState(t, restoredDB, outboxStateSucceeded)
+	time.Sleep(25 * time.Millisecond)
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests=%d, want restored pending copy suppressed after completed delivery", got)
 	}
 	var state string
 	if err := restoredDB.QueryRow("SELECT state FROM notification_outbox WHERE id=?", rowID).Scan(&state); err != nil || state != outboxStateSucceeded {

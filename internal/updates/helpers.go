@@ -472,6 +472,11 @@ func BuildUpgradePlan(pending []servers.PendingUpdate, fullUpgradeStdout string,
 		FullUpgradeNewPackages:     parseAptSummaryPackages(fullUpgradeStdout, "the following new packages will be installed:"),
 		FullUpgradeRemovedPackages: parseAptSummaryPackages(fullUpgradeStdout, "the following packages will be removed:"),
 	}
+	if facts, ok := parseAptDiskFacts(fullUpgradeStdout); fullUpgradePlanAvailable && ok {
+		plan.FullUpgradeDiskFactsAvailable = true
+		plan.FullUpgradeArchiveBytes = facts.ArchiveBytes
+		plan.FullUpgradeInstalledDeltaBytes = facts.InstalledDeltaBytes
+	}
 	plan.KeptBackSecurityPackageCount = len(KeptBackSecurityPackagesFromPendingUpdates(pending))
 	fullUpgradePackages := parseAptUpgradeSummaryPackages(strings.Split(fullUpgradeStdout, "\n"))
 	plan.FullUpgradePackageCount = len(fullUpgradePackages)
@@ -491,14 +496,35 @@ func BuildUpgradePlan(pending []servers.PendingUpdate, fullUpgradeStdout string,
 			plan.TotalSecurityCount++
 		}
 	}
-	estimate := EstimatePlanDiskSpace(plan)
-	plan.DiskSpaceRequiredKB = estimate.RequiredKB
-	plan.DiskSpacePackageCount = estimate.PackageCount
-	plan.DiskSpaceNewPackageCount = estimate.NewPackageCount
+	applyPlanDiskEstimate(&plan)
 	return plan
 }
 
 func EstimatePlanDiskSpace(plan servers.UpgradePlan) PlanDiskSpaceEstimate {
+	if plan.FullUpgradePlanAvailable && plan.FullUpgradeDiskFactsAvailable && (!plan.KeptBackSecurityPlanAvailable || plan.KeptBackDiskFactsAvailable) {
+		facts := aptDiskFacts{
+			ArchiveBytes:        plan.FullUpgradeArchiveBytes,
+			InstalledDeltaBytes: plan.FullUpgradeInstalledDeltaBytes,
+		}
+		if plan.KeptBackSecurityPlanAvailable {
+			if plan.KeptBackArchiveBytes > facts.ArchiveBytes {
+				facts.ArchiveBytes = plan.KeptBackArchiveBytes
+			}
+			if plan.KeptBackInstalledDeltaBytes > facts.InstalledDeltaBytes {
+				facts.InstalledDeltaBytes = plan.KeptBackInstalledDeltaBytes
+			}
+		}
+		if exact, ok := exactPlanDiskSpaceEstimate(facts); ok {
+			counts := estimatePlanDiskSpaceByPackages(plan)
+			exact.PackageCount = counts.PackageCount
+			exact.NewPackageCount = counts.NewPackageCount
+			return exact
+		}
+	}
+	return estimatePlanDiskSpaceByPackages(plan)
+}
+
+func estimatePlanDiskSpaceByPackages(plan servers.UpgradePlan) PlanDiskSpaceEstimate {
 	packageCount := plan.FullUpgradePackageCount
 	if fallback := plan.StandardPackageCount + plan.KeptBackPackageCount; packageCount < fallback {
 		packageCount = fallback
@@ -508,10 +534,67 @@ func EstimatePlanDiskSpace(plan servers.UpgradePlan) PlanDiskSpaceEstimate {
 		newPackageCount = keptBackNew
 	}
 	return PlanDiskSpaceEstimate{
-		RequiredKB:      PlanDiskBaseReserveKB + int64(packageCount)*PlanDiskPerPackageKB + int64(newPackageCount)*PlanDiskPerNewPackageKB,
-		PackageCount:    packageCount,
-		NewPackageCount: newPackageCount,
+		RequiredKB:              PlanDiskBaseReserveKB + int64(packageCount)*PlanDiskPerPackageKB + int64(newPackageCount)*PlanDiskPerNewPackageKB,
+		PackageCount:            packageCount,
+		NewPackageCount:         newPackageCount,
+		Source:                  PlanDiskSourceEstimate,
+		OperationalReserveBytes: PlanDiskBaseReserveKB * 1024,
 	}
+}
+
+func exactPlanDiskSpaceEstimate(facts aptDiskFacts) (PlanDiskSpaceEstimate, bool) {
+	if facts.ArchiveBytes < 0 || facts.InstalledDeltaBytes < 0 {
+		return PlanDiskSpaceEstimate{}, false
+	}
+	growth := facts.InstalledDeltaBytes
+	if facts.ArchiveBytes > math.MaxInt64-growth {
+		return PlanDiskSpaceEstimate{}, false
+	}
+	payload := facts.ArchiveBytes + growth
+	margin := payload / 10
+	if payload%10 != 0 {
+		margin++
+	}
+	if margin < PlanDiskExactMarginMinBytes {
+		margin = PlanDiskExactMarginMinBytes
+	}
+	if margin > PlanDiskExactMarginMaxBytes {
+		margin = PlanDiskExactMarginMaxBytes
+	}
+	reserve := PlanDiskBaseReserveKB * 1024
+	if payload > math.MaxInt64-margin || payload+margin > math.MaxInt64-reserve {
+		return PlanDiskSpaceEstimate{}, false
+	}
+	requiredBytes := payload + margin + reserve
+	requiredKB := requiredBytes / 1024
+	if requiredBytes%1024 != 0 {
+		requiredKB++
+	}
+	return PlanDiskSpaceEstimate{
+		RequiredKB:              requiredKB,
+		Source:                  PlanDiskSourceExact,
+		ArchiveBytes:            facts.ArchiveBytes,
+		InstalledDeltaBytes:     facts.InstalledDeltaBytes,
+		InstalledGrowthBytes:    growth,
+		SafetyMarginBytes:       margin,
+		OperationalReserveBytes: reserve,
+	}, true
+}
+
+func applyPlanDiskEstimate(plan *servers.UpgradePlan) {
+	if plan == nil {
+		return
+	}
+	estimate := EstimatePlanDiskSpace(*plan)
+	plan.DiskSpaceRequiredKB = estimate.RequiredKB
+	plan.DiskSpacePackageCount = estimate.PackageCount
+	plan.DiskSpaceNewPackageCount = estimate.NewPackageCount
+	plan.DiskSpaceSource = estimate.Source
+	plan.DiskSpaceArchiveBytes = estimate.ArchiveBytes
+	plan.DiskSpaceInstalledDeltaBytes = estimate.InstalledDeltaBytes
+	plan.DiskSpaceInstalledGrowthBytes = estimate.InstalledGrowthBytes
+	plan.DiskSpaceSafetyMarginBytes = estimate.SafetyMarginBytes
+	plan.DiskSpaceOperationalReserveBytes = estimate.OperationalReserveBytes
 }
 
 func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
@@ -521,10 +604,12 @@ func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
 	plan.KeptBackSecurityPlanAvailable = true
 	plan.KeptBackSecurityNewPackages = parseAptSummaryPackages(stdout, "the following new packages will be installed:")
 	plan.KeptBackSecurityRemovedPackages = parseAptSummaryPackages(stdout, "the following packages will be removed:")
-	estimate := EstimatePlanDiskSpace(*plan)
-	plan.DiskSpaceRequiredKB = estimate.RequiredKB
-	plan.DiskSpacePackageCount = estimate.PackageCount
-	plan.DiskSpaceNewPackageCount = estimate.NewPackageCount
+	if facts, ok := parseAptDiskFacts(stdout); ok {
+		plan.KeptBackDiskFactsAvailable = true
+		plan.KeptBackArchiveBytes = facts.ArchiveBytes
+		plan.KeptBackInstalledDeltaBytes = facts.InstalledDeltaBytes
+	}
+	applyPlanDiskEstimate(plan)
 }
 
 func ParseAptListMetadataEntry(line string) (servers.PendingUpdate, bool) {
@@ -890,7 +975,7 @@ func BuildSelectedInstallSimulationCmd(packages []string) string {
 	if len(escaped) == 0 {
 		return ""
 	}
-	return ReadOnlyAptCommand("apt-get -s install -- " + strings.Join(escaped, " "))
+	return ReadOnlyAptCommand("apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only install -- " + strings.Join(escaped, " "))
 }
 
 func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {

@@ -115,11 +115,12 @@ Common reasons:
 
 - Insufficient free disk space on `/var` or `/`
 - Baseline disk space below `1 GiB` (1048576 KB)
-- Plan-aware reserve is too small after simulation: `1 GiB` base + `64 MiB` per planned package + `512 MiB` per newly installed package
+- Exact plan requirement is too large for the filesystem holding the configured APT archive cache, `/var`, or `/`; it includes archive bytes, positive installed growth, a bounded safety margin, and the `1 GiB` operational reserve
+- APT did not provide trustworthy size facts and the compatibility estimate is too large: `1 GiB` base + `64 MiB` per planned package + `512 MiB` per newly installed package
 - APT/DPKG health failures (`dpkg --audit` or `apt-get check`)
 - Lock contention
 
-The plan-aware failure log records required space, free space, planned packages, and newly installed packages. Free space or remove unnecessary files, then run a fresh scan so the requirement is recalculated from the new plan.
+The plan-aware failure log identifies the calculation source (`exact` or `estimate`) and blocking filesystem. Exact results include archive bytes, installed growth, safety margin, and reserve; estimated results include planned and newly installed package counts. Free space or remove unnecessary files, then run a fresh scan so the requirement is recalculated from the new plan. The updater never runs cleanup or autoremove automatically.
 
 ## APT/DPKG health failures
 

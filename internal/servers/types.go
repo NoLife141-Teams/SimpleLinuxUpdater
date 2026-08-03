@@ -136,21 +136,33 @@ type VulnerabilityFinding struct {
 }
 
 type UpgradePlan struct {
-	StandardPackageCount            int      `json:"standard_package_count"`
-	KeptBackPackageCount            int      `json:"kept_back_package_count"`
-	StandardSecurityCount           int      `json:"standard_security_count"`
-	TotalSecurityCount              int      `json:"total_security_count"`
-	FullUpgradePlanAvailable        bool     `json:"full_upgrade_plan_available"`
-	FullUpgradePackageCount         int      `json:"full_upgrade_package_count"`
-	FullUpgradeNewPackages          []string `json:"full_upgrade_new_packages"`
-	FullUpgradeRemovedPackages      []string `json:"full_upgrade_removed_packages"`
-	KeptBackSecurityPlanAvailable   bool     `json:"kept_back_security_plan_available"`
-	KeptBackSecurityPackageCount    int      `json:"kept_back_security_package_count"`
-	KeptBackSecurityNewPackages     []string `json:"kept_back_security_new_packages"`
-	KeptBackSecurityRemovedPackages []string `json:"kept_back_security_removed_packages"`
-	DiskSpaceRequiredKB             int64    `json:"disk_space_required_kb"`
-	DiskSpacePackageCount           int      `json:"disk_space_package_count"`
-	DiskSpaceNewPackageCount        int      `json:"disk_space_new_package_count"`
+	StandardPackageCount             int      `json:"standard_package_count"`
+	KeptBackPackageCount             int      `json:"kept_back_package_count"`
+	StandardSecurityCount            int      `json:"standard_security_count"`
+	TotalSecurityCount               int      `json:"total_security_count"`
+	FullUpgradePlanAvailable         bool     `json:"full_upgrade_plan_available"`
+	FullUpgradePackageCount          int      `json:"full_upgrade_package_count"`
+	FullUpgradeNewPackages           []string `json:"full_upgrade_new_packages"`
+	FullUpgradeRemovedPackages       []string `json:"full_upgrade_removed_packages"`
+	KeptBackSecurityPlanAvailable    bool     `json:"kept_back_security_plan_available"`
+	KeptBackSecurityPackageCount     int      `json:"kept_back_security_package_count"`
+	KeptBackSecurityNewPackages      []string `json:"kept_back_security_new_packages"`
+	KeptBackSecurityRemovedPackages  []string `json:"kept_back_security_removed_packages"`
+	FullUpgradeDiskFactsAvailable    bool     `json:"full_upgrade_disk_facts_available,omitempty"`
+	FullUpgradeArchiveBytes          int64    `json:"full_upgrade_archive_bytes,omitempty"`
+	FullUpgradeInstalledDeltaBytes   int64    `json:"full_upgrade_installed_delta_bytes,omitempty"`
+	KeptBackDiskFactsAvailable       bool     `json:"kept_back_disk_facts_available,omitempty"`
+	KeptBackArchiveBytes             int64    `json:"kept_back_archive_bytes,omitempty"`
+	KeptBackInstalledDeltaBytes      int64    `json:"kept_back_installed_delta_bytes,omitempty"`
+	DiskSpaceSource                  string   `json:"disk_space_source,omitempty"`
+	DiskSpaceArchiveBytes            int64    `json:"disk_space_archive_bytes,omitempty"`
+	DiskSpaceInstalledDeltaBytes     int64    `json:"disk_space_installed_delta_bytes,omitempty"`
+	DiskSpaceInstalledGrowthBytes    int64    `json:"disk_space_installed_growth_bytes,omitempty"`
+	DiskSpaceSafetyMarginBytes       int64    `json:"disk_space_safety_margin_bytes,omitempty"`
+	DiskSpaceOperationalReserveBytes int64    `json:"disk_space_operational_reserve_bytes,omitempty"`
+	DiskSpaceRequiredKB              int64    `json:"disk_space_required_kb"`
+	DiskSpacePackageCount            int      `json:"disk_space_package_count"`
+	DiskSpaceNewPackageCount         int      `json:"disk_space_new_package_count"`
 }
 
 type HostKeyScanResult struct {

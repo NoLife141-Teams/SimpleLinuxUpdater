@@ -27,7 +27,7 @@ var (
 		RootOrSudoCommand("apt-get check")
 	AptListUpgradableCmd = ReadOnlyAptCommand("apt-get -s upgrade")
 	AptListMetadataCmd   = ReadOnlyAptCommand("apt list --upgradable") + " 2>/dev/null"
-	AptFullUpgradeSimCmd = ReadOnlyAptCommand("apt-get -s full-upgrade")
+	AptFullUpgradeSimCmd = ReadOnlyAptCommand("apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only full-upgrade")
 )
 
 func buildAptRepairLockGuard(lockProbeCmd string) string {
@@ -56,19 +56,23 @@ const (
 	MinSSHCommandTimeout     = 1 * time.Second
 	MaxSSHCommandTimeout     = 30 * time.Minute
 
-	CVELookupMaxPerPackage     = 12
-	CVELookupCommandTimeout    = 20 * time.Second
-	ApprovalPollInterval       = 200 * time.Millisecond
-	RebootVerificationInterval = 5 * time.Second
-	RebootVerificationAttempts = 24
-	PlanDiskBaseReserveKB      = int64(1024 * 1024)
-	PlanDiskPerPackageKB       = int64(64 * 1024)
-	PlanDiskPerNewPackageKB    = int64(512 * 1024)
-	PostcheckNameAptHealth     = "post_apt_health"
-	PostcheckNameFailedUnits   = "failed_units"
-	PostcheckNameRebootNeeded  = "reboot_required"
-	PostcheckNameCustomCmd     = "custom_command"
-	UpdateCompleteAction       = "update.complete"
+	CVELookupMaxPerPackage      = 12
+	CVELookupCommandTimeout     = 20 * time.Second
+	ApprovalPollInterval        = 200 * time.Millisecond
+	RebootVerificationInterval  = 5 * time.Second
+	RebootVerificationAttempts  = 24
+	PlanDiskBaseReserveKB       = int64(1024 * 1024)
+	PlanDiskPerPackageKB        = int64(64 * 1024)
+	PlanDiskPerNewPackageKB     = int64(512 * 1024)
+	PlanDiskExactMarginMinBytes = int64(64 * 1024 * 1024)
+	PlanDiskExactMarginMaxBytes = int64(512 * 1024 * 1024)
+	PlanDiskSourceExact         = "exact"
+	PlanDiskSourceEstimate      = "estimate"
+	PostcheckNameAptHealth      = "post_apt_health"
+	PostcheckNameFailedUnits    = "failed_units"
+	PostcheckNameRebootNeeded   = "reboot_required"
+	PostcheckNameCustomCmd      = "custom_command"
+	UpdateCompleteAction        = "update.complete"
 )
 
 type RetryPolicy struct {
@@ -95,9 +99,15 @@ type PrecheckSummary struct {
 }
 
 type PlanDiskSpaceEstimate struct {
-	RequiredKB      int64
-	PackageCount    int
-	NewPackageCount int
+	RequiredKB              int64
+	PackageCount            int
+	NewPackageCount         int
+	Source                  string
+	ArchiveBytes            int64
+	InstalledDeltaBytes     int64
+	InstalledGrowthBytes    int64
+	SafetyMarginBytes       int64
+	OperationalReserveBytes int64
 }
 
 type PostcheckSummary struct {

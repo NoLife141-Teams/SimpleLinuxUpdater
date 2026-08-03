@@ -30,7 +30,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - `apt update` + pending package listing, gated behind approval
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
 - Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
-- Baseline and plan-aware disk/apt pre-checks before approval, plus post-update health checks
+- Baseline and plan-aware disk/APT pre-checks before approval, including exact simulated size facts with a conservative fallback, plus post-update health checks
 - Durable APT reconciliation and guided repair after uncertain package-manager outcomes
 - Controlled reboot with SSH recovery, uptime reset, and reboot-required verification
 - Per-server Recommended action guidance on Status and immediate eligibility-aware bulk actions

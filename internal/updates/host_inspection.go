@@ -3,7 +3,9 @@ package updates
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,6 +24,8 @@ const (
 	hostFactsLatestInstalledKernelCmd = "sh -c \"find /boot -maxdepth 1 -type f -name 'vmlinuz-*' -print 2>/dev/null | sed 's#^.*/vmlinuz-##' | sort -V | tail -n 1\""
 	hostFactsUptimeCmd                = "cat /proc/uptime"
 )
+
+const PlanDiskSpaceProbeCmd = `sh -c 'archive_config=$(/usr/bin/apt-config shell archive_dir Dir::Cache::archives/d) || exit 1; eval "$archive_config" || exit 1; archive_dir="${archive_dir%/}"; [ -n "$archive_dir" ] || archive_dir=/; case "$archive_dir" in /*) ;; *) exit 1;; esac; probe_path() { label=$1; requested=$2; probe="$requested"; while [ ! -e "$probe" ] && [ "$probe" != / ]; do probe="${probe%/*}"; [ -n "$probe" ] || probe=/; done; device=$(stat -Lc %d "$probe") || exit 1; available=$(df -Pk "$probe" | awk "NR==2 {print \$4}") || exit 1; printf "%s\t%s\t%s\t%s\n" "$label" "$device" "$available" "$requested"; }; probe_path archive "$archive_dir" && probe_path var /var && probe_path root /'`
 
 var (
 	precheckLocksCmd       = AptExtendedLockProbeCmd
@@ -67,7 +71,7 @@ func (s *productionHostMaintenanceSession) checkDiskSpace(ctx context.Context) P
 }
 
 func (s *productionHostMaintenanceSession) checkPlanDiskSpace(ctx context.Context, plan servers.UpgradePlan) PrecheckResult {
-	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDiskSpaceCmd)
+	stdout, stderr, err := s.runInspectionCommand(ctx, PlanDiskSpaceProbeCmd)
 	return planDiskSpaceCheckResult(stdout, stderr, err, plan)
 }
 
@@ -77,19 +81,164 @@ func planDiskSpaceCheckResult(stdout, stderr string, err error, plan servers.Upg
 	if err != nil {
 		return PrecheckResult{Name: "disk_space_plan", Details: boundedInspectionDetail("Failed to read free disk space for the upgrade plan: %v", err), Output: output}
 	}
-	minFreeKB, parseErr := parseMinimumFreeDiskKB(stdout)
+	filesystems, paths, parseErr := parsePlanDiskFilesystems(stdout)
 	if parseErr != nil {
 		return PrecheckResult{Name: "disk_space_plan", Details: boundedInspectionDetail("%s", parseErr.Error()), Output: output}
 	}
-	details := boundedInspectionDetail(
-		"Plan requires %.2f GiB reserved: %.2f GiB free for %d package(s), including %d new (base %.2f GiB + %.2f GiB/package + %.2f GiB/new package).",
-		inspectionKBToGiB(estimate.RequiredKB), inspectionKBToGiB(minFreeKB), estimate.PackageCount, estimate.NewPackageCount,
+	requirements, requirementErr := planDiskFilesystemRequirements(estimate, paths)
+	if requirementErr != nil {
+		return PrecheckResult{Name: "disk_space_plan", Details: boundedInspectionDetail("%s", requirementErr.Error()), Output: output}
+	}
+	details := planDiskSpaceDetails(estimate, filesystems, requirements)
+	devices := make([]string, 0, len(requirements))
+	for device := range requirements {
+		devices = append(devices, device)
+	}
+	sort.Strings(devices)
+	for _, device := range devices {
+		requiredBytes := requirements[device]
+		filesystem := filesystems[device]
+		if filesystem.AvailableBytes < requiredBytes {
+			return PrecheckResult{Name: "disk_space_plan", Details: planDiskSpaceFailureDetails(estimate, filesystem, requiredBytes), Output: output}
+		}
+	}
+	return PrecheckResult{Name: "disk_space_plan", Passed: true, Details: boundedInspectionDetail("Plan-aware disk space OK. %s", details), Output: output}
+}
+
+type planDiskFilesystem struct {
+	Device         string
+	AvailableBytes int64
+	Paths          []string
+}
+
+func parsePlanDiskFilesystems(stdout string) (map[string]planDiskFilesystem, map[string]string, error) {
+	filesystems := map[string]planDiskFilesystem{}
+	paths := map[string]string{}
+	for _, rawLine := range strings.Split(strings.ReplaceAll(stdout, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(rawLine) == "" {
+			continue
+		}
+		fields := strings.SplitN(rawLine, "\t", 4)
+		if len(fields) != 4 {
+			return nil, nil, fmt.Errorf("invalid plan disk filesystem output")
+		}
+		label, device, path := fields[0], fields[1], fields[3]
+		if label != "archive" && label != "var" && label != "root" {
+			return nil, nil, fmt.Errorf("unexpected plan disk path label %q", label)
+		}
+		if strings.TrimSpace(device) == "" || strings.TrimSpace(path) == "" {
+			return nil, nil, fmt.Errorf("invalid plan disk filesystem output")
+		}
+		if _, exists := paths[label]; exists {
+			return nil, nil, fmt.Errorf("duplicate plan disk path label %q", label)
+		}
+		availableKB, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || availableKB < 0 || availableKB > math.MaxInt64/1024 {
+			return nil, nil, fmt.Errorf("invalid free space value %q", fields[2])
+		}
+		availableBytes := availableKB * 1024
+		paths[label] = device
+		filesystem, exists := filesystems[device]
+		if !exists {
+			filesystem = planDiskFilesystem{Device: device, AvailableBytes: availableBytes}
+		} else if availableBytes < filesystem.AvailableBytes {
+			filesystem.AvailableBytes = availableBytes
+		}
+		if !stringSliceContains(filesystem.Paths, path) {
+			filesystem.Paths = append(filesystem.Paths, path)
+			sort.Strings(filesystem.Paths)
+		}
+		filesystems[device] = filesystem
+	}
+	for _, label := range []string{"archive", "var", "root"} {
+		if strings.TrimSpace(paths[label]) == "" {
+			return nil, nil, fmt.Errorf("missing plan disk filesystem for %s", label)
+		}
+	}
+	return filesystems, paths, nil
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func planDiskFilesystemRequirements(estimate PlanDiskSpaceEstimate, paths map[string]string) (map[string]int64, error) {
+	requirements := make(map[string]int64)
+	for _, device := range paths {
+		if estimate.Source == PlanDiskSourceEstimate {
+			if estimate.RequiredKB > math.MaxInt64/1024 {
+				return nil, fmt.Errorf("estimated plan disk requirement overflow")
+			}
+			requirements[device] = estimate.RequiredKB * 1024
+			continue
+		}
+		requirements[device] = estimate.OperationalReserveBytes + estimate.SafetyMarginBytes
+	}
+	if estimate.Source != PlanDiskSourceExact {
+		return requirements, nil
+	}
+	if !addPlanDiskRequirement(requirements, paths["archive"], estimate.ArchiveBytes) {
+		return nil, fmt.Errorf("exact archive disk requirement overflow")
+	}
+	installDevices := map[string]struct{}{paths["root"]: {}, paths["var"]: {}}
+	for device := range installDevices {
+		if !addPlanDiskRequirement(requirements, device, estimate.InstalledGrowthBytes) {
+			return nil, fmt.Errorf("exact installed disk requirement overflow")
+		}
+	}
+	return requirements, nil
+}
+
+func addPlanDiskRequirement(requirements map[string]int64, device string, value int64) bool {
+	current := requirements[device]
+	if value < 0 || current > math.MaxInt64-value {
+		return false
+	}
+	requirements[device] = current + value
+	return true
+}
+
+func planDiskSpaceDetails(estimate PlanDiskSpaceEstimate, filesystems map[string]planDiskFilesystem, requirements map[string]int64) string {
+	minAvailableBytes := int64(math.MaxInt64)
+	for device := range requirements {
+		if available := filesystems[device].AvailableBytes; available < minAvailableBytes {
+			minAvailableBytes = available
+		}
+	}
+	if estimate.Source == PlanDiskSourceExact {
+		return boundedInspectionDetail(
+			"Exact APT plan: archives %.2f GiB, installed growth %.2f GiB (delta %.2f GiB), safety %.2f GiB, reserve %.2f GiB; %.2f GiB minimum free across %d filesystem(s).",
+			inspectionBytesToGiB(estimate.ArchiveBytes), inspectionBytesToGiB(estimate.InstalledGrowthBytes), inspectionBytesToGiB(estimate.InstalledDeltaBytes), inspectionBytesToGiB(estimate.SafetyMarginBytes), inspectionBytesToGiB(estimate.OperationalReserveBytes), inspectionBytesToGiB(minAvailableBytes), len(filesystems),
+		)
+	}
+	return boundedInspectionDetail(
+		"Estimated plan requires %.2f GiB: %.2f GiB minimum free for %d package(s), including %d new (base %.2f GiB + %.2f GiB/package + %.2f GiB/new package).",
+		inspectionKBToGiB(estimate.RequiredKB), inspectionBytesToGiB(minAvailableBytes), estimate.PackageCount, estimate.NewPackageCount,
 		inspectionKBToGiB(PlanDiskBaseReserveKB), inspectionKBToGiB(PlanDiskPerPackageKB), inspectionKBToGiB(PlanDiskPerNewPackageKB),
 	)
-	if minFreeKB < estimate.RequiredKB {
-		return PrecheckResult{Name: "disk_space_plan", Details: "Insufficient disk space for the planned upgrade. " + details, Output: output}
+}
+
+func planDiskSpaceFailureDetails(estimate PlanDiskSpaceEstimate, filesystem planDiskFilesystem, requiredBytes int64) string {
+	paths := strings.Join(filesystem.Paths, ",")
+	if estimate.Source == PlanDiskSourceExact {
+		return boundedInspectionDetail(
+			"Insufficient disk space for the planned upgrade (exact). Blocking filesystem %s has %.2f GiB free and requires %.2f GiB; archives %.2f GiB, installed growth %.2f GiB, safety %.2f GiB, reserve %.2f GiB.",
+			paths, inspectionBytesToGiB(filesystem.AvailableBytes), inspectionBytesToGiB(requiredBytes), inspectionBytesToGiB(estimate.ArchiveBytes), inspectionBytesToGiB(estimate.InstalledGrowthBytes), inspectionBytesToGiB(estimate.SafetyMarginBytes), inspectionBytesToGiB(estimate.OperationalReserveBytes),
+		)
 	}
-	return PrecheckResult{Name: "disk_space_plan", Passed: true, Details: "Plan-aware disk space OK. " + details, Output: output}
+	return boundedInspectionDetail(
+		"Insufficient disk space for the planned upgrade (estimate). Blocking filesystem %s has %.2f GiB free and requires %.2f GiB for %d package(s), including %d new.",
+		paths, inspectionBytesToGiB(filesystem.AvailableBytes), inspectionBytesToGiB(requiredBytes), estimate.PackageCount, estimate.NewPackageCount,
+	)
+}
+
+func inspectionBytesToGiB(value int64) float64 {
+	return float64(value) / (1024 * 1024 * 1024)
 }
 
 func diskSpaceCheckResult(stdout, stderr string, err error) PrecheckResult {

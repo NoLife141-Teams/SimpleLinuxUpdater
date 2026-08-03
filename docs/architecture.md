@@ -88,8 +88,8 @@ Typical update:
 2. Host Maintenance Session builds SSH authentication and host-key verification from per-server credentials, global key fallback, and known-hosts configuration, then opens the bounded discovery session.
 3. Pre-checks run before `apt-get update`.
 4. `apt-get update` runs with retry and timeout metadata.
-5. Standard, full-upgrade, and eligible kept-back security simulations determine pending packages and approval scopes.
-6. The plan-aware disk gate evaluates the simulated package/new-package counts before approval is exposed.
+5. Standard simulation and read-only `--print-uris --download-only` full/kept-back planning determine pending packages, approval scopes, and APT size facts without fetching archives or changing packages.
+6. The plan-aware disk gate prefers APT's simulated archive and installed-size facts, checks the archive cache and installation paths by filesystem device, and falls back to the conservative package/new-package estimate when exact facts are incomplete or unsafe; it runs before approval is exposed.
 7. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
 8. Approval opens a fresh session, while cancellation or timeout finishes without reconnecting.
 9. The approved standard, security, kept-back security, or full-upgrade command runs with the explicit non-interactive policy through the active session.

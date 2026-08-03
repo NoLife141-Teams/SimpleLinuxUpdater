@@ -43,17 +43,18 @@ func DiscoverPackageUpdates(client SSHConnection, timeout time.Duration, run Pac
 		return PackageDiscoveryOutcome{}, err
 	}
 
-	fullUpgradeStdout, _, fullUpgradeErr := run(client, AptFullUpgradeSimCmd, nil, timeout)
+	fullUpgradeStdout, fullUpgradeStderr, fullUpgradeErr := run(client, AptFullUpgradeSimCmd, nil, timeout)
 	fullUpgradePlanAvailable := fullUpgradeErr == nil
+	fullUpgradeOutput := fullUpgradeStdout + "\n" + fullUpgradeStderr
 	metadataStdout, _, metadataErr := run(client, AptListMetadataCmd, nil, timeout)
 	if metadataErr != nil {
-		pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeStdout, fullUpgradePlanAvailable)
+		pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeOutput, fullUpgradePlanAvailable)
 		plan = enrichKeptBackSecurityUpgradePlan(client, timeout, run, pending, plan)
 		return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
 	}
 
 	metadataPending, metadataUpgradable := ParseAptListMetadataEntries(metadataStdout, nil)
-	pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeStdout, fullUpgradePlanAvailable)
+	pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeOutput, fullUpgradePlanAvailable)
 	plan = enrichKeptBackSecurityUpgradePlan(client, timeout, run, pending, plan)
 	return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
 }

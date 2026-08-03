@@ -250,7 +250,7 @@ func TestRunUpdateJobClassifiesSudoPolicyFailureAndExplainsRecovery(t *testing.T
 				if req.Operation != "update.apt_update" {
 					t.Fatalf("unexpected operation %q", req.Operation)
 				}
-				return HostCommandResult{Stderr: "sudo: a password is required\n", Attempts: 1}, errors.New("Process exited with status 1")
+				return HostCommandResult{Stderr: "sudo: Sorry, user operator is not allowed to execute '/usr/bin/apt-get update' as root on example.org.\n", Attempts: 1}, errors.New("Process exited with status 1")
 			},
 		}),
 		CurrentJobManager: func() *jobs.Manager { return nil },

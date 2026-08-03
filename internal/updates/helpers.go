@@ -109,6 +109,7 @@ func IsSudoPolicyError(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(message))
 	return strings.Contains(normalized, "a password is required") ||
 		strings.Contains(normalized, "not allowed to run sudo") ||
+		strings.Contains(normalized, "not allowed to execute") ||
 		strings.Contains(normalized, "is not in the sudoers file")
 }
 

@@ -304,6 +304,14 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 }
 
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
+	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
+		r.lastErrClass = "sudo_policy"
+		_ = r.withStatus(func(status *servers.ServerStatus) {
+			status.Status = runtimepkg.StatusError
+			status.Logs = logs + "\nPasswordless APT access is missing or outdated. Click Enable apt for this server, enter the host's sudo password, wait for it to succeed, then retry the update."
+		})
+		return
+	}
 	var reconciliation interface{ RequiresReconciliation() bool }
 	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
 		r.lastErrClass = "reconciliation_required"

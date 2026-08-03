@@ -87,6 +87,30 @@ test("reconciliation recommendation falls back to runtime status when dashboard 
     assert.equal(view.selectedHost.canRepairApt, true);
 });
 
+test("sudo policy recommendation exposes the canonical enable apt action", () => {
+    const server = { name: "apt-host", status: "error", pending_updates: [] };
+    const view = project({ statusView: statusView({
+        servers: [server],
+        dashboardServers: [{
+            name: "apt-host",
+            recommended_action: {
+                key: "enable_apt_access",
+                label: "Re-enable APT access",
+                detail: "Run Enable apt with this host's sudo password.",
+                action: "enable_apt"
+            }
+        }],
+        actionViews: { "apt-host": { enable_apt: { enabled: true, reason: "Ready", readiness: "ready" } } }
+    }) });
+
+    assert.equal(view.selectedHost.recommendedAction.key, "enable_apt_access");
+    assert.equal(view.selectedHost.recommendedAction.action, "enable_apt");
+    assert.equal(view.selectedHost.canRunSudoers, true);
+
+    const source = fs.readFileSync(path.join(__dirname, "../../static/js/index.js"), "utf8");
+    assert.match(source, /recommendedAction\.action === "enable_apt"[\s\S]*data-action="enable-apt"/);
+});
+
 test("compatibility recommendations never present stale or failed hosts as healthy", () => {
     const servers = [
         { name: "failed", status: "error", pending_updates: [] },

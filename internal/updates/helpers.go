@@ -105,6 +105,13 @@ func IsRetryableError(err error) bool {
 	return IsRetryableMessage(err.Error())
 }
 
+func IsSudoPolicyError(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(normalized, "a password is required") ||
+		strings.Contains(normalized, "not allowed to run sudo") ||
+		strings.Contains(normalized, "is not in the sudoers file")
+}
+
 func MarkRetryableFromOutput(err error, output string) error {
 	if err == nil {
 		return nil

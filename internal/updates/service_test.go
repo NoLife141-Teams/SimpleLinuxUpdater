@@ -15,6 +15,7 @@ import (
 
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
+	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
 
 	_ "modernc.org/sqlite"
@@ -230,6 +231,45 @@ func TestRunUpdateJobStopsBeforeApprovalWhenPlanDiskCheckFails(t *testing.T) {
 	auditedPlan, ok := auditMeta["upgrade_plan"].(servers.UpgradePlan)
 	if !ok || auditedPlan.DiskSpaceSource != PlanDiskSourceExact || auditedPlan.DiskSpaceArchiveBytes != 108_000_000 || auditedPlan.DiskSpaceInstalledGrowthBytes != 1_140_000_000 {
 		t.Fatalf("audit upgrade plan = %#v, want exact disk calculation metadata", auditMeta["upgrade_plan"])
+	}
+}
+
+func TestRunUpdateJobClassifiesSudoPolicyFailureAndExplainsRecovery(t *testing.T) {
+	server := servers.Server{Name: "srv-sudo-policy", Host: "example.org", Port: 22, User: "operator"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	var auditErrorClass string
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{AllPassed: true}
+			},
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				if req.Operation != "update.apt_update" {
+					t.Fatalf("unexpected operation %q", req.Operation)
+				}
+				return HostCommandResult{Stderr: "sudo: a password is required\n", Attempts: 1}, errors.New("Process exited with status 1")
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		AuditWithActor: func(_, _, _, _, _, _, _ string, meta map[string]any) {
+			auditErrorClass, _ = meta["last_error_class"].(string)
+		},
+	})
+
+	service.RunUpdateJob(UpdateRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != runtimepkg.StatusError {
+		t.Fatalf("final status = %+v, want error", status)
+	}
+	if auditErrorClass != "sudo_policy" {
+		t.Fatalf("last_error_class = %q, want sudo_policy", auditErrorClass)
+	}
+	if !strings.Contains(status.Logs, "Click Enable apt") || !strings.Contains(status.Logs, "host's sudo password") {
+		t.Fatalf("logs = %q, want explicit Enable apt recovery guidance", status.Logs)
 	}
 }
 

@@ -513,7 +513,7 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
-	outcomes, err := loadTerminalOutboxOutcomes(ctx, s.database())
+	outcomes, err := loadCurrentOutboxOutcomes(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
@@ -554,7 +554,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	s.persistenceMu.Lock()
 	outcomes := s.replacementOutcomes
 	s.persistenceMu.Unlock()
-	if err := restoreTerminalOutboxOutcomes(ctx, db, outcomes, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := restoreCurrentOutboxOutcomes(ctx, db, outcomes, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	if _, err := pruneOutbox(ctx, db, s.deps.Now(), s.deps.Retention); err != nil {
@@ -594,6 +594,9 @@ func (s *Service) Accept(intent DeliveryIntent) Admission {
 	rows, err := buildOutboxRows(intent, eventType, destinations, s.deps.Now())
 	if err != nil {
 		return Admission{State: AdmissionRejected, Error: err.Error()}
+	}
+	for i := range rows {
+		rows[i].DestinationFingerprint = destinationConfigFingerprint(settings, rows[i].Destination)
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -691,6 +694,21 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		})
 		if err != nil {
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
+		}
+		return
+	}
+	if currentFingerprint := destinationConfigFingerprint(settings, row.Destination); row.DestinationFingerprint != "" && row.DestinationFingerprint != currentFingerprint {
+		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
+		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		err := s.retrySQLiteContention(func() error {
+			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
+				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
+				Error: "destination configuration changed after notification admission",
+			}, now)
+		})
+		if err != nil {
+			s.deps.Logf("notification outbox destination-change persistence failed for %q: %v", row.ID, err)
 		}
 		return
 	}

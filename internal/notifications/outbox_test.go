@@ -56,6 +56,43 @@ func TestNotificationOutboxMigratesExistingSettingsDatabase(t *testing.T) {
 	}
 }
 
+func TestNotificationOutboxMigratesDestinationFingerprintColumn(t *testing.T) {
+	db := openOutboxTestDB(t, "destination-fingerprint-migration.db")
+	if _, err := db.Exec(`CREATE TABLE notification_outbox (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+		t.Fatalf("ensureOutboxDestinationFingerprintColumn() error = %v", err)
+	}
+	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+		t.Fatalf("ensureOutboxDestinationFingerprintColumn() second call error = %v", err)
+	}
+	var found int
+	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "destination_fingerprint" {
+			found++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if found != 1 {
+		t.Fatalf("destination_fingerprint columns=%d, want 1", found)
+	}
+}
+
 func TestNotificationOutboxPersistsOnlyRedactedIntentFacts(t *testing.T) {
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	rows, err := buildOutboxRows(DeliveryIntent{
@@ -108,6 +145,26 @@ func TestNotificationOutboxIdentityDeduplicatesOneDestination(t *testing.T) {
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM notification_outbox").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("count=%d error=%v, want one stable row", count, err)
+	}
+}
+
+func TestNotificationOutboxAdmissionBindsDestinationConfiguration(t *testing.T) {
+	db := openOutboxTestDB(t, "destination-binding.db")
+	server, _ := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	svc := NewService(outboxTestDeps(db, time.Hour))
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+
+	if got := svc.Accept(DeliveryIntent{ID: "bound-destination", Action: EventUpdateComplete, TargetName: "srv-bound", MetaJSON: `{}`}); got.State != AdmissionAdmitted {
+		t.Fatalf("Accept()=%+v, want admitted", got)
+	}
+	var fingerprint string
+	if err := db.QueryRow("SELECT destination_fingerprint FROM notification_outbox").Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	want := destinationConfigFingerprint(Settings{Enabled: true, WebhookURL: server.URL}, DestinationWebhook)
+	if fingerprint == "" || fingerprint != want {
+		t.Fatalf("destination fingerprint=%q, want bound fingerprint %q", fingerprint, want)
 	}
 }
 
@@ -275,6 +332,39 @@ func TestNotificationOutboxSkipsDestinationDisabledBeforeReplay(t *testing.T) {
 	}
 }
 
+func TestNotificationOutboxSkipsDestinationChangedAfterAdmission(t *testing.T) {
+	db := openOutboxTestDB(t, "changed-destination.db")
+	server, requests := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	now := time.Now().UTC()
+	rows, err := buildOutboxRows(DeliveryIntent{
+		ID: "changed-destination", Action: EventUpdateComplete, TargetName: "srv-changed", MetaJSON: `{}`,
+	}, EventUpdateComplete, []string{DestinationWebhook}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows[0].DestinationFingerprint = destinationConfigFingerprint(Settings{
+		Enabled: true, WebhookURL: "https://old.example.test/hook",
+	}, DestinationWebhook)
+	if err := insertOutboxRows(context.Background(), db, rows, now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	waitForLatestOutboxState(t, db, outboxStateSkipped)
+	if got := atomic.LoadInt32(requests); got != 0 {
+		t.Fatalf("requests=%d, want changed destination skipped", got)
+	}
+	var persistedError string
+	if err := db.QueryRow("SELECT error FROM notification_outbox").Scan(&persistedError); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(persistedError, "destination configuration changed") {
+		t.Fatalf("persisted error=%q, want destination-change explanation", persistedError)
+	}
+}
+
 func TestNotificationOutboxAdmissionReportsPersistenceFailure(t *testing.T) {
 	db := openOutboxTestDB(t, "admission-failure.db")
 	server, _ := newOutboxHTTPServer(t)
@@ -427,6 +517,56 @@ func TestNotificationOutboxReloadPreservesCompletedDeliveryOutcome(t *testing.T)
 	var state string
 	if err := restoredDB.QueryRow("SELECT state FROM notification_outbox WHERE id=?", rowID).Scan(&state); err != nil || state != outboxStateSucceeded {
 		t.Fatalf("restored row state=%q error=%v, want succeeded", state, err)
+	}
+}
+
+func TestNotificationOutboxReloadPreservesRetryBudget(t *testing.T) {
+	now := time.Now().UTC()
+	nextAttempt := now.Add(time.Hour).Format(time.RFC3339Nano)
+	intent := DeliveryIntent{ID: "restored-retrying", Action: EventUpdateComplete, TargetName: "srv-retrying", MetaJSON: `{}`}
+	initialDB := openOutboxTestDB(t, "reload-retrying-initial.db")
+	if err := EnsureSchema(initialDB); err != nil {
+		t.Fatal(err)
+	}
+	rowID := insertPendingOutboxIntent(t, initialDB, intent, now)
+	if _, err := initialDB.Exec(`
+		UPDATE notification_outbox
+		   SET state=?, attempts=2, next_attempt_at=?, attempted_at=?, status_code=503, error='temporary failure'
+		 WHERE id=?
+	`, outboxStateRetrying, nextAttempt, now.Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+
+	var currentDB atomic.Pointer[sql.DB]
+	currentDB.Store(initialDB)
+	deps := outboxTestDeps(initialDB, 5*time.Millisecond)
+	deps.DB = currentDB.Load
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	if err := svc.PreparePersistenceReplacement(context.Background()); err != nil {
+		t.Fatalf("PreparePersistenceReplacement() error=%v", err)
+	}
+
+	restoredDB := openOutboxTestDB(t, "reload-retrying-restored.db")
+	if err := EnsureSchema(restoredDB); err != nil {
+		t.Fatal(err)
+	}
+	insertPendingOutboxIntent(t, restoredDB, intent, now.Add(-time.Hour))
+	currentDB.Store(restoredDB)
+	if err := svc.ReloadPersistence(context.Background()); err != nil {
+		t.Fatalf("ReloadPersistence() error=%v", err)
+	}
+
+	var state, restoredNextAttempt, restoredError string
+	var attempts, statusCode int
+	if err := restoredDB.QueryRow(`
+		SELECT state, attempts, next_attempt_at, status_code, error
+		  FROM notification_outbox WHERE id=?
+	`, rowID).Scan(&state, &attempts, &restoredNextAttempt, &statusCode, &restoredError); err != nil {
+		t.Fatal(err)
+	}
+	if state != outboxStateRetrying || attempts != 2 || restoredNextAttempt != nextAttempt || statusCode != 503 || restoredError != "temporary failure" {
+		t.Fatalf("restored retry state=(%q,%d,%q,%d,%q), want retrying budget preserved", state, attempts, restoredNextAttempt, statusCode, restoredError)
 	}
 }
 

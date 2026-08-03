@@ -26,14 +26,15 @@ const (
 )
 
 type outboxRow struct {
-	ID            string
-	Destination   string
-	EventType     string
-	Intent        DeliveryIntent
-	State         string
-	Attempts      int
-	NextAttemptAt string
-	ClaimedAt     string
+	ID                     string
+	Destination            string
+	DestinationFingerprint string
+	EventType              string
+	Intent                 DeliveryIntent
+	State                  string
+	Attempts               int
+	NextAttemptAt          string
+	ClaimedAt              string
 }
 
 type outboxOutcome struct {
@@ -47,7 +48,7 @@ type outboxOutcome struct {
 	DurationMS    int64
 }
 
-func loadTerminalOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]outboxOutcome, error) {
+func loadCurrentOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]outboxOutcome, error) {
 	outcomes := make(map[string]outboxOutcome)
 	if db == nil {
 		return outcomes, nil
@@ -56,8 +57,8 @@ func loadTerminalOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]out
 		SELECT id, state, attempts, next_attempt_at, attempted_at, completed_at,
 		       status_code, error, duration_ms
 		  FROM notification_outbox
-		 WHERE state IN (?, ?, ?)
-	`, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped)
+		 WHERE state IN (?, ?, ?, ?, ?)
+	`, outboxStateClaimed, outboxStateRetrying, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped)
 	if err != nil {
 		return nil, err
 	}
@@ -70,12 +71,16 @@ func loadTerminalOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]out
 			&outcome.DurationMS); err != nil {
 			return nil, err
 		}
+		if outcome.State == outboxStateClaimed {
+			outcome.State = outboxStateRetrying
+			outcome.NextAttemptAt = ""
+		}
 		outcomes[id] = outcome
 	}
 	return outcomes, rows.Err()
 }
 
-func restoreTerminalOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map[string]outboxOutcome, now string) error {
+func restoreCurrentOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map[string]outboxOutcome, now string) error {
 	if db == nil || len(outcomes) == 0 {
 		return nil
 	}
@@ -85,6 +90,19 @@ func restoreTerminalOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map
 	}
 	defer func() { _ = tx.Rollback() }()
 	for id, outcome := range outcomes {
+		if outcome.State == outboxStateRetrying {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE notification_outbox
+				   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
+				       completed_at = '', status_code = ?, error = ?, duration_ms = ?, updated_at = ?
+				 WHERE id = ? AND state IN (?, ?, ?)
+			`, outboxStateRetrying, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
+				outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
+				outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE notification_outbox
 			   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
@@ -130,6 +148,7 @@ func EnsureSchema(db *sql.DB) error {
 			actor TEXT NOT NULL DEFAULT '',
 			client_ip TEXT NOT NULL DEFAULT '',
 			meta_json TEXT NOT NULL DEFAULT '{}',
+			destination_fingerprint TEXT NOT NULL DEFAULT '',
 			state TEXT NOT NULL,
 			attempts INTEGER NOT NULL DEFAULT 0,
 			next_attempt_at TEXT NOT NULL DEFAULT '',
@@ -145,6 +164,9 @@ func EnsureSchema(db *sql.DB) error {
 	`); err != nil {
 		return fmt.Errorf("create notification outbox: %w", err)
 	}
+	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+		return fmt.Errorf("migrate notification outbox destination binding: %w", err)
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
 		ON notification_outbox (state, next_attempt_at, created_at, id)`); err != nil {
 		return fmt.Errorf("index notification outbox due rows: %w", err)
@@ -154,6 +176,60 @@ func EnsureSchema(db *sql.DB) error {
 		return fmt.Errorf("index notification outbox terminal rows: %w", err)
 	}
 	return nil
+}
+
+func ensureOutboxDestinationFingerprintColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == "destination_fingerprint" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+func destinationConfigFingerprint(settings Settings, destination string) string {
+	var identity string
+	switch destination {
+	case DestinationWebhook:
+		identity = strings.TrimSpace(settings.WebhookURL)
+	case DestinationDiscord:
+		identity = strings.TrimSpace(settings.DiscordWebhookURL)
+	case DestinationTelegram:
+		token := strings.TrimSpace(settings.TelegramBotToken)
+		chatID := strings.TrimSpace(settings.TelegramChatID)
+		if token != "" && chatID != "" {
+			identity = token + "\x00" + chatID
+		}
+	}
+	if identity == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(destination + "\x00" + identity))
+	return hex.EncodeToString(digest[:])
 }
 
 func buildOutboxRows(intent DeliveryIntent, eventType string, destinations []string, now time.Time) ([]outboxRow, error) {
@@ -200,12 +276,13 @@ func insertOutboxRows(ctx context.Context, db *sql.DB, rows []outboxRow, now str
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
-				event_created_at, actor, client_ip, meta_json, state, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				event_created_at, actor, client_ip, meta_json, destination_fingerprint, state, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO NOTHING
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
-			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, outboxStatePending, now, now); err != nil {
+			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, row.DestinationFingerprint,
+			outboxStatePending, now, now); err != nil {
 			return err
 		}
 	}
@@ -239,7 +316,8 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time) (*outbox
 	var row outboxRow
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, destination, event_type, action, target_type, target_name, status, message,
-		       event_created_at, actor, client_ip, meta_json, state, attempts, next_attempt_at, claimed_at
+		       event_created_at, actor, client_ip, meta_json, destination_fingerprint, state, attempts,
+		       next_attempt_at, claimed_at
 		  FROM notification_outbox
 		 WHERE state IN (?, ?) AND (next_attempt_at = '' OR next_attempt_at <= ?)
 		 ORDER BY rowid
@@ -247,8 +325,8 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time) (*outbox
 	`, outboxStatePending, outboxStateRetrying, nowText).Scan(
 		&row.ID, &row.Destination, &row.EventType, &row.Intent.Action, &row.Intent.TargetType,
 		&row.Intent.TargetName, &row.Intent.Status, &row.Intent.Message, &row.Intent.CreatedAt,
-		&row.Intent.Actor, &row.Intent.ClientIP, &row.Intent.MetaJSON, &row.State, &row.Attempts,
-		&row.NextAttemptAt, &row.ClaimedAt,
+		&row.Intent.Actor, &row.Intent.ClientIP, &row.Intent.MetaJSON, &row.DestinationFingerprint,
+		&row.State, &row.Attempts, &row.NextAttemptAt, &row.ClaimedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

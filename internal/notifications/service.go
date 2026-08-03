@@ -330,7 +330,6 @@ func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
 	var retryTimer *time.Timer
 	var retryC <-chan time.Time
-	claimFailures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -356,11 +355,9 @@ func (s *Service) run(ctx context.Context) {
 			row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now())
 			if err != nil {
 				s.deps.Logf("notification outbox claim failed: %v", err)
-				claimFailures++
 				claimFailed = true
 				break
 			}
-			claimFailures = 0
 			if row == nil {
 				if s.isClosing() {
 					return
@@ -373,14 +370,12 @@ func (s *Service) run(ctx context.Context) {
 			return
 		}
 		if claimFailed {
-			if claimFailures < defaultAttempts {
-				delay := s.deps.PollInterval
-				if delay <= 0 {
-					delay = defaultOutboxPollInterval
-				}
-				retryTimer = time.NewTimer(delay)
-				retryC = retryTimer.C
+			delay := s.deps.PollInterval
+			if delay <= 0 {
+				delay = defaultOutboxPollInterval
 			}
+			retryTimer = time.NewTimer(delay)
+			retryC = retryTimer.C
 			continue
 		}
 		if ctx.Err() != nil {

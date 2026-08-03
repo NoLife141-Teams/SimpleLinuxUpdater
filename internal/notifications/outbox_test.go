@@ -181,6 +181,56 @@ func TestNotificationOutboxDuplicateWakeupsDoNotDuplicateDelivery(t *testing.T) 
 	}
 }
 
+func TestNotificationOutboxKeepsPollingAfterRepeatedClaimFailures(t *testing.T) {
+	db := openOutboxTestDB(t, "claim-retry.db")
+	server, requests := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "claim-retry", Action: EventUpdateComplete, TargetName: "srv-retry", MetaJSON: `{}`}, time.Now().UTC())
+
+	lockConn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_, _ = lockConn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var claimFailures int32
+	deps := outboxTestDeps(db, 5*time.Millisecond)
+	deps.Logf = func(format string, _ ...any) {
+		if strings.Contains(format, "notification outbox claim failed") {
+			atomic.AddInt32(&claimFailures, 1)
+		}
+	}
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	svc.signalWorker()
+
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&claimFailures) < defaultAttempts {
+		if time.Now().After(deadline) {
+			t.Fatalf("claim failures=%d, want at least %d", atomic.LoadInt32(&claimFailures), defaultAttempts)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+
+	waitForLatestOutboxState(t, db, outboxStateSucceeded)
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("requests=%d, want delivery after repeated claim failures", got)
+	}
+}
+
 func TestNotificationOutboxSkipsDestinationDisabledBeforeReplay(t *testing.T) {
 	db := openOutboxTestDB(t, "disabled.db")
 	server, requests := newOutboxHTTPServer(t)

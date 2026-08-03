@@ -46,6 +46,15 @@ func TestPolicyServiceDepsWithDefaultsWiresRolloutHistory(t *testing.T) {
 	}
 }
 
+func TestPolicyServiceDepsWithDefaultsDoesNotMixCustomAndGlobalRunHistory(t *testing.T) {
+	deps := policyServiceDepsWithDefaults(PolicyServiceDeps{
+		ListRuns: func(int) ([]UpdatePolicyRun, error) { return nil, nil },
+	})
+	if deps.ListRolloutRuns != nil {
+		t.Fatal("ListRolloutRuns is non-nil, want custom service to require an app-scoped rollout history lookup")
+	}
+}
+
 func TestPolicyServiceNormalizePolicyRequiresTarget(t *testing.T) {
 	policy := UpdatePolicy{
 		Name:          "Nightly",

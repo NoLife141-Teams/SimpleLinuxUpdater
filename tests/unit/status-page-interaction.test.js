@@ -506,6 +506,56 @@ test("out-of-order responses are discarded independently per stream", () => {
     assert.equal(store.getDashboardServer("alpha").marker, "dashboard");
 });
 
+test("secondary Status snapshots retain the newest accepted response per source", () => {
+    const cases = [
+        { stream: "audit", older: [{ id: 1 }], newer: [{ id: 2 }], select: view => view.extras.recentActivity },
+        { stream: "observability", older: { marker: "old" }, newer: { marker: "new" }, select: view => view.extras.observabilitySummary },
+        { stream: "policies", older: [{ id: 1 }], newer: [{ id: 2 }], select: view => view.extras.policySummary },
+        { stream: "globalKey", older: false, newer: true, select: view => view.globalKeyAvailable }
+    ];
+
+    cases.forEach(({ stream, older, newer, select }) => {
+        const store = createStore();
+        const first = store.dispatch({ type: "refreshRequested", stream, reason: "initial" });
+        assert.equal(first.find(effect => effect.type === "fetchSnapshot").requestId, 1);
+        store.dispatch({ type: "refreshRequested", stream, priority: "immediate", reason: "newer" });
+
+        const firstCompletion = store.dispatch({ type: "secondarySnapshotReceived", stream, requestId: 1, snapshot: older });
+        assert.equal(firstCompletion.find(effect => effect.type === "fetchSnapshot").requestId, 2);
+        store.dispatch({ type: "secondarySnapshotReceived", stream, requestId: 2, snapshot: newer });
+
+        assert.deepEqual(store.dispatch({ type: "secondarySnapshotReceived", stream, requestId: 1, snapshot: older }), []);
+        assert.deepEqual(select(store.getView()), newer, `${stream} regressed to a stale response`);
+        assert.equal(store.getView().sync.streams[stream].lastAcceptedRequestId, 2);
+    });
+});
+
+test("secondary Status failures retain accepted data and expose source-specific sync state", () => {
+    const store = createStore();
+    const accepted = [{ id: 42, action: "server.update" }];
+    store.dispatch({ type: "refreshRequested", stream: "audit" });
+    store.dispatch({ type: "secondarySnapshotReceived", stream: "audit", requestId: 1, snapshot: accepted });
+    accepted[0].id = 99;
+
+    store.dispatch({ type: "refreshRequested", stream: "audit" });
+    store.dispatch({ type: "snapshotFailed", stream: "audit", requestId: 2, error: "offline" });
+
+    const view = store.getView();
+    assert.deepEqual(view.extras.recentActivity, [{ id: 42, action: "server.update" }]);
+    assert.equal(view.sync.streams.audit.lastError, "offline");
+});
+
+test("unscoped secondary Status snapshots cannot bypass an active request", () => {
+    const store = createStore();
+    store.dispatch({ type: "refreshRequested", stream: "observability" });
+    assert.deepEqual(store.dispatch({
+        type: "secondarySnapshotReceived",
+        stream: "observability",
+        snapshot: { marker: "unscoped" }
+    }), []);
+    assert.equal(store.getView().extras.observabilitySummary, null);
+});
+
 test("snapshot failure preserves the last successful view and records sync metadata", () => {
     const store = createStore();
     store.dispatch({ type: "refreshRequested", stream: "servers" });
@@ -653,4 +703,11 @@ test("browser adapters do not restore superseded action globals or DOM-derived b
         "row-select:checked"
     ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain deleted`));
     assert.equal(adapterSource.includes("jobLogsByServer"), false, "accepted job log state belongs to Status Page Interaction");
+    [
+        "let recentActivity",
+        "let observabilitySummary",
+        "let policySummary",
+        "let globalKeyAvailable",
+        "dashboardExtraErrors"
+    ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain owned by Status Page Interaction`));
 });

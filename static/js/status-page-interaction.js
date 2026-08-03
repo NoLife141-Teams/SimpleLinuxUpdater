@@ -193,6 +193,11 @@
         let dashboardServers = [];
         let dashboardByName = new Map();
         let globalKeyAvailable = false;
+        let secondarySnapshots = {
+            recentActivity: [],
+            observabilitySummary: null,
+            policySummary: null
+        };
         let filters = {
             search: "",
             status: "",
@@ -209,7 +214,11 @@
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
         let streams = {
             servers: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
+            dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            audit: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            observability: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            policies: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            globalKey: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
         };
         let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
         let nextActionPlanId = 1;
@@ -398,6 +407,22 @@
             const items = normalizeNamedItems(snapshot && snapshot.servers);
             dashboardServers = items;
             dashboardByName = new Map(items.map(server => [server.name, server]));
+        }
+
+        function replaceSecondarySnapshot(streamName, snapshot) {
+            if (streamName === "audit") {
+                secondarySnapshots.recentActivity = Array.isArray(snapshot) ? cloneValue(snapshot) : [];
+            } else if (streamName === "observability") {
+                secondarySnapshots.observabilitySummary = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+                    ? cloneValue(snapshot)
+                    : null;
+            } else if (streamName === "policies") {
+                secondarySnapshots.policySummary = Array.isArray(snapshot) ? cloneValue(snapshot) : [];
+            } else if (streamName === "globalKey") {
+                globalKeyAvailable = !!snapshot;
+                return reconcileNavigation();
+            }
+            return false;
         }
 
         function dashboardServerFor(server) {
@@ -710,6 +735,20 @@
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("dashboard", requestId) : [])
+                ];
+            } else if (event.type === "secondarySnapshotReceived") {
+                const streamName = String(event.stream || "");
+                const requestId = Number(event.requestId || 0);
+                const stream = streams[streamName];
+                if (!stream || !Number.isSafeInteger(requestId) || requestId < 1
+                    || !stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId) return [];
+                const persistenceChanged = replaceSecondarySnapshot(streamName, event.snapshot);
+                return [
+                    ...(streamName === "globalKey"
+                        ? stateEffects({ persist: persistenceChanged, scope: "serverState" })
+                        : [{ type: "renderSecondarySnapshot", stream: streamName }]),
+                    { type: "renderSyncState" },
+                    ...finishRefresh(streamName, requestId)
                 ];
             } else if (event.type === "snapshotFailed") {
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
@@ -1044,6 +1083,8 @@
                 servers: cloneValue(servers),
                 dashboardSnapshot: cloneValue(dashboardSnapshot),
                 dashboardServers: cloneValue(dashboardServers),
+                globalKeyAvailable,
+                extras: cloneValue(secondarySnapshots),
                 actionViews: Object.fromEntries(servers.map(server => [
                     server.name,
                     Object.fromEntries(dashboardActionKeys.map(key => [key, getAction(server.name, key)]))

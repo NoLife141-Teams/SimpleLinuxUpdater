@@ -3700,6 +3700,43 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
+  test('status renders accepted secondary snapshots through the page interaction state', async ({ page }) => {
+    const servers = [makeServer('secondary-host', 'idle', [], { has_key: false, has_password: false })];
+    await stubDashboardApi(page, () => servers);
+    await page.route('**/api/keys/global', route => fulfillJson(route, { has_key: true }));
+    await page.route('**/api/audit-events*', route => fulfillJson(route, { items: [{
+      id: 42,
+      created_at: '2026-05-28T12:00:00Z',
+      created_at_display: 'May 28, 2026 12:00',
+      action: 'server.update',
+      target_type: 'server',
+      target_name: 'secondary-host',
+      status: 'success',
+      message: 'Update completed',
+    }] }));
+    await page.route('**/api/observability/summary*', route => fulfillJson(route, { totals: { updates_total: 4, success_rate_pct: 75 } }));
+    await page.route('**/api/update-policies', route => fulfillJson(route, [{ id: 1 }, { id: 2 }]));
+
+    await ensureAuthenticatedSession(page);
+    await page.goto('/');
+
+    await expect(page.locator('#recent-activity')).toContainText('server.update');
+    await expect(page.locator('#observability-summary-label')).toHaveText('7d 75%');
+    await expect(page.locator('#policy-summary-label')).toHaveText('Policies 2');
+    await expect(page.locator('body')).toContainText('Global SSH key');
+
+    const accepted = await page.evaluate(() => {
+      const view = window.statusPageInteraction.getView();
+      return {
+        auditID: view.extras.recentActivity[0]?.id,
+        observabilityUpdates: view.extras.observabilitySummary?.totals?.updates_total,
+        policyCount: view.extras.policySummary.length,
+        globalKeyAvailable: view.globalKeyAvailable,
+      };
+    });
+    expect(accepted).toEqual({ auditID: 42, observabilityUpdates: 4, policyCount: 2, globalKeyAvailable: true });
+  });
+
   test('status command history keeps quiet hosts visible and noisy hosts bounded to eight items', async ({ page }) => {
     const noisyHistory = Array.from({ length: 8 }, (_, index) => ({
       created_at: `2026-05-28T${String(20 - index).padStart(2, '0')}:00:00Z`,

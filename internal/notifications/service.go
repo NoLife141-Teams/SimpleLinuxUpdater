@@ -35,6 +35,7 @@ const (
 	defaultQueueSize                    = 64
 	defaultAdmissionPersistenceAttempts = 20
 	defaultOutboxPollInterval           = 250 * time.Millisecond
+	defaultOutboxPruneInterval          = 12 * time.Hour
 )
 
 var supportedEvents = []string{
@@ -219,6 +220,10 @@ type DestinationTester interface {
 	TestDestination(context.Context, string) (DeliveryStatus, error)
 }
 
+type PersistenceReloader interface {
+	ReloadPersistence(context.Context) error
+}
+
 type WebhookPayload struct {
 	EventType  string         `json:"event_type"`
 	Action     string         `json:"action"`
@@ -245,6 +250,7 @@ type ServiceDeps struct {
 	PollInterval    time.Duration
 	ClaimTTL        time.Duration
 	Retention       time.Duration
+	PruneInterval   time.Duration
 	NewID           func() string
 }
 
@@ -293,6 +299,9 @@ func NewService(deps ServiceDeps) *Service {
 	if deps.Retention <= 0 {
 		deps.Retention = defaultOutboxRetention
 	}
+	if deps.PruneInterval <= 0 {
+		deps.PruneInterval = defaultOutboxPruneInterval
+	}
 	if deps.NewID == nil {
 		deps.NewID = newOutboxID
 	}
@@ -328,6 +337,8 @@ func NewService(deps ServiceDeps) *Service {
 
 func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
+	pruneTicker := time.NewTicker(s.deps.PruneInterval)
+	defer pruneTicker.Stop()
 	var retryTimer *time.Timer
 	var retryC <-chan time.Time
 	for {
@@ -346,6 +357,10 @@ func (s *Service) run(ctx context.Context) {
 		case <-retryC:
 			retryTimer = nil
 			retryC = nil
+		case <-pruneTicker.C:
+			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
+				s.deps.Logf("notification outbox pruning failed: %v", err)
+			}
 		}
 		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
 			s.deps.Logf("notification outbox claim recovery failed: %v", err)
@@ -392,6 +407,38 @@ func (s *Service) run(ctx context.Context) {
 		retryTimer = time.NewTimer(delay)
 		retryC = retryTimer.C
 	}
+}
+
+// ReloadPersistence reinitializes the outbox after runtime persistence has
+// been replaced, then wakes the existing worker to drain restored rows.
+func (s *Service) ReloadPersistence(ctx context.Context) error {
+	if s == nil {
+		return errors.New("notification delivery lifecycle is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closing {
+		return errors.New("notification delivery lifecycle is closing")
+	}
+	db := s.database()
+	if db == nil {
+		return errors.New("notification outbox database is unavailable")
+	}
+	if err := EnsureSchema(db); err != nil {
+		return err
+	}
+	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL); err != nil {
+		return err
+	}
+	if _, err := pruneOutbox(ctx, db, s.deps.Now(), s.deps.Retention); err != nil {
+		return err
+	}
+	s.initErr = nil
+	s.signalWorker()
+	return nil
 }
 
 func (s *Service) Accept(intent DeliveryIntent) Admission {

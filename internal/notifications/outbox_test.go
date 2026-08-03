@@ -304,6 +304,65 @@ func TestNotificationOutboxPrunesOldTerminalRowsButKeepsDiagnostics(t *testing.T
 	}
 }
 
+func TestNotificationOutboxPrunesOldTerminalRowsWhileRunning(t *testing.T) {
+	db := openOutboxTestDB(t, "periodic-retention.db")
+	server, _ := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	now := time.Now().UTC()
+	deps := outboxTestDeps(db, time.Hour)
+	deps.Now = func() time.Time { return now }
+	deps.Retention = 30 * 24 * time.Hour
+	deps.PruneInterval = 5 * time.Millisecond
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+
+	rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "periodic-old-terminal", Action: EventUpdateComplete, TargetName: "srv-old", MetaJSON: `{}`}, now.Add(-60*24*time.Hour))
+	if _, err := db.Exec("UPDATE notification_outbox SET state=?, completed_at=? WHERE id=?", outboxStateSucceeded, now.Add(-60*24*time.Hour).Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM notification_outbox WHERE id=?", rowID).Scan(&count); err == nil && count == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("old terminal notification row was not pruned while the service remained running")
+}
+
+func TestNotificationOutboxReloadPersistenceDrainsRestoredRows(t *testing.T) {
+	initialDB := openOutboxTestDB(t, "reload-initial.db")
+	if err := EnsureSchema(initialDB); err != nil {
+		t.Fatal(err)
+	}
+	var currentDB atomic.Pointer[sql.DB]
+	currentDB.Store(initialDB)
+	deps := outboxTestDeps(initialDB, time.Hour)
+	deps.DB = currentDB.Load
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+
+	restoredDB := openOutboxTestDB(t, "reload-restored.db")
+	server, requests := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, restoredDB, server.URL, true)
+	rowID := insertPendingOutboxIntent(t, restoredDB, DeliveryIntent{ID: "restored-pending", Action: EventUpdateComplete, TargetName: "srv-restored", MetaJSON: `{}`}, time.Now().UTC())
+	currentDB.Store(restoredDB)
+
+	if err := svc.ReloadPersistence(context.Background()); err != nil {
+		t.Fatalf("ReloadPersistence() error=%v", err)
+	}
+	waitForLatestOutboxState(t, restoredDB, outboxStateSucceeded)
+	if got := atomic.LoadInt32(requests); got != 1 {
+		t.Fatalf("restored notification requests=%d, want 1", got)
+	}
+	var state string
+	if err := restoredDB.QueryRow("SELECT state FROM notification_outbox WHERE id=?", rowID).Scan(&state); err != nil || state != outboxStateSucceeded {
+		t.Fatalf("restored row state=%q error=%v, want succeeded", state, err)
+	}
+}
+
 func TestNotificationOutboxCountsPendingAndRetryingRows(t *testing.T) {
 	db := openOutboxTestDB(t, "counts.db")
 	if err := EnsureSchema(db); err != nil {

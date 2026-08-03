@@ -11,6 +11,7 @@ import (
 
 	"debian-updater/internal/events"
 	internaljobs "debian-updater/internal/jobs"
+	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
@@ -29,6 +30,38 @@ type fixedInventoryRepository struct {
 	servers []serverpkg.Server
 }
 
+type reloadTrackingNotificationLifecycle struct {
+	reloadErr error
+	reloads   int
+}
+
+func (*reloadTrackingNotificationLifecycle) Settings() (notificationpkg.SettingsResponse, error) {
+	return notificationpkg.SettingsResponse{}, nil
+}
+
+func (*reloadTrackingNotificationLifecycle) SaveSettings(notificationpkg.SettingsUpdate) (notificationpkg.SettingsResponse, error) {
+	return notificationpkg.SettingsResponse{}, nil
+}
+
+func (*reloadTrackingNotificationLifecycle) DeliveryDiagnostics() (notificationpkg.DeliveryDiagnostics, error) {
+	return notificationpkg.DeliveryDiagnostics{}, nil
+}
+
+func (*reloadTrackingNotificationLifecycle) Accept(notificationpkg.DeliveryIntent) notificationpkg.Admission {
+	return notificationpkg.Admission{}
+}
+
+func (*reloadTrackingNotificationLifecycle) TestDelivery(context.Context) (notificationpkg.DeliveryStatus, error) {
+	return notificationpkg.DeliveryStatus{}, nil
+}
+
+func (*reloadTrackingNotificationLifecycle) Close(context.Context) error { return nil }
+
+func (s *reloadTrackingNotificationLifecycle) ReloadPersistence(context.Context) error {
+	s.reloads++
+	return s.reloadErr
+}
+
 func (r fixedInventoryRepository) Load() ([]serverpkg.Server, error) {
 	return append([]serverpkg.Server(nil), r.servers...), nil
 }
@@ -43,6 +76,29 @@ func TestRuntimeCompositionReloadRestoredStateHonorsCancellation(t *testing.T) {
 	err := composition.ReloadRestoredState(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReloadRestoredState() error = %v, want context canceled", err)
+	}
+}
+
+func TestRuntimeCompositionReloadRestoredStateRehydratesNotificationPersistence(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "reload-notifications.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	reloadErr := errors.New("restored notification outbox unavailable")
+	notifications := &reloadTrackingNotificationLifecycle{reloadErr: reloadErr}
+	composition := newRuntimeComposition(AppDeps{
+		DB:                  func() *sql.DB { return db },
+		NotificationService: notifications,
+	})
+	composition.resetCaches = func() {}
+
+	err = composition.ReloadRestoredState(context.Background())
+	if !errors.Is(err, reloadErr) || !strings.Contains(err.Error(), "reload restored Notification Delivery Lifecycle") {
+		t.Fatalf("ReloadRestoredState() error=%v, want labelled notification reload failure", err)
+	}
+	if notifications.reloads != 1 {
+		t.Fatalf("notification persistence reloads=%d, want 1", notifications.reloads)
 	}
 }
 

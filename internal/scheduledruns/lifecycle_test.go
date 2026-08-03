@@ -32,6 +32,12 @@ type flakyReconciliationRepository struct {
 	terminalFailures int
 }
 
+type terminalBeforeActiveTransitionRepository struct {
+	delegate *policies.SQLiteRepository
+	once     sync.Once
+	err      error
+}
+
 func (r *flakyReconciliationRepository) CreateRun(run policies.Run) (policies.Run, bool, error) {
 	return r.delegate.CreateRun(run)
 }
@@ -66,6 +72,38 @@ func (r *flakyReconciliationRepository) TransitionRunTerminal(id int64, update p
 	}
 	r.mu.Unlock()
 	return r.delegate.TransitionRunTerminal(id, update)
+}
+
+func (r *flakyReconciliationRepository) TransitionRunActive(id int64, update policies.RunUpdate) (bool, error) {
+	return r.delegate.TransitionRunActive(id, update)
+}
+
+func (r *terminalBeforeActiveTransitionRepository) CreateRun(run policies.Run) (policies.Run, bool, error) {
+	return r.delegate.CreateRun(run)
+}
+
+func (r *terminalBeforeActiveTransitionRepository) GetRun(id int64) (policies.Run, error) {
+	return r.delegate.GetRun(id)
+}
+
+func (r *terminalBeforeActiveTransitionRepository) UpdateRun(id int64, update policies.RunUpdate) error {
+	return r.delegate.UpdateRun(id, update)
+}
+
+func (r *terminalBeforeActiveTransitionRepository) TransitionRunTerminal(id int64, update policies.RunUpdate) (bool, error) {
+	return r.delegate.TransitionRunTerminal(id, update)
+}
+
+func (r *terminalBeforeActiveTransitionRepository) TransitionRunActive(id int64, update policies.RunUpdate) (bool, error) {
+	r.once.Do(func() {
+		status := policies.RunSucceeded
+		finishedAt := "2026-08-02T12:01:00Z"
+		r.err = r.delegate.UpdateRun(id, policies.RunUpdate{Status: &status, FinishedAt: &finishedAt})
+	})
+	if r.err != nil {
+		return false, r.err
+	}
+	return r.delegate.TransitionRunActive(id, update)
 }
 
 type getOnlyJobRepository struct {
@@ -449,6 +487,74 @@ func TestConcurrentTerminalReconciliationRecordsAuditOnce(t *testing.T) {
 	}
 	if listed.Total != 1 {
 		t.Fatalf("terminal audit count = %d, want 1", listed.Total)
+	}
+}
+
+func TestReconcileRunDoesNotReopenTerminalRunFromStaleActiveJob(t *testing.T) {
+	_, repository, run, audits := newReconciliationHarness(t)
+	jobID := "stale-active-job"
+	if err := repository.UpdateRun(run.ID, policies.RunUpdate{JobID: &jobID}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := repository.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := jobs.NewManager(getOnlyJobRepository{get: func(id string) (jobs.Record, error) {
+		return jobs.Record{ID: id, Kind: jobs.KindScheduledScan, ServerName: run.ServerName, Status: jobs.StatusRunning}, nil
+	}}, jobs.ManagerOptions{})
+	lifecycle := scheduledruns.New(scheduledruns.Deps{
+		AuditService:      audits,
+		CurrentJobManager: func() *jobs.Manager { return manager },
+		PolicyRepository:  &terminalBeforeActiveTransitionRepository{delegate: repository},
+	})
+
+	reconciled, err := lifecycle.ReconcileRun(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.Status != policies.RunSucceeded || reconciled.FinishedAt == "" {
+		t.Fatalf("reconciled run = %+v, want terminal success preserved", reconciled)
+	}
+}
+
+func TestReconcileRunCorrectsRestartInterruptedProjectionFromTerminalJob(t *testing.T) {
+	db, repository, run, audits := newReconciliationHarness(t)
+	manager := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{
+		Now:   func() time.Time { return time.Date(2026, 8, 2, 12, 1, 0, 0, time.UTC) },
+		NewID: func() string { return "restart-terminal-job" },
+	})
+	job, err := manager.CreateJob(jobs.CreateParams{
+		Kind:       jobs.KindScheduledScan,
+		ServerName: run.ServerName,
+		Actor:      "system",
+		Status:     jobs.StatusSucceeded,
+		Summary:    "Scheduled scan completed before restart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := policies.RunInterrupted
+	reason := policies.RunReasonRestart
+	if err := repository.UpdateRun(run.ID, policies.RunUpdate{Status: &status, Reason: &reason, JobID: &job.ID}); err != nil {
+		t.Fatal(err)
+	}
+	run, err = repository.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := scheduledruns.New(scheduledruns.Deps{
+		AuditService:      audits,
+		CurrentJobManager: func() *jobs.Manager { return manager },
+		PolicyRepository:  repository,
+	})
+
+	reconciled, err := lifecycle.ReconcileRun(context.Background(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.Status != policies.RunSucceeded || reconciled.JobID != job.ID {
+		t.Fatalf("reconciled run = %+v, want authoritative job success", reconciled)
 	}
 }
 

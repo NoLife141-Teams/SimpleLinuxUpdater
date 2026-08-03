@@ -526,8 +526,13 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 		update.Reason = &reason
 	}
 	terminal := isTerminalRunStatus(status)
+	restartRecovery := previous.Status == policies.RunInterrupted && previous.Reason == policies.RunReasonRestart
+	if isTerminalRunStatus(previous.Status) && (!restartRecovery || !terminal) {
+		return nil
+	}
 	claimedTerminal := false
 	conditionalTransition := false
+	transitionApplied := false
 	if terminal && !isTerminalRunStatus(previous.Status) {
 		if repository, ok := l.deps.PolicyRepository.(interface {
 			TransitionRunTerminal(int64, policies.RunUpdate) (bool, error)
@@ -537,14 +542,28 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 			if err != nil {
 				return err
 			}
+			transitionApplied = claimedTerminal
+		}
+	} else if !terminal {
+		if repository, ok := l.deps.PolicyRepository.(interface {
+			TransitionRunActive(int64, policies.RunUpdate) (bool, error)
+		}); ok {
+			conditionalTransition = true
+			transitionApplied, err = l.transitionRunActiveWithRetry(ctx, repository, runID, update)
+			if err != nil {
+				return err
+			}
 		}
 	}
-	if !claimedTerminal {
+	if !transitionApplied {
 		current := previous
 		if conditionalTransition {
 			current, err = l.getRunWithRetry(ctx, runID)
 			if err != nil {
 				return err
+			}
+			if isTerminalRunStatus(current.Status) {
+				return nil
 			}
 		}
 		if current.Status != status || strings.TrimSpace(current.JobID) != strings.TrimSpace(job.ID) || (terminal && strings.TrimSpace(job.FinishedAt) != "" && current.FinishedAt != job.FinishedAt) {
@@ -755,6 +774,18 @@ func (l *Lifecycle) transitionRunTerminalWithRetry(ctx context.Context, reposito
 	err := l.retry(ctx, func() error {
 		var err error
 		changed, err = repository.TransitionRunTerminal(runID, update)
+		return err
+	})
+	return changed, err
+}
+
+func (l *Lifecycle) transitionRunActiveWithRetry(ctx context.Context, repository interface {
+	TransitionRunActive(int64, policies.RunUpdate) (bool, error)
+}, runID int64, update policies.RunUpdate) (bool, error) {
+	changed := false
+	err := l.retry(ctx, func() error {
+		var err error
+		changed, err = repository.TransitionRunActive(runID, update)
 		return err
 	})
 	return changed, err

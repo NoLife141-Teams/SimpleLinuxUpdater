@@ -283,6 +283,41 @@ func TestProcessDueSlotReconcilesAuthoritativeCanaryBeforeReleasingWave(t *testi
 	}
 }
 
+func TestProcessDueSlotReconcilesRestartInterruptedCanaryBeforeReleasingWave(t *testing.T) {
+	policy := Policy{ID: 10, Name: "Restarted", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 5}
+	slot := time.Date(2026, 8, 2, 3, 0, 0, 0, time.UTC)
+	scheduled := CanonicalScheduledForUTC(slot, DefaultTimestampLayout, func() *time.Location { return time.UTC })
+	runs := []Run{{ID: 73, PolicyID: policy.ID, ServerName: "srv-a", ScheduledForUTC: scheduled, Status: RunInterrupted, Reason: RunReasonRestart, JobID: "canary-job"}}
+	var requests []ScheduledRunRequest
+	reconcileCalls := 0
+	service := NewService(ServiceDeps{
+		ListPolicies:        func() ([]Policy, error) { return []Policy{policy}, nil },
+		LoadOverrides:       func() (map[int64]map[string]bool, error) { return map[int64]map[string]bool{}, nil },
+		LoadGlobalBlackouts: func() ([]BlackoutWindow, error) { return nil, nil },
+		ListRuns:            func(int) ([]Run, error) { return runs, nil },
+		ReconcileRun: func(run Run) (Run, error) {
+			reconcileCalls++
+			run.Status = RunSucceeded
+			return run, nil
+		},
+		SnapshotServers: func() []servers.Server {
+			return []servers.Server{{Name: "srv-a", Tags: []string{"prod"}}, {Name: "srv-b", Tags: []string{"prod"}}, {Name: "srv-c", Tags: []string{"prod"}}}
+		},
+		HandleScheduledRun: func(req ScheduledRunRequest) ScheduledRunResult {
+			requests = append(requests, req)
+			return ScheduledRunResult{Handled: true, Inserted: true}
+		},
+		CurrentLocation: func() *time.Location { return time.UTC },
+	})
+
+	if err := service.ProcessDueSlot(ScheduleRequest{Now: slot.Add(6 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if reconcileCalls != 1 || len(requests) != 2 || requests[0].Server.Name != "srv-b" || requests[1].Server.Name != "srv-c" {
+		t.Fatalf("reconcileCalls=%d requests=%+v, want restart recovery to release wave", reconcileCalls, requests)
+	}
+}
+
 func TestProcessDueSlotKeepsWaveWaitingWhenGateReconciliationFails(t *testing.T) {
 	policy := Policy{ID: 9, Name: "Waiting", Enabled: true, TargetTag: "prod", PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionAutoApply, CadenceKind: CadenceDaily, TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 2, WaveDelayMinutes: 5}
 	slot := time.Date(2026, 8, 2, 3, 0, 0, 0, time.UTC)

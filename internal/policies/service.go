@@ -1042,7 +1042,7 @@ func (s *Service) reconciledRolloutGateState(policyID int64, scheduledForUTC str
 			for _, serverName := range batch.Servers {
 				key := rolloutRunKey(policyID, scheduledForUTC, serverName)
 				run, ok := runs[key]
-				if !ok || isTerminalRunStatus(run.Status) || strings.TrimSpace(run.JobID) == "" {
+				if !ok || strings.TrimSpace(run.JobID) == "" || (isTerminalRunStatus(run.Status) && !restartInterruptedRun(run)) {
 					continue
 				}
 				reconciled, err := deps.ReconcileRun(run)
@@ -1064,6 +1064,10 @@ func isTerminalRunStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func restartInterruptedRun(run Run) bool {
+	return run.Status == RunInterrupted && run.Reason == RunReasonRestart
 }
 
 func (s *Service) rolloutScheduledSlot(policy Policy, nowLocal time.Time) (time.Time, bool) {

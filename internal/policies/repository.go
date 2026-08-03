@@ -791,6 +791,20 @@ func (r *SQLiteRepository) TransitionRunTerminal(id int64, update RunUpdate) (bo
 	return changed > 0, err
 }
 
+// TransitionRunActive applies a non-terminal reconciliation only while the run
+// is still active. A stale job snapshot must never reopen a terminal run.
+func (r *SQLiteRepository) TransitionRunActive(id int64, update RunUpdate) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	result, err := r.updateRunWhere(id, update, " AND status IN (?, ?, ?)", RunQueued, RunRunning, RunWaitingApproval)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
+}
+
 func (r *SQLiteRepository) updateRunWhere(id int64, update RunUpdate, condition string, conditionArgs ...any) (sql.Result, error) {
 	if id <= 0 {
 		return nil, nil

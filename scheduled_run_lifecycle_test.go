@@ -497,10 +497,6 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 }
 
 func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testing.T) {
-	server := Server{Name: "srv-reconcile", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-reconcile.db", server, "idle")
-	lifecycle := scheduledrunspkg.New(deps)
-
 	tests := []struct {
 		name       string
 		jobStatus  string
@@ -517,6 +513,9 @@ func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			server := Server{Name: "srv-reconcile-" + strings.ReplaceAll(tt.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-reconcile-"+strings.ReplaceAll(tt.name, " ", "-")+".db", server, "idle")
+			lifecycle := scheduledrunspkg.New(deps)
 			meta := updatespkg.BuildScheduledJobMeta(policy, run.ScheduledForUTC)
 			if tt.jobStatus == jobStatusSucceeded {
 				meta.Discovery = &scheduledJobDiscovery{

@@ -1085,7 +1085,12 @@ func (s *Service) deliverDestination(ctx context.Context, evt DeliveryIntent, de
 func (s *Service) notificationPlan(evt DeliveryIntent, force bool) (Settings, string, error) {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
-	settings, err := s.loadSettings()
+	var settings Settings
+	err := s.retrySQLiteContention(func() error {
+		var err error
+		settings, err = s.loadSettings()
+		return err
+	})
 	if err != nil {
 		return Settings{}, "", err
 	}

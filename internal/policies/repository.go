@@ -776,14 +776,24 @@ func (r *SQLiteRepository) UpdateRun(id int64, update RunUpdate) error {
 	return err
 }
 
-// TransitionRunTerminal applies a terminal reconciliation only while the run
-// is still active. The affected-row result lets callers claim terminal side
-// effects exactly once when concurrent watchers observe the same job.
+// TransitionRunTerminal applies a terminal reconciliation while the run is
+// still active or while restart recovery has only interrupted its projection.
+// The affected-row result lets callers claim terminal side effects exactly
+// once when concurrent watchers observe the same job.
 func (r *SQLiteRepository) TransitionRunTerminal(id int64, update RunUpdate) (bool, error) {
 	if id <= 0 {
 		return false, nil
 	}
-	result, err := r.updateRunWhere(id, update, " AND status IN (?, ?, ?)", RunQueued, RunRunning, RunWaitingApproval)
+	result, err := r.updateRunWhere(
+		id,
+		update,
+		" AND (status IN (?, ?, ?) OR (status = ? AND reason = ?))",
+		RunQueued,
+		RunRunning,
+		RunWaitingApproval,
+		RunInterrupted,
+		RunReasonRestart,
+	)
 	if err != nil {
 		return false, err
 	}

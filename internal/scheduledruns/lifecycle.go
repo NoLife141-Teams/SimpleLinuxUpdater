@@ -524,6 +524,9 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 	if status == policies.RunFailed || status == policies.RunCancelled || status == policies.RunInterrupted {
 		reason := status
 		update.Reason = &reason
+	} else {
+		reason := ""
+		update.Reason = &reason
 	}
 	terminal := isTerminalRunStatus(status)
 	restartRecovery := previous.Status == policies.RunInterrupted && previous.Reason == policies.RunReasonRestart
@@ -533,7 +536,7 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 	claimedTerminal := false
 	conditionalTransition := false
 	transitionApplied := false
-	if terminal && !isTerminalRunStatus(previous.Status) {
+	if terminal && (!isTerminalRunStatus(previous.Status) || restartRecovery) {
 		if repository, ok := l.deps.PolicyRepository.(interface {
 			TransitionRunTerminal(int64, policies.RunUpdate) (bool, error)
 		}); ok {

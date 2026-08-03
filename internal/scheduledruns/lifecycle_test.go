@@ -530,6 +530,15 @@ func TestReconcileRunCorrectsRestartInterruptedProjectionFromTerminalJob(t *test
 		Actor:      "system",
 		Status:     jobs.StatusSucceeded,
 		Summary:    "Scheduled scan completed before restart",
+		MetaJSON: jobs.MarshalJSON(updates.ScheduledJobMeta{
+			Trigger:    "scheduled",
+			PolicyID:   run.PolicyID,
+			PolicyName: run.PolicyName,
+			Discovery: &updates.PackageDiscoveryOutcome{
+				PendingPackageCount:  2,
+				SecurityPackageCount: 1,
+			},
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -553,8 +562,20 @@ func TestReconcileRunCorrectsRestartInterruptedProjectionFromTerminalJob(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reconciled.Status != policies.RunSucceeded || reconciled.JobID != job.ID {
-		t.Fatalf("reconciled run = %+v, want authoritative job success", reconciled)
+	if reconciled.Status != policies.RunSucceeded || reconciled.JobID != job.ID || reconciled.Reason != "" {
+		t.Fatalf("reconciled run = %+v, want authoritative job success without stale reason", reconciled)
+	}
+	listed, err := audits.List(audit.ListFilter{Action: "schedule.run.completed", TargetName: run.ServerName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed.Total != 1 || len(listed.Items) != 1 {
+		t.Fatalf("terminal audit result = %+v, want one recovered completion", listed)
+	}
+	if !strings.Contains(listed.Items[0].MetaJSON, `"policy_id":91`) ||
+		!strings.Contains(listed.Items[0].MetaJSON, `"pending_package_count":2`) ||
+		!strings.Contains(listed.Items[0].MetaJSON, `"security_package_count":1`) {
+		t.Fatalf("terminal audit meta = %s, want policy and discovery facts", listed.Items[0].MetaJSON)
 	}
 }
 

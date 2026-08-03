@@ -20,6 +20,7 @@ func scheduledRunLifecycleDepsFromApp(deps AppDeps) scheduledrunspkg.Deps {
 		StartJobRunner:                  deps.StartJobRunner,
 		StartScheduledRunReconciliation: deps.StartScheduledRunReconciliation,
 		UpdateService:                   deps.UpdateService,
+		ReconciliationContext:           deps.ScheduledRunReconciliationContext,
 	}
 }
 

@@ -398,7 +398,7 @@ func TestScheduledRunLifecycleScanJobSetupFailuresRollBackStatus(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
+func TestScheduledRunLifecycleFailedScanFinalizesWithoutWatcherAndRestoresRuntimeStatus(t *testing.T) {
 	server := Server{Name: "srv-scan-worker-fails", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
 	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-worker-fails.db", server, "idle")
 	policy.ExecutionMode = updatePolicyExecutionScanOnly
@@ -413,13 +413,7 @@ func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
 		JobTimestampNow: deps.JobTimestampNow,
 	})
 	deps.StartJobRunner = func(_ string, run func(), _ ...func()) { run() }
-	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
-		job, err := jm.GetJob(jobID)
-		if err != nil {
-			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
-		}
-		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
-	}
+	deps.StartScheduledRunReconciliation = func(int64, string) {}
 
 	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
@@ -433,7 +427,7 @@ func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
+func TestScheduledRunLifecycleScanOnlyFinalizesWithoutWatcherAndRestoresRuntimeStatus(t *testing.T) {
 	server := Server{Name: "srv-scan-restore", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
 	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-restore.db", server, "idle")
 	policy.ExecutionMode = updatePolicyExecutionScanOnly
@@ -473,13 +467,7 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 	deps.StartJobRunner = func(_ string, run func(), _ ...func()) {
 		run()
 	}
-	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
-		job, err := jm.GetJob(jobID)
-		if err != nil {
-			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
-		}
-		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
-	}
+	deps.StartScheduledRunReconciliation = func(int64, string) {}
 
 	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
@@ -497,10 +485,6 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 }
 
 func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testing.T) {
-	server := Server{Name: "srv-reconcile", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-reconcile.db", server, "idle")
-	lifecycle := scheduledrunspkg.New(deps)
-
 	tests := []struct {
 		name       string
 		jobStatus  string
@@ -517,6 +501,9 @@ func TestScheduledRunLifecycleReconcileMapsJobStatusAndCopiesDiscovery(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			server := Server{Name: "srv-reconcile-" + strings.ReplaceAll(tt.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-reconcile-"+strings.ReplaceAll(tt.name, " ", "-")+".db", server, "idle")
+			lifecycle := scheduledrunspkg.New(deps)
 			meta := updatespkg.BuildScheduledJobMeta(policy, run.ScheduledForUTC)
 			if tt.jobStatus == jobStatusSucceeded {
 				meta.Discovery = &scheduledJobDiscovery{
@@ -664,7 +651,7 @@ func TestScheduledRunLifecycleLoadsScheduledJobBehavior(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleWatchJobStopsForTerminalOrUnavailableJobs(t *testing.T) {
+func TestScheduledRunLifecycleWatchJobStopsForTerminalOrPersistentlyUnavailableJobs(t *testing.T) {
 	server := Server{Name: "srv-watch-job", Host: "example.org", Port: 22, User: "root"}
 	deps, _, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-watch-job.db", server, "idle")
 	job, err := jm.CreateJob(JobCreateParams{
@@ -684,10 +671,24 @@ func TestScheduledRunLifecycleWatchJobStopsForTerminalOrUnavailableJobs(t *testi
 		t.Fatalf("WatchJob(terminal) took %s, want immediate return", elapsed)
 	}
 
+	running := updatePolicyRunRunning
+	empty := ""
+	if err := deps.PolicyRepository.UpdateRun(run.ID, policypkg.RunUpdate{Status: &running, Reason: &empty, FinishedAt: &empty}); err != nil {
+		t.Fatalf("reset run for unavailable watcher: %v", err)
+	}
 	deps.CurrentJobManager = func() *JobManager { return nil }
+	deps.ReconciliationWait = func(context.Context, time.Duration) error { return nil }
+	deps.ReconciliationBackoff = func(int) time.Duration { return 0 }
 	started = time.Now()
 	scheduledrunspkg.New(deps).WatchJob(run.ID, "missing")
 	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("WatchJob(unavailable) took %s, want immediate return", elapsed)
+		t.Fatalf("WatchJob(unavailable) took %s, want bounded return", elapsed)
+	}
+	persisted, err := deps.PolicyRepository.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun(%d) unexpected error: %v", run.ID, err)
+	}
+	if persisted.Status != updatePolicyRunInterrupted || persisted.Reason != updatePolicyRunReasonPersistence {
+		t.Fatalf("WatchJob(unavailable) run = %+v, want persisted interruption", persisted)
 	}
 }

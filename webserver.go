@@ -2457,14 +2457,14 @@ func writeServerActionLifecycleResult(c *gin.Context, result serverActionLifecyc
 }
 
 func main() {
-	deps := NewDefaultAppDeps()
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
 	r, err := setupRouterWithDeps(deps)
 	if err != nil {
 		log.Fatalf("Failed to setup router: %v", err)
 	}
 	seedVariantCDemoIfRequested(deps)
-	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	startAuditPruner(shutdownCtx)
 	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
 	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})

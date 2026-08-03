@@ -272,6 +272,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			})
 		}
 	}
+	if deps.ScheduledRunReconciliationContext == nil {
+		deps.ScheduledRunReconciliationContext = context.Background()
+	}
 	recordAudit := func(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) {
 		if err := deps.AuditService.Record(actor, clientIP, action, targetType, targetName, status, message, meta); err != nil {
 			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
@@ -284,6 +287,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			LoadOverrides:       deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts: deps.PolicyRepository.LoadGlobalBlackouts,
 			ListRuns:            deps.PolicyRepository.ListRuns,
+			ReconcileRun: func(run policypkg.Run) (policypkg.Run, error) {
+				return scheduledRunLifecycleFromComposedApp(deps).ReconcileRun(deps.ScheduledRunReconciliationContext, run)
+			},
 			CurrentLocation: func() *time.Location {
 				return deps.ApplicationTime.Current().Location
 			},

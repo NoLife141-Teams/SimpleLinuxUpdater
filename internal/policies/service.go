@@ -22,6 +22,7 @@ type ServiceDeps struct {
 	LoadOverrides       func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
 	ListRuns            func(int) ([]Run, error)
+	ReconcileRun        func(Run) (Run, error)
 	SnapshotServers     func() []servers.Server
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation     func() *time.Location
@@ -934,7 +935,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			if elapsedMinutes < batch.ReleaseDelayMinutes {
 				continue
 			}
-			gate := rolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
+			gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
 			if gate == "waiting" {
 				continue
 			}
@@ -1032,6 +1033,41 @@ func rolloutGateState(policyID int64, scheduledForUTC string, previous []Rollout
 		}
 	}
 	return "ready"
+}
+
+func (s *Service) reconciledRolloutGateState(policyID int64, scheduledForUTC string, previous []RolloutBatch, runs map[string]Run) string {
+	deps := s.EnsureDeps()
+	if deps.ReconcileRun != nil {
+		for _, batch := range previous {
+			for _, serverName := range batch.Servers {
+				key := rolloutRunKey(policyID, scheduledForUTC, serverName)
+				run, ok := runs[key]
+				if !ok || strings.TrimSpace(run.JobID) == "" || (isTerminalRunStatus(run.Status) && !restartInterruptedRun(run)) {
+					continue
+				}
+				reconciled, err := deps.ReconcileRun(run)
+				if err != nil {
+					deps.Logf("failed to reconcile rollout gate run %d for server %q: %v", run.ID, run.ServerName, err)
+					return "waiting"
+				}
+				runs[key] = reconciled
+			}
+		}
+	}
+	return rolloutGateState(policyID, scheduledForUTC, previous, runs)
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case RunSucceeded, RunFailed, RunSkipped, RunCancelled, RunInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func restartInterruptedRun(run Run) bool {
+	return run.Status == RunInterrupted && run.Reason == RunReasonRestart
 }
 
 func (s *Service) rolloutScheduledSlot(policy Policy, nowLocal time.Time) (time.Time, bool) {

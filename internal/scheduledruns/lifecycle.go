@@ -1,6 +1,8 @@
 package scheduledruns
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,11 @@ type Deps struct {
 	StartJobRunner                  func(string, func(), ...func())
 	StartScheduledRunReconciliation func(int64, string)
 	UpdateService                   *updates.Service
+	ReconciliationContext           context.Context
+	ReconciliationWait              func(context.Context, time.Duration) error
+	ReconciliationBackoff           func(int) time.Duration
+	ReconciliationAttempts          int
+	MissingJobConfirmations         int
 }
 
 // RunRepository is the complete persistence surface owned by the Scheduled Run
@@ -48,6 +55,24 @@ func New(deps Deps) *Lifecycle {
 		deps.MaintenanceReadiness = func(servers.Server) servers.MaintenanceReadiness {
 			return servers.MaintenanceReadiness{Ready: true, Code: servers.MaintenanceReadinessReady}
 		}
+	}
+	if deps.ReconciliationContext == nil {
+		deps.ReconciliationContext = context.Background()
+	}
+	if deps.JobTimestampNow == nil {
+		deps.JobTimestampNow = func() string { return time.Now().UTC().Format(jobs.TimestampLayout) }
+	}
+	if deps.ReconciliationWait == nil {
+		deps.ReconciliationWait = waitForReconciliation
+	}
+	if deps.ReconciliationBackoff == nil {
+		deps.ReconciliationBackoff = reconciliationBackoff
+	}
+	if deps.ReconciliationAttempts <= 0 {
+		deps.ReconciliationAttempts = 5
+	}
+	if deps.MissingJobConfirmations <= 0 {
+		deps.MissingJobConfirmations = 3
 	}
 	return &Lifecycle{deps: deps}
 }
@@ -313,6 +338,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		"upgrade_mode":      policy.UpgradeMode,
 	})
 	l.deps.StartJobRunner(job.ID, func() {
+		defer l.reconcileCurrentJob(run.ID, job.ID)
 		l.deps.UpdateService.RunUpdateJob(updates.UpdateRunRequest{
 			Server:   serverForRun,
 			Actor:    "system",
@@ -322,6 +348,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		})
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+		l.reconcileCurrentJob(run.ID, job.ID)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil
@@ -432,6 +459,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 	})
 
 	l.deps.StartJobRunner(job.ID, func() {
+		defer l.reconcileCurrentJob(run.ID, job.ID)
 		defer l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		l.deps.UpdateService.RunScheduledScanJob(updates.ScheduledScanRunRequest{
 			JobID:           job.ID,
@@ -443,13 +471,46 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		})
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+		l.reconcileCurrentJob(run.ID, job.ID)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil
 }
 
 func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
-	previous, previousErr := l.deps.PolicyRepository.GetRun(runID)
+	if err := l.reconcileJob(l.deps.ReconciliationContext, runID, job); err != nil {
+		log.Printf("failed to reconcile scheduled run %d from job %q: %v", runID, job.ID, err)
+	}
+}
+
+// reconcileCurrentJob is the worker-completion backstop for WatchJob. Polling
+// can be cancelled during graceful shutdown, but the worker is still drained;
+// its final job state must therefore be projected before the worker exits.
+func (l *Lifecycle) reconcileCurrentJob(runID int64, jobID string) {
+	if l.deps.CurrentJobManager == nil {
+		log.Printf("failed to reconcile completed scheduled run %d: job manager is unavailable", runID)
+		return
+	}
+	jm := l.deps.CurrentJobManager()
+	if jm == nil {
+		log.Printf("failed to reconcile completed scheduled run %d: job manager is unavailable", runID)
+		return
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		log.Printf("failed to read completed scheduled job %q for run %d: %v", jobID, runID, err)
+		return
+	}
+	if err := l.reconcileJob(context.Background(), runID, job); err != nil {
+		log.Printf("failed to reconcile completed scheduled run %d from job %q: %v", runID, job.ID, err)
+	}
+}
+
+func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Record) error {
+	previous, err := l.getRunWithRetry(ctx, runID)
+	if err != nil {
+		return err
+	}
 	status := policies.RunRunning
 	switch job.Status {
 	case jobs.StatusQueued:
@@ -490,17 +551,72 @@ func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
 	if status == policies.RunFailed || status == policies.RunCancelled || status == policies.RunInterrupted {
 		reason := status
 		update.Reason = &reason
+	} else {
+		reason := ""
+		update.Reason = &reason
 	}
-	if err := l.deps.PolicyRepository.UpdateRun(runID, update); err != nil {
-		log.Printf("failed to reconcile scheduled run %d from job %q: %v", runID, job.ID, err)
-		return
+	terminal := isTerminalRunStatus(status)
+	restartRecovery := previous.Status == policies.RunInterrupted && previous.Reason == policies.RunReasonRestart
+	if isTerminalRunStatus(previous.Status) && (!restartRecovery || !terminal) {
+		return nil
 	}
-	if previousErr == nil && previous.Status == status && previous.FinishedAt != "" {
-		return
+	claimedTerminal := false
+	conditionalTransition := false
+	transitionApplied := false
+	if terminal && (!isTerminalRunStatus(previous.Status) || restartRecovery) {
+		if repository, ok := l.deps.PolicyRepository.(interface {
+			TransitionRunTerminal(int64, policies.RunUpdate) (bool, error)
+		}); ok {
+			conditionalTransition = true
+			claimedTerminal, err = l.transitionRunTerminalWithRetry(ctx, repository, runID, update)
+			if err != nil {
+				return err
+			}
+			transitionApplied = claimedTerminal
+		}
+	} else if !terminal {
+		if repository, ok := l.deps.PolicyRepository.(interface {
+			TransitionRunActive(int64, policies.RunUpdate) (bool, error)
+		}); ok {
+			conditionalTransition = true
+			transitionApplied, err = l.transitionRunActiveWithRetry(ctx, repository, runID, update)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	if hasMeta {
+	if !transitionApplied {
+		current := previous
+		if conditionalTransition {
+			current, err = l.getRunWithRetry(ctx, runID)
+			if err != nil {
+				return err
+			}
+			if isTerminalRunStatus(current.Status) {
+				return nil
+			}
+		}
+		if current.Status != status || strings.TrimSpace(current.JobID) != strings.TrimSpace(job.ID) || (terminal && strings.TrimSpace(job.FinishedAt) != "" && current.FinishedAt != job.FinishedAt) {
+			if err := l.updateRunWithRetry(ctx, runID, update); err != nil {
+				return err
+			}
+		}
+		claimedTerminal = !conditionalTransition && terminal && !isTerminalRunStatus(previous.Status)
+	}
+	accepted, err := l.getRunWithRetry(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if accepted.Status != status || strings.TrimSpace(accepted.JobID) != strings.TrimSpace(job.ID) {
+		return fmt.Errorf("scheduled run %d did not accept job %q reconciliation", runID, job.ID)
+	}
+	if terminal && strings.TrimSpace(job.FinishedAt) != "" && accepted.FinishedAt != job.FinishedAt {
+		return fmt.Errorf("scheduled run %d terminal timestamp does not match job %q", runID, job.ID)
+	}
+	if claimedTerminal && hasMeta {
 		l.recordScheduledScanTerminalAudit(job, meta)
 	}
+	return nil
 }
 
 func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy policies.Policy, server servers.Server, job jobs.Record, preStartStatus *servers.ServerStatus, operation string, persistenceErr error) {
@@ -571,25 +687,223 @@ func (l *Lifecycle) recordScheduledScanTerminalAudit(job jobs.Record, meta updat
 }
 
 func (l *Lifecycle) WatchJob(runID int64, jobID string) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	l.WatchJobContext(l.deps.ReconciliationContext, runID, jobID)
+}
+
+// WatchJobContext keeps Scheduled Run state converged with its authoritative
+// job while allowing application shutdown and tests to cancel the watcher.
+func (l *Lifecycle) WatchJobContext(ctx context.Context, runID int64, jobID string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	readFailures := 0
+	missingConfirmations := 0
 	for {
-		jm := l.deps.CurrentJobManager()
-		if jm == nil {
+		if err := ctx.Err(); err != nil {
 			return
+		}
+		var jm *jobs.Manager
+		if l.deps.CurrentJobManager != nil {
+			jm = l.deps.CurrentJobManager()
+		}
+		if jm == nil {
+			readFailures++
+			if readFailures >= l.deps.ReconciliationAttempts {
+				l.persistReconciliationFailure(ctx, runID, jobID, policies.RunReasonPersistence, "Scheduled run interrupted because the job manager remained unavailable")
+				return
+			}
+			if !l.wait(ctx, readFailures) {
+				return
+			}
+			continue
 		}
 		job, err := jm.GetJob(jobID)
 		if err != nil {
-			log.Printf("failed to read scheduled job %q for run %d: %v", jobID, runID, err)
+			if errors.Is(err, sql.ErrNoRows) {
+				missingConfirmations++
+				if missingConfirmations >= l.deps.MissingJobConfirmations {
+					l.persistReconciliationFailure(ctx, runID, jobID, policies.RunReasonMissing, "Scheduled run interrupted because its job could not be found")
+					return
+				}
+			} else {
+				missingConfirmations = 0
+				readFailures++
+				if !isTransientReconciliationError(err) || readFailures >= l.deps.ReconciliationAttempts {
+					l.persistReconciliationFailure(ctx, runID, jobID, policies.RunReasonPersistence, "Scheduled run interrupted because its job state could not be read")
+					return
+				}
+			}
+			if !l.wait(ctx, max(readFailures, missingConfirmations)) {
+				return
+			}
+			continue
+		}
+		readFailures = 0
+		missingConfirmations = 0
+		if err := l.reconcileJob(ctx, runID, job); err != nil {
+			log.Printf("failed to reconcile scheduled run %d from job %q: %v", runID, job.ID, err)
+			if ctx.Err() == nil {
+				l.persistReconciliationFailure(ctx, runID, jobID, policies.RunReasonPersistence, "Scheduled run interrupted because its reconciled state could not be persisted")
+			}
 			return
 		}
-		l.ReconcileJob(runID, job)
 		switch job.Status {
 		case jobs.StatusSucceeded, jobs.StatusFailed, jobs.StatusCancelled, jobs.StatusInterrupted:
 			return
 		}
-		<-ticker.C
+		if !l.wait(ctx, 1) {
+			return
+		}
 	}
+}
+
+// ReconcileRun reloads the authoritative job for a persisted run. Rollout
+// gates use it before treating a stale non-terminal projection as decisive.
+func (l *Lifecycle) ReconcileRun(ctx context.Context, run policies.Run) (policies.Run, error) {
+	if strings.TrimSpace(run.JobID) == "" {
+		return run, nil
+	}
+	if ctx == nil {
+		ctx = l.deps.ReconciliationContext
+	}
+	if l.deps.CurrentJobManager == nil {
+		return run, errors.New("job manager is unavailable")
+	}
+	manager := l.deps.CurrentJobManager()
+	if manager == nil {
+		return run, errors.New("job manager is unavailable")
+	}
+	job, err := manager.GetJob(run.JobID)
+	if err != nil {
+		return run, err
+	}
+	if err := l.reconcileJob(ctx, run.ID, job); err != nil {
+		return run, err
+	}
+	return l.getRunWithRetry(ctx, run.ID)
+}
+
+func (l *Lifecycle) getRunWithRetry(ctx context.Context, runID int64) (policies.Run, error) {
+	var run policies.Run
+	err := l.retry(ctx, func() error {
+		var err error
+		run, err = l.deps.PolicyRepository.GetRun(runID)
+		return err
+	})
+	return run, err
+}
+
+func (l *Lifecycle) updateRunWithRetry(ctx context.Context, runID int64, update policies.RunUpdate) error {
+	return l.retry(ctx, func() error { return l.deps.PolicyRepository.UpdateRun(runID, update) })
+}
+
+func (l *Lifecycle) transitionRunTerminalWithRetry(ctx context.Context, repository interface {
+	TransitionRunTerminal(int64, policies.RunUpdate) (bool, error)
+}, runID int64, update policies.RunUpdate) (bool, error) {
+	changed := false
+	err := l.retry(ctx, func() error {
+		var err error
+		changed, err = repository.TransitionRunTerminal(runID, update)
+		return err
+	})
+	return changed, err
+}
+
+func (l *Lifecycle) transitionRunActiveWithRetry(ctx context.Context, repository interface {
+	TransitionRunActive(int64, policies.RunUpdate) (bool, error)
+}, runID int64, update policies.RunUpdate) (bool, error) {
+	changed := false
+	err := l.retry(ctx, func() error {
+		var err error
+		changed, err = repository.TransitionRunActive(runID, update)
+		return err
+	})
+	return changed, err
+}
+
+func (l *Lifecycle) retry(ctx context.Context, operation func() error) error {
+	var err error
+	for attempt := 1; attempt <= l.deps.ReconciliationAttempts; attempt++ {
+		if err = operation(); err == nil {
+			return nil
+		}
+		if !isTransientReconciliationError(err) || attempt == l.deps.ReconciliationAttempts || !l.wait(ctx, attempt) {
+			return err
+		}
+	}
+	return err
+}
+
+func (l *Lifecycle) wait(ctx context.Context, attempt int) bool {
+	return l.deps.ReconciliationWait(ctx, l.deps.ReconciliationBackoff(attempt)) == nil
+}
+
+func (l *Lifecycle) persistReconciliationFailure(ctx context.Context, runID int64, jobID, reason, summary string) {
+	status := policies.RunInterrupted
+	finishedAt := l.deps.JobTimestampNow()
+	update := policies.RunUpdate{Status: &status, Reason: &reason, Summary: &summary, JobID: &jobID, FinishedAt: &finishedAt}
+	if repository, ok := l.deps.PolicyRepository.(interface {
+		TransitionRunTerminal(int64, policies.RunUpdate) (bool, error)
+	}); ok {
+		if _, err := l.transitionRunTerminalWithRetry(ctx, repository, runID, update); err != nil {
+			log.Printf("failed to persist reconciliation failure for scheduled run %d: %v", runID, err)
+		}
+		return
+	}
+	if err := l.updateRunWithRetry(ctx, runID, update); err != nil {
+		log.Printf("failed to persist reconciliation failure for scheduled run %d: %v", runID, err)
+	}
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case policies.RunSucceeded, policies.RunFailed, policies.RunSkipped, policies.RunCancelled, policies.RunInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTransientReconciliationError(err error) bool {
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	type temporary interface{ Temporary() bool }
+	var temporaryErr temporary
+	if errors.As(err, &temporaryErr) && temporaryErr.Temporary() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, fragment := range []string{"database is locked", "database is busy", "sqlite_busy", "sqlite_locked", "temporarily unavailable", "temporary failure", "timeout"} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForReconciliation(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func reconciliationBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := 250 * time.Millisecond * time.Duration(1<<min(attempt-1, 3))
+	jitterRange := delay / 5
+	if jitterRange == 0 {
+		return delay
+	}
+	jitter := time.Duration(time.Now().UnixNano()%int64(2*jitterRange+1)) - jitterRange
+	return delay + jitter
 }
 
 func (l *Lifecycle) LoadJobBehavior(jobID string) updates.ScheduledJobBehavior {

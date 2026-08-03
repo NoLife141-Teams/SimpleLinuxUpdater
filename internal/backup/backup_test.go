@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,6 +194,203 @@ func TestPayloadRoundTrip(t *testing.T) {
 	}
 	if _, err := DecryptPayload(encrypted, "wrong-passphrase"); err == nil {
 		t.Fatalf("DecryptPayload(wrong passphrase) error = nil, want error")
+	}
+}
+
+func TestExportArchiveFileUsesTemporaryArtifactsAndPreservesLegacyFormat(t *testing.T) {
+	sourceDir := t.TempDir()
+	workDir := t.TempDir()
+	databaseData := []byte(strings.Repeat("database-page-", 128))
+	configData := []byte(`{"encryption_key":"test-key"}`)
+	databasePath := filepath.Join(sourceDir, "servers.db")
+	configPath := filepath.Join(sourceDir, "config.json")
+	if err := os.WriteFile(databasePath, databaseData, 0600); err != nil {
+		t.Fatalf("write database fixture: %v", err)
+	}
+	if err := os.WriteFile(configPath, configData, 0600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	includeKnownHosts := false
+	service := NewService(ServiceDeps{
+		ConfigPath: func() string { return configPath },
+		TempDir:    func() string { return workDir },
+		Logf:       func(string, ...any) {},
+	})
+
+	result, err := service.ExportArchiveFile(context.Background(), ExportRequest{
+		Passphrase:        testPassphrase,
+		IncludeKnownHosts: &includeKnownHosts,
+		DBSnapshotPath:    databasePath,
+	})
+	if err != nil {
+		t.Fatalf("ExportArchiveFile() error = %v", err)
+	}
+	if result.File.Path == "" || result.File.Size <= 0 {
+		t.Fatalf("ExportArchiveFile() file = %+v, want a file-backed result", result.File)
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatalf("read temporary directory: %v", err)
+	}
+	if len(entries) != 1 || filepath.Join(workDir, entries[0].Name()) != result.File.Path {
+		t.Fatalf("temporary entries = %v, want only returned encrypted artifact", entries)
+	}
+
+	encrypted, err := os.ReadFile(result.File.Path)
+	if err != nil {
+		t.Fatalf("read encrypted artifact: %v", err)
+	}
+	plain, err := DecryptPayload(encrypted, testPassphrase)
+	if err != nil {
+		t.Fatalf("legacy DecryptPayload(new file-backed export) error = %v", err)
+	}
+	files, manifest, err := ExtractTarGz(plain)
+	if err != nil {
+		t.Fatalf("legacy ExtractTarGz(new file-backed export) error = %v", err)
+	}
+	if !bytes.Equal(files["servers.db"], databaseData) || !bytes.Equal(files["config.json"], configData) {
+		t.Fatalf("file-backed export did not preserve source files")
+	}
+	if manifest.Format != FormatName || manifest.Version != FormatVersion {
+		t.Fatalf("manifest = %+v, want current legacy-compatible format", manifest)
+	}
+	if err := result.File.Remove(); err != nil {
+		t.Fatalf("remove encrypted artifact: %v", err)
+	}
+	entries, err = os.ReadDir(workDir)
+	if err != nil {
+		t.Fatalf("read cleaned temporary directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary entries after cleanup = %v, want none", entries)
+	}
+}
+
+func TestFilePipelineReadsLegacyEnvelopeAndCleansArtifacts(t *testing.T) {
+	workDir := t.TempDir()
+	archive := buildTestTarGz(t, []testArchiveEntry{
+		{name: "manifest.json", data: []byte(`{"format":"simplelinuxupdater-backup","version":1,"files":{}}`)},
+	})
+	encrypted, err := EncryptPayload(archive, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload() error = %v", err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "legacy"+FileExtension)
+	if err := os.WriteFile(legacyPath, encrypted, 0600); err != nil {
+		t.Fatalf("write legacy envelope: %v", err)
+	}
+	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
+	plain, err := service.decryptFile(legacyPath, testPassphrase)
+	if err != nil {
+		t.Fatalf("decryptFile(legacy envelope) error = %v", err)
+	}
+	inspection, err := InspectTarGzFileWithLimits(plain.Path, workDir, MaxUploadBytes, MaxExtractedBytes)
+	if err != nil {
+		_ = plain.Remove()
+		t.Fatalf("InspectTarGzFileWithLimits(legacy envelope) error = %v", err)
+	}
+	if inspection.Manifest.Format != FormatName || inspection.Manifest.Version != FormatVersion {
+		t.Fatalf("inspection manifest = %+v, want legacy manifest", inspection.Manifest)
+	}
+	if err := inspection.Remove(); err != nil {
+		t.Fatalf("remove extracted files: %v", err)
+	}
+	if err := plain.Remove(); err != nil {
+		t.Fatalf("remove plaintext artifact: %v", err)
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatalf("read cleaned temporary directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary entries after legacy read = %v, want none", entries)
+	}
+}
+
+func TestFilePipelineReadsJSONEscapedLegacyPayload(t *testing.T) {
+	archive := buildTestTarGz(t, []testArchiveEntry{
+		{name: "manifest.json", data: []byte(`{"format":"simplelinuxupdater-backup","version":1,"files":{}}`)},
+	})
+	encrypted, err := EncryptPayload(archive, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload() error = %v", err)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(encrypted, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if envelope.PayloadB64 == "" {
+		t.Fatalf("legacy envelope payload is empty")
+	}
+	original := `"payload_b64":"` + envelope.PayloadB64 + `"`
+	escaped := fmt.Sprintf(`"payload_b64":"\u%04x%s"`, envelope.PayloadB64[0], envelope.PayloadB64[1:])
+	escapedEnvelope := []byte(strings.Replace(string(encrypted), original, escaped, 1))
+	if bytes.Equal(escapedEnvelope, encrypted) {
+		t.Fatalf("failed to JSON-escape the payload fixture")
+	}
+	encrypted = escapedEnvelope
+	path := filepath.Join(t.TempDir(), "escaped"+FileExtension)
+	if err := os.WriteFile(path, encrypted, 0600); err != nil {
+		t.Fatalf("write escaped envelope: %v", err)
+	}
+	workDir := t.TempDir()
+	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
+	plain, err := service.decryptFile(path, testPassphrase)
+	if err != nil {
+		t.Fatalf("decryptFile(escaped legacy payload) error = %v", err)
+	}
+	defer plain.Remove()
+	if data, err := os.ReadFile(plain.Path); err != nil || !bytes.Equal(data, archive) {
+		t.Fatalf("decrypted escaped payload mismatch: bytes=%d err=%v", len(data), err)
+	}
+}
+
+func TestInspectEnvelopeFileRejectsTrailingComma(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid"+FileExtension)
+	payload := `{"format":"simplelinuxupdater-backup","version":1,"created_at":"2026-08-03T00:00:00Z","kdf":{},"cipher":{},"payload_b64":"",}`
+	if err := os.WriteFile(path, []byte(payload), 0600); err != nil {
+		t.Fatalf("write malformed envelope: %v", err)
+	}
+	if _, err := InspectEnvelopeFile(path); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("InspectEnvelopeFile() error = %v, want ErrMalformed", err)
+	}
+}
+
+func TestInspectEnvelopeFilePreservesUnsupportedVersionReview(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "future"+FileExtension)
+	if err := os.WriteFile(path, []byte(`{"format":"simplelinuxupdater-backup","version":2}`), 0600); err != nil {
+		t.Fatalf("write future envelope: %v", err)
+	}
+	envelope, err := InspectEnvelopeFile(path)
+	if err != nil {
+		t.Fatalf("InspectEnvelopeFile() error = %v", err)
+	}
+	if envelope.Format != FormatName || envelope.Version != 2 {
+		t.Fatalf("InspectEnvelopeFile() = %+v, want future version facts", envelope)
+	}
+}
+
+func TestDecryptFileCleansIntermediateArtifactsOnWrongPassphrase(t *testing.T) {
+	workDir := t.TempDir()
+	archive := buildTestTarGz(t, []testArchiveEntry{{name: "manifest.json", data: []byte(`{"format":"simplelinuxupdater-backup","version":1,"files":{}}`)}})
+	encrypted, err := EncryptPayload(archive, testPassphrase)
+	if err != nil {
+		t.Fatalf("EncryptPayload() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "backup"+FileExtension)
+	if err := os.WriteFile(path, encrypted, 0600); err != nil {
+		t.Fatalf("write encrypted fixture: %v", err)
+	}
+	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
+	if _, err := service.decryptFile(path, "wrong-passphrase"); err == nil {
+		t.Fatalf("decryptFile() error = nil, want authentication failure")
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatalf("read temporary directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary entries after failed decrypt = %v, want none", entries)
 	}
 }
 

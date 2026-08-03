@@ -273,6 +273,47 @@ func TestRunUpdateJobClassifiesSudoPolicyFailureAndExplainsRecovery(t *testing.T
 	}
 }
 
+func TestRunUpdateJobClassifiesPrecheckSudoPolicyFailureAndExplainsRecovery(t *testing.T) {
+	server := servers.Server{Name: "srv-precheck-sudo-policy", Host: "example.org", Port: 22, User: "operator"}
+	inventory := []servers.Server{server}
+	statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+	var auditErrorClass string
+	service := NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
+				return PrecheckSummary{
+					AllPassed:   false,
+					FailedCheck: "apt_locks",
+					Results: []PrecheckResult{{
+						Name:    "apt_locks",
+						Details: "APT lock check requires passwordless sudo.",
+						Output:  "sudo: a password is required",
+					}},
+				}
+			},
+		}),
+		CurrentJobManager: func() *jobs.Manager { return nil },
+		AuditWithActor: func(_, _, _, _, _, _, _ string, meta map[string]any) {
+			auditErrorClass, _ = meta["last_error_class"].(string)
+		},
+	})
+
+	service.RunUpdateJob(UpdateRunRequest{Server: server, Policy: RetryPolicy{MaxAttempts: 1}})
+
+	status := state.CurrentStatusSnapshot(server.Name)
+	if status == nil || status.Status != runtimepkg.StatusError {
+		t.Fatalf("final status = %+v, want error", status)
+	}
+	if auditErrorClass != "sudo_policy" {
+		t.Fatalf("last_error_class = %q, want sudo_policy", auditErrorClass)
+	}
+	if !strings.Contains(status.Logs, "Pre-check failed (apt_locks)") || !strings.Contains(status.Logs, "Click Enable apt") {
+		t.Fatalf("logs = %q, want pre-check failure and Enable apt recovery guidance", status.Logs)
+	}
+}
+
 func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(t *testing.T) {
 	state, statuses := testState()
 	statuses["srv"].PendingUpdates = []servers.PendingUpdate{

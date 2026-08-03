@@ -852,6 +852,9 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	if statusValue == runtimepkg.StatusPendingApproval {
 		return DashboardRecommendedActionInfo{Key: "review_approval", Label: "Review approval", Detail: "Review the package plan and approve the safest eligible scope, or cancel the pending run."}
 	}
+	if statusValue == runtimepkg.StatusError && strings.EqualFold(strings.TrimSpace(failure.errorClass), "sudo_policy") {
+		return dashboardRecommendationForFailure(failure, actions)
+	}
 	if triageTime.factsState != "fresh" || dashboardHealthFactsIncomplete(health) {
 		action := ""
 		if dashboardActionEnabled(actions, dashboardActionRefreshFacts) {

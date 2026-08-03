@@ -303,13 +303,17 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 	})
 }
 
+func (r *withActorRunner) setSudoPolicyErrorLogs(logs string) {
+	r.lastErrClass = "sudo_policy"
+	_ = r.withStatus(func(status *servers.ServerStatus) {
+		status.Status = runtimepkg.StatusError
+		status.Logs = logs + "\nPasswordless APT access is missing or outdated. Click Enable apt for this server, enter the host's sudo password, wait for it to succeed, then retry the update."
+	})
+}
+
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
-		r.lastErrClass = "sudo_policy"
-		_ = r.withStatus(func(status *servers.ServerStatus) {
-			status.Status = runtimepkg.StatusError
-			status.Logs = logs + "\nPasswordless APT access is missing or outdated. Click Enable apt for this server, enter the host's sudo password, wait for it to succeed, then retry the update."
-		})
+		r.setSudoPolicyErrorLogs(logs)
 		return
 	}
 	var reconciliation interface{ RequiresReconciliation() bool }
@@ -661,11 +665,16 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.appendStatusLog(line)
 			}
 			if !precheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
 				r.precheckFailed = precheckSummary.FailedCheck
+				logs := r.currentLogs() + fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
+				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && precheckSummaryHasSudoPolicyError(precheckSummary) {
+					r.setSudoPolicyErrorLogs(logs)
+					return
+				}
+				r.lastErrClass = "permanent"
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "error"
-					status.Logs += fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
+					status.Logs = logs
 				})
 				return
 			}

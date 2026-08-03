@@ -112,6 +112,18 @@ func IsSudoPolicyError(message string) bool {
 		strings.Contains(normalized, "is not in the sudoers file")
 }
 
+func precheckSummaryHasSudoPolicyError(summary PrecheckSummary) bool {
+	for _, result := range summary.Results {
+		if result.Passed {
+			continue
+		}
+		if IsSudoPolicyError(result.Details + "\n" + result.Output + "\n" + result.Error) {
+			return true
+		}
+	}
+	return false
+}
+
 func MarkRetryableFromOutput(err error, output string) error {
 	if err == nil {
 		return nil

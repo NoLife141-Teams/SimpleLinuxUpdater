@@ -3,6 +3,7 @@ package policies
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -107,6 +108,59 @@ func TestSQLiteRepositoryQueryRunsDoesNotPreallocateFromPageSize(t *testing.T) {
 	}
 	if page.Items == nil || cap(page.Items) != 0 {
 		t.Fatalf("QueryRuns() empty items = %#v with capacity %d, want non-nil empty slice without request-sized preallocation", page.Items, cap(page.Items))
+	}
+}
+
+func TestSQLiteRepositoryListRolloutRunsScopesCompleteOccurrences(t *testing.T) {
+	repo, db := newTestRepository(t)
+	targetTime := "2026-01-05T03:00:00.000000000Z"
+	otherTime := "2026-01-06T03:00:00.000000000Z"
+	fixtures := []Run{
+		{PolicyID: 11, PolicyName: "Target", ServerName: "srv-a", ScheduledForUTC: targetTime, ExecutionMode: ExecutionAutoApply, PackageScope: PackageScopeSecurity, Status: RunSucceeded},
+		{PolicyID: 11, PolicyName: "Target", ServerName: "srv-b", ScheduledForUTC: targetTime, ExecutionMode: ExecutionAutoApply, PackageScope: PackageScopeSecurity, Status: RunRunning},
+		{PolicyID: 11, PolicyName: "Other occurrence", ServerName: "srv-a", ScheduledForUTC: otherTime, ExecutionMode: ExecutionAutoApply, PackageScope: PackageScopeSecurity, Status: RunSucceeded},
+		{PolicyID: 12, PolicyName: "Other policy", ServerName: "srv-a", ScheduledForUTC: targetTime, ExecutionMode: ExecutionAutoApply, PackageScope: PackageScopeSecurity, Status: RunSucceeded},
+	}
+	for index, fixture := range fixtures {
+		if _, inserted, err := repo.CreateRun(fixture); err != nil || !inserted {
+			t.Fatalf("CreateRun(%d) = inserted %t, err %v", index, inserted, err)
+		}
+	}
+
+	runs, err := repo.ListRolloutRuns([]RolloutRunScope{
+		{PolicyID: 11, ScheduledForUTC: targetTime},
+		{PolicyID: 11, ScheduledForUTC: targetTime},
+	})
+	if err != nil {
+		t.Fatalf("ListRolloutRuns() error = %v", err)
+	}
+	if len(runs) != 2 || runs[0].ServerName != "srv-a" || runs[1].ServerName != "srv-b" {
+		t.Fatalf("ListRolloutRuns() = %+v, want complete target occurrence", runs)
+	}
+
+	var plan string
+	rows, err := db.Query("EXPLAIN QUERY PLAN SELECT server_name FROM update_policy_runs WHERE policy_id = ? AND scheduled_for_utc = ?", 11, targetTime)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN error = %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatalf("scan query plan: %v", err)
+		}
+		plan += detail + "\n"
+	}
+	if !strings.Contains(plan, "idx_update_policy_runs_rollout_scope") {
+		t.Fatalf("rollout query plan does not use scoped index:\n%s", plan)
+	}
+}
+
+func TestSQLiteRepositoryListRolloutRunsRejectsInvalidScope(t *testing.T) {
+	repo, _ := newTestRepository(t)
+	if _, err := repo.ListRolloutRuns([]RolloutRunScope{{PolicyID: 0, ScheduledForUTC: "2026-01-05T03:00:00Z"}}); err == nil {
+		t.Fatal("ListRolloutRuns() error = nil, want invalid scope rejection")
 	}
 }
 

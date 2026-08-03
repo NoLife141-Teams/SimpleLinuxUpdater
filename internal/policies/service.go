@@ -22,6 +22,7 @@ type ServiceDeps struct {
 	LoadOverrides       func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
 	ListRuns            func(int) ([]Run, error)
+	ListRolloutRuns     func([]RolloutRunScope) ([]Run, error)
 	ReconcileRun        func(Run) (Run, error)
 	SnapshotServers     func() []servers.Server
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
@@ -864,19 +865,26 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		}
 	}
 	serversSnapshot := deps.SnapshotServers()
-	rolloutRuns := []Run{}
-	needsRolloutRuns := false
+	rolloutScopes := make([]RolloutRunScope, 0)
 	for _, policy := range policies {
-		if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
-			needsRolloutRuns = true
-			break
+		if !policy.Enabled || policy.RolloutMode != RolloutCanaryWaves {
+			continue
 		}
+		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
+		if !rolloutDue {
+			continue
+		}
+		rolloutScopes = append(rolloutScopes, RolloutRunScope{
+			PolicyID:        policy.ID,
+			ScheduledForUTC: CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation),
+		})
 	}
-	if needsRolloutRuns && deps.ListRuns == nil {
+	if len(rolloutScopes) > 0 && deps.ListRolloutRuns == nil {
 		return errors.New("policy rollout history dependency is incomplete")
 	}
-	if needsRolloutRuns {
-		rolloutRuns, err = deps.ListRuns(1000)
+	rolloutRuns := []Run{}
+	if len(rolloutScopes) > 0 {
+		rolloutRuns, err = deps.ListRolloutRuns(rolloutScopes)
 		if err != nil {
 			return err
 		}

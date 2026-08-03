@@ -664,7 +664,7 @@ func TestScheduledRunLifecycleLoadsScheduledJobBehavior(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleWatchJobStopsForTerminalOrUnavailableJobs(t *testing.T) {
+func TestScheduledRunLifecycleWatchJobStopsForTerminalOrPersistentlyUnavailableJobs(t *testing.T) {
 	server := Server{Name: "srv-watch-job", Host: "example.org", Port: 22, User: "root"}
 	deps, _, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-watch-job.db", server, "idle")
 	job, err := jm.CreateJob(JobCreateParams{
@@ -684,10 +684,24 @@ func TestScheduledRunLifecycleWatchJobStopsForTerminalOrUnavailableJobs(t *testi
 		t.Fatalf("WatchJob(terminal) took %s, want immediate return", elapsed)
 	}
 
+	running := updatePolicyRunRunning
+	empty := ""
+	if err := deps.PolicyRepository.UpdateRun(run.ID, policypkg.RunUpdate{Status: &running, Reason: &empty, FinishedAt: &empty}); err != nil {
+		t.Fatalf("reset run for unavailable watcher: %v", err)
+	}
 	deps.CurrentJobManager = func() *JobManager { return nil }
+	deps.ReconciliationWait = func(context.Context, time.Duration) error { return nil }
+	deps.ReconciliationBackoff = func(int) time.Duration { return 0 }
 	started = time.Now()
 	scheduledrunspkg.New(deps).WatchJob(run.ID, "missing")
 	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("WatchJob(unavailable) took %s, want immediate return", elapsed)
+		t.Fatalf("WatchJob(unavailable) took %s, want bounded return", elapsed)
+	}
+	persisted, err := deps.PolicyRepository.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun(%d) unexpected error: %v", run.ID, err)
+	}
+	if persisted.Status != updatePolicyRunInterrupted || persisted.Reason != updatePolicyRunReasonPersistence {
+		t.Fatalf("WatchJob(unavailable) run = %+v, want persisted interruption", persisted)
 	}
 }

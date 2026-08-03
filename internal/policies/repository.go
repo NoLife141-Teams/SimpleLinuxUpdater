@@ -772,8 +772,28 @@ func scanRunRow(scanner interface{ Scan(dest ...any) error }) (Run, error) {
 }
 
 func (r *SQLiteRepository) UpdateRun(id int64, update RunUpdate) error {
+	_, err := r.updateRunWhere(id, update, "")
+	return err
+}
+
+// TransitionRunTerminal applies a terminal reconciliation only while the run
+// is still active. The affected-row result lets callers claim terminal side
+// effects exactly once when concurrent watchers observe the same job.
+func (r *SQLiteRepository) TransitionRunTerminal(id int64, update RunUpdate) (bool, error) {
 	if id <= 0 {
-		return nil
+		return false, nil
+	}
+	result, err := r.updateRunWhere(id, update, " AND status IN (?, ?, ?)", RunQueued, RunRunning, RunWaitingApproval)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
+}
+
+func (r *SQLiteRepository) updateRunWhere(id int64, update RunUpdate, condition string, conditionArgs ...any) (sql.Result, error) {
+	if id <= 0 {
+		return nil, nil
 	}
 	now := r.now()
 	setClauses := []string{"updated_at = ?"}
@@ -807,8 +827,8 @@ func (r *SQLiteRepository) UpdateRun(id int64, update RunUpdate) error {
 		args = append(args, strings.TrimSpace(*update.FinishedAt))
 	}
 	args = append(args, id)
-	_, err := r.database().Exec("UPDATE update_policy_runs SET "+strings.Join(setClauses, ", ")+" WHERE id = ?", args...)
-	return err
+	args = append(args, conditionArgs...)
+	return r.database().Exec("UPDATE update_policy_runs SET "+strings.Join(setClauses, ", ")+" WHERE id = ?"+condition, args...)
 }
 
 func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {

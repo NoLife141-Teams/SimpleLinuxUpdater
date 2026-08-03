@@ -48,6 +48,11 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	if deps.ListRuns == nil {
 		deps.ListRuns = listUpdatePolicyRuns
 	}
+	if deps.ReconcileRun == nil {
+		deps.ReconcileRun = func(run policypkg.Run) (policypkg.Run, error) {
+			return defaultScheduledRunLifecycle().ReconcileRun(context.Background(), run)
+		}
+	}
 	if deps.SnapshotServers == nil {
 		deps.SnapshotServers = snapshotServers
 	}

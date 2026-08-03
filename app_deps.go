@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -52,15 +53,16 @@ type AppDeps struct {
 	SetupRateLimiter          *AuthRateLimiter
 	MetricsRateLimiter        *AuthRateLimiter
 
-	TrustedProxies                  func() []string
-	Now                             func() time.Time
-	JobTimestampNow                 func() string
-	LoadRetryPolicy                 func() RetryPolicy
-	StartJobRunner                  func(string, func(), ...func())
-	StartScheduledRunReconciliation func(int64, string)
-	NotifyDashboardEvent            func(string)
-	NotifyDashboardLogEvent         func(internaljobs.LogEvent)
-	DashboardEventBroker            *events.Broker
+	TrustedProxies                    func() []string
+	Now                               func() time.Time
+	JobTimestampNow                   func() string
+	LoadRetryPolicy                   func() RetryPolicy
+	StartJobRunner                    func(string, func(), ...func())
+	StartScheduledRunReconciliation   func(int64, string)
+	ScheduledRunReconciliationContext context.Context
+	NotifyDashboardEvent              func(string)
+	NotifyDashboardLogEvent           func(internaljobs.LogEvent)
+	DashboardEventBroker              *events.Broker
 }
 
 func NewDefaultAppDeps() AppDeps {

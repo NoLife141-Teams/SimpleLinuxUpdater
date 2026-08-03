@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	auditpkg "debian-updater/internal/audit"
 	jobspkg "debian-updater/internal/jobs"
@@ -31,6 +33,11 @@ func TestScheduledRunLifecycleDepsExposeExactLifecycleKnowledge(t *testing.T) {
 		"StartJobRunner":                  reflect.TypeOf((func(string, func(), ...func()))(nil)),
 		"StartScheduledRunReconciliation": reflect.TypeOf((func(int64, string))(nil)),
 		"UpdateService":                   reflect.TypeOf((*updatespkg.Service)(nil)),
+		"ReconciliationContext":           reflect.TypeOf((*context.Context)(nil)).Elem(),
+		"ReconciliationWait":              reflect.TypeOf((func(context.Context, time.Duration) error)(nil)),
+		"ReconciliationBackoff":           reflect.TypeOf((func(int) time.Duration)(nil)),
+		"ReconciliationAttempts":          reflect.TypeOf(int(0)),
+		"MissingJobConfirmations":         reflect.TypeOf(int(0)),
 	}
 	typeInfo := reflect.TypeOf(scheduledrunspkg.Deps{})
 	if typeInfo.NumField() != len(want) {
@@ -61,6 +68,8 @@ func TestScheduledRunLifecycleExposesExactInterface(t *testing.T) {
 		"ReconcileJob":       reflect.TypeOf((func(*scheduledrunspkg.Lifecycle, int64, jobspkg.Record))(nil)),
 		"UpdateJobDiscovery": reflect.TypeOf((func(*scheduledrunspkg.Lifecycle, string, updatespkg.PackageDiscoveryOutcome))(nil)),
 		"WatchJob":           reflect.TypeOf((func(*scheduledrunspkg.Lifecycle, int64, string))(nil)),
+		"WatchJobContext":    reflect.TypeOf((func(*scheduledrunspkg.Lifecycle, context.Context, int64, string))(nil)),
+		"ReconcileRun":       reflect.TypeOf((func(*scheduledrunspkg.Lifecycle, context.Context, policypkg.Run) (policypkg.Run, error))(nil)),
 	}
 	typeInfo := reflect.TypeOf((*scheduledrunspkg.Lifecycle)(nil))
 	if typeInfo.NumMethod() != len(want) {
@@ -80,6 +89,17 @@ func TestScheduledRunLifecycleExposesExactInterface(t *testing.T) {
 	}
 	for missing := range want {
 		t.Errorf("Lifecycle lost approved method %q", missing)
+	}
+}
+
+func TestScheduledRunLifecycleReceivesApplicationShutdownContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	deps := scheduledRunLifecycleDepsFromApp(AppDeps{ScheduledRunReconciliationContext: ctx})
+	cancel()
+	select {
+	case <-deps.ReconciliationContext.Done():
+	default:
+		t.Fatal("scheduled run lifecycle did not receive the application shutdown context")
 	}
 }
 

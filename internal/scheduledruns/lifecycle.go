@@ -338,6 +338,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		"upgrade_mode":      policy.UpgradeMode,
 	})
 	l.deps.StartJobRunner(job.ID, func() {
+		defer l.reconcileCurrentJob(run.ID, job.ID)
 		l.deps.UpdateService.RunUpdateJob(updates.UpdateRunRequest{
 			Server:   serverForRun,
 			Actor:    "system",
@@ -347,6 +348,7 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		})
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+		l.reconcileCurrentJob(run.ID, job.ID)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil
@@ -457,6 +459,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 	})
 
 	l.deps.StartJobRunner(job.ID, func() {
+		defer l.reconcileCurrentJob(run.ID, job.ID)
 		defer l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		l.deps.UpdateService.RunScheduledScanJob(updates.ScheduledScanRunRequest{
 			JobID:           job.ID,
@@ -468,6 +471,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		})
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
+		l.reconcileCurrentJob(run.ID, job.ID)
 	})
 	l.deps.StartScheduledRunReconciliation(run.ID, job.ID)
 	return policies.RunRunning, job.ID, nil
@@ -476,6 +480,29 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 func (l *Lifecycle) ReconcileJob(runID int64, job jobs.Record) {
 	if err := l.reconcileJob(l.deps.ReconciliationContext, runID, job); err != nil {
 		log.Printf("failed to reconcile scheduled run %d from job %q: %v", runID, job.ID, err)
+	}
+}
+
+// reconcileCurrentJob is the worker-completion backstop for WatchJob. Polling
+// can be cancelled during graceful shutdown, but the worker is still drained;
+// its final job state must therefore be projected before the worker exits.
+func (l *Lifecycle) reconcileCurrentJob(runID int64, jobID string) {
+	if l.deps.CurrentJobManager == nil {
+		log.Printf("failed to reconcile completed scheduled run %d: job manager is unavailable", runID)
+		return
+	}
+	jm := l.deps.CurrentJobManager()
+	if jm == nil {
+		log.Printf("failed to reconcile completed scheduled run %d: job manager is unavailable", runID)
+		return
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil {
+		log.Printf("failed to read completed scheduled job %q for run %d: %v", jobID, runID, err)
+		return
+	}
+	if err := l.reconcileJob(context.Background(), runID, job); err != nil {
+		log.Printf("failed to reconcile completed scheduled run %d from job %q: %v", runID, job.ID, err)
 	}
 }
 

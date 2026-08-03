@@ -398,7 +398,7 @@ func TestScheduledRunLifecycleScanJobSetupFailuresRollBackStatus(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
+func TestScheduledRunLifecycleFailedScanFinalizesWithoutWatcherAndRestoresRuntimeStatus(t *testing.T) {
 	server := Server{Name: "srv-scan-worker-fails", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
 	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-worker-fails.db", server, "idle")
 	policy.ExecutionMode = updatePolicyExecutionScanOnly
@@ -413,13 +413,7 @@ func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
 		JobTimestampNow: deps.JobTimestampNow,
 	})
 	deps.StartJobRunner = func(_ string, run func(), _ ...func()) { run() }
-	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
-		job, err := jm.GetJob(jobID)
-		if err != nil {
-			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
-		}
-		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
-	}
+	deps.StartScheduledRunReconciliation = func(int64, string) {}
 
 	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 
@@ -433,7 +427,7 @@ func TestScheduledRunLifecycleFailedScanRestoresRuntimeStatus(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
+func TestScheduledRunLifecycleScanOnlyFinalizesWithoutWatcherAndRestoresRuntimeStatus(t *testing.T) {
 	server := Server{Name: "srv-scan-restore", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"scan"}}
 	deps, policy, run, jm := newScheduledRunLifecycleTestDeps(t, "scheduled-run-scan-restore.db", server, "idle")
 	policy.ExecutionMode = updatePolicyExecutionScanOnly
@@ -473,13 +467,7 @@ func TestScheduledRunLifecycleScanOnlyRestoresRuntimeStatus(t *testing.T) {
 	deps.StartJobRunner = func(_ string, run func(), _ ...func()) {
 		run()
 	}
-	deps.StartScheduledRunReconciliation = func(runID int64, jobID string) {
-		job, err := jm.GetJob(jobID)
-		if err != nil {
-			t.Fatalf("GetJob(%q) during reconciliation unexpected error: %v", jobID, err)
-		}
-		scheduledrunspkg.New(deps).ReconcileJob(runID, job)
-	}
+	deps.StartScheduledRunReconciliation = func(int64, string) {}
 
 	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
 

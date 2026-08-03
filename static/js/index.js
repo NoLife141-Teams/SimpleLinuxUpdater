@@ -12,12 +12,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let allServers = [];
         let lastSuccessfulSyncAt = null;
         let lastFetchError = null;
-        let recentActivity = [];
-        let observabilitySummary = null;
-        let policySummary = null;
         let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
-        let globalKeyAvailable = false;
-        let dashboardExtraErrors = new Map();
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
 	        let expandedMiniLists = new Set();
@@ -60,10 +55,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function refreshDashboardPresentation() {
+            const statusView = getStatusView();
             dashboardPresentation = dashboardConsumption.project({
-                statusView: getStatusView(),
-                globalKeyAvailable,
-                extras: { recentActivity, observabilitySummary, policySummary }
+                statusView,
+                globalKeyAvailable: statusView.globalKeyAvailable,
+                extras: statusView.extras
             });
             return dashboardPresentation;
         }
@@ -89,6 +85,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     renderDrawerLogs(effect.serverName);
                 } else if (effect.type === "renderSyncState") {
                     renderSyncState();
+                } else if (effect.type === "renderSecondarySnapshot") {
+                    refreshDashboardPresentation();
+                    if (effect.stream === "audit") renderRecentActivity();
+                    if (["observability", "policies"].includes(effect.stream)) renderSummaryBadges();
                 } else if (effect.type === "cancelInteractionRelease") {
                     if (actionInteractionReleaseTimer !== null) {
                         clearTimeout(actionInteractionReleaseTimer);
@@ -515,9 +515,17 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderSyncState() {
-            const extrasError = dashboardExtraErrors.size > 0
-                ? Array.from(dashboardExtraErrors.values()).join("; ")
-                : "";
+            const streamLabels = {
+                dashboard: "dashboard",
+                audit: "audit",
+                observability: "observability",
+                policies: "policies",
+                globalKey: "global key"
+            };
+            const extrasError = Object.entries(getStatusView().sync.streams)
+                .filter(([name, stream]) => name !== "servers" && stream.lastError)
+                .map(([name, stream]) => `${streamLabels[name] || name}: ${stream.lastError}`)
+                .join("; ");
             const degraded = !!lastFetchError || !!extrasError;
             statusRendering.syncState({
                 degraded,
@@ -526,16 +534,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     ? `Last sync error: ${lastFetchError?.message || extrasError || "unknown"}`
                     : formatRelativeTime(lastSuccessfulSyncAt)
             });
-        }
-
-        function setDashboardExtraError(key, err) {
-            if (err) {
-                const message = err.message || "unknown error";
-                dashboardExtraErrors.set(key, `${key}: ${message}`);
-            } else {
-                dashboardExtraErrors.delete(key);
-            }
-            renderSyncState();
         }
 
         function miniEmpty(text) {
@@ -1078,48 +1076,46 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            renderCommandHistoryPanel();
 	        }
 
-        async function fetchRecentActivity() {
+        async function executeRecentActivityFetch(effect) {
             try {
                 const response = await fetch('/api/audit-events?page=1&page_size=8');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                recentActivity = Array.isArray(data?.items) ? data.items : [];
-                setDashboardExtraError("audit", null);
+                await dispatchStatusInteraction({
+                    type: "secondarySnapshotReceived",
+                    stream: "audit",
+                    requestId: effect.requestId,
+                    snapshot: Array.isArray(data?.items) ? data.items : []
+                });
             } catch (err) {
-                recentActivity = [];
-                setDashboardExtraError("audit", err);
+                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "audit", requestId: effect.requestId, error: err?.message || String(err) });
             }
-            refreshDashboardPresentation();
-            renderRecentActivity();
         }
 
-        async function fetchObservabilitySummary() {
+        async function executeObservabilitySummaryFetch(effect) {
             try {
                 const response = await fetch('/api/observability/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                observabilitySummary = await response.json();
-                setDashboardExtraError("observability", null);
+                await dispatchStatusInteraction({ type: "secondarySnapshotReceived", stream: "observability", requestId: effect.requestId, snapshot: await response.json() });
             } catch (err) {
-                observabilitySummary = null;
-                setDashboardExtraError("observability", err);
+                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "observability", requestId: effect.requestId, error: err?.message || String(err) });
             }
-            refreshDashboardPresentation();
-            renderSummaryBadges();
         }
 
-        async function fetchPolicySummary() {
+        async function executePolicySummaryFetch(effect) {
             try {
                 const response = await fetch('/api/update-policies');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                policySummary = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
-                setDashboardExtraError("policies", null);
+                await dispatchStatusInteraction({
+                    type: "secondarySnapshotReceived",
+                    stream: "policies",
+                    requestId: effect.requestId,
+                    snapshot: Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+                });
             } catch (err) {
-                policySummary = null;
-                setDashboardExtraError("policies", err);
+                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "policies", requestId: effect.requestId, error: err?.message || String(err) });
             }
-            refreshDashboardPresentation();
-            renderSummaryBadges();
         }
 
         function requestStatusRefresh(streams, priority = "deferable", reason = "refresh") {
@@ -1133,6 +1129,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function executeStatusSnapshotFetch(effect) {
             if (effect.stream === "servers") return executeServersSnapshotFetch(effect);
             if (effect.stream === "dashboard") return executeDashboardSnapshotFetch(effect);
+            if (effect.stream === "audit") return executeRecentActivityFetch(effect);
+            if (effect.stream === "observability") return executeObservabilitySummaryFetch(effect);
+            if (effect.stream === "policies") return executePolicySummaryFetch(effect);
+            if (effect.stream === "globalKey") return executeGlobalKeyStatusFetch(effect);
             return Promise.resolve();
         }
 
@@ -1141,14 +1141,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const response = await fetch('/api/dashboard/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const nextDashboardSummary = await response.json();
-                setDashboardExtraError("dashboard", null);
                 await dispatchStatusInteraction({
                     type: "dashboardSnapshotReceived",
                     requestId: effect.requestId,
                     snapshot: nextDashboardSummary
                 });
             } catch (err) {
-                setDashboardExtraError("dashboard", err);
                 await dispatchStatusInteraction({
                     type: "snapshotFailed",
                     stream: "dashboard",
@@ -1184,36 +1182,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
-        async function fetchGlobalKeyStatus() {
+        async function executeGlobalKeyStatusFetch(effect) {
             try {
                 const response = await fetch('/api/keys/global');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                const nextGlobalKeyAvailable = !!data?.has_key;
-                if (nextGlobalKeyAvailable !== globalKeyAvailable) {
-                    globalKeyAvailable = nextGlobalKeyAvailable;
-                    dispatchStatusInteraction({ type: "globalKeyAvailabilityChanged", available: globalKeyAvailable });
-                    refreshDashboardPresentation();
-                    renderDashboardMetrics();
-                    if (allServers.length > 0) {
-                        renderTable();
-                        renderDrawer();
-                    }
-                } else {
-                    globalKeyAvailable = nextGlobalKeyAvailable;
-                }
-                setDashboardExtraError("global key", null);
+                await dispatchStatusInteraction({ type: "secondarySnapshotReceived", stream: "globalKey", requestId: effect.requestId, snapshot: !!data?.has_key });
             } catch (err) {
-                setDashboardExtraError("global key", err);
+                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "globalKey", requestId: effect.requestId, error: err?.message || String(err) });
             }
         }
 
         function fetchDashboardExtras(reason = "extras", includeDashboard = true) {
-            fetchGlobalKeyStatus();
-            fetchRecentActivity();
-            fetchObservabilitySummary();
-            fetchPolicySummary();
-            if (includeDashboard) fetchDashboardSummary(false, reason);
+            const streams = ["globalKey", "audit", "observability", "policies"];
+            if (includeDashboard) streams.push("dashboard");
+            return requestStatusRefresh(streams, reason === "sse" ? "immediate" : "deferable", reason);
         }
 
         const statusTransport = window.StatusTransport.createController({

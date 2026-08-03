@@ -26,6 +26,35 @@ func testWebhookCodec() (func(string) (string, error), func(string) (string, err
 		}
 }
 
+func TestDeliveryDiagnosticsWaitsForTransientSQLiteContention(t *testing.T) {
+	db := openOutboxTestDB(t, "diagnostics-contention.db")
+	prepareOutboxSettings(t, db, "https://hooks.example.test/notify", false)
+	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+
+	lockConn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(context.Background(), "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, err := lockConn.ExecContext(context.Background(), "ROLLBACK")
+		released <- err
+	}()
+
+	if _, err := svc.DeliveryDiagnostics(); err != nil {
+		t.Fatalf("DeliveryDiagnostics() during transient SQLite contention error = %v", err)
+	}
+	if err := <-released; err != nil {
+		t.Fatalf("release SQLite lock: %v", err)
+	}
+}
+
 func newTestService(t *testing.T, handler http.HandlerFunc) (*Service, <-chan WebhookPayload) {
 	return newTestServiceWithQueue(t, handler, defaultQueueSize)
 }

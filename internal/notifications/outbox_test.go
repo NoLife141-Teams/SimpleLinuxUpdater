@@ -570,6 +570,62 @@ func TestNotificationOutboxReloadPreservesRetryBudget(t *testing.T) {
 	}
 }
 
+func TestNotificationOutboxReloadReinsertsCurrentRowMissingFromRestore(t *testing.T) {
+	now := time.Now().UTC()
+	nextAttempt := now.Add(time.Hour).Format(time.RFC3339Nano)
+	intent := DeliveryIntent{
+		ID: "current-only-retrying", Action: EventUpdateComplete, TargetType: "server",
+		TargetName: "srv-current", Status: "failure", Message: "Current delivery is still retrying",
+		MetaJSON: `{"safe":"retained"}`,
+	}
+	initialDB := openOutboxTestDB(t, "reload-current-only-initial.db")
+	if err := EnsureSchema(initialDB); err != nil {
+		t.Fatal(err)
+	}
+	rowID := insertPendingOutboxIntent(t, initialDB, intent, now)
+	if _, err := initialDB.Exec(`
+		UPDATE notification_outbox
+		   SET state=?, attempts=2, next_attempt_at=?, attempted_at=?, status_code=503, error='temporary failure'
+		 WHERE id=?
+	`, outboxStateRetrying, nextAttempt, now.Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+
+	var currentDB atomic.Pointer[sql.DB]
+	currentDB.Store(initialDB)
+	deps := outboxTestDeps(initialDB, 5*time.Millisecond)
+	deps.DB = currentDB.Load
+	svc := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+	if err := svc.PreparePersistenceReplacement(context.Background()); err != nil {
+		t.Fatalf("PreparePersistenceReplacement() error=%v", err)
+	}
+
+	restoredDB := openOutboxTestDB(t, "reload-current-only-restored.db")
+	if err := EnsureSchema(restoredDB); err != nil {
+		t.Fatal(err)
+	}
+	currentDB.Store(restoredDB)
+	if err := svc.ReloadPersistence(context.Background()); err != nil {
+		t.Fatalf("ReloadPersistence() error=%v", err)
+	}
+
+	var state, targetName, message, metaJSON, restoredNextAttempt, restoredError string
+	var attempts, statusCode int
+	if err := restoredDB.QueryRow(`
+		SELECT state, target_name, message, meta_json, attempts, next_attempt_at, status_code, error
+		  FROM notification_outbox WHERE id=?
+	`, rowID).Scan(&state, &targetName, &message, &metaJSON, &attempts, &restoredNextAttempt, &statusCode, &restoredError); err != nil {
+		t.Fatal(err)
+	}
+	if state != outboxStateRetrying || targetName != intent.TargetName || message != intent.Message ||
+		metaJSON != intent.MetaJSON || attempts != 2 || restoredNextAttempt != nextAttempt ||
+		statusCode != 503 || restoredError != "temporary failure" {
+		t.Fatalf("restored current-only row=(%q,%q,%q,%q,%d,%q,%d,%q), want complete retrying row preserved",
+			state, targetName, message, metaJSON, attempts, restoredNextAttempt, statusCode, restoredError)
+	}
+}
+
 func TestNotificationOutboxCountsPendingAndRetryingRows(t *testing.T) {
 	db := openOutboxTestDB(t, "counts.db")
 	if err := EnsureSchema(db); err != nil {

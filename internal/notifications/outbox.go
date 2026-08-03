@@ -48,40 +48,72 @@ type outboxOutcome struct {
 	DurationMS    int64
 }
 
-func loadCurrentOutboxOutcomes(ctx context.Context, db *sql.DB) (map[string]outboxOutcome, error) {
-	outcomes := make(map[string]outboxOutcome)
+type outboxSnapshot struct {
+	Row       outboxRow
+	Outcome   outboxOutcome
+	CreatedAt string
+}
+
+type outboxReplacement struct {
+	ActiveRows       map[string]outboxSnapshot
+	TerminalOutcomes map[string]outboxOutcome
+}
+
+func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
+	replacement := outboxReplacement{
+		ActiveRows:       make(map[string]outboxSnapshot),
+		TerminalOutcomes: make(map[string]outboxOutcome),
+	}
 	if db == nil {
-		return outcomes, nil
+		return replacement, nil
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, state, attempts, next_attempt_at, attempted_at, completed_at,
-		       status_code, error, duration_ms
+		SELECT id, destination, event_type, action, target_type, target_name, status, message,
+		       event_created_at, actor, client_ip, meta_json, destination_fingerprint, state,
+		       attempts, next_attempt_at, claimed_at, attempted_at, completed_at, status_code,
+		       error, duration_ms, created_at
 		  FROM notification_outbox
-		 WHERE state IN (?, ?, ?, ?, ?)
-	`, outboxStateClaimed, outboxStateRetrying, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped)
+	`)
 	if err != nil {
-		return nil, err
+		return outboxReplacement{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
-		var outcome outboxOutcome
-		if err := rows.Scan(&id, &outcome.State, &outcome.Attempts, &outcome.NextAttemptAt,
-			&outcome.AttemptedAt, &outcome.CompletedAt, &outcome.StatusCode, &outcome.Error,
-			&outcome.DurationMS); err != nil {
-			return nil, err
+		var snapshot outboxSnapshot
+		if err := rows.Scan(
+			&snapshot.Row.ID, &snapshot.Row.Destination, &snapshot.Row.EventType,
+			&snapshot.Row.Intent.Action, &snapshot.Row.Intent.TargetType, &snapshot.Row.Intent.TargetName,
+			&snapshot.Row.Intent.Status, &snapshot.Row.Intent.Message, &snapshot.Row.Intent.CreatedAt,
+			&snapshot.Row.Intent.Actor, &snapshot.Row.Intent.ClientIP, &snapshot.Row.Intent.MetaJSON,
+			&snapshot.Row.DestinationFingerprint, &snapshot.Outcome.State, &snapshot.Outcome.Attempts,
+			&snapshot.Outcome.NextAttemptAt, &snapshot.Row.ClaimedAt, &snapshot.Outcome.AttemptedAt,
+			&snapshot.Outcome.CompletedAt, &snapshot.Outcome.StatusCode, &snapshot.Outcome.Error,
+			&snapshot.Outcome.DurationMS, &snapshot.CreatedAt,
+		); err != nil {
+			return outboxReplacement{}, err
 		}
-		if outcome.State == outboxStateClaimed {
-			outcome.State = outboxStateRetrying
-			outcome.NextAttemptAt = ""
+		if snapshot.Outcome.State == outboxStateSucceeded || snapshot.Outcome.State == outboxStateFailed || snapshot.Outcome.State == outboxStateSkipped {
+			replacement.TerminalOutcomes[snapshot.Row.ID] = snapshot.Outcome
+			continue
 		}
-		outcomes[id] = outcome
+		if snapshot.Outcome.State == outboxStateClaimed {
+			snapshot.Outcome.State = outboxStateRetrying
+			snapshot.Outcome.NextAttemptAt = ""
+		}
+		if snapshot.Outcome.State == outboxStateRetrying {
+			snapshot.Row.ClaimedAt = ""
+			snapshot.Outcome.CompletedAt = ""
+		}
+		snapshot.Row.State = snapshot.Outcome.State
+		snapshot.Row.Attempts = snapshot.Outcome.Attempts
+		snapshot.Row.NextAttemptAt = snapshot.Outcome.NextAttemptAt
+		replacement.ActiveRows[snapshot.Row.ID] = snapshot
 	}
-	return outcomes, rows.Err()
+	return replacement, rows.Err()
 }
 
-func restoreCurrentOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map[string]outboxOutcome, now string) error {
-	if db == nil || len(outcomes) == 0 {
+func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outboxReplacement, now string) error {
+	if db == nil || replacement == nil || (len(replacement.ActiveRows) == 0 && len(replacement.TerminalOutcomes) == 0) {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -89,20 +121,50 @@ func restoreCurrentOutboxOutcomes(ctx context.Context, db *sql.DB, outcomes map[
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for id, outcome := range outcomes {
-		if outcome.State == outboxStateRetrying {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE notification_outbox
-				   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
-				       completed_at = '', status_code = ?, error = ?, duration_ms = ?, updated_at = ?
-				 WHERE id = ? AND state IN (?, ?, ?)
-			`, outboxStateRetrying, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
-				outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
-				outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
-				return err
-			}
-			continue
+	for _, snapshot := range replacement.ActiveRows {
+		row := snapshot.Row
+		outcome := snapshot.Outcome
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO notification_outbox (
+				id, destination, event_type, action, target_type, target_name, status, message,
+				event_created_at, actor, client_ip, meta_json, destination_fingerprint, state,
+				attempts, next_attempt_at, claimed_at, attempted_at, completed_at, status_code,
+				error, duration_ms, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				destination = excluded.destination,
+				event_type = excluded.event_type,
+				action = excluded.action,
+				target_type = excluded.target_type,
+				target_name = excluded.target_name,
+				status = excluded.status,
+				message = excluded.message,
+				event_created_at = excluded.event_created_at,
+				actor = excluded.actor,
+				client_ip = excluded.client_ip,
+				meta_json = excluded.meta_json,
+				destination_fingerprint = excluded.destination_fingerprint,
+				state = excluded.state,
+				attempts = excluded.attempts,
+				next_attempt_at = excluded.next_attempt_at,
+				claimed_at = excluded.claimed_at,
+				attempted_at = excluded.attempted_at,
+				completed_at = excluded.completed_at,
+				status_code = excluded.status_code,
+				error = excluded.error,
+				duration_ms = excluded.duration_ms,
+				created_at = excluded.created_at,
+				updated_at = excluded.updated_at
+		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
+			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
+			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, row.DestinationFingerprint,
+			outcome.State, outcome.Attempts, outcome.NextAttemptAt, row.ClaimedAt,
+			outcome.AttemptedAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
+			outcome.DurationMS, snapshot.CreatedAt, now); err != nil {
+			return err
 		}
+	}
+	for id, outcome := range replacement.TerminalOutcomes {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE notification_outbox
 			   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,

@@ -262,17 +262,17 @@ type ServiceDeps struct {
 type Service struct {
 	deps ServiceDeps
 
-	settingsMu          sync.Mutex
-	lifecycleMu         sync.Mutex
-	persistenceMu       sync.Mutex
-	persistencePaused   bool
-	persistenceActive   int
-	replacementOutcomes map[string]outboxOutcome
-	wake                chan struct{}
-	closing             bool
-	cancel              context.CancelFunc
-	done                chan struct{}
-	initErr             error
+	settingsMu        sync.Mutex
+	lifecycleMu       sync.Mutex
+	persistenceMu     sync.Mutex
+	persistencePaused bool
+	persistenceActive int
+	replacementRows   *outboxReplacement
+	wake              chan struct{}
+	closing           bool
+	cancel            context.CancelFunc
+	done              chan struct{}
+	initErr           error
 }
 
 func NewService(deps ServiceDeps) *Service {
@@ -508,18 +508,18 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 		return err
 	}
 	s.persistenceMu.Lock()
-	alreadyPrepared := s.replacementOutcomes != nil
+	alreadyPrepared := s.replacementRows != nil
 	s.persistenceMu.Unlock()
 	if alreadyPrepared {
 		return nil
 	}
-	outcomes, err := loadCurrentOutboxOutcomes(ctx, s.database())
+	rows, err := loadCurrentOutboxRows(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
 	}
 	s.persistenceMu.Lock()
-	s.replacementOutcomes = outcomes
+	s.replacementRows = &rows
 	s.persistenceMu.Unlock()
 	return nil
 }
@@ -552,9 +552,9 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 		return err
 	}
 	s.persistenceMu.Lock()
-	outcomes := s.replacementOutcomes
+	rows := s.replacementRows
 	s.persistenceMu.Unlock()
-	if err := restoreCurrentOutboxOutcomes(ctx, db, outcomes, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := restoreCurrentOutboxRows(ctx, db, rows, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	if _, err := pruneOutbox(ctx, db, s.deps.Now(), s.deps.Retention); err != nil {
@@ -562,7 +562,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	}
 	s.initErr = nil
 	s.persistenceMu.Lock()
-	s.replacementOutcomes = nil
+	s.replacementRows = nil
 	s.persistenceMu.Unlock()
 	s.resumePersistence()
 	return nil

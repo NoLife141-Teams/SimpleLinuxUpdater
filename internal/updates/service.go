@@ -988,7 +988,15 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(postcheckSummary.Results, func(name string) bool {
 					return deps.IsPostcheckFailureBlocking(name, postcheckCfg)
 				}) {
-					r.setSudoPolicyErrorLogs(logs)
+					r.lastErrClass = "sudo_policy"
+					_ = r.withStatus(func(status *servers.ServerStatus) {
+						status.Status = runtimepkg.StatusError
+						status.ApprovalScope = ""
+						status.ApprovalConfirmRemovals = false
+						status.PendingUpdates = nil
+						status.UpgradePlan = servers.UpgradePlan{}
+						status.Logs = logs + "\nPasswordless APT access is missing or outdated. Click Enable apt for this server, enter the host's sudo password, wait for it to succeed, then retry the update."
+					})
 					return
 				}
 				r.lastErrClass = "permanent"

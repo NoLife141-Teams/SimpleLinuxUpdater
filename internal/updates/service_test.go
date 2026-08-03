@@ -386,6 +386,9 @@ func TestRunUpdateJobClassifiesOnlyBlockingPostcheckSudoPolicyFailure(t *testing
 			if got := strings.Contains(status.Logs, "Click Enable apt"); got != tt.wantRecovery {
 				t.Fatalf("recovery guidance present = %t, want %t; logs=%q", got, tt.wantRecovery, status.Logs)
 			}
+			if status.ApprovalScope != "" || status.ApprovalConfirmRemovals || len(status.PendingUpdates) != 0 || !reflect.DeepEqual(status.UpgradePlan, servers.UpgradePlan{}) {
+				t.Fatalf("completed upgrade approval state was not cleared: %+v", status)
+			}
 		})
 	}
 }

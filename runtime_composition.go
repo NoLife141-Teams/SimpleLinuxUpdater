@@ -14,6 +14,7 @@ import (
 	healthpkg "debian-updater/internal/health"
 	internaljobs "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
@@ -37,6 +38,11 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("prepare persistence replacement: %w", err)
+	}
+	if preparer, ok := c.deps.NotificationService.(notificationpkg.PersistenceReplacementPreparer); ok {
+		if err := preparer.PreparePersistenceReplacement(ctx); err != nil {
+			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
+		}
 	}
 	if c.resetCaches != nil {
 		c.resetCaches()
@@ -67,6 +73,11 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	db := deps.DB()
 	if db == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
+	}
+	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
+		if err := reloader.ReloadPersistence(ctx); err != nil {
+			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
+		}
 	}
 	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
 		if err := deps.MaintenanceCoordinator.Initialize(ctx); err != nil {

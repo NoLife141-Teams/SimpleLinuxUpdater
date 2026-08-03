@@ -34,6 +34,7 @@ import (
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	jobsPkg "debian-updater/internal/jobs"
+	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
@@ -457,6 +458,9 @@ func ensureSchema(db *sql.DB) error {
 
 func ensureSettingsSchema(db *sql.DB) error {
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
+		return err
+	}
+	if err := notificationpkg.EnsureSchema(db); err != nil {
 		return err
 	}
 	return nil

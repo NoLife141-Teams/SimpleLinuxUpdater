@@ -162,9 +162,14 @@ func TestNotificationDeliveryLifecycleSkipsNoOpUpdate(t *testing.T) {
 func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var delivered int32
 	svc, _ := newTestServiceWithQueue(t, func(w http.ResponseWriter, _ *http.Request) {
-		started <- struct{}{}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-release
+		atomic.AddInt32(&delivered, 1)
 		w.WriteHeader(http.StatusAccepted)
 	}, 1)
 
@@ -180,14 +185,36 @@ func TestNotificationDeliveryLifecycleReportsSkipCapacityAndClosing(t *testing.T
 	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
 		t.Fatalf("queued Accept() = %+v, want admitted", got)
 	}
-	if got := svc.Accept(intent); got.State != AdmissionRejected {
-		t.Fatalf("saturated Accept() = %+v, want rejected", got)
+	if got := svc.Accept(intent); got.State != AdmissionAdmitted {
+		close(release)
+		t.Fatalf("saturated Accept() = %+v, want durable admission", got)
+	}
+	closeDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		closeDone <- svc.Close(ctx)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !svc.isClosing() {
+		if time.Now().After(deadline) {
+			t.Fatal("notification lifecycle did not begin closing")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := svc.Close(ctx); err != nil {
+	if err := <-closeDone; err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+	if got := atomic.LoadInt32(&delivered); got != 1 {
+		t.Fatalf("delivered=%d, want shutdown to finish only the in-flight notification", got)
+	}
+	diagnostics, err := svc.DeliveryDiagnostics()
+	if err != nil {
+		t.Fatalf("DeliveryDiagnostics() error = %v", err)
+	}
+	if diagnostics.PendingCount != 2 {
+		t.Fatalf("pending=%d, want two admitted notifications retained for restart", diagnostics.PendingCount)
 	}
 	if got := svc.Accept(intent); got.State != AdmissionClosing {
 		t.Fatalf("post-close Accept() = %+v, want closing", got)
@@ -259,6 +286,7 @@ func TestAcceptedDeliveryRetriesAndStoresFailure(t *testing.T) {
 	if admission.State != AdmissionAdmitted {
 		t.Fatalf("Accept() = %+v, want admitted", admission)
 	}
+	waitForLatestOutboxState(t, svc.deps.DB(), outboxStateFailed)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := svc.Close(ctx); err != nil {

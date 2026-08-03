@@ -552,18 +552,21 @@ func TestNotificationOutboxPrunesOldTerminalRowsWhileRunning(t *testing.T) {
 	db := openOutboxTestDB(t, "periodic-retention.db")
 	server, _ := newOutboxHTTPServer(t)
 	prepareOutboxSettings(t, db, server.URL, true)
-	now := time.Now().UTC()
+	initialNow := time.Now().UTC()
+	var currentNow atomic.Int64
+	currentNow.Store(initialNow.UnixNano())
+	rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "periodic-old-terminal", Action: EventUpdateComplete, TargetName: "srv-old", MetaJSON: `{}`}, initialNow)
+	if _, err := db.Exec("UPDATE notification_outbox SET state=?, completed_at=? WHERE id=?", outboxStateSucceeded, initialNow.Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+
 	deps := outboxTestDeps(db, time.Hour)
-	deps.Now = func() time.Time { return now }
+	deps.Now = func() time.Time { return time.Unix(0, currentNow.Load()).UTC() }
 	deps.Retention = 30 * 24 * time.Hour
 	deps.PruneInterval = 5 * time.Millisecond
 	svc := NewService(deps)
 	t.Cleanup(func() { closeOutboxService(t, svc) })
-
-	rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "periodic-old-terminal", Action: EventUpdateComplete, TargetName: "srv-old", MetaJSON: `{}`}, now.Add(-60*24*time.Hour))
-	if _, err := db.Exec("UPDATE notification_outbox SET state=?, completed_at=? WHERE id=?", outboxStateSucceeded, now.Add(-60*24*time.Hour).Format(time.RFC3339Nano), rowID); err != nil {
-		t.Fatal(err)
-	}
+	currentNow.Store(initialNow.Add(60 * 24 * time.Hour).UnixNano())
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

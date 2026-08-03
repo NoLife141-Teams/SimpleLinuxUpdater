@@ -386,6 +386,10 @@ func (s *Service) run(ctx context.Context) {
 		}
 		claimFailed := false
 		for ctx.Err() == nil {
+			if s.isClosing() {
+				s.endPersistence()
+				return
+			}
 			row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now())
 			if err != nil {
 				s.deps.Logf("notification outbox claim failed: %v", err)
@@ -400,6 +404,10 @@ func (s *Service) run(ctx context.Context) {
 				break
 			}
 			s.processOutboxRow(ctx, *row)
+			s.endPersistence()
+			if !s.beginPersistence(ctx) {
+				return
+			}
 		}
 		if claimFailed && s.isClosing() {
 			s.endPersistence()

@@ -239,6 +239,130 @@ func TestNotificationOutboxDuplicateWakeupsDoNotDuplicateDelivery(t *testing.T) 
 	}
 }
 
+func TestNotificationOutboxPersistenceReplacementPausesBetweenRows(t *testing.T) {
+	db := openOutboxTestDB(t, "replacement-pause.db")
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch atomic.AddInt32(&requests, 1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+		case 2:
+			close(secondStarted)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	prepareOutboxSettings(t, db, server.URL, true)
+	now := time.Now().UTC()
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "replacement-first", Action: EventUpdateComplete, TargetName: "srv-first", MetaJSON: `{}`}, now)
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "replacement-second", Action: EventUpdateComplete, TargetName: "srv-second", MetaJSON: `{}`}, now)
+	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+	t.Cleanup(func() { closeOutboxService(t, svc) })
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first notification delivery did not start")
+	}
+	prepareDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		prepareDone <- svc.PreparePersistenceReplacement(ctx)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		svc.persistenceMu.Lock()
+		paused := svc.persistencePaused
+		svc.persistenceMu.Unlock()
+		if paused {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("persistence replacement did not request a pause")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseFirst)
+	if err := <-prepareDone; err != nil {
+		t.Fatalf("PreparePersistenceReplacement() error=%v", err)
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("worker claimed a second row while persistence replacement was waiting")
+	default:
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("requests=%d, want only the in-flight delivery before replacement", got)
+	}
+	if err := svc.ReloadPersistence(context.Background()); err != nil {
+		t.Fatalf("ReloadPersistence() error=%v", err)
+	}
+	waitForLatestOutboxState(t, db, outboxStateSucceeded)
+}
+
+func TestNotificationOutboxCloseLeavesQueuedRowsDurable(t *testing.T) {
+	db := openOutboxTestDB(t, "close-backlog.db")
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	prepareOutboxSettings(t, db, server.URL, true)
+	now := time.Now().UTC()
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "close-first", Action: EventUpdateComplete, TargetName: "srv-first", MetaJSON: `{}`}, now)
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "close-second", Action: EventUpdateComplete, TargetName: "srv-second", MetaJSON: `{}`}, now)
+	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first notification delivery did not start")
+	}
+	closeDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		closeDone <- svc.Close(ctx)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !svc.isClosing() {
+		if time.Now().After(deadline) {
+			t.Fatal("notification lifecycle did not begin closing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseFirst)
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close() error=%v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("requests=%d, want shutdown to finish only the in-flight delivery", got)
+	}
+	var pending, succeeded int
+	if err := db.QueryRow(`
+		SELECT
+			SUM(CASE WHEN state = ? THEN 1 ELSE 0 END),
+			SUM(CASE WHEN state = ? THEN 1 ELSE 0 END)
+		  FROM notification_outbox
+	`, outboxStatePending, outboxStateSucceeded).Scan(&pending, &succeeded); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || succeeded != 1 {
+		t.Fatalf("outbox states=(pending=%d,succeeded=%d), want queued row preserved", pending, succeeded)
+	}
+}
+
 func TestNotificationOutboxKeepsPollingAfterRepeatedClaimFailures(t *testing.T) {
 	db := openOutboxTestDB(t, "claim-retry.db")
 	server, requests := newOutboxHTTPServer(t)

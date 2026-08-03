@@ -6,10 +6,39 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.5] - 2026-08-03
+
 ### Changed
 
+- Make Status recommendations depend on fresh, complete host facts and typed
+  failure evidence before presenting maintenance guidance or declaring a host
+  healthy.
+- Block manual and scheduled SSH-backed maintenance before job creation when
+  effective authentication or trusted host-key configuration is incomplete.
 - Use APT simulation archive and installed-size facts for the plan-aware disk
-  gate, with split-filesystem checks and the existing package formula as a safe fallback.
+  gate, with split-filesystem checks and the existing package formula as a safe
+  fallback.
+- Recommend the existing **Enable apt** workflow directly when an outdated sudo
+  policy rejects the current non-interactive APT command set.
+- Persist admitted notifications in a redacted SQLite outbox so pending and
+  retrying deliveries survive restarts without storing destination credentials.
+- Limit Status command history fairly to the eight newest commands for each
+  current server instead of applying a global audit-row cap first.
+
+### Fixed
+
+- Keep Scheduled Run reconciliation active across transient job-manager and
+  SQLite failures, claim terminal effects once, and reconcile rollout gates from
+  authoritative job state.
+- Remove artificial SQLite writer contention from the notification outbox
+  retention test so the race-enabled CI gate tests periodic pruning
+  deterministically.
+
+### Validation
+
+- Record the automated, Docker, and disposable-host requirements in
+  [the v0.4.5 release readiness record](docs/release-v0.4.5-readiness.md) and
+  [release smoke result](docs/release-v0.4.5-smoke.md).
 
 ## [v0.4.4] - 2026-08-02
 

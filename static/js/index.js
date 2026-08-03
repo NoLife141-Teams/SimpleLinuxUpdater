@@ -987,6 +987,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <p>${escapeHtml(recommendedAction.detail || "No immediate maintenance action is required.")}</p>
                     </div>
                     ${recommendedAction.action === "repair_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="repair-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRepairApt, "Inspect and repair APT/DPKG state", "APT repair is not available for the current state")}>Repair APT</button>` : ""}
+                    ${recommendedAction.action === "enable_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="enable-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRunSudoers, "Re-enable passwordless APT access", "Host cannot change passwordless APT access while another action is active")}>Enable apt</button>` : ""}
                     ${recommendedAction.action === "reboot" ? `<button type="button" class="inline-btn btn-warning" data-action="reboot-server" data-name="${safeDataName}" ${buttonStateAttrs(canReboot, "Reboot and verify this host", "Controlled reboot is not available for the current state")}>Reboot and verify</button>` : ""}
                     ${recommendedAction.action === "refresh_facts" ? `<button type="button" class="inline-btn btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>` : ""}
                 </section>

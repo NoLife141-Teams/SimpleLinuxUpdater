@@ -13,6 +13,27 @@ import (
 	"debian-updater/internal/servers"
 )
 
+func TestIsSudoPolicyError(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{name: "password required", message: "sudo: a password is required", want: true},
+		{name: "sudo unavailable to user", message: "operator is not allowed to run sudo on host", want: true},
+		{name: "command denied", message: "Sorry, user operator is not allowed to execute '/usr/bin/apt-get update' as root on host.", want: true},
+		{name: "not in sudoers", message: "operator is not in the sudoers file", want: true},
+		{name: "ordinary apt failure", message: "E: The repository is not signed", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSudoPolicyError(tt.message); got != tt.want {
+				t.Fatalf("IsSudoPolicyError(%q) = %t, want %t", tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseUpgradableEntriesAndPackageSelection(t *testing.T) {
 	stdout := strings.Join([]string{
 		"NOTE: noise",

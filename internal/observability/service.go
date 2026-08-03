@@ -852,6 +852,9 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	if statusValue == runtimepkg.StatusPendingApproval {
 		return DashboardRecommendedActionInfo{Key: "review_approval", Label: "Review approval", Detail: "Review the package plan and approve the safest eligible scope, or cancel the pending run."}
 	}
+	if statusValue == runtimepkg.StatusError && strings.EqualFold(strings.TrimSpace(failure.errorClass), "sudo_policy") {
+		return dashboardRecommendationForFailure(failure, actions)
+	}
 	if triageTime.factsState != "fresh" || dashboardHealthFactsIncomplete(health) {
 		action := ""
 		if dashboardActionEnabled(actions, dashboardActionRefreshFacts) {
@@ -897,6 +900,13 @@ func dashboardHealthFactsIncomplete(health DashboardHealthInfo) bool {
 func dashboardRecommendationForFailure(failure dashboardMaintenanceFailureFacts, actions map[string]DashboardActionInfo) DashboardRecommendedActionInfo {
 	cause := strings.ToLower(strings.TrimSpace(failure.cause))
 	errorClass := strings.ToLower(strings.TrimSpace(failure.errorClass))
+	if errorClass == "sudo_policy" {
+		action := ""
+		if dashboardActionEnabled(actions, dashboardActionEnableApt) {
+			action = dashboardActionEnableApt
+		}
+		return DashboardRecommendedActionInfo{Key: "enable_apt_access", Label: "Re-enable APT access", Detail: "The host rejected the managed passwordless sudo command. Run Enable apt with this host's sudo password, then retry the update.", Action: action}
+	}
 	if cause == "precheck:disk_space" || cause == "precheck:disk_space_plan" {
 		return DashboardRecommendedActionInfo{Key: "review_disk_capacity", Label: "Review disk capacity", Detail: "The update was blocked by its disk-space plan. Review required and available capacity before retrying."}
 	}

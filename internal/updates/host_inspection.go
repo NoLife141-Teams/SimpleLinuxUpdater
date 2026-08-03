@@ -572,8 +572,7 @@ func boundedInspectionDetail(format string, args ...any) string {
 func inspectionKBToGiB(kb int64) float64 { return float64(kb) / (1024.0 * 1024.0) }
 
 func inspectionSudoPolicyError(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	return strings.Contains(normalized, "a password is required") || strings.Contains(normalized, "not allowed to run sudo") || strings.Contains(normalized, "is not in the sudoers file")
+	return IsSudoPolicyError(message)
 }
 
 func inspectionSudoMissing(message string) bool {

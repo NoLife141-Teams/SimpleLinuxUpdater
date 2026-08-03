@@ -303,7 +303,19 @@ func (r *withActorRunner) setErrorLogs(logs string) {
 	})
 }
 
+func (r *withActorRunner) setSudoPolicyErrorLogs(logs string) {
+	r.lastErrClass = "sudo_policy"
+	_ = r.withStatus(func(status *servers.ServerStatus) {
+		status.Status = runtimepkg.StatusError
+		status.Logs = logs + "\nPasswordless APT access is missing or outdated. Click Enable apt for this server, enter the host's sudo password, wait for it to succeed, then retry the update."
+	})
+}
+
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
+	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
+		r.setSudoPolicyErrorLogs(logs)
+		return
+	}
 	var reconciliation interface{ RequiresReconciliation() bool }
 	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
 		r.lastErrClass = "reconciliation_required"
@@ -653,11 +665,16 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.appendStatusLog(line)
 			}
 			if !precheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
 				r.precheckFailed = precheckSummary.FailedCheck
+				logs := r.currentLogs() + fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
+				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(precheckSummary.Results, nil) {
+					r.setSudoPolicyErrorLogs(logs)
+					return
+				}
+				r.lastErrClass = "permanent"
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "error"
-					status.Logs += fmt.Sprintf("\nPre-check failed (%s). Update aborted before apt update.", precheckSummary.FailedCheck)
+					status.Logs = logs
 				})
 				return
 			}
@@ -965,16 +982,23 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.appendStatusLog(line)
 			}
 			if !postcheckSummary.AllPassed {
-				r.lastErrClass = "permanent"
 				r.postcheckFailed = postcheckSummary.FailedCheck
 				r.postchecksPassed = false
+				logs := r.currentLogs() + fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
+				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(postcheckSummary.Results, func(name string) bool {
+					return deps.IsPostcheckFailureBlocking(name, postcheckCfg)
+				}) {
+					r.setSudoPolicyErrorLogs(logs)
+					return
+				}
+				r.lastErrClass = "permanent"
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "error"
 					status.ApprovalScope = ""
 					status.ApprovalConfirmRemovals = false
 					status.PendingUpdates = nil
 					status.UpgradePlan = servers.UpgradePlan{}
-					status.Logs += fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
+					status.Logs = logs
 				})
 				return
 			}

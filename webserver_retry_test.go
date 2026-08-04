@@ -70,6 +70,7 @@ type aptLockAwareTestConnection struct {
 	lockProbeCount  int
 	connectionClose bool
 	commandDelay    time.Duration
+	commandOutputAt time.Duration
 	lockProbeDelay  time.Duration
 }
 
@@ -107,6 +108,14 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 	delay := s.conn.commandDelay
 	if delay <= 0 {
 		delay = 95 * time.Millisecond
+	}
+	if outputAt := s.conn.commandOutputAt; outputAt > 0 {
+		time.Sleep(outputAt)
+		_, _ = io.WriteString(s.stdout, "progress\n")
+		delay -= outputAt
+	}
+	if delay <= 0 {
+		return nil
 	}
 	time.Sleep(delay)
 	return nil
@@ -262,6 +271,29 @@ func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t
 	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want completion during lock probe to succeed", err)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutHonorsActivityDuringLockProbe(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		extendedAllowed: true,
+		commandDelay:    70 * time.Millisecond,
+		commandOutputAt: 40 * time.Millisecond,
+		lockProbeDelay:  20 * time.Millisecond,
+	}
+
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want output during the lock probe to extend the idle deadline", err)
+	}
+	if !strings.Contains(stdout, "progress\n") {
+		t.Fatalf("runSSHCommandWithTimeout() stdout = %q, want progress emitted during the lock probe", stdout)
+	}
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount != 1 {
+		t.Fatalf("apt lock probes = %d, want 1 before output extended the idle deadline", lockProbeCount)
 	}
 }
 

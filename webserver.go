@@ -828,6 +828,12 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 					return stdout.String(), stderr.String(), runErr
 				default:
 				}
+				select {
+				case <-activityCh:
+					timer.Reset(timeout)
+					continue
+				default:
+				}
 				if probe.active {
 					aptLivenessCheckpoints++
 					elapsed := time.Since(commandStarted).Round(time.Millisecond)

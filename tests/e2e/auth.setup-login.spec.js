@@ -326,11 +326,27 @@ test.describe.serial('setup and login flows', () => {
   async function stubDashboardApi(page, getServers) {
     await page.route('**/api/servers', route => fulfillJson(route, getServers()));
     await page.route('**/api/keys/global', route => fulfillJson(route, { has_key: false }));
-    await page.route('**/api/audit-events*', route => fulfillJson(route, { items: [] }));
+    await page.route('**/api/audit-events*', route => {
+      const requestURL = new URL(route.request().url());
+      const targetName = requestURL.searchParams.get('target_name');
+      const targetType = requestURL.searchParams.get('target_type');
+      const server = targetType === 'server' && targetName
+        ? getServers().find(item => item.name === targetName)
+        : null;
+      const items = Array.isArray(server?.command_history) ? server.command_history.slice(0, 8) : [];
+      return fulfillJson(route, { items, total: items.length, page: 1, page_size: 8 });
+    });
     await page.route('**/api/observability/summary*', route => fulfillJson(route, { totals: { updates_total: 0, success_rate_pct: 0 } }));
     await page.route('**/api/observability/health-trends*', route => fulfillJson(route, makeHealthTrends(getServers())));
     await page.route('**/api/update-policies', route => fulfillJson(route, []));
-    await page.route('**/api/dashboard/summary*', route => fulfillJson(route, makeDashboardSummary(getServers())));
+    await page.route('**/api/dashboard/summary*', route => {
+      const requestURL = new URL(route.request().url());
+      const summary = makeDashboardSummary(getServers());
+      if (requestURL.searchParams.get('include_command_history') === 'false') {
+        summary.servers = summary.servers.map(server => ({ ...server, command_history: [] }));
+      }
+      return fulfillJson(route, summary);
+    });
   }
 
   function makeServer(name, status = 'idle', pendingUpdates = [], overrides = {}) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -882,6 +883,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 		pageSize = 200
 	}
 	targetName := strings.TrimSpace(c.Query("target_name"))
+	targetType := strings.TrimSpace(c.Query("target_type"))
 	action := strings.TrimSpace(c.Query("action"))
 	status := strings.TrimSpace(c.Query("status"))
 	failureCause := strings.TrimSpace(c.Query("failure_cause"))
@@ -918,6 +920,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 		Page:         page,
 		PageSize:     pageSize,
 		Category:     category,
+		TargetType:   targetType,
 		TargetName:   targetName,
 		Action:       action,
 		Status:       status,
@@ -1218,7 +1221,18 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 	if c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	summary, err := service.BuildDashboardSummaryContext(ctx, c.Query("window"), now())
+	includeCommandHistory := true
+	if raw := strings.TrimSpace(c.Query("include_command_history")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid include_command_history value; expected true or false"})
+			return
+		}
+		includeCommandHistory = parsed
+	}
+	summary, err := service.BuildDashboardSummaryContextWithOptions(ctx, c.Query("window"), now(), observabilitypkg.DashboardSummaryOptions{
+		OmitCommandHistory: !includeCommandHistory,
+	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
@@ -1231,7 +1245,64 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build dashboard summary"})
 		return
 	}
-	c.JSON(http.StatusOK, summary)
+	writeDashboardSummaryResponse(c, summary)
+}
+
+func writeDashboardSummaryResponse(c *gin.Context, summary dashboardSummaryResponse) {
+	c.Header("Vary", "Accept-Encoding")
+	if c.Request == nil || !acceptsGzipEncoding(c.Request.Header.Get("Accept-Encoding")) {
+		c.JSON(http.StatusOK, summary)
+		return
+	}
+
+	c.Header("Content-Encoding", "gzip")
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+	compressed, err := gzip.NewWriterLevel(c.Writer, gzip.BestSpeed)
+	if err != nil {
+		log.Printf("writeDashboardSummaryResponse: create gzip writer: %v", err)
+		return
+	}
+	if err := json.NewEncoder(compressed).Encode(summary); err != nil {
+		log.Printf("writeDashboardSummaryResponse: encode summary: %v", err)
+	}
+	if err := compressed.Close(); err != nil {
+		log.Printf("writeDashboardSummaryResponse: close gzip writer: %v", err)
+	}
+}
+
+func acceptsGzipEncoding(raw string) bool {
+	explicitQuality := -1.0
+	wildcardQuality := -1.0
+	for _, encoding := range strings.Split(raw, ",") {
+		parts := strings.Split(encoding, ";")
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+		quality := 1.0
+		for _, parameter := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "q") {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil {
+				quality = 0
+				break
+			}
+			quality = parsed
+		}
+		if name == "gzip" {
+			explicitQuality = quality
+		} else {
+			wildcardQuality = quality
+		}
+	}
+	if explicitQuality >= 0 {
+		return explicitQuality > 0
+	}
+	return wildcardQuality > 0
 }
 
 func handleMetrics(c *gin.Context) {

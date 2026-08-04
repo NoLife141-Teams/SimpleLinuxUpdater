@@ -192,6 +192,7 @@
         let dashboardSnapshot = {};
         let dashboardServers = [];
         let dashboardByName = new Map();
+        let commandHistoryLoadedNames = new Set();
         let globalKeyAvailable = false;
         let secondarySnapshots = {
             recentActivity: [],
@@ -215,6 +216,7 @@
         let streams = {
             servers: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
             dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
+            commandHistory: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
             audit: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
             observability: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
             policies: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
@@ -407,6 +409,7 @@
             const items = normalizeNamedItems(snapshot && snapshot.servers);
             dashboardServers = items;
             dashboardByName = new Map(items.map(server => [server.name, server]));
+            commandHistoryLoadedNames = new Set();
         }
 
         function replaceSecondarySnapshot(streamName, snapshot) {
@@ -532,20 +535,26 @@
             return effects;
         }
 
-        function startRefresh(streamName, priority, reason) {
+        function startRefresh(streamName, priority, reason, context = {}) {
             const stream = streams[streamName];
             if (!stream) return [];
             const normalizedPriority = normalizedRefreshPriority(priority);
+            const requestContext = context && typeof context === "object" && !Array.isArray(context)
+                ? cloneValue(context)
+                : {};
             if (stream.inFlight) {
-                if (!stream.queued || refreshPriority[normalizedPriority] > refreshPriority[stream.queued.priority]) {
-                    stream.queued = { priority: normalizedPriority, reason: String(reason || "refresh") };
+                if (!stream.queued
+                    || refreshPriority[normalizedPriority] > refreshPriority[stream.queued.priority]
+                    || (refreshPriority[normalizedPriority] === refreshPriority[stream.queued.priority] && Object.keys(requestContext).length > 0)) {
+                    stream.queued = { priority: normalizedPriority, reason: String(reason || "refresh"), context: requestContext };
                 }
                 return [];
             }
             const request = {
                 requestId: stream.nextRequestId,
                 priority: normalizedPriority,
-                reason: String(reason || "refresh")
+                reason: String(reason || "refresh"),
+                ...requestContext
             };
             stream.nextRequestId += 1;
             stream.inFlight = request;
@@ -564,7 +573,7 @@
             if (!stream.queued) return [];
             const queued = stream.queued;
             stream.queued = null;
-            return startRefresh(streamName, queued.priority, queued.reason);
+            return startRefresh(streamName, queued.priority, queued.reason, queued.context);
         }
 
         function failRefresh(streamName, requestId, error) {
@@ -576,9 +585,21 @@
             if (stream.queued) {
                 const queued = stream.queued;
                 stream.queued = null;
-                effects.push(...startRefresh(streamName, queued.priority, queued.reason));
+                effects.push(...startRefresh(streamName, queued.priority, queued.reason, queued.context));
             }
             return effects;
+        }
+
+        function requestPrimaryCommandHistory(priority = "deferable", reason = "selected-host") {
+            const serverName = String(primaryServerName || "");
+            const stream = streams.commandHistory;
+            if (!serverName || !dashboardByName.has(serverName) || commandHistoryLoadedNames.has(serverName)) return [];
+            if (stream.inFlight && stream.inFlight.serverName === serverName) return [];
+            if (stream.queued && stream.queued.context && stream.queued.context.serverName === serverName) return [];
+            const context = { serverName };
+            if (dashboardSnapshot.from) context.from = String(dashboardSnapshot.from);
+            if (dashboardSnapshot.to) context.to = String(dashboardSnapshot.to);
+            return startRefresh("commandHistory", priority, reason, context);
         }
 
         function restoreNavigation(value) {
@@ -722,7 +743,8 @@
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId) : []),
-                    ...logEffects
+                    ...logEffects,
+                    ...requestPrimaryCommandHistory(priority, "server-selection")
                 ];
             } else if (event.type === "dashboardSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
@@ -734,7 +756,28 @@
                 return [
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
-                    ...(requestId ? finishRefresh("dashboard", requestId) : [])
+                    ...(requestId ? finishRefresh("dashboard", requestId) : []),
+                    ...requestPrimaryCommandHistory(priority, "dashboard")
+                ];
+            } else if (event.type === "commandHistoryReceived") {
+                const requestId = Number(event.requestId || 0);
+                const serverName = String(event.serverName || "");
+                const stream = streams.commandHistory;
+                if (!Number.isSafeInteger(requestId) || requestId < 1
+                    || !stream.inFlight || stream.inFlight.requestId !== requestId
+                    || stream.inFlight.serverName !== serverName || requestId < stream.lastAcceptedRequestId) return [];
+                const history = Array.isArray(event.history) ? cloneValue(event.history) : [];
+                const dashboardServer = dashboardByName.get(serverName);
+                if (dashboardServer) dashboardServer.command_history = history;
+                const snapshotServer = Array.isArray(dashboardSnapshot.servers)
+                    ? dashboardSnapshot.servers.find(server => server && server.name === serverName)
+                    : null;
+                if (snapshotServer) snapshotServer.command_history = cloneValue(history);
+                commandHistoryLoadedNames.add(serverName);
+                return [
+                    ...stateEffects({ scope: "serverState", priority: stream.inFlight.priority }),
+                    { type: "renderSyncState" },
+                    ...finishRefresh("commandHistory", requestId)
                 ];
             } else if (event.type === "secondarySnapshotReceived") {
                 const streamName = String(event.stream || "");
@@ -891,7 +934,10 @@
             } else if (event.type === "primaryServerSelected") {
                 primaryServerName = serversByName.has(String(event.name || "")) ? String(event.name) : "";
                 reconcileNavigation();
-                return stateEffects({ persist: true });
+                return [
+                    ...stateEffects({ persist: true }),
+                    ...requestPrimaryCommandHistory("immediate", "selected-host")
+                ];
             } else if (event.type === "drawerOpened") {
                 const name = String(event.name || "");
                 if (serversByName.has(name)) {

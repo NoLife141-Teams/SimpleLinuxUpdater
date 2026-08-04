@@ -201,6 +201,27 @@ func TestServiceListFiltersPaginatesAndFormatsTimezone(t *testing.T) {
 	}
 }
 
+func TestServiceListFiltersByTargetType(t *testing.T) {
+	db := newTestDB(t)
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
+	for _, event := range []Event{
+		{CreatedAt: "2026-08-03T12:00:00Z", Action: "server.update", TargetType: "server", TargetName: "alpha", Status: "success", Message: "server event"},
+		{CreatedAt: "2026-08-03T11:00:00Z", Action: "policy.update", TargetType: "policy", TargetName: "alpha", Status: "success", Message: "policy event"},
+	} {
+		if err := svc.Write(event); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+
+	result, err := svc.List(ListFilter{Page: 1, PageSize: 8, TargetType: "server", TargetName: "alpha"})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].TargetType != "server" {
+		t.Fatalf("result = %+v, want only the matching server event", result)
+	}
+}
+
 func TestSQLiteRepositoryListRejectsInvalidBoundsWithoutAllocating(t *testing.T) {
 	db := newTestDB(t)
 	repo := NewSQLiteRepository(func() *sql.DB { return db })

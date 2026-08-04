@@ -48,6 +48,7 @@ type ListFilter struct {
 	Page         int
 	PageSize     int
 	Category     string
+	TargetType   string
 	TargetName   string
 	Action       string
 	Status       string
@@ -258,6 +259,10 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 	if filter.TargetName != "" {
 		whereParts = append(whereParts, "target_name = ?")
 		args = append(args, filter.TargetName)
+	}
+	if filter.TargetType != "" {
+		whereParts = append(whereParts, "target_type = ?")
+		args = append(args, filter.TargetType)
 	}
 	if filter.Action != "" {
 		whereParts = append(whereParts, "action = ?")

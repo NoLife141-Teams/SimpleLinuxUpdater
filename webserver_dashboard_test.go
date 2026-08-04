@@ -1,9 +1,11 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,10 +13,141 @@ import (
 	"time"
 
 	healthpkg "debian-updater/internal/health"
+	observabilitypkg "debian-updater/internal/observability"
 
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
+
+func TestDashboardSummaryHandlerCompressesLargeFleet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dashboard-large-fleet.db")
+	testDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = testDB.Close() })
+	if err := ensureSchema(testDB); err != nil {
+		t.Fatalf("ensureSchema() error = %v", err)
+	}
+
+	const fleetSize = 500
+	serverList := make([]Server, 0, fleetSize)
+	statusByName := make(map[string]*ServerStatus, fleetSize)
+	for index := range fleetSize {
+		name := fmt.Sprintf("server-%03d", index)
+		serverList = append(serverList, Server{Name: name, Host: fmt.Sprintf("10.0.%d.%d", index/250, index%250+1), Port: 22, User: "root"})
+		statusByName[name] = &ServerStatus{Name: name, Status: "idle"}
+	}
+	service := observabilitypkg.NewService(ObservabilityServiceDeps{
+		DB:     func() *sql.DB { return testDB },
+		DBPath: func() string { return path },
+		ServerSnapshot: func() ([]Server, map[string]*ServerStatus) {
+			return serverList, statusByName
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/api/dashboard/summary?window=7d", nil)
+	ginContext.Request.Header.Set("Accept-Encoding", "gzip")
+	handleDashboardSummaryWithService(ginContext, service, func() time.Time {
+		return time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip; response size = %d bytes", got, recorder.Body.Len())
+	}
+	if recorder.Body.Len() >= 500*1024 {
+		t.Fatalf("compressed response size = %d bytes, want less than 500 KiB", recorder.Body.Len())
+	}
+	t.Logf("compressed 500-server dashboard response: %d bytes", recorder.Body.Len())
+
+	reader, err := gzip.NewReader(recorder.Body)
+	if err != nil {
+		t.Fatalf("gzip.NewReader() error = %v", err)
+	}
+	defer reader.Close()
+	var summary dashboardSummaryResponse
+	if err := json.NewDecoder(reader).Decode(&summary); err != nil {
+		t.Fatalf("decode compressed dashboard response: %v", err)
+	}
+	if len(summary.Servers) != fleetSize {
+		t.Fatalf("len(summary.Servers) = %d, want %d", len(summary.Servers), fleetSize)
+	}
+}
+
+func TestDashboardSummaryHandlerCanOmitCommandHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dashboard-compact.db")
+	testDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = testDB.Close() })
+	if err := ensureSchema(testDB); err != nil {
+		t.Fatalf("ensureSchema() error = %v", err)
+	}
+	if _, err := testDB.Exec(`INSERT INTO audit_events
+		(created_at, actor, action, target_type, target_name, status, message, meta_json)
+		VALUES (?, 'tester', 'server.facts.refresh', 'server', 'alpha', 'success', 'refreshed', '{}')`,
+		time.Date(2026, 8, 3, 11, 0, 0, 0, time.UTC).Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert audit event: %v", err)
+	}
+	server := Server{Name: "alpha", Host: "10.0.0.1", Port: 22, User: "root"}
+	service := observabilitypkg.NewService(ObservabilityServiceDeps{
+		DB:     func() *sql.DB { return testDB },
+		DBPath: func() string { return path },
+		ServerSnapshot: func() ([]Server, map[string]*ServerStatus) {
+			return []Server{server}, map[string]*ServerStatus{server.Name: {Name: server.Name, Status: "idle"}}
+		},
+	})
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/api/dashboard/summary?window=7d&include_command_history=false", nil)
+	handleDashboardSummaryWithService(ginContext, service, func() time.Time {
+		return time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	})
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var summary dashboardSummaryResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode dashboard response: %v", err)
+	}
+	if len(summary.Servers) != 1 {
+		t.Fatalf("len(summary.Servers) = %d, want 1", len(summary.Servers))
+	}
+	if len(summary.Servers[0].CommandHistory) != 0 {
+		t.Fatalf("CommandHistory = %+v, want compact response without command history", summary.Servers[0].CommandHistory)
+	}
+}
+
+func TestAcceptsGzipEncoding(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "gzip", header: "gzip", want: true},
+		{name: "case insensitive", header: "br, GZip", want: true},
+		{name: "positive quality", header: "gzip;q=0.5", want: true},
+		{name: "disabled", header: "gzip;q=0", want: false},
+		{name: "explicit disable overrides wildcard", header: "gzip;q=0, *;q=1", want: false},
+		{name: "wildcard", header: "br, *;q=0.5", want: true},
+		{name: "malformed quality", header: "gzip;q=invalid", want: false},
+		{name: "absent", header: "br", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := acceptsGzipEncoding(test.header); got != test.want {
+				t.Fatalf("acceptsGzipEncoding(%q) = %v, want %v", test.header, got, test.want)
+			}
+		})
+	}
+}
 
 func mustDashboardMeta(t *testing.T, meta map[string]any) string {
 	t.Helper()

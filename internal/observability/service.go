@@ -1115,6 +1115,10 @@ func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (Dashbo
 }
 
 func (s *Service) BuildDashboardSummaryContext(ctx context.Context, rawWindow string, now time.Time) (DashboardSummaryResponse, error) {
+	return s.BuildDashboardSummaryContextWithOptions(ctx, rawWindow, now, DashboardSummaryOptions{})
+}
+
+func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, rawWindow string, now time.Time, options DashboardSummaryOptions) (DashboardSummaryResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1129,7 +1133,7 @@ func (s *Service) BuildDashboardSummaryContext(ctx context.Context, rawWindow st
 	}
 	deps := s.EnsureDeps()
 	collector := newDashboardProjectionCollector(deps)
-	projectionInput, err := collector.CollectContext(ctx, rawWindow, now)
+	projectionInput, err := collector.CollectContextWithOptions(ctx, rawWindow, now, options)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
 	}

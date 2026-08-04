@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -335,6 +336,93 @@ func TestFilePipelineReadsLegacyEnvelopeAndCleansArtifacts(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary entries after legacy read = %v, want none", entries)
+	}
+}
+
+func TestFileCipherAllocationGrowthStaysNearPayloadGrowth(t *testing.T) {
+	workDir := t.TempDir()
+	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
+	createInput := func(name string, size int64) string {
+		t.Helper()
+		path := filepath.Join(workDir, name)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		if err := file.Truncate(size); err != nil {
+			_ = file.Close()
+			t.Fatalf("truncate %s: %v", name, err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close %s: %v", name, err)
+		}
+		return path
+	}
+	measureEncrypt := func(path string) uint64 {
+		t.Helper()
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		result, err := service.encryptFile(path, testPassphrase)
+		if err != nil {
+			t.Fatalf("encryptFile(%s): %v", filepath.Base(path), err)
+		}
+		if err := result.Remove(); err != nil {
+			t.Fatalf("remove encrypted result: %v", err)
+		}
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	encryptFixture := func(path string) TemporaryFile {
+		t.Helper()
+		result, err := service.encryptFile(path, testPassphrase)
+		if err != nil {
+			t.Fatalf("encrypt fixture %s: %v", filepath.Base(path), err)
+		}
+		t.Cleanup(func() { _ = result.Remove() })
+		return result
+	}
+	measureDecrypt := func(path string) uint64 {
+		t.Helper()
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		result, err := service.decryptFile(path, testPassphrase)
+		if err != nil {
+			t.Fatalf("decryptFile(%s): %v", filepath.Base(path), err)
+		}
+		if err := result.Remove(); err != nil {
+			t.Fatalf("remove decrypted result: %v", err)
+		}
+		runtime.ReadMemStats(&after)
+		return after.TotalAlloc - before.TotalAlloc
+	}
+
+	warmup := createInput("warmup.bin", 64*1024)
+	_ = measureEncrypt(warmup)
+	const smallSize = int64(1 * 1024 * 1024)
+	const largeSize = int64(9 * 1024 * 1024)
+	smallInput := createInput("small.bin", smallSize)
+	largeInput := createInput("large.bin", largeSize)
+	smallAllocated := measureEncrypt(smallInput)
+	largeAllocated := measureEncrypt(largeInput)
+	growth := largeAllocated - smallAllocated
+	payloadGrowth := uint64(largeSize - smallSize)
+	t.Logf("encrypt allocation growth = %d bytes for %d payload bytes", growth, payloadGrowth)
+	if growth > payloadGrowth*3/2 {
+		t.Fatalf("encrypt allocation growth = %d bytes, want at most 1.5x payload growth (%d bytes)", growth, payloadGrowth*3/2)
+	}
+
+	warmupEncrypted := encryptFixture(warmup)
+	_ = measureDecrypt(warmupEncrypted.Path)
+	smallEncrypted := encryptFixture(smallInput)
+	largeEncrypted := encryptFixture(largeInput)
+	smallAllocated = measureDecrypt(smallEncrypted.Path)
+	largeAllocated = measureDecrypt(largeEncrypted.Path)
+	growth = largeAllocated - smallAllocated
+	t.Logf("decrypt allocation growth = %d bytes for %d payload bytes", growth, payloadGrowth)
+	if growth > payloadGrowth*3/2 {
+		t.Fatalf("decrypt allocation growth = %d bytes, want at most 1.5x payload growth (%d bytes)", growth, payloadGrowth*3/2)
 	}
 }
 

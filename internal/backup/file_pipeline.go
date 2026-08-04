@@ -147,6 +147,36 @@ func readPathBounded(path string, maxBytes int64) ([]byte, error) {
 	return data.Bytes(), nil
 }
 
+func readRegularPathBounded(path string, maxBytes, extraCapacity int64) ([]byte, error) {
+	if maxBytes < 0 || extraCapacity < 0 {
+		return nil, errors.New("invalid backup size limit")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxBytes || info.Size() > int64(^uint(0)>>1)-extraCapacity {
+		return nil, fmt.Errorf("backup file too large (max %d bytes)", maxBytes)
+	}
+	size := int(info.Size())
+	data := make([]byte, size, size+int(extraCapacity))
+	if _, err := io.ReadFull(file, data); err != nil {
+		return nil, err
+	}
+	var trailing [1]byte
+	if count, err := file.Read(trailing[:]); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	} else if count != 0 {
+		return nil, fmt.Errorf("backup file too large (max %d bytes)", maxBytes)
+	}
+	return data, nil
+}
+
 func (s *Service) CreateDBSnapshotFile() (TemporaryFile, error) {
 	tempRoot := s.deps.TempDir()
 	tmp, err := createTemporaryFile(tempRoot, "slu-backup-db-*.sqlite")
@@ -338,10 +368,6 @@ func validateEnvelopeEncryption(env Envelope) error {
 }
 
 func (s *Service) encryptFile(path, passphrase string) (TemporaryFile, error) {
-	plain, err := readPathBounded(path, MaxUploadBytes)
-	if err != nil {
-		return TemporaryFile{}, err
-	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return TemporaryFile{}, err
@@ -362,7 +388,11 @@ func (s *Service) encryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil {
 		return TemporaryFile{}, err
 	}
-	ciphertext := gcm.Seal(nil, nonce, plain, nil)
+	plain, err := readRegularPathBounded(path, MaxUploadBytes, int64(gcm.Overhead()))
+	if err != nil {
+		return TemporaryFile{}, err
+	}
+	ciphertext := gcm.Seal(plain[:0], nonce, plain, nil)
 	plain = nil
 
 	metadata := struct {
@@ -528,16 +558,32 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 		return 0, ErrMalformed
 	}
 	var written int64
+	var buffered *bufio.Writer
+	if writer != nil {
+		buffered = bufio.NewWriterSize(writer, 64*1024)
+	}
 	writeBytes := func(data []byte) error {
 		if written+int64(len(data)) > maxBytes {
 			return ErrMalformed
 		}
-		if len(data) > 0 && writer != nil {
-			if _, err := writer.Write(data); err != nil {
+		if len(data) > 0 && buffered != nil {
+			if _, err := buffered.Write(data); err != nil {
 				return err
 			}
 		}
 		written += int64(len(data))
+		return nil
+	}
+	writeByte := func(value byte) error {
+		if written+1 > maxBytes {
+			return ErrMalformed
+		}
+		if buffered != nil {
+			if err := buffered.WriteByte(value); err != nil {
+				return err
+			}
+		}
+		written++
 		return nil
 	}
 	for {
@@ -547,6 +593,11 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 		}
 		switch b {
 		case '"':
+			if buffered != nil {
+				if err := buffered.Flush(); err != nil {
+					return written, err
+				}
+			}
 			return written, nil
 		case '\\':
 			escaped, err := reader.ReadByte()
@@ -555,27 +606,27 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 			}
 			switch escaped {
 			case '"', '\\', '/':
-				if err := writeBytes([]byte{escaped}); err != nil {
+				if err := writeByte(escaped); err != nil {
 					return written, err
 				}
 			case 'b':
-				if err := writeBytes([]byte{'\b'}); err != nil {
+				if err := writeByte('\b'); err != nil {
 					return written, err
 				}
 			case 'f':
-				if err := writeBytes([]byte{'\f'}); err != nil {
+				if err := writeByte('\f'); err != nil {
 					return written, err
 				}
 			case 'n':
-				if err := writeBytes([]byte{'\n'}); err != nil {
+				if err := writeByte('\n'); err != nil {
 					return written, err
 				}
 			case 'r':
-				if err := writeBytes([]byte{'\r'}); err != nil {
+				if err := writeByte('\r'); err != nil {
 					return written, err
 				}
 			case 't':
-				if err := writeBytes([]byte{'\t'}); err != nil {
+				if err := writeByte('\t'); err != nil {
 					return written, err
 				}
 			case 'u':
@@ -609,7 +660,7 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 			if b < 0x20 {
 				return written, ErrMalformed
 			}
-			if err := writeBytes([]byte{b}); err != nil {
+			if err := writeByte(b); err != nil {
 				return written, err
 			}
 		}
@@ -905,7 +956,7 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil || len(nonce) != 12 {
 		return TemporaryFile{}, ErrMalformed
 	}
-	ciphertext, err := readPathBounded(ciphertextFile.Path, MaxUploadBytes)
+	ciphertext, err := readRegularPathBounded(ciphertextFile.Path, MaxUploadBytes, 0)
 	if err != nil {
 		return TemporaryFile{}, err
 	}
@@ -921,7 +972,7 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil {
 		return TemporaryFile{}, err
 	}
-	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plain, err := gcm.Open(ciphertext[:0], nonce, ciphertext, nil)
 	ciphertext = nil
 	if err != nil {
 		return TemporaryFile{}, errors.New("invalid passphrase or corrupted backup")

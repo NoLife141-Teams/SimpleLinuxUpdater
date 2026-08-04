@@ -806,16 +806,20 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 
 	commandStarted := time.Now()
 	aptLivenessCheckpoints := 0
+	aptActivityObserved := false
+	aptFinalizationGraceUsed := false
 	for {
 		select {
 		case runErr := <-runErrCh:
 			_ = session.Close()
 			return stdout.String(), stderr.String(), runErr
 		case <-activityCh:
+			aptActivityObserved = true
 			resetIdleTimer()
 		case <-timer.C:
 			select {
 			case <-activityCh:
+				aptActivityObserved = true
 				timer.Reset(timeout)
 				continue
 			default:
@@ -830,6 +834,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 				}
 				select {
 				case <-activityCh:
+					aptActivityObserved = true
 					timer.Reset(timeout)
 					continue
 				default:
@@ -846,6 +851,15 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 						elapsed,
 						aptLivenessCheckpoints,
 						lockHolder,
+					))
+					timer.Reset(timeout)
+					continue
+				}
+				if aptActivityObserved && !aptFinalizationGraceUsed {
+					aptFinalizationGraceUsed = true
+					_, _ = stdout.appendLocal(fmt.Sprintf(
+						"\nAPT command produced progress before its lock was released; allowing one %s finalization window.\n",
+						timeout,
 					))
 					timer.Reset(timeout)
 					continue

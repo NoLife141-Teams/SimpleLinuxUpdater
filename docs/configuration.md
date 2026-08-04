@@ -174,10 +174,12 @@ session. If a package-manager lock is still active, the command keeps running
 and receives another full inactivity window. Each checkpoint records the
 cumulative wait and the lock-holder PIDs in the job log. There is no fixed
 checkpoint limit while the package manager continues to hold its lock. If the
-probe no longer confirms an active lock, the updater stops waiting and marks the
-command outcome as unknown. It does not automatically replay the mutating APT
-command, because the remote process may still be completing after the SSH
-session closes.
+probe no longer confirms an active lock after the command has already produced
+progress, the updater allows one final bounded window for quiet package-manager
+finalization. Without prior progress, or after that single grace window, it stops
+waiting and marks the command outcome as unknown. It does not automatically
+replay the mutating APT command, because the remote process may still be
+completing after the SSH session closes.
 
 ## Post-update checks
 
@@ -218,5 +220,5 @@ Default behavior:
 For Docker, `.env` is not automatically loaded unless you pass it:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.5
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.6
 ```

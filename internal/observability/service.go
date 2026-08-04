@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -25,16 +26,19 @@ type cacheEntry struct {
 }
 
 type Service struct {
-	deps  ServiceDeps
-	mu    sync.RWMutex
-	cache map[string]cacheEntry
+	deps          ServiceDeps
+	mu            sync.RWMutex
+	cache         map[string]cacheEntry
+	dashboardOnce sync.Once
+	dashboardSlot chan struct{}
 }
 
 func NewService(deps ServiceDeps) *Service {
 	deps = deps.withDefaults()
 	return &Service{
-		deps:  deps,
-		cache: map[string]cacheEntry{},
+		deps:          deps,
+		cache:         map[string]cacheEntry{},
+		dashboardSlot: make(chan struct{}, 1),
 	}
 }
 
@@ -1107,14 +1111,51 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 }
 
 func (s *Service) BuildDashboardSummary(rawWindow string, now time.Time) (DashboardSummaryResponse, error) {
+	return s.BuildDashboardSummaryContext(context.Background(), rawWindow, now)
+}
+
+func (s *Service) BuildDashboardSummaryContext(ctx context.Context, rawWindow string, now time.Time) (DashboardSummaryResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return DashboardSummaryResponse{}, err
+	}
+	if s != nil {
+		if err := s.acquireDashboardProjection(ctx); err != nil {
+			return DashboardSummaryResponse{}, err
+		}
+		defer s.releaseDashboardProjection()
+	}
 	deps := s.EnsureDeps()
 	collector := newDashboardProjectionCollector(deps)
-	projectionInput, err := collector.Collect(rawWindow, now)
+	projectionInput, err := collector.CollectContext(ctx, rawWindow, now)
 	if err != nil {
+		return DashboardSummaryResponse{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return DashboardSummaryResponse{}, err
 	}
 	projection := newDashboardProjection()
 	return projection.Project(projectionInput), nil
+}
+
+func (s *Service) acquireDashboardProjection(ctx context.Context) error {
+	s.dashboardOnce.Do(func() {
+		if s.dashboardSlot == nil {
+			s.dashboardSlot = make(chan struct{}, 1)
+		}
+	})
+	select {
+	case s.dashboardSlot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releaseDashboardProjection() {
+	<-s.dashboardSlot
 }
 
 func healthTrendPointFromSnapshot(record updates.HealthSnapshotRecord, deps ServiceDeps, loc *time.Location, timezoneName string) HealthTrendPoint {

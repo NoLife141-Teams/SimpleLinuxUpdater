@@ -222,6 +222,30 @@ func TestServiceListFiltersByTargetType(t *testing.T) {
 	}
 }
 
+func TestServiceListCanOrderByCreatedAtWithIDTieBreaker(t *testing.T) {
+	db := newTestDB(t)
+	svc := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Timezone: fixedTimezone})
+	for _, event := range []Event{
+		{CreatedAt: "2026-08-03T12:00:00Z", Action: "server.newest", TargetType: "server", TargetName: "alpha", Status: "success", Message: "newest"},
+		{CreatedAt: "2026-08-03T11:00:00Z", Action: "server.older", TargetType: "server", TargetName: "alpha", Status: "success", Message: "older"},
+		{CreatedAt: "2026-08-03T12:00:00Z", Action: "server.newest-tie", TargetType: "server", TargetName: "alpha", Status: "success", Message: "newest tie"},
+	} {
+		if err := svc.Write(event); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+
+	result, err := svc.List(ListFilter{
+		Page: 1, PageSize: 8, Order: ListOrderCreatedAt, TargetType: "server", TargetName: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(result.Items) != 3 || result.Items[0].Action != "server.newest-tie" || result.Items[1].Action != "server.newest" || result.Items[2].Action != "server.older" {
+		t.Fatalf("items = %+v, want chronological order with newest ID breaking ties", result.Items)
+	}
+}
+
 func TestSQLiteRepositoryListRejectsInvalidBoundsWithoutAllocating(t *testing.T) {
 	db := newTestDB(t)
 	repo := NewSQLiteRepository(func() *sql.DB { return db })

@@ -333,6 +333,7 @@ test.describe.serial('setup and login flows', () => {
       const server = targetType === 'server' && targetName
         ? getServers().find(item => item.name === targetName)
         : null;
+      if (server) expect(requestURL.searchParams.get('order')).toBe('created_at');
       const items = Array.isArray(server?.command_history) ? server.command_history.slice(0, 8) : [];
       return fulfillJson(route, { items, total: items.length, page: 1, page_size: 8 });
     });

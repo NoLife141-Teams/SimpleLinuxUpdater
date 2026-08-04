@@ -1164,6 +1164,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const query = new URLSearchParams({
                     page: "1",
                     page_size: "8",
+                    order: "created_at",
                     target_type: "server",
                     target_name: serverName
                 });

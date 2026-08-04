@@ -884,6 +884,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	}
 	targetName := strings.TrimSpace(c.Query("target_name"))
 	targetType := strings.TrimSpace(c.Query("target_type"))
+	order := strings.TrimSpace(c.Query("order"))
 	action := strings.TrimSpace(c.Query("action"))
 	status := strings.TrimSpace(c.Query("status"))
 	failureCause := strings.TrimSpace(c.Query("failure_cause"))
@@ -892,6 +893,10 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	to := strings.TrimSpace(c.Query("to"))
 	if category != "" && category != AuditListCategoryAdminActivity {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit category"})
+		return
+	}
+	if order != "" && order != auditpkg.ListOrderCreatedAt {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit order"})
 		return
 	}
 	if failureCause != "" && !auditpkg.ValidFailureCause(failureCause) {
@@ -920,6 +925,7 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 		Page:         page,
 		PageSize:     pageSize,
 		Category:     category,
+		Order:        order,
 		TargetType:   targetType,
 		TargetName:   targetName,
 		Action:       action,

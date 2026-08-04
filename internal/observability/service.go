@@ -29,6 +29,7 @@ type Service struct {
 	deps          ServiceDeps
 	mu            sync.RWMutex
 	cache         map[string]cacheEntry
+	dashboardOnce sync.Once
 	dashboardSlot chan struct{}
 }
 
@@ -1140,6 +1141,11 @@ func (s *Service) BuildDashboardSummaryContext(ctx context.Context, rawWindow st
 }
 
 func (s *Service) acquireDashboardProjection(ctx context.Context) error {
+	s.dashboardOnce.Do(func() {
+		if s.dashboardSlot == nil {
+			s.dashboardSlot = make(chan struct{}, 1)
+		}
+	})
 	select {
 	case s.dashboardSlot <- struct{}{}:
 		return nil

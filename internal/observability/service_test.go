@@ -609,6 +609,17 @@ func TestServiceBuildDashboardSummaryInvalidWindowSkipsCollection(t *testing.T) 
 	}
 }
 
+func TestServiceBuildDashboardSummaryZeroValueDoesNotBlock(t *testing.T) {
+	var service Service
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	_, err := service.BuildDashboardSummaryContext(ctx, "fortnight", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+	if !errors.Is(err, ErrInvalidWindow) {
+		t.Fatalf("BuildDashboardSummaryContext() error = %v, want ErrInvalidWindow", err)
+	}
+}
+
 func TestServiceBuildDashboardSummaryPreservesRequiredSourceErrors(t *testing.T) {
 	healthErr := errors.New("health unavailable")
 	scheduleErr := errors.New("schedule unavailable")

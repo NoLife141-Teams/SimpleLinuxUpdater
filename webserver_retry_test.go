@@ -297,6 +297,28 @@ func TestRunSSHCommandWithTimeoutHonorsActivityDuringLockProbe(t *testing.T) {
 	}
 }
 
+func TestRunSSHCommandWithTimeoutAllowsQuietAptFinalizationAfterProgress(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		extendedAllowed: true,
+		commandDelay:    70 * time.Millisecond,
+		commandOutputAt: 20 * time.Millisecond,
+	}
+
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpdateCmd, nil, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want recent APT progress to allow one quiet finalization window", err)
+	}
+	if !strings.Contains(stdout, "progress\n") {
+		t.Fatalf("runSSHCommandWithTimeout() stdout = %q, want progress before quiet finalization", stdout)
+	}
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount != 1 {
+		t.Fatalf("apt lock probes = %d, want one probe before bounded finalization grace", lockProbeCount)
+	}
+}
+
 func TestRunSSHCommandWithTimeoutKeepsWaitingBeyondPreviousAptExtensionCap(t *testing.T) {
 	conn := &aptLockAwareTestConnection{
 		lockActive:      true,

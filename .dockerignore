@@ -27,6 +27,7 @@ node_modules/
 playwright-report/
 test-results/
 .tmp-e2e/
+.tmp*/
 
 # private keys and certificates
 *.key

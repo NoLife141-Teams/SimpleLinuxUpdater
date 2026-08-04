@@ -6,11 +6,41 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.6] - 2026-08-04
+
 ### Changed
 
-- Treat the SSH timeout for lock-protected APT commands as an inactivity window, so
-  regular package-manager output extends the current attempt without extra lock
-  probes or unsafe command replay.
+- Stream encrypted Backup export and restore intermediates through bounded private
+  temporary files, reuse AES-GCM payload buffers, and preserve the existing
+  `.slubkp` v1 format while reducing allocation growth to approximately one copy
+  of the payload.
+- Compact and gzip the initial Status projection, skip fleet-wide command-history
+  collection, and load the selected server's eight newest commands on demand.
+- Cancel abandoned Dashboard projections promptly and admit only one heavy SQLite
+  projection at a time so timed-out refresh bursts do not delay lightweight APIs.
+- Coalesce concurrent identical OSV package-version queries while preserving
+  independent caller cancellation and retry behavior.
+- Treat the SSH timeout for lock-protected APT commands as an inactivity window,
+  so regular package-manager output extends the current attempt without extra
+  lock probes or unsafe command replay, with one bounded quiet-finalization
+  window after prior progress when the package-manager lock has been released.
+
+### Fixed
+
+- Scope canary rollout history to the exact policy occurrence so unrelated newer
+  runs cannot hide a successful canary and leave the next wave waiting.
+- Select the latest update job independently for every current server and reject
+  stale or unscoped secondary Status responses without discarding accepted data.
+- Reject duplicate, unknown, non-canonical, and non-regular Backup archive entries
+  before verification or restore can apply an ambiguous payload.
+- Exclude all local `.tmp*` workspaces from Docker build contexts so disposable
+  smoke data cannot enter builder layers or caches.
+
+### Validation
+
+- Record the automated, Docker, backup round-trip, and disposable-host gates in
+  [the v0.4.6 release readiness record](docs/release-v0.4.6-readiness.md) and
+  [release smoke result](docs/release-v0.4.6-smoke.md).
 
 ## [v0.4.5] - 2026-08-03
 

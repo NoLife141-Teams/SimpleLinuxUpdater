@@ -30,6 +30,39 @@ func (s *noopSession) SetStderr(io.Writer) {}
 func (s *noopSession) Run(string) error    { return nil }
 func (s *noopSession) Close() error        { return nil }
 
+type progressingSSHConnection struct {
+	interval time.Duration
+	writes   int
+}
+
+type progressingSSHSession struct {
+	conn   *progressingSSHConnection
+	stdout io.Writer
+}
+
+func (s *progressingSSHSession) SetStdin(io.Reader)    {}
+func (s *progressingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
+func (s *progressingSSHSession) SetStderr(io.Writer)   {}
+
+func (s *progressingSSHSession) Run(command string) error {
+	if strings.Contains(command, "/usr/bin/fuser") {
+		return errors.New("no process uses the apt locks")
+	}
+	for i := 0; i < s.conn.writes; i++ {
+		time.Sleep(s.conn.interval)
+		_, _ = io.WriteString(s.stdout, "progress\n")
+	}
+	return nil
+}
+
+func (s *progressingSSHSession) Close() error { return nil }
+
+func (c *progressingSSHConnection) NewSession() (sshSessionRunner, error) {
+	return &progressingSSHSession{conn: c}, nil
+}
+
+func (c *progressingSSHConnection) Close() error { return nil }
+
 type aptLockAwareTestConnection struct {
 	mu              sync.Mutex
 	lockActive      bool
@@ -37,6 +70,7 @@ type aptLockAwareTestConnection struct {
 	lockProbeCount  int
 	connectionClose bool
 	commandDelay    time.Duration
+	commandOutputAt time.Duration
 	lockProbeDelay  time.Duration
 }
 
@@ -74,6 +108,14 @@ func (s *aptLockAwareTestSession) Run(command string) error {
 	delay := s.conn.commandDelay
 	if delay <= 0 {
 		delay = 95 * time.Millisecond
+	}
+	if outputAt := s.conn.commandOutputAt; outputAt > 0 {
+		time.Sleep(outputAt)
+		_, _ = io.WriteString(s.stdout, "progress\n")
+		delay -= outputAt
+	}
+	if delay <= 0 {
+		return nil
 	}
 	time.Sleep(delay)
 	return nil
@@ -128,6 +170,33 @@ func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Fatalf("runSSHCommandWithTimeout() took too long: %v", elapsed)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutExtendsDeadlineWhileOutputIsActive(t *testing.T) {
+	conn := &progressingSSHConnection{
+		interval: 10 * time.Millisecond,
+		writes:   8,
+	}
+
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want regular output to extend the idle deadline", err)
+	}
+	if got := strings.Count(stdout, "progress\n"); got != conn.writes {
+		t.Fatalf("progress lines = %d, want %d", got, conn.writes)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutKeepsHardDeadlineForNonAptCommand(t *testing.T) {
+	conn := &progressingSSHConnection{
+		interval: 10 * time.Millisecond,
+		writes:   8,
+	}
+
+	_, _, err := runSSHCommandWithTimeout(conn, "long command", nil, 25*time.Millisecond)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want non-APT command to retain its hard deadline", err)
 	}
 }
 
@@ -202,6 +271,29 @@ func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t
 	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want completion during lock probe to succeed", err)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutHonorsActivityDuringLockProbe(t *testing.T) {
+	conn := &aptLockAwareTestConnection{
+		extendedAllowed: true,
+		commandDelay:    70 * time.Millisecond,
+		commandOutputAt: 40 * time.Millisecond,
+		lockProbeDelay:  20 * time.Millisecond,
+	}
+
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want output during the lock probe to extend the idle deadline", err)
+	}
+	if !strings.Contains(stdout, "progress\n") {
+		t.Fatalf("runSSHCommandWithTimeout() stdout = %q, want progress emitted during the lock probe", stdout)
+	}
+	conn.mu.Lock()
+	lockProbeCount := conn.lockProbeCount
+	conn.mu.Unlock()
+	if lockProbeCount != 1 {
+		t.Fatalf("apt lock probes = %d, want 1 before output extended the idle deadline", lockProbeCount)
 	}
 }
 

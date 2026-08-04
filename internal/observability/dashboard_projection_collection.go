@@ -43,6 +43,10 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 }
 
 func (c dashboardProjectionCollector) CollectContext(ctx context.Context, rawWindow string, now time.Time) (dashboardProjectionInput, error) {
+	return c.CollectContextWithOptions(ctx, rawWindow, now, DashboardSummaryOptions{})
+}
+
+func (c dashboardProjectionCollector) CollectContextWithOptions(ctx context.Context, rawWindow string, now time.Time, options DashboardSummaryOptions) (dashboardProjectionInput, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -82,9 +86,12 @@ func (c dashboardProjectionCollector) CollectContext(ctx context.Context, rawWin
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
-	commandHistory, err := c.collectCommandHistoryContext(ctx, serverNames, fromFormatted, toFormatted, loc, timezoneName)
-	if err != nil {
-		return dashboardProjectionInput{}, err
+	commandHistory := map[string][]DashboardCommandHistoryItem{}
+	if !options.OmitCommandHistory {
+		commandHistory, err = c.collectCommandHistoryContext(ctx, serverNames, fromFormatted, toFormatted, loc, timezoneName)
+		if err != nil {
+			return dashboardProjectionInput{}, err
+		}
 	}
 
 	input := dashboardProjectionInput{

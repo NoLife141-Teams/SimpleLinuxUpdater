@@ -201,6 +201,10 @@ type DashboardSummaryResponse struct {
 	Servers     []DashboardServerSummary `json:"servers"`
 }
 
+type DashboardSummaryOptions struct {
+	OmitCommandHistory bool
+}
+
 type HealthTrendPoint struct {
 	CapturedAt        string `json:"captured_at"`
 	CapturedAtDisplay string `json:"captured_at_display,omitempty"`

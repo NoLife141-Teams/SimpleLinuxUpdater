@@ -48,6 +48,8 @@ type ListFilter struct {
 	Page         int
 	PageSize     int
 	Category     string
+	Order        string
+	TargetType   string
 	TargetName   string
 	Action       string
 	Status       string
@@ -57,6 +59,8 @@ type ListFilter struct {
 }
 
 const ListCategoryAdminActivity = "admin_activity"
+
+const ListOrderCreatedAt = "created_at"
 
 const (
 	defaultAuditPageSize = 50
@@ -156,8 +160,12 @@ func (r *SQLiteRepository) List(filter ListFilter, limit, offset int) ([]Event, 
 		return nil, &ListError{Stage: "validate", Err: errInvalidListBounds}
 	}
 	whereClause, args := auditWhereClause(filter)
+	orderClause := " ORDER BY id DESC"
+	if filter.Order == ListOrderCreatedAt {
+		orderClause = " ORDER BY created_at DESC, id DESC"
+	}
 	query := `SELECT id, created_at, actor, action, target_type, target_name, status, message, meta_json, request_id, client_ip
-			FROM audit_events` + whereClause + ` ORDER BY id DESC`
+			FROM audit_events` + whereClause + orderClause
 	queryArgs := append([]any{}, args...)
 	if filter.FailureCause == "" {
 		query += ` LIMIT ? OFFSET ?`
@@ -258,6 +266,10 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 	if filter.TargetName != "" {
 		whereParts = append(whereParts, "target_name = ?")
 		args = append(args, filter.TargetName)
+	}
+	if filter.TargetType != "" {
+		whereParts = append(whereParts, "target_type = ?")
+		args = append(args, filter.TargetType)
 	}
 	if filter.Action != "" {
 		whereParts = append(whereParts, "action = ?")

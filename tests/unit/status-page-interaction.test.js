@@ -20,6 +20,64 @@ test("snapshot intake clones adapter-owned data", () => {
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
 });
 
+test("compact dashboard lazily hydrates command history for the selected host", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });
+    const effects = store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: { servers: [{ name: "alpha", command_history: [] }] }
+    });
+    const request = effects.find(effect => effect.type === "fetchSnapshot" && effect.stream === "commandHistory");
+
+    assert.equal(request.serverName, "alpha");
+    store.dispatch({
+        type: "commandHistoryReceived",
+        requestId: request.requestId,
+        serverName: "alpha",
+        history: [{ created_at: "2026-08-03T12:00:00Z", action: "server.facts.refresh", status: "success" }]
+    });
+    assert.deepEqual(store.getDashboardServer("alpha").command_history.map(item => item.action), ["server.facts.refresh"]);
+});
+
+test("selected-host history queues the newest selection and rejects stale responses", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "alpha", status: "idle" }, { name: "beta", status: "idle" }]
+    });
+    const dashboardEffects = store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: { from: "2026-07-27T12:00:00Z", to: "2026-08-03T12:00:00Z", servers: [{ name: "alpha" }, { name: "beta" }] }
+    });
+    const alphaRequest = dashboardEffects.find(effect => effect.stream === "commandHistory");
+    assert.equal(alphaRequest.from, "2026-07-27T12:00:00Z");
+
+    assert.equal(store.dispatch({ type: "primaryServerSelected", name: "beta" }).some(effect => effect.stream === "commandHistory"), false);
+    const alphaCompletion = store.dispatch({
+        type: "commandHistoryReceived",
+        requestId: alphaRequest.requestId,
+        serverName: "alpha",
+        history: [{ action: "alpha.action" }]
+    });
+    const betaRequest = alphaCompletion.find(effect => effect.stream === "commandHistory");
+    assert.equal(betaRequest.serverName, "beta");
+    assert.deepEqual(store.dispatch({
+        type: "commandHistoryReceived",
+        requestId: alphaRequest.requestId,
+        serverName: "alpha",
+        history: [{ action: "stale.action" }]
+    }), []);
+    store.dispatch({
+        type: "commandHistoryReceived",
+        requestId: betaRequest.requestId,
+        serverName: "beta",
+        history: [{ action: "beta.action" }]
+    });
+
+    assert.deepEqual(store.getDashboardServer("alpha").command_history.map(item => item.action), ["alpha.action"]);
+    assert.deepEqual(store.getDashboardServer("beta").command_history.map(item => item.action), ["beta.action"]);
+});
+
 test("structured job logs recover gaps once and ignore duplicate sequences", () => {
     const store = createStore();
     store.dispatch({ type: "jobLogTransportChanged", live: true });

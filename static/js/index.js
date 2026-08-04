@@ -517,6 +517,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderSyncState() {
             const streamLabels = {
                 dashboard: "dashboard",
+                commandHistory: "command history",
                 audit: "audit",
                 observability: "observability",
                 policies: "policies",
@@ -1129,6 +1130,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function executeStatusSnapshotFetch(effect) {
             if (effect.stream === "servers") return executeServersSnapshotFetch(effect);
             if (effect.stream === "dashboard") return executeDashboardSnapshotFetch(effect);
+            if (effect.stream === "commandHistory") return executeCommandHistoryFetch(effect);
             if (effect.stream === "audit") return executeRecentActivityFetch(effect);
             if (effect.stream === "observability") return executeObservabilitySummaryFetch(effect);
             if (effect.stream === "policies") return executePolicySummaryFetch(effect);
@@ -1138,7 +1140,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         async function executeDashboardSnapshotFetch(effect) {
             try {
-                const response = await fetch('/api/dashboard/summary?window=7d');
+                const response = await fetch('/api/dashboard/summary?window=7d&include_command_history=false');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const nextDashboardSummary = await response.json();
                 await dispatchStatusInteraction({
@@ -1155,6 +1157,37 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 });
             }
 	        }
+
+        async function executeCommandHistoryFetch(effect) {
+            const serverName = String(effect.serverName || "");
+            try {
+                const query = new URLSearchParams({
+                    page: "1",
+                    page_size: "8",
+                    order: "created_at",
+                    target_type: "server",
+                    target_name: serverName
+                });
+                if (effect.from) query.set("from", String(effect.from));
+                if (effect.to) query.set("to", String(effect.to));
+                const response = await fetch(`/api/audit-events?${query.toString()}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                await dispatchStatusInteraction({
+                    type: "commandHistoryReceived",
+                    requestId: effect.requestId,
+                    serverName,
+                    history: Array.isArray(data?.items) ? data.items : []
+                });
+            } catch (err) {
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "commandHistory",
+                    requestId: effect.requestId,
+                    error: err?.message || String(err)
+                });
+            }
+        }
 
         async function executeJobLogFetch(effect) {
             const jobId = String(effect.jobId || "");

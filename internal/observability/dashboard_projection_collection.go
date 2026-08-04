@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"strings"
@@ -38,6 +39,13 @@ func newDashboardProjectionCollector(deps ServiceDeps) dashboardProjectionCollec
 }
 
 func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (dashboardProjectionInput, error) {
+	return c.CollectContext(context.Background(), rawWindow, now)
+}
+
+func (c dashboardProjectionCollector) CollectContext(ctx context.Context, rawWindow string, now time.Time) (dashboardProjectionInput, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	window, span, err := ParseWindow(rawWindow)
 	if err != nil {
 		return dashboardProjectionInput{}, err
@@ -65,16 +73,16 @@ func (c dashboardProjectionCollector) Collect(rawWindow string, now time.Time) (
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
-	latestUpdateJobs, err := c.collectLatestUpdateJobs(serverNames)
+	latestUpdateJobs, err := c.collectLatestUpdateJobsContext(ctx, serverNames)
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
 	loc, timezoneName := c.deps.CurrentTimezone()
-	updateByServer, err := c.collectUpdateHistory(fromFormatted, toFormatted, loc, timezoneName)
+	updateByServer, err := c.collectUpdateHistoryContext(ctx, fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
-	commandHistory, err := c.collectCommandHistory(serverNames, fromFormatted, toFormatted, loc, timezoneName)
+	commandHistory, err := c.collectCommandHistoryContext(ctx, serverNames, fromFormatted, toFormatted, loc, timezoneName)
 	if err != nil {
 		return dashboardProjectionInput{}, err
 	}
@@ -181,6 +189,10 @@ func (c dashboardProjectionCollector) collectTriageTime(health DashboardHealthIn
 }
 
 func (c dashboardProjectionCollector) collectLatestUpdateJobs(serverNames []string) (map[string]jobs.Record, error) {
+	return c.collectLatestUpdateJobsContext(context.Background(), serverNames)
+}
+
+func (c dashboardProjectionCollector) collectLatestUpdateJobsContext(ctx context.Context, serverNames []string) (map[string]jobs.Record, error) {
 	result := map[string]jobs.Record{}
 	serverNames = uniqueDashboardServerNames(serverNames)
 	if len(serverNames) == 0 {
@@ -198,7 +210,7 @@ func (c dashboardProjectionCollector) collectLatestUpdateJobs(serverNames []stri
 		for _, serverName := range batch {
 			args = append(args, serverName)
 		}
-		rows, err := db.Query(latestUpdateJobsQuery(len(batch)), args...)
+		rows, err := db.QueryContext(ctx, latestUpdateJobsQuery(len(batch)), args...)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
 				return result, nil
@@ -258,8 +270,13 @@ func appendLatestUpdateJobRows(result map[string]jobs.Record, rows *sql.Rows) er
 }
 
 func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardCollectedUpdateHistory, error) {
+	return c.collectUpdateHistoryContext(context.Background(), from, to, loc, timezoneName)
+}
+
+func (c dashboardProjectionCollector) collectUpdateHistoryContext(ctx context.Context, from, to string, loc *time.Location, timezoneName string) (map[string]*dashboardCollectedUpdateHistory, error) {
 	updateByServer := map[string]*dashboardCollectedUpdateHistory{}
-	rows, err := c.deps.DB().Query(
+	rows, err := c.deps.DB().QueryContext(
+		ctx,
 		`SELECT created_at, target_name, status, message, meta_json
 		   FROM audit_events
 		  WHERE action = ? AND target_type = 'server' AND created_at >= ? AND created_at <= ?
@@ -329,6 +346,10 @@ func (c dashboardProjectionCollector) collectUpdateHistory(from, to string, loc 
 }
 
 func (c dashboardProjectionCollector) collectCommandHistory(serverNames []string, from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
+	return c.collectCommandHistoryContext(context.Background(), serverNames, from, to, loc, timezoneName)
+}
+
+func (c dashboardProjectionCollector) collectCommandHistoryContext(ctx context.Context, serverNames []string, from, to string, loc *time.Location, timezoneName string) (map[string][]DashboardCommandHistoryItem, error) {
 	commandHistory := map[string][]DashboardCommandHistoryItem{}
 	serverNames = uniqueDashboardServerNames(serverNames)
 	for start := 0; start < len(serverNames); start += dashboardCommandHistoryBatchSize {
@@ -340,7 +361,7 @@ func (c dashboardProjectionCollector) collectCommandHistory(serverNames []string
 			args = append(args, serverName)
 		}
 		args = append(args, dashboardCommandHistoryPerServer)
-		rows, err := c.deps.DB().Query(commandHistoryQuery(len(batch)), args...)
+		rows, err := c.deps.DB().QueryContext(ctx, commandHistoryQuery(len(batch)), args...)
 		if err != nil {
 			return nil, err
 		}

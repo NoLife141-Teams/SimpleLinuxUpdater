@@ -34,7 +34,7 @@ func TestObservabilityServiceComposesDashboardCollectionThenProjection(t *testin
 	}
 	serviceSource := string(source)
 	for _, required := range []string{
-		"collector.Collect(rawWindow, now)",
+		"collector.CollectContext(ctx, rawWindow, now)",
 		"projection.Project(projectionInput)",
 	} {
 		if !strings.Contains(serviceSource, required) {

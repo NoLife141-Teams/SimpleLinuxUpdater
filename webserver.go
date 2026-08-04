@@ -1214,8 +1214,15 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 	if service == nil {
 		service = defaultObservabilityService()
 	}
-	summary, err := service.BuildDashboardSummary(c.Query("window"), now())
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	summary, err := service.BuildDashboardSummaryContext(ctx, c.Query("window"), now())
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
 		if errors.Is(err, errInvalidWindow) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window; allowed values: 24h, 7d, 30d"})
 			return

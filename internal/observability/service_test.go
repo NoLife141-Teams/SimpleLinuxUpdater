@@ -468,6 +468,125 @@ func TestServiceBuildDashboardSummaryEmptyContract(t *testing.T) {
 	})
 }
 
+func TestServiceBuildDashboardSummaryContextStopsWaitingForSQLiteOnCancel(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-context-cancellation.db")
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	held, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("db.Conn() error = %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = held.Close()
+		}
+	}
+	t.Cleanup(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, buildErr := testService(db, path).BuildDashboardSummaryContext(ctx, "7d", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+		done <- buildErr
+	}()
+
+	waitDeadline := time.Now().Add(time.Second)
+	for db.Stats().WaitCount == 0 && time.Now().Before(waitDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if db.Stats().WaitCount == 0 {
+		release()
+		<-done
+		t.Fatal("dashboard projection did not wait for the occupied SQLite connection")
+	}
+
+	cancel()
+	select {
+	case buildErr := <-done:
+		if !errors.Is(buildErr, context.Canceled) {
+			t.Fatalf("BuildDashboardSummaryContext() error = %v, want context.Canceled", buildErr)
+		}
+	case <-time.After(250 * time.Millisecond):
+		release()
+		<-done
+		t.Fatal("cancelled dashboard projection kept waiting for the SQLite connection")
+	}
+}
+
+func TestServiceBuildDashboardSummaryContextAdmitsOneSQLiteProjectionAtATime(t *testing.T) {
+	db, path := newTestDB(t, "dashboard-context-admission.db")
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	held, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("db.Conn() error = %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = held.Close()
+		}
+	}
+	t.Cleanup(release)
+
+	const requests = 25
+	service := testService(db, path)
+	done := make(chan error, requests)
+	cancels := make([]context.CancelFunc, 0, requests)
+	for range requests {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		go func() {
+			_, buildErr := service.BuildDashboardSummaryContext(ctx, "7d", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC))
+			done <- buildErr
+		}()
+	}
+
+	waitDeadline := time.Now().Add(time.Second)
+	for db.Stats().WaitCount == 0 && time.Now().Before(waitDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if db.Stats().WaitCount == 0 {
+		release()
+		for range requests {
+			<-done
+		}
+		t.Fatal("dashboard projection did not wait for the occupied SQLite connection")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := db.Stats().WaitCount; got != 1 {
+		release()
+		for range requests {
+			<-done
+		}
+		t.Fatalf("SQLite waiters = %d, want one admitted dashboard projection", got)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	deadline := time.After(250 * time.Millisecond)
+	for i := 0; i < requests; i++ {
+		select {
+		case buildErr := <-done:
+			if !errors.Is(buildErr, context.Canceled) {
+				t.Fatalf("request %d error = %v, want context.Canceled", i, buildErr)
+			}
+		case <-deadline:
+			release()
+			for j := i; j < requests; j++ {
+				<-done
+			}
+			t.Fatalf("cancelled dashboard burst left %d request(s) running", requests-i)
+		}
+	}
+}
+
 func TestServiceBuildDashboardSummaryInvalidWindowSkipsCollection(t *testing.T) {
 	collectionCalls := 0
 	service := NewService(ServiceDeps{

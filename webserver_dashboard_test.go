@@ -1,10 +1,19 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
+
+	healthpkg "debian-updater/internal/health"
+
+	"github.com/gin-gonic/gin"
+	_ "modernc.org/sqlite"
 )
 
 func mustDashboardMeta(t *testing.T, meta map[string]any) string {
@@ -14,6 +23,86 @@ func mustDashboardMeta(t *testing.T, meta map[string]any) string {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return string(raw)
+}
+
+func TestDashboardSummaryHandlerCancelsSQLiteWaitWithRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dashboard-handler-cancellation.db")
+	testDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = testDB.Close() })
+	if err := ensureSchema(testDB); err != nil {
+		t.Fatalf("ensureSchema() error = %v", err)
+	}
+	testDB.SetMaxOpenConns(1)
+	testDB.SetMaxIdleConns(1)
+
+	held, err := testDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("db.Conn() error = %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = held.Close()
+		}
+	}
+	t.Cleanup(release)
+
+	service := NewObservabilityService(ObservabilityServiceDeps{
+		DB:     func() *sql.DB { return testDB },
+		DBPath: func() string { return path },
+		ServerSnapshot: func() ([]Server, map[string]*ServerStatus) {
+			return []Server{}, map[string]*ServerStatus{}
+		},
+		HostHealthObservation: healthpkg.ReaderFuncs{
+			LatestFunc: func() (map[string]healthpkg.CollectedFacts, error) {
+				return map[string]healthpkg.CollectedFacts{}, nil
+			},
+			LatestObservationsFunc: func(string) (map[string]healthpkg.Snapshot, error) {
+				return map[string]healthpkg.Snapshot{}, nil
+			},
+			HistoryFunc: func(string, string, string) ([]healthpkg.Snapshot, error) {
+				return []healthpkg.Snapshot{}, nil
+			},
+			RetentionDaysFunc: func() (int, error) { return healthpkg.DefaultRetentionDays, nil },
+		},
+	})
+	requestContext, cancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodGet, "/api/dashboard/summary?window=7d", nil).WithContext(requestContext)
+	done := make(chan struct{})
+	go func() {
+		handleDashboardSummaryWithService(ginContext, service, func() time.Time {
+			return time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+		})
+		close(done)
+	}()
+
+	waitDeadline := time.Now().Add(time.Second)
+	for testDB.Stats().WaitCount == 0 && time.Now().Before(waitDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if testDB.Stats().WaitCount == 0 {
+		release()
+		<-done
+		t.Fatal("dashboard handler did not wait for the occupied SQLite connection")
+	}
+
+	cancel()
+	select {
+	case <-done:
+		if recorder.Body.Len() != 0 {
+			t.Fatalf("response body = %q, want no response after request cancellation", recorder.Body.String())
+		}
+	case <-time.After(250 * time.Millisecond):
+		release()
+		<-done
+		t.Fatal("cancelled dashboard HTTP request kept waiting for SQLite")
+	}
 }
 
 func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {

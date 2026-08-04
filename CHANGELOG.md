@@ -6,6 +6,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+
+- Treat the SSH timeout for lock-protected APT commands as an inactivity window, so
+  regular package-manager output extends the current attempt without extra lock
+  probes or unsafe command replay.
+
 ## [v0.4.5] - 2026-08-03
 
 ### Changed

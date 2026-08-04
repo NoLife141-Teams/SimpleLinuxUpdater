@@ -30,6 +30,39 @@ func (s *noopSession) SetStderr(io.Writer) {}
 func (s *noopSession) Run(string) error    { return nil }
 func (s *noopSession) Close() error        { return nil }
 
+type progressingSSHConnection struct {
+	interval time.Duration
+	writes   int
+}
+
+type progressingSSHSession struct {
+	conn   *progressingSSHConnection
+	stdout io.Writer
+}
+
+func (s *progressingSSHSession) SetStdin(io.Reader)    {}
+func (s *progressingSSHSession) SetStdout(w io.Writer) { s.stdout = w }
+func (s *progressingSSHSession) SetStderr(io.Writer)   {}
+
+func (s *progressingSSHSession) Run(command string) error {
+	if strings.Contains(command, "/usr/bin/fuser") {
+		return errors.New("no process uses the apt locks")
+	}
+	for i := 0; i < s.conn.writes; i++ {
+		time.Sleep(s.conn.interval)
+		_, _ = io.WriteString(s.stdout, "progress\n")
+	}
+	return nil
+}
+
+func (s *progressingSSHSession) Close() error { return nil }
+
+func (c *progressingSSHConnection) NewSession() (sshSessionRunner, error) {
+	return &progressingSSHSession{conn: c}, nil
+}
+
+func (c *progressingSSHConnection) Close() error { return nil }
+
 type aptLockAwareTestConnection struct {
 	mu              sync.Mutex
 	lockActive      bool
@@ -128,6 +161,33 @@ func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Fatalf("runSSHCommandWithTimeout() took too long: %v", elapsed)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutExtendsDeadlineWhileOutputIsActive(t *testing.T) {
+	conn := &progressingSSHConnection{
+		interval: 10 * time.Millisecond,
+		writes:   8,
+	}
+
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want regular output to extend the idle deadline", err)
+	}
+	if got := strings.Count(stdout, "progress\n"); got != conn.writes {
+		t.Fatalf("progress lines = %d, want %d", got, conn.writes)
+	}
+}
+
+func TestRunSSHCommandWithTimeoutKeepsHardDeadlineForNonAptCommand(t *testing.T) {
+	conn := &progressingSSHConnection{
+		interval: 10 * time.Millisecond,
+		writes:   8,
+	}
+
+	_, _, err := runSSHCommandWithTimeout(conn, "long command", nil, 25*time.Millisecond)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want non-APT command to retain its hard deadline", err)
 	}
 }
 

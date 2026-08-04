@@ -609,16 +609,24 @@ func (g *sshCommandOutputGate) close() {
 }
 
 type sshCommandOutputWriter struct {
-	mu       sync.Mutex
-	buffer   bytes.Buffer
-	stream   updatespkg.HostCommandOutputStream
-	onOutput updatespkg.HostCommandOutputHandler
+	mu         sync.Mutex
+	buffer     bytes.Buffer
+	stream     updatespkg.HostCommandOutputStream
+	onOutput   updatespkg.HostCommandOutputHandler
+	onActivity func()
 }
 
 func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
+	return w.write(p, true)
+}
+
+func (w *sshCommandOutputWriter) write(p []byte, remoteActivity bool) (int, error) {
 	w.mu.Lock()
 	n, err := w.buffer.Write(p)
 	w.mu.Unlock()
+	if n > 0 && remoteActivity && w.onActivity != nil {
+		w.onActivity()
+	}
 	if n > 0 && w.onOutput != nil {
 		w.onOutput(updatespkg.HostCommandOutput{Stream: w.stream, Data: string(p[:n])})
 	}
@@ -626,7 +634,11 @@ func (w *sshCommandOutputWriter) Write(p []byte) (int, error) {
 }
 
 func (w *sshCommandOutputWriter) WriteString(value string) (int, error) {
-	return w.Write([]byte(value))
+	return w.write([]byte(value), true)
+}
+
+func (w *sshCommandOutputWriter) appendLocal(value string) (int, error) {
+	return w.write([]byte(value), false)
 }
 
 func (w *sshCommandOutputWriter) String() string {
@@ -756,8 +768,19 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 
 	gate := newSSHCommandOutputGate(onOutput)
 	defer gate.close()
-	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
-	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit}
+	aptLockProtected := updatespkg.IsAptLockProtectedCommand(cmd)
+	activityCh := make(chan struct{}, 1)
+	signalActivity := func() {
+		if !aptLockProtected {
+			return
+		}
+		select {
+		case activityCh <- struct{}{}:
+		default:
+		}
+	}
+	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit, onActivity: signalActivity}
+	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit, onActivity: signalActivity}
 	session.SetStdout(&stdout)
 	session.SetStderr(&stderr)
 	if stdin != nil {
@@ -771,6 +794,15 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	resetIdleTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(timeout)
+	}
 
 	commandStarted := time.Now()
 	aptLivenessCheckpoints := 0
@@ -779,8 +811,16 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 		case runErr := <-runErrCh:
 			_ = session.Close()
 			return stdout.String(), stderr.String(), runErr
+		case <-activityCh:
+			resetIdleTimer()
 		case <-timer.C:
-			if updatespkg.IsAptLockProtectedCommand(cmd) {
+			select {
+			case <-activityCh:
+				timer.Reset(timeout)
+				continue
+			default:
+			}
+			if aptLockProtected {
 				probe := aptPackageManagerLockState(client, timeout)
 				select {
 				case runErr := <-runErrCh:
@@ -795,7 +835,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 					if probe.output != "" {
 						lockHolder = fmt.Sprintf("; lock holder PID(s): %s", probe.output)
 					}
-					_, _ = stdout.WriteString(fmt.Sprintf(
+					_, _ = stdout.appendLocal(fmt.Sprintf(
 						"\nAPT command still active after %s (checkpoint %d%s); extending wait.\n",
 						elapsed,
 						aptLivenessCheckpoints,
@@ -808,7 +848,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 				if probe.err != nil {
 					probeDetail = fmt.Sprintf("APT/DPKG lock probe failed: %v", probe.err)
 				}
-				_, _ = stderr.WriteString(fmt.Sprintf("\nAPT liveness check stopped waiting: %s.\n", probeDetail))
+				_, _ = stderr.appendLocal(fmt.Sprintf("\nAPT liveness check stopped waiting: %s.\n", probeDetail))
 			}
 			_ = session.Close()
 			select {

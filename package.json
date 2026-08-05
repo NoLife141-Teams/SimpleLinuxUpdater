@@ -8,6 +8,6 @@
     "test:e2e": "node ./node_modules/@playwright/test/cli.js test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.0"
+    "@playwright/test": "^1.62.1"
   }
 }

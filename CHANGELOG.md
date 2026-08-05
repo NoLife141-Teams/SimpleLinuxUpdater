@@ -6,6 +6,35 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.7] - 2026-08-05
+
+### Changed
+
+- Turn the existing Status maintenance timeline into a recommendation-first
+  queue, while preserving explicit name and status sorting.
+- Align stale-facts attention counters, quick filters, and accessibility labels
+  so both stale and unknown host facts consistently require refresh.
+- Simplify Status around one primary attention surface and move approval,
+  audit, tag, and command-history context into collapsed supporting details.
+- Show eligible-host counts and persistent executed/skipped/failed results for
+  immediate Status bulk actions without adding a review modal.
+- Keep the selected-host inspector visible in a bounded desktop column and
+  place it directly after the maintenance timeline on mobile.
+- Keep degraded Status synchronization visible beside the maintenance timeline,
+  including affected sources and the age of their last successful refresh.
+- Update the Playwright test dependency from 1.62.0 to 1.62.1.
+
+### Fixed
+
+- Remove wall-clock scheduling assumptions from the notification outbox wake
+  retry regression test so loaded CI runners cannot report a false failure.
+
+### Validation
+
+- Record the automated, Docker, and disposable-host gates in
+  [the v0.4.7 release readiness record](docs/release-v0.4.7-readiness.md) and
+  [release smoke result](docs/release-v0.4.7-smoke.md).
+
 ## [v0.4.6] - 2026-08-04
 
 ### Changed

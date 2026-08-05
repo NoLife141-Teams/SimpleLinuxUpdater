@@ -279,7 +279,7 @@
             failureTimestamp: failureTimestamp(intelligence, timeline),
             active: activeStatuses.has(text(server.status).toLowerCase()) || runningTimeline(timeline.state),
             reachable: nonFailedStatuses.has(text(server.status).toLowerCase()) || (!!text(server.status) && text(server.status).toLowerCase() !== "error"),
-            staleFacts: triage.facts_state === "stale",
+            staleFacts: ["stale", "unknown"].includes(triage.facts_state),
             rebootRequired: health.reboot_required === true,
             busy: inFlightNames.has(text(server.name)) || !transientFallback,
             actions,

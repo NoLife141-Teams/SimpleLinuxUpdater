@@ -250,7 +250,7 @@ test.describe.serial('setup and login flows', () => {
         prechecks_running: servers.filter(server => ['updating', 'upgrading'].includes(server.status)).length,
         in_progress: servers.filter(server => ['updating', 'upgrading'].includes(server.status)).length,
         done: servers.filter(server => server.status === 'done').length,
-        stale_facts: servers.filter(server => server.facts_state === 'stale').length,
+        stale_facts: servers.filter(server => ['stale', 'unknown'].includes(server.facts_state)).length,
         high_risk_cve: dashboardServers.filter(server => server.approval_triage.cve_count > 0).length,
         pending_packages: dashboardServers.reduce((sum, server) => sum + server.approval_triage.pending_packages, 0),
         security_updates: dashboardServers.reduce((sum, server) => sum + server.approval_triage.security_updates, 0),
@@ -1654,6 +1654,43 @@ test.describe.serial('setup and login flows', () => {
 
     await inspectorRefresh.click();
     await expect.poll(() => state.refreshFacts).toBe(1);
+  });
+
+  test('attention metrics and filters use the same facts and CVE semantics', async ({ page }) => {
+    const servers = [
+      makeServer('fresh-host', 'done'),
+      makeServer('stale-host', 'done', [], { facts_state: 'stale' }),
+      makeServer('unknown-host', 'done', [], { facts_state: 'unknown' }),
+      makeServer('cve-host', 'pending_approval', makePendingUpdates(1)),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    const factsMetric = page.locator('[data-metric-filter="stale_facts"]');
+    const cveMetric = page.locator('[data-metric-filter="high_risk"]');
+    await expect(factsMetric).toContainText('Host facts to refresh');
+    await expect(factsMetric.locator('strong')).toHaveText('2');
+    await expect(cveMetric).toContainText('CVE exposure');
+    await expect(cveMetric.locator('strong')).toHaveText('1');
+
+    const factsFilter = page.locator('[data-fleet-filter="stale_facts"]');
+    await expect(factsFilter).toContainText('Facts refresh');
+    await expect(factsFilter.locator('strong')).toHaveText('2');
+    await factsFilter.evaluate(button => button.click());
+    const factsRows = page.locator('#servers-table tbody tr[data-name]');
+    await expect(factsRows).toHaveCount(2);
+    await expect.poll(() => factsRows.evaluateAll(rows => rows.map(row => row.dataset.name).sort())).toEqual([
+      'stale-host',
+      'unknown-host',
+    ]);
+
+    const cveFilter = page.locator('[data-fleet-filter="high_risk"]');
+    await expect(cveFilter).toContainText('CVE exposure');
+    await expect(cveFilter.locator('strong')).toHaveText('1');
+    await cveFilter.evaluate(button => button.click());
+    const cveRows = page.locator('#servers-table tbody tr[data-name]');
+    await expect(cveRows).toHaveCount(1);
+    await expect(cveRows.first()).toHaveAttribute('data-name', 'cve-host');
   });
 
   test('maintenance queue starts with recommended actions and lets the operator reverse the order', async ({ page }) => {

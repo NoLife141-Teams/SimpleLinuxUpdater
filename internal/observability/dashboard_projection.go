@@ -134,7 +134,7 @@ func dashboardFleetRollup(servers []DashboardServerSummary) map[string]any {
 			fleetReboot++
 		}
 		triage := server.ApprovalTriage
-		if triage.FactsState == "stale" {
+		if triage.FactsState == "stale" || triage.FactsState == "unknown" {
 			fleetStaleFacts++
 		}
 		fleetPendingPackages += triage.PendingPackages

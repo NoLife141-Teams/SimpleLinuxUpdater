@@ -626,8 +626,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     { key: "", label: "All", count: allServers.length },
                     { key: "pending_approval", label: "Pending", count: dashboardPresentation.fleet.pendingApproval },
                     { key: "active", label: "Active", count: activeCount },
-                    { key: "stale_facts", label: "Stale", count: staleCount },
-                    { key: "high_risk", label: "High risk", count: highRiskCount }
+                    { key: "stale_facts", label: "Facts refresh", count: staleCount },
+                    { key: "high_risk", label: "CVE exposure", count: highRiskCount }
                 ];
                 statusEl.innerHTML = filters.map(item => `
                     <button type="button" class="filter-pill${view.filters.quick === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">

@@ -571,6 +571,45 @@ test("high-risk filtering falls back to server CVE data before dashboard intake"
     assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha"]);
 });
 
+test("facts refresh filtering includes stale and unknown host intelligence", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "fresh", status: "done" },
+            { name: "stale", status: "done" },
+            { name: "unknown", status: "done" }
+        ]
+    });
+    store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: {
+            servers: [
+                { name: "fresh", approval_triage: { facts_state: "fresh" } },
+                { name: "stale", approval_triage: { facts_state: "stale" } },
+                { name: "unknown", approval_triage: { facts_state: "unknown" } }
+            ]
+        }
+    });
+    store.dispatch({ type: "filtersChanged", patch: { quick: "stale_facts" } });
+
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["stale", "unknown"]);
+});
+
+test("Status labels describe CVE exposure and facts that need refresh", () => {
+    const root = path.resolve(__dirname, "../..");
+    const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
+    const rendering = fs.readFileSync(path.join(root, "static/js/status-rendering.js"), "utf8");
+    const index = fs.readFileSync(path.join(root, "static/js/index.js"), "utf8");
+
+    assert.match(template, /<span>Host facts to refresh<\/span>/);
+    assert.match(template, /<span>CVE exposure<\/span>/);
+    assert.match(rendering, /Show hosts whose facts need refresh/);
+    assert.match(rendering, /Show hosts with CVE exposure/);
+    assert.match(index, /label: "Facts refresh"/);
+    assert.match(index, /label: "CVE exposure"/);
+});
+
 test("server removal prunes selection and closes an invalid drawer", () => {
     const store = createStore();
     store.dispatch({

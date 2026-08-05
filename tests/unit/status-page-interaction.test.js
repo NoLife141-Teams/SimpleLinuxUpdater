@@ -621,6 +621,19 @@ test("Status labels describe CVE exposure and facts that need refresh", () => {
     assert.match(index, /label: "CVE exposure"/);
 });
 
+test("Status keeps one attention surface and defers supporting detail", () => {
+    const template = fs.readFileSync(path.resolve(__dirname, "../../templates/index.html"), "utf8");
+
+    assert.equal((template.match(/<h2>Needs attention<\/h2>/g) || []).length, 1);
+    assert.equal((template.match(/<h2>Restart required<\/h2>/g) || []).length, 1);
+    assert.match(template, /<details class="supporting-details fade-in" id="status-supporting-details">/);
+    assert.match(template, /<summary>[\s\S]*Supporting details[\s\S]*Approvals, audit, tags, and command history/);
+    assert.doesNotMatch(template, /id="failed-hosts-panel"/);
+    assert.doesNotMatch(template, /id="active-operations"/);
+    assert.doesNotMatch(template, /id="risk-exposure-panel"/);
+    assert.doesNotMatch(template, /id="reboot-required-panel"/);
+});
+
 test("server removal prunes selection and closes an invalid drawer", () => {
     const store = createStore();
     store.dispatch({

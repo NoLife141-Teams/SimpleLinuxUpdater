@@ -804,33 +804,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }).join("");
         }
 
-        function renderIntelligenceLists() {
-            const rebootHosts = dashboardPresentation.panels.reboot.map(model => model.server);
-            const riskHosts = dashboardPresentation.panels.risk.map(model => model.server);
-            setText("reboot-required-count", String(rebootHosts.length));
-            setText("risk-exposure-count", String(riskHosts.length));
-            renderMiniServerList("reboot-required-panel", rebootHosts, "No reboot required.", {
-                limit: 1,
-                expandable: true,
-                compactDetail: true,
-	                action: "open-drawer",
-	                actionLabel: "Logs",
-	                lessLabel: "Show fewer reboot hosts",
-	                moreLabel: (_hidden, total) => `Show all ${total} reboot host${total === 1 ? "" : "s"}`
-	            });
-	            renderMiniServerList("risk-exposure-panel", riskHosts, "No CVE exposure.", {
-	                limit: 1,
-                expandable: true,
-                compactDetail: true,
-                action: "open-drawer",
-	                actionLabel: "Review",
-	                actionTab: "pending",
-	                lessLabel: "Show fewer risk hosts",
-	                moreLabel: (_hidden, total) => `Show all ${total} risk host${total === 1 ? "" : "s"}`
-	            });
-            renderCommandHistoryPanel();
-        }
-
 	        function renderCommandHistoryPanel() {
 	            const el = document.getElementById('command-history-panel');
 	            if (!el) return;
@@ -1040,31 +1013,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function renderDashboardPanels() {
-	            const activeServers = dashboardPresentation.panels.active.map(model => model.server);
 	            const failedServers = dashboardPresentation.panels.failed.map(model => model.server);
 	            const rebootHosts = dashboardPresentation.panels.reboot.map(model => model.server);
-	            setText("active-operations-count", String(activeServers.length));
-	            setText("failed-hosts-count", String(failedServers.length));
 	            renderPriorityAttention(failedServers, rebootHosts);
-	            renderMiniServerList("active-operations", activeServers, "No active runs.", {
-	                limit: 1,
-	                expandable: true,
-	                lessLabel: "Show fewer running operations",
-	                moreLabel: (_hidden, total) => `Show all ${total} running`
-	            });
-	            renderMiniServerList("failed-hosts-panel", failedServers, "No failures.", {
-	                limit: 1,
-	                expandable: true,
-	                detail: failureMiniDetail,
-	                lessLabel: "Show fewer failures",
-	                moreLabel: (_hidden, total) => `Show all ${total} failure${total === 1 ? "" : "s"}`
-	            });
             renderScheduledRuns();
             renderApprovalTriage();
             renderFleetFilters();
             renderTagSummary();
             renderRecentActivity();
-            renderIntelligenceLists();
+            renderCommandHistoryPanel();
             renderSummaryBadges();
             renderSelectedHostPanel();
 	            renderSyncState();

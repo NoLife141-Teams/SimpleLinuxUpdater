@@ -2455,6 +2455,75 @@ body.status-page .maintenance-table {
     overflow: hidden;
 }
 
+.supporting-details {
+    min-width: 0;
+    border-block: 1px solid rgba(var(--border-rgb), 0.6);
+    background: rgba(var(--panel-rgb), 0.28);
+}
+
+.supporting-details > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 58px;
+    padding: 10px 12px;
+    list-style: none;
+    cursor: pointer;
+}
+
+.supporting-details > summary::-webkit-details-marker {
+    display: none;
+}
+
+.supporting-details > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.supporting-summary-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.supporting-summary-copy strong {
+    font-size: 0.92rem;
+}
+
+.supporting-summary-copy small {
+    color: var(--muted);
+    font-size: 0.76rem;
+}
+
+.supporting-summary-action {
+    flex: 0 0 auto;
+    color: var(--accent-text);
+    font-size: 0;
+    font-weight: 800;
+}
+
+.supporting-summary-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.supporting-summary-action::before {
+    content: "Open details";
+    font-size: 0.75rem;
+}
+
+.supporting-details[open] .supporting-summary-action::before {
+    content: "Close details";
+}
+
+.supporting-details-body {
+    display: grid;
+    gap: 12px;
+    padding: 0 0 12px;
+}
+
 .approval-triage-panel .table-wrap {
     max-height: none;
     overflow-x: auto;
@@ -2673,7 +2742,7 @@ body.status-page .triage-wrap table {
 }
 
 .operations-grid-secondary {
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 0.85fr) minmax(0, 1.35fr);
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.8fr) minmax(0, 1.25fr);
     margin-top: 0;
 }
 
@@ -2908,6 +2977,7 @@ body.status-page .table-wrap {
     .priority-attention-strip,
     .fleet-rail,
     .timeline-workspace,
+    .supporting-details,
     .approval-triage-panel,
     .timeline-column .operations-grid-secondary,
     .context-panel {
@@ -2933,6 +3003,10 @@ body.status-page .table-wrap {
     }
 
     .approval-triage-panel {
+        order: 5;
+    }
+
+    .supporting-details {
         order: 5;
     }
 

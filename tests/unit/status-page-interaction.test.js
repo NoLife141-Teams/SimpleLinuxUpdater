@@ -20,6 +20,80 @@ test("snapshot intake clones adapter-owned data", () => {
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
 });
 
+test("recommended actions order the default maintenance queue by operator priority", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "healthy", status: "done" },
+            { name: "monitor", status: "upgrading" },
+            { name: "refresh", status: "done" },
+            { name: "reboot", status: "done" },
+            { name: "approval", status: "pending_approval" },
+            { name: "failure", status: "error" },
+            { name: "disk", status: "error" },
+            { name: "sudo", status: "error" },
+            { name: "repair", status: "needs_reconciliation" }
+        ]
+    });
+    store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: {
+            servers: [
+                { name: "healthy", recommended_action: { key: "healthy" } },
+                { name: "monitor", recommended_action: { key: "monitor_apt" } },
+                { name: "refresh", recommended_action: { key: "refresh_host_facts" } },
+                { name: "reboot", recommended_action: { key: "reboot_and_verify" } },
+                { name: "approval", recommended_action: { key: "review_approval" } },
+                { name: "failure", recommended_action: { key: "review_failure" } },
+                { name: "disk", recommended_action: { key: "review_disk_capacity" } },
+                { name: "sudo", recommended_action: { key: "enable_apt_access" } },
+                { name: "repair", recommended_action: { key: "repair_package_state" } }
+            ]
+        }
+    });
+
+    const view = store.getView();
+    assert.deepEqual(view.visibleServers.map(server => server.name), [
+        "repair", "sudo", "disk", "failure", "approval", "reboot", "refresh", "monitor", "healthy"
+    ]);
+    assert.deepEqual(view.sort, { key: "recommendation", dir: "desc" });
+});
+
+test("recommended action sorting is deterministic and remains operator controlled", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "zulu", status: "error" },
+            { name: "alpha", status: "error" },
+            { name: "healthy", status: "done" }
+        ]
+    });
+    store.dispatch({
+        type: "dashboardSnapshotReceived",
+        snapshot: {
+            servers: [
+                { name: "zulu", recommended_action: { key: "review_failure" } },
+                { name: "alpha", recommended_action: { key: "review_failure" } },
+                { name: "healthy", recommended_action: { key: "healthy" } }
+            ]
+        }
+    });
+
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "zulu", "healthy"]);
+    store.dispatch({ type: "sortChanged", key: "recommendation" });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["healthy", "alpha", "zulu"]);
+    store.dispatch({ type: "sortChanged", key: "name" });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "healthy", "zulu"]);
+});
+
+test("maintenance table exposes recommended-action sorting as the initial accessible sort", () => {
+    const template = fs.readFileSync(path.resolve(__dirname, "../../templates/index.html"), "utf8");
+    assert.match(template, /data-sort-key="recommendation" data-sort-dir="desc" aria-sort="descending"/);
+    assert.match(template, /data-sort-trigger="recommendation" aria-label="Sort by recommended action"/);
+});
+
 test("compact dashboard lazily hydrates command history for the selected host", () => {
     const store = createStore();
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "idle" }] });

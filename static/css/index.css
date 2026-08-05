@@ -2125,7 +2125,52 @@ body.status-page .timeline-column .metric-item small {
     gap: 7px;
     min-width: 0;
     padding: 9px 10px;
-    overflow: hidden;
+    overflow: visible;
+}
+
+.sync-degraded-notice {
+    position: sticky;
+    top: 68px;
+    z-index: 12;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(210px, auto);
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(var(--warning-rgb), 0.52);
+    border-left-width: 4px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, rgba(var(--warning-rgb), 0.16), rgba(var(--field-rgb), 0.98) 42%);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+    color: var(--warning-text);
+}
+
+.sync-degraded-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.sync-degraded-copy strong {
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.sync-degraded-copy p,
+.sync-degraded-last-success {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.sync-degraded-copy p {
+    color: var(--warning-text);
+}
+
+.sync-degraded-last-success {
+    max-width: 460px;
+    color: var(--muted);
+    text-align: right;
 }
 
 .timeline-workspace .workspace-head,
@@ -3005,6 +3050,17 @@ body.status-page .table-wrap {
 }
 
 @media (max-width: 720px) {
+    .sync-degraded-notice {
+        position: static;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+    }
+
+    .sync-degraded-last-success {
+        max-width: none;
+        text-align: left;
+    }
+
     .rail-controls .controls,
     .fleet-rail .bulk-actions,
     .filter-pill-list,

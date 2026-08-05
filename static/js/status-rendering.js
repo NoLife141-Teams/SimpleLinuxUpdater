@@ -5,6 +5,42 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function statusRenderingFactory() {
     "use strict";
 
+    const syncStreamLabels = Object.freeze({
+        servers: "Fleet inventory",
+        dashboard: "Dashboard",
+        commandHistory: "Command history",
+        audit: "Audit trail",
+        observability: "Observability",
+        policies: "Policies",
+        globalKey: "SSH key status"
+    });
+
+    function joinLabels(labels) {
+        if (labels.length < 2) return labels[0] || "";
+        if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+        return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+    }
+
+    function syncNotice(streams, formatTimestamp = value => String(value || "not yet successful")) {
+        const affected = Object.entries(streams || {})
+            .filter(([, stream]) => stream && stream.lastError)
+            .map(([name, stream]) => ({
+                label: syncStreamLabels[name] || name,
+                lastSuccessfulAt: String(stream.lastSuccessfulAt || "")
+            }));
+        if (affected.length === 0) return { visible: false, title: "", summary: "", lastSuccessText: "" };
+        const labels = affected.map(source => source.label);
+        const refreshes = affected.map(source => (
+            `${source.label} ${formatTimestamp(source.lastSuccessfulAt, "not yet successful")}`
+        ));
+        return {
+            visible: true,
+            title: "Data freshness warning",
+            summary: `Affected data: ${joinLabels(labels)}. Visible maintenance data may be out of date.`,
+            lastSuccessText: `Last successful refresh: ${refreshes.join(" · ")}`
+        };
+    }
+
     function create(documentRef) {
         function text(id, value) {
             const element = documentRef.getElementById(id);
@@ -65,9 +101,10 @@
             metricFilterState(quickFilter);
         }
 
-        function syncState({ degraded, live, lastSyncText }) {
+        function syncState({ degraded, live, lastSyncText, notice = {} }) {
             const polling = documentRef.getElementById("polling-state-label");
             const lastSync = documentRef.getElementById("last-sync-label");
+            const degradedNotice = documentRef.getElementById("sync-degraded-notice");
             if (polling) {
                 polling.textContent = degraded ? "Polling degraded" : (live ? "Live events" : "Live polling");
                 polling.classList.toggle("warning", degraded);
@@ -77,10 +114,17 @@
                 lastSync.textContent = lastSyncText;
                 lastSync.classList.toggle("warning", degraded);
             }
+            if (degradedNotice) {
+                degradedNotice.classList.toggle("hidden", !notice.visible);
+                degradedNotice.setAttribute("aria-hidden", notice.visible ? "false" : "true");
+            }
+            text("sync-degraded-title", notice.title || "");
+            text("sync-degraded-summary", notice.summary || "");
+            text("sync-degraded-last-success", notice.lastSuccessText || "");
         }
 
-        return Object.freeze({ text, html, visible, metrics, metricFilterLabel, metricFilterState, syncState });
+        return Object.freeze({ text, html, visible, metrics, metricFilterLabel, metricFilterState, syncNotice, syncState });
     }
 
-    return Object.freeze({ create });
+    return Object.freeze({ create, syncNotice });
 }));

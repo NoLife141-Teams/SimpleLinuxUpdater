@@ -1732,6 +1732,54 @@ test.describe.serial('setup and login flows', () => {
     ]);
   });
 
+  test('degraded Status synchronization stays visible beside the timeline until recovery succeeds', async ({ page }) => {
+    const servers = Array.from({ length: 25 }, (_, index) => makeServer(`sync-host-${index + 1}`, 'done'));
+    let degraded = false;
+    let delayRecovery = false;
+    await stubDashboardApi(page, () => servers);
+
+    const degradeRoute = async route => {
+      if (degraded) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"offline"}' });
+        return;
+      }
+      if (delayRecovery) await new Promise(resolve => setTimeout(resolve, 250));
+      await route.fallback();
+    };
+    await page.route('**/api/dashboard/summary*', degradeRoute);
+    await page.route('**/api/audit-events*', degradeRoute);
+    await page.route('**/api/observability/summary*', degradeRoute);
+    await page.route('**/api/update-policies', degradeRoute);
+
+    await ensureAuthenticatedSession(page);
+    await expect(page.locator('#last-sync-label')).toContainText('Synced');
+
+    degraded = true;
+    await page.evaluate(() => { window.fetchDashboardExtras('degraded-sync-test'); });
+
+    const notice = page.locator('#sync-degraded-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice.locator('#sync-degraded-summary')).toContainText('Dashboard');
+    await expect(notice.locator('#sync-degraded-summary')).toContainText('Audit trail');
+    await expect(notice.locator('#sync-degraded-summary')).toContainText('Observability');
+    await expect(notice.locator('#sync-degraded-summary')).toContainText('Policies');
+    await expect(notice.locator('#sync-degraded-summary')).toContainText('may be out of date');
+    await expect(notice.locator('#sync-degraded-last-success')).toContainText('Last successful refresh');
+    await expect.poll(() => notice.evaluate(element => getComputedStyle(element).position)).toBe('sticky');
+    const timelineScrollTarget = await page.locator('.timeline-workspace').evaluate(element => (
+      element.getBoundingClientRect().top + window.scrollY + 180
+    ));
+    await page.evaluate(scrollTarget => window.scrollTo(0, scrollTarget), timelineScrollTarget);
+    await expect.poll(() => notice.boundingBox().then(box => Math.round(box?.y || 0))).toBe(68);
+
+    degraded = false;
+    delayRecovery = true;
+    await page.evaluate(() => { window.fetchDashboardExtras('degraded-sync-recovery-test'); });
+    await page.waitForTimeout(100);
+    await expect(notice).toBeVisible();
+    await expect(notice).toBeHidden();
+  });
+
   test('cancelled approval refreshes to idle after the short cancellation state', async ({ page }) => {
     let servers = [makeServer('cancelled-host', 'pending_approval', makePendingUpdates(1), { has_key: true })];
     let cancellationCompletedAt = 0;

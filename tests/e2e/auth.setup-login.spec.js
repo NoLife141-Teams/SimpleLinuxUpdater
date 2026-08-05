@@ -1966,8 +1966,11 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').check();
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
     await page.locator('#auth-filter').selectOption('key');
+    await expect(page.locator('#bulk-update')).toHaveText('Update (1)');
+    await expect(page.locator('#bulk-action-hint')).toHaveText('2 selected · 1 visible · 1 outside current view');
     await page.locator('#bulk-update').click();
     await expect.poll(() => state.updateIdle || 0).toBe(1);
+    await expect(page.locator('#bulk-action-hint')).toHaveText('2 selected · 1 executed · 1 skipped');
     await expect(page.locator('#bulk-review-modal')).toHaveCount(0);
     await expect(page.locator('#typed-confirm-modal')).not.toBeVisible();
     await page.locator('#auth-filter').selectOption('');
@@ -1975,6 +1978,7 @@ test.describe.serial('setup and login flows', () => {
 
     await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').check();
+    await expect(page.locator('#bulk-approve')).toHaveText('Approve standard (1)');
     await page.locator('#bulk-approve').click();
     await expect.poll(() => state.approveStandard || 0).toBe(1);
 
@@ -1998,6 +2002,8 @@ test.describe.serial('setup and login flows', () => {
 
     await page.locator('#servers-table tbody tr[data-name="ok-sec-host"] .row-select').uncheck();
     await page.locator('#servers-table tbody tr[data-name="idle-host"] .row-select').check();
+    await expect(page.locator('#bulk-autoremove')).toHaveText('Autoremove (1)');
+    await expect(page.locator('#refresh-all-facts')).toHaveText('Refresh facts (1)');
     await page.locator('#bulk-autoremove').click();
     await expect.poll(() => state.autoremoveIdle || 0).toBe(1);
 

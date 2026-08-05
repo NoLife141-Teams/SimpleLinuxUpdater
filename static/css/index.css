@@ -1961,6 +1961,7 @@ body.status-page .head-meta {
     color: var(--muted);
     font-size: 11px;
     line-height: 1.35;
+    min-height: calc(2.7em + 4px);
 }
 
 .bulk-hint.warning {

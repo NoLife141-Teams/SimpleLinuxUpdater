@@ -238,6 +238,7 @@
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
         let bulkAction = null;
+        let lastBulkResult = null;
         let jobLogsByServer = new Map();
         let jobLogTransportLive = false;
 
@@ -913,7 +914,16 @@
                     kind: plan.kind
                 }));
                 if (plan.kind === "bulk") {
-                    bulkAction = { operationId: plan.id, actionKey: plan.actionKey, actionLabel: plan.actionLabel, serverNames: cloneValue(names) };
+                    lastBulkResult = null;
+                    bulkAction = {
+                        operationId: plan.id,
+                        actionKey: plan.actionKey,
+                        actionLabel: plan.actionLabel,
+                        serverNames: cloneValue(names),
+                        selectedCount: Array.isArray(plan.selectedNames) ? plan.selectedNames.length : names.length,
+                        eligibleCount: names.length,
+                        skippedCount: Array.isArray(plan.skippedHosts) ? plan.skippedHosts.length : 0
+                    };
                 }
                 return [{ type: "render", scope: "serverState", priority: "immediate" }];
             } else if (event.type === "actionCompleted" || event.type === "actionFailed") {
@@ -921,12 +931,23 @@
                 Array.from(inFlightActions.entries()).forEach(([name, action]) => {
                     if (action.operationId === operationId) inFlightActions.delete(name);
                 });
-                if (bulkAction && bulkAction.operationId === operationId) bulkAction = null;
+                if (bulkAction && bulkAction.operationId === operationId) {
+                    const result = event.bulkResult && typeof event.bulkResult === "object" ? event.bulkResult : {};
+                    lastBulkResult = {
+                        actionLabel: bulkAction.actionLabel,
+                        selectedCount: Math.max(0, Number(result.selectedCount ?? bulkAction.selectedCount) || 0),
+                        executedCount: Math.max(0, Number(result.executedCount ?? bulkAction.eligibleCount) || 0),
+                        skippedCount: Math.max(0, Number(result.skippedCount ?? bulkAction.skippedCount) || 0),
+                        failedCount: Math.max(0, Number(result.failedCount) || 0)
+                    };
+                    bulkAction = null;
+                }
                 return actionLifecycleEffects(event, event.type === "actionCompleted" ? "completed" : "failed");
             } else if (event.type === "navigationRestored") {
                 restoreNavigation(event.value);
                 return stateEffects({ render: false });
             } else if (event.type === "filtersChanged") {
+                lastBulkResult = null;
                 const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
                 filters = {
                     search: Object.hasOwn(patch, "search") ? normalizedString(patch.search, "") : filters.search,
@@ -941,6 +962,7 @@
                 reconcileNavigation();
                 return stateEffects({ persist: true });
             } else if (event.type === "sortChanged") {
+                lastBulkResult = null;
                 const key = normalizedChoice(event.key, allowedSortKeys, "recommendation");
                 if (sort.key === key) {
                     sort = { key, dir: sort.dir === "asc" ? "desc" : "asc" };
@@ -950,10 +972,12 @@
                 reconcileNavigation();
                 return stateEffects();
             } else if (event.type === "pageChanged") {
+                lastBulkResult = null;
                 page = Number.isFinite(Number(event.page)) ? Number(event.page) : page + Number(event.delta || 0);
                 reconcileNavigation();
                 return stateEffects();
             } else if (event.type === "selectionChanged") {
+                lastBulkResult = null;
                 const name = String(event.name || "");
                 if (serversByName.has(name)) {
                     if (event.selected) selectedServerNames.add(name);
@@ -961,6 +985,7 @@
                 }
                 return stateEffects();
             } else if (event.type === "pageSelectionChanged") {
+                lastBulkResult = null;
                 const projection = projectView();
                 projection.pageServers.forEach(server => {
                     if (event.selected) selectedServerNames.add(server.name);
@@ -1205,7 +1230,8 @@
                 actions: {
                     inFlightServerNames: Array.from(inFlightActions.keys()),
                     inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
-                    bulk: cloneValue(bulkAction)
+                    bulk: cloneValue(bulkAction),
+                    lastBulkResult: cloneValue(lastBulkResult)
                 },
                 persistence: persistenceValue()
             };

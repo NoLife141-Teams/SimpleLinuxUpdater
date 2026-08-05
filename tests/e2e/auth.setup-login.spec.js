@@ -1537,10 +1537,12 @@ test.describe.serial('setup and login flows', () => {
 
     await expect(page.locator('.fleet-rail h2')).toHaveText('Fleet filters');
     await expect(page.locator('#maintenance-timeline-title')).toBeVisible();
+    await expect(page.locator('#status-supporting-details')).not.toHaveAttribute('open', '');
+    await page.locator('#status-supporting-details > summary').click();
     await expect(page.locator('#approval-triage-title')).toBeVisible();
     await expect(page.locator('#selected-host-title')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Scheduled runs' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Running operations' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Running operations' })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
     await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
     await expect(page.locator('#selected-host-title')).toHaveText('demo-host');
@@ -1558,6 +1560,7 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/');
     await expect(page.locator('#servers-table tbody tr[data-name="demo-host"]')).toBeVisible();
+    await page.locator('#status-supporting-details > summary').click();
 
     await page.locator('#select-all').check();
     await page.locator('#bulk-approve-security').click();
@@ -1742,6 +1745,7 @@ test.describe.serial('setup and login flows', () => {
     });
     await ensureAuthenticatedSession(page);
 
+    await page.locator('#status-supporting-details > summary').click();
     await page.locator('#approval-triage-table button[data-action="cancel-upgrade"][data-name="cancelled-host"]').click();
     await expect.poll(() => cancellationCompletedAt).toBeGreaterThan(0);
     await expect.poll(
@@ -3850,6 +3854,7 @@ test.describe.serial('setup and login flows', () => {
     await stubDashboardApi(page, () => servers);
     await ensureAuthenticatedSession(page);
     await page.goto('/');
+    await page.locator('#status-supporting-details > summary').click();
 
     await expect(page.locator('#command-history-count')).toHaveText('8');
     await expect(page.locator('#command-history-panel .activity-row')).toHaveCount(3);
@@ -3919,7 +3924,7 @@ test.describe.serial('setup and login flows', () => {
     const badgeLayout = await page.evaluate(() => {
       const labels = [
         document.querySelector('#policy-summary-label'),
-        document.querySelector('#failed-hosts-count'),
+        document.querySelector('#priority-failures-count'),
       ];
       labels[0].textContent = 'Policies 0';
       labels[1].textContent = '14';
@@ -3950,8 +3955,8 @@ test.describe.serial('setup and login flows', () => {
     expect(busyActionLayout.buttonWidths).toHaveLength(2);
     expect(Math.abs(busyActionLayout.buttonWidths[0] - busyActionLayout.buttonWidths[1])).toBeLessThanOrEqual(1);
     expect(busyActionLayout.buttonWidths[1], 'Logs must keep its compact grid width while updating').toBeLessThan(busyActionLayout.containerWidth / 2);
-    const operationsNestedInTimeline = await page.locator('.operations-grid-secondary').evaluate(element => element.parentElement.classList.contains('timeline-column'));
-    expect(operationsNestedInTimeline).toBe(true);
+    const supportingDetailsNestedInTimeline = await page.locator('#status-supporting-details').evaluate(element => element.parentElement.classList.contains('timeline-column'));
+    expect(supportingDetailsNestedInTimeline).toBe(true);
 
     const ringSize = await row.locator('.timeline-progress-ring').evaluate(element => ({
       width: element.getBoundingClientRect().width,

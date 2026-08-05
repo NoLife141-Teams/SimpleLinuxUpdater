@@ -243,13 +243,25 @@
                     </div>
                     </section>
 
-                    <section class="approval-triage-panel fade-in" aria-labelledby="approval-triage-title">
+                    <details class="supporting-details fade-in" id="status-supporting-details">
+                        <summary>
+                            <span class="supporting-summary-copy">
+                                <span class="eyebrow">Reference</span>
+                                <strong>Supporting details</strong>
+                                <small>Approvals, audit, tags, and command history</small>
+                            </span>
+                            <span class="supporting-summary-meta">
+                                <span class="mini-badge warning" id="approval-queue-count">0</span>
+                                <span class="supporting-summary-action" aria-hidden="true"></span>
+                            </span>
+                        </summary>
+                        <div class="supporting-details-body">
+                    <section class="approval-triage-panel" aria-labelledby="approval-triage-title">
                         <div class="panel-head">
                             <div>
                                 <div class="eyebrow">Approval queue</div>
                                 <h2 id="approval-triage-title">Approval triage</h2>
                             </div>
-                            <span class="mini-badge warning" id="approval-queue-count">0</span>
                         </div>
                         <div class="table-wrap triage-wrap">
                             <table id="approval-triage-table" class="triage-table">
@@ -272,7 +284,7 @@
                         <p class="table-scroll-hint triage-scroll-hint">Scroll horizontally to see every approval detail and action.</p>
                     </section>
 
-                    <section class="operations-grid operations-grid-secondary fade-in" aria-label="Operational panels">
+                    <section class="operations-grid operations-grid-secondary" aria-label="Supporting operational details">
                         <article class="ops-panel ops-panel-wide">
                             <div class="panel-head">
                                 <div>
@@ -293,16 +305,6 @@
                             </div>
                             <div id="tag-summary" class="chip-list"></div>
                         </article>
-                        <article class="ops-panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="eyebrow">Failures</div>
-                                    <h2>Needs attention</h2>
-                                </div>
-                                <span class="mini-badge danger" id="failed-hosts-count">0</span>
-                            </div>
-                            <div id="failed-hosts-panel" class="mini-list"></div>
-                        </article>
                         <article class="ops-panel ops-panel-wide">
                             <div class="panel-head">
                                 <div>
@@ -314,6 +316,8 @@
                             <div id="command-history-panel" class="activity-list"></div>
                         </article>
                     </section>
+                        </div>
+                    </details>
                 </section>
 
                 <aside class="context-panel fade-in" aria-label="Selected host">
@@ -325,7 +329,7 @@
                     <div id="selected-host-panel" class="selected-host-panel" aria-live="polite">
                         <p class="empty-state">No host selected.</p>
                     </div>
-                    <section class="context-ops-grid" aria-label="Immediate operations">
+                    <section class="context-ops-grid" aria-label="Scheduled maintenance">
                         <article class="ops-panel">
                             <div class="panel-head">
                                 <div>
@@ -335,36 +339,6 @@
                                 <span class="mini-badge" id="scheduled-runs-count">0</span>
                             </div>
                             <div id="scheduled-runs" class="mini-list"></div>
-                        </article>
-                        <article class="ops-panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="eyebrow">Active ops</div>
-                                    <h2>Running operations</h2>
-                                </div>
-                                <span class="mini-badge" id="active-operations-count">0</span>
-                            </div>
-                            <div id="active-operations" class="mini-list"></div>
-                        </article>
-                        <article class="ops-panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="eyebrow">Risk</div>
-                                    <h2>Security exposure</h2>
-                                </div>
-                                <span class="mini-badge danger" id="risk-exposure-count">0</span>
-                            </div>
-                            <div id="risk-exposure-panel" class="mini-list"></div>
-                        </article>
-                        <article class="ops-panel">
-                            <div class="panel-head">
-                                <div>
-                                    <div class="eyebrow">Reboot</div>
-                                    <h2>Restart required</h2>
-                                </div>
-                                <span class="mini-badge warning" id="reboot-required-count">0</span>
-                            </div>
-                            <div id="reboot-required-panel" class="mini-list"></div>
                         </article>
                     </section>
                 </aside>

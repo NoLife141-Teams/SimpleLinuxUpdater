@@ -3906,6 +3906,63 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
+  test('selected host inspector stays accessible at common desktop widths and follows the timeline on mobile', async ({ page }) => {
+    const servers = [makeServer('inspector-host', 'pending_approval', makePendingUpdates(3))];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1366, height: 768 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto('/');
+      await page.locator('#servers-table tbody tr[data-name="inspector-host"]').click();
+      await expect(page.locator('#selected-host-title')).toHaveText('inspector-host');
+
+      const layout = await page.locator('.context-panel').evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const timeline = document.querySelector('.timeline-workspace').getBoundingClientRect();
+        const table = document.querySelector('.timeline-workspace .table-wrap').getBoundingClientRect();
+        const lastAction = document.querySelector('#servers-table tbody tr[data-name="inspector-host"] .timeline-actions button:last-child').getBoundingClientRect();
+        return {
+          position: getComputedStyle(element).position,
+          overflowY: getComputedStyle(element).overflowY,
+          top: Math.round(bounds.top),
+          timelineTop: Math.round(timeline.top),
+          viewportHeight: window.innerHeight,
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          lastActionRight: lastAction.right,
+          tableRight: table.right,
+        };
+      });
+      expect(layout.position).toBe('sticky');
+      expect(layout.overflowY).toBe('auto');
+      expect(layout.top).toBeLessThanOrEqual(layout.timelineTop);
+      expect(layout.top).toBeLessThan(layout.viewportHeight);
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+      expect(layout.lastActionRight).toBeLessThanOrEqual(layout.tableRight + 1);
+
+      const stickyBounds = await page.evaluate(async () => {
+        window.scrollTo(0, document.querySelector('.timeline-workspace').offsetTop);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const bounds = document.querySelector('.context-panel').getBoundingClientRect();
+        return { top: Math.round(bounds.top), bottom: Math.round(bounds.bottom), viewportHeight: window.innerHeight };
+      });
+      expect(stickyBounds.top).toBeGreaterThanOrEqual(0);
+      expect(stickyBounds.top).toBeLessThanOrEqual(68);
+      expect(stickyBounds.bottom).toBeLessThanOrEqual(stickyBounds.viewportHeight + 1);
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    const mobileOrder = await page.evaluate(() => ({
+      timeline: document.querySelector('.timeline-workspace').getBoundingClientRect().top,
+      inspector: document.querySelector('.context-panel').getBoundingClientRect().top,
+      supporting: document.querySelector('#status-supporting-details').getBoundingClientRect().top,
+    }));
+    expect(mobileOrder.timeline).toBeLessThan(mobileOrder.inspector);
+    expect(mobileOrder.inspector).toBeLessThan(mobileOrder.supporting);
+  });
+
   test('maintenance timeline uses one compact progress ring per server', async ({ page }) => {
     const servers = [
       makeServer('ring-host', 'updating', [], { tags: ['test'] }),

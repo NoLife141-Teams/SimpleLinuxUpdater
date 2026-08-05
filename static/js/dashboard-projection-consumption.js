@@ -191,6 +191,7 @@
         }
         const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "normal").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
+        const hasExplicitFactsState = Object.hasOwn(rawTriage, "facts_state") && text(rawTriage.facts_state) !== "";
         const statusValue = text(server.status).toLowerCase();
         const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"].includes(statusValue);
         const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
@@ -279,7 +280,7 @@
             failureTimestamp: failureTimestamp(intelligence, timeline),
             active: activeStatuses.has(text(server.status).toLowerCase()) || runningTimeline(timeline.state),
             reachable: nonFailedStatuses.has(text(server.status).toLowerCase()) || (!!text(server.status) && text(server.status).toLowerCase() !== "error"),
-            staleFacts: triage.facts_state === "stale",
+            staleFacts: hasExplicitFactsState && ["stale", "unknown"].includes(triage.facts_state),
             rebootRequired: health.reboot_required === true,
             busy: inFlightNames.has(text(server.name)) || !transientFallback,
             actions,

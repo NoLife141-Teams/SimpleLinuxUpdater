@@ -470,7 +470,7 @@
             }
             if (filters.quick === "stale_facts") {
                 const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "").toLowerCase();
-                if (factsState !== "stale") return false;
+                if (!["stale", "unknown"].includes(factsState)) return false;
             }
             if (filters.quick === "high_risk") {
                 const dashboardCVECount = dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.cve_count;

@@ -244,6 +244,19 @@ func TestDashboardProjectionFleetCountersRollUpProjectedSummaries(t *testing.T) 
 	}
 }
 
+func TestDashboardFleetRollupCountsUnknownFactsThatNeedRefresh(t *testing.T) {
+	servers := []DashboardServerSummary{
+		{ApprovalTriage: DashboardApprovalTriageInfo{FactsState: "fresh"}},
+		{ApprovalTriage: DashboardApprovalTriageInfo{FactsState: "stale"}},
+		{ApprovalTriage: DashboardApprovalTriageInfo{FactsState: "unknown"}},
+	}
+
+	fleet := dashboardFleetRollup(servers)
+	if got := fleet["stale_facts"]; got != 2 {
+		t.Fatalf("stale_facts = %v, want 2 hosts whose facts need refresh", got)
+	}
+}
+
 func TestDashboardProjectionMissingFactsDefaultsRemainDashboardSafe(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 

@@ -23,8 +23,8 @@
             switch (key) {
             case "pending_approval": return "Show hosts waiting for approval";
             case "active": return "Show hosts with active maintenance phases";
-            case "stale_facts": return "Show hosts with stale facts";
-            case "high_risk": return "Show hosts with high risk CVE exposure";
+            case "stale_facts": return "Show hosts whose facts need refresh";
+            case "high_risk": return "Show hosts with CVE exposure";
             default: return "Show all hosts";
             }
         }

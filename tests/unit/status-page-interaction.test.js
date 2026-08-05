@@ -92,6 +92,8 @@ test("maintenance table exposes recommended-action sorting as the initial access
     const template = fs.readFileSync(path.resolve(__dirname, "../../templates/index.html"), "utf8");
     assert.match(template, /data-sort-key="recommendation" data-sort-dir="desc" aria-sort="descending"/);
     assert.match(template, /data-sort-trigger="recommendation" aria-label="Sort by recommended action"/);
+    assert.match(template, /data-sort-key="name" aria-sort="none"/);
+    assert.equal((template.match(/aria-sort="(?:ascending|descending)"/g) || []).length, 1);
 });
 
 test("compact dashboard lazily hydrates command history for the selected host", () => {

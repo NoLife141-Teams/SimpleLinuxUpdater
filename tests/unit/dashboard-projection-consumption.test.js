@@ -170,6 +170,31 @@ test("unknown data stays explicit and optional extras degrade independently", ()
     assert.equal(view.summaries.policyCount, null);
 });
 
+test("facts refresh fleet fallback counts only explicit stale or unknown states", () => {
+    const servers = [
+        { name: "missing", status: "done" },
+        { name: "blank", status: "done" },
+        { name: "unknown", status: "done" },
+        { name: "stale", status: "done" },
+        { name: "fresh", status: "done" }
+    ];
+    const dashboardServers = [
+        { name: "missing" },
+        { name: "blank", approval_triage: { facts_state: "" } },
+        { name: "unknown", approval_triage: { facts_state: "unknown" } },
+        { name: "stale", approval_triage: { facts_state: "stale" } },
+        { name: "fresh", approval_triage: { facts_state: "fresh" } }
+    ];
+
+    const view = project({ statusView: statusView({ servers, dashboardServers }) });
+
+    assert.equal(view.fleet.staleFacts, 2);
+    assert.deepEqual(
+        view.servers.filter(server => server.staleFacts).map(server => server.name),
+        ["unknown", "stale"]
+    );
+});
+
 test("kernel facts distinguish the running kernel from a newer installed kernel", () => {
     assert.equal(presentationFacts.kernelVersions("6.8.0-60-generic", "6.8.0-62-generic"), "6.8.0-60-generic → 6.8.0-62-generic");
     assert.equal(presentationFacts.kernelVersions("6.8.0-62-generic", "6.8.0-62-generic"), "6.8.0-62-generic");

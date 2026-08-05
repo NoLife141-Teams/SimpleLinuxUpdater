@@ -41,10 +41,22 @@
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
+    const allowedSortKeys = new Set(["recommendation", "name", "status"]);
     const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
+    const recommendationPriority = Object.freeze({
+        repair_package_state: 900,
+        enable_apt_access: 850,
+        review_disk_capacity: 800,
+        review_failure: 750,
+        review_approval: 700,
+        reboot_and_verify: 600,
+        refresh_host_facts: 500,
+        monitor_apt: 400,
+        healthy: 0
+    });
 
     function cloneValue(value) {
         if (Array.isArray(value)) {
@@ -207,7 +219,7 @@
             quick: "",
             tag: ""
         };
-        let sort = { key: "name", dir: "asc" };
+        let sort = { key: "recommendation", dir: "desc" };
         let page = 1;
         let pageSize = 25;
         let primaryServerName = "";
@@ -479,12 +491,36 @@
             return haystack.includes(search);
         }
 
+        function recommendedActionPriority(server) {
+            const dashboardServer = dashboardServerFor(server);
+            const recommendationKey = String(dashboardServer && dashboardServer.recommended_action && dashboardServer.recommended_action.key || "").toLowerCase();
+            if (Object.hasOwn(recommendationPriority, recommendationKey)) {
+                return recommendationPriority[recommendationKey];
+            }
+
+            const status = String(server && server.status || "").toLowerCase();
+            if (status === "needs_reconciliation") return recommendationPriority.repair_package_state;
+            if (status === "error") return recommendationPriority.review_failure;
+            if (isPendingApproval(server)) return recommendationPriority.review_approval;
+            const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "").toLowerCase();
+            if (["stale", "unknown"].includes(factsState)) return recommendationPriority.refresh_host_facts;
+            if (activeStatuses.has(status)) return recommendationPriority.monitor_apt;
+            return recommendationKey ? 450 : recommendationPriority.healthy;
+        }
+
         function sortedVisibleServers() {
             const direction = sort.dir === "desc" ? -1 : 1;
             return servers.filter(matchesFilters).slice().sort((left, right) => {
-                const leftValue = String(left[sort.key] || "").toLowerCase();
-                const rightValue = String(right[sort.key] || "").toLowerCase();
-                return leftValue.localeCompare(rightValue) * direction;
+                if (sort.key === "recommendation") {
+                    const priorityDifference = (recommendedActionPriority(left) - recommendedActionPriority(right)) * direction;
+                    if (priorityDifference !== 0) return priorityDifference;
+                } else {
+                    const leftValue = String(left[sort.key] || "").toLowerCase();
+                    const rightValue = String(right[sort.key] || "").toLowerCase();
+                    const valueDifference = leftValue.localeCompare(rightValue) * direction;
+                    if (valueDifference !== 0) return valueDifference;
+                }
+                return String(left.name || "").localeCompare(String(right.name || ""));
             });
         }
 
@@ -905,11 +941,11 @@
                 reconcileNavigation();
                 return stateEffects({ persist: true });
             } else if (event.type === "sortChanged") {
-                const key = normalizedString(event.key, "name", 50);
+                const key = normalizedChoice(event.key, allowedSortKeys, "recommendation");
                 if (sort.key === key) {
                     sort = { key, dir: sort.dir === "asc" ? "desc" : "asc" };
                 } else {
-                    sort = { key, dir: "asc" };
+                    sort = { key, dir: key === "recommendation" ? "desc" : "asc" };
                 }
                 reconcileNavigation();
                 return stateEffects();

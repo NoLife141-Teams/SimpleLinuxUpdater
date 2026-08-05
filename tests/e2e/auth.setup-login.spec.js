@@ -1656,6 +1656,42 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.refreshFacts).toBe(1);
   });
 
+  test('maintenance queue starts with recommended actions and lets the operator reverse the order', async ({ page }) => {
+    const servers = [
+      makeServer('healthy-host', 'done'),
+      makeServer('monitor-host', 'upgrading'),
+      makeServer('refresh-host', 'done', [], { facts_state: 'stale' }),
+      makeServer('approval-host', 'pending_approval', makePendingUpdates(1)),
+      makeServer('failure-host', 'error'),
+      makeServer('repair-host', 'needs_reconciliation'),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    const rows = page.locator('#servers-table tbody tr[data-name]');
+    await expect(rows).toHaveCount(6);
+    await expect(page.locator('#servers-table th[data-sort-key="recommendation"]')).toHaveAttribute('aria-sort', 'descending');
+    await expect.poll(() => rows.evaluateAll(elements => elements.map(element => element.dataset.name))).toEqual([
+      'repair-host',
+      'failure-host',
+      'approval-host',
+      'refresh-host',
+      'monitor-host',
+      'healthy-host',
+    ]);
+
+    await page.getByRole('button', { name: 'Sort by recommended action' }).click();
+    await expect(page.locator('#servers-table th[data-sort-key="recommendation"]')).toHaveAttribute('aria-sort', 'ascending');
+    await expect.poll(() => rows.evaluateAll(elements => elements.map(element => element.dataset.name))).toEqual([
+      'healthy-host',
+      'monitor-host',
+      'refresh-host',
+      'approval-host',
+      'failure-host',
+      'repair-host',
+    ]);
+  });
+
   test('cancelled approval refreshes to idle after the short cancellation state', async ({ page }) => {
     let servers = [makeServer('cancelled-host', 'pending_approval', makePendingUpdates(1), { has_key: true })];
     let cancellationCompletedAt = 0;

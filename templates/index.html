@@ -212,10 +212,10 @@
                                 <thead>
                                     <tr>
                                         <th class="select-col"></th>
-                                        <th class="sortable name-col resizable" data-sort-key="name" data-sort-dir="asc" aria-sort="ascending">
+                                        <th class="sortable name-col resizable" data-sort-key="name" aria-sort="none">
                                             <button type="button" class="sort-header-btn" data-sort-trigger="name" aria-label="Sort by Server">
                                                 <span class="col-title">Server</span>
-                                                <span class="sort-indicator" aria-hidden="true">▲</span>
+                                                <span class="sort-indicator" aria-hidden="true"></span>
                                             </button>
                                             <span class="col-resize-handle" data-col-key="name" aria-hidden="true"></span>
                                         </th>
@@ -225,7 +225,12 @@
                                                 <span class="sort-indicator" aria-hidden="true"></span>
                                             </button>
                                         </th>
-                                        <th class="progress-header"><span class="col-title">Maintenance</span></th>
+                                        <th class="sortable progress-header" data-sort-key="recommendation" data-sort-dir="desc" aria-sort="descending">
+                                            <button type="button" class="sort-header-btn" data-sort-trigger="recommendation" aria-label="Sort by recommended action">
+                                                <span class="col-title">Maintenance</span>
+                                                <span class="sort-indicator" aria-hidden="true">▼</span>
+                                            </button>
+                                        </th>
                                         <th class="actions-col resizable">
                                             <span class="col-title">Actions</span>
                                             <span class="col-resize-handle" data-col-key="actions" aria-hidden="true"></span>

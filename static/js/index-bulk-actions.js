@@ -10,10 +10,11 @@
             return "";
         }
 
-        function setBulkButtonState(id, enabled, enabledTitle, disabledTitle) {
+        function setBulkButtonState(id, label, count, enabled, enabledTitle, disabledTitle) {
             const button = document.getElementById(id);
             if (!button) return;
             button.disabled = !enabled;
+            button.textContent = `${label} (${count})`;
             button.title = enabled ? enabledTitle : disabledTitle;
             button.setAttribute('aria-describedby', 'bulk-action-hint');
         }
@@ -28,7 +29,6 @@
 	            const approveKeptSecurityPlan = previewPlan("approve_security_kept_back");
 	            const cancelPlan = previewPlan("cancel");
 	            const autoremovePlan = previewPlan("autoremove");
-	            const refreshFactsPlan = previewPlan("refresh_facts");
 	            const selectedCount = view.selectedNames.length;
 	            const visibleCount = view.visibleSelectedNames.length;
 	            const hiddenCount = view.hiddenSelectedNames.length;
@@ -38,28 +38,31 @@
 	            const approveKeptSecurityCount = approveKeptSecurityPlan.eligibleNames.length;
 	            const cancelCount = cancelPlan.eligibleNames.length;
 	            const autoremoveCount = autoremovePlan.eligibleNames.length;
-	            const refreshFactsCount = refreshFactsPlan.eligibleNames.length;
 	            const bulk = view.actions.bulk;
+	            const lastBulkResult = view.actions.lastBulkResult;
 
-		            if (hint) {
-		                if (bulk) {
-		                    hint.textContent = `Bulk ${bulk.actionLabel} running for visible selected hosts`;
-		                    hint.classList.remove("warning");
-		                } else if (selectedCount === 0) {
+	            if (hint) {
+	                if (bulk) {
+	                    hint.textContent = `${bulk.selectedCount} selected · ${bulk.eligibleCount} executing · ${bulk.skippedCount} skipped`;
+	                    hint.classList.toggle("warning", bulk.skippedCount > 0);
+	                } else if (lastBulkResult) {
+	                    const parts = [
+	                        `${lastBulkResult.selectedCount} selected`,
+	                        `${lastBulkResult.executedCount} executed`,
+	                        `${lastBulkResult.skippedCount} skipped`
+	                    ];
+	                    if (lastBulkResult.failedCount > 0) parts.push(`${lastBulkResult.failedCount} failed`);
+	                    hint.textContent = parts.join(" · ");
+	                    hint.classList.toggle("warning", lastBulkResult.skippedCount > 0 || lastBulkResult.failedCount > 0);
+	                } else if (selectedCount === 0) {
 		                    hint.textContent = "No hosts selected";
 		                    hint.classList.remove("warning");
 		                } else if (visibleCount === 0) {
 		                    hint.textContent = `${pluralize(selectedCount, "host")} selected · 0 visible in current filter`;
 	                    hint.classList.add("warning");
 	                } else {
-	                    const parts = [`${visibleCount} visible ${visibleCount === 1 ? "host" : "hosts"} selected`];
-		                    if (updateCount > 0) parts.push(`${updateCount} can update`);
-		                    if (approveCount > 0) parts.push(`${approveCount} can approve standard`);
-		                    if (approveSecurityCount > 0) parts.push(`${approveSecurityCount} can approve security`);
-		                    if (approveKeptSecurityCount > 0) parts.push(`${approveKeptSecurityCount} can approve kept security`);
-		                    if (refreshFactsCount > 0) parts.push(`${refreshFactsCount} can refresh facts`);
-		                    if (autoremoveCount > 0) parts.push(`${autoremoveCount} can autoremove`);
-		                    if (hiddenCount > 0) parts.push(`${hiddenCount} skipped by current filter`);
+	                    const parts = [`${selectedCount} selected`, `${visibleCount} visible`];
+	                    if (hiddenCount > 0) parts.push(`${hiddenCount} outside current view`);
 	                    hint.textContent = parts.join(" · ");
 	                    hint.classList.toggle("warning", hiddenCount > 0);
 	                }
@@ -68,12 +71,13 @@
 		            const bulkDisabledTitle = bulk
 		                ? `Bulk ${bulk.actionLabel} is already running`
 		                : null;
-		            setBulkButtonState("bulk-update", !bulk && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
-		            setBulkButtonState("bulk-approve", !bulk && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
-		            setBulkButtonState("bulk-approve-security", !bulk && approveSecurityCount > 0, `Approve standard security updates on ${pluralize(approveSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard security updates eligible for approval"));
-		            setBulkButtonState("bulk-approve-kept-security", !bulk && approveKeptSecurityCount > 0, `Approve kept-back security updates on ${pluralize(approveKeptSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has kept-back security updates eligible for approval"));
-		            setBulkButtonState("bulk-cancel", !bulk && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
-		            setBulkButtonState("bulk-autoremove", !bulk && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
+	            const displayCount = (actionKey, count) => bulk?.actionKey === actionKey ? bulk.eligibleCount : count;
+	            setBulkButtonState("bulk-update", "Update", displayCount("update", updateCount), !bulk && updateCount > 0, `Update ${pluralize(updateCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host can run update checks"));
+	            setBulkButtonState("bulk-approve", "Approve standard", displayCount("approve_all", approveCount), !bulk && approveCount > 0, `Approve standard updates on ${pluralize(approveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard updates eligible for approval"));
+	            setBulkButtonState("bulk-approve-security", "Approve standard security", displayCount("approve_security", approveSecurityCount), !bulk && approveSecurityCount > 0, `Approve standard security updates on ${pluralize(approveSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has standard security updates eligible for approval"));
+	            setBulkButtonState("bulk-approve-kept-security", "Approve kept-back security", displayCount("approve_security_kept_back", approveKeptSecurityCount), !bulk && approveKeptSecurityCount > 0, `Approve kept-back security updates on ${pluralize(approveKeptSecurityCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host has kept-back security updates eligible for approval"));
+	            setBulkButtonState("bulk-cancel", "Cancel", displayCount("cancel", cancelCount), !bulk && cancelCount > 0, `Cancel approval for ${pluralize(cancelCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No selected host is waiting for approval"));
+	            setBulkButtonState("bulk-autoremove", "Autoremove", displayCount("autoremove", autoremoveCount), !bulk && autoremoveCount > 0, `Run autoremove on ${pluralize(autoremoveCount, "visible selected host")}`, bulkDisabledTitle || (selectedCount === 0 ? "Select visible hosts first" : "No visible selected host can run autoremove"));
 	            updateRefreshAllFactsState();
 	            scheduleSelectPageStateUpdate();
 	        }
@@ -148,14 +152,26 @@
 	                    type: failures.length > 0 ? "actionFailed" : "actionCompleted",
 	                    operationId: plan.id,
 	                    refreshStreams: ["servers"],
-	                    message
+	                    message,
+	                    bulkResult: {
+	                        selectedCount: plan.selectedNames.length,
+	                        executedCount: plan.eligibleNames.length,
+	                        skippedCount: plan.skippedHosts.length,
+	                        failedCount: failures.length
+	                    }
 	                });
 	            } catch (error) {
 	                await dispatchStatusInteraction({
 	                    type: "actionFailed",
 	                    operationId: plan.id,
 	                    refreshStreams: ["servers"],
-	                    message: `Bulk ${actionLabel} failed: ${error?.message || "Request failed"}`
+	                    message: `Bulk ${actionLabel} failed: ${error?.message || "Request failed"}`,
+	                    bulkResult: {
+	                        selectedCount: plan.selectedNames.length,
+	                        executedCount: plan.eligibleNames.length,
+	                        skippedCount: plan.skippedHosts.length,
+	                        failedCount: plan.eligibleNames.length
+	                    }
 	                });
 	            }
 	        }
@@ -230,14 +246,26 @@
 	                    type: failures.length > 0 ? "actionFailed" : "actionCompleted",
 	                    operationId: plan.id,
 	                    refreshStreams: ["servers", "dashboard"],
-	                    message
+	                    message,
+	                    bulkResult: {
+	                        selectedCount: plan.selectedNames.length,
+	                        executedCount: plan.eligibleNames.length,
+	                        skippedCount: plan.skippedHosts.length,
+	                        failedCount: failures.length
+	                    }
 	                });
 	            } catch (error) {
 	                await dispatchStatusInteraction({
 	                    type: "actionFailed",
 	                    operationId: plan.id,
 	                    refreshStreams: ["servers", "dashboard"],
-	                    message: `Facts refresh failed: ${error?.message || "Request failed"}`
+	                    message: `Facts refresh failed: ${error?.message || "Request failed"}`,
+	                    bulkResult: {
+	                        selectedCount: plan.selectedNames.length,
+	                        executedCount: plan.eligibleNames.length,
+	                        skippedCount: plan.skippedHosts.length,
+	                        failedCount: plan.eligibleNames.length
+	                    }
 	                });
 	            }
 	        }

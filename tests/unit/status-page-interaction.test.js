@@ -886,6 +886,48 @@ test("action completion clears in-flight state and emits refresh and announcemen
     assert.equal(effects.some(effect => effect.type === "announceResult" && effect.status === "completed"), true);
 });
 
+test("bulk action progress and result retain selected executed and skipped counts", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [
+            { name: "alpha", status: "idle" },
+            { name: "beta", status: "updating" },
+            { name: "hidden", status: "idle" }
+        ]
+    });
+    ["alpha", "beta", "hidden"].forEach(name => store.dispatch({ type: "selectionChanged", name, selected: true }));
+    store.dispatch({ type: "filtersChanged", patch: { search: "a" } });
+    const plan = store.planBulkAction("update", { actionLabel: "update" });
+
+    store.dispatch({ type: "actionStarted", plan });
+    assert.deepEqual(store.getView().actions.bulk, {
+        operationId: plan.id,
+        actionKey: "update",
+        actionLabel: "update",
+        serverNames: ["alpha"],
+        selectedCount: 3,
+        eligibleCount: 1,
+        skippedCount: 2
+    });
+
+    store.dispatch({
+        type: "actionCompleted",
+        operationId: plan.id,
+        bulkResult: { selectedCount: 3, executedCount: 1, skippedCount: 2, failedCount: 0 }
+    });
+    assert.deepEqual(store.getView().actions.lastBulkResult, {
+        actionLabel: "update",
+        selectedCount: 3,
+        executedCount: 1,
+        skippedCount: 2,
+        failedCount: 0
+    });
+
+    store.dispatch({ type: "selectionChanged", name: "beta", selected: false });
+    assert.equal(store.getView().actions.lastBulkResult, null);
+});
+
 test("browser adapters do not restore superseded action globals or DOM-derived bulk planning", () => {
     const root = path.resolve(__dirname, "../..");
     const adapterSource = ["static/js/index.js", "static/js/index-bulk-actions.js"]

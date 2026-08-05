@@ -469,7 +469,7 @@
                 if (!activeStatuses.has(status) && !["active", "queued"].includes(timelineState)) return false;
             }
             if (filters.quick === "stale_facts") {
-                const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "").toLowerCase();
+                const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "unknown").toLowerCase();
                 if (!["stale", "unknown"].includes(factsState)) return false;
             }
             if (filters.quick === "high_risk") {

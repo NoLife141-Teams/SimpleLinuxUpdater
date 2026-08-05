@@ -596,6 +596,17 @@ test("facts refresh filtering includes stale and unknown host intelligence", () 
     assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["stale", "unknown"]);
 });
 
+test("facts refresh filtering treats an unavailable dashboard snapshot as unknown", () => {
+    const store = createStore();
+    store.dispatch({
+        type: "serversSnapshotReceived",
+        servers: [{ name: "missing-facts", status: "done" }]
+    });
+    store.dispatch({ type: "filtersChanged", patch: { quick: "stale_facts" } });
+
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["missing-facts"]);
+});
+
 test("Status labels describe CVE exposure and facts that need refresh", () => {
     const root = path.resolve(__dirname, "../..");
     const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");

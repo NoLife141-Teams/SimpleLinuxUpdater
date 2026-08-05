@@ -419,20 +419,39 @@ func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) 
 	prepareOutboxSettings(t, db, server.URL, true)
 	now := time.Now().UTC()
 	rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "wake-scheduling-retry", Action: EventUpdateComplete, TargetName: "srv-retry", MetaJSON: `{}`}, now)
-	if _, err := db.Exec("UPDATE notification_outbox SET state=?, next_attempt_at=? WHERE id=?", outboxStateRetrying, now.Add(500*time.Millisecond).Format(time.RFC3339Nano), rowID); err != nil {
+	if _, err := db.Exec("UPDATE notification_outbox SET state=?, next_attempt_at=? WHERE id=?", outboxStateRetrying, now.Add(time.Hour).Format(time.RFC3339Nano), rowID); err != nil {
 		t.Fatal(err)
 	}
 
 	deps := outboxTestDeps(db, 5*time.Millisecond)
 	var wakeCalls int32
+	retryStarted := make(chan struct{})
+	allowRetrySchedule := make(chan struct{})
 	deps.NextOutboxWake = func(ctx context.Context, db *sql.DB, ttl time.Duration) (time.Time, bool, error) {
-		if atomic.AddInt32(&wakeCalls, 1) == 1 {
+		switch atomic.AddInt32(&wakeCalls, 1) {
+		case 1:
 			return time.Time{}, false, errors.New("temporary wake query failure")
+		case 2:
+			close(retryStarted)
+			select {
+			case <-ctx.Done():
+				return time.Time{}, false, ctx.Err()
+			case <-allowRetrySchedule:
+			}
 		}
 		return nextOutboxWake(ctx, db, ttl)
 	}
 	svc := NewService(deps)
 	t.Cleanup(func() { closeOutboxService(t, svc) })
+	select {
+	case <-retryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("wake scheduling was not retried after the temporary failure")
+	}
+	if _, err := db.Exec("UPDATE notification_outbox SET next_attempt_at=? WHERE id=?", time.Now().UTC().Format(time.RFC3339Nano), rowID); err != nil {
+		t.Fatal(err)
+	}
+	close(allowRetrySchedule)
 	waitForLatestOutboxState(t, db, outboxStateSucceeded)
 	if got := atomic.LoadInt32(requests); got != 1 {
 		t.Fatalf("requests=%d, want delivery after wake scheduling retry", got)

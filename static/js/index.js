@@ -10,8 +10,6 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
         window.statusPageInteraction = statusInteraction;
         let allServers = [];
-        let lastSuccessfulSyncAt = null;
-        let lastFetchError = null;
         let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
@@ -516,6 +514,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function renderSyncState() {
             const streamLabels = {
+                servers: "fleet inventory",
                 dashboard: "dashboard",
                 commandHistory: "command history",
                 audit: "audit",
@@ -523,17 +522,22 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 policies: "policies",
                 globalKey: "global key"
             };
-            const extrasError = Object.entries(getStatusView().sync.streams)
-                .filter(([name, stream]) => name !== "servers" && stream.lastError)
+            const streams = getStatusView().sync.streams;
+            const syncErrors = Object.entries(streams)
+                .filter(([, stream]) => stream.lastError)
                 .map(([name, stream]) => `${streamLabels[name] || name}: ${stream.lastError}`)
                 .join("; ");
-            const degraded = !!lastFetchError || !!extrasError;
+            const degraded = !!syncErrors;
+            const serversLastSuccessfulAt = streams.servers?.lastSuccessfulAt
+                ? new Date(streams.servers.lastSuccessfulAt)
+                : null;
             statusRendering.syncState({
                 degraded,
                 live: statusTransport.isLive(),
-                lastSyncText: lastFetchError || extrasError
-                    ? `Last sync error: ${lastFetchError?.message || extrasError || "unknown"}`
-                    : formatRelativeTime(lastSuccessfulSyncAt)
+                lastSyncText: degraded
+                    ? `Last sync error: ${syncErrors || "unknown"}`
+                    : formatRelativeTime(serversLastSuccessfulAt),
+                notice: statusRendering.syncNotice(streams, formatRelativeTimestamp)
             });
         }
 
@@ -1043,7 +1047,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     type: "secondarySnapshotReceived",
                     stream: "audit",
                     requestId: effect.requestId,
-                    snapshot: Array.isArray(data?.items) ? data.items : []
+                    snapshot: Array.isArray(data?.items) ? data.items : [],
+                    receivedAt: new Date().toISOString()
                 });
             } catch (err) {
                 await dispatchStatusInteraction({ type: "snapshotFailed", stream: "audit", requestId: effect.requestId, error: err?.message || String(err) });
@@ -1054,7 +1059,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
             try {
                 const response = await fetch('/api/observability/summary?window=7d');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                await dispatchStatusInteraction({ type: "secondarySnapshotReceived", stream: "observability", requestId: effect.requestId, snapshot: await response.json() });
+                await dispatchStatusInteraction({
+                    type: "secondarySnapshotReceived",
+                    stream: "observability",
+                    requestId: effect.requestId,
+                    snapshot: await response.json(),
+                    receivedAt: new Date().toISOString()
+                });
             } catch (err) {
                 await dispatchStatusInteraction({ type: "snapshotFailed", stream: "observability", requestId: effect.requestId, error: err?.message || String(err) });
             }
@@ -1069,7 +1080,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     type: "secondarySnapshotReceived",
                     stream: "policies",
                     requestId: effect.requestId,
-                    snapshot: Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+                    snapshot: Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []),
+                    receivedAt: new Date().toISOString()
                 });
             } catch (err) {
                 await dispatchStatusInteraction({ type: "snapshotFailed", stream: "policies", requestId: effect.requestId, error: err?.message || String(err) });
@@ -1103,7 +1115,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 await dispatchStatusInteraction({
                     type: "dashboardSnapshotReceived",
                     requestId: effect.requestId,
-                    snapshot: nextDashboardSummary
+                    snapshot: nextDashboardSummary,
+                    receivedAt: new Date().toISOString()
                 });
             } catch (err) {
                 await dispatchStatusInteraction({
@@ -1134,7 +1147,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     type: "commandHistoryReceived",
                     requestId: effect.requestId,
                     serverName,
-                    history: Array.isArray(data?.items) ? data.items : []
+                    history: Array.isArray(data?.items) ? data.items : [],
+                    receivedAt: new Date().toISOString()
                 });
             } catch (err) {
                 await dispatchStatusInteraction({
@@ -1177,7 +1191,13 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const response = await fetch('/api/keys/global');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                await dispatchStatusInteraction({ type: "secondarySnapshotReceived", stream: "globalKey", requestId: effect.requestId, snapshot: !!data?.has_key });
+                await dispatchStatusInteraction({
+                    type: "secondarySnapshotReceived",
+                    stream: "globalKey",
+                    requestId: effect.requestId,
+                    snapshot: !!data?.has_key,
+                    receivedAt: new Date().toISOString()
+                });
             } catch (err) {
                 await dispatchStatusInteraction({ type: "snapshotFailed", stream: "globalKey", requestId: effect.requestId, error: err?.message || String(err) });
             }
@@ -1456,16 +1476,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 if (!Array.isArray(parsedServers)) {
                     throw new Error('Invalid servers payload: expected an array');
                 }
-                lastFetchError = null;
-                lastSuccessfulSyncAt = new Date();
                 await dispatchStatusInteraction({
                     type: "serversSnapshotReceived",
                     requestId: effect.requestId,
-                    servers: parsedServers
+                    servers: parsedServers,
+                    receivedAt: new Date().toISOString()
                 });
             } catch (err) {
                 console.error('Unable to refresh servers list:', err);
-                lastFetchError = err;
                 await dispatchStatusInteraction({
                     type: "snapshotFailed",
                     stream: "servers",

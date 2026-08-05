@@ -742,6 +742,39 @@ test("secondary Status failures retain accepted data and expose source-specific 
     assert.equal(view.sync.streams.audit.lastError, "offline");
 });
 
+test("degraded Status streams retain their last good refresh until recovery succeeds", () => {
+    const store = createStore();
+    store.dispatch({ type: "refreshRequested", stream: "audit" });
+    store.dispatch({
+        type: "secondarySnapshotReceived",
+        stream: "audit",
+        requestId: 1,
+        snapshot: [{ id: 42 }],
+        receivedAt: "2026-08-05T03:00:00Z"
+    });
+
+    store.dispatch({ type: "refreshRequested", stream: "audit" });
+    store.dispatch({ type: "snapshotFailed", stream: "audit", requestId: 2, error: "offline" });
+    store.dispatch({ type: "refreshRequested", stream: "audit", reason: "retry" });
+
+    let stream = store.getView().sync.streams.audit;
+    assert.equal(stream.lastSuccessfulAt, "2026-08-05T03:00:00Z");
+    assert.equal(stream.lastError, "offline");
+    assert.equal(stream.inFlight.requestId, 3);
+
+    store.dispatch({
+        type: "secondarySnapshotReceived",
+        stream: "audit",
+        requestId: 3,
+        snapshot: [{ id: 43 }],
+        receivedAt: "2026-08-05T03:05:00Z"
+    });
+
+    stream = store.getView().sync.streams.audit;
+    assert.equal(stream.lastSuccessfulAt, "2026-08-05T03:05:00Z");
+    assert.equal(stream.lastError, "");
+});
+
 test("unscoped secondary Status snapshots cannot bypass an active request", () => {
     const store = createStore();
     store.dispatch({ type: "refreshRequested", stream: "observability" });

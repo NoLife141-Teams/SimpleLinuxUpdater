@@ -225,14 +225,25 @@
         let primaryServerName = "";
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        function createStreamState() {
+            return {
+                nextRequestId: 1,
+                inFlight: null,
+                queued: null,
+                lastAcceptedRequestId: 0,
+                lastError: "",
+                lastSuccessfulAt: ""
+            };
+        }
+
         let streams = {
-            servers: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            dashboard: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            commandHistory: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            audit: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            observability: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            policies: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" },
-            globalKey: { nextRequestId: 1, inFlight: null, queued: null, lastAcceptedRequestId: 0, lastError: "" }
+            servers: createStreamState(),
+            dashboard: createStreamState(),
+            commandHistory: createStreamState(),
+            audit: createStreamState(),
+            observability: createStreamState(),
+            policies: createStreamState(),
+            globalKey: createStreamState()
         };
         let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
         let nextActionPlanId = 1;
@@ -595,17 +606,18 @@
             };
             stream.nextRequestId += 1;
             stream.inFlight = request;
-            stream.lastError = "";
             return [
                 { type: "fetchSnapshot", stream: streamName, ...request },
                 { type: "renderSyncState" }
             ];
         }
 
-        function finishRefresh(streamName, requestId) {
+        function finishRefresh(streamName, requestId, receivedAt) {
             const stream = streams[streamName];
             if (!stream || !stream.inFlight || stream.inFlight.requestId !== requestId) return [];
             stream.lastAcceptedRequestId = Math.max(stream.lastAcceptedRequestId, requestId);
+            stream.lastError = "";
+            if (receivedAt) stream.lastSuccessfulAt = String(receivedAt);
             stream.inFlight = null;
             if (!stream.queued) return [];
             const queued = stream.queued;
@@ -779,7 +791,7 @@
                 return [
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
-                    ...(requestId ? finishRefresh("servers", requestId) : []),
+                    ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,
                     ...requestPrimaryCommandHistory(priority, "server-selection")
                 ];
@@ -793,7 +805,7 @@
                 return [
                     ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
                     { type: "renderSyncState" },
-                    ...(requestId ? finishRefresh("dashboard", requestId) : []),
+                    ...(requestId ? finishRefresh("dashboard", requestId, event.receivedAt) : []),
                     ...requestPrimaryCommandHistory(priority, "dashboard")
                 ];
             } else if (event.type === "commandHistoryReceived") {
@@ -814,7 +826,7 @@
                 return [
                     ...stateEffects({ scope: "serverState", priority: stream.inFlight.priority }),
                     { type: "renderSyncState" },
-                    ...finishRefresh("commandHistory", requestId)
+                    ...finishRefresh("commandHistory", requestId, event.receivedAt)
                 ];
             } else if (event.type === "secondarySnapshotReceived") {
                 const streamName = String(event.stream || "");
@@ -828,7 +840,7 @@
                         ? stateEffects({ persist: persistenceChanged, scope: "serverState" })
                         : [{ type: "renderSecondarySnapshot", stream: streamName }]),
                     { type: "renderSyncState" },
-                    ...finishRefresh(streamName, requestId)
+                    ...finishRefresh(streamName, requestId, event.receivedAt)
                 ];
             } else if (event.type === "snapshotFailed") {
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);

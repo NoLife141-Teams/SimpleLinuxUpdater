@@ -782,8 +782,11 @@ th.resizing .col-resize-handle::before {
     position: sticky;
     top: 68px;
     padding: 10px;
-    max-height: none;
-    overflow: visible;
+    max-height: calc(100vh - 80px);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
 }
 
 .context-block {
@@ -2795,45 +2798,16 @@ body.status-page .triage-wrap table {
 
 @media (max-width: 1500px) {
     .variant-c-layout {
-        grid-template-columns: minmax(196px, 220px) minmax(0, 1fr);
+        grid-template-columns: minmax(190px, 196px) minmax(0, 1fr) minmax(244px, 252px);
     }
 
-    .timeline-column {
-        grid-column: 2;
-        grid-row: 1;
-    }
-
-    .fleet-rail {
-        grid-column: 1;
-        grid-row: 1;
-    }
-
-    .context-panel {
-        position: static;
-        grid-column: 1 / -1;
-        grid-row: 2;
-    }
+    .col-progress { width: 260px; }
+    .col-actions { width: 240px; }
 }
 
 @media (max-width: 1380px) {
     .variant-c-layout {
-        grid-template-columns: minmax(196px, 220px) minmax(0, 1fr);
-    }
-
-    .timeline-column {
-        grid-column: 2;
-        grid-row: 1;
-    }
-
-    .fleet-rail {
-        grid-column: 1;
-        grid-row: 1;
-    }
-
-    .context-panel {
-        position: static;
-        grid-column: 1 / -1;
-        grid-row: 2;
+        grid-template-columns: minmax(186px, 196px) minmax(0, 1fr) minmax(244px, 252px);
     }
 
     .rail-controls .controls {
@@ -2870,6 +2844,15 @@ body.status-page .triage-wrap table {
 @media (max-width: 1280px) {
     .variant-c-layout {
         grid-template-columns: minmax(186px, 208px) minmax(0, 1fr);
+    }
+
+    .context-panel {
+        position: static;
+        grid-column: 1 / -1;
+        grid-row: 2;
+        max-height: none;
+        overflow: visible;
+        scrollbar-gutter: auto;
     }
 
     .rail-controls .controls {
@@ -3003,16 +2986,12 @@ body.status-page .table-wrap {
         order: 4;
     }
 
-    .approval-triage-panel {
-        order: 5;
-    }
-
     .supporting-details {
-        order: 5;
+        order: 6;
     }
 
     .context-panel {
-        order: 6;
+        order: 5;
     }
 
     .timeline-column .operations-grid-secondary {

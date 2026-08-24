@@ -44,6 +44,7 @@ jobs:
               - 'static/**'
               - 'templates/**'
               - 'tests/e2e/**'
+              - '.github/workflows/ci.yml'
 
   test:
     needs: changes
@@ -56,7 +57,7 @@ jobs:
           - name: race
             cmd: go test -race -count=1 ./...
           - name: cover
-            cmd: go test -covermode=atomic -coverprofile=coverage.out ./...
+            cmd: go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
     steps:
       - name: Checkout
         uses: actions/checkout@v7

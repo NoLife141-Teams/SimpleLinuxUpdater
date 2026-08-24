@@ -345,5 +345,9 @@ func openServerFactsTestRepository(t *testing.T, name string) (*sql.DB, SQLiteOb
 	if err := EnsureServerFactsSchema(db); err != nil {
 		t.Fatalf("EnsureServerFactsSchema() error = %v", err)
 	}
-	return db, SQLiteObservation{DB: func() *sql.DB { return db }}
+	testNow := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	return db, SQLiteObservation{
+		DB:  func() *sql.DB { return db },
+		Now: func() time.Time { return testNow },
+	}
 }

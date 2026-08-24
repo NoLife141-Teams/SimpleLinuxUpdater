@@ -19,11 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Detect Go and workflow changes
+      - name: Detect relevant changes
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
@@ -33,6 +34,16 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/**'
+            e2e:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'playwright.config.js'
+              - 'static/**'
+              - 'templates/**'
+              - 'tests/e2e/**'
 
   test:
     needs: changes
@@ -128,8 +139,10 @@ jobs:
         run: npm run test:unit
 
   ui-e2e:
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
@@ -162,13 +175,21 @@ jobs:
       - name: Install E2E dependencies
         run: npm ci
 
-      - name: Install Playwright browser and OS dependencies
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
+      - name: Configure APT network resilience
+        run: |
+          sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null <<'EOF'
+          Acquire::Retries "5";
+          Acquire::http::Timeout "30";
+          Acquire::https::Timeout "30";
+          DPkg::Lock::Timeout "60";
+          EOF
 
       - name: Install Playwright OS dependencies
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
+
+      - name: Install Playwright browser
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
 
       - name: Run Playwright auth E2E
         run: npm run test:e2e
@@ -188,6 +209,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           GO_REQUIRED: ${{ github.event_name == 'push' || needs.changes.outputs.go == 'true' }}
+          E2E_REQUIRED: ${{ github.event_name == 'push' || needs.changes.outputs.e2e == 'true' }}
           TEST_RESULT: ${{ needs.test.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
           NPM_AUDIT_RESULT: ${{ needs.npm-audit.result }}
@@ -197,6 +219,7 @@ jobs:
           printf '%s\n' \
             "changes=$CHANGES_RESULT" \
             "go_required=$GO_REQUIRED" \
+            "e2e_required=$E2E_REQUIRED" \
             "test=$TEST_RESULT" \
             "quality=$QUALITY_RESULT" \
             "npm_audit=$NPM_AUDIT_RESULT" \
@@ -206,7 +229,6 @@ jobs:
           test "$CHANGES_RESULT" = success
           test "$NPM_AUDIT_RESULT" = success
           test "$FRONTEND_UNIT_RESULT" = success
-          test "$UI_E2E_RESULT" = success
 
           if [ "$GO_REQUIRED" = true ]; then
             test "$TEST_RESULT" = success
@@ -214,4 +236,10 @@ jobs:
           else
             test "$TEST_RESULT" = skipped
             test "$QUALITY_RESULT" = skipped
+          fi
+
+          if [ "$E2E_REQUIRED" = true ]; then
+            test "$UI_E2E_RESULT" = success
+          else
+            test "$UI_E2E_RESULT" = skipped
           fi

@@ -94,6 +94,38 @@ func TestServiceApproveCancelUsesInjectedServerState(t *testing.T) {
 	}
 }
 
+func TestServiceRefreshServerFactsUsesBoundedReadOnlySessionAndPersists(t *testing.T) {
+	server := servers.Server{Name: "srv-facts", Host: "example.org", Port: 22, User: "root"}
+	saved := false
+	closed := false
+	service := NewService(ServiceDeps{
+		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			if req.Server.Name != server.Name || req.RetryPolicy.MaxAttempts != 1 || req.DialOperation != "automatic_facts_refresh.ssh_dial" {
+				t.Fatalf("session request = %+v", req)
+			}
+			return &HostMaintenanceSessionFuncs{
+				CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+					return ServerFactsRecord{ServerName: server.Name, CollectedAt: "2026-08-31T12:00:00Z", DiskStatus: "ok", AptStatus: "ok"}
+				},
+				CloseFunc: func() error { closed = true; return nil },
+			}, nil
+		}),
+		LoadCommandTimeout: func() time.Duration { return 30 * time.Second },
+		SaveServerFacts: func(record ServerFactsRecord) error {
+			saved = record.ServerName == server.Name
+			return nil
+		},
+	})
+
+	record, err := service.RefreshServerFacts(context.Background(), server, "automatic_facts_refresh.ssh_dial")
+	if err != nil {
+		t.Fatalf("RefreshServerFacts() error = %v", err)
+	}
+	if record.ServerName != server.Name || !saved || !closed {
+		t.Fatalf("record=%+v saved=%t closed=%t", record, saved, closed)
+	}
+}
+
 func TestRunRebootJobVerifiesSSHRecoveryAndUptimeReset(t *testing.T) {
 	server := servers.Server{Name: "srv-reboot", Host: "example.org", Port: 22, User: "root"}
 	inventory := []servers.Server{server}
@@ -1364,6 +1396,8 @@ func TestRunUpdateJobApprovalTimeoutDoesNotReopenHostSession(t *testing.T) {
 
 func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	var auditActions []string
+	factsCollected := false
+	factsSaved := false
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
 	if err != nil {
 		t.Fatalf("open jobs db: %v", err)
@@ -1430,8 +1464,16 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 				}
 				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(pending, upgradable, plan), Attempts: 1}, nil
 			},
+			CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+				factsCollected = true
+				return ServerFactsRecord{ServerName: "srv", CollectedAt: scheduledForUTC, DiskStatus: "ok", AptStatus: "ok"}
+			},
 		}),
 		CurrentJobManager: func() *jobs.Manager { return jm },
+		SaveServerFacts: func(record ServerFactsRecord) error {
+			factsSaved = record.ServerName == "srv" && record.DiskStatus == "ok" && record.AptStatus == "ok"
+			return nil
+		},
 		AuditWithActor: func(_, _, action, _, _, _, _ string, _ map[string]any) {
 			auditActions = append(auditActions, action)
 		},
@@ -1457,8 +1499,11 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	if job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusSucceeded)
 	}
-	if len(auditActions) != 0 {
-		t.Fatalf("auditActions=%v, want scheduled scan worker to leave audit to reconciliation", auditActions)
+	if !factsCollected || !factsSaved {
+		t.Fatalf("factsCollected=%t factsSaved=%t, want scheduled scan to persist facts from its existing session", factsCollected, factsSaved)
+	}
+	if !reflect.DeepEqual(auditActions, []string{"server.facts.refresh"}) {
+		t.Fatalf("auditActions=%v, want one scheduled host-facts refresh audit", auditActions)
 	}
 	var meta ScheduledJobMeta
 	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {
@@ -1486,5 +1531,59 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	}
 	if got := states["linux-image-amd64"]; got.CVEState != "unavailable" || len(got.CVEs) != 0 {
 		t.Fatalf("linux-image CVE result = %+v, want warning-only unavailable state", got)
+	}
+}
+
+func TestRunScheduledScanJobKeepsScanSuccessWhenFactsPersistenceFails(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "scheduled-facts-failure.db"))
+	if err != nil {
+		t.Fatalf("open jobs db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := jobs.EnsureSchema(db); err != nil {
+		t.Fatalf("ensure jobs schema: %v", err)
+	}
+	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{NewID: func() string { return "scan-facts-failure" }})
+	if _, err := jm.CreateJob(jobs.CreateParams{Kind: jobs.KindScheduledScan, ServerName: "srv", Actor: "system", Status: jobs.StatusQueued}); err != nil {
+		t.Fatalf("create scheduled scan job: %v", err)
+	}
+	auditStatus := ""
+	service := NewService(ServiceDeps{
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+				return HostCommandResult{Attempts: 1}, nil
+			},
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome(nil, nil, servers.UpgradePlan{}), Attempts: 1}, nil
+			},
+			CollectServerFactsFunc: func(context.Context) ServerFactsRecord {
+				return ServerFactsRecord{ServerName: "srv", DiskStatus: "ok", AptStatus: "ok"}
+			},
+		}),
+		VulnerabilityScanner: VulnerabilityScannerFunc(func(_ context.Context, _ HostMaintenanceSession, updates []servers.PendingUpdate) ([]servers.PendingUpdate, error) {
+			return updates, nil
+		}),
+		CurrentJobManager: func() *jobs.Manager { return jm },
+		SaveServerFacts:   func(ServerFactsRecord) error { return errors.New("database unavailable") },
+		AuditWithActor: func(_, _, action, _, _, status, _ string, _ map[string]any) {
+			if action == "server.facts.refresh" {
+				auditStatus = status
+			}
+		},
+	})
+
+	service.RunScheduledScanJob(ScheduledScanRunRequest{
+		JobID:  "scan-facts-failure",
+		Server: servers.Server{Name: "srv", Host: "127.0.0.1", Port: 22, User: "root"},
+		Policy: policies.Policy{ExecutionMode: policies.ExecutionScanOnly},
+	})
+
+	job, err := jm.GetJob("scan-facts-failure")
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if job.Status != jobs.StatusSucceeded || auditStatus != "failure" || !strings.Contains(job.LogsText, "facts refresh failed") {
+		t.Fatalf("job=%+v auditStatus=%q, want successful scan with visible facts-refresh failure", job, auditStatus)
 	}
 }

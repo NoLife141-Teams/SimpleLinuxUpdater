@@ -37,6 +37,7 @@ type AppDeps struct {
 	MaintenanceCoordinator  *maintenancepkg.Coordinator
 	ApplicationTime         *apptimepkg.Module
 	HostHealthObservation   healthpkg.Observation
+	HostFactsRefreshWorker  *healthpkg.RefreshWorker
 	MaintenanceReadiness    func([]Server) map[string]serverpkg.MaintenanceReadiness
 
 	JobManager           *JobManager

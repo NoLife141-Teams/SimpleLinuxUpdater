@@ -350,6 +350,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 		})
 	}
+	if deps.HostFactsRefreshWorker == nil {
+		deps.HostFactsRefreshWorker = newAutomaticHostFactsRefreshWorker(deps)
+	}
 	if deps.ObservabilityService == nil {
 		policyScheduleDeps := deps.PolicyService.EnsureDeps()
 		policyScheduleDeps.ListRuns = deps.PolicyRepository.ListRuns

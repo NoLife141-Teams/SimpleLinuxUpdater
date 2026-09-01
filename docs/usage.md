@@ -153,6 +153,14 @@ Each selected server also shows one **Recommended action**: **Monitor APT**, **R
 
 When current host facts report that a reboot is required, **Recommended action → Reboot and verify** offers a deliberately confirmed controlled reboot. The reboot command is sent once and is never automatically replayed. SimpleLinuxUpdater then waits for SSH to return and only reports success after proving that uptime reset and the reboot-required marker cleared. A missing uptime baseline or an unverified restart leaves the job in `error` for operator review.
 
+Host facts are normally maintained without operator action. Successful scheduled
+scans reuse their SSH session to collect facts, and a sequential background
+worker refreshes any remaining host before the 24-hour freshness limit. Busy or
+temporarily unreachable hosts are retried with backoff; their audit history
+shows whether an automatic refresh succeeded, was deferred, returned incomplete
+health data, or failed. The manual refresh action remains available for immediate
+recovery and verification.
+
 Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts; there is no application review modal. Ineligible hosts are skipped, and completion feedback separates successful, skipped, and failed hosts. Verify the selection before clicking a destructive bulk action.
 
 ### Passwordless apt toggle

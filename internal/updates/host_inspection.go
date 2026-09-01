@@ -30,8 +30,8 @@ const PlanDiskSpaceProbeCmd = `sh -c 'archive_config=$(/usr/bin/apt-config shell
 var (
 	precheckLocksCmd       = AptExtendedLockProbeCmd
 	precheckLegacyLocksCmd = AptLockProbeCmd
-	precheckDpkgAuditCmd   = RootOrSudoCommand("dpkg --audit")
-	precheckAptCheckCmd    = RootOrSudoCommand("apt-get check")
+	precheckDpkgAuditCmd   = RootOrSudoHelperCommand("/usr/bin/dpkg --audit", "dpkg-audit")
+	precheckAptCheckCmd    = RootOrSudoHelperCommand("/usr/bin/apt-get check", "apt-check")
 	rebootCheckErrorRe     = regexp.MustCompile(`\b(error|failed|failure|unable|cannot|can't)\b`)
 	rebootRequiredRe       = regexp.MustCompile(`\b(reboot required|requires reboot|restart required|system restart required|needs reboot|need reboot)\b`)
 )

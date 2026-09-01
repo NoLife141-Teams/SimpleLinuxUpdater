@@ -165,7 +165,9 @@ Status bulk update, standard approval, security approval, kept-back security app
 
 ### Passwordless apt toggle
 
-From the Status page, you can enable or disable passwordless apt (per server). This is only needed for non-root SSH users: it creates or removes `/etc/sudoers.d/apt-nopasswd` on the target host so the managed apt/dpkg commands and the exact `systemctl reboot` command can be executed via sudo without prompting. Root SSH sessions run those commands directly. Re-run **Enable apt** once on non-root hosts configured before the explicit non-interactive strategy so their managed sudoers rule permits the restricted `/usr/bin/env … /usr/bin/apt-get` and dpkg command forms.
+From the Status page, you can enable or disable passwordless apt per server. This is only needed for non-root SSH users. **Enable apt** installs the owner-marked `/usr/local/sbin/simplelinuxupdater-root-helper` and `/etc/sudoers.d/simplelinuxupdater`; sudo can invoke only the helper's typed maintenance operations. The helper rejects raw shell input, arbitrary APT options and hooks, paths, and invalid package selectors. Root SSH sessions continue to run the same maintenance commands directly.
+
+After upgrading from a release that used `/etc/sudoers.d/apt-nopasswd`, run **Enable apt** once on every non-root target. An exact previous SimpleLinuxUpdater rule is migrated automatically. If the legacy file is customized or cannot be identified exactly, the action stops without overwriting or deleting it; inspect and migrate that administrator-owned policy manually. **Disable apt** likewise removes only recognized, root-owned, owner-marked files.
 
 ## Scheduled canary and wave rollouts
 

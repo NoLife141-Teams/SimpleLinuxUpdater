@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Security
+
+- Replace generic passwordless `apt`/`apt-get` sudoers grants with a root-owned,
+  typed SimpleLinuxUpdater helper; validate package selectors, reject raw APT
+  options/hooks, and migrate or remove sudoers files only after strict owner
+  marker and legacy-content checks.
+
 ### Added
 
 - Refresh host facts through successful scheduled-scan SSH sessions and add a

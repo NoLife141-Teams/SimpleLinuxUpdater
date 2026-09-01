@@ -85,8 +85,8 @@ func TestProductionHostMaintenanceSessionOwnsPreUpdateInspection(t *testing.T) {
 	commands := []string{
 		"df -Pk /var / | awk 'NR>1 {print $2, $4}'",
 		AptExtendedLockProbeCmd,
-		RootOrSudoCommand("dpkg --audit"),
-		RootOrSudoCommand("apt-get check"),
+		RootOrSudoHelperCommand("/usr/bin/dpkg --audit", "dpkg-audit"),
+		RootOrSudoHelperCommand("/usr/bin/apt-get check", "apt-check"),
 	}
 	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{
 		commands[0]: {stdout: "2097152 2048000\n3145728 2097152\n"},
@@ -132,9 +132,9 @@ func TestProductionHostMaintenanceSessionFallsBackToLegacyLockProbe(t *testing.T
 func TestProductionHostMaintenanceSessionOwnsPostUpdateInspection(t *testing.T) {
 	failedUnitsCommand := "systemctl --failed --no-legend --plain"
 	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{
-		RootOrSudoCommand("dpkg --audit"):  {},
-		RootOrSudoCommand("apt-get check"): {},
-		failedUnitsCommand:                 {},
+		RootOrSudoHelperCommand("/usr/bin/dpkg --audit", "dpkg-audit"): {},
+		RootOrSudoHelperCommand("/usr/bin/apt-get check", "apt-check"): {},
+		failedUnitsCommand: {},
 		"sh -c \"if [ -f /var/run/reboot-required ]; then echo required; fi\"": {stdout: "required\n"},
 	}}
 	session := newInspectionSession(t, conn)

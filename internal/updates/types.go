@@ -1,6 +1,7 @@
 package updates
 
 import (
+	"fmt"
 	"io"
 	"time"
 
@@ -11,24 +12,28 @@ import (
 )
 
 var (
-	AptUpdateCmd            = NonInteractiveAptCommand("update")
-	AptUpgradeCmd           = NonInteractiveAptCommand("-y upgrade")
-	AptFullUpgradeCmd       = NonInteractiveAptCommand("-y full-upgrade")
-	AptAutoremoveCmd        = NonInteractiveAptCommand("-y autoremove")
-	ControlledRebootCmd     = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then systemctl reboot; else sudo -n systemctl reboot; fi' >/dev/null 2>&1 &"
-	AptLockProbeCmd         = RootOrSudoCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock")
-	AptExtendedLockProbeCmd = RootOrSudoCommand(
-		"/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock",
-	)
-	AptRepairCmd = buildAptRepairLockGuard(AptExtendedLockProbeCmd) + "; " +
-		NonInteractiveDpkgConfigureCommand() + " && " +
-		NonInteractiveAptCommand("-y -f install") + " && " +
-		buildAptRepairAuditGuard(RootOrSudoCommand("dpkg --audit")) + " && " +
-		RootOrSudoCommand("apt-get check")
-	AptListUpgradableCmd = ReadOnlyAptCommand("apt-get -s upgrade")
-	AptListMetadataCmd   = ReadOnlyAptCommand("apt list --upgradable") + " 2>/dev/null"
-	AptFullUpgradeSimCmd = ReadOnlyAptCommand("apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only full-upgrade")
+	AptUpdateCmd        = nonInteractiveAptCommand("update", "update")
+	AptUpgradeCmd       = nonInteractiveAptCommand("upgrade", "-y upgrade")
+	AptFullUpgradeCmd   = nonInteractiveAptCommand("full-upgrade", "-y full-upgrade")
+	AptAutoremoveCmd    = nonInteractiveAptCommand("autoremove", "-y autoremove")
+	ControlledRebootCmd = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then /usr/bin/systemctl reboot; else sudo -n " + RootHelperPath + " reboot; fi' >/dev/null 2>&1 &"
+	// AptLockProbeCmd remains the exact pre-helper fallback used only after the
+	// typed extended probe is denied by an older sudoers policy.
+	AptLockProbeCmd         = `if [ "$(id -u)" -eq 0 ]; then /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; else sudo -n /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; fi`
+	AptExtendedLockProbeCmd = RootOrSudoHelperCommand("/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock", "lock-probe-extended")
+	AptRepairCmd            = RootOrSudoHelperCommand(rootAptRepairCommand(), "repair")
+	AptListUpgradableCmd    = ReadOnlyAptCommand("apt-get -s upgrade")
+	AptListMetadataCmd      = ReadOnlyAptCommand("apt list --upgradable") + " 2>/dev/null"
+	AptFullUpgradeSimCmd    = ReadOnlyAptCommand("apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only full-upgrade")
 )
+
+func rootAptRepairCommand() string {
+	lockProbe := "/usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock"
+	dpkgConfigure := fmt.Sprintf("/usr/bin/env %s /usr/bin/dpkg --force-confdef --force-confold --configure -a", AptNonInteractiveEnvironment)
+	aptRepair := fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get %s -y -f install", AptNonInteractiveEnvironment, AptDpkgConffileOptions)
+	return buildAptRepairLockGuard(lockProbe) + "; " + dpkgConfigure + " && " + aptRepair + " && " +
+		buildAptRepairAuditGuard("/usr/bin/dpkg --audit") + " && /usr/bin/apt-get check"
+}
 
 func buildAptRepairLockGuard(lockProbeCmd string) string {
 	return "apt_lock_probe_output=$(" + lockProbeCmd + " 2>&1); apt_lock_probe_status=$?; " +

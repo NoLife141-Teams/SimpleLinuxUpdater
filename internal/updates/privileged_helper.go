@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"debian-updater/internal/servers"
 )
 
 const (
@@ -18,7 +20,6 @@ const (
 var (
 	packageNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 	architecturePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	sudoersUserPattern  = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )
 
 func IsValidPackageSelector(selector string) bool {
@@ -26,14 +27,14 @@ func IsValidPackageSelector(selector string) bool {
 		return false
 	}
 	name, architecture, hasArchitecture := strings.Cut(selector, ":")
-	if !packageNamePattern.MatchString(name) {
+	if !packageNamePattern.MatchString(name) || strings.HasSuffix(name, "-") || strings.Contains(name, ".+") {
 		return false
 	}
-	return !hasArchitecture || architecturePattern.MatchString(architecture)
+	return !hasArchitecture || architecturePattern.MatchString(architecture) && !strings.HasSuffix(architecture, "-")
 }
 
 func IsValidSudoersUser(user string) bool {
-	return sudoersUserPattern.MatchString(user)
+	return servers.IsValidSSHUsername(user) && strings.TrimSpace(user) == user
 }
 
 func shellQuote(value string) string {
@@ -94,11 +95,11 @@ require_no_args() {
 valid_package_selector() {
     selector=$1
     case "$selector" in
-        ""|?:*:*|*:*:*|[!a-z0-9]*|*[!a-z0-9+.:_-]*) return 1 ;;
+        ""|?:*:*|*:*:*|*-|*.+*|[!a-z0-9]*|*[!a-z0-9+.:_-]*) return 1 ;;
     esac
     name=${selector%%:*}
     case "$name" in
-        ""|?|[!a-z0-9]*|*[!a-z0-9+.-]*) return 1 ;;
+        ""|?|*-|*.+*|[!a-z0-9]*|*[!a-z0-9+.-]*) return 1 ;;
     esac
     if [ "$selector" != "$name" ]; then
         architecture=${selector#*:}
@@ -113,6 +114,15 @@ require_packages() {
     [ "$#" -gt 0 ] || refuse "package operation requires at least one selector"
     for selector in "$@"; do
         valid_package_selector "$selector" || refuse "invalid package selector"
+    done
+    available_names=$(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-cache pkgnames) || refuse "could not read the APT package index"
+    for selector in "$@"; do
+        name=${selector%%:*}
+        printf '%s\n' "$available_names" | /usr/bin/grep -Fqx -- "$name" || refuse "package selector does not resolve to one exact package"
+        if [ "$selector" != "$name" ]; then
+            architecture=${selector#*:}
+            /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-cache show "$name" | /usr/bin/awk -v wanted="$architecture" '$1 == "Architecture:" && ($2 == wanted || $2 == "all") { found=1 } END { exit !found }' || refuse "package architecture is not available for the exact package"
+        fi
     done
 }
 

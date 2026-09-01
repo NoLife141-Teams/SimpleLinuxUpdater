@@ -625,6 +625,9 @@ func TestRootHelperRejectsEscapeInputsBeforeDispatch(t *testing.T) {
 		{name: "command substitution", args: []string{"install", "$(id)"}},
 		{name: "invalid package option", args: []string{"install", "--reinstall"}},
 		{name: "invalid architecture", args: []string{"install", "openssl:amd64;id"}},
+		{name: "apt removal suffix", args: []string{"install", "curl-"}},
+		{name: "architecture removal suffix", args: []string{"install", "curl:amd64-"}},
+		{name: "apt regex fallback", args: []string{"install", "a.+"}},
 		{name: "arbitrary path", args: []string{"install", "/tmp/package.deb"}},
 		{name: "unknown operation", args: []string{"shell", "id"}},
 	}
@@ -648,7 +651,7 @@ func TestPackageSelectorValidation(t *testing.T) {
 			t.Errorf("IsValidPackageSelector(%q) = false, want true", selector)
 		}
 	}
-	for _, selector := range []string{"", "-o", "openssl;id", "$(id)", "pkg:amd64:extra", "pkg:../amd64", "/tmp/pkg.deb", "pkg=1.2"} {
+	for _, selector := range []string{"", "-o", "openssl;id", "$(id)", "pkg:amd64:extra", "pkg:../amd64", "/tmp/pkg.deb", "pkg=1.2", "curl-", "curl:amd64-", "a.+"} {
 		if IsValidPackageSelector(selector) {
 			t.Errorf("IsValidPackageSelector(%q) = true, want false", selector)
 		}

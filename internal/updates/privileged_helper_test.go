@@ -62,16 +62,20 @@ func TestManagedSudoersContentValidatesWithVisudo(t *testing.T) {
 	if err != nil {
 		t.Skip("visudo is not available")
 	}
-	content, err := ManagedSudoersContent("operator")
-	if err != nil {
-		t.Fatalf("ManagedSudoersContent() error = %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "simplelinuxupdater")
-	if err := os.WriteFile(path, []byte(content), 0o440); err != nil {
-		t.Fatalf("write sudoers fixture: %v", err)
-	}
-	if output, err := exec.Command(visudo, "-cf", path).CombinedOutput(); err != nil {
-		t.Fatalf("visudo rejected managed rule: %v\n%s", err, output)
+	for _, user := range []string{"operator", "Admin", "ops.admin", "ops-admin_2", "123", "-ops", ".ops"} {
+		t.Run(user, func(t *testing.T) {
+			content, err := ManagedSudoersContent(user)
+			if err != nil {
+				t.Fatalf("ManagedSudoersContent() error = %v", err)
+			}
+			path := filepath.Join(t.TempDir(), "simplelinuxupdater")
+			if err := os.WriteFile(path, []byte(content), 0o440); err != nil {
+				t.Fatalf("write sudoers fixture: %v", err)
+			}
+			if output, err := exec.Command(visudo, "-cf", path).CombinedOutput(); err != nil {
+				t.Fatalf("visudo rejected managed rule: %v\n%s", err, output)
+			}
+		})
 	}
 }
 
@@ -80,8 +84,17 @@ func TestRootHelperClearsInheritedEnvironmentBeforeAptAndDpkg(t *testing.T) {
 	if strings.Contains(script, "/usr/bin/env DEBIAN_FRONTEND=") {
 		t.Fatal("root helper invokes package tools with an inherited environment")
 	}
-	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 8 {
-		t.Fatalf("root helper clean-environment package invocations = %d, want 8", got)
+	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 10 {
+		t.Fatalf("root helper clean-environment package invocations = %d, want 10", got)
+	}
+}
+
+func TestRootHelperVerifiesEverySelectorAgainstExactAptCacheNames(t *testing.T) {
+	script := RootHelperScript()
+	for _, required := range []string{"/usr/bin/apt-cache pkgnames", "/usr/bin/grep -Fqx -- \"$name\"", "/usr/bin/apt-cache show \"$name\"", "$2 == wanted || $2 == \"all\""} {
+		if !strings.Contains(script, required) {
+			t.Errorf("root helper lacks exact package resolution guard %q", required)
+		}
 	}
 }
 
@@ -125,6 +138,19 @@ func TestSudoersCommandsRejectUnsafeSSHUser(t *testing.T) {
 	}
 }
 
+func TestSudoersCommandsAcceptInventorySSHUsernameAlphabet(t *testing.T) {
+	for _, user := range []string{"operator", "Admin", "ops.admin", "ops-admin_2", "123", "-ops", ".ops"} {
+		content, err := ManagedSudoersContent(user)
+		if err != nil {
+			t.Errorf("ManagedSudoersContent(%q) error = %v", user, err)
+			continue
+		}
+		if !strings.Contains(content, "\n"+user+" ALL=(root)") {
+			t.Errorf("ManagedSudoersContent(%q) = %q", user, content)
+		}
+	}
+}
+
 func TestSelectedPackageBuildersRejectEntireInvalidSet(t *testing.T) {
 	for _, packages := range [][]string{
 		{"openssl", "--reinstall"},
@@ -132,6 +158,9 @@ func TestSelectedPackageBuildersRejectEntireInvalidSet(t *testing.T) {
 		{"openssl", "libssl3;id"},
 		{"openssl", "/tmp/package.deb"},
 		{"openssl", "libssl3:amd64;id"},
+		{"openssl", "curl-"},
+		{"openssl", "curl:amd64-"},
+		{"openssl", "a.+"},
 	} {
 		if got := BuildSelectedUpgradeCmd(packages); got != "" {
 			t.Errorf("BuildSelectedUpgradeCmd(%q) = %q, want fail-closed empty command", packages, got)

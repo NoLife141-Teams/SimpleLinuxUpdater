@@ -6,6 +6,10 @@ import (
 )
 
 func scheduledRunLifecycleDepsFromApp(deps AppDeps) scheduledrunspkg.Deps {
+	acquireScheduledAction := func(string) func() { return func() {} }
+	if deps.HostFactsRefreshAdmission != nil {
+		acquireScheduledAction = deps.HostFactsRefreshAdmission.AcquireScheduled
+	}
 	return scheduledrunspkg.Deps{
 		AuditService:           deps.AuditService,
 		CurrentJobManager:      deps.CurrentJobManager,
@@ -15,6 +19,7 @@ func scheduledRunLifecycleDepsFromApp(deps AppDeps) scheduledrunspkg.Deps {
 		MaintenanceReadiness: func(server Server) serverpkg.MaintenanceReadiness {
 			return deps.MaintenanceReadiness([]Server{server})[server.Name]
 		},
+		AcquireScheduledAction:          acquireScheduledAction,
 		PolicyRepository:                deps.PolicyRepository,
 		ServerState:                     deps.ServerState,
 		StartJobRunner:                  deps.StartJobRunner,

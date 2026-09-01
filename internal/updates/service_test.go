@@ -1396,6 +1396,8 @@ func TestRunUpdateJobApprovalTimeoutDoesNotReopenHostSession(t *testing.T) {
 
 func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	var auditActions []string
+	var factsAuditActor, factsAuditTarget, factsAuditStatus string
+	var factsAuditMeta map[string]any
 	factsCollected := false
 	factsSaved := false
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "jobs.db"))
@@ -1474,8 +1476,17 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 			factsSaved = record.ServerName == "srv" && record.DiskStatus == "ok" && record.AptStatus == "ok"
 			return nil
 		},
-		AuditWithActor: func(_, _, action, _, _, _, _ string, _ map[string]any) {
+		AuditWithActor: func(actor, _, action, _, target, status, _ string, meta map[string]any) {
 			auditActions = append(auditActions, action)
+			if action == "server.facts.refresh" {
+				factsAuditActor = actor
+				factsAuditTarget = target
+				factsAuditStatus = status
+				factsAuditMeta = make(map[string]any, len(meta))
+				for key, value := range meta {
+					factsAuditMeta[key] = value
+				}
+			}
 		},
 		UpdatePolicyRun: func(_ int64, update policies.RunUpdate) error {
 			t.Fatalf("UpdatePolicyRun called from scheduled scan worker: %+v", update)
@@ -1504,6 +1515,12 @@ func TestRunScheduledScanJobRecordsCVEResultOnJob(t *testing.T) {
 	}
 	if !reflect.DeepEqual(auditActions, []string{"server.facts.refresh"}) {
 		t.Fatalf("auditActions=%v, want one scheduled host-facts refresh audit", auditActions)
+	}
+	if factsAuditActor != "system" || factsAuditTarget != "srv" || factsAuditStatus != "success" {
+		t.Fatalf("facts refresh audit actor/target/status = %q/%q/%q", factsAuditActor, factsAuditTarget, factsAuditStatus)
+	}
+	if factsAuditMeta["source"] != scheduledScanFactsRefreshSource || factsAuditMeta["job_id"] != jobID || factsAuditMeta["run_id"] != int64(42) {
+		t.Fatalf("facts refresh audit metadata = %+v, want scheduled source and job/run correlation", factsAuditMeta)
 	}
 	var meta ScheduledJobMeta
 	if err := json.Unmarshal([]byte(job.MetaJSON), &meta); err != nil {

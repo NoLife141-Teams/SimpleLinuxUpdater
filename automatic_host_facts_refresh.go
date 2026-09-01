@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 
 	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
@@ -17,6 +18,49 @@ const (
 	automaticHostFactsRefreshSource     = "automatic_periodic"
 	automaticHostFactsRefreshDial       = "automatic_facts_refresh.ssh_dial"
 )
+
+// hostFactsRefreshAdmission gives scheduled maintenance admission priority over
+// low-priority automatic fact collection without changing manual-action rules.
+type hostFactsRefreshAdmission struct {
+	mu       sync.Mutex
+	byServer map[string]*sync.Mutex
+}
+
+func newHostFactsRefreshAdmission() *hostFactsRefreshAdmission {
+	return &hostFactsRefreshAdmission{byServer: map[string]*sync.Mutex{}}
+}
+
+func (g *hostFactsRefreshAdmission) serverGate(name string) *sync.Mutex {
+	if g == nil {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	gate := g.byServer[key]
+	if gate == nil {
+		gate = &sync.Mutex{}
+		g.byServer[key] = gate
+	}
+	return gate
+}
+
+func (g *hostFactsRefreshAdmission) TryRefresh(name string) (func(), bool) {
+	gate := g.serverGate(name)
+	if gate == nil || !gate.TryLock() {
+		return func() {}, false
+	}
+	return gate.Unlock, true
+}
+
+func (g *hostFactsRefreshAdmission) AcquireScheduled(name string) func() {
+	gate := g.serverGate(name)
+	if gate == nil {
+		return func() {}
+	}
+	gate.Lock()
+	return gate.Unlock
+}
 
 func newAutomaticHostFactsRefreshWorker(deps AppDeps) *healthpkg.RefreshWorker {
 	return healthpkg.NewRefreshWorker(healthpkg.RefreshWorkerDeps{
@@ -43,6 +87,13 @@ func newAutomaticHostFactsRefreshWorker(deps AppDeps) *healthpkg.RefreshWorker {
 func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candidate Server) healthpkg.RefreshAttempt {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if deps.HostFactsRefreshAdmission != nil {
+		release, admitted := deps.HostFactsRefreshAdmission.TryRefresh(candidate.Name)
+		if !admitted {
+			return healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptDeferred, Reason: "scheduled maintenance is being admitted", ReasonCode: "scheduled_admission"}
+		}
+		defer release()
 	}
 	if deps.MaintenanceCoordinator == nil {
 		return healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptDeferred, Reason: "maintenance coordination is unavailable", ReasonCode: "maintenance_unavailable"}

@@ -10,6 +10,12 @@ import (
 	"debian-updater/internal/servers"
 )
 
+func TestDefaultRefreshSweepHonorsRetryBase(t *testing.T) {
+	if DefaultRefreshSweepInterval > DefaultRefreshRetryBase {
+		t.Fatalf("default sweep interval %s exceeds retry base %s", DefaultRefreshSweepInterval, DefaultRefreshRetryBase)
+	}
+}
+
 func TestRefreshWorkerRunOnceRefreshesOnlyDueHostsAndBacksOffFailures(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	facts := map[string]CollectedFacts{

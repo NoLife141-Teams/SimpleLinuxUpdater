@@ -213,6 +213,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.ServerState == nil {
 		deps.ServerState = newServerState()
 	}
+	if deps.HostFactsRefreshAdmission == nil {
+		deps.HostFactsRefreshAdmission = newHostFactsRefreshAdmission()
+	}
 	if deps.GlobalSSHCredential == nil {
 		deps.GlobalSSHCredential = serverpkg.NewGlobalSSHCredential(serverpkg.GlobalSSHCredentialDeps{
 			Store:               serverpkg.SQLiteGlobalSSHCredentialStore{DB: deps.DB},

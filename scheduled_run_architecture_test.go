@@ -28,6 +28,7 @@ func TestScheduledRunLifecycleDepsExposeExactLifecycleKnowledge(t *testing.T) {
 		"LoadRetryPolicy":                 reflect.TypeOf((func() updatespkg.RetryPolicy)(nil)),
 		"MaintenanceCoordinator":          reflect.TypeOf((*maintenancepkg.Coordinator)(nil)),
 		"MaintenanceReadiness":            reflect.TypeOf((func(serverpkg.Server) serverpkg.MaintenanceReadiness)(nil)),
+		"AcquireScheduledAction":          reflect.TypeOf((func(string) func())(nil)),
 		"PolicyRepository":                reflect.TypeOf((*scheduledrunspkg.RunRepository)(nil)).Elem(),
 		"ServerState":                     reflect.TypeOf((*serverpkg.State)(nil)),
 		"StartJobRunner":                  reflect.TypeOf((func(string, func(), ...func()))(nil)),

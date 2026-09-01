@@ -13,7 +13,7 @@ import (
 
 const (
 	DefaultAutomaticRefreshAfter = 20 * time.Hour
-	DefaultRefreshSweepInterval  = time.Hour
+	DefaultRefreshSweepInterval  = 15 * time.Minute
 	DefaultRefreshJitterWindow   = 2 * time.Hour
 	DefaultRefreshRetryBase      = 15 * time.Minute
 	DefaultRefreshRetryMax       = 6 * time.Hour

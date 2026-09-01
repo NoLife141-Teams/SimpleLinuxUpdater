@@ -90,6 +90,60 @@ func TestAutomaticHostFactsRefreshAttemptDefersBusyServerWithoutSSH(t *testing.T
 	}
 }
 
+func TestHostFactsRefreshAdmissionPreservesScheduledRun(t *testing.T) {
+	admission := newHostFactsRefreshAdmission()
+	releaseRefresh, admitted := admission.TryRefresh("srv")
+	if !admitted {
+		t.Fatal("initial automatic refresh was not admitted")
+	}
+
+	scheduledAcquired := make(chan func(), 1)
+	go func() {
+		scheduledAcquired <- admission.AcquireScheduled("srv")
+	}()
+	select {
+	case <-scheduledAcquired:
+		t.Fatal("scheduled run acquired admission before automatic refresh released it")
+	default:
+	}
+
+	releaseRefresh()
+	var releaseScheduled func()
+	select {
+	case releaseScheduled = <-scheduledAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled run did not acquire admission after automatic refresh completed")
+	}
+	defer releaseScheduled()
+	if release, admitted := admission.TryRefresh("srv"); admitted {
+		release()
+		t.Fatal("automatic refresh was admitted while scheduled run held priority admission")
+	}
+}
+
+func TestAutomaticHostFactsRefreshAttemptDefersForScheduledAdmissionWithoutSSH(t *testing.T) {
+	server := Server{Name: "scheduled", Host: "example.org", Port: 22, User: "root"}
+	admission := newHostFactsRefreshAdmission()
+	releaseScheduled := admission.AcquireScheduled(server.Name)
+	defer releaseScheduled()
+
+	opened := false
+	deps := AppDeps{
+		HostFactsRefreshAdmission: admission,
+		UpdateService: NewUpdateService(UpdateServiceDeps{
+			HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+				opened = true
+				return &HostMaintenanceSessionFuncs{}, nil
+			}),
+		}),
+	}
+
+	attempt := automaticHostFactsRefreshAttempt(context.Background(), deps, server)
+	if attempt.State != healthpkg.RefreshAttemptDeferred || attempt.ReasonCode != "scheduled_admission" || opened {
+		t.Fatalf("attempt=%+v opened=%t", attempt, opened)
+	}
+}
+
 func TestAutomaticHostFactsRefreshWorkerStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	worker := healthpkg.NewRefreshWorker(healthpkg.RefreshWorkerDeps{}, healthpkg.RefreshWorkerOptions{SweepInterval: time.Hour})

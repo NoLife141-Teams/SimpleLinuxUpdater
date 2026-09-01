@@ -190,7 +190,7 @@ SSH session they already opened, without making a second connection.
 
 A background worker covers hosts that do not have a successful scheduled scan.
 It starts refreshing complete facts after 20 hours plus a stable per-host jitter
-of up to 2 hours, checks hourly, and processes only one host at a time. A refresh
+of up to 2 hours, checks every 15 minutes, and processes only one host at a time. A refresh
 is skipped while the host is busy or an exclusive Backup operation is active.
 Deferred attempts, failures, and incomplete disk/APT facts use exponential
 backoff from 15 minutes to 6 hours and are recorded as `server.facts.refresh` audit events with source

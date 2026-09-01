@@ -25,6 +25,7 @@ type Deps struct {
 	LoadRetryPolicy                 func() updates.RetryPolicy
 	MaintenanceCoordinator          *maintenance.Coordinator
 	MaintenanceReadiness            func(servers.Server) servers.MaintenanceReadiness
+	AcquireScheduledAction          func(string) func()
 	PolicyRepository                RunRepository
 	ServerState                     *servers.State
 	StartJobRunner                  func(string, func(), ...func())
@@ -55,6 +56,9 @@ func New(deps Deps) *Lifecycle {
 		deps.MaintenanceReadiness = func(servers.Server) servers.MaintenanceReadiness {
 			return servers.MaintenanceReadiness{Ready: true, Code: servers.MaintenanceReadinessReady}
 		}
+	}
+	if deps.AcquireScheduledAction == nil {
+		deps.AcquireScheduledAction = func(string) func() { return func() {} }
 	}
 	if deps.ReconciliationContext == nil {
 		deps.ReconciliationContext = context.Background()
@@ -157,6 +161,8 @@ func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, se
 }
 
 func (l *Lifecycle) executeByMode(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
+	releaseAdmission := l.deps.AcquireScheduledAction(server.Name)
+	defer releaseAdmission()
 	switch policy.ExecutionMode {
 	case policies.ExecutionScanOnly:
 		return l.runScan(run, policy, server)

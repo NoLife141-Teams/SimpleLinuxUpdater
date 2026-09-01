@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	"debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 )
+
+const scheduledScanFactsRefreshSource = "scheduled_scan"
 
 func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) ScheduledJobMeta {
 	meta := ScheduledJobMeta{
@@ -145,6 +148,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		discovery.PendingUpdates = scannedUpdates
 	}
 	SortPendingUpdates(discovery.PendingUpdates)
+	logs = s.refreshFactsAfterScheduledScan(req, session, logs)
 	result := discovery.Clone()
 	finalSummary := "Scheduled scan completed"
 	if discovery.Empty() {
@@ -164,4 +168,29 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			MetaJSON: &metaJSON,
 		})
 	}
+}
+
+func (s *Service) refreshFactsAfterScheduledScan(req ScheduledScanRunRequest, session HostMaintenanceSession, logs string) string {
+	deps := s.EnsureDeps()
+	facts := session.CollectServerFacts(context.Background())
+	meta := map[string]any{
+		"source":       scheduledScanFactsRefreshSource,
+		"job_id":       req.JobID,
+		"run_id":       req.RunID,
+		"collected_at": facts.CollectedAt,
+		"disk_status":  facts.DiskStatus,
+		"apt_status":   facts.AptStatus,
+	}
+	if err := deps.SaveServerFacts(facts); err != nil {
+		meta["error"] = err.Error()
+		deps.Logf("failed to persist scheduled host facts for %q: %v", req.Server.Name, err)
+		deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "failure", "Scheduled host facts refresh failed", meta)
+		return logs + "\nScheduled host facts refresh failed; the scan result remains valid."
+	}
+	if !health.FactsHealthComplete(facts) {
+		deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "warning", "Scheduled host facts refresh returned incomplete health data", meta)
+		return logs + "\nScheduled host facts refreshed with incomplete health data."
+	}
+	deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "success", "Scheduled host facts refreshed", meta)
+	return logs + "\nScheduled host facts refreshed."
 }

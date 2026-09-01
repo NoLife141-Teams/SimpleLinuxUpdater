@@ -790,6 +790,7 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 		one.ServerInventoryService == two.ServerInventoryService ||
 		one.PolicyService == two.PolicyService ||
 		one.UpdateService == two.UpdateService ||
+		one.HostFactsRefreshWorker == two.HostFactsRefreshWorker ||
 		one.ObservabilityService == two.ObservabilityService ||
 		one.MetricsAccessCredential == two.MetricsAccessCredential ||
 		one.DashboardEventBroker == two.DashboardEventBroker ||

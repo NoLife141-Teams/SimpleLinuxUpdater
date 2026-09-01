@@ -6,6 +6,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Refresh host facts through successful scheduled-scan SSH sessions and add a
+  sequential periodic worker with pre-expiry jitter, bounded retry backoff,
+  maintenance coordination, and explicit audit outcomes.
+
 ## [v0.4.7] - 2026-08-05
 
 ### Changed

@@ -1185,25 +1185,7 @@ func rebootResultRequiresRestart(result updatePrecheckResult) (bool, bool) {
 }
 
 func refreshServerFactsWithUpdateDeps(ctx context.Context, server Server, deps UpdateServiceDeps) (serverFactsRecord, error) {
-	deps = updateServiceDepsWithDefaults(deps)
-	session, err := deps.HostMaintenanceSessions.Open(ctx, HostMaintenanceSessionRequest{
-		Server:         server,
-		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
-		DialOperation:  "facts_refresh.ssh_dial",
-		CommandTimeout: deps.LoadCommandTimeout(),
-	})
-	if err != nil {
-		return serverFactsRecord{}, err
-	}
-	defer session.Close()
-	record := session.CollectServerFacts(ctx)
-	if err := ctx.Err(); err != nil {
-		return serverFactsRecord{}, err
-	}
-	if err := deps.SaveServerFacts(record); err != nil {
-		return serverFactsRecord{}, err
-	}
-	return record, nil
+	return NewUpdateService(deps).RefreshServerFacts(ctx, server, "facts_refresh.ssh_dial")
 }
 
 func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
@@ -2616,6 +2598,9 @@ func main() {
 	startAuditPruner(shutdownCtx)
 	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
 	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})
+	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
+		deps.HostFactsRefreshWorker.Start(shutdownCtx)
+	}
 	defer StopAuthRateLimiters()
 	server := &http.Server{
 		Addr:         ":8080",
@@ -2627,7 +2612,12 @@ func main() {
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()
-		shutdownApplication(server, deps.PolicyService.WaitScheduler, func(deliveryCtx context.Context) error {
+		shutdownApplication(server, func() {
+			deps.PolicyService.WaitScheduler()
+			if deps.HostFactsRefreshWorker != nil {
+				deps.HostFactsRefreshWorker.Wait()
+			}
+		}, func(deliveryCtx context.Context) error {
 			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
 		})
 		close(shutdownDone)

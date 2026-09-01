@@ -30,6 +30,36 @@ func (s *Service) EnsureDeps() ServiceDeps {
 	return s.deps.withDefaults()
 }
 
+// RefreshServerFacts opens one bounded read-only Host Maintenance Session,
+// captures the current host health facts, and persists the accepted observation.
+func (s *Service) RefreshServerFacts(ctx context.Context, server servers.Server, dialOperation string) (ServerFactsRecord, error) {
+	deps := s.EnsureDeps()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(dialOperation) == "" {
+		dialOperation = "facts_refresh.ssh_dial"
+	}
+	session, err := deps.HostMaintenanceSessions.Open(ctx, HostMaintenanceSessionRequest{
+		Server:         server,
+		RetryPolicy:    RetryPolicy{MaxAttempts: 1},
+		DialOperation:  dialOperation,
+		CommandTimeout: deps.LoadCommandTimeout(),
+	})
+	if err != nil {
+		return ServerFactsRecord{}, err
+	}
+	defer func() { _ = session.Close() }()
+	record := session.CollectServerFacts(ctx)
+	if err := ctx.Err(); err != nil {
+		return ServerFactsRecord{}, err
+	}
+	if err := deps.SaveServerFacts(record); err != nil {
+		return ServerFactsRecord{}, err
+	}
+	return record, nil
+}
+
 func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.Now == nil {
 		d.Now = func() time.Time { return time.Now().UTC() }

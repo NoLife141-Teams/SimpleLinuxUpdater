@@ -235,6 +235,8 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 		deps.PolicyService == nil ||
 		deps.PolicyRepository == nil ||
 		deps.UpdateService == nil ||
+		deps.HostFactsRefreshWorker == nil ||
+		deps.HostFactsRefreshAdmission == nil ||
 		deps.ObservabilityService == nil ||
 		deps.MetricsAccessCredential == nil ||
 		deps.CurrentJobManager == nil ||

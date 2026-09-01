@@ -12,6 +12,7 @@
 - [Storage paths](#storage-paths)
 - [Job log storage and retention](#job-log-storage-and-retention)
 - [Retry policy](#retry-policy)
+- [Automatic host-facts refresh](#automatic-host-facts-refresh)
 - [Post-update checks](#post-update-checks)
 - [Known hosts handling](#known-hosts-handling)
 - [Environment file (.env)](#environment-file-env)
@@ -180,6 +181,27 @@ finalization. Without prior progress, or after that single grace window, it stop
 waiting and marks the command outcome as unknown. It does not automatically
 replay the mutating APT command, because the remote process may still be
 completing after the SSH session closes.
+
+## Automatic host-facts refresh
+
+Host facts are refreshed automatically after successful updates and controlled
+reboots. Successful scheduled scans also collect and persist facts through the
+SSH session they already opened, without making a second connection.
+
+A background worker covers hosts that do not have a successful scheduled scan.
+It starts refreshing complete facts after 20 hours plus a stable per-host jitter
+of up to 2 hours, checks every 15 minutes, and processes only one host at a time. A refresh
+is skipped while the host is busy or an exclusive Backup operation is active.
+Deferred attempts, failures, and incomplete disk/APT facts use exponential
+backoff from 15 minutes to 6 hours and are recorded as `server.facts.refresh` audit events with source
+`automatic_periodic`. The manual **Refresh host facts** action remains available.
+
+Environment variable:
+
+- `DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED` (`true|false`, default `true`)
+
+Disabling the worker does not disable the facts capture performed by successful
+updates, controlled reboots, or scheduled scans.
 
 ## Post-update checks
 

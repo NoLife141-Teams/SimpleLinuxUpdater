@@ -25,8 +25,8 @@ const postcheckNameFailedUnits = updatespkg.PostcheckNameFailedUnits
 const postcheckNameRebootRequired = updatespkg.PostcheckNameRebootNeeded
 
 var precheckLocksCmd = updatespkg.AptExtendedLockProbeCmd
-var precheckDpkgAuditCmd = updatespkg.RootOrSudoCommand("dpkg --audit")
-var precheckAptCheckCmd = updatespkg.RootOrSudoCommand("apt-get check")
+var precheckDpkgAuditCmd = updatespkg.RootOrSudoHelperCommand("/usr/bin/dpkg --audit", "dpkg-audit")
+var precheckAptCheckCmd = updatespkg.RootOrSudoHelperCommand("/usr/bin/apt-get check", "apt-check")
 
 type fakeExitStatusError struct {
 	code int

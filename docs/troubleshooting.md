@@ -10,6 +10,7 @@
 - [SSH host key issues](#ssh-host-key-issues)
 - [APT locks and missing fuser](#apt-locks-and-missing-fuser)
 - [`needs_reconciliation` after an APT timeout](#needs_reconciliation-after-an-apt-timeout)
+- [Sudoers migration refused](#sudoers-migration-refused)
 - [Pre-check failures](#pre-check-failures)
 - [APT/DPKG health failures](#aptdpkg-health-failures)
 - [Post-check failures](#post-check-failures)
@@ -94,7 +95,7 @@ sudo apt-get update
 sudo apt-get install -y psmisc
 ```
 
-After installing `psmisc`, rerun the app's passwordless apt helper or add a sudoers rule that allows the exact `fuser` lock-check command shown in [security.md](security.md).
+After installing `psmisc`, rerun **Enable apt** so the app installs its typed root helper and managed sudoers rule. Do not add a generic `fuser`, `apt`, or `apt-get` sudoers grant; the helper exposes only the two fixed lock-probe operations documented in [security.md](security.md).
 
 If the host intentionally uses root SSH without `sudo` (common on Proxmox), connect as `root`; the updater will run apt and pre-check commands directly.
 
@@ -107,7 +108,20 @@ This status means a mutating APT command timed out while its final outcome could
 3. Confirm **Repair APT**. The repair refuses to start its dpkg work while an APT/DPKG lock holder is detected.
 4. Retry the update only after the repair job reports that package health checks passed.
 
-For non-root SSH users configured before this feature was added, run **Enable apt** again so the managed sudoers rule also permits the exact `dpkg --configure -a` repair command.
+For non-root SSH users configured before the typed helper was added, run **Enable apt** again so repair uses the helper's fixed operation.
+
+## Sudoers migration refused
+
+Symptom: **Enable apt** or **Disable apt** fails with `refused sudoers file operation`, `has no owner marker`, or `legacy apt-nopasswd is not an exact app-generated rule`.
+
+SimpleLinuxUpdater refuses to overwrite or remove `/etc/sudoers.d/simplelinuxupdater`, `/usr/local/sbin/simplelinuxupdater-root-helper`, or the legacy `/etc/sudoers.d/apt-nopasswd` unless the file type, root ownership, and app identity checks pass. This protects administrator-managed files and symlinks.
+
+1. Inspect the reported path as root without changing it.
+2. If `/etc/sudoers.d/apt-nopasswd` is administrator-managed or customized, migrate the required policy manually and remove the generic legacy grants only after validating the replacement.
+3. If an app-managed file was edited, compare it with a trusted release and decide whether to remove it manually before rerunning **Enable apt**.
+4. Run `sudo visudo -c` after any manual sudoers change.
+
+The app never treats an unrecognized legacy file as safe to delete.
 
 ## Pre-check failures
 

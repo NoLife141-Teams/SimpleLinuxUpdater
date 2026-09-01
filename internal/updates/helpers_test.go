@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"math"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -305,11 +307,15 @@ func TestAptListUpgradableCmdForcesCLocaleWithoutSudo(t *testing.T) {
 	}
 }
 
-func TestBuildSelectedUpgradeCmdEscapesPackages(t *testing.T) {
-	got := BuildSelectedUpgradeCmd([]string{"openssl", "libfoo'bar"})
-	want := NonInteractiveAptCommand(`-y install --only-upgrade -- 'openssl' 'libfoo'"'"'bar'`)
-	if got != want {
-		t.Fatalf("BuildSelectedUpgradeCmd() = %q, want %q", got, want)
+func TestBuildSelectedUpgradeCmdUsesValidatedTypedHelperOperation(t *testing.T) {
+	got := BuildSelectedUpgradeCmd([]string{"openssl", "libssl3:amd64"})
+	for _, required := range []string{"/usr/bin/apt-get", "install --only-upgrade -- 'openssl' 'libssl3:amd64'", RootHelperPath + " 'install-only-upgrade' 'openssl' 'libssl3:amd64'"} {
+		if !strings.Contains(got, required) {
+			t.Fatalf("BuildSelectedUpgradeCmd() = %q, missing %q", got, required)
+		}
+	}
+	if got := BuildSelectedUpgradeCmd([]string{"openssl", "libfoo'bar"}); got != "" {
+		t.Fatalf("BuildSelectedUpgradeCmd() accepted invalid selector: %q", got)
 	}
 }
 
@@ -360,10 +366,9 @@ func TestKeptBackSecurityPackagesUseInstallSelectorForForeignArch(t *testing.T) 
 }
 
 func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
-	got := BuildSelectedInstallCmd([]string{"linux-image-amd64", "libfoo'bar"})
-	want := NonInteractiveAptCommand(`-y install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
-	if got != want {
-		t.Fatalf("BuildSelectedInstallCmd() = %q, want %q", got, want)
+	got := BuildSelectedInstallCmd([]string{"linux-image-amd64", "libssl3:amd64"})
+	if !strings.Contains(got, "install -- 'linux-image-amd64' 'libssl3:amd64'") || !strings.Contains(got, RootHelperPath+" 'install' 'linux-image-amd64' 'libssl3:amd64'") {
+		t.Fatalf("BuildSelectedInstallCmd() = %q, want direct root and typed helper forms", got)
 	}
 	if strings.Contains(got, "--only-upgrade") {
 		t.Fatalf("BuildSelectedInstallCmd() = %q, should allow dependencies and new packages", got)
@@ -371,8 +376,8 @@ func TestBuildSelectedInstallCmdAllowsNewDependencies(t *testing.T) {
 }
 
 func TestBuildSelectedInstallSimulationCmd(t *testing.T) {
-	got := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64", "libfoo'bar"})
-	want := ReadOnlyAptCommand(`apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only install -- 'linux-image-amd64' 'libfoo'"'"'bar'`)
+	got := BuildSelectedInstallSimulationCmd([]string{"linux-image-amd64", "libssl3:amd64"})
+	want := ReadOnlyAptCommand(`apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only install -- 'linux-image-amd64' 'libssl3:amd64'`)
 	if got != want {
 		t.Fatalf("BuildSelectedInstallSimulationCmd() = %q, want %q", got, want)
 	}
@@ -559,14 +564,6 @@ func TestApplyKeptBackSecuritySimulationParsesExactImpact(t *testing.T) {
 	}
 }
 
-func TestRootOrSudoCommand(t *testing.T) {
-	got := RootOrSudoCommand("apt-get update")
-	want := `if [ "$(id -u)" -eq 0 ]; then apt-get update; else sudo -n apt-get update; fi`
-	if got != want {
-		t.Fatalf("RootOrSudoCommand() = %q, want %q", got, want)
-	}
-}
-
 func TestAptMutationCommandsDeclareNonInteractivePolicy(t *testing.T) {
 	commands := []string{
 		AptUpdateCmd,
@@ -591,19 +588,73 @@ func TestAptMutationCommandsDeclareNonInteractivePolicy(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(AptRepairCmd, NonInteractiveDpkgConfigureCommand()) || !strings.Contains(AptRepairCmd, NonInteractiveAptCommand("-y -f install")) {
-		t.Fatalf("AptRepairCmd = %q, want explicit noninteractive dpkg and apt repair", AptRepairCmd)
+	for _, required := range []string{"/usr/bin/dpkg --force-confdef --force-confold --configure -a", "/usr/bin/apt-get " + AptDpkgConffileOptions + " -y -f install", RootHelperPath + " 'repair'"} {
+		if !strings.Contains(AptRepairCmd, required) {
+			t.Fatalf("AptRepairCmd = %q, missing %q", AptRepairCmd, required)
+		}
 	}
 }
 
 func TestNonInteractiveSudoersSpecsRestrictEnvironmentWrapper(t *testing.T) {
-	aptSpec := NonInteractiveAptSudoersSpec()
-	if !strings.HasPrefix(aptSpec, "/usr/bin/env ") || !strings.HasSuffix(aptSpec, "/usr/bin/apt-get *") || !strings.Contains(aptSpec, AptNonInteractiveEnvironment) {
-		t.Fatalf("NonInteractiveAptSudoersSpec() = %q", aptSpec)
+	spec := NonInteractiveAptSudoersSpec()
+	for _, forbidden := range []string{"/usr/bin/apt,", "/usr/bin/apt-get,", "/usr/bin/apt-get *", "/usr/bin/env "} {
+		if strings.Contains(spec, forbidden) {
+			t.Fatalf("NonInteractiveAptSudoersSpec() = %q, contains generic grant %q", spec, forbidden)
+		}
 	}
-	dpkgSpec := NonInteractiveDpkgSudoersSpec()
-	if !strings.HasPrefix(dpkgSpec, "/usr/bin/env ") || !strings.HasSuffix(dpkgSpec, "/usr/bin/dpkg --force-confdef --force-confold --configure -a") || !strings.Contains(dpkgSpec, AptNonInteractiveEnvironment) {
-		t.Fatalf("NonInteractiveDpkgSudoersSpec() = %q", dpkgSpec)
+	for _, operation := range []string{"update", "upgrade", "full-upgrade", "autoremove", "repair", "lock-probe", "lock-probe-extended", "install", "install-only-upgrade", "reboot"} {
+		if !strings.Contains(spec, RootHelperPath+" "+operation) {
+			t.Fatalf("NonInteractiveAptSudoersSpec() = %q, missing typed operation %q", spec, operation)
+		}
+	}
+}
+
+func TestRootHelperRejectsEscapeInputsBeforeDispatch(t *testing.T) {
+	helperPath := filepath.Join(t.TempDir(), "simplelinuxupdater-root-helper")
+	if err := os.WriteFile(helperPath, []byte(RootHelperScript()), 0o700); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "arbitrary apt option", args: []string{"update", "-o", "Debug::pkgProblemResolver=true"}},
+		{name: "apt pre invoke hook", args: []string{"install", "APT::Update::Pre-Invoke::=/bin/sh", "openssl"}},
+		{name: "shell metacharacters", args: []string{"install", "openssl;id"}},
+		{name: "command substitution", args: []string{"install", "$(id)"}},
+		{name: "invalid package option", args: []string{"install", "--reinstall"}},
+		{name: "invalid architecture", args: []string{"install", "openssl:amd64;id"}},
+		{name: "apt removal suffix", args: []string{"install", "curl-"}},
+		{name: "architecture removal suffix", args: []string{"install", "curl:amd64-"}},
+		{name: "apt regex fallback", args: []string{"install", "a.+"}},
+		{name: "arbitrary path", args: []string{"install", "/tmp/package.deb"}},
+		{name: "unknown operation", args: []string{"shell", "id"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(helperPath, tt.args...)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("helper accepted %q; output=%q", tt.args, output)
+			}
+			if !strings.Contains(string(output), "refused") {
+				t.Fatalf("helper rejection for %q = %q, want refused diagnostic", tt.args, output)
+			}
+		})
+	}
+}
+
+func TestPackageSelectorValidation(t *testing.T) {
+	for _, selector := range []string{"openssl", "libssl3:amd64", "linux-image-6.12.0-1-amd64", "libstdc++6"} {
+		if !IsValidPackageSelector(selector) {
+			t.Errorf("IsValidPackageSelector(%q) = false, want true", selector)
+		}
+	}
+	for _, selector := range []string{"", "-o", "openssl;id", "$(id)", "pkg:amd64:extra", "pkg:../amd64", "/tmp/pkg.deb", "pkg=1.2", "curl-", "curl:amd64-", "a.+"} {
+		if IsValidPackageSelector(selector) {
+			t.Errorf("IsValidPackageSelector(%q) = true, want false", selector)
+		}
 	}
 }
 
@@ -625,6 +676,13 @@ func TestIsAptLockProtectedCommand(t *testing.T) {
 		if IsAptLockProtectedCommand(command) {
 			t.Fatalf("IsAptLockProtectedCommand(%q) = true, want false", command)
 		}
+	}
+	bootstrap, err := BuildSudoersBootstrapCommand("operator")
+	if err != nil {
+		t.Fatalf("BuildSudoersBootstrapCommand() error = %v", err)
+	}
+	if IsAptLockProtectedCommand(bootstrap) {
+		t.Fatal("sudoers bootstrap embeds helper source but must not be classified as a running APT operation")
 	}
 }
 

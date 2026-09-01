@@ -938,33 +938,19 @@ func ShellEscapeSingleQuotes(value string) string {
 	return strings.ReplaceAll(value, "'", "'\"'\"'")
 }
 
-func RootOrSudoCommand(command string) string {
-	return fmt.Sprintf("if [ \"$(id -u)\" -eq 0 ]; then %s; else sudo -n %s; fi", command, command)
-}
-
-func NonInteractiveAptCommand(args string) string {
+func nonInteractiveAptCommand(operation, args string) string {
 	command := strings.TrimSpace(fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get %s %s", AptNonInteractiveEnvironment, AptDpkgConffileOptions, strings.TrimSpace(args)))
-	return RootOrSudoCommand(command)
-}
-
-func NonInteractiveDpkgConfigureCommand() string {
-	command := fmt.Sprintf("/usr/bin/env %s /usr/bin/dpkg --force-confdef --force-confold --configure -a", AptNonInteractiveEnvironment)
-	return RootOrSudoCommand(command)
+	return RootOrSudoHelperCommand(command, operation)
 }
 
 func ReadOnlyAptCommand(command string) string {
 	return strings.TrimSpace(AptReadOnlyEnvironment + " " + strings.TrimSpace(command))
 }
 
-func NonInteractiveAptSudoersSpec() string {
-	return fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get *", AptNonInteractiveEnvironment)
-}
-
-func NonInteractiveDpkgSudoersSpec() string {
-	return fmt.Sprintf("/usr/bin/env %s /usr/bin/dpkg --force-confdef --force-confold --configure -a", AptNonInteractiveEnvironment)
-}
-
 func IsAptLockProtectedCommand(command string) bool {
+	if strings.HasPrefix(strings.TrimSpace(command), "sudo -S -p '' /bin/sh -c ") {
+		return false
+	}
 	normalized := strings.ToLower(strings.TrimSpace(command))
 	return strings.Contains(normalized, "apt-get") && strings.Contains(normalized, " update") || IsAptMutationCommand(command)
 }
@@ -994,7 +980,7 @@ func BuildSelectedInstallCmd(packages []string) string {
 }
 
 func BuildSelectedInstallSimulationCmd(packages []string) string {
-	escaped := shellEscapedPackageArgs(packages)
+	escaped := validatedShellEscapedPackageArgs(packages)
 	if len(escaped) == 0 {
 		return ""
 	}
@@ -1002,36 +988,43 @@ func BuildSelectedInstallSimulationCmd(packages []string) string {
 }
 
 func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
-	args := buildSelectedInstallArgs(packages, onlyUpgrade)
-	if args == "" {
+	selectors := validatedPackageSelectors(packages)
+	if len(selectors) == 0 {
 		return ""
 	}
-	return NonInteractiveAptCommand(strings.TrimPrefix(args, "apt-get "))
-}
-
-func buildSelectedInstallArgs(packages []string, onlyUpgrade bool) string {
-	escaped := shellEscapedPackageArgs(packages)
-	if len(escaped) == 0 {
-		return ""
-	}
-	args := "apt-get -y install"
+	rootCommand := fmt.Sprintf("/usr/bin/env %s /usr/bin/apt-get %s -y install", AptNonInteractiveEnvironment, AptDpkgConffileOptions)
+	operation := "install"
 	if onlyUpgrade {
-		args += " --only-upgrade"
+		rootCommand += " --only-upgrade"
+		operation = "install-only-upgrade"
 	}
-	return args + " -- " + strings.Join(escaped, " ")
+	rootCommand += " -- " + strings.Join(validatedShellEscapedPackageArgs(selectors), " ")
+	return RootOrSudoHelperCommand(rootCommand, operation, selectors...)
 }
 
-func shellEscapedPackageArgs(packages []string) []string {
+func validatedPackageSelectors(packages []string) []string {
 	if len(packages) == 0 {
 		return nil
 	}
-	escaped := make([]string, 0, len(packages))
+	validated := make([]string, 0, len(packages))
 	for _, pkg := range packages {
 		trimmed := strings.TrimSpace(pkg)
 		if trimmed == "" {
 			continue
 		}
-		escaped = append(escaped, fmt.Sprintf("'%s'", ShellEscapeSingleQuotes(trimmed)))
+		if !IsValidPackageSelector(trimmed) || trimmed != pkg {
+			return nil
+		}
+		validated = append(validated, trimmed)
+	}
+	return validated
+}
+
+func validatedShellEscapedPackageArgs(packages []string) []string {
+	validated := validatedPackageSelectors(packages)
+	escaped := make([]string, 0, len(validated))
+	for _, selector := range validated {
+		escaped = append(escaped, shellQuote(selector))
 	}
 	return escaped
 }

@@ -1090,21 +1090,30 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		line := fmt.Sprintf("%s ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg --audit, /usr/bin/dpkg --configure -a, %s, %s, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock, /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock, /usr/bin/systemctl reboot", r.server.User, NonInteractiveAptSudoersSpec(), NonInteractiveDpkgSudoersSpec())
-		escapedLine := ShellEscapeSingleQuotes(line)
-		cmd := fmt.Sprintf("sudo -S -p '' sh -c \"printf '%%s\\n' '%s' > /etc/sudoers.d/apt-nopasswd && chmod 440 /etc/sudoers.d/apt-nopasswd && /usr/sbin/visudo -cf /etc/sudoers.d/apt-nopasswd\"", escapedLine)
+		cmd, err := BuildSudoersBootstrapCommand(r.server.User)
+		if err != nil {
+			r.lastErrClass = "validation"
+			r.setErrorLogs(r.currentLogs() + "\nError: " + err.Error())
+			return
+		}
 		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
 			return strings.NewReader(req.SudoPassword + "\n")
-		}, "\nPasswordless apt sudoers enabled.")
+		}, "\nRestricted SimpleLinuxUpdater sudoers helper enabled.")
 	})
 }
 
 func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersDisable, req.Policy, "sudoers.disable.complete", "sudoers.disable.ssh_dial", "Disabling passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
-		r.runSingleCommand("sudoers.disable.command", "\nsudoers disable attempt %d/%d failed: %v; retrying in %s", "sudo -S -p '' rm -f /etc/sudoers.d/apt-nopasswd", func() io.Reader {
+		cmd, err := BuildSudoersDisableCommand(r.server.User)
+		if err != nil {
+			r.lastErrClass = "validation"
+			r.setErrorLogs(r.currentLogs() + "\nError: " + err.Error())
+			return
+		}
+		r.runSingleCommand("sudoers.disable.command", "\nsudoers disable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
 			return strings.NewReader(req.SudoPassword + "\n")
-		}, "\nPasswordless apt sudoers disabled.")
+		}, "\nRestricted SimpleLinuxUpdater sudoers helper disabled.")
 	})
 }
 

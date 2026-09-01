@@ -378,9 +378,14 @@ func TestBuildSelectedUpgradeCmd(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "multiple packages with escaping",
-			input: []string{"openssl", "python3.11", "libfoo'bar"},
-			want:  updatespkg.NonInteractiveAptCommand("-y install --only-upgrade -- 'openssl' 'python3.11' 'libfoo'\"'\"'bar'"),
+			name:  "multiple validated packages",
+			input: []string{"openssl", "python3.11", "libssl3:amd64"},
+			want:  updatespkg.BuildSelectedUpgradeCmd([]string{"openssl", "python3.11", "libssl3:amd64"}),
+		},
+		{
+			name:  "invalid selector rejected",
+			input: []string{"openssl", "libfoo'bar"},
+			want:  "",
 		},
 		{
 			name:  "nil input",

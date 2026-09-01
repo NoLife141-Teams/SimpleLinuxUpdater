@@ -134,7 +134,7 @@ The UI can enable/disable passwordless apt by installing/removing two owner-mark
 - `/usr/local/sbin/simplelinuxupdater-root-helper`
 - `/etc/sudoers.d/simplelinuxupdater`
 
-The generated sudoers rule does not grant `/usr/bin/apt`, `/usr/bin/apt-get`, a shell, or `/usr/bin/env` directly. It permits only typed helper operations. The helper has an internal allowlist for metadata refresh, standard upgrade, full upgrade, autoremove, repair, the two lock probes, package-state checks, selected-package install/upgrade, and controlled reboot. Each operation constructs its own fixed command; it does not accept a raw shell command, arbitrary APT options, `-o`, APT hooks, or filesystem paths.
+The generated sudoers rule does not grant `/usr/bin/apt`, `/usr/bin/apt-get`, a shell, or `/usr/bin/env` directly. It permits only typed helper operations. The helper has an internal allowlist for metadata refresh, standard upgrade, full upgrade, autoremove, repair, the two lock probes, package-state checks, selected-package install/upgrade, and controlled reboot. Each operation constructs its own fixed command; it does not accept a raw shell command, arbitrary APT options, `-o`, APT hooks, or filesystem paths. APT and dpkg start with an empty environment rebuilt from a fixed PATH and the documented non-interactive variables, so inherited APT configuration variables cannot alter the operation.
 
 Selected-package operations accept only Debian package selectors matching a lowercase package name, optionally followed by one validated architecture suffix such as `openssl:amd64`. The helper inserts `--` itself and rejects options, hooks, metacharacters, extra colons, version expressions, and arbitrary paths before invoking APT.
 

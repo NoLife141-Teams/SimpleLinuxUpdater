@@ -75,6 +75,16 @@ func TestManagedSudoersContentValidatesWithVisudo(t *testing.T) {
 	}
 }
 
+func TestRootHelperClearsInheritedEnvironmentBeforeAptAndDpkg(t *testing.T) {
+	script := RootHelperScript()
+	if strings.Contains(script, "/usr/bin/env DEBIAN_FRONTEND=") {
+		t.Fatal("root helper invokes package tools with an inherited environment")
+	}
+	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 8 {
+		t.Fatalf("root helper clean-environment package invocations = %d, want 8", got)
+	}
+}
+
 func TestSudoersCommandsGuardEveryManagedPathBeforeMutation(t *testing.T) {
 	bootstrap, err := BuildSudoersBootstrapCommand("operator")
 	if err != nil {

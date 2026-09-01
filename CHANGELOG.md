@@ -10,8 +10,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 - Replace generic passwordless `apt`/`apt-get` sudoers grants with a root-owned,
   typed SimpleLinuxUpdater helper; validate package selectors, reject raw APT
-  options/hooks, and migrate or remove sudoers files only after strict owner
-  marker and legacy-content checks.
+  options/hooks and inherited package-manager configuration, and migrate or
+  remove sudoers files only after strict owner marker and legacy-content checks.
 
 ### Added
 

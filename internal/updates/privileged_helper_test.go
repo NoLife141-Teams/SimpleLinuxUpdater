@@ -84,8 +84,13 @@ func TestRootHelperClearsInheritedEnvironmentBeforeAptAndDpkg(t *testing.T) {
 	if strings.Contains(script, "/usr/bin/env DEBIAN_FRONTEND=") {
 		t.Fatal("root helper invokes package tools with an inherited environment")
 	}
-	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 10 {
-		t.Fatalf("root helper clean-environment package invocations = %d, want 10", got)
+	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 14 {
+		t.Fatalf("root helper clean-environment package invocations = %d, want 14", got)
+	}
+	for _, forbidden := range []string{"exec /usr/bin/dpkg --audit", "exec /usr/bin/apt-get check", "audit_output=$(/usr/bin/dpkg --audit"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("root helper contains inherited-environment health check %q", forbidden)
+		}
 	}
 }
 

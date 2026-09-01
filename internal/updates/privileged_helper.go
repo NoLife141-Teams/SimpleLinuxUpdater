@@ -164,11 +164,11 @@ case "$operation" in
         ;;
     dpkg-audit)
         require_no_args "$@"
-        exec /usr/bin/dpkg --audit
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --audit
         ;;
     apt-check)
         require_no_args "$@"
-        exec /usr/bin/apt-get check
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-get check
         ;;
     repair)
         require_no_args "$@"
@@ -183,7 +183,7 @@ case "$operation" in
         fi
         /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/dpkg --force-confdef --force-confold --configure -a
         /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y -f install
-        audit_output=$(/usr/bin/dpkg --audit 2>&1) || {
+        audit_output=$(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/dpkg --audit 2>&1) || {
             status=$?
             printf '%s\n' 'APT/DPKG repair verification failed: dpkg audit command failed.' "$audit_output" >&2
             exit "$status"
@@ -192,7 +192,7 @@ case "$operation" in
             printf '%s\n' 'APT/DPKG repair verification failed: dpkg audit still reports package-state problems.' "$audit_output" >&2
             exit 77
         }
-        exec /usr/bin/apt-get check
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-get check
         ;;
     reboot)
         require_no_args "$@"

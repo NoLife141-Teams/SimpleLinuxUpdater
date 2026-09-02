@@ -4,7 +4,7 @@ This file provides guidance for agentic coding agents working on this codebase.
 
 ## Project Overview
 
-- **Language**: Go 1.26+
+- **Language**: Go version declared by `go.mod` (currently 1.26.6)
 - **Web Framework**: Gin
 - **Database**: SQLite (modernc.org/sqlite)
 - **SSH**: golang.org/x/crypto/ssh
@@ -236,7 +236,7 @@ func TestNormalizePort(t *testing.T) {
 
 The project uses GitHub Actions (see `.github/workflows/ci.yml`):
 - Runs unit tests, race detector tests, and coverage tests on pushes/PRs to main
-- Go version: Go 1.26+ via `go.mod`
+- Go version: exact version declared by `go.mod` (currently 1.26.6)
 - No separate lint step (Go's built-in tooling is used)
 
 ## Release Process

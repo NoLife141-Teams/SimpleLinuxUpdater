@@ -13,7 +13,7 @@
 
 ## Requirements
 
-- Go 1.26+ (only required if building from source)
+- The Go version declared by `go.mod`, currently `1.26.6` (only required if building from source)
 - A Debian-based target host (Debian, Ubuntu, Proxmox, etc.) with `apt`
 - `psmisc` on each target, which provides the required `/usr/bin/fuser` APT-lock check
 - `sudo` for non-root target SSH users; root SSH sessions run maintenance commands directly

@@ -175,6 +175,10 @@ actionlint
 npm audit --audit-level=moderate
 ```
 
+## Go toolchain
+
+The exact `go` directive in `go.mod` is the canonical Go toolchain version. GitHub Actions reads that file through `setup-go`, and the Docker builder must use the matching `golang:<version>-alpine` tag. Run `tools/ci/verify-go-toolchain.sh` after either file changes. CI requires this check on every PR, and Dependabot is configured not to update the `golang` Docker image independently; intentional Go upgrades must update `go.mod`, the Docker builder, and the current-version documentation together.
+
 ## Release tags
 
 Create release tags only after the release commit is merged to `main` and its final CI and CodeQL runs are green. `.github/workflows/release-trigger.yml`, which is loaded from the tagged ref, has no permissions and only signals `.github/workflows/release.yml`. GitHub loads the latter through `workflow_run` from the trusted default branch. It verifies the exact tag-to-SHA binding and rejects a tagged commit that is not in current `origin/main` history before either publication job can start. Its critical validation set must remain aligned with normal CI; `release_workflow_architecture_test.go` enforces that contract.

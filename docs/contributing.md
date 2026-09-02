@@ -174,3 +174,9 @@ govulncheck ./...
 actionlint
 npm audit --audit-level=moderate
 ```
+
+## Release tags
+
+Create release tags only after the release commit is merged to `main` and its final CI and CodeQL runs are green. `.github/workflows/release.yml` fetches full history and rejects a tagged commit that is not in `origin/main` history before either publication job can start. Its critical validation set must remain aligned with normal CI; `release_workflow_architecture_test.go` enforces that contract.
+
+Release workflow actions must use full commit SHAs with a readable version comment. GitHub's hosted `Protect release tags v*` ruleset separately prevents updates and deletions of existing `v*` tags. Because repository rulesets are not versioned with this checkout, verify the active ruleset in repository settings as part of release preparation.

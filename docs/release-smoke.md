@@ -6,9 +6,19 @@ Run this checklist before creating a release tag. This is the authoritative disp
 
 For a detailed Codex/Computer Use execution runbook that covers both deterministic UI states and a live disposable-host pass, use [Computer Use Release Checklist](computer-use-release-checklist.md).
 
+## Release source and tag protection
+
+Merge the release commit to `main` and wait for the final `main` CI and CodeQL runs before creating a `vX.Y.Z` tag. Never create a release tag from a release-preparation branch.
+
+The versioned release workflow provides the publication boundary: `release-gate` checks out full history, fetches the current `origin/main`, and uses Git ancestry to require the tagged `GITHUB_SHA` to be part of `origin/main` history. A tag on an unmerged branch or unrelated commit fails before the GitHub release or container jobs can run. The gate repeats the critical normal-CI validations, including frontend unit tests, and every third-party action in the release chain is pinned to a full commit SHA with its readable version recorded in the workflow.
+
+Repository settings provide a separate hosted control. The active `Protect release tags v*` GitHub ruleset prevents updates and deletions of matching tags after creation. This ruleset is not stored in Git and must be verified in **Settings → Rules → Rulesets** before each release if repository administration or ownership changes. The workflow ancestry check remains authoritative for publication even if the hosted ruleset is disabled or removed.
+
 ## Preconditions
 
 - Fresh build from the release commit.
+- Release commit is merged into `main`, and final `main` CI plus CodeQL are green.
+- The `Protect release tags v*` repository ruleset is active and targets `refs/tags/v*`.
 - Disposable app DB path and disposable `known_hosts` path.
 - One reachable Debian/Ubuntu target host that may be updated, scanned, and have test audit/job records created. Controlled reboot additionally requires explicit approval and a real `systemd` boot environment.
 - Target details recorded outside the repo:

@@ -35,21 +35,49 @@ func workflowJobForTest(t *testing.T, source, name, nextName string) string {
 
 func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 	release := readWorkflowForTest(t, ".github/workflows/release.yml")
-	releaseGate := workflowJobForTest(t, release, "release-gate", "publish-release")
+	trigger := readWorkflowForTest(t, ".github/workflows/release-trigger.yml")
 
 	for _, required := range []string{
+		`workflow_run:`,
+		`workflows: ["Release Tag Signal"]`,
+		`RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}`,
+		`RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}`,
 		"fetch-depth: 0",
 		"run: tools/release/verify-tag-on-main.sh",
 	} {
-		if !strings.Contains(releaseGate, required) {
-			t.Errorf("release-gate does not enforce main-history provenance %q", required)
+		if !strings.Contains(release, required) {
+			t.Errorf("trusted release workflow does not enforce main-history provenance %q", required)
 		}
+	}
+	if strings.Contains(release, "on:\n  push:") || strings.Contains(release, `tags: ["v*"]`) {
+		t.Error("publication workflow must not be loaded from the untrusted tagged ref")
+	}
+	for _, required := range []string{
+		"name: Release Tag Signal",
+		"push:",
+		`tags: ["v*"]`,
+	} {
+		if !strings.Contains(trigger, required) {
+			t.Errorf("tag signal workflow is missing %q", required)
+		}
+	}
+	if strings.Contains(trigger, "uses:") || strings.Contains(trigger, "contents: write") {
+		t.Error("untrusted tag signal workflow must not check out code or receive write permissions")
 	}
 	if !strings.Contains(release, "needs: release-gate") {
 		t.Error("GitHub release publication is not gated by release-gate")
 	}
 	if !strings.Contains(release, "needs: [release-gate, publish-release]") {
 		t.Error("container publication is not gated by release-gate and GitHub release publication")
+	}
+	for _, required := range []string{
+		"tag_name: ${{ env.RELEASE_TAG }}",
+		"target_commitish: ${{ env.RELEASE_SHA }}",
+		"type=raw,value=${{ env.RELEASE_TAG }}",
+	} {
+		if !strings.Contains(release, required) {
+			t.Errorf("publication does not use the verified release identity %q", required)
+		}
 	}
 }
 

@@ -1,14 +1,23 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: ["Release Tag Signal"]
+    types: [completed]
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+
 jobs:
   release-gate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,8 +31,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Verify tagged commit is on main
+      - name: Verify trusted release signal and main ancestry
         run: tools/release/verify-tag-on-main.sh
+
+      - name: Check out verified release commit
+        run: git checkout --detach "$RELEASE_SHA"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -79,7 +91,7 @@ jobs:
       - name: Verify release metadata
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           ESCAPED_TAG="$(printf '%s' "$TAG" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
           ESCAPED_VERSION="$(printf '%s' "$VERSION" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
@@ -116,6 +128,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_SHA }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -126,7 +139,7 @@ jobs:
       - name: Build release archives
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
           APP="SimpleLinuxUpdater_${VERSION}"
           mkdir -p dist
@@ -177,7 +190,7 @@ jobs:
         id: release_notes
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="$RELEASE_TAG"
           NOTES_FILE="dist/release_notes.md"
           awk -v tag="$TAG" '
             index($0, "## [" tag "]") == 1 {capture=1}
@@ -193,6 +206,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ env.RELEASE_SHA }}
           body_path: ${{ steps.release_notes.outputs.path }}
           files: |
             dist/*.tar.gz
@@ -210,6 +225,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_SHA }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -235,7 +251,7 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=ref,event=tag
+            type=raw,value=${{ env.RELEASE_TAG }}
             type=raw,value=latest
 
       - name: Build and push Docker image

@@ -1,0 +1,14 @@
+name: Release Tag Signal
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signal trusted release workflow
+        run: echo "Release tag signal accepted for downstream validation."

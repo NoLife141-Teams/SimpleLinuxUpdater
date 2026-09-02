@@ -41,6 +41,7 @@ func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
 	mainSHA := runGitForReleaseLineageTest(t, work, "rev-parse", "HEAD")
 	runGitForReleaseLineageTest(t, work, "push", "-u", "origin", "main")
 	runGitForReleaseLineageTest(t, work, "tag", "-a", "v1.0.0", "-m", "main release", mainSHA)
+	runGitForReleaseLineageTest(t, work, "push", "origin", "refs/tags/v1.0.0")
 	mainTagSHA := runGitForReleaseLineageTest(t, work, "rev-parse", "refs/tags/v1.0.0")
 
 	runGitForReleaseLineageTest(t, work, "checkout", "-b", "unmerged")
@@ -51,6 +52,7 @@ func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
 	runGitForReleaseLineageTest(t, work, "commit", "-m", "unmerged release")
 	unmergedSHA := runGitForReleaseLineageTest(t, work, "rev-parse", "HEAD")
 	runGitForReleaseLineageTest(t, work, "tag", "-a", "v1.0.1", "-m", "unmerged release", unmergedSHA)
+	runGitForReleaseLineageTest(t, work, "push", "origin", "refs/tags/v1.0.1")
 	unmergedTagSHA := runGitForReleaseLineageTest(t, work, "rev-parse", "refs/tags/v1.0.1")
 
 	script, err := filepath.Abs("tools/release/verify-tag-on-main.sh")
@@ -59,17 +61,19 @@ func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
 	}
 	for _, testCase := range []struct {
 		name       string
+		tag        string
 		sha        string
 		wantErr    bool
 		wantOutput string
 	}{
-		{name: "main history", sha: mainTagSHA, wantOutput: "is in origin/main history"},
-		{name: "unmerged branch", sha: unmergedTagSHA, wantErr: true, wantOutput: "is not in origin/main history"},
+		{name: "main history", tag: "v1.0.0", sha: mainTagSHA, wantOutput: "is in origin/main history"},
+		{name: "mismatched signal", tag: "v1.0.0", sha: unmergedTagSHA, wantErr: true, wantOutput: "does not resolve to"},
+		{name: "unmerged branch", tag: "v1.0.1", sha: unmergedTagSHA, wantErr: true, wantOutput: "is not in origin/main history"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cmd := exec.Command(script)
 			cmd.Dir = work
-			cmd.Env = append(os.Environ(), "GITHUB_SHA="+testCase.sha)
+			cmd.Env = append(os.Environ(), "RELEASE_TAG="+testCase.tag, "RELEASE_SHA="+testCase.sha)
 			output, runErr := cmd.CombinedOutput()
 			if (runErr != nil) != testCase.wantErr {
 				t.Fatalf("verify lineage error = %v, wantErr %t\n%s", runErr, testCase.wantErr, output)

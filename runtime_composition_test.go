@@ -32,8 +32,10 @@ type fixedInventoryRepository struct {
 
 type reloadTrackingNotificationLifecycle struct {
 	reloadErr error
+	closeFn   func(context.Context) error
 	prepares  int
 	reloads   int
+	closes    int
 }
 
 func (*reloadTrackingNotificationLifecycle) Settings() (notificationpkg.SettingsResponse, error) {
@@ -56,7 +58,13 @@ func (*reloadTrackingNotificationLifecycle) TestDelivery(context.Context) (notif
 	return notificationpkg.DeliveryStatus{}, nil
 }
 
-func (*reloadTrackingNotificationLifecycle) Close(context.Context) error { return nil }
+func (s *reloadTrackingNotificationLifecycle) Close(ctx context.Context) error {
+	s.closes++
+	if s.closeFn != nil {
+		return s.closeFn(ctx)
+	}
+	return nil
+}
 
 func (s *reloadTrackingNotificationLifecycle) PreparePersistenceReplacement(context.Context) error {
 	s.prepares++
@@ -66,6 +74,45 @@ func (s *reloadTrackingNotificationLifecycle) PreparePersistenceReplacement(cont
 func (s *reloadTrackingNotificationLifecycle) ReloadPersistence(context.Context) error {
 	s.reloads++
 	return s.reloadErr
+}
+
+func TestComposeRuntimeForTestClosesNotificationLifecycle(t *testing.T) {
+	var notifications *reloadTrackingNotificationLifecycle
+	if ok := t.Run("composed runtime", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "composition-cleanup.db")
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if err := ensureSchema(db); err != nil {
+			t.Fatalf("ensure schema: %v", err)
+		}
+
+		notifications = &reloadTrackingNotificationLifecycle{
+			closeFn: func(ctx context.Context) error {
+				return db.PingContext(ctx)
+			},
+		}
+		state := newServerState()
+		inventory := serverpkg.NewService(serverpkg.ServiceDeps{
+			State:      state,
+			Repository: fixedInventoryRepository{},
+		})
+		composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
+			DB:                     func() *sql.DB { return db },
+			DBPath:                 func() string { return dbPath },
+			NotificationService:    notifications,
+			ServerState:            state,
+			ServerInventoryService: inventory,
+		}))
+	}); !ok {
+		t.Fatal("composed runtime subtest failed")
+	}
+
+	if notifications.closes != 1 {
+		t.Fatalf("notification lifecycle closes = %d, want 1", notifications.closes)
+	}
 }
 
 func (r fixedInventoryRepository) Load() ([]serverpkg.Server, error) {
@@ -124,7 +171,7 @@ func TestRuntimeCompositionReloadRestoredStateLabelsSessionFailureWithoutPublish
 
 	composition := newRuntimeComposition(AppDeps{DB: func() *sql.DB { return db }, DBPath: func() string { return dbPath }})
 	composition.resetCaches = func() {}
-	deps := composition.Compose()
+	deps := composeRuntimeForTest(t, composition)
 	initial := scs.New()
 	deps.SetSessionManager(initial)
 	sessionErr := errors.New("session database unavailable")
@@ -165,7 +212,7 @@ func TestRuntimeCompositionReloadRestoredStateReturnsInventoryFailure(t *testing
 		ServerInventoryService: inventory,
 	})
 	composition.resetCaches = func() {}
-	composition.Compose()
+	composeRuntimeForTest(t, composition)
 
 	err = composition.ReloadRestoredState(context.Background())
 	if !errors.Is(err, inventoryErr) || !strings.Contains(err.Error(), "reload restored Server inventory") {
@@ -197,7 +244,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 		ServerInventoryService: inventory,
 	})
 	composition.resetCaches = func() {}
-	deps := composition.Compose()
+	deps := composeRuntimeForTest(t, composition)
 	if _, err := deps.NewJobManager(db).CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
@@ -220,7 +267,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 }
 
 func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
-	deps := AppDeps{}.withDefaults()
+	deps := appDepsWithDefaultsForTest(t, AppDeps{})
 
 	if deps.DB == nil ||
 		deps.DBPath == nil ||
@@ -262,9 +309,9 @@ func TestRuntimeCompositionCompletesCoreDefaults(t *testing.T) {
 
 func TestRuntimeCompositionDefaultsDashboardNotificationToBroker(t *testing.T) {
 	broker := events.NewBroker()
-	deps := newRuntimeComposition(AppDeps{
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
 		DashboardEventBroker: broker,
-	}).Compose()
+	}))
 
 	ch := broker.Subscribe()
 	t.Cleanup(func() { broker.Unsubscribe(ch) })
@@ -283,9 +330,9 @@ func TestRuntimeCompositionDefaultsDashboardNotificationToBroker(t *testing.T) {
 
 func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
 	broker := events.NewBroker()
-	deps := newRuntimeComposition(AppDeps{
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
 		DashboardEventBroker: broker,
-	}).Compose()
+	}))
 
 	ch := broker.Subscribe()
 	t.Cleanup(func() { broker.Unsubscribe(ch) })
@@ -317,10 +364,10 @@ func TestRuntimeCompositionInjectsDBPathIntoRuntimeServices(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	deps := newRuntimeComposition(AppDeps{
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
 		DB:     func() *sql.DB { return db },
 		DBPath: func() string { return dbPath },
-	}).Compose()
+	}))
 
 	if _, err := deps.MetricsAccessCredential.Rotate(context.Background()); err != nil {
 		t.Fatalf("rotate composed Metrics Access Credential: %v", err)
@@ -366,11 +413,11 @@ func TestRuntimeCompositionSharesStateAndPolicyRepositoryAcrossServices(t *testi
 	})
 	state.Unlock()
 
-	deps := newRuntimeComposition(AppDeps{
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
 		DB:          func() *sql.DB { return db },
 		DBPath:      func() string { return dbPath },
 		ServerState: state,
-	}).Compose()
+	}))
 
 	if got := deps.UpdateService.EnsureDeps().ServerState; got != state {
 		t.Fatalf("update service server state = %p, want %p", got, state)
@@ -476,12 +523,12 @@ func TestRuntimeCompositionPolicyScheduleProjectionUsesAppScopedRuns(t *testing.
 		Now:             func() time.Time { return now },
 	})
 
-	deps := newRuntimeComposition(AppDeps{
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
 		DB:            func() *sql.DB { return db },
 		DBPath:        func() string { return dbPath },
 		ServerState:   state,
 		PolicyService: injectedService,
-	}).Compose()
+	}))
 	if _, _, err := deps.PolicyRepository.CreateRun(UpdatePolicyRun{
 		PolicyID:        7,
 		PolicyName:      "app-scoped queued run",
@@ -519,7 +566,7 @@ func TestRuntimeCompositionJobAndSessionSettersStayAppScoped(t *testing.T) {
 		t.Fatalf("ensure job schema: %v", err)
 	}
 
-	deps := newRuntimeComposition(AppDeps{DB: func() *sql.DB { return jobDB }}).Compose()
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{DB: func() *sql.DB { return jobDB }}))
 
 	jm := newJobManager(jobDB)
 	deps.SetCurrentJobManager(jm)

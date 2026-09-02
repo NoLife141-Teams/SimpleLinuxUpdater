@@ -607,7 +607,7 @@ func TestAppScopedBackupRestoreInvalidatesMetricsAccessCredential(t *testing.T) 
 	if err := saveServers(); err != nil {
 		t.Fatalf("saveServers() unexpected error: %v", err)
 	}
-	deps := AppDeps{}.withDefaults()
+	deps := appDepsWithDefaultsForTest(t, AppDeps{})
 	restoredToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
 	if err != nil {
 		t.Fatalf("rotate restored Metrics Access Credential: %v", err)
@@ -664,7 +664,7 @@ func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
 
 	routeState := newServerState()
-	deps := AppDeps{ServerState: routeState}.withDefaults()
+	deps := appDepsWithDefaultsForTest(t, AppDeps{ServerState: routeState})
 	if _, err := setupRouterWithDeps(deps); err != nil {
 		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 		t.Fatalf("loaded servers after rewrap = %+v, want restored server with decrypted secrets", servers)
 	}
 	mu.Unlock()
-	resolved, err := AppDeps{}.withDefaults().GlobalSSHCredential.Resolve(context.Background(), "")
+	resolved, err := appDepsWithDefaultsForTest(t, AppDeps{}).GlobalSSHCredential.Resolve(context.Background(), "")
 	if err != nil || resolved.Key != "restored-global-key" {
 		t.Fatalf("GlobalSSHCredential.Resolve() = %+v, %v, want restored global key", resolved, err)
 	}

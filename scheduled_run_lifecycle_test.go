@@ -74,7 +74,7 @@ func newScheduledRunLifecycleTestDeps(t *testing.T, dbName string, server Server
 		StartJobRunner:                  func(string, func(), ...func()) {},
 		StartScheduledRunReconciliation: func(int64, string) {},
 	}
-	deps = deps.withDefaults()
+	deps = appDepsWithDefaultsForTest(t, deps)
 	return scheduledRunLifecycleDepsFromApp(deps), policy, run, jm
 }
 

@@ -4,13 +4,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func runGitForReleaseLineageTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	gitArgs := append([]string{"-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"}, args...)
+	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -20,6 +22,10 @@ func runGitForReleaseLineageTest(t *testing.T, dir string, args ...string) strin
 }
 
 func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release lineage script targets the Linux GitHub Actions runner")
+	}
+
 	testRoot := t.TempDir()
 	origin := filepath.Join(testRoot, "origin.git")
 	work := filepath.Join(testRoot, "work")

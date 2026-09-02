@@ -49,6 +49,12 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 			t.Errorf("trusted release workflow does not enforce main-history provenance %q", required)
 		}
 	}
+	if got := strings.Count(release, "run: tools/release/verify-tag-on-main.sh"); got != 3 {
+		t.Errorf("each release job must independently verify provenance, got %d gates", got)
+	}
+	if strings.Contains(release, "ref: ${{ env.RELEASE_SHA }}") {
+		t.Error("privileged workflow must not pass workflow_run input directly to actions/checkout")
+	}
 	if strings.Contains(release, "on:\n  push:") || strings.Contains(release, `tags: ["v*"]`) {
 		t.Error("publication workflow must not be loaded from the untrusted tagged ref")
 	}

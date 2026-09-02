@@ -326,6 +326,10 @@ Run this only in the separate restore-validation runtime. Record skipped with th
 
 Run these from the release commit and record pass/fail output. If a tool is not installed, install/use the repo-standard pinned version or record the exact blocker.
 
+- [ ] Confirm the release commit is present in `origin/main` history and final `main` CI plus CodeQL are green.
+- [ ] Confirm `Release Tag Signal` completed and the downstream `Release` run uses the trusted default-branch workflow before publication.
+- [ ] Confirm the hosted `Protect release tags v*` ruleset is active and targets `refs/tags/v*`; this setting is separate from the versioned workflow ancestry gate.
+
 - [ ] `go test -count=1 ./...`
 - [ ] `go vet ./...`
 - [ ] `staticcheck ./...`

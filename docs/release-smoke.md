@@ -6,9 +6,19 @@ Run this checklist before creating a release tag. This is the authoritative disp
 
 For a detailed Codex/Computer Use execution runbook that covers both deterministic UI states and a live disposable-host pass, use [Computer Use Release Checklist](computer-use-release-checklist.md).
 
+## Release source and tag protection
+
+Merge the release commit to `main` and wait for the final `main` CI and CodeQL runs before creating a `vX.Y.Z` tag. Never create a release tag from a release-preparation branch.
+
+The versioned release workflows provide the publication boundary. The workflow loaded from a tagged ref, `Release Tag Signal`, has no permissions and only emits a completion signal. GitHub then runs `Release` from the trusted default-branch workflow definition. Its `release-gate` captures the original tag name and SHA from that signal, checks out full history, verifies that the exact tag resolves to that SHA, fetches the current `origin/main`, and uses Git ancestry to require the tagged commit to be part of `origin/main` history. Only after those checks does it check out the release commit. A tag on an unmerged branch, an unrelated commit, or an old commit without the signal workflow cannot publish. The gate repeats the critical normal-CI validations, including frontend unit tests, and every third-party action in the release chain is pinned to a full commit SHA with its readable version recorded in the workflow.
+
+Repository settings provide a separate hosted control. The active `Protect release tags v*` GitHub ruleset prevents updates and deletions of matching tags after creation. This ruleset is not stored in Git and must be verified in **Settings → Rules → Rulesets** before each release if repository administration or ownership changes. The workflow ancestry check remains authoritative for publication even if the hosted ruleset is disabled or removed.
+
 ## Preconditions
 
 - Fresh build from the release commit.
+- Release commit is merged into `main`, and final `main` CI plus CodeQL are green.
+- The `Protect release tags v*` repository ruleset is active and targets `refs/tags/v*`.
 - Disposable app DB path and disposable `known_hosts` path.
 - One reachable Debian/Ubuntu target host that may be updated, scanned, and have test audit/job records created. Controlled reboot additionally requires explicit approval and a real `systemd` boot environment.
 - Target details recorded outside the repo:

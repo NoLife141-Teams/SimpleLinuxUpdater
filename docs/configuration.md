@@ -48,8 +48,8 @@ publishing remains compatible.
 
 Values must use `host:port` syntax with a numeric port from `1` to `65535`.
 Bracket IPv6 literals, for example `[::1]:8080`. Surrounding whitespace is
-ignored; malformed values stop startup with a clear configuration error before
-the HTTP listener, router, and background workers are started.
+ignored. Malformed values and addresses that cannot be resolved or bound stop
+startup with a clear error before the router and background workers are started.
 
 Examples:
 

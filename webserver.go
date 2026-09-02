@@ -2591,6 +2591,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid HTTP listen configuration: %v", err)
 	}
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("Failed to bind HTTP listener on %s: %v", listenAddr, err)
+	}
+	defer listener.Close()
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
@@ -2627,7 +2632,7 @@ func main() {
 		close(shutdownDone)
 	}()
 	log.Printf("Starting web server on %s", listenAddr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to run web server: %v", err)
 	}
 	if shutdownCtx.Err() != nil {

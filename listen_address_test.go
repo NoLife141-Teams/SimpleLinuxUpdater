@@ -43,7 +43,9 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 	checks := map[string][]string{
 		"webserver.go": {
 			"resolveListenAddr(os.Getenv)",
+			"net.Listen(\"tcp\", listenAddr)",
 			"Addr:         listenAddr",
+			"server.Serve(listener)",
 		},
 		"Dockerfile": {
 			"DEBIAN_UPDATER_LISTEN_ADDR=:8080",
@@ -65,6 +67,16 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 				t.Errorf("%s does not contain %q", path, fragment)
 			}
 		}
+	}
+
+	webserverRaw, err := os.ReadFile("webserver.go")
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", "webserver.go", err)
+	}
+	bindIndex := strings.Index(string(webserverRaw), "net.Listen(\"tcp\", listenAddr)")
+	depsIndex := strings.Index(string(webserverRaw), ").withDefaults()")
+	if bindIndex < 0 || depsIndex < 0 || bindIndex > depsIndex {
+		t.Fatal("webserver must bind its HTTP listener before initializing runtime dependencies")
 	}
 }
 

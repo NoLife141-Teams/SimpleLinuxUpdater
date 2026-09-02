@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	serverpkg "debian-updater/internal/servers"
 
@@ -28,6 +30,31 @@ type testApp struct {
 type testAppOptions struct {
 	DBPath string
 	Deps   AppDeps
+}
+
+func registerNotificationLifecycleCleanup(t *testing.T, service NotificationDeliveryLifecycle) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := closeNotificationDelivery(ctx, service); err != nil {
+			t.Errorf("close test Notification Delivery Lifecycle: %v", err)
+		}
+	})
+}
+
+func composeRuntimeForTest(t *testing.T, composition *runtimeComposition) AppDeps {
+	t.Helper()
+	deps := composition.Compose()
+	registerNotificationLifecycleCleanup(t, deps.NotificationService)
+	return deps
+}
+
+func appDepsWithDefaultsForTest(t *testing.T, overrides AppDeps) AppDeps {
+	t.Helper()
+	deps := overrides.withDefaults()
+	registerNotificationLifecycleCleanup(t, deps.NotificationService)
+	return deps
 }
 
 func setDialSSHConnection(fn func(Server, *ssh.ClientConfig) (sshConnection, error)) {
@@ -142,7 +169,7 @@ func newTestApp(t *testing.T, opts testAppOptions) *testApp {
 		t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 	}
 
-	deps := opts.Deps.withDefaults()
+	deps := appDepsWithDefaultsForTest(t, opts.Deps)
 	router, err := setupRouterWithDeps(deps)
 	if err != nil {
 		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)

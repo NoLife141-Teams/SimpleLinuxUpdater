@@ -562,10 +562,10 @@ func TestAppDepsDefaultPolicyServiceUsesAppScopedServerState(t *testing.T) {
 	})
 	state.Unlock()
 
-	deps := AppDeps{
+	deps := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:          func() *sql.DB { return routeDB },
 		ServerState: state,
-	}.withDefaults()
+	})
 	policyDeps := deps.PolicyService.EnsureDeps()
 	snapshot := policyDeps.SnapshotServers()
 	if len(snapshot) != 1 || snapshot[0].Name != "scoped-policy-server" {
@@ -584,14 +584,14 @@ func TestAppDepsDefaultsBackupServiceToAppScopedInstance(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = routeDB.Close() })
 
-	deps := AppDeps{
+	deps := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:     func() *sql.DB { return routeDB },
 		DBPath: func() string { return routeDBPath },
-	}.withDefaults()
-	other := AppDeps{
+	})
+	other := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:     func() *sql.DB { return routeDB },
 		DBPath: func() string { return routeDBPath },
-	}.withDefaults()
+	})
 	if deps.BackupService == nil {
 		t.Fatalf("default backup service is nil")
 	}
@@ -726,11 +726,11 @@ func TestAppDepsDefaultObservabilityUsesAppScopedServerState(t *testing.T) {
 	})
 	state.Unlock()
 
-	deps := AppDeps{
+	deps := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:          func() *sql.DB { return routeDB },
 		DBPath:      func() string { return routeDBPath },
 		ServerState: state,
-	}.withDefaults()
+	})
 	summary, err := deps.ObservabilityService.BuildDashboardSummary("24h", time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("BuildDashboardSummary() error = %v", err)
@@ -751,20 +751,20 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 		t.Fatalf("ensure job schema: %v", err)
 	}
 
-	one := AppDeps{
+	one := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:                        dbProvider,
 		LoginRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authLoginRateLimitMaxAttempts),
 		PasswordChangeRateLimiter: NewAuthRateLimiter(authRateLimitWindow, authPasswordChangeMaxAttempts),
 		SetupRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authSetupRateLimitMaxAttempts),
 		MetricsRateLimiter:        NewAuthRateLimiter(metricsRateLimitWindow, metricsRateLimitMaxAttempts),
-	}.withDefaults()
-	two := AppDeps{
+	})
+	two := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:                        dbProvider,
 		LoginRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authLoginRateLimitMaxAttempts),
 		PasswordChangeRateLimiter: NewAuthRateLimiter(authRateLimitWindow, authPasswordChangeMaxAttempts),
 		SetupRateLimiter:          NewAuthRateLimiter(authRateLimitWindow, authSetupRateLimitMaxAttempts),
 		MetricsRateLimiter:        NewAuthRateLimiter(metricsRateLimitWindow, metricsRateLimitMaxAttempts),
-	}.withDefaults()
+	})
 	t.Cleanup(one.LoginRateLimiter.Stop)
 	t.Cleanup(one.PasswordChangeRateLimiter.Stop)
 	t.Cleanup(one.SetupRateLimiter.Stop)
@@ -804,7 +804,7 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 }
 
 func TestAppDepsProductionDefaultsReuseLifecycleOwnedLimiters(t *testing.T) {
-	deps := AppDeps{}.withDefaults()
+	deps := appDepsWithDefaultsForTest(t, AppDeps{})
 	if deps.LoginRateLimiter != loginRateLimiter ||
 		deps.PasswordChangeRateLimiter != passwordChangeRateLimiter ||
 		deps.SetupRateLimiter != setupRateLimiter ||
@@ -841,11 +841,11 @@ func TestAppDepsDefaultJobManagerSyncsAppScopedServerState(t *testing.T) {
 		}
 	}()
 
-	deps := AppDeps{
+	deps := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:          func() *sql.DB { return routeDB },
 		DBPath:      func() string { return routeDBPath },
 		ServerState: state,
-	}.withDefaults()
+	})
 	if err := deps.initializeJobManager(); err != nil {
 		t.Fatalf("initialize job manager: %v", err)
 	}
@@ -890,11 +890,11 @@ func TestAppDepsInitializeJobManagerRestoresReconciliationRequiredStatus(t *test
 		server.Name: {Name: server.Name, Status: "idle"},
 	})
 
-	deps := AppDeps{
+	deps := appDepsWithDefaultsForTest(t, AppDeps{
 		DB:          func() *sql.DB { return routeDB },
 		DBPath:      func() string { return routeDBPath },
 		ServerState: state,
-	}.withDefaults()
+	})
 	if _, err := deps.NewJobManager(routeDB).CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,

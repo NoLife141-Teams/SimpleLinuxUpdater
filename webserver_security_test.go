@@ -763,7 +763,7 @@ func TestGlobalSSHCredentialResolveDoesNotDeadlockWhenEncryptionKeyIsCold(t *tes
 	runtimeStateMu.Unlock()
 
 	resultCh := make(chan string, 1)
-	credential := AppDeps{}.withDefaults().GlobalSSHCredential
+	credential := appDepsWithDefaultsForTest(t, AppDeps{}).GlobalSSHCredential
 	go func() {
 		resolved, resolveErr := credential.Resolve(context.Background(), "")
 		if resolveErr != nil {

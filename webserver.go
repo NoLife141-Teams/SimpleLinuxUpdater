@@ -2587,6 +2587,10 @@ func writeServerActionLifecycleResult(c *gin.Context, result serverActionLifecyc
 }
 
 func main() {
+	listenAddr, err := resolveListenAddr(os.Getenv)
+	if err != nil {
+		log.Fatalf("Invalid HTTP listen configuration: %v", err)
+	}
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
@@ -2603,7 +2607,7 @@ func main() {
 	}
 	defer StopAuthRateLimiters()
 	server := &http.Server{
-		Addr:         ":8080",
+		Addr:         listenAddr,
 		Handler:      sessionHandler(r),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 60 * time.Second,
@@ -2622,7 +2626,7 @@ func main() {
 		})
 		close(shutdownDone)
 	}()
-	log.Println("Starting web server on :8080")
+	log.Printf("Starting web server on %s", listenAddr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to run web server: %v", err)
 	}

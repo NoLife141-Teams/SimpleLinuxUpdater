@@ -31,6 +31,11 @@ Treat it as privileged infrastructure.
 - Intended for trusted LAN/VPN environments only.
 - No TLS termination by default; use a reverse proxy for HTTPS.
 - Single-user local authentication is intended for small trusted teams/homelabs.
+- Direct binary runs bind to `127.0.0.1:8080` by default. The Docker image binds
+  `:8080` explicitly so published container ports continue to work.
+- A non-loopback listener exposes first-run `/setup` account creation. Restrict
+  it to the intended LAN, VPN, container network, or authenticated reverse proxy;
+  never publish first-run setup directly to the public internet.
 
 ## Authentication model
 
@@ -158,6 +163,8 @@ sudo -l -U <ssh-user>
 
 - Do not expose the UI to the public internet.
 - Restrict access with a VPN and/or reverse proxy controls.
+- Keep `DEBIAN_UPDATER_LISTEN_ADDR` on loopback unless a controlled non-loopback
+  deployment is required.
 - Use HTTPS and set `DEBIAN_UPDATER_SESSION_COOKIE_SECURE=true`.
 - Store the generated Metrics API token in a secret manager and rotate it periodically.
 - Protect the persisted volume (`/data`) like a secret.

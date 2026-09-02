@@ -22,6 +22,10 @@ Use a named volume for persistence:
 docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.7
 ```
 
+The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`. To limit access on
+the Docker host itself, publish to a specific host address, for example
+`-p 127.0.0.1:8080:8080` behind a local reverse proxy.
+
 ## GHCR images
 
 Release tags publish images to GitHub Container Registry:
@@ -54,6 +58,7 @@ WorkingDirectory=/opt/simplelinuxupdater
 ExecStart=/opt/simplelinuxupdater/webserver
 Restart=on-failure
 Environment=DEBIAN_UPDATER_SESSION_COOKIE_SECURE=true
+Environment=DEBIAN_UPDATER_LISTEN_ADDR=127.0.0.1:8080
 
 [Install]
 WantedBy=multi-user.target
@@ -68,6 +73,11 @@ After deployment:
 3. Use `/api/auth/logout` or the UI logout action to end sessions.
 
 Only one local user is supported by design.
+
+Before that user exists, `/setup` is the account-creation boundary. If the
+listener is non-loopback, firewall or proxy it so only the intended LAN, VPN, or
+reverse-proxy clients can reach first-run setup. Do not expose it directly to the
+public internet.
 
 ## Metrics scraping
 

@@ -57,6 +57,12 @@ Open `http://localhost:8080`.
 On first run, you will be redirected to `/setup` to create the local admin account.
 After setup, sign in at `/login`.
 
+The container image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080` so its
+published port remains reachable. A directly launched binary defaults to
+`127.0.0.1:8080`; set `DEBIAN_UPDATER_LISTEN_ADDR` only when another bind address
+is required. If first-run setup is exposed beyond loopback, limit access to the
+intended LAN, VPN, or authenticated reverse proxy rather than the public internet.
+
 For Prometheus, configure your scraper with:
 
 - `Authorization: Bearer <token-created-in-admin-page>`

@@ -229,7 +229,12 @@ Edit Server also provides **Known host management** actions:
 
 Override search path:
 
-- `DEBIAN_UPDATER_KNOWN_HOSTS` (colon-separated paths)
+- `DEBIAN_UPDATER_KNOWN_HOSTS` accepts a native path list: separate paths with
+  `:` on Unix and `;` on Windows. For example,
+  `/data/known_hosts:/etc/ssh/ssh_known_hosts` on Unix or
+  `C:\Users\Alice\.ssh\known_hosts;D:\ssh\known_hosts` on Windows.
+- The first non-empty configured path is the managed write target; all configured
+  paths are considered when reading host-key trust.
 
 Default behavior:
 

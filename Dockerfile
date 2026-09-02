@@ -8,7 +8,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o webserver .
 
 # Runtime stage
 FROM alpine:3.24
-ENV GIN_MODE=release
+ENV GIN_MODE=release \
+    DEBIAN_UPDATER_LISTEN_ADDR=:8080
 RUN apk --no-cache add ca-certificates su-exec
 RUN addgroup -S app && adduser -S -G app app && mkdir -p /app /data && chown -R app:app /app /data
 WORKDIR /app

@@ -5,6 +5,7 @@
 ## Table of contents
 
 - [Authentication and sessions](#authentication-and-sessions)
+- [Network listener](#network-listener)
 - [Codex browser annotations](#codex-browser-annotations)
 - [Metrics API token](#metrics-api-token)
 - [Notification destinations](#notification-destinations)
@@ -38,6 +39,28 @@ Environment variables:
 - `DEBIAN_UPDATER_TRUSTED_PROXIES` (optional comma-separated proxy IPs/CIDRs; unset/`none` trusts no proxies)
 
 When `DEBIAN_UPDATER_TRUSTED_PROXIES` is configured, Gin honors forwarded client IP headers from those proxies. This affects audit `client_ip` values and in-memory auth/metrics rate limiting.
+
+## Network listener
+
+`DEBIAN_UPDATER_LISTEN_ADDR` controls the HTTP bind address. Direct binary runs
+default to `127.0.0.1:8080`. The Docker image explicitly sets `:8080` so port
+publishing remains compatible.
+
+Values must use `host:port` syntax with a numeric port from `1` to `65535`.
+Bracket IPv6 literals, for example `[::1]:8080`. Surrounding whitespace is
+ignored. Malformed values and addresses that cannot be resolved or bound stop
+startup with a clear error before the router and background workers are started.
+
+Examples:
+
+```bash
+DEBIAN_UPDATER_LISTEN_ADDR=127.0.0.1:8080 ./webserver
+DEBIAN_UPDATER_LISTEN_ADDR='[::1]:8080' ./webserver
+```
+
+Use a non-loopback address such as `:8080` only when access is restricted to the
+intended LAN, VPN, container network, or reverse proxy. This is especially
+important before the first admin account has been created at `/setup`.
 
 ## Codex browser annotations
 

@@ -40,6 +40,8 @@ Notes:
 
 - The container stores the SQLite DB at `/data/servers.db` and the encryption key at `/data/config.json` when a volume is mounted.
 - If you do not mount `/data`, state is not persisted.
+- The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`; published port
+  access therefore remains compatible with existing Docker deployments.
 
 Build locally (optional):
 
@@ -53,6 +55,9 @@ docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data debian-upda
 Download the archive for your platform from [GitHub Releases](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases). Release archives include the binary, `templates/`, `static/`, documentation, and `.env-template`.
 
 After extracting the archive, run `./webserver` from the extracted application directory. On Windows, run `webserver.exe`.
+The directly launched binary listens on `127.0.0.1:8080` by default. To bind a
+different interface, set a complete `host:port` value, for example
+`DEBIAN_UPDATER_LISTEN_ADDR=192.0.2.10:8080`.
 
 ## Build from source
 
@@ -89,5 +94,7 @@ Transfer `webserver` and the `templates/` and `static/` directories to the host 
 ## Next steps
 
 - Complete first-run setup at `/setup`, then sign in at `/login`
+- If you select a non-loopback listener, expose first-run setup only through the
+  intended LAN, VPN, or reverse proxy; do not publish it directly to the internet.
 - Configure storage paths, metrics token, and backup/restore behavior: [configuration.md](configuration.md)
 - Add servers and run updates: [usage.md](usage.md)

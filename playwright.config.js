@@ -2,7 +2,7 @@ const { defineConfig } = require('@playwright/test');
 
 const webServerCommand =
   process.env.PLAYWRIGHT_WEBSERVER_COMMAND ||
-  'go build -o webserver . && mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver';
+  'go build -o webserver . && mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_LISTEN_ADDR=127.0.0.1:8080 DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver';
 
 module.exports = defineConfig({
   testDir: './tests/e2e',

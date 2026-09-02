@@ -21,6 +21,7 @@ type KnownHostsDeps struct {
 	DBPath              func() string
 	UserHomeDir         func() (string, error)
 	Getenv              func(string) string
+	SplitPathList       func(string) []string
 	ScanHostKey         func(string, int) (ssh.PublicKey, error)
 	KnownHostsMu        *sync.Mutex
 	SSHConnectTimeout   time.Duration
@@ -46,6 +47,13 @@ func (d KnownHostsDeps) getenv(key string) string {
 		return d.Getenv(key)
 	}
 	return os.Getenv(key)
+}
+
+func (d KnownHostsDeps) splitPathList(raw string) []string {
+	if d.SplitPathList != nil {
+		return d.SplitPathList(raw)
+	}
+	return filepath.SplitList(raw)
 }
 
 func (d KnownHostsDeps) knownHostsMu() *sync.Mutex {
@@ -181,15 +189,7 @@ func NormalizeApprovalScope(scope string) string {
 
 func KnownHostsPaths(deps KnownHostsDeps) []string {
 	if raw := strings.TrimSpace(deps.getenv("DEBIAN_UPDATER_KNOWN_HOSTS")); raw != "" {
-		parts := strings.Split(raw, ":")
-		paths := make([]string, 0, len(parts))
-		for _, part := range parts {
-			path := strings.TrimSpace(part)
-			if path != "" {
-				paths = append(paths, path)
-			}
-		}
-		return paths
+		return configuredKnownHostsPaths(deps, raw)
 	}
 	paths := []string{filepath.Join(filepath.Dir(deps.dbPath()), "known_hosts")}
 	if home, err := deps.userHomeDir(); err == nil && strings.TrimSpace(home) != "" {
@@ -209,6 +209,18 @@ func KnownHostsPaths(deps KnownHostsDeps) []string {
 		unique = append(unique, path)
 	}
 	return unique
+}
+
+func configuredKnownHostsPaths(deps KnownHostsDeps, raw string) []string {
+	parts := deps.splitPathList(raw)
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		path := strings.TrimSpace(part)
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func KnownHostsDefaultWritePath(deps KnownHostsDeps) string {
@@ -235,11 +247,9 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 
 func KnownHostsWritePath(deps KnownHostsDeps) (string, error) {
 	if raw := strings.TrimSpace(deps.getenv("DEBIAN_UPDATER_KNOWN_HOSTS")); raw != "" {
-		for _, part := range strings.Split(raw, ":") {
-			path := strings.TrimSpace(part)
-			if path != "" {
-				return path, nil
-			}
+		paths := configuredKnownHostsPaths(deps, raw)
+		if len(paths) > 0 {
+			return paths[0], nil
 		}
 		return "", errors.New("no known_hosts path configured")
 	}

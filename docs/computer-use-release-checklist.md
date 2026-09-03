@@ -339,7 +339,7 @@ Run these from the release commit and record pass/fail output. If a tool is not 
 - [ ] `go test -count=1 ./internal/notifications ./internal/policies ./internal/observability ./internal/updates`
 - [ ] `go test -race -count=1 ./...`
 - [ ] `go test -covermode=atomic -coverprofile=coverage.out ./...`
-- [ ] `go tool cover -func=coverage.out | tail -n 1`
+- [ ] `go tool cover -func=coverage.out | tail -n 1` reports coverage at or above the versioned `GO_COVERAGE_THRESHOLD` shared by CI and the release gate; record both values.
 - [ ] `go build -o webserver .`
 - [ ] `npm ci`
 - [ ] `npm run test:unit`

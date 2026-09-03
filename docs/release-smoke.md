@@ -173,7 +173,7 @@ Required:
 - `govulncheck ./...` passes.
 - `actionlint` passes.
 - `go test -race -count=1 ./...` passes.
-- `go test -covermode=atomic -coverprofile=coverage.out ./...` passes and the coverage summary is recorded.
+- `go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...` passes and the measured coverage is recorded at or above the versioned `GO_COVERAGE_THRESHOLD` shared by normal CI and the release gate.
 - `go build -o webserver .` passes.
 - `npm ci` succeeds.
 - `npm run test:unit` passes.

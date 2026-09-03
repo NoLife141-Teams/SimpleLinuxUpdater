@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
     env:
+      GO_COVERAGE_THRESHOLD: '73.0'
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
     steps:
@@ -84,6 +85,20 @@ jobs:
           go test -count=1 ./...
           go test -race -count=1 ./...
           go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+          coverage_summary="$(go tool cover -func=coverage.out | tail -n 1)"
+          measured="$(printf '%s\n' "$coverage_summary" | awk '{ value = $NF; sub(/%$/, "", value); print value }')"
+          case "$measured" in
+            ''|*[!0-9.]*)
+              echo "::error::Unable to parse total Go coverage from: $coverage_summary"
+              exit 1
+              ;;
+          esac
+          printf 'Measured Go coverage: %s%%; required minimum: %s%%\n' "$measured" "$GO_COVERAGE_THRESHOLD"
+          if ! awk -v measured="$measured" -v threshold="$GO_COVERAGE_THRESHOLD" \
+            'BEGIN { exit !(measured + 0 >= threshold + 0) }'; then
+            echo "::error::Measured Go coverage ${measured}% is below required minimum ${GO_COVERAGE_THRESHOLD}%"
+            exit 1
+          fi
           go build -o webserver .
           npm run test:unit
           npm audit --audit-level=moderate

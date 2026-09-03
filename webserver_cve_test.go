@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -42,7 +43,9 @@ func makeDialSSHValidator(expected Server, calls *int32, first sshConnection, su
 }
 
 func discoverPackagesForTest(conn sshConnection, timeout time.Duration) (PackageDiscoveryOutcome, error) {
-	return updatespkg.DiscoverPackageUpdates(conn, timeout, runSSHCommandWithTimeout)
+	return updatespkg.DiscoverPackageUpdates(conn, timeout, func(conn sshConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+		return runSSHCommandWithTimeout(conn, command, updatespkg.HostCommandEffectReadOnly, stdin, timeout)
+	})
 }
 
 func TestParseUpgradableEntriesStructured(t *testing.T) {

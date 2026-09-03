@@ -299,7 +299,7 @@ func TestProductionHostMaintenanceSessionUsesPackageDiscovery(t *testing.T) {
 		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return fakeConnection{}, nil
 		},
-		RunCommand: func(_ context.Context, conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+		RunCommand: func(_ context.Context, conn SSHConnection, command string, _ HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
 			return runner.run(conn, command, stdin, timeout)
 		},
 	})
@@ -331,7 +331,7 @@ func TestProductionHostMaintenanceSessionPackageDiscoveryFailsWithoutReplay(t *t
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
 		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return fakeConnection{}, nil },
-		RunCommand: func(_ context.Context, conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
+		RunCommand: func(_ context.Context, conn SSHConnection, command string, _ HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
 			return runner.run(conn, command, stdin, timeout)
 		},
 	})

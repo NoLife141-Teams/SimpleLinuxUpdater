@@ -669,17 +669,17 @@ func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.
 	return stdout.String(), stderr.String(), err
 }
 
-func runSSHCommandWithTimeout(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration) (string, string, error) {
-	return runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, nil)
+func runSSHCommandWithTimeout(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
+	return runSSHCommandWithTimeoutStreaming(client, cmd, effect, stdin, timeout, nil)
 }
 
-func classifyCommandTimeout(cmd string, err error) error {
-	if err == nil || !updatespkg.IsAptLockProtectedCommand(cmd) {
+func classifyCommandTimeout(effect updatespkg.HostCommandEffect, err error) error {
+	if err == nil || !effect.UsesPackageManagerLocks() {
 		return err
 	}
 	return updatespkg.NonRetryableTaggedError{
 		Err:                    fmt.Errorf("APT command outcome is unknown; automatic replay disabled: %w", err),
-		ReconciliationRequired: updatespkg.IsAptMutationCommand(cmd),
+		ReconciliationRequired: effect.RequiresReconciliationOnUnknownOutcome(),
 	}
 }
 
@@ -694,7 +694,7 @@ func aptPackageManagerLockState(client sshConnection, commandTimeout time.Durati
 	if probeTimeout <= 0 || probeTimeout > 10*time.Second {
 		probeTimeout = 10 * time.Second
 	}
-	stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptExtendedLockProbeCmd, nil, probeTimeout, nil)
+	stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, updatespkg.AptExtendedLockProbeCmd, updatespkg.HostCommandEffectReadOnly, nil, probeTimeout, nil)
 	if err == nil {
 		return aptLockProbeResult{active: true, output: strings.TrimSpace(stdout)}
 	}
@@ -710,14 +710,14 @@ func aptPackageManagerLockState(client sshConnection, commandTimeout time.Durati
 	// Releases before the extended probe granted passwordless sudo only for
 	// this exact legacy command. Fall back so upgraded non-root hosts retain
 	// their existing lock protection until the helper is enabled again.
-	stdout, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, nil, probeTimeout, nil)
+	stdout, _, err = runSSHCommandWithTimeoutStreaming(client, updatespkg.AptLockProbeCmd, updatespkg.HostCommandEffectReadOnly, nil, probeTimeout, nil)
 	if exitCode, ok := updatespkg.SSHExitCode(err); ok && exitCode == 1 {
 		return aptLockProbeResult{}
 	}
 	return aptLockProbeResult{active: err == nil, output: strings.TrimSpace(stdout), err: err}
 }
 
-func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
+func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if timeout <= 0 {
 		return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, onOutput)
 	}
@@ -768,7 +768,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 
 	gate := newSSHCommandOutputGate(onOutput)
 	defer gate.close()
-	aptLockProtected := updatespkg.IsAptLockProtectedCommand(cmd)
+	aptLockProtected := effect.UsesPackageManagerLocks()
 	activityCh := make(chan struct{}, 1)
 	signalActivity := func() {
 		if !aptLockProtected {
@@ -881,22 +881,22 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, stdin i
 				} else {
 					runErr = fmt.Errorf("command timed out after %s total (checkpoint window %s): %w", elapsed, timeout, runErr)
 				}
-				return timeoutStdout, timeoutStderr, classifyCommandTimeout(cmd, runErr)
+				return timeoutStdout, timeoutStderr, classifyCommandTimeout(effect, runErr)
 			case <-time.After(1 * time.Second):
 				go func() { <-runErrCh }()
 				elapsed := time.Since(commandStarted).Round(time.Millisecond)
 				runErr := fmt.Errorf("command timed out after %s total (checkpoint window %s)", elapsed, timeout)
-				return stdout.String(), stderr.String(), classifyCommandTimeout(cmd, runErr)
+				return stdout.String(), stderr.String(), classifyCommandTimeout(effect, runErr)
 			}
 		}
 	}
 }
 
-func runSSHCommandWithContext(ctx context.Context, client sshConnection, cmd string, stdin io.Reader, timeout time.Duration) (string, string, error) {
-	return runSSHCommandWithContextStreaming(ctx, client, cmd, stdin, timeout, nil)
+func runSSHCommandWithContext(ctx context.Context, client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
+	return runSSHCommandWithContextStreaming(ctx, client, cmd, effect, stdin, timeout, nil)
 }
 
-func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection, cmd string, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
+func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
@@ -909,7 +909,7 @@ func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection
 	}
 	resultCh := make(chan commandResult, 1)
 	go func() {
-		stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, cmd, stdin, timeout, gate.emit)
+		stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, cmd, effect, stdin, timeout, gate.emit)
 		resultCh <- commandResult{stdout: stdout, stderr: stderr, err: err}
 	}()
 	select {

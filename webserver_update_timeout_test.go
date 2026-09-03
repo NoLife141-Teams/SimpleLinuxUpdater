@@ -22,7 +22,7 @@ func TestRunSSHCommandWithContextCancelsInFlightCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(20*time.Millisecond, cancel)
 	started := time.Now()
-	_, _, err := runSSHCommandWithContext(ctx, conn, "slow command", nil, time.Minute)
+	_, _, err := runSSHCommandWithContext(ctx, conn, "slow command", updatespkg.HostCommandEffectReadOnly, nil, time.Minute)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runSSHCommandWithContext() error = %v, want context canceled", err)
 	}
@@ -132,6 +132,7 @@ func TestRunSSHCommandWithContextStreamsOutputBeforeCompletion(t *testing.T) {
 			context.Background(),
 			conn,
 			"apt-get -y upgrade",
+			updatespkg.HostCommandEffectPackageStateMutation,
 			nil,
 			time.Minute,
 			func(output updatespkg.HostCommandOutput) {

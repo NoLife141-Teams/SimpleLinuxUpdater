@@ -75,6 +75,38 @@ const (
 	ReplayRetryableOutputErrors HostCommandReplayPolicy = "retryable_output_errors"
 )
 
+// HostCommandEffect declares the state a remote command may change independently
+// of its shell representation.
+type HostCommandEffect string
+
+const (
+	// HostCommandEffectReadOnly covers probes, simulations, discovery, and CVE inspection.
+	HostCommandEffectReadOnly HostCommandEffect = "read_only"
+	// HostCommandEffectMetadataMutation refreshes package-manager metadata without changing installed packages.
+	HostCommandEffectMetadataMutation HostCommandEffect = "metadata_mutation"
+	// HostCommandEffectPackageStateMutation may change dpkg's installed package state.
+	HostCommandEffectPackageStateMutation HostCommandEffect = "package_state_mutation"
+	// HostCommandEffectSystemStateMutation covers controlled non-package changes such as reboot and sudoers management.
+	HostCommandEffectSystemStateMutation HostCommandEffect = "system_state_mutation"
+)
+
+func (e HostCommandEffect) UsesPackageManagerLocks() bool {
+	return e == HostCommandEffectMetadataMutation || e == HostCommandEffectPackageStateMutation
+}
+
+func (e HostCommandEffect) RequiresReconciliationOnUnknownOutcome() bool {
+	return e == HostCommandEffectPackageStateMutation
+}
+
+func (e HostCommandEffect) Valid() bool {
+	switch e {
+	case HostCommandEffectReadOnly, HostCommandEffectMetadataMutation, HostCommandEffectPackageStateMutation, HostCommandEffectSystemStateMutation:
+		return true
+	default:
+		return false
+	}
+}
+
 type HostCommandOutputStream string
 
 const (
@@ -92,6 +124,7 @@ type HostCommandOutputHandler func(HostCommandOutput)
 type HostCommandRequest struct {
 	Operation         string
 	Command           string
+	Effect            HostCommandEffect
 	Stdin             func() io.Reader
 	ReplayPolicy      HostCommandReplayPolicy
 	OnOutput          HostCommandOutputHandler
@@ -229,8 +262,8 @@ type ProductionHostMaintenanceSessionDeps struct {
 	BuildAuthMethods    func(servers.Server) ([]ssh.AuthMethod, error)
 	HostKeyCallback     func() (ssh.HostKeyCallback, error)
 	DialSSH             func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
-	RunCommand          func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error)
-	RunStreamingCommand func(context.Context, SSHConnection, string, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error)
+	RunCommand          func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error)
+	RunStreamingCommand func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error)
 	SSHConnectTimeout   time.Duration
 	Sleep               func(time.Duration)
 	Logf                func(string, ...any)
@@ -396,6 +429,9 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 	if s.deps.RunCommand == nil {
 		return HostCommandResult{}, errors.New("host command runner is not configured")
 	}
+	if !req.Effect.Valid() {
+		return HostCommandResult{}, fmt.Errorf("host command effect is required for operation %q", req.Operation)
+	}
 	var stdout, stderr string
 	run := func(conn SSHConnection) error {
 		var runErr error
@@ -404,9 +440,9 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 			stdin = req.Stdin()
 		}
 		if req.OnOutput != nil && s.deps.RunStreamingCommand != nil {
-			stdout, stderr, runErr = s.deps.RunStreamingCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout, req.OnOutput)
+			stdout, stderr, runErr = s.deps.RunStreamingCommand(ctx, conn, req.Command, req.Effect, stdin, s.request.CommandTimeout, req.OnOutput)
 		} else {
-			stdout, stderr, runErr = s.deps.RunCommand(ctx, conn, req.Command, stdin, s.request.CommandTimeout)
+			stdout, stderr, runErr = s.deps.RunCommand(ctx, conn, req.Command, req.Effect, stdin, s.request.CommandTimeout)
 		}
 		if req.OnAttemptComplete != nil {
 			req.OnAttemptComplete()
@@ -456,7 +492,7 @@ func (s *productionHostMaintenanceSession) DiscoverPackages(ctx context.Context,
 	attempts, err := s.runWithRetry(ctx, req.Operation, func(conn SSHConnection) error {
 		var discoverErr error
 		outcome, discoverErr = DiscoverPackageUpdates(conn, s.request.CommandTimeout, func(conn SSHConnection, command string, stdin io.Reader, timeout time.Duration) (string, string, error) {
-			return s.deps.RunCommand(ctx, conn, command, stdin, timeout)
+			return s.deps.RunCommand(ctx, conn, command, HostCommandEffectReadOnly, stdin, timeout)
 		})
 		return discoverErr
 	})
@@ -470,7 +506,7 @@ func (s *productionHostMaintenanceSession) QueryPackageCVEs(ctx context.Context,
 	if s.deps.RunCommand == nil {
 		return nil, errors.New("CVE query command runner is not configured")
 	}
-	stdout, _, err := s.deps.RunCommand(ctx, s.conn, BuildPackageCVEQueryCmd(pkg), nil, CVELookupCommandTimeout)
+	stdout, _, err := s.deps.RunCommand(ctx, s.conn, BuildPackageCVEQueryCmd(pkg), HostCommandEffectReadOnly, nil, CVELookupCommandTimeout)
 	if err != nil {
 		return nil, err
 	}

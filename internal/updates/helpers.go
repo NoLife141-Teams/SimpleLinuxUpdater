@@ -947,30 +947,6 @@ func ReadOnlyAptCommand(command string) string {
 	return strings.TrimSpace(AptReadOnlyEnvironment + " " + strings.TrimSpace(command))
 }
 
-func IsAptLockProtectedCommand(command string) bool {
-	if strings.HasPrefix(strings.TrimSpace(command), "sudo -S -p '' /bin/sh -c ") {
-		return false
-	}
-	normalized := strings.ToLower(strings.TrimSpace(command))
-	return strings.Contains(normalized, "apt-get") && strings.Contains(normalized, " update") || IsAptMutationCommand(command)
-}
-
-func IsAptMutationCommand(command string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(command))
-	for _, aptCommand := range []string{
-		" -y upgrade",
-		" -y full-upgrade",
-		" -y autoremove",
-		" -y install",
-		" -y -f install",
-	} {
-		if strings.Contains(normalized, aptCommand) {
-			return true
-		}
-	}
-	return false
-}
-
 func BuildSelectedUpgradeCmd(packages []string) string {
 	return buildSelectedInstallCmd(packages, true)
 }

@@ -34,11 +34,11 @@ func TestNotificationDeliveryLifecycleArchitecture(t *testing.T) {
 			t.Errorf("notification module retains obsolete delivery interface %q", removed)
 		}
 	}
-	webserverSource, err := os.ReadFile("webserver.go")
+	processSource, err := os.ReadFile("http_server_lifecycle.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(webserverSource), "closeNotificationDelivery(deliveryCtx, deps.NotificationService)") {
+	if !strings.Contains(string(processSource), "closeNotificationDelivery(deliveryCtx, deps.NotificationService)") {
 		t.Error("process shutdown does not close Notification Delivery Lifecycle")
 	}
 }

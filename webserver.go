@@ -16,17 +16,14 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	appshell "debian-updater/internal/app"
@@ -42,7 +39,6 @@ import (
 	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,20 +61,16 @@ const maxUploadedKeyRequestBytes = maxUploadedKeyBytes + 1024*1024
 const sshConnectTimeout = 15 * time.Second
 const auditRetentionDays = 90
 const auditPruneInterval = 12 * time.Hour
-const serverShutdownTimeout = 10 * time.Second
-const notificationShutdownTimeout = 10 * time.Second
 const retryMaxAttemptsEnv = "DEBIAN_UPDATER_RETRY_MAX_ATTEMPTS"
 const retryBaseDelayMSEnv = "DEBIAN_UPDATER_RETRY_BASE_DELAY_MS"
 const retryMaxDelayMSEnv = "DEBIAN_UPDATER_RETRY_MAX_DELAY_MS"
 const retryJitterPctEnv = "DEBIAN_UPDATER_RETRY_JITTER_PCT"
 const sshCommandTimeoutSecondsEnv = "DEBIAN_UPDATER_SSH_COMMAND_TIMEOUT_SECONDS"
-const trustedProxiesEnv = "DEBIAN_UPDATER_TRUSTED_PROXIES"
 const postchecksEnabledEnv = "DEBIAN_UPDATER_POSTCHECKS_ENABLED"
 const postcheckBlockOnAptHealthEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_APT_HEALTH"
 const postcheckBlockOnFailedUnitsEnv = "DEBIAN_UPDATER_POSTCHECK_BLOCK_ON_FAILED_UNITS"
 const postcheckRebootRequiredWarningEnv = "DEBIAN_UPDATER_POSTCHECK_REBOOT_REQUIRED_WARNING"
 const postcheckCustomCmdEnv = "DEBIAN_UPDATER_POSTCHECK_CMD"
-const devAllowBrowserAnnotationsEnv = "DEBIAN_UPDATER_DEV_ALLOW_BROWSER_ANNOTATIONS"
 
 var aptUpdateCmd = updatespkg.AptUpdateCmd
 var aptUpgradeCmd = updatespkg.AptUpgradeCmd
@@ -93,10 +85,6 @@ const maxSSHCommandTimeout = 30 * time.Minute
 const sqliteBusyTimeoutMS = 5000
 const updateCompleteAction = "update.complete"
 const serverFactsRefreshAction = "server.facts.refresh"
-const defaultContentSecurityPolicy = "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'"
-const browserAnnotationsContentSecurityPolicy = defaultContentSecurityPolicy + "; style-src-elem 'self' https://fonts.googleapis.com 'unsafe-inline'"
-
-var actionRunnerShutdownTimeout = 30 * time.Second
 
 var errUploadedKeyTooLarge = errors.New("key file too large (max 64KB)")
 var errUploadedKeyEmpty = errors.New("empty key")
@@ -132,136 +120,6 @@ type PostUpdateCheckConfig = updatespkg.PostUpdateCheckConfig
 type updatePrecheckResult = updatespkg.PrecheckResult
 type updatePrecheckSummary = updatespkg.PrecheckSummary
 type updatePostcheckSummary = updatespkg.PostcheckSummary
-type sshSessionRunner = updatespkg.SSHSessionRunner
-type sshConnection = updatespkg.SSHConnection
-
-type realSSHSession struct {
-	session *ssh.Session
-}
-
-func (s *realSSHSession) SetStdin(r io.Reader)  { s.session.Stdin = r }
-func (s *realSSHSession) SetStdout(w io.Writer) { s.session.Stdout = w }
-func (s *realSSHSession) SetStderr(w io.Writer) { s.session.Stderr = w }
-func (s *realSSHSession) Run(cmd string) error  { return s.session.Run(cmd) }
-func (s *realSSHSession) Close() error          { return s.session.Close() }
-
-type realSSHConnection struct {
-	client *ssh.Client
-}
-
-func (c *realSSHConnection) NewSession() (sshSessionRunner, error) {
-	session, err := c.client.NewSession()
-	if err != nil {
-		return nil, err
-	}
-	return &realSSHSession{session: session}, nil
-}
-
-func (c *realSSHConnection) Close() error {
-	return c.client.Close()
-}
-
-var dialSSHConnectionMu sync.RWMutex
-var dialSSHConnection = func(server Server, config *ssh.ClientConfig) (sshConnection, error) {
-	client, err := ssh.Dial("tcp", net.JoinHostPort(server.Host, strconv.Itoa(normalizePort(server.Port))), config)
-	if err != nil {
-		return nil, err
-	}
-	return &realSSHConnection{client: client}, nil
-}
-
-func getDialSSHConnection() func(Server, *ssh.ClientConfig) (sshConnection, error) {
-	dialSSHConnectionMu.RLock()
-	defer dialSSHConnectionMu.RUnlock()
-	return dialSSHConnection
-}
-
-type actionRunnerTracker struct {
-	mu     sync.Mutex
-	active int
-	idle   chan struct{}
-}
-
-func newActionRunnerTracker() *actionRunnerTracker {
-	idle := make(chan struct{})
-	close(idle)
-	return &actionRunnerTracker{idle: idle}
-}
-
-func (t *actionRunnerTracker) start(run func()) {
-	t.mu.Lock()
-	if t.active == 0 {
-		t.idle = make(chan struct{})
-	}
-	t.active++
-	t.mu.Unlock()
-	go func() {
-		defer t.done()
-		run()
-	}()
-}
-
-func (t *actionRunnerTracker) done() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.active--
-	if t.active == 0 {
-		close(t.idle)
-	}
-}
-
-func (t *actionRunnerTracker) wait(ctx context.Context) error {
-	t.mu.Lock()
-	idle := t.idle
-	t.mu.Unlock()
-	select {
-	case <-idle:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-var updateRunners = newActionRunnerTracker()
-
-func startTrackedActionRunner(run func()) {
-	updateRunners.start(run)
-}
-
-func waitForUpdateRunners() {
-	_ = updateRunners.wait(context.Background())
-}
-
-func waitForUpdateRunnersContext(ctx context.Context) error {
-	return updateRunners.wait(ctx)
-}
-
-func shutdownApplication(server *http.Server, waitForScheduler func(), closeNotifications func(context.Context) error) {
-	if server != nil {
-		serverCtx, cancelServer := context.WithTimeout(context.Background(), serverShutdownTimeout)
-		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Failed to shutdown web server cleanly: %v", err)
-		}
-		cancelServer()
-	}
-	if waitForScheduler != nil {
-		waitForScheduler()
-	}
-
-	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
-	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
-		log.Printf("Action runners exceeded the shutdown grace period; continuing shutdown: %v", err)
-	}
-	cancelRunners()
-
-	if closeNotifications != nil {
-		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), notificationShutdownTimeout)
-		if err := closeNotifications(deliveryCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Failed to drain notification delivery cleanly: %v", err)
-		}
-		cancelDelivery()
-	}
-}
 
 func dbPath() string {
 	if p := strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_DB_PATH")); p != "" {
@@ -1922,41 +1780,6 @@ func startPendingUpdateCVEEnrichment(server Server, updates []PendingUpdate, par
 	defaultUpdateService().StartPendingCVEEnrichment(server, updates, parentJobID, actor, clientIP)
 }
 
-func securityHeadersMiddleware() gin.HandlerFunc {
-	contentSecurityPolicy := contentSecurityPolicyFromEnv()
-	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		c.Header("X-Frame-Options", "DENY")
-		c.Header("Content-Security-Policy", contentSecurityPolicy)
-		if c.Request != nil && c.Request.TLS != nil {
-			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		} else {
-			forwardedProto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
-			if forwardedProto != "" {
-				if idx := strings.Index(forwardedProto, ","); idx >= 0 {
-					forwardedProto = strings.TrimSpace(forwardedProto[:idx])
-				}
-				if strings.EqualFold(forwardedProto, "https") {
-					c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-				}
-			}
-		}
-		c.Next()
-	}
-}
-
-func contentSecurityPolicyFromEnv() string {
-	if parseBoolEnvWithDefault(devAllowBrowserAnnotationsEnv, false) {
-		return browserAnnotationsContentSecurityPolicy
-	}
-	return defaultContentSecurityPolicy
-}
-
-func trustedProxiesFromEnv() []string {
-	return appshell.ParseTrustedProxies(os.Getenv(trustedProxiesEnv))
-}
-
 func setupRouter() (*gin.Engine, error) {
 	return setupRouterWithDeps(NewDefaultAppDeps())
 }
@@ -2584,58 +2407,4 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 func writeServerActionLifecycleResult(c *gin.Context, result serverActionLifecycleResult) {
 	c.JSON(result.statusCode, gin.H(result.body))
-}
-
-func main() {
-	listenAddr, err := resolveListenAddr(os.Getenv)
-	if err != nil {
-		log.Fatalf("Invalid HTTP listen configuration: %v", err)
-	}
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		log.Fatalf("Failed to bind HTTP listener on %s: %v", listenAddr, err)
-	}
-	defer listener.Close()
-	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
-	r, err := setupRouterWithDeps(deps)
-	if err != nil {
-		log.Fatalf("Failed to setup router: %v", err)
-	}
-	seedVariantCDemoIfRequested(deps)
-	startAuditPruner(shutdownCtx)
-	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
-	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})
-	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
-		deps.HostFactsRefreshWorker.Start(shutdownCtx)
-	}
-	defer StopAuthRateLimiters()
-	server := &http.Server{
-		Addr:         listenAddr,
-		Handler:      sessionHandler(r),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
-	shutdownDone := make(chan struct{})
-	go func() {
-		<-shutdownCtx.Done()
-		shutdownApplication(server, func() {
-			deps.PolicyService.WaitScheduler()
-			if deps.HostFactsRefreshWorker != nil {
-				deps.HostFactsRefreshWorker.Wait()
-			}
-		}, func(deliveryCtx context.Context) error {
-			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
-		})
-		close(shutdownDone)
-	}()
-	log.Printf("Starting web server on %s", listenAddr)
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Failed to run web server: %v", err)
-	}
-	if shutdownCtx.Err() != nil {
-		<-shutdownDone
-	}
 }

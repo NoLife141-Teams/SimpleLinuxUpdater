@@ -41,7 +41,7 @@ func TestResolveListenAddr(t *testing.T) {
 
 func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 	checks := map[string][]string{
-		"webserver.go": {
+		"http_server_lifecycle.go": {
 			"resolveListenAddr(os.Getenv)",
 			"net.Listen(\"tcp\", listenAddr)",
 			"Addr:         listenAddr",
@@ -69,12 +69,12 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 		}
 	}
 
-	webserverRaw, err := os.ReadFile("webserver.go")
+	lifecycleRaw, err := os.ReadFile("http_server_lifecycle.go")
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", "webserver.go", err)
+		t.Fatalf("ReadFile(%q) error = %v", "http_server_lifecycle.go", err)
 	}
-	bindIndex := strings.Index(string(webserverRaw), "net.Listen(\"tcp\", listenAddr)")
-	depsIndex := strings.Index(string(webserverRaw), ").withDefaults()")
+	bindIndex := strings.Index(string(lifecycleRaw), "net.Listen(\"tcp\", listenAddr)")
+	depsIndex := strings.Index(string(lifecycleRaw), ").withDefaults()")
 	if bindIndex < 0 || depsIndex < 0 || bindIndex > depsIndex {
 		t.Fatal("webserver must bind its HTTP listener before initializing runtime dependencies")
 	}

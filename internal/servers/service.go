@@ -279,7 +279,7 @@ func (s *Service) Create(server Server) (Server, error) {
 		return server, ErrNameExists
 	}
 	if ServerEndpointExists(state.Servers(), server.Host, server.Port, -1) {
-		return server, ErrEndpointExists
+		return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 	}
 	state.SetServers(append(state.Servers(), server))
 	state.StatusMap()[server.Name] = NewIdleStatus(server)
@@ -330,7 +330,7 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			return server, ErrNameExists
 		}
 		if ServerEndpointExists(currentServers, server.Host, server.Port, i) {
-			return server, ErrEndpointExists
+			return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 		}
 		currentServers[i] = server
 		state.SetServers(currentServers)

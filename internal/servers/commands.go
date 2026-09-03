@@ -71,8 +71,7 @@ func (c *CommandService) CreateServer(server Server) CommandResult {
 		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server name already exists", "Server name already exists", nil)
 	case errors.Is(err, ErrEndpointExists):
 		target := strings.TrimSpace(server.Name)
-		host := strings.TrimSpace(server.Host)
-		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server endpoint already exists", "Server endpoint already exists", map[string]any{"host": host})
+		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server endpoint already exists", "Server endpoint already exists", endpointConflictMeta(err, server))
 	default:
 		target := strings.TrimSpace(server.Name)
 		return failedCommand(CommandOutcomeFailed, "server.create", "server", target, "Failed to persist server", fmt.Sprintf("Failed to save servers: %v", err), map[string]any{"error": err.Error()})
@@ -99,12 +98,23 @@ func (c *CommandService) UpdateServer(name string, server Server) CommandResult 
 	case errors.Is(err, ErrNameExists):
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server name already exists", "Server name already exists", nil)
 	case errors.Is(err, ErrEndpointExists):
-		host := strings.TrimSpace(server.Host)
-		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server endpoint already exists", "Server endpoint already exists", map[string]any{"host": host})
+		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server endpoint already exists", "Server endpoint already exists", endpointConflictMeta(err, server))
 	case errors.Is(err, ErrNotFound):
 		return failedCommand(CommandOutcomeNotFound, "server.update", "server", name, "Server not found", "Server not found", nil)
 	default:
 		return failedCommand(CommandOutcomeFailed, "server.update", "server", name, "Failed to persist server", fmt.Sprintf("Failed to save servers: %v", err), map[string]any{"error": err.Error()})
+	}
+}
+
+func endpointConflictMeta(err error, server Server) map[string]any {
+	endpoint := NormalizeServerEndpoint(server.Host, server.Port)
+	var conflict EndpointConflictError
+	if errors.As(err, &conflict) {
+		endpoint = conflict.Endpoint
+	}
+	return map[string]any{
+		"host": endpoint.Host,
+		"port": endpoint.Port,
 	}
 }
 

@@ -21,6 +21,18 @@ var (
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
 
+type EndpointConflictError struct {
+	Endpoint ServerEndpoint
+}
+
+func (e EndpointConflictError) Error() string {
+	return ErrEndpointExists.Error()
+}
+
+func (e EndpointConflictError) Unwrap() error {
+	return ErrEndpointExists
+}
+
 type Server struct {
 	Name string   `json:"name"`
 	Host string   `json:"host"`

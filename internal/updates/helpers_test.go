@@ -658,42 +658,32 @@ func TestPackageSelectorValidation(t *testing.T) {
 	}
 }
 
-func TestIsAptLockProtectedCommand(t *testing.T) {
-	protected := []string{
-		AptUpdateCmd,
-		AptUpgradeCmd,
-		AptFullUpgradeCmd,
-		AptAutoremoveCmd,
-		BuildSelectedUpgradeCmd([]string{"openssl"}),
-		BuildSelectedInstallCmd([]string{"linux-image-amd64"}),
+func TestHostCommandEffectOwnsPackageManagerTimeoutSemantics(t *testing.T) {
+	tests := []struct {
+		effect              HostCommandEffect
+		usesLocks           bool
+		needsReconciliation bool
+	}{
+		{effect: HostCommandEffectReadOnly},
+		{effect: HostCommandEffectMetadataMutation, usesLocks: true},
+		{effect: HostCommandEffectPackageStateMutation, usesLocks: true, needsReconciliation: true},
+		{effect: HostCommandEffectSystemStateMutation},
 	}
-	for _, command := range protected {
-		if !IsAptLockProtectedCommand(command) {
-			t.Fatalf("IsAptLockProtectedCommand(%q) = false, want true", command)
-		}
+	for _, tt := range tests {
+		t.Run(string(tt.effect), func(t *testing.T) {
+			if !tt.effect.Valid() {
+				t.Fatal("declared host command effect must be valid")
+			}
+			if got := tt.effect.UsesPackageManagerLocks(); got != tt.usesLocks {
+				t.Fatalf("UsesPackageManagerLocks() = %t, want %t", got, tt.usesLocks)
+			}
+			if got := tt.effect.RequiresReconciliationOnUnknownOutcome(); got != tt.needsReconciliation {
+				t.Fatalf("RequiresReconciliationOnUnknownOutcome() = %t, want %t", got, tt.needsReconciliation)
+			}
+		})
 	}
-	for _, command := range []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptLockProbeCmd, AptExtendedLockProbeCmd, "true"} {
-		if IsAptLockProtectedCommand(command) {
-			t.Fatalf("IsAptLockProtectedCommand(%q) = true, want false", command)
-		}
-	}
-	bootstrap, err := BuildSudoersBootstrapCommand("operator")
-	if err != nil {
-		t.Fatalf("BuildSudoersBootstrapCommand() error = %v", err)
-	}
-	if IsAptLockProtectedCommand(bootstrap) {
-		t.Fatal("sudoers bootstrap embeds helper source but must not be classified as a running APT operation")
-	}
-}
-
-func TestIsAptMutationCommandExcludesMetadataRefresh(t *testing.T) {
-	if IsAptMutationCommand(AptUpdateCmd) {
-		t.Fatal("apt update must not require dpkg reconciliation")
-	}
-	for _, command := range []string{AptUpgradeCmd, AptFullUpgradeCmd, AptAutoremoveCmd, AptRepairCmd} {
-		if !IsAptMutationCommand(command) {
-			t.Fatalf("IsAptMutationCommand(%q) = false, want true", command)
-		}
+	if HostCommandEffect("").Valid() || HostCommandEffect("unknown").Valid() {
+		t.Fatal("missing and unknown host command effects must fail validation")
 	}
 }
 

@@ -145,7 +145,7 @@ func TestRunRebootJobVerifiesSSHRecoveryAndUptimeReset(t *testing.T) {
 						return ServerFactsRecord{ServerName: server.Name, UptimeSeconds: 7200, RunningKernelVersion: "6.12.1"}
 					},
 					RunCommandFunc: func(_ context.Context, command HostCommandRequest) (HostCommandResult, error) {
-						if command.Command != ControlledRebootCmd || command.ReplayPolicy != ReplayNever {
+						if command.Command != ControlledRebootCmd || command.Effect != HostCommandEffectSystemStateMutation || command.ReplayPolicy != ReplayNever {
 							t.Fatalf("reboot command = %+v", command)
 						}
 						commandSent = true
@@ -564,12 +564,12 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 			statuses := map[string]*servers.ServerStatus{
 				server.Name: {Name: server.Name, Status: "idle"},
 			}
-			var commands []string
+			var requests []HostCommandRequest
 			deps := ServiceDeps{
 				ServerState: servers.NewState(mu, &inventory, &statuses, nil),
 				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
 					RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
-						commands = append(commands, req.Command)
+						requests = append(requests, req)
 						return HostCommandResult{Attempts: 1}, nil
 					},
 					RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary {
@@ -624,8 +624,27 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 			if status == nil || status.Status != "done" {
 				t.Fatalf("final status = %+v, want done", status)
 			}
+			var updateEffect, upgradeEffect HostCommandEffect
+			var commands []string
+			for _, request := range requests {
+				commands = append(commands, request.Command)
+				switch request.Operation {
+				case "update.apt_update":
+					updateEffect = request.Effect
+				case "update.apt_upgrade":
+					upgradeEffect = request.Effect
+				}
+			}
 			if !containsString(commands, tc.wantCmd) {
 				t.Fatalf("commands = %#v, want %q", commands, tc.wantCmd)
+			}
+			if updateEffect != HostCommandEffectMetadataMutation || upgradeEffect != HostCommandEffectPackageStateMutation {
+				t.Fatalf("effects update/upgrade = %q/%q, want metadata/package-state mutation", updateEffect, upgradeEffect)
+			}
+			for _, request := range requests {
+				if (request.Operation == "update.apt_update" || request.Operation == "update.apt_upgrade") && request.ReplayPolicy != ReplayRetryableOutputErrors {
+					t.Fatalf("%s replay policy = %q, want retryable output errors", request.Operation, request.ReplayPolicy)
+				}
 			}
 		})
 	}

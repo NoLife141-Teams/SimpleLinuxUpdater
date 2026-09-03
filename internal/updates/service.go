@@ -736,6 +736,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			commandResult, err := r.session.RunCommand(context.Background(), HostCommandRequest{
 				Operation:    "update.apt_update",
 				Command:      AptUpdateCmd,
+				Effect:       HostCommandEffectMetadataMutation,
 				ReplayPolicy: ReplayRetryableOutputErrors,
 			})
 			r.aptUpdateAttempts += commandResult.Attempts
@@ -953,6 +954,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			commandResult, err = r.session.RunCommand(context.Background(), HostCommandRequest{
 				Operation:         "update.apt_upgrade",
 				Command:           upgradeCmd,
+				Effect:            HostCommandEffectPackageStateMutation,
 				ReplayPolicy:      ReplayRetryableOutputErrors,
 				OnOutput:          liveOutput.Handle,
 				OnAttemptComplete: liveOutput.Flush,
@@ -1096,7 +1098,7 @@ func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 			r.setErrorLogs(r.currentLogs() + "\nError: " + err.Error())
 			return
 		}
-		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
+		r.runSingleCommand("sudoers.enable.command", "\nsudoers enable attempt %d/%d failed: %v; retrying in %s", cmd, HostCommandEffectSystemStateMutation, ReplayRetryableErrors, false, func() io.Reader {
 			return strings.NewReader(req.SudoPassword + "\n")
 		}, "\nRestricted SimpleLinuxUpdater sudoers helper enabled.")
 	})
@@ -1111,7 +1113,7 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 			r.setErrorLogs(r.currentLogs() + "\nError: " + err.Error())
 			return
 		}
-		r.runSingleCommand("sudoers.disable.command", "\nsudoers disable attempt %d/%d failed: %v; retrying in %s", cmd, func() io.Reader {
+		r.runSingleCommand("sudoers.disable.command", "\nsudoers disable attempt %d/%d failed: %v; retrying in %s", cmd, HostCommandEffectSystemStateMutation, ReplayRetryableErrors, false, func() io.Reader {
 			return strings.NewReader(req.SudoPassword + "\n")
 		}, "\nRestricted SimpleLinuxUpdater sudoers helper disabled.")
 	})
@@ -1122,7 +1124,7 @@ func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 		if !r.requireMutationPhase(jobs.PhaseAutoremove) {
 			return
 		}
-		r.runSingleCommand("autoremove.command", "\nautoremove attempt %d/%d failed: %v; retrying in %s", AptAutoremoveCmd, nil, "\nAutoremove completed.")
+		r.runSingleCommand("autoremove.command", "\nautoremove attempt %d/%d failed: %v; retrying in %s", AptAutoremoveCmd, HostCommandEffectPackageStateMutation, ReplayRetryableOutputErrors, true, nil, "\nAutoremove completed.")
 	})
 }
 
@@ -1131,7 +1133,7 @@ func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
 		if !r.requireMutationPhase(jobs.PhaseReconcile) {
 			return
 		}
-		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, nil, "\nAPT/DPKG repair completed and package health checks passed.")
+		r.runSingleCommand("apt_repair.command", "\nAPT repair attempt %d/%d failed: %v; retrying in %s", AptRepairCmd, HostCommandEffectPackageStateMutation, ReplayRetryableErrors, false, nil, "\nAPT/DPKG repair completed and package health checks passed.")
 	})
 }
 
@@ -1155,7 +1157,7 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 			}
 			r.appendStatusLog(fmt.Sprintf("\nBaseline captured: uptime=%ds kernel=%s.", baseline.UptimeSeconds, strings.TrimSpace(baseline.RunningKernelVersion)))
 			r.setJobPhase(jobs.PhaseReboot)
-			result, err := r.session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, ReplayPolicy: ReplayNever})
+			result, err := r.session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, Effect: HostCommandEffectSystemStateMutation, ReplayPolicy: ReplayNever})
 			r.commandAttempts += result.Attempts
 			if err != nil {
 				r.markErrorClass(err)
@@ -1238,17 +1240,16 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 	)
 }
 
-func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, stdin func() io.Reader, successSuffix string) {
+func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, effect HostCommandEffect, replayPolicy HostCommandReplayPolicy, streamOutput bool, stdin func() io.Reader, successSuffix string) {
 	r.retryLogFormats[opName] = retryLogFormat
-	replayPolicy := ReplayRetryableErrors
 	var liveOutput *liveCommandLogSink
-	if cmd == AptAutoremoveCmd {
-		replayPolicy = ReplayRetryableOutputErrors
+	if streamOutput {
 		liveOutput = newLiveCommandLogSink(r)
 	}
 	request := HostCommandRequest{
 		Operation:    opName,
 		Command:      cmd,
+		Effect:       effect,
 		Stdin:        stdin,
 		ReplayPolicy: replayPolicy,
 	}

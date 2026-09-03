@@ -158,7 +158,7 @@ func TestLoadRetryPolicyFromEnvDefaults(t *testing.T) {
 func TestRunSSHCommandWithTimeoutTimesOutBlockedSessionOpen(t *testing.T) {
 	conn := &delayedNewSessionConn{delay: 2 * time.Second}
 	start := time.Now()
-	_, _, err := runSSHCommandWithTimeout(conn, "true", nil, 200*time.Millisecond)
+	_, _, err := runSSHCommandWithTimeout(conn, "true", updatespkg.HostCommandEffectReadOnly, nil, 200*time.Millisecond)
 	if err == nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = nil, want timeout error")
 	}
@@ -179,7 +179,7 @@ func TestRunSSHCommandWithTimeoutExtendsDeadlineWhileOutputIsActive(t *testing.T
 		writes:   8,
 	}
 
-	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 25*time.Millisecond)
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 25*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want regular output to extend the idle deadline", err)
 	}
@@ -188,22 +188,22 @@ func TestRunSSHCommandWithTimeoutExtendsDeadlineWhileOutputIsActive(t *testing.T
 	}
 }
 
-func TestRunSSHCommandWithTimeoutKeepsHardDeadlineForNonAptCommand(t *testing.T) {
+func TestRunSSHCommandWithTimeoutKeepsHardDeadlineForReadOnlyEffectRegardlessOfSyntax(t *testing.T) {
 	conn := &progressingSSHConnection{
 		interval: 10 * time.Millisecond,
 		writes:   8,
 	}
 
-	_, _, err := runSSHCommandWithTimeout(conn, "long command", nil, 25*time.Millisecond)
+	_, _, err := runSSHCommandWithTimeout(conn, "apt-get -y upgrade", updatespkg.HostCommandEffectReadOnly, nil, 25*time.Millisecond)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
-		t.Fatalf("runSSHCommandWithTimeout() error = %v, want non-APT command to retain its hard deadline", err)
+		t.Fatalf("runSSHCommandWithTimeout() error = %v, want read-only effect to retain its hard deadline", err)
 	}
 }
 
 func TestRunSSHCommandWithTimeoutKeepsWaitingWhileAptLockIsActive(t *testing.T) {
 	conn := &aptLockAwareTestConnection{lockActive: true, extendedAllowed: true}
 
-	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	_, _, err := runSSHCommandWithTimeout(conn, "simplelinuxupdater-apt apply transaction-42", updatespkg.HostCommandEffectPackageStateMutation, nil, 30*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want active apt lock to extend the wait", err)
 	}
@@ -223,7 +223,7 @@ func TestRunSSHCommandWithTimeoutKeepsWaitingWhileAptLockIsActive(t *testing.T) 
 func TestRunSSHCommandWithTimeoutFallsBackToLegacyAptLockProbe(t *testing.T) {
 	conn := &aptLockAwareTestConnection{lockActive: true}
 
-	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 30*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want legacy sudoers probe to extend the wait", err)
 	}
@@ -239,7 +239,7 @@ func TestRunSSHCommandWithTimeoutFallsBackToLegacyAptLockProbe(t *testing.T) {
 func TestRunSSHCommandWithTimeoutStillTimesOutAptWithoutActiveLock(t *testing.T) {
 	conn := &aptLockAwareTestConnection{extendedAllowed: true}
 
-	_, stderr, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	_, stderr, err := runSSHCommandWithTimeout(conn, "simplelinuxupdater-apt apply transaction-42", updatespkg.HostCommandEffectPackageStateMutation, nil, 30*time.Millisecond)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "timed out") {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want timeout without an active apt lock", err)
 	}
@@ -268,7 +268,7 @@ func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t
 		lockProbeDelay:  30 * time.Millisecond,
 	}
 
-	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 10*time.Millisecond)
+	_, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want completion during lock probe to succeed", err)
 	}
@@ -282,7 +282,7 @@ func TestRunSSHCommandWithTimeoutHonorsActivityDuringLockProbe(t *testing.T) {
 		lockProbeDelay:  20 * time.Millisecond,
 	}
 
-	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, nil, 30*time.Millisecond)
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 30*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want output during the lock probe to extend the idle deadline", err)
 	}
@@ -304,7 +304,7 @@ func TestRunSSHCommandWithTimeoutAllowsQuietAptFinalizationAfterProgress(t *test
 		commandOutputAt: 20 * time.Millisecond,
 	}
 
-	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpdateCmd, nil, 30*time.Millisecond)
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpdateCmd, updatespkg.HostCommandEffectMetadataMutation, nil, 30*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want recent APT progress to allow one quiet finalization window", err)
 	}
@@ -327,7 +327,7 @@ func TestRunSSHCommandWithTimeoutKeepsWaitingBeyondPreviousAptExtensionCap(t *te
 	}
 	var progress strings.Builder
 
-	_, _, err := runSSHCommandWithTimeoutStreaming(conn, aptUpgradeCmd, nil, 20*time.Millisecond, func(output updatespkg.HostCommandOutput) {
+	_, _, err := runSSHCommandWithTimeoutStreaming(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 20*time.Millisecond, func(output updatespkg.HostCommandOutput) {
 		progress.WriteString(output.Data)
 	})
 	if err != nil {

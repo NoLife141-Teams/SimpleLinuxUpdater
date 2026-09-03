@@ -182,12 +182,12 @@ func TestUpdateServiceAutoremoveUsesCommandHookAndAuditsSuccess(t *testing.T) {
 		mu.Unlock()
 	})
 
-	var command string
+	var command HostCommandRequest
 	var auditStatus string
 	deps := testUpdateServiceDeps(t)
 	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
 		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
-			command = req.Command
+			command = req
 			return HostCommandResult{Stdout: "removed packages", Attempts: 1}, nil
 		},
 	})
@@ -204,8 +204,8 @@ func TestUpdateServiceAutoremoveUsesCommandHookAndAuditsSuccess(t *testing.T) {
 		Policy:   loadRetryPolicyFromEnv(),
 	})
 
-	if command != aptAutoremoveCmd {
-		t.Fatalf("command = %q, want %q", command, aptAutoremoveCmd)
+	if command.Command != aptAutoremoveCmd || command.Effect != updatespkg.HostCommandEffectPackageStateMutation || command.ReplayPolicy != updatespkg.ReplayRetryableOutputErrors {
+		t.Fatalf("autoremove request = %+v, want package-state mutation", command)
 	}
 	mu.Lock()
 	got := cloneServerStatus(statusMap[server.Name])
@@ -243,8 +243,8 @@ func TestUpdateServiceAptRepairUsesGuardedRepairCommand(t *testing.T) {
 		Policy: RetryPolicy{MaxAttempts: 1},
 	})
 
-	if request.Operation != "apt_repair.command" || request.Command != updatespkg.AptRepairCmd {
-		t.Fatalf("repair request = operation %q command %q", request.Operation, request.Command)
+	if request.Operation != "apt_repair.command" || request.Command != updatespkg.AptRepairCmd || request.Effect != updatespkg.HostCommandEffectPackageStateMutation || request.ReplayPolicy != updatespkg.ReplayRetryableErrors {
+		t.Fatalf("repair request = %+v, want guarded package-state mutation", request)
 	}
 	status := state.CurrentStatusSnapshot(server.Name)
 	if status == nil || status.Status != "done" || !strings.Contains(status.Logs, "package health checks passed") {
@@ -347,8 +347,8 @@ func TestUpdateServiceScheduledScanIncludesCVEResults(t *testing.T) {
 	deps.CurrentJobManager = func() *JobManager { return jm }
 	deps.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
 		RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
-			if req.Command != aptUpdateCmd {
-				t.Fatalf("command = %q, want apt update command", req.Command)
+			if req.Command != aptUpdateCmd || req.Effect != updatespkg.HostCommandEffectMetadataMutation {
+				t.Fatalf("scheduled scan request = %+v, want apt metadata mutation", req)
 			}
 			return HostCommandResult{Stdout: "apt updated", Attempts: 1}, nil
 		},

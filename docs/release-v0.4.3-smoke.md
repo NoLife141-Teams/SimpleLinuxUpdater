@@ -35,7 +35,7 @@ The following focused commands passed on the release implementation:
 - `go test -count=1 -v . -run
   'TestRunSSHCommandWithTimeout(KeepsWaitingWhileAptLockIsActive|FallsBackToLegacyAptLockProbe|StillTimesOutAptWithoutActiveLock|CapsAptLockExtensions)'`
 - `go test -count=1 -v ./internal/updates -run
-  'TestIsAptLockProtectedCommand|TestProductionHostMaintenanceSessionFallsBackToLegacyLockProbe'`
+  'TestHostCommandEffectOwnsPackageManagerTimeoutSemantics|TestProductionHostMaintenanceSessionFallsBackToLegacyLockProbe'`
 - `go test -count=1 -v ./internal/notifications -run
   'TestNotificationDeliveryLifecycleSkipsNoOpUpdate'`
 

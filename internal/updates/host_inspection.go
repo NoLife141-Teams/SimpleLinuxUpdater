@@ -43,7 +43,7 @@ func (s *productionHostMaintenanceSession) runInspectionCommand(ctx context.Cont
 	if s.deps.RunCommand == nil {
 		return "", "", fmt.Errorf("host command runner is not configured")
 	}
-	return s.deps.RunCommand(ctx, s.conn, command, nil, s.request.CommandTimeout)
+	return s.deps.RunCommand(ctx, s.conn, command, HostCommandEffectReadOnly, nil, s.request.CommandTimeout)
 }
 
 func (s *productionHostMaintenanceSession) runUpdatePrechecks(ctx context.Context) PrecheckSummary {

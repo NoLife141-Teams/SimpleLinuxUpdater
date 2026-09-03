@@ -117,6 +117,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	commandResult, err := session.RunCommand(context.Background(), HostCommandRequest{
 		Operation:    "scheduled_scan.apt_update",
 		Command:      AptUpdateCmd,
+		Effect:       HostCommandEffectMetadataMutation,
 		ReplayPolicy: ReplayRetryableOutputErrors,
 	})
 	stdout, stderr := commandResult.Stdout, commandResult.Stderr

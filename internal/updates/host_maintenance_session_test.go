@@ -36,6 +36,7 @@ type inspectionCommandResult struct {
 type inspectionTestConnection struct {
 	results  map[string]inspectionCommandResult
 	commands []string
+	effects  []HostCommandEffect
 }
 
 func (*inspectionTestConnection) NewSession() (SSHSessionRunner, error) {
@@ -56,11 +57,12 @@ func newInspectionSession(t *testing.T, conn *inspectionTestConnection) HostMain
 		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return conn, nil
 		},
-		RunCommand: func(_ context.Context, got SSHConnection, command string, _ io.Reader, _ time.Duration) (string, string, error) {
+		RunCommand: func(_ context.Context, got SSHConnection, command string, effect HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
 			if got != conn {
 				t.Fatalf("command connection = %T, want inspection connection", got)
 			}
 			conn.commands = append(conn.commands, command)
+			conn.effects = append(conn.effects, effect)
 			result, ok := conn.results[command]
 			if !ok {
 				return "", "", errors.New("unexpected command: " + command)
@@ -178,6 +180,28 @@ func TestProductionHostMaintenanceSessionOwnsPackageDiscoveryAndCVEQueries(t *te
 	}
 	if !reflect.DeepEqual(cves, []string{"CVE-2026-4101", "CVE-2026-4102"}) {
 		t.Fatalf("QueryPackageCVEs() = %#v", cves)
+	}
+	for index, effect := range conn.effects {
+		if effect != HostCommandEffectReadOnly {
+			t.Fatalf("command %q effect = %q, want read-only", conn.commands[index], effect)
+		}
+	}
+}
+
+func TestProductionHostMaintenanceSessionRejectsMissingCommandEffect(t *testing.T) {
+	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{"true": {}}}
+	session := newInspectionSession(t, conn)
+
+	_, err := session.RunCommand(context.Background(), HostCommandRequest{
+		Operation:    "test.missing_effect",
+		Command:      "true",
+		ReplayPolicy: ReplayNever,
+	})
+	if err == nil || !strings.Contains(err.Error(), "host command effect is required") {
+		t.Fatalf("RunCommand() error = %v, want missing effect rejection", err)
+	}
+	if len(conn.commands) != 0 {
+		t.Fatalf("commands = %#v, want no transport call", conn.commands)
 	}
 }
 
@@ -480,7 +504,7 @@ func TestProductionHostMaintenanceSessionHonorsCancellationAfterInspectionStarts
 		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return &inspectionTestConnection{}, nil
 		},
-		RunCommand: func(ctx context.Context, _ SSHConnection, _ string, _ io.Reader, _ time.Duration) (string, string, error) {
+		RunCommand: func(ctx context.Context, _ SSHConnection, _ string, _ HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
 			close(started)
 			<-ctx.Done()
 			return "", "", ctx.Err()
@@ -516,7 +540,7 @@ func TestProductionHostMaintenanceSessionDeadlineInterruptsRetryBackoff(t *testi
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
 		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
-		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			commands++
 			return "", "mirror temporarily unavailable", errors.New("exit status 100")
 		},
@@ -540,7 +564,7 @@ func TestProductionHostMaintenanceSessionDeadlineInterruptsRetryBackoff(t *testi
 	started := time.Now()
 	errCh := make(chan error, 1)
 	go func() {
-		_, runErr := session.RunCommand(ctx, HostCommandRequest{Operation: "test.retry", Command: "apt-get update", ReplayPolicy: ReplayRetryableOutputErrors})
+		_, runErr := session.RunCommand(ctx, HostCommandRequest{Operation: "test.retry", Command: "apt-get update", Effect: HostCommandEffectMetadataMutation, ReplayPolicy: ReplayRetryableOutputErrors})
 		errCh <- runErr
 	}()
 	select {
@@ -569,9 +593,15 @@ func TestProductionHostMaintenanceSessionDoesNotReplayUnknownAptOutcome(t *testi
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
 		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
-		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+		RunCommand: func(_ context.Context, _ SSHConnection, command string, effect HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
 			commands++
-			return "Setting up kernel...", "E: Could not get lock /var/lib/dpkg/lock-frontend", NonRetryableTaggedError{Err: errors.New("APT command outcome is unknown; automatic replay disabled: command timed out")}
+			if command != "simplelinuxupdater-apt apply transaction-42" || effect != HostCommandEffectPackageStateMutation {
+				t.Fatalf("command/effect = %q/%q, want future syntax with package-state mutation", command, effect)
+			}
+			return "Setting up kernel...", "E: Could not get lock /var/lib/dpkg/lock-frontend", NonRetryableTaggedError{
+				Err:                    errors.New("APT command outcome is unknown; automatic replay disabled: command timed out"),
+				ReconciliationRequired: effect.RequiresReconciliationOnUnknownOutcome(),
+			}
 		},
 		Sleep: func(time.Duration) {},
 	})
@@ -590,7 +620,8 @@ func TestProductionHostMaintenanceSessionDoesNotReplayUnknownAptOutcome(t *testi
 
 	result, err := session.RunCommand(context.Background(), HostCommandRequest{
 		Operation:    "update.apt_upgrade",
-		Command:      AptFullUpgradeCmd,
+		Command:      "simplelinuxupdater-apt apply transaction-42",
+		Effect:       HostCommandEffectPackageStateMutation,
 		ReplayPolicy: ReplayRetryableOutputErrors,
 	})
 	if err == nil || !strings.Contains(err.Error(), "automatic replay disabled") {
@@ -609,7 +640,7 @@ func TestProductionHostMaintenanceSessionNeverReplaysControlledCommand(t *testin
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
 		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
-		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			commands++
 			return "", "connection reset by peer", errors.New("connection reset by peer")
 		},
@@ -628,7 +659,7 @@ func TestProductionHostMaintenanceSessionNeverReplaysControlledCommand(t *testin
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
-	result, err := session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, ReplayPolicy: ReplayNever})
+	result, err := session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, Effect: HostCommandEffectSystemStateMutation, ReplayPolicy: ReplayNever})
 	if err == nil {
 		t.Fatal("RunCommand() error = nil, want controlled command failure")
 	}
@@ -645,11 +676,11 @@ func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testin
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
 		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
-		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			fallbackCalls++
 			return "fallback", "", nil
 		},
-		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
+		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ HostCommandEffect, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
 			streamingCalls++
 			onOutput(HostCommandOutput{Stream: HostCommandStdout, Data: "unpacking\n"})
 			onOutput(HostCommandOutput{Stream: HostCommandStderr, Data: "configuration warning\n"})
@@ -671,6 +702,7 @@ func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testin
 	result, err := session.RunCommand(context.Background(), HostCommandRequest{
 		Operation: "test.stream",
 		Command:   "apt-get -y upgrade",
+		Effect:    HostCommandEffectPackageStateMutation,
 		OnOutput: func(output HostCommandOutput) {
 			outputs = append(outputs, output)
 		},
@@ -714,10 +746,10 @@ func TestProductionHostMaintenanceSessionCompletesStreamAttemptBeforeRetryNotifi
 			dials++
 			return conn, nil
 		},
-		RunCommand: func(context.Context, SSHConnection, string, io.Reader, time.Duration) (string, string, error) {
+		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			return "", "", errors.New("unexpected fallback command")
 		},
-		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
+		RunStreamingCommand: func(_ context.Context, _ SSHConnection, _ string, _ HostCommandEffect, _ io.Reader, _ time.Duration, onOutput HostCommandOutputHandler) (string, string, error) {
 			attempts++
 			output := fmt.Sprintf("attempt-%d\n", attempts)
 			onOutput(HostCommandOutput{Stream: HostCommandStdout, Data: output})
@@ -745,6 +777,7 @@ func TestProductionHostMaintenanceSessionCompletesStreamAttemptBeforeRetryNotifi
 	_, err = session.RunCommand(context.Background(), HostCommandRequest{
 		Operation: "test.stream-retry",
 		Command:   "apt-get -y upgrade",
+		Effect:    HostCommandEffectPackageStateMutation,
 		OnOutput:  func(HostCommandOutput) {},
 		OnAttemptComplete: func() {
 			events = append(events, "flush")
@@ -888,7 +921,7 @@ func TestProductionHostMaintenanceSessionOwnsReconnectRetryAndClose(t *testing.T
 			dials++
 			return conn, nil
 		},
-		RunCommand: func(_ context.Context, conn SSHConnection, cmd string, stdin io.Reader, _ time.Duration) (string, string, error) {
+		RunCommand: func(_ context.Context, conn SSHConnection, cmd string, _ HostCommandEffect, stdin io.Reader, _ time.Duration) (string, string, error) {
 			commands++
 			if _, err := io.ReadAll(stdin); err != nil {
 				t.Fatalf("read command stdin: %v", err)
@@ -897,7 +930,7 @@ func TestProductionHostMaintenanceSessionOwnsReconnectRetryAndClose(t *testing.T
 				if conn != first {
 					t.Fatalf("first command connection = %T, want first", conn)
 				}
-				return "", "mirror temporarily unavailable", errors.New("exit status 100")
+				return "", "connection reset by peer", errors.New("connection reset by peer")
 			}
 			if conn != second {
 				t.Fatalf("second command connection = %T, want replacement", conn)
@@ -923,6 +956,7 @@ func TestProductionHostMaintenanceSessionOwnsReconnectRetryAndClose(t *testing.T
 	result, err := session.RunCommand(context.Background(), HostCommandRequest{
 		Operation: "update.apt_update",
 		Command:   AptUpdateCmd,
+		Effect:    HostCommandEffectMetadataMutation,
 		Stdin: func() io.Reader {
 			stdinBuilds++
 			return strings.NewReader("password")

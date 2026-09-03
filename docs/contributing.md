@@ -162,9 +162,13 @@ npm run test:e2e
 Coverage:
 
 ```bash
-go test -covermode=atomic -coverprofile=coverage.out ./...
+go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out | tail -n 1
 ```
+
+The `test (cover)` CI matrix entry enforces the versioned global statement-coverage floor in `.github/workflows/ci.yml`. The initial floor is `73.0%`, based on a `73.3%` measurement from `main`; CI prints both the measured value and required minimum. A coverage failure makes the `test` job fail and therefore also fails `ci-required`. The trusted release gate enforces the same floor.
+
+To raise the floor intentionally, first synchronize `main`, run the exact coverage commands above, then update `GO_COVERAGE_THRESHOLD` to the same higher value in both `ci.yml` and `release.yml` and update `ci_coverage_architecture_test.go`. Run the Go tests and `actionlint` before opening the PR. Do not lower the floor merely to make a PR pass; add tests for the regressed paths instead. Any exceptional reduction requires an explicit technical justification and review in its own change.
 
 Optional hardening checks when tools are available:
 

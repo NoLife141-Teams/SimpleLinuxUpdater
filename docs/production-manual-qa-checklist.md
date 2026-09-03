@@ -116,7 +116,7 @@ For release gating with real SSH operations, use the disposable-target flow in [
 - [ ] Expected: server appears in table and dashboard.
 - [ ] Try missing name/host/user.
 - [ ] Expected: validation error.
-- [ ] Try duplicate server name or duplicate host.
+- [ ] Try a duplicate server name or duplicate normalized host/port endpoint; verify that the same host on another port remains allowed.
 - [ ] Expected: conflict/error, no duplicate row.
 - [ ] Edit server name, host, port, user, and tags.
 - [ ] Expected: changes persist after refresh.

@@ -15,11 +15,23 @@ var (
 	ErrRequiredFields      = errors.New("name, host, and user are required")
 	ErrInvalidSSHUsername  = errors.New("invalid ssh username")
 	ErrNameExists          = errors.New("server name already exists")
-	ErrHostExists          = errors.New("server host already exists")
+	ErrEndpointExists      = errors.New("server endpoint already exists")
 	ErrNotFound            = errors.New("server not found")
 	ErrActionInProgress    = errors.New("action already in progress")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
+
+type EndpointConflictError struct {
+	Endpoint ServerEndpoint
+}
+
+func (e EndpointConflictError) Error() string {
+	return ErrEndpointExists.Error()
+}
+
+func (e EndpointConflictError) Unwrap() error {
+	return ErrEndpointExists
+}
 
 type Server struct {
 	Name string   `json:"name"`

@@ -134,6 +134,18 @@ func NormalizeServerHost(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+type ServerEndpoint struct {
+	Host string
+	Port int
+}
+
+func NormalizeServerEndpoint(host string, port int) ServerEndpoint {
+	return ServerEndpoint{
+		Host: NormalizeServerHost(host),
+		Port: NormalizePort(port),
+	}
+}
+
 func ServerNameExists(servers []Server, name string, skipIndex int) bool {
 	normalized := NormalizeServerName(name)
 	for i, existing := range servers {
@@ -147,13 +159,13 @@ func ServerNameExists(servers []Server, name string, skipIndex int) bool {
 	return false
 }
 
-func ServerHostExists(servers []Server, host string, skipIndex int) bool {
-	normalized := NormalizeServerHost(host)
+func ServerEndpointExists(servers []Server, host string, port, skipIndex int) bool {
+	endpoint := NormalizeServerEndpoint(host, port)
 	for i, existing := range servers {
 		if i == skipIndex {
 			continue
 		}
-		if NormalizeServerHost(existing.Host) == normalized {
+		if NormalizeServerEndpoint(existing.Host, existing.Port) == endpoint {
 			return true
 		}
 	}

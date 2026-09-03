@@ -17,6 +17,34 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func TestServerEndpointExistsUsesNormalizedEndpoint(t *testing.T) {
+	servers := []Server{
+		{Name: "default", Host: "Node.EXAMPLE", Port: 0},
+		{Name: "ipv6", Host: "2001:db8::1", Port: 2201},
+	}
+
+	tests := []struct {
+		name string
+		host string
+		port int
+		want bool
+	}{
+		{name: "same host and default port", host: "node.example", port: 22, want: true},
+		{name: "DNS case is ignored", host: "NODE.example", port: 0, want: true},
+		{name: "same host on another port", host: "node.example", port: 2202, want: false},
+		{name: "IPv6 endpoint", host: "2001:DB8::1", port: 2201, want: true},
+		{name: "IPv6 different port", host: "2001:db8::1", port: 2202, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ServerEndpointExists(servers, tt.host, tt.port, -1); got != tt.want {
+				t.Fatalf("ServerEndpointExists(%q, %d) = %t, want %t", tt.host, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKnownHostsConfiguredPathListSemantics(t *testing.T) {
 	tests := []struct {
 		name      string

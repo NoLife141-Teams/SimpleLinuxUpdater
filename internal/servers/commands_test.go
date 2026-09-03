@@ -66,6 +66,26 @@ func TestServerInventoryCommandsCreateUpdateDeleteOutcomes(t *testing.T) {
 	}
 }
 
+func TestServerInventoryCommandsEndpointConflictAuditIncludesNormalizedPort(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{
+		{Name: "default", Host: "Node.EXAMPLE", Port: 0, User: "root"},
+		{Name: "custom", Host: "node.example", Port: 2201, User: "root"},
+		{Name: "edited", Host: "other.example", Port: 2201, User: "root"},
+	})
+	commands := NewCommandService(svc)
+
+	created := commands.CreateServer(Server{Name: "duplicate-default", Host: "node.example", Port: 0, User: "root"})
+	if created.Outcome != CommandOutcomeConflict || created.Audit.Meta["port"] != 22 {
+		t.Fatalf("CreateServer(endpoint conflict) = %+v, want normalized port 22 audit metadata", created)
+	}
+
+	updated := commands.UpdateServer("edited", Server{Name: "edited", Host: "NODE.EXAMPLE", Port: 0, User: "root"})
+	if updated.Outcome != CommandOutcomeConflict || updated.Audit.Meta["port"] != 2201 {
+		t.Fatalf("UpdateServer(endpoint conflict) = %+v, want inherited port 2201 audit metadata", updated)
+	}
+}
+
 func TestServerInventoryCommandsCredentialOutcomes(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, _, stateServers, statusMap := newTestService(repo, []Server{{Name: "srv", Host: "srv.example", User: "root", Pass: "pw", Key: "key"}})

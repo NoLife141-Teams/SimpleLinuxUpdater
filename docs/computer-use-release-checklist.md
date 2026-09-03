@@ -161,7 +161,7 @@ Record each item as pass, fail, or skipped with the exact reason.
 - [ ] A server with no per-server password or key is shown as using the Global SSH Credential in effective-auth grouping/status.
 - [ ] Clearing the Global SSH Credential requires typing `CLEAR GLOBAL SSH CREDENTIAL`, only runs against disposable data, and updates effective-auth state.
 - [ ] Missing required fields are rejected before a server is saved.
-- [ ] Duplicate server name or duplicate host is rejected.
+- [ ] A duplicate server name or normalized host/port endpoint is rejected; the same host on another port remains allowed.
 - [ ] Add a disposable UI-only server such as `cu-demo-local`.
 - [ ] Edit name, host, port, user, and tags, then refresh and verify persistence.
 - [ ] Secrets are hidden in the table and edit flow.

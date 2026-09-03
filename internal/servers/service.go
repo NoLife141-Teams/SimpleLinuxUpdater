@@ -278,8 +278,8 @@ func (s *Service) Create(server Server) (Server, error) {
 	if ServerNameExists(state.Servers(), server.Name, -1) {
 		return server, ErrNameExists
 	}
-	if ServerHostExists(state.Servers(), server.Host, -1) {
-		return server, ErrHostExists
+	if ServerEndpointExists(state.Servers(), server.Host, server.Port, -1) {
+		return server, ErrEndpointExists
 	}
 	state.SetServers(append(state.Servers(), server))
 	state.StatusMap()[server.Name] = NewIdleStatus(server)
@@ -329,8 +329,8 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if ServerNameExists(currentServers, server.Name, i) {
 			return server, ErrNameExists
 		}
-		if ServerHostExists(currentServers, server.Host, i) {
-			return server, ErrHostExists
+		if ServerEndpointExists(currentServers, server.Host, server.Port, i) {
+			return server, ErrEndpointExists
 		}
 		currentServers[i] = server
 		state.SetServers(currentServers)

@@ -69,10 +69,10 @@ func (c *CommandService) CreateServer(server Server) CommandResult {
 	case errors.Is(err, ErrNameExists):
 		target := strings.TrimSpace(server.Name)
 		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server name already exists", "Server name already exists", nil)
-	case errors.Is(err, ErrHostExists):
+	case errors.Is(err, ErrEndpointExists):
 		target := strings.TrimSpace(server.Name)
 		host := strings.TrimSpace(server.Host)
-		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server host already exists", "Server host already exists", map[string]any{"host": host})
+		return failedCommand(CommandOutcomeConflict, "server.create", "server", target, "Server endpoint already exists", "Server endpoint already exists", map[string]any{"host": host})
 	default:
 		target := strings.TrimSpace(server.Name)
 		return failedCommand(CommandOutcomeFailed, "server.create", "server", target, "Failed to persist server", fmt.Sprintf("Failed to save servers: %v", err), map[string]any{"error": err.Error()})
@@ -98,9 +98,9 @@ func (c *CommandService) UpdateServer(name string, server Server) CommandResult 
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server action already in progress", "wait for the active server action to finish before editing this server", actionStatusMeta(err))
 	case errors.Is(err, ErrNameExists):
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server name already exists", "Server name already exists", nil)
-	case errors.Is(err, ErrHostExists):
+	case errors.Is(err, ErrEndpointExists):
 		host := strings.TrimSpace(server.Host)
-		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server host already exists", "Server host already exists", map[string]any{"host": host})
+		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server endpoint already exists", "Server endpoint already exists", map[string]any{"host": host})
 	case errors.Is(err, ErrNotFound):
 		return failedCommand(CommandOutcomeNotFound, "server.update", "server", name, "Server not found", "Server not found", nil)
 	default:

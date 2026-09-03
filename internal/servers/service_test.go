@@ -201,8 +201,11 @@ func TestServerInventoryServiceCRUDValidationAndRollback(t *testing.T) {
 	if _, err := svc.Create(Server{Name: "alpha", Host: "other.example", User: "root"}); !errors.Is(err, ErrNameExists) {
 		t.Fatalf("Create(duplicate name) error = %v, want %v", err, ErrNameExists)
 	}
-	if _, err := svc.Create(Server{Name: "Beta", Host: "node.example", Port: 2200, User: "root"}); !errors.Is(err, ErrHostExists) {
-		t.Fatalf("Create(duplicate host) error = %v, want %v", err, ErrHostExists)
+	if _, err := svc.Create(Server{Name: "Beta", Host: "node.example", Port: 22, User: "root"}); !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Create(duplicate endpoint) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if _, err := svc.Create(Server{Name: "AltPort", Host: "node.example", Port: 2200, User: "root"}); err != nil {
+		t.Fatalf("Create(same host different port) unexpected error: %v", err)
 	}
 	if _, err := svc.Create(Server{Name: "BadUser", Host: "bad.example", User: "root!"}); !errors.Is(err, ErrInvalidSSHUsername) {
 		t.Fatalf("Create(invalid user) error = %v, want %v", err, ErrInvalidSSHUsername)
@@ -216,6 +219,29 @@ func TestServerInventoryServiceCRUDValidationAndRollback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(*stateServers, beforeServers) || !reflect.DeepEqual(*stateStatus, beforeStatus) {
 		t.Fatalf("Create(save failure) did not roll back state")
+	}
+}
+
+func TestServerInventoryServiceUpdateEnforcesEndpointUniqueness(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, stateServers, _ := newTestService(repo, []Server{
+		{Name: "primary", Host: "Node.EXAMPLE", Port: 22, User: "root"},
+		{Name: "alternate", Host: "other.example", Port: 2201, User: "root"},
+	})
+
+	if _, err := svc.Update("alternate", Server{Name: "alternate", Host: "node.example", Port: 22, User: "root"}); !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Update(duplicate endpoint) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if got := (*stateServers)[1]; got.Host != "other.example" || got.Port != 2201 {
+		t.Fatalf("Update(duplicate endpoint) changed inventory to %+v", got)
+	}
+
+	updated, err := svc.Update("alternate", Server{Name: "alternate", Host: "node.example", Port: 2202, User: "root"})
+	if err != nil {
+		t.Fatalf("Update(same host different port) unexpected error: %v", err)
+	}
+	if updated.Host != "node.example" || updated.Port != 2202 {
+		t.Fatalf("Update(same host different port) = %+v", updated)
 	}
 }
 

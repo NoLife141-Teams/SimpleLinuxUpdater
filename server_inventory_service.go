@@ -20,11 +20,11 @@ type UpgradePlan = serverpkg.UpgradePlan
 type ServerInventoryService = serverpkg.Service
 
 var (
-	errInvalidSSHUsername  = serverpkg.ErrInvalidSSHUsername
-	errServerNameExists    = serverpkg.ErrNameExists
-	errServerHostExists    = serverpkg.ErrHostExists
-	errActionInProgress    = serverpkg.ErrActionInProgress
-	errFingerprintMismatch = serverpkg.ErrFingerprintMismatch
+	errInvalidSSHUsername   = serverpkg.ErrInvalidSSHUsername
+	errServerNameExists     = serverpkg.ErrNameExists
+	errServerEndpointExists = serverpkg.ErrEndpointExists
+	errActionInProgress     = serverpkg.ErrActionInProgress
+	errFingerprintMismatch  = serverpkg.ErrFingerprintMismatch
 )
 
 func newServerState() *serverpkg.State {
@@ -150,8 +150,8 @@ func serverNameExistsLocked(name string, skipIndex int) bool {
 	return serverpkg.ServerNameExists(servers, name, skipIndex)
 }
 
-func serverHostExistsLocked(host string, skipIndex int) bool {
-	return serverpkg.ServerHostExists(servers, host, skipIndex)
+func serverEndpointExistsLocked(host string, port, skipIndex int) bool {
+	return serverpkg.ServerEndpointExists(servers, host, port, skipIndex)
 }
 
 func knownHostsPaths() []string {

@@ -130,14 +130,14 @@ func TestUpdateCompletionOutcome(t *testing.T) {
 	}
 }
 
-func TestServerNameAndHostExistsLocked(t *testing.T) {
+func TestServerNameAndEndpointExistsLocked(t *testing.T) {
 	preserveServerState(t)
 
 	mu.Lock()
 	defer mu.Unlock()
 	servers = []Server{
-		{Name: "Alpha", Host: "node-a.example"},
-		{Name: "Beta", Host: "NODE-B.EXAMPLE"},
+		{Name: "Alpha", Host: "node-a.example", Port: 22},
+		{Name: "Beta", Host: "NODE-B.EXAMPLE", Port: 2201},
 	}
 
 	if !serverNameExistsLocked("alpha", -1) {
@@ -150,14 +150,14 @@ func TestServerNameAndHostExistsLocked(t *testing.T) {
 		t.Fatalf("serverNameExistsLocked(gamma) = true, want false")
 	}
 
-	if !serverHostExistsLocked("node-b.example", -1) {
-		t.Fatalf("serverHostExistsLocked(node-b.example) = false, want true")
+	if !serverEndpointExistsLocked("node-b.example", 2201, -1) {
+		t.Fatalf("serverEndpointExistsLocked(node-b.example, 2201) = false, want true")
 	}
-	if serverHostExistsLocked("node-b.example", 1) {
-		t.Fatalf("serverHostExistsLocked(node-b.example, skip=1) = true, want false")
+	if serverEndpointExistsLocked("node-b.example", 2201, 1) {
+		t.Fatalf("serverEndpointExistsLocked(node-b.example, 2201, skip=1) = true, want false")
 	}
-	if serverHostExistsLocked("node-c.example", -1) {
-		t.Fatalf("serverHostExistsLocked(node-c.example) = true, want false")
+	if serverEndpointExistsLocked("node-b.example", 2202, -1) {
+		t.Fatalf("serverEndpointExistsLocked(node-b.example, 2202) = true, want false")
 	}
 }
 

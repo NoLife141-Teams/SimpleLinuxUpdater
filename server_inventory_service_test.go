@@ -53,8 +53,11 @@ func TestServerInventoryServiceCreateAndUpdateValidation(t *testing.T) {
 	if _, err := svc.Create(Server{Name: "alpha", Host: "other.example", User: "root"}); !errors.Is(err, errServerNameExists) {
 		t.Fatalf("Create(duplicate name) error = %v, want %v", err, errServerNameExists)
 	}
-	if _, err := svc.Create(Server{Name: "Beta", Host: "node.example", Port: 2222, User: "root"}); !errors.Is(err, errServerHostExists) {
-		t.Fatalf("Create(duplicate host different port) error = %v, want %v", err, errServerHostExists)
+	if _, err := svc.Create(Server{Name: "Beta", Host: "node.example", Port: 22, User: "root"}); !errors.Is(err, errServerEndpointExists) {
+		t.Fatalf("Create(duplicate endpoint) error = %v, want %v", err, errServerEndpointExists)
+	}
+	if _, err := svc.Create(Server{Name: "Gamma", Host: "node.example", Port: 2222, User: "root"}); err != nil {
+		t.Fatalf("Create(same host different port) unexpected error: %v", err)
 	}
 	if _, err := svc.Create(Server{Name: "bad-user", Host: "bad.example", User: "root!"}); !errors.Is(err, errInvalidSSHUsername) {
 		t.Fatalf("Create(invalid user) error = %v, want %v", err, errInvalidSSHUsername)

@@ -183,6 +183,20 @@ npm audit --audit-level=moderate
 
 The exact `go` directive in `go.mod` is the canonical Go toolchain version. GitHub Actions reads that file through `setup-go`, and the Docker builder must use the matching `golang:<version>-alpine` tag. Run `tools/ci/verify-go-toolchain.sh` after either file changes. CI requires this check on every PR, and Dependabot is configured not to update the `golang` Docker image independently; intentional Go upgrades must update `go.mod`, the Docker builder, and the current-version documentation together.
 
+## GitHub Actions provenance
+
+All external action and reusable-workflow references in `.github/workflows/*.yml`
+and `*.yaml` must use a full 40-character commit SHA followed by a readable
+`# vX.Y.Z` comment. Local `./...` references are exempt. The repository-wide
+`TestGitHubWorkflowsPinExternalActions` Go test enforces this policy in CI and
+the release gate; its fixtures also reject mutable tags, branches, and short SHAs.
+
+Dependabot's weekly `github-actions` updates remain enabled. Review the proposed
+SHA and version comment together against the action's official repository, and
+keep shared CI/release actions aligned when they use the same version. Pinning
+fixes the action revision executed by the workflow; it does not pin downloads
+or other dependencies fetched by that action at runtime.
+
 ## Release tags
 
 Create release tags only after the release commit is merged to `main` and its final CI and CodeQL runs are green. `.github/workflows/release-trigger.yml`, which is loaded from the tagged ref, has no permissions and only signals `.github/workflows/release.yml`. GitHub loads the latter through `workflow_run` from the trusted default branch. It verifies the exact tag-to-SHA binding and rejects a tagged commit that is not in current `origin/main` history before either publication job can start. Its critical validation set must remain aligned with normal CI; `release_workflow_architecture_test.go` enforces that contract.

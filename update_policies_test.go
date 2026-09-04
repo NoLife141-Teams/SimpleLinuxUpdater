@@ -1538,7 +1538,10 @@ func TestProcessDueUpdatePoliciesUsesConfiguredAppTimezone(t *testing.T) {
 	setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {
 		return conn, nil
 	})
-	t.Cleanup(func() { setDialSSHConnection(origDial) })
+	t.Cleanup(func() {
+		waitForUpdateRunners()
+		setDialSSHConnection(origDial)
+	})
 
 	if err := processDueUpdatePolicies(now); err != nil {
 		t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
@@ -1689,7 +1692,12 @@ func TestProcessDueUpdatePoliciesDedupesAndHandlesSkips(t *testing.T) {
 		}
 		return updateConn, nil
 	})
-	t.Cleanup(func() { setDialSSHConnection(origDial) })
+	t.Cleanup(func() {
+		// A persisted terminal run does not mean its reconciliation watcher has exited.
+		// Join it before restoring mocks, global state, and the test database.
+		waitForUpdateRunners()
+		setDialSSHConnection(origDial)
+	})
 
 	if err := processDueUpdatePolicies(now); err != nil {
 		t.Fatalf("processDueUpdatePolicies() unexpected error: %v", err)
@@ -2221,7 +2229,10 @@ func TestScheduledScanPolicyStoresDiscoveryWithoutRuntimeMutation(t *testing.T) 
 		}
 		return conn, nil
 	})
-	t.Cleanup(func() { setDialSSHConnection(origDial) })
+	t.Cleanup(func() {
+		waitForUpdateRunners()
+		setDialSSHConnection(origDial)
+	})
 
 	staleServer := server
 	staleServer.Host = "old.example.org"

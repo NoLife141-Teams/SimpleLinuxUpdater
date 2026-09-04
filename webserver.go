@@ -877,8 +877,27 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	})
 }
 
+const dashboardEventsHeartbeatInterval = 25 * time.Second
+
+// Keep two heartbeat intervals of write headroom. Each successful event or
+// heartbeat renews this deadline, while a client that stops reading remains
+// bounded instead of holding a socket forever.
+const dashboardEventsWriteTimeout = 2 * dashboardEventsHeartbeatInterval
+
+type dashboardEventsStreamConfig struct {
+	heartbeatInterval time.Duration
+	writeTimeout      time.Duration
+}
+
 func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
-	flusher, ok := c.Writer.(http.Flusher)
+	handleDashboardEventsWithConfig(c, broker, dashboardEventsStreamConfig{
+		heartbeatInterval: dashboardEventsHeartbeatInterval,
+		writeTimeout:      dashboardEventsWriteTimeout,
+	})
+}
+
+func handleDashboardEventsWithConfig(c *gin.Context, broker *events.Broker, config dashboardEventsStreamConfig) {
+	_, ok := c.Writer.(http.Flusher)
 	if !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
 		return
@@ -887,19 +906,35 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unavailable"})
 		return
 	}
+	responseController := http.NewResponseController(c.Writer)
+	if err := responseController.SetWriteDeadline(time.Now().Add(config.writeTimeout)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
+		return
+	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	writeAndFlush := func(parts ...string) bool {
+		if err := responseController.SetWriteDeadline(time.Now().Add(config.writeTimeout)); err != nil {
+			return false
+		}
+		for _, part := range parts {
+			if _, err := fmt.Fprint(c.Writer, part); err != nil {
+				return false
+			}
+		}
+		return responseController.Flush() == nil
+	}
 
 	dashboardEvents := broker.Subscribe()
 	defer broker.Unsubscribe(dashboardEvents)
 
-	fmt.Fprintf(c.Writer, "event: dashboard\n")
-	fmt.Fprintf(c.Writer, "data: {\"reason\":\"connected\"}\n\n")
-	flusher.Flush()
+	if !writeAndFlush("event: dashboard\n", "data: {\"reason\":\"connected\"}\n\n") {
+		return
+	}
 
-	heartbeat := time.NewTicker(25 * time.Second)
+	heartbeat := time.NewTicker(config.heartbeatInterval)
 	defer heartbeat.Stop()
 	for {
 		select {
@@ -911,12 +946,13 @@ func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(c.Writer, "event: dashboard\n")
-			fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
-			flusher.Flush()
+			if !writeAndFlush("event: dashboard\n", fmt.Sprintf("data: %s\n\n", payload)) {
+				return
+			}
 		case <-heartbeat.C:
-			fmt.Fprintf(c.Writer, ": keepalive\n\n")
-			flusher.Flush()
+			if !writeAndFlush(": keepalive\n\n") {
+				return
+			}
 		case <-c.Request.Context().Done():
 			return
 		}

@@ -289,6 +289,34 @@ func TestKnownHostsCanonicalFallbackDoesNotBypassRevokedIPv6Key(t *testing.T) {
 	}
 }
 
+func TestKnownHostsCanonicalFallbackDoesNotBypassHashedRevocation(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const legacyHost = "2001:0db8:0:0:0:0:0:1"
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	trustedLine := knownhosts.Line([]string{legacyHost}, hostKey)
+	revokedLine := "@revoked " + knownhosts.Line([]string{knownhosts.HashHostname(legacyHost)}, hostKey)
+	if err := os.WriteFile(path, []byte(trustedLine+"\n"+revokedLine+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deps := KnownHostsDeps{Getenv: func(string) string { return path }}
+
+	callback, err := HostKeyCallback(deps)
+	if err != nil {
+		t.Fatalf("HostKeyCallback() error = %v", err)
+	}
+	address := "[2001:db8::1]:22"
+	if err := callback(address, knownHostsRemoteAddr(address), hostKey); err == nil {
+		t.Fatal("canonical fallback accepted a key revoked through a hashed legacy alias")
+	}
+}
+
 func TestKnownHostsCanonicalFallbackHonorsNegatedPatterns(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

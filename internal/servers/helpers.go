@@ -318,7 +318,7 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 		if !ok {
 			return checkErr
 		}
-		if canonicalIPKeys.contains(canonicalIPKeys.revoked, endpoint, key) {
+		if canonicalIPKeys.isRevoked(endpoint, key) {
 			return checkErr
 		}
 		for _, knownKey := range canonicalIPKeys.trusted[endpoint] {
@@ -331,8 +331,9 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 }
 
 type canonicalKnownHostsIPKeys struct {
-	trusted map[ServerEndpoint][]ssh.PublicKey
-	revoked map[ServerEndpoint][]ssh.PublicKey
+	trusted    map[ServerEndpoint][]ssh.PublicKey
+	revoked    map[ServerEndpoint][]ssh.PublicKey
+	revokedAll map[string]struct{}
 }
 
 func (k canonicalKnownHostsIPKeys) contains(index map[ServerEndpoint][]ssh.PublicKey, endpoint ServerEndpoint, key ssh.PublicKey) bool {
@@ -344,10 +345,18 @@ func (k canonicalKnownHostsIPKeys) contains(index map[ServerEndpoint][]ssh.Publi
 	return false
 }
 
+func (k canonicalKnownHostsIPKeys) isRevoked(endpoint ServerEndpoint, key ssh.PublicKey) bool {
+	if _, ok := k.revokedAll[string(key.Marshal())]; ok {
+		return true
+	}
+	return k.contains(k.revoked, endpoint, key)
+}
+
 func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, error) {
 	result := canonicalKnownHostsIPKeys{
-		trusted: make(map[ServerEndpoint][]ssh.PublicKey),
-		revoked: make(map[ServerEndpoint][]ssh.PublicKey),
+		trusted:    make(map[ServerEndpoint][]ssh.PublicKey),
+		revoked:    make(map[ServerEndpoint][]ssh.PublicKey),
+		revokedAll: make(map[string]struct{}),
 	}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
@@ -365,6 +374,12 @@ func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, e
 			data = rest
 			if marker != "" && marker != "revoked" {
 				continue
+			}
+			if marker == "revoked" {
+				// A hashed or patterned revocation cannot safely be projected onto
+				// a canonical endpoint. Keep its key globally ineligible for the
+				// compatibility fallback; the standard matcher still runs first.
+				result.revokedAll[string(key.Marshal())] = struct{}{}
 			}
 			endpoints := make([]ServerEndpoint, 0, len(hosts))
 			for _, host := range hosts {
@@ -386,6 +401,15 @@ func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, e
 				index[endpoint] = append(index[endpoint], key)
 			}
 		}
+	}
+	for endpoint, keys := range result.trusted {
+		trusted := keys[:0]
+		for _, key := range keys {
+			if _, revoked := result.revokedAll[string(key.Marshal())]; !revoked {
+				trusted = append(trusted, key)
+			}
+		}
+		result.trusted[endpoint] = trusted
 	}
 	return result, nil
 }

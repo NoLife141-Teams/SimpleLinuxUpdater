@@ -8,9 +8,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
-- Canonicalize IPv4 and IPv6 server literals for SSH endpoint identity,
-  persistence, transport, and managed `known_hosts` operations so equivalent
-  textual forms cannot bypass the normalized `host + port` uniqueness rule.
+- Canonicalize IPv4 and IPv6 server literals for SSH endpoint identity and
+  managed `known_hosts` operations so equivalent textual forms cannot bypass
+  the normalized `host + port` uniqueness rule, while preserving submitted
+  spelling for persistence and OpenSSH matching compatibility.
 - Keep authenticated Dashboard SSE streams alive beyond the global HTTP write
   timeout by renewing a bounded stream-specific deadline on every event and
   heartbeat, while retaining the existing timeout for normal HTTP routes.

@@ -6,6 +6,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.8] - 2026-09-03
+
 ### Security
 
 - Replace generic passwordless `apt`/`apt-get` sudoers grants with a root-owned,
@@ -13,12 +15,58 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   cached package/architecture, reject raw APT options/hooks, removal or pattern
   selectors, and inherited package-manager configuration, and migrate or remove
   sudoers files only after strict owner marker and legacy-content checks.
+- Require release tags to signal a separate release workflow, prove the tagged
+  commit belongs to `origin/main`, and pass the complete release gate before any
+  GitHub Release or container publication; pin release-chain actions by commit.
+- Update `golang.org/x/crypto` and related Go dependencies to their current
+  compatible patch baselines.
 
 ### Added
 
 - Refresh host facts through successful scheduled-scan SSH sessions and add a
   sequential periodic worker with pre-expiry jitter, bounded retry backoff,
   maintenance coordination, and explicit audit outcomes.
+- Add a versioned Go coverage floor to normal CI and the release gate, plus
+  architecture tests for release lineage and Go toolchain alignment.
+
+### Changed
+
+- Make `go.mod` the canonical Go toolchain version and verify the Docker builder
+  remains aligned with it while preventing independent Dependabot Docker bumps.
+- Drive uncertain-outcome reconciliation from explicit typed command effects
+  instead of parsing APT command strings, without changing operator workflows.
+- Split HTTP lifecycle, security/listener configuration, SSH transport wiring,
+  and Admin session-IP interaction into focused modules without changing routes,
+  middleware order, status codes, or UI behavior.
+
+### Fixed
+
+- Parse `DEBIAN_UPDATER_KNOWN_HOSTS` with native Unix and Windows path-list
+  semantics for both reads and the first managed write target.
+- Default direct binary launches to `127.0.0.1:8080`, validate listener values at
+  startup, and keep Docker compatibility through an explicit `:8080` image value.
+- Treat only a normalized SSH `host + port` pair as a duplicate server endpoint,
+  allowing the same host on distinct ports while preserving unique server names.
+- Close composed notification workers deterministically in database-backed tests
+  so cleanup cannot race SQLite or temporary-directory teardown.
+
+### Compatibility / migration
+
+- Existing non-root targets that still use `/etc/sudoers.d/apt-nopasswd` should
+  run **Enable apt** once after upgrading. SimpleLinuxUpdater installs
+  `/usr/local/sbin/simplelinuxupdater-root-helper` and
+  `/etc/sudoers.d/simplelinuxupdater`; it migrates the legacy file only when the
+  complete content is recognized as the exact app-generated rule. Customized or
+  administrator-managed legacy files are never overwritten or removed.
+- Direct binary deployments now listen on loopback by default. Set
+  `DEBIAN_UPDATER_LISTEN_ADDR` explicitly for a controlled LAN, VPN, or reverse
+  proxy bind; the Docker image continues to bind `:8080` explicitly.
+
+### Validation
+
+- Record automated, Docker, migration, and disposable-host release gates in
+  [the v0.4.8 release readiness record](docs/release-v0.4.8-readiness.md) and
+  [release smoke result](docs/release-v0.4.8-smoke.md).
 
 ## [v0.4.7] - 2026-08-05
 

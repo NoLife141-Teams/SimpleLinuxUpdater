@@ -19,7 +19,7 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.7
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.8
 ```
 
 The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`. To limit access on
@@ -36,7 +36,7 @@ Release tags publish images to GitHub Container Registry:
 Example:
 
 ```bash
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.7
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.8
 ```
 
 ## Binary deployment

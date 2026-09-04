@@ -74,7 +74,7 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 		}
 		loaded = append(loaded, Server{
 			Name: name,
-			Host: CanonicalServerHost(host),
+			Host: host,
 			Port: NormalizePort(port),
 			User: user,
 			Pass: pass,
@@ -120,7 +120,7 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		}
 		tags := JoinTags(server.Tags)
 		port := NormalizePort(server.Port)
-		if _, err := stmt.Exec(server.Name, CanonicalServerHost(server.Host), port, server.User, enc, keyEnc, tags); err != nil {
+		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert server %s: %w", server.Name, err)
 		}
@@ -192,9 +192,6 @@ func (s *Service) Load() error {
 	loaded, err := s.repo().Load()
 	if err != nil {
 		return fmt.Errorf("load Server inventory: %w", err)
-	}
-	for i := range loaded {
-		loaded[i].Host = CanonicalServerHost(loaded[i].Host)
 	}
 	s.state().SetServers(loaded)
 	if len(loaded) == 0 && s.deps.LegacyImport != nil {
@@ -294,7 +291,7 @@ func (s *Service) Create(server Server) (Server, error) {
 
 func (s *Service) Update(name string, server Server) (Server, error) {
 	server.Name = strings.TrimSpace(server.Name)
-	server.Host = CanonicalServerHost(server.Host)
+	server.Host = strings.TrimSpace(server.Host)
 	server.User = strings.TrimSpace(server.User)
 	if server.Name == "" || server.Host == "" || server.User == "" {
 		return server, ErrRequiredFields
@@ -320,6 +317,11 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		}
 		if strings.TrimSpace(server.Key) == "" {
 			server.Key = existing.Key
+		}
+		if NormalizeServerHost(server.Host) == NormalizeServerHost(existing.Host) {
+			server.Host = existing.Host
+		} else {
+			server.Host = CanonicalServerHost(server.Host)
 		}
 		if server.Port == 0 {
 			server.Port = existing.Port
@@ -491,7 +493,7 @@ func (s *Service) UpdateServerKey(name, key string) error {
 }
 
 func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) {
-	host = CanonicalServerHost(host)
+	host = ServerHostForTransport(host)
 	if host == "" {
 		return HostKeyScanResult{}, errors.New("host is required")
 	}

@@ -144,6 +144,20 @@ func CanonicalServerHost(value string) string {
 	return trimmed
 }
 
+// ServerHostForTransport removes user-supplied brackets only for a valid IPv6
+// literal. It otherwise preserves the spelling used by existing inventory so
+// hashed and pattern-based known_hosts entries keep matching.
+func ServerHostForTransport(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) >= 2 && trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']' {
+		inner := trimmed[1 : len(trimmed)-1]
+		if addr, err := netip.ParseAddr(inner); err == nil && addr.Is6() {
+			return inner
+		}
+	}
+	return trimmed
+}
+
 func NormalizeServerHost(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if addr, ok := parseServerIPLiteral(trimmed); ok {
@@ -352,14 +366,24 @@ func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, e
 			if marker != "" && marker != "revoked" {
 				continue
 			}
+			endpoints := make([]ServerEndpoint, 0, len(hosts))
 			for _, host := range hosts {
-				if endpoint, ok := parseKnownHostsIPToken(host); ok {
-					index := result.trusted
-					if marker == "revoked" {
-						index = result.revoked
-					}
-					index[endpoint] = append(index[endpoint], key)
+				endpoint, ok := parseKnownHostsIPToken(host)
+				if !ok {
+					endpoints = nil
+					break
 				}
+				endpoints = append(endpoints, endpoint)
+			}
+			if len(endpoints) != len(hosts) {
+				continue
+			}
+			index := result.trusted
+			if marker == "revoked" {
+				index = result.revoked
+			}
+			for _, endpoint := range endpoints {
+				index[endpoint] = append(index[endpoint], key)
 			}
 		}
 	}
@@ -634,7 +658,7 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 	}
 
 	return func(host string, port int) (bool, error) {
-		cleanHost := CanonicalServerHost(host)
+		cleanHost := ServerHostForTransport(host)
 		if cleanHost == "" {
 			return false, errors.New("host is required")
 		}
@@ -750,7 +774,7 @@ func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, er
 }
 
 func ScanHostKey(host string, port int, timeout time.Duration) (ssh.PublicKey, error) {
-	cleanHost := CanonicalServerHost(host)
+	cleanHost := ServerHostForTransport(host)
 	if cleanHost == "" {
 		return nil, errors.New("host is required")
 	}

@@ -284,7 +284,7 @@ func TestServerInventoryServiceUpdateRejectsEquivalentIPv6Endpoint(t *testing.T)
 	}
 }
 
-func TestServerInventoryServiceLoadCanonicalizesExistingIPWithoutSaving(t *testing.T) {
+func TestServerInventoryServiceLoadPreservesExistingIPWithoutSaving(t *testing.T) {
 	repo := &fakeRepo{loaded: []Server{
 		{Name: "expanded", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"},
 		{Name: "bracketed", Host: "[2001:db8::2]", Port: 22, User: "root"},
@@ -298,14 +298,28 @@ func TestServerInventoryServiceLoadCanonicalizesExistingIPWithoutSaving(t *testi
 	if repo.saveCalls != 0 {
 		t.Fatalf("Load() save calls = %d, want no implicit migration write", repo.saveCalls)
 	}
-	if got := (*stateServers)[0].Host; got != "2001:db8::1" {
-		t.Fatalf("loaded expanded host = %q, want canonical IPv6", got)
+	if got := (*stateServers)[0].Host; got != "2001:0db8:0:0:0:0:0:1" {
+		t.Fatalf("loaded expanded host = %q, want persisted spelling", got)
 	}
-	if got := (*stateServers)[1].Host; got != "2001:db8::2" {
-		t.Fatalf("loaded bracketed host = %q, want canonical IPv6", got)
+	if got := (*stateServers)[1].Host; got != "[2001:db8::2]" {
+		t.Fatalf("loaded bracketed host = %q, want persisted spelling", got)
 	}
 	if got := (*stateServers)[2].Host; got != "NODE.EXAMPLE" {
 		t.Fatalf("loaded DNS host = %q, want presentation preserved", got)
+	}
+}
+
+func TestServerInventoryServiceUpdatePreservesEquivalentLegacyIPSpelling(t *testing.T) {
+	const legacyHost = "2001:0db8:0:0:0:0:0:1"
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{{Name: "legacy", Host: legacyHost, Port: 22, User: "root"}})
+
+	updated, err := svc.Update("legacy", Server{Name: "legacy", Host: "[2001:db8::1]", Port: 22, User: "admin"})
+	if err != nil {
+		t.Fatalf("Update(equivalent legacy IP) error = %v", err)
+	}
+	if updated.Host != legacyHost || len(repo.saved) != 1 || repo.saved[0].Host != legacyHost {
+		t.Fatalf("Update(equivalent legacy IP) = %+v, saved=%+v, want preserved spelling", updated, repo.saved)
 	}
 }
 
@@ -333,8 +347,8 @@ func TestServerInventoryServiceHostKeyOperationsUseCanonicalIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanHostKey() unexpected error: %v", err)
 	}
-	if scannedHost != "2001:db8::1" || result.Host != "2001:db8::1" || result.KnownHostsLine == "" {
-		t.Fatalf("ScanHostKey() = %+v, scanned host %q, want canonical IPv6", result, scannedHost)
+	if scannedHost != "2001:0DB8:0:0:0:0:0:1" || result.Host != scannedHost || !strings.Contains(result.KnownHostsLine, "[2001:db8::1]:2201") {
+		t.Fatalf("ScanHostKey() = %+v, scanned host %q, want transport spelling and canonical token", result, scannedHost)
 	}
 }
 

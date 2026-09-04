@@ -91,6 +91,15 @@ func TestCanonicalServerHostPreservesDNSPresentation(t *testing.T) {
 	}
 }
 
+func TestServerHostForTransportPreservesLegacyIPSpelling(t *testing.T) {
+	if got := ServerHostForTransport(" [2001:0DB8:0:0:0:0:0:1] "); got != "2001:0DB8:0:0:0:0:0:1" {
+		t.Fatalf("ServerHostForTransport(IPv6) = %q, want unbracketed legacy spelling", got)
+	}
+	if got := ServerHostForTransport("[EXAMPLE.COM]"); got != "[EXAMPLE.COM]" {
+		t.Fatalf("ServerHostForTransport(bracketed DNS) = %q, want unchanged invalid host", got)
+	}
+}
+
 func TestServerEndpointExistsCanonicalIPCases(t *testing.T) {
 	servers := []Server{
 		{Name: "ipv4", Host: "192.0.2.10", Port: 22},
@@ -278,6 +287,108 @@ func TestKnownHostsCanonicalFallbackDoesNotBypassRevokedIPv6Key(t *testing.T) {
 	if err := callback(address, knownHostsRemoteAddr(address), hostKey); err == nil {
 		t.Fatal("HostKeyCallback(equivalent IPv6) accepted a revoked host key")
 	}
+}
+
+func TestKnownHostsCanonicalFallbackHonorsNegatedPatterns(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	line := knownhosts.Line([]string{"!2001:db8::*", "2001:0db8:0:0:0:0:0:1"}, hostKey)
+	if err := os.WriteFile(path, []byte(line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deps := KnownHostsDeps{Getenv: func(key string) string {
+		if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+			return path
+		}
+		return ""
+	}}
+
+	callback, err := HostKeyCallback(deps)
+	if err != nil {
+		t.Fatalf("HostKeyCallback() error = %v", err)
+	}
+	address := "[2001:db8::1]:22"
+	if err := callback(address, knownHostsRemoteAddr(address), hostKey); err == nil {
+		t.Fatal("canonical fallback bypassed a negated known_hosts pattern")
+	}
+}
+
+func TestKnownHostsPreservesLegacyHashedAndCAIPv6Spelling(t *testing.T) {
+	const legacyHost = "2001:0db8:0:0:0:0:0:1"
+	t.Run("hashed", func(t *testing.T) {
+		publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hostKey, err := ssh.NewPublicKey(publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "known_hosts")
+		line := knownhosts.Line([]string{knownhosts.HashHostname(legacyHost)}, hostKey)
+		if err := os.WriteFile(path, []byte(line+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		deps := KnownHostsDeps{Getenv: func(string) string { return path }}
+		callback, err := HostKeyCallback(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := "[" + legacyHost + "]:22"
+		if err := callback(address, knownHostsRemoteAddr(address), hostKey); err != nil {
+			t.Fatalf("hashed legacy IPv6 callback error = %v", err)
+		}
+	})
+
+	t.Run("certificate authority", func(t *testing.T) {
+		_, caPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		caSigner, err := ssh.NewSignerFromKey(caPrivateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hostPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hostKey, err := ssh.NewPublicKey(hostPublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		certificate := &ssh.Certificate{
+			Key:             hostKey,
+			CertType:        ssh.HostCert,
+			KeyId:           "legacy-ipv6-host",
+			ValidPrincipals: []string{legacyHost},
+			ValidBefore:     ssh.CertTimeInfinity,
+		}
+		if err := certificate.SignCert(rand.Reader, caSigner); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "known_hosts")
+		line := "@cert-authority " + knownhosts.Line([]string{legacyHost}, caSigner.PublicKey())
+		if err := os.WriteFile(path, []byte(line+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		deps := KnownHostsDeps{Getenv: func(string) string { return path }}
+		callback, err := HostKeyCallback(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := "[" + legacyHost + "]:22"
+		if err := callback(address, knownHostsRemoteAddr(address), certificate); err != nil {
+			t.Fatalf("CA legacy IPv6 callback error = %v", err)
+		}
+	})
 }
 
 func TestKnownHostsConfiguredPathListSemantics(t *testing.T) {

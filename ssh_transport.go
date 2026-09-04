@@ -45,7 +45,7 @@ var dialSSHConnection = func(server Server, config *ssh.ClientConfig) (sshConnec
 }
 
 func sshServerAddress(server Server) string {
-	return net.JoinHostPort(serverpkg.CanonicalServerHost(server.Host), strconv.Itoa(normalizePort(server.Port)))
+	return net.JoinHostPort(serverpkg.ServerHostForTransport(server.Host), strconv.Itoa(normalizePort(server.Port)))
 }
 
 func getDialSSHConnection() func(Server, *ssh.ClientConfig) (sshConnection, error) {

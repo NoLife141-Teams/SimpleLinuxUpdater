@@ -74,7 +74,7 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 		}
 		loaded = append(loaded, Server{
 			Name: name,
-			Host: host,
+			Host: CanonicalServerHost(host),
 			Port: NormalizePort(port),
 			User: user,
 			Pass: pass,
@@ -120,7 +120,7 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		}
 		tags := JoinTags(server.Tags)
 		port := NormalizePort(server.Port)
-		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags); err != nil {
+		if _, err := stmt.Exec(server.Name, CanonicalServerHost(server.Host), port, server.User, enc, keyEnc, tags); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert server %s: %w", server.Name, err)
 		}
@@ -193,6 +193,9 @@ func (s *Service) Load() error {
 	if err != nil {
 		return fmt.Errorf("load Server inventory: %w", err)
 	}
+	for i := range loaded {
+		loaded[i].Host = CanonicalServerHost(loaded[i].Host)
+	}
 	s.state().SetServers(loaded)
 	if len(loaded) == 0 && s.deps.LegacyImport != nil {
 		s.deps.LegacyImport()
@@ -260,7 +263,7 @@ func (s *Service) ListStatuses() []ServerStatus {
 
 func (s *Service) Create(server Server) (Server, error) {
 	server.Name = strings.TrimSpace(server.Name)
-	server.Host = strings.TrimSpace(server.Host)
+	server.Host = CanonicalServerHost(server.Host)
 	server.User = strings.TrimSpace(server.User)
 	if server.Name == "" || server.Host == "" || server.User == "" {
 		return server, ErrRequiredFields
@@ -291,7 +294,7 @@ func (s *Service) Create(server Server) (Server, error) {
 
 func (s *Service) Update(name string, server Server) (Server, error) {
 	server.Name = strings.TrimSpace(server.Name)
-	server.Host = strings.TrimSpace(server.Host)
+	server.Host = CanonicalServerHost(server.Host)
 	server.User = strings.TrimSpace(server.User)
 	if server.Name == "" || server.Host == "" || server.User == "" {
 		return server, ErrRequiredFields
@@ -488,7 +491,7 @@ func (s *Service) UpdateServerKey(name, key string) error {
 }
 
 func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) {
-	host = strings.TrimSpace(host)
+	host = CanonicalServerHost(host)
 	if host == "" {
 		return HostKeyScanResult{}, errors.New("host is required")
 	}
@@ -522,7 +525,7 @@ func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) 
 }
 
 func (s *Service) TrustHostKey(host string, port int, expectedFingerprint string) (HostKeyTrustResult, error) {
-	host = strings.TrimSpace(host)
+	host = CanonicalServerHost(host)
 	if host == "" {
 		return HostKeyTrustResult{}, errors.New("host is required")
 	}
@@ -546,7 +549,7 @@ func (s *Service) TrustHostKey(host string, port int, expectedFingerprint string
 }
 
 func (s *Service) ClearKnownHost(host string, port int) (HostKeyClearResult, error) {
-	host = strings.TrimSpace(host)
+	host = CanonicalServerHost(host)
 	if host == "" {
 		return HostKeyClearResult{}, errors.New("host is required")
 	}

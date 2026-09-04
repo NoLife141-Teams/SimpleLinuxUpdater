@@ -245,6 +245,99 @@ func TestServerInventoryServiceUpdateEnforcesEndpointUniqueness(t *testing.T) {
 	}
 }
 
+func TestServerInventoryServiceCanonicalizesIPOnCreateAndRejectsEquivalentEndpoint(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, nil)
+
+	created, err := svc.Create(Server{Name: "primary", Host: " [2001:0DB8:0:0:0:0:0:1] ", Port: 22, User: "root"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if created.Host != "2001:db8::1" {
+		t.Fatalf("Create() host = %q, want canonical IPv6", created.Host)
+	}
+	if len(repo.saved) != 1 || repo.saved[0].Host != "2001:db8::1" {
+		t.Fatalf("saved inventory = %+v, want canonical IPv6", repo.saved)
+	}
+
+	if _, err := svc.Create(Server{Name: "duplicate", Host: "2001:db8::1", Port: 22, User: "root"}); !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Create(equivalent IPv6) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if _, err := svc.Create(Server{Name: "other-port", Host: "2001:0db8:0:0:0:0:0:1", Port: 2201, User: "root"}); err != nil {
+		t.Fatalf("Create(equivalent IPv6 on another port) unexpected error: %v", err)
+	}
+}
+
+func TestServerInventoryServiceUpdateRejectsEquivalentIPv6Endpoint(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, stateServers, _ := newTestService(repo, []Server{
+		{Name: "primary", Host: "2001:db8::1", Port: 22, User: "root"},
+		{Name: "alternate", Host: "2001:db8::2", Port: 22, User: "root"},
+	})
+
+	_, err := svc.Update("alternate", Server{Name: "alternate", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"})
+	if !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Update(equivalent IPv6) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if got := (*stateServers)[1].Host; got != "2001:db8::2" {
+		t.Fatalf("Update(equivalent IPv6) changed host to %q", got)
+	}
+}
+
+func TestServerInventoryServiceLoadCanonicalizesExistingIPWithoutSaving(t *testing.T) {
+	repo := &fakeRepo{loaded: []Server{
+		{Name: "expanded", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"},
+		{Name: "bracketed", Host: "[2001:db8::2]", Port: 22, User: "root"},
+		{Name: "dns", Host: "NODE.EXAMPLE", Port: 22, User: "root"},
+	}}
+	svc, _, stateServers, _ := newTestService(repo, nil)
+
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if repo.saveCalls != 0 {
+		t.Fatalf("Load() save calls = %d, want no implicit migration write", repo.saveCalls)
+	}
+	if got := (*stateServers)[0].Host; got != "2001:db8::1" {
+		t.Fatalf("loaded expanded host = %q, want canonical IPv6", got)
+	}
+	if got := (*stateServers)[1].Host; got != "2001:db8::2" {
+		t.Fatalf("loaded bracketed host = %q, want canonical IPv6", got)
+	}
+	if got := (*stateServers)[2].Host; got != "NODE.EXAMPLE" {
+		t.Fatalf("loaded DNS host = %q, want presentation preserved", got)
+	}
+}
+
+func TestServerInventoryServiceHostKeyOperationsUseCanonicalIPv6(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scannedHost string
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	svc, _, _, _ := newTestService(&fakeRepo{}, nil)
+	svc.deps.KnownHosts = KnownHostsDeps{
+		ScanHostKey: func(host string, _ int) (ssh.PublicKey, error) {
+			scannedHost = host
+			return hostKey, nil
+		},
+		Getenv: func(string) string { return knownHostsPath },
+	}
+
+	result, err := svc.ScanHostKey(" [2001:0DB8:0:0:0:0:0:1] ", 2201)
+	if err != nil {
+		t.Fatalf("ScanHostKey() unexpected error: %v", err)
+	}
+	if scannedHost != "2001:db8::1" || result.Host != "2001:db8::1" || result.KnownHostsLine == "" {
+		t.Fatalf("ScanHostKey() = %+v, scanned host %q, want canonical IPv6", result, scannedHost)
+	}
+}
+
 func TestServerInventoryServiceUpdateFallbackAndDeleteHooks(t *testing.T) {
 	repo := &fakeRepo{}
 	var renamedFrom, renamedTo, deleted string

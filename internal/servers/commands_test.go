@@ -86,6 +86,25 @@ func TestServerInventoryCommandsEndpointConflictAuditIncludesNormalizedPort(t *t
 	}
 }
 
+func TestServerInventoryCommandsEndpointConflictAuditCanonicalizesIPv6(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{
+		{Name: "primary", Host: "2001:db8::1", Port: 22, User: "root"},
+		{Name: "edited", Host: "2001:db8::2", Port: 22, User: "root"},
+	})
+	commands := NewCommandService(svc)
+
+	created := commands.CreateServer(Server{Name: "duplicate", Host: "[2001:0DB8:0:0:0:0:0:1]", Port: 22, User: "root"})
+	if created.Outcome != CommandOutcomeConflict || created.Audit.Meta["host"] != "2001:db8::1" || created.Audit.Meta["port"] != 22 {
+		t.Fatalf("CreateServer(IPv6 conflict) audit = %+v, want canonical host and port", created.Audit.Meta)
+	}
+
+	updated := commands.UpdateServer("edited", Server{Name: "edited", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"})
+	if updated.Outcome != CommandOutcomeConflict || updated.Audit.Meta["host"] != "2001:db8::1" || updated.Audit.Meta["port"] != 22 {
+		t.Fatalf("UpdateServer(IPv6 conflict) audit = %+v, want canonical host and port", updated.Audit.Meta)
+	}
+}
+
 func TestServerInventoryCommandsCredentialOutcomes(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, _, stateServers, statusMap := newTestService(repo, []Server{{Name: "srv", Host: "srv.example", User: "root", Pass: "pw", Key: "key"}})

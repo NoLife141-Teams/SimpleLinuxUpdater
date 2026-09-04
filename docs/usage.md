@@ -69,6 +69,13 @@ In Edit Server, use **Known host management** to:
 - Clear an existing known-host entry for the current host/port (for key rotation/replacement).
 - Avoid redundant trust prompts on Save when the same host/port was already confirmed as trusted in that edit session.
 
+IP literals are canonicalized locally when an inventory entry is loaded or
+saved. Equivalent IPv6 forms, including a valid bracketed literal, therefore
+identify the same SSH endpoint when the port also matches. IPv4-mapped IPv6 is
+treated as the corresponding IPv4 endpoint, while IPv6 interface zones remain
+part of the identity. DNS names remain case-insensitive and are never resolved
+to decide inventory uniqueness.
+
 ## Run updates with approval
 
 Typical workflow:

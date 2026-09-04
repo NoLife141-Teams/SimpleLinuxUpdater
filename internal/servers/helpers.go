@@ -1,11 +1,14 @@
 package servers
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -130,8 +133,38 @@ func NormalizeServerName(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
+// CanonicalServerHost returns a transport-safe host representation while
+// preserving the presentation of DNS names. IP literals are serialized by
+// netip so equivalent textual forms share one runtime and persisted value.
+func CanonicalServerHost(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if addr, ok := parseServerIPLiteral(trimmed); ok {
+		return addr.Unmap().String()
+	}
+	return trimmed
+}
+
 func NormalizeServerHost(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	trimmed := strings.TrimSpace(value)
+	if addr, ok := parseServerIPLiteral(trimmed); ok {
+		// Do not lowercase the serialized address: an IPv6 zone names a local
+		// interface and remains a case-sensitive part of the endpoint identity.
+		return addr.Unmap().String()
+	}
+	return strings.ToLower(trimmed)
+}
+
+func parseServerIPLiteral(value string) (netip.Addr, bool) {
+	if addr, err := netip.ParseAddr(value); err == nil {
+		return addr, true
+	}
+	if len(value) >= 2 && value[0] == '[' && value[len(value)-1] == ']' {
+		addr, err := netip.ParseAddr(value[1 : len(value)-1])
+		if err == nil && addr.Is6() {
+			return addr, true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 type ServerEndpoint struct {
@@ -254,7 +287,83 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load known_hosts: %w", err)
 	}
-	return cb, nil
+	canonicalIPKeys, err := loadKnownHostsCanonicalIPKeys(existing)
+	if err != nil {
+		return nil, err
+	}
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		checkErr := cb(hostname, remote, key)
+		if checkErr == nil {
+			return nil
+		}
+		var keyErr *knownhosts.KeyError
+		if !errors.As(checkErr, &keyErr) || len(keyErr.Want) != 0 {
+			return checkErr
+		}
+		endpoint, ok := parseKnownHostsIPToken(hostname)
+		if !ok {
+			return checkErr
+		}
+		if canonicalIPKeys.contains(canonicalIPKeys.revoked, endpoint, key) {
+			return checkErr
+		}
+		for _, knownKey := range canonicalIPKeys.trusted[endpoint] {
+			if bytes.Equal(knownKey.Marshal(), key.Marshal()) {
+				return nil
+			}
+		}
+		return checkErr
+	}, nil
+}
+
+type canonicalKnownHostsIPKeys struct {
+	trusted map[ServerEndpoint][]ssh.PublicKey
+	revoked map[ServerEndpoint][]ssh.PublicKey
+}
+
+func (k canonicalKnownHostsIPKeys) contains(index map[ServerEndpoint][]ssh.PublicKey, endpoint ServerEndpoint, key ssh.PublicKey) bool {
+	for _, indexedKey := range index[endpoint] {
+		if bytes.Equal(indexedKey.Marshal(), key.Marshal()) {
+			return true
+		}
+	}
+	return false
+}
+
+func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, error) {
+	result := canonicalKnownHostsIPKeys{
+		trusted: make(map[ServerEndpoint][]ssh.PublicKey),
+		revoked: make(map[ServerEndpoint][]ssh.PublicKey),
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return canonicalKnownHostsIPKeys{}, fmt.Errorf("read known_hosts %q: %w", path, err)
+		}
+		for len(data) > 0 {
+			marker, hosts, key, _, rest, err := ssh.ParseKnownHosts(data)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return canonicalKnownHostsIPKeys{}, fmt.Errorf("parse known_hosts %q: %w", path, err)
+			}
+			data = rest
+			if marker != "" && marker != "revoked" {
+				continue
+			}
+			for _, host := range hosts {
+				if endpoint, ok := parseKnownHostsIPToken(host); ok {
+					index := result.trusted
+					if marker == "revoked" {
+						index = result.revoked
+					}
+					index[endpoint] = append(index[endpoint], key)
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 func KnownHostsWritePath(deps KnownHostsDeps) (string, error) {
@@ -269,11 +378,40 @@ func KnownHostsWritePath(deps KnownHostsDeps) (string, error) {
 }
 
 func KnownHostsHostToken(host string, port int) string {
-	cleanHost := strings.Trim(strings.TrimSpace(host), "[]")
+	cleanHost := CanonicalServerHost(host)
 	if NormalizePort(port) == 22 {
 		return cleanHost
 	}
 	return fmt.Sprintf("[%s]:%d", cleanHost, NormalizePort(port))
+}
+
+func knownHostsHostTokensEqual(left, right string) bool {
+	if left == right {
+		return true
+	}
+	leftEndpoint, leftOK := parseKnownHostsIPToken(left)
+	rightEndpoint, rightOK := parseKnownHostsIPToken(right)
+	return leftOK && rightOK && leftEndpoint == rightEndpoint
+}
+
+func parseKnownHostsIPToken(token string) (ServerEndpoint, bool) {
+	token = strings.TrimSpace(token)
+	if addr, ok := parseServerIPLiteral(token); ok {
+		return NormalizeServerEndpoint(addr.String(), 22), true
+	}
+	host, rawPort, err := net.SplitHostPort(token)
+	if err != nil {
+		return ServerEndpoint{}, false
+	}
+	addr, ok := parseServerIPLiteral(host)
+	if !ok {
+		return ServerEndpoint{}, false
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil || port < 1 || port > 65535 {
+		return ServerEndpoint{}, false
+	}
+	return NormalizeServerEndpoint(addr.String(), port), true
 }
 
 func AppendKnownHostLine(deps KnownHostsDeps, line string) (bool, error) {
@@ -360,7 +498,7 @@ func ReplaceKnownHostLine(deps KnownHostsDeps, host string, port int, line strin
 		keptHostTokens := make([]string, 0, len(hostTokens))
 		for _, hostToken := range hostTokens {
 			trimmedToken := strings.TrimSpace(hostToken)
-			if trimmedToken != "" && trimmedToken != token {
+			if trimmedToken != "" && !knownHostsHostTokensEqual(trimmedToken, token) {
 				keptHostTokens = append(keptHostTokens, trimmedToken)
 			}
 		}
@@ -490,9 +628,13 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 	if err != nil {
 		return nil, fmt.Errorf("create known_hosts probe key: %w", err)
 	}
+	canonicalIPKeys, err := loadKnownHostsCanonicalIPKeys(existingPaths)
+	if err != nil {
+		return nil, err
+	}
 
 	return func(host string, port int) (bool, error) {
-		cleanHost := strings.Trim(strings.TrimSpace(host), "[]")
+		cleanHost := CanonicalServerHost(host)
 		if cleanHost == "" {
 			return false, errors.New("host is required")
 		}
@@ -503,7 +645,13 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 		}
 		var keyErr *knownhosts.KeyError
 		if errors.As(err, &keyErr) {
-			return len(keyErr.Want) > 0, nil
+			if len(keyErr.Want) > 0 {
+				return true, nil
+			}
+			if endpoint, ok := parseKnownHostsIPToken(address); ok {
+				return len(canonicalIPKeys.trusted[endpoint]) > 0, nil
+			}
+			return false, nil
 		}
 		return false, err
 	}, nil
@@ -520,7 +668,7 @@ func knownHostEntryExistsInData(data []byte, token string) bool {
 			continue
 		}
 		for _, hostToken := range strings.Split(fields[0], ",") {
-			if strings.TrimSpace(hostToken) == token {
+			if knownHostsHostTokensEqual(strings.TrimSpace(hostToken), token) {
 				return true
 			}
 		}
@@ -570,7 +718,7 @@ func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, er
 			if trimmedToken == "" {
 				continue
 			}
-			if trimmedToken == token {
+			if knownHostsHostTokensEqual(trimmedToken, token) {
 				removedOnLine++
 				continue
 			}
@@ -602,7 +750,7 @@ func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, er
 }
 
 func ScanHostKey(host string, port int, timeout time.Duration) (ssh.PublicKey, error) {
-	cleanHost := strings.TrimSpace(host)
+	cleanHost := CanonicalServerHost(host)
 	if cleanHost == "" {
 		return nil, errors.New("host is required")
 	}

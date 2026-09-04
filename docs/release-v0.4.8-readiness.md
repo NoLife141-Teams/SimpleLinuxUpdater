@@ -63,15 +63,19 @@ suites were also repeated with `GOTOOLCHAIN=go1.26.6`, matching CI and Docker:
 
 ## Docker Runtime Gate
 
-- [ ] Build the exact branch candidate image.
-- [ ] Verify the final process is non-root.
-- [ ] Verify `/data` is writable and SQLite/config state persists across restart.
-- [ ] Verify the image explicitly listens on `:8080` and the UI is reachable.
-- [ ] Complete first-run setup and login against a fresh disposable database.
+- [x] Build the exact branch candidate image.
+- [x] Verify the final process is non-root.
+- [x] Verify `/data` is writable and SQLite/config state persists across restart.
+- [x] Verify the image explicitly listens on `:8080` and the UI is reachable.
+- [x] Complete first-run setup and login against a fresh disposable database.
 
-The Docker runtime gate is pending because both available remote daemons timed
-out over SSH and the local default socket does not exist. No Docker context was
-changed and no substitute image was published.
+The branch candidate was built on the remote Windows Docker Desktop Linux
+daemon as `simplelinuxupdater:v0.4.8-rc`, with image ID
+`sha256:d28cefdf7695595a886cedbecd1d71fd8a95138d22cd02e5d954dc4d17e14be8`.
+PID 1 ran as UID 100/GID 101, `/data` was mode 0700, `servers.db` was mode 0600,
+and first-run setup, login, a restart with the same volume, and a persistence
+sentinel all passed. Image metadata and runtime logs confirmed
+`DEBIAN_UPDATER_LISTEN_ADDR=:8080` and `Starting web server on :8080`.
 
 ## Security and Host-Maintenance Gate
 
@@ -85,12 +89,11 @@ changed and no substitute image was published.
   invalid architectures, and unknown operations are refused before dispatch.
 - [x] Prove through focused guard tests that managed and legacy paths are checked
   before mutation and unrecognized legacy content is refused.
-- [ ] Exercise typed APT update, upgrade/full-upgrade selection, autoremove,
-  repair/lock probes, selected packages, and controlled reboot where the
-  disposable target can safely prove them.
-- [ ] Exercise exact legacy sudoers migration and refusal of an unrecognized
+- [x] Exercise typed APT update, upgrade/full-upgrade, autoremove, repair/lock
+  probes, and selected-package operations on a disposable Debian target.
+- [x] Exercise exact legacy sudoers migration and refusal of an unrecognized
   `/etc/sudoers.d/apt-nopasswd` without overwrite or deletion.
-- [ ] Verify SSH root operation remains compatible.
+- [x] Verify SSH root operation remains compatible.
 - [x] Verify in workflow and architecture tests that release is signaled by
   `Release Tag Signal`, checks tag/SHA ancestry against `origin/main`, and
   publishes only after release-gate.
@@ -101,7 +104,7 @@ changed and no substitute image was published.
 
 - [x] All implementation PRs are merged to `main` at implementation base
   `b8f36e1`; its required CI and CodeQL checks are green.
-- [ ] Complete local, Docker, and disposable-host release evidence is recorded.
+- [x] Complete local, Docker, and disposable-host release evidence is recorded.
 - [ ] The release-preparation PR is green and merged to `main`.
 - [ ] Post-merge `main` CI and CodeQL are green on the final release commit.
 - [ ] The `v0.4.8` tag points to that verified final `main` commit.

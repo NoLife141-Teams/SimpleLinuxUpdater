@@ -245,6 +245,145 @@ func TestServerInventoryServiceUpdateEnforcesEndpointUniqueness(t *testing.T) {
 	}
 }
 
+func TestServerInventoryServicePreservesIPSpellingOnCreateAndRejectsEquivalentEndpoint(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, nil)
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	legacyHost := "2001:0DB8:0:0:0:0:0:1"
+	if err := os.WriteFile(knownHostsPath, []byte(testKnownHostsLine(t, knownhosts.HashHostname(legacyHost))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc.deps.KnownHosts = KnownHostsDeps{
+		Getenv:       func(string) string { return knownHostsPath },
+		KnownHostsMu: &sync.Mutex{},
+	}
+
+	created, err := svc.Create(Server{Name: "primary", Host: " [2001:0DB8:0:0:0:0:0:1] ", Port: 22, User: "root"})
+	if err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+	if created.Host != "[2001:0DB8:0:0:0:0:0:1]" {
+		t.Fatalf("Create() host = %q, want submitted IPv6 spelling without spaces", created.Host)
+	}
+	if len(repo.saved) != 1 || repo.saved[0].Host != "[2001:0DB8:0:0:0:0:0:1]" {
+		t.Fatalf("saved inventory = %+v, want submitted IPv6 spelling", repo.saved)
+	}
+	statuses := svc.ListStatuses()
+	if len(statuses) != 1 || statuses[0].HostKeyStatus != HostKeyStatusTrusted {
+		t.Fatalf("ListStatuses() = %+v, want submitted spelling to match hashed known_hosts entry", statuses)
+	}
+
+	if _, err := svc.Create(Server{Name: "duplicate", Host: "2001:db8::1", Port: 22, User: "root"}); !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Create(equivalent IPv6) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if _, err := svc.Create(Server{Name: "other-port", Host: "2001:0db8:0:0:0:0:0:1", Port: 2201, User: "root"}); err != nil {
+		t.Fatalf("Create(equivalent IPv6 on another port) unexpected error: %v", err)
+	}
+}
+
+func TestServerInventoryServiceUpdateRejectsEquivalentIPv6Endpoint(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, stateServers, _ := newTestService(repo, []Server{
+		{Name: "primary", Host: "2001:db8::1", Port: 22, User: "root"},
+		{Name: "alternate", Host: "2001:db8::2", Port: 22, User: "root"},
+	})
+
+	_, err := svc.Update("alternate", Server{Name: "alternate", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"})
+	if !errors.Is(err, ErrEndpointExists) {
+		t.Fatalf("Update(equivalent IPv6) error = %v, want %v", err, ErrEndpointExists)
+	}
+	if got := (*stateServers)[1].Host; got != "2001:db8::2" {
+		t.Fatalf("Update(equivalent IPv6) changed host to %q", got)
+	}
+}
+
+func TestServerInventoryServiceLoadPreservesExistingIPWithoutSaving(t *testing.T) {
+	repo := &fakeRepo{loaded: []Server{
+		{Name: "expanded", Host: "2001:0db8:0:0:0:0:0:1", Port: 22, User: "root"},
+		{Name: "bracketed", Host: "[2001:db8::2]", Port: 22, User: "root"},
+		{Name: "dns", Host: "NODE.EXAMPLE", Port: 22, User: "root"},
+	}}
+	svc, _, stateServers, _ := newTestService(repo, nil)
+
+	if err := svc.Load(); err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	if repo.saveCalls != 0 {
+		t.Fatalf("Load() save calls = %d, want no implicit migration write", repo.saveCalls)
+	}
+	if got := (*stateServers)[0].Host; got != "2001:0db8:0:0:0:0:0:1" {
+		t.Fatalf("loaded expanded host = %q, want persisted spelling", got)
+	}
+	if got := (*stateServers)[1].Host; got != "[2001:db8::2]" {
+		t.Fatalf("loaded bracketed host = %q, want persisted spelling", got)
+	}
+	if got := (*stateServers)[2].Host; got != "NODE.EXAMPLE" {
+		t.Fatalf("loaded DNS host = %q, want presentation preserved", got)
+	}
+}
+
+func TestServerInventoryServiceUpdatePreservesEquivalentLegacyIPSpelling(t *testing.T) {
+	const legacyHost = "2001:0db8:0:0:0:0:0:1"
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{{Name: "legacy", Host: legacyHost, Port: 22, User: "root"}})
+
+	updated, err := svc.Update("legacy", Server{Name: "legacy", Host: "[2001:db8::1]", Port: 22, User: "admin"})
+	if err != nil {
+		t.Fatalf("Update(equivalent legacy IP) error = %v", err)
+	}
+	if updated.Host != legacyHost || len(repo.saved) != 1 || repo.saved[0].Host != legacyHost {
+		t.Fatalf("Update(equivalent legacy IP) = %+v, saved=%+v, want preserved spelling", updated, repo.saved)
+	}
+}
+
+func TestServerInventoryServiceUpdatePreservesNewIPSpelling(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{{Name: "server", Host: "2001:db8::1", Port: 22, User: "root"}})
+
+	updated, err := svc.Update("server", Server{
+		Name: "server",
+		Host: " [2001:0DB8:0:0:0:0:0:2] ",
+		Port: 22,
+		User: "root",
+	})
+	if err != nil {
+		t.Fatalf("Update(new IP) error = %v", err)
+	}
+	const want = "[2001:0DB8:0:0:0:0:0:2]"
+	if updated.Host != want || len(repo.saved) != 1 || repo.saved[0].Host != want {
+		t.Fatalf("Update(new IP) = %+v, saved=%+v, want submitted spelling %q", updated, repo.saved, want)
+	}
+}
+
+func TestServerInventoryServiceHostKeyOperationsUseCanonicalIPv6(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scannedHost string
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	svc, _, _, _ := newTestService(&fakeRepo{}, nil)
+	svc.deps.KnownHosts = KnownHostsDeps{
+		ScanHostKey: func(host string, _ int) (ssh.PublicKey, error) {
+			scannedHost = host
+			return hostKey, nil
+		},
+		Getenv: func(string) string { return knownHostsPath },
+	}
+
+	result, err := svc.ScanHostKey(" [2001:0DB8:0:0:0:0:0:1] ", 2201)
+	if err != nil {
+		t.Fatalf("ScanHostKey() unexpected error: %v", err)
+	}
+	if scannedHost != "2001:0DB8:0:0:0:0:0:1" || result.Host != scannedHost || !strings.Contains(result.KnownHostsLine, "[2001:db8::1]:2201") {
+		t.Fatalf("ScanHostKey() = %+v, scanned host %q, want transport spelling and canonical token", result, scannedHost)
+	}
+}
+
 func TestServerInventoryServiceUpdateFallbackAndDeleteHooks(t *testing.T) {
 	repo := &fakeRepo{}
 	var renamedFrom, renamedTo, deleted string

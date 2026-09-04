@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
 	"golang.org/x/crypto/ssh"
@@ -36,11 +37,15 @@ func (c *realSSHConnection) Close() error { return c.client.Close() }
 
 var dialSSHConnectionMu sync.RWMutex
 var dialSSHConnection = func(server Server, config *ssh.ClientConfig) (sshConnection, error) {
-	client, err := ssh.Dial("tcp", net.JoinHostPort(server.Host, strconv.Itoa(normalizePort(server.Port))), config)
+	client, err := ssh.Dial("tcp", sshServerAddress(server), config)
 	if err != nil {
 		return nil, err
 	}
 	return &realSSHConnection{client: client}, nil
+}
+
+func sshServerAddress(server Server) string {
+	return net.JoinHostPort(serverpkg.ServerHostForTransport(server.Host), strconv.Itoa(normalizePort(server.Port)))
 }
 
 func getDialSSHConnection() func(Server, *ssh.ClientConfig) (sshConnection, error) {

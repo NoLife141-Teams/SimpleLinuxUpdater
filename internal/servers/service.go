@@ -318,6 +318,9 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if strings.TrimSpace(server.Key) == "" {
 			server.Key = existing.Key
 		}
+		if NormalizeServerHost(server.Host) == NormalizeServerHost(existing.Host) {
+			server.Host = existing.Host
+		}
 		if server.Port == 0 {
 			server.Port = existing.Port
 		}
@@ -488,7 +491,7 @@ func (s *Service) UpdateServerKey(name, key string) error {
 }
 
 func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) {
-	host = strings.TrimSpace(host)
+	host = ServerHostForTransport(host)
 	if host == "" {
 		return HostKeyScanResult{}, errors.New("host is required")
 	}
@@ -522,7 +525,7 @@ func (s *Service) ScanHostKey(host string, port int) (HostKeyScanResult, error) 
 }
 
 func (s *Service) TrustHostKey(host string, port int, expectedFingerprint string) (HostKeyTrustResult, error) {
-	host = strings.TrimSpace(host)
+	host = CanonicalServerHost(host)
 	if host == "" {
 		return HostKeyTrustResult{}, errors.New("host is required")
 	}
@@ -546,7 +549,7 @@ func (s *Service) TrustHostKey(host string, port int, expectedFingerprint string
 }
 
 func (s *Service) ClearKnownHost(host string, port int) (HostKeyClearResult, error) {
-	host = strings.TrimSpace(host)
+	host = CanonicalServerHost(host)
 	if host == "" {
 		return HostKeyClearResult{}, errors.New("host is required")
 	}

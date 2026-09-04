@@ -133,9 +133,9 @@ func NormalizeServerName(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// CanonicalServerHost returns a transport-safe host representation while
-// preserving the presentation of DNS names. IP literals are serialized by
-// netip so equivalent textual forms share one runtime and persisted value.
+// CanonicalServerHost returns the representation used for managed endpoint
+// tokens while preserving the presentation of DNS names. Inventory storage
+// keeps the submitted spelling so OpenSSH hashed and pattern entries can match.
 func CanonicalServerHost(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if addr, ok := parseServerIPLiteral(trimmed); ok {

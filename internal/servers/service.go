@@ -260,7 +260,7 @@ func (s *Service) ListStatuses() []ServerStatus {
 
 func (s *Service) Create(server Server) (Server, error) {
 	server.Name = strings.TrimSpace(server.Name)
-	server.Host = CanonicalServerHost(server.Host)
+	server.Host = strings.TrimSpace(server.Host)
 	server.User = strings.TrimSpace(server.User)
 	if server.Name == "" || server.Host == "" || server.User == "" {
 		return server, ErrRequiredFields
@@ -320,8 +320,6 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		}
 		if NormalizeServerHost(server.Host) == NormalizeServerHost(existing.Host) {
 			server.Host = existing.Host
-		} else {
-			server.Host = CanonicalServerHost(server.Host)
 		}
 		if server.Port == 0 {
 			server.Port = existing.Port

@@ -245,19 +245,32 @@ func TestServerInventoryServiceUpdateEnforcesEndpointUniqueness(t *testing.T) {
 	}
 }
 
-func TestServerInventoryServiceCanonicalizesIPOnCreateAndRejectsEquivalentEndpoint(t *testing.T) {
+func TestServerInventoryServicePreservesIPSpellingOnCreateAndRejectsEquivalentEndpoint(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, _, _, _ := newTestService(repo, nil)
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	legacyHost := "2001:0DB8:0:0:0:0:0:1"
+	if err := os.WriteFile(knownHostsPath, []byte(testKnownHostsLine(t, knownhosts.HashHostname(legacyHost))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc.deps.KnownHosts = KnownHostsDeps{
+		Getenv:       func(string) string { return knownHostsPath },
+		KnownHostsMu: &sync.Mutex{},
+	}
 
 	created, err := svc.Create(Server{Name: "primary", Host: " [2001:0DB8:0:0:0:0:0:1] ", Port: 22, User: "root"})
 	if err != nil {
 		t.Fatalf("Create() unexpected error: %v", err)
 	}
-	if created.Host != "2001:db8::1" {
-		t.Fatalf("Create() host = %q, want canonical IPv6", created.Host)
+	if created.Host != "[2001:0DB8:0:0:0:0:0:1]" {
+		t.Fatalf("Create() host = %q, want submitted IPv6 spelling without spaces", created.Host)
 	}
-	if len(repo.saved) != 1 || repo.saved[0].Host != "2001:db8::1" {
-		t.Fatalf("saved inventory = %+v, want canonical IPv6", repo.saved)
+	if len(repo.saved) != 1 || repo.saved[0].Host != "[2001:0DB8:0:0:0:0:0:1]" {
+		t.Fatalf("saved inventory = %+v, want submitted IPv6 spelling", repo.saved)
+	}
+	statuses := svc.ListStatuses()
+	if len(statuses) != 1 || statuses[0].HostKeyStatus != HostKeyStatusTrusted {
+		t.Fatalf("ListStatuses() = %+v, want submitted spelling to match hashed known_hosts entry", statuses)
 	}
 
 	if _, err := svc.Create(Server{Name: "duplicate", Host: "2001:db8::1", Port: 22, User: "root"}); !errors.Is(err, ErrEndpointExists) {
@@ -320,6 +333,25 @@ func TestServerInventoryServiceUpdatePreservesEquivalentLegacyIPSpelling(t *test
 	}
 	if updated.Host != legacyHost || len(repo.saved) != 1 || repo.saved[0].Host != legacyHost {
 		t.Fatalf("Update(equivalent legacy IP) = %+v, saved=%+v, want preserved spelling", updated, repo.saved)
+	}
+}
+
+func TestServerInventoryServiceUpdatePreservesNewIPSpelling(t *testing.T) {
+	repo := &fakeRepo{}
+	svc, _, _, _ := newTestService(repo, []Server{{Name: "server", Host: "2001:db8::1", Port: 22, User: "root"}})
+
+	updated, err := svc.Update("server", Server{
+		Name: "server",
+		Host: " [2001:0DB8:0:0:0:0:0:2] ",
+		Port: 22,
+		User: "root",
+	})
+	if err != nil {
+		t.Fatalf("Update(new IP) error = %v", err)
+	}
+	const want = "[2001:0DB8:0:0:0:0:0:2]"
+	if updated.Host != want || len(repo.saved) != 1 || repo.saved[0].Host != want {
+		t.Fatalf("Update(new IP) = %+v, saved=%+v, want submitted spelling %q", updated, repo.saved, want)
 	}
 }
 

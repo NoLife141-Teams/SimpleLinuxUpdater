@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
-	"debian-updater/internal/servers"
 )
 
 // lifecycleHostMaintenanceSessionFactory binds every SSH-backed maintenance
@@ -110,7 +110,7 @@ func shutdownPrecheckSummary(err error) updatespkg.PrecheckSummary {
 	}
 }
 
-func (s *lifecycleHostMaintenanceSession) RunPlanDiskPrecheck(ctx context.Context, plan servers.UpgradePlan) updatespkg.PrecheckResult {
+func (s *lifecycleHostMaintenanceSession) RunPlanDiskPrecheck(ctx context.Context, plan serverpkg.UpgradePlan) updatespkg.PrecheckResult {
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
 	return s.inner.RunPlanDiskPrecheck(opCtx, plan)

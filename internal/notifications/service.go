@@ -278,9 +278,7 @@ type Service struct {
 }
 
 func NewService(deps ServiceDeps) *Service {
-	if deps.HTTPClient == nil {
-		deps.HTTPClient = &http.Client{Timeout: 10 * time.Second}
-	}
+	deps.HTTPClient = secureNotificationHTTPClient(deps.HTTPClient)
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -935,8 +933,13 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 			return SettingsResponse{}, validationError("webhook_url must be empty when preserving the configured URL.")
 		}
 	}
-	if settings.Enabled && settings.WebhookURL == "" {
-		return SettingsResponse{}, validationError("Enablement requires a configured webhook URL. Choose Replace URL first.")
+	if settings.Enabled {
+		if settings.WebhookURL == "" {
+			return SettingsResponse{}, validationError("Enablement requires a configured webhook URL. Choose Replace URL first.")
+		}
+		if err := validateStoredWebhookURL(settings.WebhookURL); err != nil {
+			return SettingsResponse{}, validationError("Configured webhook URL no longer satisfies the current policy. Replace it before enabling delivery.")
+		}
 	}
 	discordIntent := WebhookURLPreserve
 	if update.Discord != nil {
@@ -1265,6 +1268,7 @@ func (s *Service) loadSettings() (Settings, error) {
 	settings.LastDeliveries = cloneDeliveryStatuses(stored.LastDeliveries)
 	legacyURLStored := strings.TrimSpace(stored.EncryptedWebhookURL) == "" &&
 		strings.TrimSpace(stored.LegacyWebhookURL) != ""
+	rewriteStoredSettings := legacyURLStored
 	switch {
 	case strings.TrimSpace(stored.EncryptedWebhookURL) != "":
 		if s.deps.DecryptSecret == nil {
@@ -1288,6 +1292,12 @@ func (s *Service) loadSettings() (Settings, error) {
 		settings.EventTypes = events
 	}
 	settings.WebhookURL = strings.TrimSpace(settings.WebhookURL)
+	if settings.Enabled && settings.WebhookURL != "" {
+		if err := validateStoredWebhookURL(settings.WebhookURL); err != nil {
+			settings.Enabled = false
+			rewriteStoredSettings = true
+		}
+	}
 	if strings.TrimSpace(stored.DiscordWebhookURL) != "" {
 		settings.DiscordWebhookURL, err = s.decryptStoredSecret(stored.DiscordWebhookURL)
 		if err != nil {
@@ -1306,9 +1316,12 @@ func (s *Service) loadSettings() (Settings, error) {
 			return Settings{}, errors.New("protected Telegram chat ID cannot be loaded")
 		}
 	}
-	if legacyURLStored {
+	if rewriteStoredSettings {
 		if err := s.saveSettings(settings); err != nil {
-			return Settings{}, errors.New("legacy webhook URL could not be protected")
+			if legacyURLStored {
+				return Settings{}, errors.New("legacy webhook URL could not be protected")
+			}
+			return Settings{}, errors.New("unsafe webhook configuration could not be disabled")
 		}
 	}
 	return settings, nil
@@ -1435,6 +1448,9 @@ func ReencryptStoredWebhookURL(
 	stored.LegacyWebhookURL = ""
 	stored.EncryptedWebhookURL = ""
 	if strings.TrimSpace(webhookURL) != "" {
+		if err := validateStoredWebhookURL(webhookURL); err != nil {
+			stored.Enabled = false
+		}
 		if encrypt == nil {
 			return errors.New("notification webhook encryption is unavailable")
 		}
@@ -1555,12 +1571,8 @@ func normalizeWebhookURLIntent(update SettingsUpdate) (WebhookURLIntent, error) 
 }
 
 func validateStoredWebhookURL(raw string) error {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed == nil || parsed.Host == "" {
-		return validationError("The configured webhook URL is invalid.")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return validationError("The configured webhook URL is invalid.")
+	if err := validateReplacementWebhookURL(raw); err != nil {
+		return validationError("The configured webhook URL violates the current notification destination policy.")
 	}
 	return nil
 }

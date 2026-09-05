@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	serverpkg "debian-updater/internal/servers"
@@ -55,11 +56,56 @@ type lifecycleHostMaintenanceSession struct {
 	closeErr  error
 }
 
+// MaintenanceContext exposes the session lifecycle to maintenance collaborators
+// that are not SSH operations themselves (for example, OSV HTTP lookups and
+// final persistence checks). The updates package consumes it through a small
+// structural interface so the core HostMaintenanceSession contract stays stable.
+func (s *lifecycleHostMaintenanceSession) MaintenanceContext() context.Context {
+	if s == nil || s.lifecycle == nil {
+		return context.Background()
+	}
+	return s.lifecycle
+}
+
 func (s *lifecycleHostMaintenanceSession) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if s == nil {
 		return mergeMaintenanceContexts(ctx, context.Background())
 	}
 	return mergeMaintenanceContexts(ctx, s.lifecycle)
+}
+
+type lifecycleCommandCapture struct {
+	mu      sync.Mutex
+	stdout  strings.Builder
+	stderr  strings.Builder
+	forward updatespkg.HostCommandOutputHandler
+}
+
+func (c *lifecycleCommandCapture) handle(output updatespkg.HostCommandOutput) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	switch output.Stream {
+	case updatespkg.HostCommandStdout:
+		c.stdout.WriteString(output.Data)
+	case updatespkg.HostCommandStderr:
+		c.stderr.WriteString(output.Data)
+	}
+	forward := c.forward
+	c.mu.Unlock()
+	if forward != nil {
+		forward(output)
+	}
+}
+
+func (c *lifecycleCommandCapture) values() (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stdout.String(), c.stderr.String()
 }
 
 func (s *lifecycleHostMaintenanceSession) RunCommand(ctx context.Context, req updatespkg.HostCommandRequest) (updatespkg.HostCommandResult, error) {
@@ -68,11 +114,29 @@ func (s *lifecycleHostMaintenanceSession) RunCommand(ctx context.Context, req up
 	if err := opCtx.Err(); err != nil {
 		return updatespkg.HostCommandResult{}, err
 	}
-	result, err := s.inner.RunCommand(opCtx, req)
+
+	// Package-state mutations need their already-produced output if shutdown
+	// closes the SSH connection. Force the production streaming path so output is
+	// captured before the context-aware command wrapper returns cancellation.
+	var capture *lifecycleCommandCapture
+	wrappedReq := req
+	if req.Effect.RequiresReconciliationOnUnknownOutcome() {
+		capture = &lifecycleCommandCapture{forward: req.OnOutput}
+		wrappedReq.OnOutput = capture.handle
+	}
+
+	result, err := s.inner.RunCommand(opCtx, wrappedReq)
 	if err == nil || s.lifecycle == nil || s.lifecycle.Err() == nil {
 		return result, err
 	}
 	if req.Effect.RequiresReconciliationOnUnknownOutcome() {
+		capturedStdout, capturedStderr := capture.values()
+		if result.Stdout == "" {
+			result.Stdout = capturedStdout
+		}
+		if result.Stderr == "" {
+			result.Stderr = capturedStderr
+		}
 		return result, updatespkg.NonRetryableTaggedError{
 			Err:                    fmt.Errorf("APT command outcome is unknown; application shutdown interrupted command: %w", err),
 			ReconciliationRequired: true,
@@ -166,6 +230,35 @@ func (s *lifecycleHostMaintenanceSession) Close() error {
 		}
 	})
 	return s.closeErr
+}
+
+// lifecycleVulnerabilityScanner binds non-SSH vulnerability work, notably OSV
+// HTTP requests, to the same maintenance lifecycle used by the SSH session.
+type lifecycleVulnerabilityScanner struct {
+	lifecycle context.Context
+	inner     updatespkg.VulnerabilityScanner
+}
+
+func newLifecycleVulnerabilityScanner(lifecycle context.Context, inner updatespkg.VulnerabilityScanner) updatespkg.VulnerabilityScanner {
+	if inner == nil {
+		return nil
+	}
+	if lifecycle == nil {
+		lifecycle = context.Background()
+	}
+	if existing, ok := inner.(*lifecycleVulnerabilityScanner); ok && existing.lifecycle == lifecycle {
+		return inner
+	}
+	return &lifecycleVulnerabilityScanner{lifecycle: lifecycle, inner: inner}
+}
+
+func (s *lifecycleVulnerabilityScanner) Scan(ctx context.Context, session updatespkg.HostMaintenanceSession, pending []serverpkg.PendingUpdate) ([]serverpkg.PendingUpdate, error) {
+	if s == nil || s.inner == nil {
+		return nil, fmt.Errorf("vulnerability scanner is unavailable")
+	}
+	opCtx, cancel := mergeMaintenanceContexts(ctx, s.lifecycle)
+	defer cancel()
+	return s.inner.Scan(opCtx, session, pending)
 }
 
 func mergeMaintenanceContexts(operation, lifecycle context.Context) (context.Context, context.CancelFunc) {

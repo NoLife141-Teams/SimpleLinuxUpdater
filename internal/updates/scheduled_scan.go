@@ -44,6 +44,19 @@ func scheduledScanFailureState(err error) (string, string) {
 	return jobs.StatusFailed, "permanent"
 }
 
+type maintenanceContextProvider interface {
+	MaintenanceContext() context.Context
+}
+
+func maintenanceContextForSession(session HostMaintenanceSession) context.Context {
+	if provider, ok := session.(maintenanceContextProvider); ok {
+		if ctx := provider.MaintenanceContext(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
+}
+
 func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	deps := s.EnsureDeps()
 	jm := deps.CurrentJobManager()
@@ -87,6 +100,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 	defer func() { _ = session.Close() }()
+	maintenanceCtx := maintenanceContextForSession(session)
 
 	logs := "Starting scheduled package scan..."
 	if jm != nil {
@@ -98,7 +112,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			LogsText: &logs,
 		})
 	}
-	precheckSummary := session.RunUpdatePrechecks(context.Background())
+	precheckSummary := session.RunUpdatePrechecks(maintenanceCtx)
 	for _, result := range precheckSummary.Results {
 		state := "PASS"
 		if !result.Passed {
@@ -110,7 +124,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		}
 		logs += line
 	}
-	if precheckSummary.FailedCheck == "application_shutdown" {
+	if precheckSummary.FailedCheck == "application_shutdown" || errors.Is(maintenanceCtx.Err(), context.Canceled) {
 		setFailure("Scheduled scan interrupted by application shutdown", context.Canceled, jobs.PhasePrechecks, logs)
 		return
 	}
@@ -128,7 +142,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			LogsText: &logs,
 		})
 	}
-	commandResult, err := session.RunCommand(context.Background(), HostCommandRequest{
+	commandResult, err := session.RunCommand(maintenanceCtx, HostCommandRequest{
 		Operation:    "scheduled_scan.apt_update",
 		Command:      AptUpdateCmd,
 		Effect:       HostCommandEffectMetadataMutation,
@@ -141,14 +155,14 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 
-	discoveryResult, err := session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "scheduled_scan.list_upgradable"})
+	discoveryResult, err := session.DiscoverPackages(maintenanceCtx, HostOperationRequest{Operation: "scheduled_scan.list_upgradable"})
 	discovery := discoveryResult.Outcome
 	if err != nil {
 		setFailure("Scheduled scan package discovery failed", err, jobs.PhaseAptUpdate, logs)
 		return
 	}
 
-	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(context.Background(), session, discovery.PendingUpdates)
+	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(maintenanceCtx, session, discovery.PendingUpdates)
 	if scanErr != nil {
 		if errors.Is(scanErr, context.Canceled) {
 			setFailure("Scheduled scan vulnerability lookup interrupted", scanErr, jobs.PhaseLookup, logs)
@@ -167,7 +181,15 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		discovery.PendingUpdates = scannedUpdates
 	}
 	SortPendingUpdates(discovery.PendingUpdates)
-	logs = s.refreshFactsAfterScheduledScan(req, session, logs)
+	logs, err = s.refreshFactsAfterScheduledScan(maintenanceCtx, req, session, logs)
+	if err != nil {
+		setFailure("Scheduled scan final facts refresh interrupted", err, jobs.PhaseLookup, logs)
+		return
+	}
+	if err := maintenanceCtx.Err(); err != nil {
+		setFailure("Scheduled scan interrupted before completion", err, jobs.PhaseLookup, logs)
+		return
+	}
 	result := discovery.Clone()
 	finalSummary := "Scheduled scan completed"
 	if discovery.Empty() {
@@ -189,9 +211,15 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	}
 }
 
-func (s *Service) refreshFactsAfterScheduledScan(req ScheduledScanRunRequest, session HostMaintenanceSession, logs string) string {
+func (s *Service) refreshFactsAfterScheduledScan(ctx context.Context, req ScheduledScanRunRequest, session HostMaintenanceSession, logs string) (string, error) {
 	deps := s.EnsureDeps()
-	facts := session.CollectServerFacts(context.Background())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	facts := session.CollectServerFacts(ctx)
+	if err := ctx.Err(); err != nil {
+		return logs + "\nScheduled host facts refresh interrupted by application shutdown.", err
+	}
 	meta := map[string]any{
 		"source":       scheduledScanFactsRefreshSource,
 		"job_id":       req.JobID,
@@ -204,12 +232,12 @@ func (s *Service) refreshFactsAfterScheduledScan(req ScheduledScanRunRequest, se
 		meta["error"] = err.Error()
 		deps.Logf("failed to persist scheduled host facts for %q: %v", req.Server.Name, err)
 		deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "failure", "Scheduled host facts refresh failed", meta)
-		return logs + "\nScheduled host facts refresh failed; the scan result remains valid."
+		return logs + "\nScheduled host facts refresh failed; the scan result remains valid.", nil
 	}
 	if !health.FactsHealthComplete(facts) {
 		deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "warning", "Scheduled host facts refresh returned incomplete health data", meta)
-		return logs + "\nScheduled host facts refreshed with incomplete health data."
+		return logs + "\nScheduled host facts refreshed with incomplete health data.", nil
 	}
 	deps.AuditWithActor("system", "", "server.facts.refresh", "server", req.Server.Name, "success", "Scheduled host facts refreshed", meta)
-	return logs + "\nScheduled host facts refreshed."
+	return logs + "\nScheduled host facts refreshed.", nil
 }

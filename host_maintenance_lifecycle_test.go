@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 )
 
@@ -54,15 +55,22 @@ func TestLifecycleHostMaintenanceSessionCancelsReadOnlyCommand(t *testing.T) {
 	}
 }
 
-func TestLifecycleHostMaintenanceSessionMarksPackageMutationForReconciliation(t *testing.T) {
+func TestLifecycleHostMaintenanceSessionMarksPackageMutationForReconciliationAndPreservesStreamedOutput(t *testing.T) {
 	lifecycle, stop := context.WithCancel(context.Background())
 	started := make(chan struct{})
 	inner := updatespkg.HostMaintenanceSessionFactoryFunc(func(context.Context, updatespkg.HostMaintenanceSessionRequest) (updatespkg.HostMaintenanceSession, error) {
 		return &updatespkg.HostMaintenanceSessionFuncs{
-			RunCommandFunc: func(ctx context.Context, _ updatespkg.HostCommandRequest) (updatespkg.HostCommandResult, error) {
+			RunCommandFunc: func(ctx context.Context, req updatespkg.HostCommandRequest) (updatespkg.HostCommandResult, error) {
 				close(started)
+				if req.OnOutput == nil {
+					t.Fatal("package mutation did not enable output capture")
+				}
+				req.OnOutput(updatespkg.HostCommandOutput{Stream: updatespkg.HostCommandStdout, Data: "Setting up packages...\n"})
+				req.OnOutput(updatespkg.HostCommandOutput{Stream: updatespkg.HostCommandStderr, Data: "dpkg: processing triggers\n"})
 				<-ctx.Done()
-				return updatespkg.HostCommandResult{Stdout: "Setting up packages..."}, ctx.Err()
+				// Match the production context wrapper: cancellation may return empty
+				// aggregate buffers even though output already streamed.
+				return updatespkg.HostCommandResult{}, ctx.Err()
 			},
 		}, nil
 	})
@@ -90,8 +98,11 @@ func TestLifecycleHostMaintenanceSessionMarksPackageMutationForReconciliation(t 
 
 	select {
 	case got := <-resultCh:
-		if got.command.Stdout != "Setting up packages..." {
-			t.Fatalf("RunCommand() stdout = %q, want preserved output", got.command.Stdout)
+		if got.command.Stdout != "Setting up packages...\n" {
+			t.Fatalf("RunCommand() stdout = %q, want preserved streamed output", got.command.Stdout)
+		}
+		if got.command.Stderr != "dpkg: processing triggers\n" {
+			t.Fatalf("RunCommand() stderr = %q, want preserved streamed output", got.command.Stderr)
 		}
 		var reconciliation interface{ RequiresReconciliation() bool }
 		if !errors.As(got.err, &reconciliation) || !reconciliation.RequiresReconciliation() {
@@ -177,5 +188,33 @@ func TestLifecycleHostMaintenanceSessionCloseCancelsInFlightOperation(t *testing
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Close() did not cancel in-flight operation")
+	}
+}
+
+func TestLifecycleVulnerabilityScannerCancelsInFlightLookup(t *testing.T) {
+	lifecycle, stop := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	inner := updatespkg.VulnerabilityScannerFunc(func(ctx context.Context, _ updatespkg.HostMaintenanceSession, _ []serverpkg.PendingUpdate) ([]serverpkg.PendingUpdate, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	scanner := newLifecycleVulnerabilityScanner(lifecycle, inner)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := scanner.Scan(context.Background(), &updatespkg.HostMaintenanceSessionFuncs{}, []serverpkg.PendingUpdate{{Package: "openssl"}})
+		resultCh <- err
+	}()
+	<-started
+	stop()
+
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Scan() error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("vulnerability scanner did not stop after lifecycle cancellation")
 	}
 }

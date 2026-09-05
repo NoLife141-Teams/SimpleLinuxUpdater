@@ -129,6 +129,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.VulnerabilityScanner == nil {
 		d.VulnerabilityScanner = applicationVulnerabilityScanner()
 	}
+	d.VulnerabilityScanner = newLifecycleVulnerabilityScanner(currentApplicationMaintenanceContext(), d.VulnerabilityScanner)
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager
 	}
@@ -185,16 +186,19 @@ func newHostMaintenanceSessionFactory(
 	hostKeyCallback func() (ssh.HostKeyCallback, error),
 	dial func(serverpkg.Server, *ssh.ClientConfig) (sshConnection, error),
 ) HostMaintenanceSessionFactory {
+	lifecycle := currentApplicationMaintenanceContext()
 	inner := updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
-		BuildAuthMethods:    buildAuth,
-		HostKeyCallback:     hostKeyCallback,
-		DialSSH:             dial,
+		BuildAuthMethods: buildAuth,
+		HostKeyCallback:  hostKeyCallback,
+		DialSSH: func(server serverpkg.Server, config *ssh.ClientConfig) (sshConnection, error) {
+			return dialSSHConnectionWithContext(lifecycle, dial, server, config)
+		},
 		RunCommand:          runSSHCommandWithContext,
 		RunStreamingCommand: runSSHCommandWithContextStreaming,
 		SSHConnectTimeout:   sshConnectTimeout,
 		Logf:                log.Printf,
 	})
-	return newLifecycleHostMaintenanceSessionFactory(currentApplicationMaintenanceContext(), inner)
+	return newLifecycleHostMaintenanceSessionFactory(lifecycle, inner)
 }
 
 func updateServiceEnsureDeps(service *UpdateService) UpdateServiceDeps {

@@ -44,7 +44,35 @@ const HostMaintenanceStageAuth = updatespkg.HostMaintenanceStageAuth
 var (
 	defaultVulnerabilityScannerMu sync.Mutex
 	defaultVulnerabilityScanner   VulnerabilityScanner
+
+	applicationMaintenanceContextMu sync.RWMutex
+	applicationMaintenanceCtx       context.Context = context.Background()
 )
+
+func currentApplicationMaintenanceContext() context.Context {
+	applicationMaintenanceContextMu.RLock()
+	ctx := applicationMaintenanceCtx
+	applicationMaintenanceContextMu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func setApplicationMaintenanceContext(ctx context.Context) func() {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	applicationMaintenanceContextMu.Lock()
+	previous := applicationMaintenanceCtx
+	applicationMaintenanceCtx = ctx
+	applicationMaintenanceContextMu.Unlock()
+	return func() {
+		applicationMaintenanceContextMu.Lock()
+		applicationMaintenanceCtx = previous
+		applicationMaintenanceContextMu.Unlock()
+	}
+}
 
 func applicationVulnerabilityScanner() VulnerabilityScanner {
 	defaultVulnerabilityScannerMu.Lock()
@@ -90,7 +118,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 			Logf:                log.Printf,
 		})
 		d.HostMaintenanceSessions = newHostMaintenanceSessionFactory(func(server Server) ([]ssh.AuthMethod, error) {
-			resolved, err := credential.Resolve(context.Background(), server.Key)
+			resolved, err := credential.Resolve(currentApplicationMaintenanceContext(), server.Key)
 			if err != nil {
 				return nil, err
 			}
@@ -101,6 +129,7 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.VulnerabilityScanner == nil {
 		d.VulnerabilityScanner = applicationVulnerabilityScanner()
 	}
+	d.VulnerabilityScanner = newLifecycleVulnerabilityScanner(currentApplicationMaintenanceContext(), d.VulnerabilityScanner)
 	if d.CurrentJobManager == nil {
 		d.CurrentJobManager = currentJobManager
 	}
@@ -157,15 +186,19 @@ func newHostMaintenanceSessionFactory(
 	hostKeyCallback func() (ssh.HostKeyCallback, error),
 	dial func(serverpkg.Server, *ssh.ClientConfig) (sshConnection, error),
 ) HostMaintenanceSessionFactory {
-	return updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
-		BuildAuthMethods:    buildAuth,
-		HostKeyCallback:     hostKeyCallback,
-		DialSSH:             dial,
+	lifecycle := currentApplicationMaintenanceContext()
+	inner := updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: buildAuth,
+		HostKeyCallback:  hostKeyCallback,
+		DialSSH: func(server serverpkg.Server, config *ssh.ClientConfig) (sshConnection, error) {
+			return dialSSHConnectionWithContext(lifecycle, dial, server, config)
+		},
 		RunCommand:          runSSHCommandWithContext,
 		RunStreamingCommand: runSSHCommandWithContextStreaming,
 		SSHConnectTimeout:   sshConnectTimeout,
 		Logf:                log.Printf,
 	})
+	return newLifecycleHostMaintenanceSessionFactory(lifecycle, inner)
 }
 
 func updateServiceEnsureDeps(service *UpdateService) UpdateServiceDeps {

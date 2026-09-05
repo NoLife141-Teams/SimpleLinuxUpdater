@@ -15,6 +15,7 @@ import (
 
 const serverShutdownTimeout = 10 * time.Second
 const notificationShutdownTimeout = 10 * time.Second
+const maintenanceCancellationDrainTimeout = 5 * time.Second
 
 var actionRunnerShutdownTimeout = 30 * time.Second
 
@@ -72,7 +73,7 @@ func waitForUpdateRunners() { _ = updateRunners.wait(context.Background()) }
 
 func waitForUpdateRunnersContext(ctx context.Context) error { return updateRunners.wait(ctx) }
 
-func shutdownApplication(server *http.Server, waitForScheduler func(), closeNotifications func(context.Context) error) {
+func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMaintenance func(), closeNotifications func(context.Context) error) {
 	if server != nil {
 		serverCtx, cancelServer := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		if err := server.Shutdown(serverCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -85,10 +86,21 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), closeNoti
 	}
 
 	runnerCtx, cancelRunners := context.WithTimeout(context.Background(), actionRunnerShutdownTimeout)
-	if err := waitForUpdateRunnersContext(runnerCtx); err != nil {
-		log.Printf("Action runners exceeded the shutdown grace period; continuing shutdown: %v", err)
-	}
+	runnerErr := waitForUpdateRunnersContext(runnerCtx)
 	cancelRunners()
+	if runnerErr != nil {
+		log.Printf("Action runners exceeded the shutdown grace period; cancelling host maintenance: %v", runnerErr)
+		if cancelMaintenance != nil {
+			cancelMaintenance()
+		}
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), maintenanceCancellationDrainTimeout)
+		if err := waitForUpdateRunnersContext(drainCtx); err != nil {
+			log.Printf("Action runners did not stop after maintenance cancellation; continuing shutdown: %v", err)
+		}
+		cancelDrain()
+	} else if cancelMaintenance != nil {
+		cancelMaintenance()
+	}
 
 	if closeNotifications != nil {
 		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), notificationShutdownTimeout)
@@ -111,6 +123,10 @@ func main() {
 	defer listener.Close()
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
+	defer cancelMaintenance()
+	restoreMaintenanceContext := setApplicationMaintenanceContext(maintenanceCtx)
+	defer restoreMaintenanceContext()
 	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
 	r, err := setupRouterWithDeps(deps)
 	if err != nil {
@@ -139,7 +155,7 @@ func main() {
 			if deps.HostFactsRefreshWorker != nil {
 				deps.HostFactsRefreshWorker.Wait()
 			}
-		}, func(deliveryCtx context.Context) error {
+		}, cancelMaintenance, func(deliveryCtx context.Context) error {
 			return closeNotificationDelivery(deliveryCtx, deps.NotificationService)
 		})
 		close(shutdownDone)

@@ -85,8 +85,75 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 	if d.LoadScheduledJobBehavior == nil {
 		d.LoadScheduledJobBehavior = func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: 30 * time.Minute} }
 	}
+	if d.WaitForApprovalPollContext == nil {
+		if d.WaitForApprovalPoll != nil {
+			poll := d.WaitForApprovalPoll
+			d.WaitForApprovalPollContext = func(ctx context.Context) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				poll()
+				return ctx.Err()
+			}
+		} else {
+			d.WaitForApprovalPollContext = func(ctx context.Context) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				timer := time.NewTimer(ApprovalPollInterval)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-timer.C:
+					return nil
+				}
+			}
+		}
+	}
 	if d.WaitForApprovalPoll == nil {
 		d.WaitForApprovalPoll = func() { time.Sleep(ApprovalPollInterval) }
+	}
+	if d.SleepContext == nil {
+		if d.Sleep != nil {
+			sleep := d.Sleep
+			d.SleepContext = func(ctx context.Context, delay time.Duration) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				done := make(chan struct{})
+				go func() {
+					sleep(delay)
+					close(done)
+				}()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-done:
+					return ctx.Err()
+				}
+			}
+		} else {
+			d.SleepContext = func(ctx context.Context, delay time.Duration) error {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-timer.C:
+					return nil
+				}
+			}
+		}
 	}
 	if d.Sleep == nil {
 		d.Sleep = time.Sleep
@@ -126,7 +193,8 @@ type withActorRunner struct {
 	approvedPackages        []string
 	upgradePlan             servers.UpgradePlan
 
-	session HostMaintenanceSession
+	session        HostMaintenanceSession
+	maintenanceCtx context.Context
 
 	commandTimeout time.Duration
 
@@ -136,8 +204,9 @@ type withActorRunner struct {
 	aptUpgradeAttempts     int
 	commandAttempts        int
 
-	retryExhausted bool
-	lastErrClass   string
+	retryExhausted       bool
+	lastErrClass         string
+	auditOutcomeOverride string
 
 	prechecksPassed bool
 	precheckFailed  string
@@ -259,6 +328,13 @@ func (r *withActorRunner) deps() ServiceDeps {
 	return ServiceDeps{}.withDefaults()
 }
 
+func (r *withActorRunner) maintenanceContext() context.Context {
+	if r != nil && r.maintenanceCtx != nil {
+		return r.maintenanceCtx
+	}
+	return context.Background()
+}
+
 func (r *withActorRunner) currentJobManager() *jobs.Manager {
 	return r.deps().CurrentJobManager()
 }
@@ -366,6 +442,65 @@ func (r *withActorRunner) currentLogs() string {
 	return deps.ServerState.CurrentStatusLogs(r.server.Name)
 }
 
+func (r *withActorRunner) interruptForShutdown(summary string) {
+	if r == nil {
+		return
+	}
+	if strings.TrimSpace(summary) == "" {
+		summary = "Maintenance interrupted by application shutdown"
+	}
+	r.lastErrClass = "interrupted"
+	r.auditOutcomeOverride = "interrupted"
+	r.jobPhase = jobs.PhaseComplete
+	logs := r.currentLogs()
+	if strings.TrimSpace(logs) != "" {
+		logs += "\n"
+	}
+	logs += summary
+
+	deps := r.deps()
+	if deps.ServerState != nil {
+		deps.ServerState.Lock()
+		if status := deps.ServerState.StatusMap()[r.server.Name]; status != nil {
+			status.Status = runtimepkg.StatusIdle
+			status.ApprovalScope = ""
+			status.ApprovalConfirmRemovals = false
+			status.Upgradable = nil
+			status.PendingUpdates = nil
+			status.UpgradePlan = servers.UpgradePlan{}
+			status.Logs = logs
+		}
+		deps.ServerState.Unlock()
+	}
+
+	if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" {
+		jobStatus := jobs.StatusInterrupted
+		phase := jobs.PhaseComplete
+		errorClass := "interrupted"
+		if err := jm.Transition(r.jobID, jobs.Intent{
+			Status:     &jobStatus,
+			Phase:      &phase,
+			Summary:    &summary,
+			LogsText:   &logs,
+			ErrorClass: &errorClass,
+		}); err != nil {
+			deps.Logf("failed to mark job %q interrupted during application shutdown: %v", r.jobID, err)
+		}
+	}
+}
+
+func (r *withActorRunner) handleShutdownCancellation(err error, summary string) bool {
+	if !errors.Is(err, context.Canceled) {
+		return false
+	}
+	var reconciliation interface{ RequiresReconciliation() bool }
+	if errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation() {
+		return false
+	}
+	r.interruptForShutdown(summary)
+	return true
+}
+
 func (r *withActorRunner) setJobPhase(phase string) {
 	r.jobPhase = strings.TrimSpace(phase)
 	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && r.jobPhase != "" {
@@ -439,7 +574,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		r.retryLogFormats = map[string]string{}
 	}
 	r.retryLogFormats[dialOpName] = "\nSSH dial attempt %d/%d failed: %v; retrying in %s"
-	session, err := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+	session, err := deps.HostMaintenanceSessions.Open(r.maintenanceContext(), HostMaintenanceSessionRequest{
 		Server:         r.server,
 		RetryPolicy:    r.policy,
 		DialOperation:  dialOpName,
@@ -450,6 +585,9 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		var sessionErr *HostMaintenanceError
 		if errors.As(err, &sessionErr) {
 			r.sshDialAttempts += sessionErr.Attempts
+		}
+		if r.handleShutdownCancellation(err, "Maintenance interrupted while establishing SSH connectivity.") {
+			return false
 		}
 		r.markErrorClass(err)
 		switch HostMaintenanceErrorStageOf(err) {
@@ -463,6 +601,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		return false
 	}
 	r.session = session
+	r.maintenanceCtx = maintenanceContextForSession(session)
 	r.sshDialAttempts += session.Stats().DialAttempts
 	return true
 }
@@ -529,6 +668,13 @@ func (s *Service) runWithActorShared(
 			}
 		}
 		outcome := outcomeForStatus(finalStatus)
+		message := fmt.Sprintf("Final status: %s", finalStatus)
+		if runner.auditOutcomeOverride != "" {
+			outcome = runner.auditOutcomeOverride
+			if outcome == "interrupted" {
+				message = "Maintenance interrupted by application shutdown"
+			}
+		}
 		deps.AuditWithActor(
 			actor,
 			clientIP,
@@ -536,7 +682,7 @@ func (s *Service) runWithActorShared(
 			"server",
 			server.Name,
 			outcome,
-			fmt.Sprintf("Final status: %s", finalStatus),
+			message,
 			auditMeta(runner, finalStatus),
 		)
 	}()
@@ -613,6 +759,7 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 		"approved_package_count":        len(r.approvedPackages),
 		"approved_packages":             append([]string(nil), r.approvedPackages...),
 		"upgrade_plan":                  servers.CloneUpgradePlan(r.upgradePlan),
+		"interrupted":                   r.auditOutcomeOverride == "interrupted",
 	}
 	if !r.startedAt.IsZero() {
 		meta["total_elapsed_ms"] = r.deps().Now().Sub(r.startedAt).Milliseconds()
@@ -634,15 +781,25 @@ func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]a
 	}
 }
 
-func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() {
+func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() bool {
 	if r == nil || r.session == nil {
-		return
+		return true
 	}
 	deps := r.deps()
-	record := r.session.CollectServerFacts(context.Background())
+	ctx := r.maintenanceContext()
+	record := r.session.CollectServerFacts(ctx)
+	if err := ctx.Err(); err != nil {
+		r.interruptForShutdown("Update interrupted during final host facts refresh.")
+		return false
+	}
 	if err := deps.SaveServerFacts(record); err != nil {
 		deps.Logf("failed to refresh facts after update for %q: %v", r.server.Name, err)
 	}
+	if err := ctx.Err(); err != nil {
+		r.interruptForShutdown("Update interrupted before successful completion could be persisted.")
+		return false
+	}
+	return true
 }
 
 func (s *Service) RunUpdateJob(req UpdateRunRequest) {
@@ -677,11 +834,12 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 		UpdateCompletionOutcome,
 		"update.ssh_dial",
 		func(r *withActorRunner) {
+			maintenanceCtx := r.maintenanceContext()
 			r.setJobPhase(jobs.PhasePrechecks)
 			r.postchecksEnabled = postcheckCfg.Enabled
 			r.appendStatusLog("\nRunning pre-checks...")
 
-			precheckSummary := r.session.RunUpdatePrechecks(context.Background())
+			precheckSummary := r.session.RunUpdatePrechecks(maintenanceCtx)
 			r.precheckResults = precheckSummary.Results
 			for _, result := range precheckSummary.Results {
 				state := "PASS"
@@ -693,6 +851,11 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					line += fmt.Sprintf(" Output: %s", trimmed)
 				}
 				r.appendStatusLog(line)
+			}
+			if precheckSummary.FailedCheck == "application_shutdown" || errors.Is(maintenanceCtx.Err(), context.Canceled) {
+				r.precheckFailed = "application_shutdown"
+				r.interruptForShutdown("Update interrupted during pre-checks.")
+				return
 			}
 			if !precheckSummary.AllPassed {
 				r.precheckFailed = precheckSummary.FailedCheck
@@ -714,7 +877,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			})
 
 			preUpdateFailedUnitsMap := make(map[string]struct{})
-			preUpdateFailedUnits, _, preUnitsErr := r.session.ListFailedSystemdUnits(context.Background())
+			preUpdateFailedUnits, _, preUnitsErr := r.session.ListFailedSystemdUnits(maintenanceCtx)
+			if r.handleShutdownCancellation(preUnitsErr, "Update interrupted while capturing the pre-update systemd baseline.") {
+				return
+			}
 			if preUnitsErr != nil {
 				r.appendStatusLog(fmt.Sprintf("\nBaseline failed-units snapshot unavailable: %v", preUnitsErr))
 			} else {
@@ -730,10 +896,13 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					))
 				}
 			}
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted before apt update.") {
+				return
+			}
 
 			r.setJobPhase(jobs.PhaseAptUpdate)
 			r.retryLogFormats["update.apt_update"] = "\napt update attempt %d/%d failed: %v; retrying in %s"
-			commandResult, err := r.session.RunCommand(context.Background(), HostCommandRequest{
+			commandResult, err := r.session.RunCommand(maintenanceCtx, HostCommandRequest{
 				Operation:    "update.apt_update",
 				Command:      AptUpdateCmd,
 				Effect:       HostCommandEffectMetadataMutation,
@@ -743,6 +912,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			stdout, stderr := commandResult.Stdout, commandResult.Stderr
 			logs := r.currentLogs() + "\n" + stdout + stderr
 			if err != nil {
+				if r.handleShutdownCancellation(err, "Update interrupted during apt update.") {
+					return
+				}
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
 				r.setCommandErrorLogs(logs, err)
@@ -750,17 +922,25 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.retryLogFormats["update.list_upgradable"] = "\nlist upgradable attempt %d/%d failed: %v; retrying in %s"
-			discoveryResult, err := r.session.DiscoverPackages(context.Background(), HostOperationRequest{Operation: "update.list_upgradable"})
+			discoveryResult, err := r.session.DiscoverPackages(maintenanceCtx, HostOperationRequest{Operation: "update.list_upgradable"})
 			r.listUpgradableAttempts += discoveryResult.Attempts
 			discovery := discoveryResult.Outcome
 			if err != nil {
+				if r.handleShutdownCancellation(err, "Update interrupted while discovering upgradable packages.") {
+					return
+				}
 				r.markErrorClass(err)
 				r.setErrorLogs(logs + fmt.Sprintf("\nError listing upgradable: %v", err))
 				return
 			}
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted after package discovery.") {
+				return
+			}
 
 			if discovery.Empty() {
-				r.refreshFactsAfterSuccessfulUpdate()
+				if !r.refreshFactsAfterSuccessfulUpdate() {
+					return
+				}
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
@@ -773,7 +953,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.upgradePlan = discovery.UpgradePlan
-			planDiskResult := r.session.RunPlanDiskPrecheck(context.Background(), discovery.UpgradePlan)
+			planDiskResult := r.session.RunPlanDiskPrecheck(maintenanceCtx, discovery.UpgradePlan)
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during the plan-aware disk pre-check.") {
+				return
+			}
 			r.precheckResults = append(r.precheckResults, planDiskResult)
 			planDiskState := "PASS"
 			if !planDiskResult.Passed {
@@ -846,7 +1029,11 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.closeSession()
 				approvalDeadline := deps.Now().Add(behavior.ApprovalTimeout)
 				for {
-					deps.WaitForApprovalPoll()
+					if err := deps.WaitForApprovalPollContext(maintenanceCtx); err != nil {
+						if r.handleShutdownCancellation(err, "Update interrupted while waiting for approval.") {
+							return
+						}
+					}
 					approved := false
 					cancelledByUser := false
 					approvalTimedOut := false
@@ -913,7 +1100,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				if r.session == nil && !r.setupSSH("update.ssh_dial") {
 					return
 				}
-				r.refreshFactsAfterSuccessfulUpdate()
+				if !r.refreshFactsAfterSuccessfulUpdate() {
+					return
+				}
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
@@ -951,7 +1140,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			r.appendStatusLog(approvalRun.RunnerCommandLog)
 			r.retryLogFormats["update.apt_upgrade"] = "\napt upgrade attempt %d/%d failed: %v; retrying in %s"
 			liveOutput := newLiveCommandLogSink(r)
-			commandResult, err = r.session.RunCommand(context.Background(), HostCommandRequest{
+			commandResult, err = r.session.RunCommand(maintenanceCtx, HostCommandRequest{
 				Operation:         "update.apt_upgrade",
 				Command:           upgradeCmd,
 				Effect:            HostCommandEffectPackageStateMutation,
@@ -967,6 +1156,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				logs += "\n" + stdout + stderr
 			}
 			if err != nil {
+				if r.handleShutdownCancellation(err, "Update interrupted during package mutation.") {
+					return
+				}
 				r.markErrorClass(err)
 				logs += fmt.Sprintf("\nError: %v", err)
 				r.setCommandErrorLogs(logs, err)
@@ -976,7 +1168,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 
 			if !postcheckCfg.Enabled {
 				r.postchecksPassed = true
-				r.refreshFactsAfterSuccessfulUpdate()
+				if !r.refreshFactsAfterSuccessfulUpdate() {
+					return
+				}
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
@@ -994,7 +1188,10 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				status.Logs = logs + "\nUpgrade completed.\nRunning post-update health checks..."
 			})
 
-			inspectionSummary := r.session.RunPostUpdateHealthChecks(context.Background(), postcheckCfg, preUpdateFailedUnitsMap)
+			inspectionSummary := r.session.RunPostUpdateHealthChecks(maintenanceCtx, postcheckCfg, preUpdateFailedUnitsMap)
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during post-update health checks.") {
+				return
+			}
 			postcheckSummary := applyPostcheckPolicy(inspectionSummary.Results, postcheckCfg, deps.IsPostcheckFailureBlocking)
 			r.postcheckResults = postcheckSummary.Results
 			r.postcheckWarnings = postcheckSummary.Warnings
@@ -1046,7 +1243,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			r.postchecksPassed = true
 			finalLogs := r.currentLogs()
 			if postcheckSummary.Warnings > 0 {
-				r.refreshFactsAfterSuccessfulUpdate()
+				if !r.refreshFactsAfterSuccessfulUpdate() {
+					return
+				}
 				_ = r.withStatus(func(status *servers.ServerStatus) {
 					status.Status = "done"
 					status.ApprovalScope = ""
@@ -1058,7 +1257,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			r.refreshFactsAfterSuccessfulUpdate()
+			if !r.refreshFactsAfterSuccessfulUpdate() {
+				return
+			}
 			_ = r.withStatus(func(status *servers.ServerStatus) {
 				status.Status = "done"
 				status.ApprovalScope = ""
@@ -1149,7 +1350,11 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 		DoneOnlyOutcome,
 		"reboot.ssh_dial",
 		func(r *withActorRunner) {
-			baseline := r.session.CollectServerFacts(context.Background())
+			maintenanceCtx := r.maintenanceContext()
+			baseline := r.session.CollectServerFacts(maintenanceCtx)
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Reboot interrupted while capturing the uptime baseline.") {
+				return
+			}
 			if baseline.UptimeSeconds <= 0 {
 				r.lastErrClass = "verification"
 				r.setErrorLogs(r.currentLogs() + "\nUnable to establish a positive uptime baseline; reboot was not sent.")
@@ -1157,9 +1362,12 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 			}
 			r.appendStatusLog(fmt.Sprintf("\nBaseline captured: uptime=%ds kernel=%s.", baseline.UptimeSeconds, strings.TrimSpace(baseline.RunningKernelVersion)))
 			r.setJobPhase(jobs.PhaseReboot)
-			result, err := r.session.RunCommand(context.Background(), HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, Effect: HostCommandEffectSystemStateMutation, ReplayPolicy: ReplayNever})
+			result, err := r.session.RunCommand(maintenanceCtx, HostCommandRequest{Operation: "reboot.command", Command: ControlledRebootCmd, Effect: HostCommandEffectSystemStateMutation, ReplayPolicy: ReplayNever})
 			r.commandAttempts += result.Attempts
 			if err != nil {
+				if r.handleShutdownCancellation(err, "Reboot interrupted while sending the reboot command.") {
+					return
+				}
 				r.markErrorClass(err)
 				r.setErrorLogs(r.currentLogs() + fmt.Sprintf("\nReboot command failed before acknowledgement: %v", err))
 				return
@@ -1171,16 +1379,26 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 			verifyPolicy := r.policy
 			verifyPolicy.MaxAttempts = 1
 			for attempt := 1; attempt <= RebootVerificationAttempts; attempt++ {
-				deps.Sleep(RebootVerificationInterval)
-				session, openErr := deps.HostMaintenanceSessions.Open(context.Background(), HostMaintenanceSessionRequest{
+				if err := deps.SleepContext(maintenanceCtx, RebootVerificationInterval); err != nil {
+					if r.handleShutdownCancellation(err, "Reboot verification interrupted by application shutdown.") {
+						return
+					}
+				}
+				session, openErr := deps.HostMaintenanceSessions.Open(maintenanceCtx, HostMaintenanceSessionRequest{
 					Server: r.server, RetryPolicy: verifyPolicy, DialOperation: "reboot.verify.ssh_dial", CommandTimeout: r.commandTimeout,
 				})
 				if openErr != nil {
+					if r.handleShutdownCancellation(openErr, "Reboot verification interrupted by application shutdown.") {
+						return
+					}
 					r.appendStatusLog(fmt.Sprintf("\nReboot verification %d/%d: host not reachable yet.", attempt, RebootVerificationAttempts))
 					continue
 				}
-				facts := session.CollectServerFacts(context.Background())
+				facts := session.CollectServerFacts(maintenanceCtx)
 				_ = session.Close()
+				if r.handleShutdownCancellation(maintenanceCtx.Err(), "Reboot verification interrupted while collecting host facts.") {
+					return
+				}
 				if facts.UptimeSeconds > 0 && facts.UptimeSeconds < baseline.UptimeSeconds {
 					if facts.RebootRequired != nil && *facts.RebootRequired {
 						r.appendStatusLog(fmt.Sprintf("\nReboot verification %d/%d: host returned, but still reports reboot required.", attempt, RebootVerificationAttempts))
@@ -1188,6 +1406,9 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 					}
 					if err := deps.SaveServerFacts(facts); err != nil {
 						deps.Logf("failed to persist post-reboot facts for %q: %v", r.server.Name, err)
+					}
+					if r.handleShutdownCancellation(maintenanceCtx.Err(), "Reboot verification interrupted while persisting host facts.") {
+						return
 					}
 					logs := r.currentLogs()
 					_ = r.withStatus(func(status *servers.ServerStatus) {
@@ -1257,7 +1478,7 @@ func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, e
 		request.OnOutput = liveOutput.Handle
 		request.OnAttemptComplete = liveOutput.Flush
 	}
-	result, err := r.session.RunCommand(context.Background(), request)
+	result, err := r.session.RunCommand(r.maintenanceContext(), request)
 	if liveOutput != nil {
 		liveOutput.Flush()
 	}
@@ -1268,6 +1489,9 @@ func (r *withActorRunner) runSingleCommand(opName, retryLogFormat, cmd string, e
 		logs += "\n" + stdout + stderr
 	}
 	if err != nil {
+		if r.handleShutdownCancellation(err, "Maintenance operation interrupted by application shutdown.") {
+			return
+		}
 		r.markErrorClass(err)
 		logs += fmt.Sprintf("\nError: %v", err)
 		r.setCommandErrorLogs(logs, err)
@@ -1316,7 +1540,6 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			ClientIP:    clientIP,
 			Status:      jobs.StatusQueued,
 			Phase:       jobs.PhaseDial,
-			Summary:     "Enriching pending updates with CVEs",
 		})
 		if err != nil {
 			deps.Logf("failed to create CVE enrichment job for %q: %v", server.Name, err)
@@ -1328,6 +1551,27 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			return
 		}
 		jobID = job.ID
+	}
+
+	markInterrupted := func(err error) {
+		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
+			status := jobs.StatusInterrupted
+			phase := jobs.PhaseComplete
+			summary := "CVE enrichment interrupted by application shutdown"
+			errorClass := "interrupted"
+			metaMap := map[string]any{}
+			if err != nil {
+				metaMap["error"] = err.Error()
+			}
+			meta := jobs.MarshalJSON(metaMap)
+			_ = jm.Transition(jobID, jobs.Intent{
+				Status:     &status,
+				Phase:      &phase,
+				Summary:    &summary,
+				ErrorClass: &errorClass,
+				MetaJSON:   &meta,
+			})
+		}
 	}
 
 	deps.StartJobRunner(jobID, func() {
@@ -1347,6 +1591,10 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			},
 		})
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				markInterrupted(err)
+				return
+			}
 			deps.Logf("CVE enrichment dial attempt 2 failed for server %q: %v", server.Name, err)
 			if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 				status := jobs.StatusFailed
@@ -1370,11 +1618,16 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			return
 		}
 		defer func() { _ = cveSession.Close() }()
+		cveCtx := maintenanceContextForSession(cveSession)
 
 		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 			phase := jobs.PhaseLookup
 			summary := "Looking up package CVEs"
 			_ = jm.Transition(jobID, jobs.Intent{Phase: &phase, Summary: &summary})
+		}
+		if err := cveCtx.Err(); err != nil {
+			markInterrupted(err)
+			return
 		}
 		if !s.serverPendingApproval(server.Name) {
 			if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
@@ -1389,8 +1642,12 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			}
 			return
 		}
-		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(context.Background(), cveSession, updates)
+		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(cveCtx, cveSession, updates)
 		if scanErr != nil {
+			if errors.Is(scanErr, context.Canceled) || errors.Is(cveCtx.Err(), context.Canceled) {
+				markInterrupted(scanErr)
+				return
+			}
 			deps.Logf("official vulnerability scan failed for server %q: %v", server.Name, scanErr)
 			for _, pkg := range packages {
 				if !s.updatePendingPackageCVEState(server.Name, pkg, "unavailable", []string{}) {
@@ -1413,11 +1670,19 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			}
 			return
 		}
+		if err := cveCtx.Err(); err != nil {
+			markInterrupted(err)
+			return
+		}
 		for _, update := range scannedUpdates {
 			if update.CVEState == "skipped" {
 				continue
 			}
 			if !s.updatePendingPackageVulnerabilityAssessment(server.Name, update) {
+				if err := cveCtx.Err(); err != nil {
+					markInterrupted(err)
+					return
+				}
 				if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 					status := jobs.StatusCancelled
 					phase := jobs.PhaseComplete
@@ -1430,6 +1695,10 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 				}
 				return
 			}
+		}
+		if err := cveCtx.Err(); err != nil {
+			markInterrupted(err)
+			return
 		}
 		if jm := deps.CurrentJobManager(); jm != nil && strings.TrimSpace(jobID) != "" {
 			status := jobs.StatusSucceeded

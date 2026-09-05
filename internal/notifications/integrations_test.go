@@ -54,15 +54,29 @@ func (c *firstDestinationTimeoutClient) Do(req *http.Request) (*http.Response, e
 	}, nil
 }
 
-func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "native-integrations.db"))
+func openNativeIntegrationTestDB(t *testing.T, name string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		t.Fatalf("set SQLite busy timeout: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("set SQLite journal mode: %v", err)
+	}
 	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
 		t.Fatalf("create settings table: %v", err)
 	}
+	return db
+}
+
+func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "native-integrations.db")
 	client := &capturingNotificationClient{requests: make(chan capturedNotificationRequest, 4)}
 	encrypt, decrypt := testWebhookCodec()
 	svc := NewService(ServiceDeps{
@@ -183,14 +197,7 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 }
 
 func TestNativeIntegrationFanOutUsesIndependentDestinationTimeouts(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "native-integration-timeouts.db"))
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
-		t.Fatalf("create settings table: %v", err)
-	}
+	db := openNativeIntegrationTestDB(t, "native-integration-timeouts.db")
 	client := &firstDestinationTimeoutClient{successes: make(chan string, 2)}
 	encrypt, decrypt := testWebhookCodec()
 	svc := NewService(ServiceDeps{
@@ -277,14 +284,7 @@ func TestNativeIntegrationValidationRejectsUnsafeCredentials(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "validation.db"))
-			if err != nil {
-				t.Fatalf("sql.Open() error = %v", err)
-			}
-			defer db.Close()
-			if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
-				t.Fatalf("create settings table: %v", err)
-			}
+			db := openNativeIntegrationTestDB(t, "validation.db")
 			encrypt, decrypt := testWebhookCodec()
 			svc := NewService(ServiceDeps{
 				DB:            func() *sql.DB { return db },

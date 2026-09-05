@@ -231,6 +231,7 @@ type ServiceDeps struct {
 	WaitForApprovalPoll          func()
 	WaitForApprovalPollContext   func(context.Context) error
 	Sleep                        func(time.Duration)
+	SleepContext                 func(context.Context, time.Duration) error
 	SaveServerFacts              func(ServerFactsRecord) error
 	UpdateScheduledDiscoveryMeta func(string, PackageDiscoveryOutcome)
 	UpdatePolicyRun              func(int64, policies.RunUpdate) error

@@ -1407,6 +1407,9 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 					if err := deps.SaveServerFacts(facts); err != nil {
 						deps.Logf("failed to persist post-reboot facts for %q: %v", r.server.Name, err)
 					}
+					if r.handleShutdownCancellation(maintenanceCtx.Err(), "Reboot verification interrupted while persisting host facts.") {
+						return
+					}
 					logs := r.currentLogs()
 					_ = r.withStatus(func(status *servers.ServerStatus) {
 						status.Status = runtimepkg.StatusDone

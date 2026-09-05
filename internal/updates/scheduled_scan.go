@@ -2,6 +2,7 @@ package updates
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -36,14 +37,23 @@ func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) Sched
 	return meta
 }
 
+func scheduledScanFailureState(err error) (string, string) {
+	if errors.Is(err, context.Canceled) {
+		return jobs.StatusInterrupted, "interrupted"
+	}
+	return jobs.StatusFailed, "permanent"
+}
+
 func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 	deps := s.EnsureDeps()
 	jm := deps.CurrentJobManager()
 	setFailure := func(summary string, err error, phase string, logs string) {
 		if jm != nil && strings.TrimSpace(req.JobID) != "" {
-			status := jobs.StatusFailed
+			status, errorClass := scheduledScanFailureState(err)
+			if status == jobs.StatusInterrupted {
+				summary = "Scheduled scan interrupted by application shutdown"
+			}
 			jobPhase := phase
-			errorClass := "permanent"
 			meta := BuildScheduledJobMeta(req.Policy, req.ScheduledForUTC)
 			if err != nil {
 				meta.Error = err.Error()
@@ -100,6 +110,10 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		}
 		logs += line
 	}
+	if precheckSummary.FailedCheck == "application_shutdown" {
+		setFailure("Scheduled scan interrupted by application shutdown", context.Canceled, jobs.PhasePrechecks, logs)
+		return
+	}
 	if !precheckSummary.AllPassed {
 		setFailure(fmt.Sprintf("Scheduled scan pre-check failed (%s)", precheckSummary.FailedCheck), nil, jobs.PhasePrechecks, logs)
 		return
@@ -136,6 +150,10 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 
 	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(context.Background(), session, discovery.PendingUpdates)
 	if scanErr != nil {
+		if errors.Is(scanErr, context.Canceled) {
+			setFailure("Scheduled scan vulnerability lookup interrupted", scanErr, jobs.PhaseLookup, logs)
+			return
+		}
 		deps.Logf("scheduled official vulnerability scan failed for server %q: %v", req.Server.Name, scanErr)
 		for i := range discovery.PendingUpdates {
 			if discovery.PendingUpdates[i].CVEState != "pending" {

@@ -13,10 +13,11 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 		<-releaseRunner
 	})
 
+	maintenanceCancelled := make(chan struct{})
 	notificationsClosed := make(chan struct{})
 	shutdownDone := make(chan struct{})
 	go func() {
-		shutdownApplication(nil, nil, func(context.Context) error {
+		shutdownApplication(nil, nil, func() { close(maintenanceCancelled) }, func(context.Context) error {
 			close(notificationsClosed)
 			return nil
 		})
@@ -26,6 +27,8 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 	select {
 	case <-notificationsClosed:
 		t.Fatal("notification delivery closed before the active action runner finished")
+	case <-maintenanceCancelled:
+		t.Fatal("maintenance was cancelled before the active action runner finished within its grace period")
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -35,30 +38,30 @@ func TestShutdownApplicationWaitsForActionRunnersBeforeClosingNotifications(t *t
 	case <-time.After(time.Second):
 		t.Fatal("application shutdown did not finish after the action runner completed")
 	}
+	select {
+	case <-maintenanceCancelled:
+	default:
+		t.Fatal("maintenance lifecycle was not closed after runners drained")
+	}
 }
 
-func TestShutdownApplicationHonorsRunnerGracePeriod(t *testing.T) {
+func TestShutdownApplicationCancelsMaintenanceAfterRunnerGracePeriod(t *testing.T) {
 	waitForUpdateRunners()
 	originalTimeout := actionRunnerShutdownTimeout
 	actionRunnerShutdownTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { actionRunnerShutdownTimeout = originalTimeout })
 
-	releaseRunner := make(chan struct{})
-	released := false
-	t.Cleanup(func() {
-		if !released {
-			close(releaseRunner)
-		}
-		waitForUpdateRunners()
-	})
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
 	startTrackedActionRunner(func() {
-		<-releaseRunner
+		<-maintenanceCtx.Done()
 	})
+	t.Cleanup(waitForUpdateRunners)
 
 	notificationsClosed := make(chan struct{})
 	shutdownDone := make(chan struct{})
+	started := time.Now()
 	go func() {
-		shutdownApplication(nil, nil, func(context.Context) error {
+		shutdownApplication(nil, nil, cancelMaintenance, func(context.Context) error {
 			close(notificationsClosed)
 			return nil
 		})
@@ -66,18 +69,23 @@ func TestShutdownApplicationHonorsRunnerGracePeriod(t *testing.T) {
 	}()
 
 	select {
+	case <-maintenanceCtx.Done():
+		if elapsed := time.Since(started); elapsed < actionRunnerShutdownTimeout {
+			t.Fatalf("maintenance cancelled after %s, before runner grace %s", elapsed, actionRunnerShutdownTimeout)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("maintenance was not cancelled after the runner grace period")
+	}
+	select {
 	case <-shutdownDone:
 	case <-time.After(time.Second):
-		t.Fatal("application shutdown exceeded the action runner grace period")
+		t.Fatal("application shutdown did not finish after cooperative runner cancellation")
 	}
 	select {
 	case <-notificationsClosed:
 	default:
-		t.Fatal("notification shutdown was not attempted after the runner grace period")
+		t.Fatal("notification shutdown was not attempted after cooperative runner cancellation")
 	}
-	released = true
-	close(releaseRunner)
-	waitForUpdateRunners()
 }
 
 func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing.T) {
@@ -85,6 +93,7 @@ func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing
 	allowAdmission := make(chan struct{})
 	releaseRunner := make(chan struct{})
 	schedulerJoined := make(chan struct{})
+	maintenanceCancelled := make(chan struct{})
 	notificationsClosed := make(chan struct{})
 	shutdownDone := make(chan struct{})
 
@@ -95,7 +104,7 @@ func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing
 				<-releaseRunner
 			})
 			close(schedulerJoined)
-		}, func(context.Context) error {
+		}, func() { close(maintenanceCancelled) }, func(context.Context) error {
 			close(notificationsClosed)
 			return nil
 		})
@@ -105,6 +114,8 @@ func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing
 	select {
 	case <-notificationsClosed:
 		t.Fatal("notification delivery closed before the scheduler joined")
+	case <-maintenanceCancelled:
+		t.Fatal("maintenance cancelled before the scheduler joined")
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(allowAdmission)
@@ -116,6 +127,8 @@ func TestShutdownApplicationJoinsSchedulerBeforeDrainingActionRunners(t *testing
 	select {
 	case <-notificationsClosed:
 		t.Fatal("notification delivery closed before the scheduler-admitted runner finished")
+	case <-maintenanceCancelled:
+		t.Fatal("maintenance cancelled before the scheduler-admitted runner finished")
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(releaseRunner)

@@ -41,30 +41,32 @@ func (f *lifecycleHostMaintenanceSessionFactory) Open(ctx context.Context, req u
 		return nil, err
 	}
 	return &lifecycleHostMaintenanceSession{
-		lifecycle: sessionCtx,
-		cancel:    cancel,
-		inner:     inner,
+		lifecycle:            sessionCtx,
+		applicationLifecycle: f.lifecycle,
+		cancel:               cancel,
+		inner:                inner,
 	}, nil
 }
 
 type lifecycleHostMaintenanceSession struct {
-	lifecycle context.Context
-	cancel    context.CancelFunc
-	inner     updatespkg.HostMaintenanceSession
+	lifecycle            context.Context
+	applicationLifecycle context.Context
+	cancel               context.CancelFunc
+	inner                updatespkg.HostMaintenanceSession
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// MaintenanceContext exposes the session lifecycle to maintenance collaborators
-// that are not SSH operations themselves (for example, OSV HTTP lookups and
-// final persistence checks). The updates package consumes it through a small
-// structural interface so the core HostMaintenanceSession contract stays stable.
+// MaintenanceContext exposes the application-wide maintenance lifecycle to
+// collaborators that outlive an individual SSH session, such as approval waits,
+// OSV HTTP lookups, and final persistence checks. Closing the SSH session must
+// not cancel this context; only application maintenance shutdown does.
 func (s *lifecycleHostMaintenanceSession) MaintenanceContext() context.Context {
-	if s == nil || s.lifecycle == nil {
+	if s == nil || s.applicationLifecycle == nil {
 		return context.Background()
 	}
-	return s.lifecycle
+	return s.applicationLifecycle
 }
 
 func (s *lifecycleHostMaintenanceSession) operationContext(ctx context.Context) (context.Context, context.CancelFunc) {

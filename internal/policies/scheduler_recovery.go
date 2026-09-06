@@ -28,6 +28,12 @@ type missedScheduledSlot struct {
 	PolicyIDs map[int64]struct{}
 }
 
+type missedPolicyCandidate struct {
+	ScheduledCandidate
+	Selected bool
+	Existing bool
+}
+
 // StartSchedulerWithRecovery starts the policy scheduler with a durable
 // watermark. Missed policy occurrences are recorded as skips; only the current
 // tick is eligible to launch scheduled work.
@@ -95,24 +101,22 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
 
+	// In-process maintenance ticks are explicit history and must never be
+	// discarded merely because a later policy occurrence wins the bounded
+	// scheduler recovery selection. Process every pending maintenance tick first
+	// using the original slot semantics, then keep general recovery away from
+	// those same minutes.
 	pending := s.PendingMissedTicks()
-	pendingByKey := make(map[string]struct{}, len(pending))
+	processedPending := make(map[string]struct{}, len(pending))
 	for _, tick := range pending {
-		pendingByKey[MissedTickKey(tick, deps.TimestampLayout)] = struct{}{}
-	}
-
-	// Before the first durable watermark exists, in-process maintenance ticks
-	// are the only trustworthy history. Preserve them explicitly instead of
-	// dropping them when the first watermark is initialized.
-	if !found {
-		for _, tick := range pending {
-			if tick.UTC().Truncate(time.Minute).After(currentUTC) {
-				continue
-			}
-			if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
-				return err
-			}
+		tickUTC := tick.UTC().Truncate(time.Minute)
+		if tickUTC.After(currentUTC) {
+			continue
 		}
+		if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
+			return err
+		}
+		processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
 	}
 
 	if found && watermark.Before(currentUTC) {
@@ -121,14 +125,13 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			return err
 		}
 		for _, slot := range slots {
-			reason := RunReasonSchedulerMissed
-			if _, ok := pendingByKey[MissedTickKey(slot.At, deps.TimestampLayout)]; ok {
-				reason = RunReasonMaintenance
+			if _, maintenanceTick := processedPending[MissedTickKey(slot.At, deps.TimestampLayout)]; maintenanceTick {
+				continue
 			}
-			if err := s.processMissedDueSlot(slot.At, reason, slot.PolicyIDs); err != nil {
+			if err := s.processMissedDueSlot(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs); err != nil {
 				return err
 			}
-		}
+	}
 	}
 
 	if err := s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true}); err != nil {
@@ -143,7 +146,8 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		return fmt.Errorf("save policy scheduler watermark: %w", err)
 	}
 	for _, tick := range pending {
-		if !tick.UTC().Truncate(time.Minute).After(currentUTC) {
+		key := MissedTickKey(tick, deps.TimestampLayout)
+		if _, processed := processedPending[key]; processed {
 			s.ForgetMissedTick(tick)
 		}
 	}
@@ -257,11 +261,11 @@ func parsePolicyCreationInstant(raw, timestampLayout string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// processMissedDueSlot records an exact scheduled occurrence without ever
-// launching its work. A rollout that already has persisted history is left
-// alone so the current tick can continue it. A wholly missed rollout is closed
-// by recording every matched server as missed, preventing current-tick rollout
-// continuation from manufacturing downstream rollout_gate history.
+// processMissedDueSlot records an exact historical occurrence without ever
+// launching its work. All policies that were due at the slot participate in
+// priority selection, but only policies selected by the bounded recovery pass
+// may materialize new Scheduled Run rows. This preserves original competition
+// semantics without backfilling older occurrences of unrelated policies.
 func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, policyIDs map[int64]struct{}) error {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
@@ -282,7 +286,11 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 	if err != nil {
 		return err
 	}
-	slotLocal := slot.In(deps.CurrentLocation()).Truncate(time.Minute)
+	loc := deps.CurrentLocation()
+	if loc == nil {
+		loc = time.Local
+	}
+	slotLocal := slot.In(loc).Truncate(time.Minute)
 	if deps.ApplicationTime != nil {
 		occurrence := deps.ApplicationTime.Current().ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
 		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
@@ -308,16 +316,15 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		))
 	}
 
-	candidatesByServer := make(map[string][]ScheduledCandidate)
+	candidatesByServer := make(map[string][]missedPolicyCandidate)
 	for _, policy := range policies {
-		if _, wanted := policyIDs[policy.ID]; !wanted {
-			continue
-		}
 		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
 			continue
 		}
+		_, selected := policyIDs[policy.ID]
 		scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
-		if policy.RolloutMode == RolloutCanaryWaves {
+		existingByServer := map[string]struct{}{}
+		if selected && policy.RolloutMode == RolloutCanaryWaves {
 			if deps.ListRolloutRuns == nil {
 				return errors.New("policy rollout history dependency is incomplete")
 			}
@@ -325,13 +332,17 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 			if err != nil {
 				return err
 			}
-			if len(existing) > 0 {
-				// This rollout started before the scheduler gap. Do not rewrite
-				// its origin as missed; ProcessDueSlot on the current tick will
-				// reconcile persisted history and release or stop later waves.
+			if len(existing) > 0 && !rolloutHistoryIsRecoveryOnly(existing) {
+				// Genuine persisted rollout history predates the scheduler gap.
+				// Leave it untouched so the current tick can reconcile and
+				// continue or stop the rollout from authoritative state.
 				continue
 			}
+			for _, run := range existing {
+				existingByServer[strings.ToLower(strings.TrimSpace(run.ServerName))] = struct{}{}
+			}
 		}
+
 		matchedServers := make([]servers.Server, 0)
 		for _, server := range serversSnapshot {
 			if s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
@@ -342,18 +353,27 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
 		})
 		for _, server := range matchedServers {
+			_, existing := existingByServer[strings.ToLower(strings.TrimSpace(server.Name))]
 			if missedReason == RunReasonMaintenance {
-				recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
+				if selected && !existing {
+					recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
+				}
 				continue
 			}
 			if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
-				recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
+				if selected && !existing {
+					recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
+				}
 				continue
 			}
-			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
-				Policy:          policy,
-				Server:          server,
-				ScheduledForUTC: scheduledForUTC,
+			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], missedPolicyCandidate{
+				ScheduledCandidate: ScheduledCandidate{
+					Policy:          policy,
+					Server:          server,
+					ScheduledForUTC: scheduledForUTC,
+				},
+				Selected: selected,
+				Existing: existing,
 			})
 		}
 	}
@@ -376,16 +396,39 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 			continue
 		}
 		sort.Slice(candidates, func(i, j int) bool {
-			return s.ComparePolicyCandidates(candidates[i], candidates[j])
+			return s.ComparePolicyCandidates(candidates[i].ScheduledCandidate, candidates[j].ScheduledCandidate)
 		})
-		winner := candidates[0]
-		for _, skipped := range candidates[1:] {
-			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded)
+		for index, candidate := range candidates {
+			if !candidate.Selected || candidate.Existing {
+				continue
+			}
+			reason := missedReason
+			if index > 0 {
+				reason = RunReasonSuperseded
+			}
+			recordSkipped(candidate.Policy, candidate.Server, candidate.ScheduledForUTC, reason)
 		}
-		recordSkipped(winner.Policy, winner.Server, winner.ScheduledForUTC, missedReason)
 	}
 	if len(queueErrs) > 0 {
 		return fmt.Errorf("missed scheduled policy processing encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
 	}
 	return nil
+}
+
+func rolloutHistoryIsRecoveryOnly(runs []Run) bool {
+	if len(runs) == 0 {
+		return false
+	}
+	for _, run := range runs {
+		if run.Status != RunSkipped {
+			return false
+		}
+		switch run.Reason {
+		case RunReasonSchedulerMissed, RunReasonMaintenance, RunReasonBlackout, RunReasonSuperseded:
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }

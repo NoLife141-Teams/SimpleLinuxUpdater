@@ -14,13 +14,18 @@ import (
 )
 
 const (
-	RunReasonSchedulerMissed          = "scheduler_missed"
-	DefaultSchedulerRecoveryHorizon   = 7 * 24 * time.Hour
+	RunReasonSchedulerMissed        = "scheduler_missed"
+	DefaultSchedulerRecoveryHorizon = 7 * 24 * time.Hour
 )
 
 type SchedulerWatermarkStore struct {
 	Load func() (time.Time, bool, error)
 	Save func(time.Time) error
+}
+
+type missedScheduledSlot struct {
+	At        time.Time
+	PolicyIDs map[int64]struct{}
 }
 
 // StartSchedulerWithRecovery starts the policy scheduler with a durable
@@ -103,10 +108,10 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		}
 		for _, slot := range slots {
 			reason := RunReasonSchedulerMissed
-			if _, ok := pendingByKey[MissedTickKey(slot, deps.TimestampLayout)]; ok {
+			if _, ok := pendingByKey[MissedTickKey(slot.At, deps.TimestampLayout)]; ok {
 				reason = RunReasonMaintenance
 			}
-			if err := s.processMissedDueSlot(slot, reason); err != nil {
+			if err := s.processMissedDueSlot(slot.At, reason, slot.PolicyIDs); err != nil {
 				return err
 			}
 		}
@@ -142,10 +147,11 @@ func (s *Service) processDueWithoutDurableRecovery(now time.Time) error {
 }
 
 // latestMissedScheduledSlots returns one latest missed policy occurrence per
-// enabled policy. It intentionally does not enumerate every minute or every old
-// daily occurrence after a long outage, which bounds restart work while still
-// leaving a durable trace that the scheduler crossed a planned occurrence.
-func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time) ([]time.Time, error) {
+// enabled policy. Each slot carries the policy IDs whose latest occurrence is
+// that slot so another daily policy cannot be backfilled merely because a
+// weekly policy contributed an older slot. It intentionally does not enumerate
+// every minute or every old daily occurrence after a long outage.
+func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time) ([]missedScheduledSlot, error) {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil {
 		return nil, errors.New("policy service dependencies are incomplete")
@@ -155,7 +161,7 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 		return nil, err
 	}
 	if len(policies) == 0 {
-		return []time.Time{}, nil
+		return []missedScheduledSlot{}, nil
 	}
 
 	currentUTC = currentUTC.UTC().Truncate(time.Minute)
@@ -172,7 +178,7 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 	currentDay := time.Date(currentLocal.Year(), currentLocal.Month(), currentLocal.Day(), 0, 0, 0, 0, loc)
 	maxDaysBack := int(DefaultSchedulerRecoveryHorizon/(24*time.Hour)) + 1
 
-	unique := make(map[string]time.Time)
+	byKey := make(map[string]*missedScheduledSlot)
 	for _, policy := range policies {
 		if !policy.Enabled {
 			continue
@@ -188,16 +194,21 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 				continue
 			}
 			key := MissedTickKey(slotUTC, deps.TimestampLayout)
-			unique[key] = slotUTC
+			entry := byKey[key]
+			if entry == nil {
+				entry = &missedScheduledSlot{At: slotUTC, PolicyIDs: map[int64]struct{}{}}
+				byKey[key] = entry
+			}
+			entry.PolicyIDs[policy.ID] = struct{}{}
 			break
 		}
 	}
 
-	slots := make([]time.Time, 0, len(unique))
-	for _, slot := range unique {
-		slots = append(slots, slot)
+	slots := make([]missedScheduledSlot, 0, len(byKey))
+	for _, slot := range byKey {
+		slots = append(slots, *slot)
 	}
-	sort.Slice(slots, func(i, j int) bool { return slots[i].Before(slots[j]) })
+	sort.Slice(slots, func(i, j int) bool { return slots[i].At.Before(slots[j].At) })
 	return slots, nil
 }
 
@@ -206,7 +217,7 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 // canary-and-wave policies materialize only their canary batch for a wholly
 // missed occurrence so a previously-started rollout can still continue from
 // persisted history on the current tick.
-func (s *Service) processMissedDueSlot(slot time.Time, missedReason string) error {
+func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, policyIDs map[int64]struct{}) error {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
 		return errors.New("policy service dependencies are incomplete")
@@ -254,6 +265,9 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string) erro
 
 	candidatesByServer := make(map[string][]ScheduledCandidate)
 	for _, policy := range policies {
+		if _, wanted := policyIDs[policy.ID]; !wanted {
+			continue
+		}
 		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
 			continue
 		}

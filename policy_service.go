@@ -19,6 +19,11 @@ type PolicyScheduledRunRequest = policypkg.ScheduledRunRequest
 type PolicyScheduledRunResult = policypkg.ScheduledRunResult
 type PolicyService = policypkg.Service
 
+type policySchedulerWatermarkRepository interface {
+	LoadSchedulerWatermark() (time.Time, bool, error)
+	SaveSchedulerWatermark(time.Time) error
+}
+
 var (
 	defaultPolicyServiceOnce sync.Once
 	defaultPolicyServiceInst *PolicyService
@@ -86,13 +91,22 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	return deps
 }
 
-func startPolicyScheduler(service *PolicyService, ctx context.Context, options PolicySchedulerOptions) {
+func startPolicyScheduler(service *PolicyService, repository policypkg.Repository, ctx context.Context, options PolicySchedulerOptions) {
 	if service == nil {
 		service = defaultPolicyService()
 	}
-	repository := defaultPolicyRepository()
+	if repository == nil {
+		repository = defaultPolicyRepository()
+	}
+	watermarkRepository, ok := repository.(policySchedulerWatermarkRepository)
+	if !ok {
+		// A custom repository that does not expose watermark persistence keeps
+		// the legacy scheduler rather than reading or writing another app's DB.
+		service.StartScheduler(ctx, options)
+		return
+	}
 	service.StartSchedulerWithRecovery(ctx, options, policypkg.SchedulerWatermarkStore{
-		Load: repository.LoadSchedulerWatermark,
-		Save: repository.SaveSchedulerWatermark,
+		Load: watermarkRepository.LoadSchedulerWatermark,
+		Save: watermarkRepository.SaveSchedulerWatermark,
 	})
 }

@@ -21,6 +21,10 @@ type OperationClass string
 const (
 	OperationBackupExport  OperationClass = "backup_export"
 	OperationBackupRestore OperationClass = "backup_restore"
+
+	exclusiveLeaseReleaseAttempts       = 5
+	exclusiveLeaseReleaseDelay          = 5 * time.Millisecond
+	exclusiveLeaseReleaseAttemptTimeout = 500 * time.Millisecond
 )
 
 type State struct {
@@ -66,6 +70,9 @@ type Coordinator struct {
 
 	stateMu sync.RWMutex
 	state   State
+
+	releaseMu      sync.Mutex
+	pendingRelease *State
 }
 
 func NewCoordinator(deps Deps) *Coordinator {
@@ -106,6 +113,7 @@ func (c *Coordinator) TryShared(_ WorkClass) (*SharedLease, Decision) {
 	if c == nil || !c.gate.TryRLock() {
 		return nil, Decision{State: c.Snapshot()}
 	}
+	c.recoverPendingRelease()
 	if state := c.Snapshot(); state.Active {
 		c.gate.RUnlock()
 		return nil, Decision{State: state}
@@ -117,6 +125,7 @@ func (c *Coordinator) TryExclusive(operation OperationClass) (*ExclusiveLease, D
 	if c == nil || !c.gate.TryLock() {
 		return nil, Decision{State: c.Snapshot()}
 	}
+	c.recoverPendingRelease()
 	if state := c.Snapshot(); state.Active {
 		c.gate.Unlock()
 		return nil, Decision{State: state}
@@ -140,10 +149,12 @@ type ExclusiveLease struct {
 	coordinator *Coordinator
 	operation   OperationClass
 
-	mu        sync.Mutex
-	activated bool
-	closed    bool
-	closeErr  error
+	mu             sync.Mutex
+	activated      bool
+	activeState    State
+	releasePending bool
+	gateReleased   bool
+	closed         bool
 }
 
 func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) error {
@@ -154,6 +165,9 @@ func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) err
 	defer l.mu.Unlock()
 	if l.closed {
 		return errors.New("maintenance lease is closed")
+	}
+	if l.releasePending {
+		return errors.New("maintenance lease release is pending")
 	}
 	if l.activated {
 		return nil
@@ -170,6 +184,7 @@ func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) err
 		return err
 	}
 	l.coordinator.publish(state)
+	l.activeState = state
 	l.activated = true
 	return nil
 }
@@ -178,9 +193,7 @@ func (l *ExclusiveLease) State() State {
 	if l == nil || l.coordinator == nil {
 		return State{}
 	}
-	l.coordinator.stateMu.RLock()
-	defer l.coordinator.stateMu.RUnlock()
-	return l.coordinator.state
+	return l.coordinator.currentState()
 }
 
 func (l *ExclusiveLease) Handoff(ctx context.Context) error {
@@ -191,6 +204,9 @@ func (l *ExclusiveLease) Handoff(ctx context.Context) error {
 	defer l.mu.Unlock()
 	if l.closed {
 		return errors.New("maintenance lease is closed")
+	}
+	if l.releasePending {
+		return errors.New("maintenance lease release is pending")
 	}
 	state := l.State()
 	if !state.Active {
@@ -206,18 +222,89 @@ func (l *ExclusiveLease) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed {
-		return l.closeErr
+		return nil
 	}
-	l.closed = true
 	if l.activated {
-		if err := l.coordinator.deps.Store.Save(context.Background(), State{}); err != nil {
-			l.closeErr = err
-		} else {
-			l.coordinator.publish(State{})
+		if err := l.coordinator.release(l.activeState); err != nil {
+			l.releasePending = true
+			l.releaseGate()
+			return err
 		}
 	}
+	l.releasePending = false
+	l.closed = true
+	l.releaseGate()
+	return nil
+}
+
+func (l *ExclusiveLease) releaseGate() {
+	if l.gateReleased {
+		return
+	}
+	l.gateReleased = true
 	l.coordinator.gate.Unlock()
-	return l.closeErr
+}
+
+func (c *Coordinator) release(expected State) error {
+	c.releaseMu.Lock()
+	defer c.releaseMu.Unlock()
+	return c.releaseLocked(expected)
+}
+
+func (c *Coordinator) releaseLocked(expected State) error {
+	current := c.currentState()
+	if !current.Active {
+		c.pendingRelease = nil
+		return nil
+	}
+	if current != expected {
+		c.clearPendingReleaseIfOwnedBy(expected)
+		return errors.New("maintenance lease no longer owns the active state")
+	}
+	var err error
+	for attempt := 1; attempt <= exclusiveLeaseReleaseAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), exclusiveLeaseReleaseAttemptTimeout)
+		err = c.deps.Store.Save(ctx, State{})
+		cancel()
+		if err == nil {
+			c.publish(State{})
+			c.pendingRelease = nil
+			return nil
+		}
+		if attempt < exclusiveLeaseReleaseAttempts {
+			time.Sleep(time.Duration(attempt) * exclusiveLeaseReleaseDelay)
+		}
+	}
+	pending := expected
+	c.pendingRelease = &pending
+	return err
+}
+
+func (c *Coordinator) clearPendingReleaseIfOwnedBy(expected State) {
+	if c.pendingRelease != nil && *c.pendingRelease == expected {
+		c.pendingRelease = nil
+	}
+}
+
+func (c *Coordinator) recoverPendingRelease() {
+	if c == nil {
+		return
+	}
+	c.releaseMu.Lock()
+	defer c.releaseMu.Unlock()
+	if c.pendingRelease == nil {
+		return
+	}
+	_ = c.releaseLocked(*c.pendingRelease)
+}
+
+func (c *Coordinator) currentState() State {
+	if c == nil {
+		return State{}
+	}
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.state
 }
 
 func (c *Coordinator) publish(state State) {

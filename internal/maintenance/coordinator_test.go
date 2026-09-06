@@ -3,9 +3,52 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
+
+type releaseFailureStore struct {
+	mu                  sync.Mutex
+	state               State
+	failInactive        bool
+	failInactiveAttempts int
+	inactiveSaveAttempts int
+}
+
+func (s *releaseFailureStore) Load(context.Context) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state, nil
+}
+
+func (s *releaseFailureStore) Save(_ context.Context, state State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !state.Active {
+		s.inactiveSaveAttempts++
+		if s.failInactive || s.failInactiveAttempts > 0 {
+			if s.failInactiveAttempts > 0 {
+				s.failInactiveAttempts--
+			}
+			return errors.New("temporary maintenance release failure")
+		}
+	}
+	s.state = state
+	return nil
+}
+
+func (s *releaseFailureStore) setFailInactive(fail bool) {
+	s.mu.Lock()
+	s.failInactive = fail
+	s.mu.Unlock()
+}
+
+func (s *releaseFailureStore) inactiveAttempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inactiveSaveAttempts
+}
 
 func TestCoordinatorSharedAndExclusiveAdmission(t *testing.T) {
 	coordinator := NewCoordinator(Deps{Store: NewMemoryStore(), Now: func() time.Time {
@@ -178,4 +221,106 @@ func TestExclusiveLeaseReleaseFailureKeepsFailClosedSnapshot(t *testing.T) {
 	if shared, decision := coordinator.TryShared(WorkInteractive); shared != nil || decision.Allowed {
 		t.Fatalf("TryShared() = %#v, %+v, want denied", shared, decision)
 	}
+}
+
+func TestExclusiveLeaseReleaseRetriesTransientPersistenceFailure(t *testing.T) {
+	store := &releaseFailureStore{failInactiveAttempts: 2}
+	coordinator := NewCoordinator(Deps{Store: store})
+	if err := coordinator.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, decision := coordinator.TryExclusive(OperationBackupExport)
+	if !decision.Allowed || lease == nil {
+		t.Fatalf("TryExclusive() = %#v, %+v", lease, decision)
+	}
+	if err := lease.Activate(context.Background(), OperationFacts{JobID: "export"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want bounded retry recovery", err)
+	}
+	if attempts := store.inactiveAttempts(); attempts != 3 {
+		t.Fatalf("inactive Save attempts = %d, want 3", attempts)
+	}
+	if got := coordinator.Snapshot(); got.Active {
+		t.Fatalf("Snapshot() = %+v, want inactive after recovered release", got)
+	}
+}
+
+func TestExclusiveLeasePendingReleaseRecoversOnNextAdmission(t *testing.T) {
+	store := &releaseFailureStore{failInactive: true}
+	coordinator := NewCoordinator(Deps{Store: store})
+	if err := coordinator.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, _ := coordinator.TryExclusive(OperationBackupExport)
+	if err := lease.Activate(context.Background(), OperationFacts{JobID: "export"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err == nil {
+		t.Fatal("Close() error = nil, want exhausted release retries")
+	}
+	if got := coordinator.Snapshot(); !got.Active {
+		t.Fatalf("Snapshot() = %+v, want fail-closed active state", got)
+	}
+
+	store.setFailInactive(false)
+	shared, decision := coordinator.TryShared(WorkInteractive)
+	if !decision.Allowed || shared == nil {
+		t.Fatalf("TryShared() after persistence recovery = %#v, %+v, want automatic release recovery", shared, decision)
+	}
+	shared.Close()
+	if got := coordinator.Snapshot(); got.Active {
+		t.Fatalf("Snapshot() = %+v, want inactive after online recovery", got)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("Close() after automatic recovery error = %v", err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("idempotent Close() error = %v", err)
+	}
+}
+
+func TestStaleLeaseRetryCannotClearNewActiveLease(t *testing.T) {
+	store := &releaseFailureStore{failInactive: true}
+	coordinator := NewCoordinator(Deps{Store: store, Now: func() time.Time {
+		return time.Date(2026, 9, 5, 20, 0, 0, 0, time.UTC)
+	}})
+	if err := coordinator.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldLease, _ := coordinator.TryExclusive(OperationBackupExport)
+	if err := oldLease.Activate(context.Background(), OperationFacts{JobID: "old-export"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := oldLease.Close(); err == nil {
+		t.Fatal("old Close() error = nil, want persistence failure")
+	}
+
+	store.setFailInactive(false)
+	newLease, decision := coordinator.TryExclusive(OperationBackupRestore)
+	if !decision.Allowed || newLease == nil {
+		t.Fatalf("TryExclusive(new) = %#v, %+v, want pending release recovery followed by admission", newLease, decision)
+	}
+	if err := newLease.Activate(context.Background(), OperationFacts{JobID: "new-restore"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := oldLease.Close(); err == nil {
+		t.Fatal("stale Close() error = nil, want ownership mismatch")
+	}
+	state := newLease.State()
+	if !state.Active || state.JobID != "new-restore" || state.Kind != string(OperationBackupRestore) {
+		t.Fatalf("active state after stale retry = %+v, want new restore preserved", state)
+	}
+	if err := newLease.Close(); err != nil {
+		t.Fatalf("new Close() error = %v", err)
+	}
+	if err := oldLease.Close(); err != nil {
+		t.Fatalf("old Close() after new release error = %v", err)
+	}
+	shared, decision := coordinator.TryShared(WorkInteractive)
+	if !decision.Allowed || shared == nil {
+		t.Fatalf("TryShared() after releases = %#v, %+v", shared, decision)
+	}
+	shared.Close()
 }

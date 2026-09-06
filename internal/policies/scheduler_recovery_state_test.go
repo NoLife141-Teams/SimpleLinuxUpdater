@@ -135,7 +135,7 @@ func TestProcessMissedDueSlotIncludesActiveRolloutWaveCompetitor(t *testing.T) {
 	scheduled := CanonicalScheduledForUTC(origin, DefaultTimestampLayout, func() *time.Location { return time.UTC })
 	persisted := []Run{{
 		PolicyID: high.ID, ServerName: "srv-a", ScheduledForUTC: scheduled,
-		Status: RunSucceeded,
+		Status: RunSucceeded, FinishedAt: origin.Add(time.Minute).UTC().Format(DefaultTimestampLayout),
 	}}
 	var handled []ScheduledRunRequest
 	deps := testServiceDeps()

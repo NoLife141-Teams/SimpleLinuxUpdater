@@ -90,5 +90,9 @@ func startPolicyScheduler(service *PolicyService, ctx context.Context, options P
 	if service == nil {
 		service = defaultPolicyService()
 	}
-	service.StartScheduler(ctx, options)
+	repository := defaultPolicyRepository()
+	service.StartSchedulerWithRecovery(ctx, options, policypkg.SchedulerWatermarkStore{
+		Load: repository.LoadSchedulerWatermark,
+		Save: repository.SaveSchedulerWatermark,
+	})
 }

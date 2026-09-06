@@ -574,7 +574,7 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 				if elapsedMinutes < batch.ReleaseDelayMinutes {
 					continue
 				}
-				if s.reconciledRolloutGateState(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey) != "ready" {
+				if s.reconciledRolloutGateStateAt(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey, slotLocal) != "ready" {
 					continue
 				}
 				for _, serverName := range batch.Servers {

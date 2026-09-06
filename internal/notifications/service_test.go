@@ -70,7 +70,15 @@ func newTestServiceWithQueueAndDB(t *testing.T, handler http.HandlerFunc, queueS
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		t.Fatalf("set SQLite busy timeout: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("set SQLite journal mode: %v", err)
+	}
 	if _, err := db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
 		t.Fatalf("create settings table: %v", err)
 	}

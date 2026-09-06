@@ -126,11 +126,17 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
 
+	recoverySnapshot, err := s.captureSchedulerRecoverySnapshot()
+	if err != nil {
+		return fmt.Errorf("capture policy scheduler recovery state: %w", err)
+	}
+	recoveryService := recoverySnapshot.bind(s)
+
 	fingerprintEnabled := store.LoadStateFingerprint != nil && store.SaveStateFingerprint != nil
 	currentFingerprint := ""
 	historicalStateKnown := true
 	if fingerprintEnabled {
-		currentFingerprint, err = s.schedulerRecoveryStateFingerprint()
+		currentFingerprint, err = recoverySnapshot.fingerprint()
 		if err != nil {
 			return fmt.Errorf("fingerprint policy scheduler state: %w", err)
 		}
@@ -158,7 +164,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if tickUTC.After(currentUTC) {
 				continue
 			}
-			if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
+			if err := recoveryService.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
 				return err
 			}
 			processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
@@ -166,7 +172,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 
 	if found && historicalStateKnown && watermark.Before(currentUTC) {
-		slots, err := s.latestMissedScheduledSlots(watermark, currentUTC)
+		slots, err := recoveryService.latestMissedScheduledSlots(watermark, currentUTC)
 		if err != nil {
 			return err
 		}
@@ -174,7 +180,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if _, maintenanceTick := processedPending[MissedTickKey(slot.At, deps.TimestampLayout)]; maintenanceTick {
 				continue
 			}
-			if err := s.processMissedDueSlotWithStore(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs, store); err != nil {
+			if err := recoveryService.processMissedDueSlotWithStore(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs, store); err != nil {
 				return err
 			}
 		}
@@ -568,7 +574,7 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 				if elapsedMinutes < batch.ReleaseDelayMinutes {
 					continue
 				}
-				if rolloutGateState(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey) != "ready" {
+				if s.reconciledRolloutGateState(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey) != "ready" {
 					continue
 				}
 				for _, serverName := range batch.Servers {

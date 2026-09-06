@@ -530,6 +530,21 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 			continue
 		}
 		originUTC := rolloutSlot.UTC().Truncate(time.Minute)
+		slotUTC := slotLocal.UTC().Truncate(time.Minute)
+		_, selectedByRecovery := policyIDs[policy.ID]
+		scheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+		existingByServer := map[string]struct{}{}
+		rolloutRuns := []Run{}
+		if policy.RolloutMode == RolloutCanaryWaves {
+			if deps.ListRolloutRuns == nil {
+				return errors.New("policy rollout history dependency is incomplete")
+			}
+			rolloutRuns, err = deps.ListRolloutRuns([]RolloutRunScope{{PolicyID: policy.ID, ScheduledForUTC: scheduledForUTC}})
+			if err != nil {
+				return err
+			}
+		}
+
 		effectiveAt, timestampsValid := policyRecoveryBoundary(policy, deps.TimestampLayout)
 		if !timestampsValid {
 			deps.Logf(
@@ -540,32 +555,31 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 			)
 			continue
 		}
-		if !effectiveAt.IsZero() && originUTC.Before(effectiveAt) {
+		effectiveBoundaryInstant := originUTC
+		if policy.RolloutMode == RolloutCanaryWaves && originUTC.Before(slotUTC) {
+			// An earlier-origin rollout may compete at a recovered wave slot only
+			// when persisted temporal history proves that occurrence already existed
+			// at that instant. For a proven continuation, current policy state is
+			// safe only from the recovered slot's effective boundary, not from the
+			// older origin that may predate a later policy edit.
+			if !rolloutHistoryExistedAt(rolloutRuns, slotUTC, deps.TimestampLayout) {
+				continue
+			}
+			effectiveBoundaryInstant = slotUTC
+		}
+		if !effectiveAt.IsZero() && effectiveBoundaryInstant.Before(effectiveAt) {
 			continue
 		}
 
-		_, selectedByRecovery := policyIDs[policy.ID]
-		scheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
-		existingByServer := map[string]struct{}{}
-		rolloutRuns := []Run{}
 		recoveryManagedRollout := false
-		if policy.RolloutMode == RolloutCanaryWaves {
-			if deps.ListRolloutRuns == nil {
-				return errors.New("policy rollout history dependency is incomplete")
-			}
-			rolloutRuns, err = deps.ListRolloutRuns([]RolloutRunScope{{PolicyID: policy.ID, ScheduledForUTC: scheduledForUTC}})
+		if policy.RolloutMode == RolloutCanaryWaves && selectedByRecovery {
+			recoveryManagedRollout, err = schedulerRecoveryScopeOwned(store, policy.ID, scheduledForUTC, rolloutRuns)
 			if err != nil {
 				return err
 			}
-			if selectedByRecovery {
-				recoveryManagedRollout, err = schedulerRecoveryScopeOwned(store, policy.ID, scheduledForUTC, rolloutRuns)
-				if err != nil {
-					return err
-				}
-				if recoveryManagedRollout {
-					for _, run := range rolloutRuns {
-						existingByServer[strings.ToLower(strings.TrimSpace(run.ServerName))] = struct{}{}
-					}
+			if recoveryManagedRollout {
+				for _, run := range rolloutRuns {
+					existingByServer[strings.ToLower(strings.TrimSpace(run.ServerName))] = struct{}{}
 				}
 			}
 		}

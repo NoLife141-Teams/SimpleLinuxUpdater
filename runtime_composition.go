@@ -74,6 +74,15 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if db == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
 	}
+	if watermarkRepository, ok := deps.PolicyRepository.(policySchedulerWatermarkRepository); ok {
+		now := time.Now().UTC()
+		if deps.Now != nil {
+			now = deps.Now().UTC()
+		}
+		if err := watermarkRepository.SaveSchedulerWatermark(now.Truncate(time.Minute)); err != nil {
+			return fmt.Errorf("rebase restored policy scheduler watermark: %w", err)
+		}
+	}
 	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
 		if err := reloader.ReloadPersistence(ctx); err != nil {
 			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)

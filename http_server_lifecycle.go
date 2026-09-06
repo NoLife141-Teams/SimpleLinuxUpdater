@@ -135,7 +135,7 @@ func main() {
 	seedVariantCDemoIfRequested(deps)
 	startAuditPruner(shutdownCtx)
 	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
-	startPolicyScheduler(deps.PolicyService, shutdownCtx, PolicySchedulerOptions{})
+	startPolicyScheduler(deps.PolicyService, deps.PolicyRepository, shutdownCtx, PolicySchedulerOptions{})
 	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
 	}

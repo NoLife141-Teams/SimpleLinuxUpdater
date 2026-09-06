@@ -50,3 +50,24 @@ func (s *Service) rolloutGateStateAt(policyID int64, scheduledForUTC string, pre
 	}
 	return "ready"
 }
+
+// rolloutHistoryExistedAt requires persisted temporal evidence that an older
+// rollout occurrence had actually materialized by the recovered scheduler
+// instant. Recovery-generated rows are created later and therefore cannot make
+// a wholly missed older rollout retroactively compete with another policy.
+func rolloutHistoryExistedAt(runs []Run, asOf time.Time, timestampLayout string) bool {
+	asOfUTC := asOf.UTC()
+	for _, run := range runs {
+		for _, raw := range []string{run.CreatedAt, run.StartedAt, run.FinishedAt} {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			instant, ok := parsePolicyInstant(raw, timestampLayout)
+			if ok && !instant.After(asOfUTC) {
+				return true
+			}
+		}
+	}
+	return false
+}

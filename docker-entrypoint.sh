@@ -14,21 +14,21 @@ trim_space() {
 }
 
 first_path_list_entry() {
-    remaining="$(trim_space "$1")"
-    while [ -n "$remaining" ]; do
-        case "$remaining" in
+    fple_remaining="$(trim_space "$1")"
+    while [ -n "$fple_remaining" ]; do
+        case "$fple_remaining" in
             *:*)
-                candidate="${remaining%%:*}"
-                remaining="${remaining#*:}"
+                fple_candidate="${fple_remaining%%:*}"
+                fple_remaining="${fple_remaining#*:}"
                 ;;
             *)
-                candidate="$remaining"
-                remaining=""
+                fple_candidate="$fple_remaining"
+                fple_remaining=""
                 ;;
         esac
-        candidate="$(trim_space "$candidate")"
-        if [ -n "$candidate" ]; then
-            printf '%s\n' "$candidate"
+        fple_candidate="$(trim_space "$fple_candidate")"
+        if [ -n "$fple_candidate" ]; then
+            printf '%s\n' "$fple_candidate"
             return 0
         fi
     done
@@ -36,70 +36,70 @@ first_path_list_entry() {
 }
 
 assert_no_symlink_components() {
-    path="$1"
-    if [ -z "$path" ]; then
+    ansc_path="$1"
+    if [ -z "$ansc_path" ]; then
         fail_path "refusing empty persistence path"
     fi
 
-    case "$path" in
+    case "$ansc_path" in
         /*)
-            current=""
-            remaining="${path#/}"
+            ansc_current=""
+            ansc_remaining="${ansc_path#/}"
             ;;
         *)
-            current="."
-            remaining="$path"
+            ansc_current="."
+            ansc_remaining="$ansc_path"
             ;;
     esac
 
-    while [ -n "$remaining" ]; do
-        case "$remaining" in
+    while [ -n "$ansc_remaining" ]; do
+        case "$ansc_remaining" in
             */*)
-                component="${remaining%%/*}"
-                remaining="${remaining#*/}"
+                ansc_component="${ansc_remaining%%/*}"
+                ansc_remaining="${ansc_remaining#*/}"
                 ;;
             *)
-                component="$remaining"
-                remaining=""
+                ansc_component="$ansc_remaining"
+                ansc_remaining=""
                 ;;
         esac
 
-        if [ -z "$component" ] || [ "$component" = "." ]; then
+        if [ -z "$ansc_component" ] || [ "$ansc_component" = "." ]; then
             continue
         fi
-        if [ "$component" = ".." ]; then
-            fail_path "refusing persistence path containing '..': $path"
+        if [ "$ansc_component" = ".." ]; then
+            fail_path "refusing persistence path containing '..': $ansc_path"
         fi
 
-        if [ -z "$current" ]; then
-            current="/$component"
+        if [ -z "$ansc_current" ]; then
+            ansc_current="/$ansc_component"
         else
-            current="$current/$component"
+            ansc_current="$ansc_current/$ansc_component"
         fi
-        if [ -L "$current" ]; then
-            fail_path "refusing symbolic link in persistence path: $current"
+        if [ -L "$ansc_current" ]; then
+            fail_path "refusing symbolic link in persistence path: $ansc_current"
         fi
     done
 }
 
 chown_data_directory_chain() {
-    dir="$1"
-    case "$dir" in
+    cddc_dir="$1"
+    case "$cddc_dir" in
         /data)
-            current="/data"
-            remaining=""
+            cddc_current="/data"
+            cddc_remaining=""
             ;;
         /data/*)
-            current="/data"
-            remaining="${dir#/data/}"
+            cddc_current="/data"
+            cddc_remaining="${cddc_dir#/data/}"
             ;;
         data)
-            current="data"
-            remaining=""
+            cddc_current="data"
+            cddc_remaining=""
             ;;
         data/*)
-            current="data"
-            remaining="${dir#data/}"
+            cddc_current="data"
+            cddc_remaining="${cddc_dir#data/}"
             ;;
         *)
             return 1
@@ -107,108 +107,108 @@ chown_data_directory_chain() {
     esac
 
     while :; do
-        if [ ! -d "$current" ]; then
-            fail_path "expected persistence directory, found non-directory: $current"
+        if [ ! -d "$cddc_current" ]; then
+            fail_path "expected persistence directory, found non-directory: $cddc_current"
         fi
-        chown -h "$app_user:$app_group" "$current"
-        if [ -z "$remaining" ]; then
+        chown -h "$app_user:$app_group" "$cddc_current"
+        if [ -z "$cddc_remaining" ]; then
             return 0
         fi
-        case "$remaining" in
+        case "$cddc_remaining" in
             */*)
-                component="${remaining%%/*}"
-                remaining="${remaining#*/}"
+                cddc_component="${cddc_remaining%%/*}"
+                cddc_remaining="${cddc_remaining#*/}"
                 ;;
             *)
-                component="$remaining"
-                remaining=""
+                cddc_component="$cddc_remaining"
+                cddc_remaining=""
                 ;;
         esac
-        current="$current/$component"
+        cddc_current="$cddc_current/$cddc_component"
     done
 }
 
 ensure_owned_directory() {
-    dir="$1"
-    if [ "$dir" = "/" ]; then
+    eod_dir="$1"
+    if [ "$eod_dir" = "/" ]; then
         fail_path "refusing to change ownership of filesystem root"
     fi
-    assert_no_symlink_components "$dir"
+    assert_no_symlink_components "$eod_dir"
 
-    if [ -e "$dir" ]; then
-        if [ ! -d "$dir" ]; then
-            fail_path "expected persistence directory, found non-directory: $dir"
+    if [ -e "$eod_dir" ]; then
+        if [ ! -d "$eod_dir" ]; then
+            fail_path "expected persistence directory, found non-directory: $eod_dir"
         fi
     else
-        mkdir -p "$dir"
+        mkdir -p "$eod_dir"
         # Re-check after creation so every existing component is validated before root chown.
-        assert_no_symlink_components "$dir"
+        assert_no_symlink_components "$eod_dir"
     fi
 
     # Under the Docker persistence root, repair only the directory chain needed
     # to reach the configured target. This replaces the old recursive /data chown
     # without leaving root-owned 0700 ancestors from earlier images.
-    if chown_data_directory_chain "$dir"; then
+    if chown_data_directory_chain "$eod_dir"; then
         return
     fi
 
     # -h is defense in depth against a final-component symlink swap.
-    chown -h "$app_user:$app_group" "$dir"
+    chown -h "$app_user:$app_group" "$eod_dir"
 }
 
 chown_regular_file_if_present() {
-    path="$1"
-    assert_no_symlink_components "$path"
+    crfip_path="$1"
+    assert_no_symlink_components "$crfip_path"
 
-    if [ ! -e "$path" ]; then
+    if [ ! -e "$crfip_path" ]; then
         return
     fi
-    if [ ! -f "$path" ]; then
-        fail_path "expected regular persistence file: $path"
+    if [ ! -f "$crfip_path" ]; then
+        fail_path "expected regular persistence file: $crfip_path"
     fi
 
     # Never dereference a symlink if the path changes after validation.
-    chown -h "$app_user:$app_group" "$path"
+    chown -h "$app_user:$app_group" "$crfip_path"
 }
 
 prepare_persistence_file() {
-    path="$1"
-    dir="$(dirname "$path")"
-    ensure_owned_directory "$dir"
-    chown_regular_file_if_present "$path"
+    ppf_path="$1"
+    ppf_dir="$(dirname "$ppf_path")"
+    ensure_owned_directory "$ppf_dir"
+    chown_regular_file_if_present "$ppf_path"
 }
 
 prepare_data_dir() {
-    dir="$1"
-    db_file="$2"
+    pdd_dir="$1"
+    pdd_db_file="$2"
 
-    if [ -z "$dir" ]; then
+    if [ -z "$pdd_dir" ]; then
         return
     fi
 
-    ensure_owned_directory "$dir"
-    chown_regular_file_if_present "$db_file"
-    chown_regular_file_if_present "$db_file-wal"
-    chown_regular_file_if_present "$db_file-shm"
-    chown_regular_file_if_present "$dir/config.json"
+    ensure_owned_directory "$pdd_dir"
+    chown_regular_file_if_present "$pdd_db_file"
+    chown_regular_file_if_present "$pdd_db_file-wal"
+    chown_regular_file_if_present "$pdd_db_file-shm"
+    chown_regular_file_if_present "$pdd_dir/config.json"
 }
 
 path_within_directory() {
-    path="$1"
-    dir="$2"
-    case "$dir" in
+    pwd_path="$1"
+    pwd_dir="$2"
+    case "$pwd_dir" in
         /)
             return 1
             ;;
         .)
-            case "$path" in
+            case "$pwd_path" in
                 /*) return 1 ;;
                 *) return 0 ;;
             esac
             ;;
         *)
-            case "$path" in
-                "$dir"/*) return 0 ;;
+            case "$pwd_path" in
+                "$pwd_dir"/*) return 0 ;;
                 *) return 1 ;;
             esac
             ;;
@@ -216,23 +216,23 @@ path_within_directory() {
 }
 
 should_repair_known_hosts() {
-    path="$1"
-    db_dir="$2"
-    case "$path" in
+    srkh_path="$1"
+    srkh_db_dir="$2"
+    case "$srkh_path" in
         /data/*|data/*)
             return 0
             ;;
     esac
-    path_within_directory "$path" "$db_dir"
+    path_within_directory "$srkh_path" "$srkh_db_dir"
 }
 
 if [ "$(id -u)" = "0" ]; then
     # Match the application's strings.TrimSpace behavior for operator-supplied paths.
-    db_path="$(trim_space "${DEBIAN_UPDATER_DB_PATH:-}")"
-    if [ -z "$db_path" ]; then
-        db_path="/data/servers.db"
+    entry_db_path="$(trim_space "${DEBIAN_UPDATER_DB_PATH:-}")"
+    if [ -z "$entry_db_path" ]; then
+        entry_db_path="/data/servers.db"
     fi
-    db_dir="$(dirname "$db_path")"
+    entry_db_dir="$(dirname "$entry_db_path")"
 
     # Previous images wrote persisted files as root. Repair only known runtime
     # paths and the required directory chain; never recursively chown app-writable files.
@@ -240,22 +240,22 @@ if [ "$(id -u)" = "0" ]; then
         ensure_owned_directory "/data"
         chown_regular_file_if_present "/data/servers.json"
     fi
-    prepare_data_dir "$db_dir" "$db_path"
+    prepare_data_dir "$entry_db_dir" "$entry_db_path"
 
-    known_hosts_path=""
-    known_hosts_configured=0
-    if configured_known_hosts="$(first_path_list_entry "${DEBIAN_UPDATER_KNOWN_HOSTS:-}")"; then
-        known_hosts_path="$configured_known_hosts"
-        known_hosts_configured=1
+    entry_known_hosts_path=""
+    entry_known_hosts_configured=0
+    if entry_configured_known_hosts="$(first_path_list_entry "${DEBIAN_UPDATER_KNOWN_HOSTS:-}")"; then
+        entry_known_hosts_path="$entry_configured_known_hosts"
+        entry_known_hosts_configured=1
     else
-        known_hosts_path="$db_dir/known_hosts"
+        entry_known_hosts_path="$entry_db_dir/known_hosts"
     fi
 
     # A configured write target is repaired only when it is inside the Docker
     # persistence tree or the already-owned DB directory. Never chown system
     # locations such as /etc/ssh merely because they were listed for reading.
-    if [ "$known_hosts_configured" = "0" ] || should_repair_known_hosts "$known_hosts_path" "$db_dir"; then
-        prepare_persistence_file "$known_hosts_path"
+    if [ "$entry_known_hosts_configured" = "0" ] || should_repair_known_hosts "$entry_known_hosts_path" "$entry_db_dir"; then
+        prepare_persistence_file "$entry_known_hosts_path"
     fi
 
     exec su-exec "$app_user:$app_group" "$@"

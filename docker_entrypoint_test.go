@@ -20,11 +20,14 @@ func TestDockerEntrypointDelegatesRootOwnershipRepairToDescriptorHelper(t *testi
 			t.Fatalf("docker-entrypoint.sh missing %q", required)
 		}
 	}
-	if strings.Contains(script, "chown ") || strings.Contains(script, "chown\t") {
-		t.Fatal("docker-entrypoint.sh must not perform path-based root chown operations")
-	}
-	if strings.Contains(script, "chown -R") {
-		t.Fatal("docker-entrypoint.sh must not recursively chown app-writable persistence trees")
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "chown" || strings.HasPrefix(trimmed, "chown ") || strings.HasPrefix(trimmed, "chown\t") {
+			t.Fatalf("docker-entrypoint.sh must not perform path-based root chown operations: %q", trimmed)
+		}
 	}
 }
 

@@ -176,6 +176,7 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 		return
 	}
 	serverList := w.deps.SnapshotServers()
+	w.pruneRetries(serverList)
 	sort.Slice(serverList, func(i, j int) bool { return serverList[i].Name < serverList[j].Name })
 	now := w.deps.Now().UTC()
 	for _, server := range serverList {
@@ -205,6 +206,24 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 		}
 		w.recordRetry(name, attempt.State, now)
 		w.deps.ObserveAttempt(server, attempt)
+	}
+}
+
+func (w *RefreshWorker) pruneRetries(serverList []servers.Server) {
+	if len(w.retries) == 0 {
+		return
+	}
+	activeNames := make(map[string]struct{}, len(serverList))
+	for _, server := range serverList {
+		name := strings.TrimSpace(server.Name)
+		if name != "" {
+			activeNames[name] = struct{}{}
+		}
+	}
+	for name := range w.retries {
+		if _, ok := activeNames[name]; !ok {
+			delete(w.retries, name)
+		}
 	}
 }
 

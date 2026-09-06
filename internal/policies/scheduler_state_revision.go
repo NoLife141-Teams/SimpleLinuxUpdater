@@ -64,14 +64,30 @@ func ensureSchedulerStateRevisionSchema(db *sql.DB) error {
 		return err
 	}
 	if serversExists {
-		for _, trigger := range []string{
-			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_server_insert AFTER INSERT ON servers BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
-			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_server_update AFTER UPDATE ON servers BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
-			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_server_delete AFTER DELETE ON servers BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
+		// Older iterations used row-level INSERT/UPDATE/DELETE triggers for the
+		// server table. The production server repository rewrites the full table
+		// with DELETE+INSERT, so those triggers treated credential/host-only saves
+		// as matching-state mutations. Drop them and let the composed repository
+		// bump the generation once when the semantic name+tags set actually
+		// changes. Keep a narrow UPDATE trigger as a guard for direct SQL changes.
+		for _, legacy := range []string{
+			"trg_scheduler_state_server_insert",
+			"trg_scheduler_state_server_update",
+			"trg_scheduler_state_server_delete",
 		} {
-			if _, err := db.Exec(trigger); err != nil {
+			if _, err := db.Exec("DROP TRIGGER IF EXISTS " + legacy); err != nil {
 				return err
 			}
+		}
+		if _, err := db.Exec(`
+			CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_server_matching_update
+			AFTER UPDATE OF name, tags ON servers
+			WHEN lower(trim(OLD.name)) IS NOT lower(trim(NEW.name)) OR OLD.tags IS NOT NEW.tags
+			BEGIN
+				UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1;
+			END
+		`); err != nil {
+			return err
 		}
 	}
 

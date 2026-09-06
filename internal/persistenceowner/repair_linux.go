@@ -255,9 +255,13 @@ func (r *repairer) openDirectory(path string, create bool, plan ownershipPlan) (
 			return -1, fmt.Errorf("invalid persistence path component %q in %q", component, clean)
 		}
 
+		createdComponent := false
 		nextFD, openErr := syscall.Openat(currentFD, component, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 		if errors.Is(openErr, syscall.ENOENT) && create {
-			if mkdirErr := syscall.Mkdirat(currentFD, component, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, syscall.EEXIST) {
+			mkdirErr := syscall.Mkdirat(currentFD, component, 0o700)
+			if mkdirErr == nil {
+				createdComponent = true
+			} else if !errors.Is(mkdirErr, syscall.EEXIST) {
 				syscall.Close(currentFD)
 				return -1, fmt.Errorf("create persistence directory %q: %w", filepath.Join(currentPath, component), mkdirErr)
 			}
@@ -276,7 +280,7 @@ func (r *repairer) openDirectory(path string, create bool, plan ownershipPlan) (
 				return -1, hookErr
 			}
 		}
-		if plan.shouldChown(nextPath, i == len(components)-1) {
+		if createdComponent || plan.shouldChown(nextPath, i == len(components)-1) {
 			if err := r.fchown(nextFD, r.uid, r.gid); err != nil {
 				syscall.Close(nextFD)
 				syscall.Close(currentFD)

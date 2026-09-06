@@ -72,19 +72,16 @@ func TestSQLiteSchedulerStateRevisionDetectsChangeThenRevert(t *testing.T) {
 	if err := servers.EnsureSchema(db); err != nil {
 		t.Fatalf("servers.EnsureSchema() error = %v", err)
 	}
-	initialRevision, err := repo.LoadSchedulerStateRevision()
-	if err != nil {
-		t.Fatalf("LoadSchedulerStateRevision() initial error = %v", err)
-	}
+	// Seed inventory before installing the revision triggers. Production server
+	// creates/deletes are tracked by the composed repository's semantic
+	// name+tags comparison; this package-level test exercises the narrow direct
+	// SQL UPDATE guard and proves a change+revert still advances monotonically.
 	if _, err := db.Exec(`INSERT INTO servers(name, host, port, user, pass_enc, key_enc, key_path, tags) VALUES('srv-a', '127.0.0.1', 22, 'root', '', '', '', 'prod')`); err != nil {
 		t.Fatalf("insert server: %v", err)
 	}
-	afterInsert, err := repo.LoadSchedulerStateRevision()
+	initialRevision, err := repo.LoadSchedulerStateRevision()
 	if err != nil {
-		t.Fatalf("LoadSchedulerStateRevision() after insert error = %v", err)
-	}
-	if afterInsert <= initialRevision {
-		t.Fatalf("revision after insert = %d, want > %d", afterInsert, initialRevision)
+		t.Fatalf("LoadSchedulerStateRevision() initial error = %v", err)
 	}
 	if _, err := db.Exec(`UPDATE servers SET tags = 'staging' WHERE name = 'srv-a'`); err != nil {
 		t.Fatalf("temporarily change server tags: %v", err)
@@ -96,8 +93,8 @@ func TestSQLiteSchedulerStateRevisionDetectsChangeThenRevert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSchedulerStateRevision() final error = %v", err)
 	}
-	if finalRevision < afterInsert+2 {
-		t.Fatalf("revision after change+revert = %d, want at least %d", finalRevision, afterInsert+2)
+	if finalRevision < initialRevision+2 {
+		t.Fatalf("revision after change+revert = %d, want at least %d", finalRevision, initialRevision+2)
 	}
 	var tags string
 	if err := db.QueryRow(`SELECT tags FROM servers WHERE name = 'srv-a'`).Scan(&tags); err != nil {

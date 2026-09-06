@@ -80,6 +80,8 @@ func TestProcessMissedDueSlotReconcilesActiveRolloutWaveCompetitor(t *testing.T)
 	persisted := []Run{{
 		ID: 901, PolicyID: high.ID, ServerName: "srv-a", ScheduledForUTC: scheduled,
 		Status: RunInterrupted, Reason: RunReasonRestart, JobID: "job-canary",
+		CreatedAt: origin.Add(30 * time.Second).Format(DefaultTimestampLayout),
+		StartedAt: origin.Add(30 * time.Second).Format(DefaultTimestampLayout),
 	}}
 	var handled []ScheduledRunRequest
 	var reconciled int
@@ -146,6 +148,8 @@ func TestProcessMissedDueSlotDoesNotUseFutureRolloutSuccessForHistoricalCompetit
 	persisted := []Run{{
 		ID: 902, PolicyID: high.ID, ServerName: "srv-a", ScheduledForUTC: scheduled,
 		Status: RunSucceeded,
+		CreatedAt:  origin.Add(30 * time.Second).Format(DefaultTimestampLayout),
+		StartedAt:  origin.Add(30 * time.Second).Format(DefaultTimestampLayout),
 		FinishedAt: origin.Add(10 * time.Minute).Format(DefaultTimestampLayout),
 	}}
 	var handled []ScheduledRunRequest

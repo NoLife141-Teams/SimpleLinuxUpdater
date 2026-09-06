@@ -26,9 +26,12 @@ type policySchedulerWatermarkRepository interface {
 	SaveSchedulerWatermark(time.Time) error
 	LoadSchedulerStateFingerprint() (string, bool, error)
 	SaveSchedulerStateFingerprint(string) error
-	LoadSchedulerStateRevision() (int64, error)
 	HasSchedulerRecoveryScope(int64, string) (bool, error)
 	MarkSchedulerRecoveryScope(int64, string) error
+}
+
+type policySchedulerStateRevisionRepository interface {
+	LoadSchedulerStateRevision() (int64, error)
 }
 
 type policySchedulerCheckpointRepository interface {
@@ -124,12 +127,14 @@ func startPolicyScheduler(service *PolicyService, repository policypkg.Repositor
 		Save:                 watermarkRepository.SaveSchedulerWatermark,
 		LoadStateFingerprint: watermarkRepository.LoadSchedulerStateFingerprint,
 		SaveStateFingerprint: watermarkRepository.SaveSchedulerStateFingerprint,
-		LoadStateRevision:    watermarkRepository.LoadSchedulerStateRevision,
 		HasRecoveryScope:     watermarkRepository.HasSchedulerRecoveryScope,
 		MarkRecoveryScope:    watermarkRepository.MarkSchedulerRecoveryScope,
 	}
 	if checkpointRepository, supportsAtomicCheckpoint := repository.(policySchedulerCheckpointRepository); supportsAtomicCheckpoint {
 		store = atomicPolicySchedulerStore(checkpointRepository, watermarkRepository)
+	}
+	if revisionRepository, supportsRevision := repository.(policySchedulerStateRevisionRepository); supportsRevision {
+		store.LoadStateRevision = revisionRepository.LoadSchedulerStateRevision
 	}
 	service.StartSchedulerWithRecovery(ctx, options, store)
 }
@@ -177,7 +182,6 @@ func atomicPolicySchedulerStore(checkpointRepository policySchedulerCheckpointRe
 			fingerprint := strings.TrimSpace(checkpoint.StateFingerprint)
 			return fingerprint, found && fingerprint != "", nil
 		},
-		LoadStateRevision: recoveryScopes.LoadSchedulerStateRevision,
 		Save: func(value time.Time) error {
 			if value.IsZero() {
 				return errors.New("policy scheduler watermark is required")

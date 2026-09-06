@@ -68,12 +68,8 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		dbPathProvider = dbPath
 	}
 	var service *ServerInventoryService = serverpkg.NewService(serverpkg.ServiceDeps{
-		State: state,
-		Repository: serverpkg.SQLiteRepository{
-			DB:      dbProvider,
-			Encrypt: encryptSecret,
-			Decrypt: decryptSecret,
-		},
+		State:      state,
+		Repository: newSchedulerRevisionServerRepository(dbProvider, encryptSecret, decryptSecret),
 		KnownHosts:                     appKnownHostsDeps(dbPathProvider),
 		PrunePolicyOverridesForServers: pruneUpdatePolicyOverridesForServersTx,
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,

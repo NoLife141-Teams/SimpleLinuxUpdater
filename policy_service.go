@@ -22,6 +22,10 @@ type PolicyService = policypkg.Service
 type policySchedulerWatermarkRepository interface {
 	LoadSchedulerWatermark() (time.Time, bool, error)
 	SaveSchedulerWatermark(time.Time) error
+	LoadSchedulerStateFingerprint() (string, bool, error)
+	SaveSchedulerStateFingerprint(string) error
+	HasSchedulerRecoveryScope(int64, string) (bool, error)
+	MarkSchedulerRecoveryScope(int64, string) error
 }
 
 var (
@@ -100,13 +104,18 @@ func startPolicyScheduler(service *PolicyService, repository policypkg.Repositor
 	}
 	watermarkRepository, ok := repository.(policySchedulerWatermarkRepository)
 	if !ok {
-		// A custom repository that does not expose watermark persistence keeps
-		// the legacy scheduler rather than reading or writing another app's DB.
+		// A custom repository that does not expose recovery checkpoint
+		// persistence keeps the legacy scheduler rather than reading or writing
+		// another app's DB.
 		service.StartScheduler(ctx, options)
 		return
 	}
 	service.StartSchedulerWithRecovery(ctx, options, policypkg.SchedulerWatermarkStore{
-		Load: watermarkRepository.LoadSchedulerWatermark,
-		Save: watermarkRepository.SaveSchedulerWatermark,
+		Load:                 watermarkRepository.LoadSchedulerWatermark,
+		Save:                 watermarkRepository.SaveSchedulerWatermark,
+		LoadStateFingerprint: watermarkRepository.LoadSchedulerStateFingerprint,
+		SaveStateFingerprint: watermarkRepository.SaveSchedulerStateFingerprint,
+		HasRecoveryScope:     watermarkRepository.HasSchedulerRecoveryScope,
+		MarkRecoveryScope:    watermarkRepository.MarkSchedulerRecoveryScope,
 	})
 }

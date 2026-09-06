@@ -75,6 +75,40 @@ func TestRefreshWorkerRunOnceRefreshesOnlyDueHostsAndBacksOffFailures(t *testing
 	}
 }
 
+func TestRefreshWorkerDropsBackoffWhenServerLeavesInventory(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	serverList := []servers.Server{{Name: "reused"}}
+	attempts := 0
+	worker := NewRefreshWorker(RefreshWorkerDeps{
+		Now: func() time.Time { return now },
+		SnapshotServers: func() []servers.Server {
+			return append([]servers.Server(nil), serverList...)
+		},
+		LatestFacts: func() (map[string]CollectedFacts, error) { return map[string]CollectedFacts{}, nil },
+		Refresh: func(context.Context, servers.Server) RefreshAttempt {
+			attempts++
+			return RefreshAttempt{State: RefreshAttemptFailed, Err: errors.New("dial failed")}
+		},
+	}, RefreshWorkerOptions{RefreshAfter: 20 * time.Hour, SweepInterval: time.Hour, RetryBase: time.Hour, RetryMax: 4 * time.Hour})
+
+	worker.RunOnce(context.Background())
+	if attempts != 1 || len(worker.retries) != 1 {
+		t.Fatalf("after initial failure attempts=%d retries=%d, want 1 and 1", attempts, len(worker.retries))
+	}
+
+	serverList = nil
+	worker.RunOnce(context.Background())
+	if len(worker.retries) != 0 {
+		t.Fatalf("retry entries after server removal = %d, want 0", len(worker.retries))
+	}
+
+	serverList = []servers.Server{{Name: "reused"}}
+	worker.RunOnce(context.Background())
+	if attempts != 2 {
+		t.Fatalf("attempts after recreating server = %d, want immediate second attempt", attempts)
+	}
+}
+
 func TestRefreshWorkerRetriesIncompleteFactsWithBackoff(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	attempts := 0

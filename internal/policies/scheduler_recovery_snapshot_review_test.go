@@ -97,6 +97,7 @@ func TestProcessMissedDueSlotReconcilesActiveRolloutWaveCompetitor(t *testing.T)
 		reconciled++
 		run.Status = RunSucceeded
 		run.Reason = ""
+		run.FinishedAt = origin.Add(4 * time.Minute).Format(DefaultTimestampLayout)
 		return run, nil
 	}
 	deps.SnapshotServers = func() []servers.Server {
@@ -122,5 +123,61 @@ func TestProcessMissedDueSlotReconcilesActiveRolloutWaveCompetitor(t *testing.T)
 	}
 	if handled[0].Policy.ID != low.ID || handled[0].Server.Name != "srv-b" || handled[0].Outcome != RunReasonSuperseded {
 		t.Fatalf("handled[0] = %+v, want low policy superseded by reconciled high rollout wave", handled[0])
+	}
+}
+
+func TestProcessMissedDueSlotDoesNotUseFutureRolloutSuccessForHistoricalCompetition(t *testing.T) {
+	high := Policy{
+		ID: 64, Name: "future-success rollout", Enabled: true, TargetTag: "prod",
+		PackageScope: PackageScopeFull, ExecutionMode: ExecutionApprovalRequired,
+		CadenceKind: CadenceDaily, TimeLocal: "03:00",
+		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 1, WaveDelayMinutes: 5,
+	}
+	low := Policy{
+		ID: 65, Name: "historically unopposed", Enabled: true, TargetServers: []string{"srv-b"},
+		PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly,
+		CadenceKind: CadenceDaily, TimeLocal: "03:05",
+		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	origin := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
+	slot := origin.Add(5 * time.Minute)
+	scheduled := CanonicalScheduledForUTC(origin, DefaultTimestampLayout, func() *time.Location { return time.UTC })
+	persisted := []Run{{
+		ID: 902, PolicyID: high.ID, ServerName: "srv-a", ScheduledForUTC: scheduled,
+		Status: RunSucceeded,
+		FinishedAt: origin.Add(10 * time.Minute).Format(DefaultTimestampLayout),
+	}}
+	var handled []ScheduledRunRequest
+	deps := testServiceDeps()
+	deps.ListPolicies = func() ([]Policy, error) { return []Policy{high, low}, nil }
+	deps.ListRolloutRuns = func(scopes []RolloutRunScope) ([]Run, error) {
+		for _, scope := range scopes {
+			if scope.PolicyID == high.ID && scope.ScheduledForUTC == scheduled {
+				return append([]Run(nil), persisted...), nil
+			}
+		}
+		return nil, nil
+	}
+	deps.SnapshotServers = func() []servers.Server {
+		return []servers.Server{
+			{Name: "srv-a", Tags: []string{"prod"}},
+			{Name: "srv-b", Tags: []string{"prod"}},
+		}
+	}
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		handled = append(handled, req)
+		return ScheduledRunResult{Handled: true, Inserted: true}
+	}
+
+	service := NewService(deps)
+	if err := service.processMissedDueSlotWithStore(slot, RunReasonSchedulerMissed, map[int64]struct{}{low.ID: {}}, SchedulerWatermarkStore{}); err != nil {
+		t.Fatalf("processMissedDueSlotWithStore() error = %v", err)
+	}
+	if len(handled) != 1 {
+		t.Fatalf("handled = %+v, want only lower-priority historical row", handled)
+	}
+	if handled[0].Policy.ID != low.ID || handled[0].Outcome != RunReasonSchedulerMissed {
+		t.Fatalf("handled[0] = %+v, want scheduler_missed because rollout canary finished after recovered slot", handled[0])
 	}
 }

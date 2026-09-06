@@ -2,6 +2,8 @@ package policies
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -19,8 +21,12 @@ const (
 )
 
 type SchedulerWatermarkStore struct {
-	Load func() (time.Time, bool, error)
-	Save func(time.Time) error
+	Load                 func() (time.Time, bool, error)
+	Save                 func(time.Time) error
+	LoadStateFingerprint func() (string, bool, error)
+	SaveStateFingerprint func(string) error
+	HasRecoveryScope     func(int64, string) (bool, error)
+	MarkRecoveryScope    func(int64, string) error
 }
 
 type missedScheduledSlot struct {
@@ -32,6 +38,25 @@ type missedPolicyCandidate struct {
 	ScheduledCandidate
 	Selected bool
 	Existing bool
+}
+
+type schedulerStateOverride struct {
+	PolicyID   int64  `json:"policy_id"`
+	ServerName string `json:"server_name"`
+	Disabled   bool   `json:"disabled"`
+}
+
+type schedulerStateServer struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
+}
+
+type schedulerStateFingerprintPayload struct {
+	Policies        []Policy                 `json:"policies"`
+	Overrides       []schedulerStateOverride `json:"overrides"`
+	GlobalBlackouts []BlackoutWindow         `json:"global_blackouts"`
+	Servers         []schedulerStateServer   `json:"servers"`
+	Location        string                   `json:"location"`
 }
 
 // StartSchedulerWithRecovery starts the policy scheduler with a durable
@@ -101,25 +126,46 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
 
-	// In-process maintenance ticks are explicit history and must never be
-	// discarded merely because a later policy occurrence wins the bounded
-	// scheduler recovery selection. Process every pending maintenance tick first
-	// using the original slot semantics, then keep general recovery away from
-	// those same minutes.
-	pending := s.PendingMissedTicks()
-	processedPending := make(map[string]struct{}, len(pending))
-	for _, tick := range pending {
-		tickUTC := tick.UTC().Truncate(time.Minute)
-		if tickUTC.After(currentUTC) {
-			continue
+	fingerprintEnabled := store.LoadStateFingerprint != nil && store.SaveStateFingerprint != nil
+	currentFingerprint := ""
+	historicalStateKnown := true
+	if fingerprintEnabled {
+		currentFingerprint, err = s.schedulerRecoveryStateFingerprint()
+		if err != nil {
+			return fmt.Errorf("fingerprint policy scheduler state: %w", err)
 		}
-		if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
-			return err
+		storedFingerprint, fingerprintFound, loadErr := store.LoadStateFingerprint()
+		if loadErr != nil {
+			return fmt.Errorf("load policy scheduler state fingerprint: %w", loadErr)
 		}
-		processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
+		if found {
+			historicalStateKnown = fingerprintFound && strings.TrimSpace(storedFingerprint) == currentFingerprint
+		}
+		if found && !historicalStateKnown {
+			deps.Logf("policy scheduler state changed since the durable watermark; rebasing without historical reconstruction")
+		}
 	}
 
-	if found && watermark.Before(currentUTC) {
+	pending := s.PendingMissedTicks()
+	processedPending := make(map[string]struct{}, len(pending))
+	if historicalStateKnown {
+		// In-process maintenance ticks are explicit history. Replay them only
+		// while the scheduling state still matches the durable checkpoint;
+		// otherwise their per-server historical outcome cannot be reconstructed
+		// safely from the current inventory/overrides/blackouts/timezone.
+		for _, tick := range pending {
+			tickUTC := tick.UTC().Truncate(time.Minute)
+			if tickUTC.After(currentUTC) {
+				continue
+			}
+			if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
+				return err
+			}
+			processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
+		}
+	}
+
+	if found && historicalStateKnown && watermark.Before(currentUTC) {
 		slots, err := s.latestMissedScheduledSlots(watermark, currentUTC)
 		if err != nil {
 			return err
@@ -128,7 +174,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if _, maintenanceTick := processedPending[MissedTickKey(slot.At, deps.TimestampLayout)]; maintenanceTick {
 				continue
 			}
-			if err := s.processMissedDueSlot(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs); err != nil {
+			if err := s.processMissedDueSlotWithStore(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs, store); err != nil {
 				return err
 			}
 		}
@@ -145,13 +191,96 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	if err := store.Save(nextWatermark); err != nil {
 		return fmt.Errorf("save policy scheduler watermark: %w", err)
 	}
+	if fingerprintEnabled {
+		if err := store.SaveStateFingerprint(currentFingerprint); err != nil {
+			return fmt.Errorf("save policy scheduler state fingerprint: %w", err)
+		}
+	}
 	for _, tick := range pending {
 		key := MissedTickKey(tick, deps.TimestampLayout)
-		if _, processed := processedPending[key]; processed {
+		_, processed := processedPending[key]
+		if processed || (!historicalStateKnown && !tick.UTC().Truncate(time.Minute).After(currentUTC)) {
 			s.ForgetMissedTick(tick)
 		}
 	}
 	return nil
+}
+
+func (s *Service) schedulerRecoveryStateFingerprint() (string, error) {
+	deps := s.EnsureDeps()
+	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil {
+		return "", errors.New("policy service dependencies are incomplete")
+	}
+	policies, err := deps.ListPolicies()
+	if err != nil {
+		return "", err
+	}
+	overrides, err := deps.LoadOverrides()
+	if err != nil {
+		return "", err
+	}
+	globalBlackouts, err := deps.LoadGlobalBlackouts()
+	if err != nil {
+		return "", err
+	}
+	serversSnapshot := deps.SnapshotServers()
+
+	overrideState := make([]schedulerStateOverride, 0)
+	for policyID, perPolicy := range overrides {
+		for serverName, disabled := range perPolicy {
+			overrideState = append(overrideState, schedulerStateOverride{
+				PolicyID:   policyID,
+				ServerName: strings.TrimSpace(serverName),
+				Disabled:   disabled,
+			})
+		}
+	}
+	sort.Slice(overrideState, func(i, j int) bool {
+		if overrideState[i].PolicyID != overrideState[j].PolicyID {
+			return overrideState[i].PolicyID < overrideState[j].PolicyID
+		}
+		left := strings.ToLower(overrideState[i].ServerName)
+		right := strings.ToLower(overrideState[j].ServerName)
+		if left == right {
+			return overrideState[i].ServerName < overrideState[j].ServerName
+		}
+		return left < right
+	})
+
+	serverState := make([]schedulerStateServer, 0, len(serversSnapshot))
+	for _, server := range serversSnapshot {
+		serverState = append(serverState, schedulerStateServer{
+			Name: strings.TrimSpace(server.Name),
+			Tags: NormalizeStringList(server.Tags),
+		})
+	}
+	sort.Slice(serverState, func(i, j int) bool {
+		left := strings.ToLower(serverState[i].Name)
+		right := strings.ToLower(serverState[j].Name)
+		if left == right {
+			return serverState[i].Name < serverState[j].Name
+		}
+		return left < right
+	})
+
+	loc := deps.CurrentLocation()
+	locationName := ""
+	if loc != nil {
+		locationName = loc.String()
+	}
+	payload := schedulerStateFingerprintPayload{
+		Policies:        policies,
+		Overrides:       overrideState,
+		GlobalBlackouts: globalBlackouts,
+		Servers:         serverState,
+		Location:        locationName,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 func (s *Service) processDueWithoutDurableRecovery(now time.Time) error {
@@ -296,6 +425,10 @@ func parsePolicyInstant(raw, timestampLayout string) (time.Time, bool) {
 // but only policies selected by the bounded recovery pass may materialize new
 // Scheduled Run rows.
 func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, policyIDs map[int64]struct{}) error {
+	return s.processMissedDueSlotWithStore(slot, missedReason, policyIDs, SchedulerWatermarkStore{})
+}
+
+func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason string, policyIDs map[int64]struct{}, store SchedulerWatermarkStore) error {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
 		return errors.New("policy service dependencies are incomplete")
@@ -320,7 +453,6 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		loc = time.Local
 	}
 	slotLocal := slot.In(loc).Truncate(time.Minute)
-	slotUTC := slot.UTC().Truncate(time.Minute)
 	if deps.ApplicationTime != nil {
 		occurrence := deps.ApplicationTime.Current().ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
 		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
@@ -348,9 +480,14 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 
 	candidatesByServer := make(map[string][]missedPolicyCandidate)
 	for _, policy := range policies {
-		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
+		if !policy.Enabled {
 			continue
 		}
+		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
+		if !rolloutDue {
+			continue
+		}
+		originUTC := rolloutSlot.UTC().Truncate(time.Minute)
 		effectiveAt, timestampsValid := policyRecoveryBoundary(policy, deps.TimestampLayout)
 		if !timestampsValid {
 			deps.Logf(
@@ -361,29 +498,33 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 			)
 			continue
 		}
-		if !effectiveAt.IsZero() && slotUTC.Before(effectiveAt) {
+		if !effectiveAt.IsZero() && originUTC.Before(effectiveAt) {
 			continue
 		}
 
-		_, selected := policyIDs[policy.ID]
-		scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
+		_, selectedByRecovery := policyIDs[policy.ID]
+		scheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
 		existingByServer := map[string]struct{}{}
-		if selected && policy.RolloutMode == RolloutCanaryWaves {
+		rolloutRuns := []Run{}
+		recoveryManagedRollout := false
+		if policy.RolloutMode == RolloutCanaryWaves {
 			if deps.ListRolloutRuns == nil {
 				return errors.New("policy rollout history dependency is incomplete")
 			}
-			existing, err := deps.ListRolloutRuns([]RolloutRunScope{{PolicyID: policy.ID, ScheduledForUTC: scheduledForUTC}})
+			rolloutRuns, err = deps.ListRolloutRuns([]RolloutRunScope{{PolicyID: policy.ID, ScheduledForUTC: scheduledForUTC}})
 			if err != nil {
 				return err
 			}
-			if len(existing) > 0 && !rolloutHistoryIsRecoveryOnly(existing) {
-				// Genuine persisted rollout history predates the scheduler gap.
-				// Leave it untouched so the current tick can reconcile and
-				// continue or stop the rollout from authoritative state.
-				continue
-			}
-			for _, run := range existing {
-				existingByServer[strings.ToLower(strings.TrimSpace(run.ServerName))] = struct{}{}
+			if selectedByRecovery {
+				recoveryManagedRollout, err = schedulerRecoveryScopeOwned(store, policy.ID, scheduledForUTC, rolloutRuns)
+				if err != nil {
+					return err
+				}
+				if recoveryManagedRollout {
+					for _, run := range rolloutRuns {
+						existingByServer[strings.ToLower(strings.TrimSpace(run.ServerName))] = struct{}{}
+					}
+				}
 			}
 		}
 
@@ -396,16 +537,68 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		sort.Slice(matchedServers, func(i, j int) bool {
 			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
 		})
+
+		materializeSelected := selectedByRecovery
+		if policy.RolloutMode == RolloutCanaryWaves {
+			materializeSelected = selectedByRecovery && recoveryManagedRollout
+		}
+
+		// A selected rollout recovery intentionally closes every missing target
+		// as historical output so a later current tick cannot manufacture
+		// downstream rollout_gate rows. Rollouts that are not recovery-owned
+		// instead participate only as historical competitors using their actual
+		// persisted gate/batch state.
+		if policy.RolloutMode == RolloutCanaryWaves && !materializeSelected {
+			if s.BlackoutApplies(rolloutSlot, globalBlackouts) || s.BlackoutApplies(rolloutSlot, policy.PolicyBlackouts) {
+				continue
+			}
+			serverByName := make(map[string]servers.Server, len(matchedServers))
+			matchedNames := make([]string, 0, len(matchedServers))
+			for _, server := range matchedServers {
+				serverByName[server.Name] = server
+				matchedNames = append(matchedNames, server.Name)
+			}
+			batches := BuildRolloutBatches(policy, matchedNames)
+			runByKey := make(map[string]Run, len(rolloutRuns))
+			for _, run := range rolloutRuns {
+				runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
+			}
+			elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
+			for batchIndex, batch := range batches {
+				if elapsedMinutes < batch.ReleaseDelayMinutes {
+					continue
+				}
+				if rolloutGateState(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey) != "ready" {
+					continue
+				}
+				for _, serverName := range batch.Servers {
+					server := serverByName[serverName]
+					if _, exists := runByKey[rolloutRunKey(policy.ID, scheduledForUTC, server.Name)]; exists {
+						continue
+					}
+					candidatesByServer[server.Name] = append(candidatesByServer[server.Name], missedPolicyCandidate{
+						ScheduledCandidate: ScheduledCandidate{
+							Policy:          policy,
+							Server:          server,
+							ScheduledForUTC: scheduledForUTC,
+						},
+						Selected: false,
+					})
+				}
+			}
+			continue
+		}
+
 		for _, server := range matchedServers {
 			_, existing := existingByServer[strings.ToLower(strings.TrimSpace(server.Name))]
 			if missedReason == RunReasonMaintenance {
-				if selected && !existing {
+				if materializeSelected && !existing {
 					recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
 				}
 				continue
 			}
-			if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
-				if selected && !existing {
+			if s.BlackoutApplies(rolloutSlot, globalBlackouts) || s.BlackoutApplies(rolloutSlot, policy.PolicyBlackouts) {
+				if materializeSelected && !existing {
 					recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
 				}
 				continue
@@ -416,7 +609,7 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 					Server:          server,
 					ScheduledForUTC: scheduledForUTC,
 				},
-				Selected: selected,
+				Selected: materializeSelected,
 				Existing: existing,
 			})
 		}
@@ -459,15 +652,38 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 	return nil
 }
 
+func schedulerRecoveryScopeOwned(store SchedulerWatermarkStore, policyID int64, scheduledForUTC string, existing []Run) (bool, error) {
+	if store.HasRecoveryScope != nil && store.MarkRecoveryScope != nil {
+		marked, err := store.HasRecoveryScope(policyID, scheduledForUTC)
+		if err != nil {
+			return false, fmt.Errorf("load scheduler recovery scope: %w", err)
+		}
+		if len(existing) > 0 {
+			return marked, nil
+		}
+		if !marked {
+			if err := store.MarkRecoveryScope(policyID, scheduledForUTC); err != nil {
+				return false, fmt.Errorf("mark scheduler recovery scope: %w", err)
+			}
+		}
+		return true, nil
+	}
+	if len(existing) == 0 {
+		return true, nil
+	}
+	return rolloutHistoryIsRecoveryOnly(existing), nil
+}
+
 func rolloutHistoryIsRecoveryOnly(runs []Run) bool {
 	if len(runs) == 0 {
 		return false
 	}
 	for _, run := range runs {
-		// scheduler_missed is the only skip reason emitted exclusively by the
-		// durable recovery path. Maintenance, blackout and supersedence can be
-		// genuine persisted scheduler history if the process crashed before the
-		// watermark save, so they must remain authoritative rollout state.
+		// This is a compatibility fallback for tests/custom stores that do not
+		// persist recovery-scope provenance. Production recovery uses the durable
+		// scope marker, which safely covers scheduler_missed, blackout and
+		// superseded rows from an interrupted recovery attempt without confusing
+		// genuine maintenance or normal scheduler history.
 		if run.Status != RunSkipped || run.Reason != RunReasonSchedulerMissed {
 			return false
 		}

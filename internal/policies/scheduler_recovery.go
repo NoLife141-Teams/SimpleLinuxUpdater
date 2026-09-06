@@ -101,6 +101,20 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		pendingByKey[MissedTickKey(tick, deps.TimestampLayout)] = struct{}{}
 	}
 
+	// Before the first durable watermark exists, in-process maintenance ticks
+	// are the only trustworthy history. Preserve them explicitly instead of
+	// dropping them when the first watermark is initialized.
+	if !found {
+		for _, tick := range pending {
+			if tick.UTC().Truncate(time.Minute).After(currentUTC) {
+				continue
+			}
+			if err := s.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
+				return err
+			}
+		}
+	}
+
 	if found && watermark.Before(currentUTC) {
 		slots, err := s.latestMissedScheduledSlots(watermark, currentUTC)
 		if err != nil {
@@ -183,6 +197,11 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 		if !policy.Enabled {
 			continue
 		}
+		createdAt, createdAtKnown := parsePolicyCreationInstant(policy.CreatedAt, deps.TimestampLayout)
+		if strings.TrimSpace(policy.CreatedAt) != "" && !createdAtKnown {
+			deps.Logf("skipping missed occurrence recovery for policy %d because created_at %q is invalid", policy.ID, policy.CreatedAt)
+			continue
+		}
 		for daysBack := 0; daysBack <= maxDaysBack; daysBack++ {
 			dayStart := currentDay.AddDate(0, 0, -daysBack)
 			slotLocal, ok := s.policySlotForDay(policy, dayStart)
@@ -190,6 +209,9 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 				continue
 			}
 			slotUTC := slotLocal.UTC().Truncate(time.Minute)
+			if createdAtKnown && slotUTC.Before(createdAt) {
+				continue
+			}
 			if !slotUTC.After(lowerBound) || !slotUTC.Before(currentUTC) {
 				continue
 			}
@@ -212,11 +234,34 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 	return slots, nil
 }
 
+func parsePolicyCreationInstant(raw, timestampLayout string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{strings.TrimSpace(timestampLayout), time.RFC3339Nano, time.RFC3339}
+	seen := map[string]struct{}{}
+	for _, layout := range layouts {
+		if layout == "" {
+			continue
+		}
+		if _, exists := seen[layout]; exists {
+			continue
+		}
+		seen[layout] = struct{}{}
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
 // processMissedDueSlot records an exact scheduled occurrence without ever
-// launching its work. Blackout and supersedence semantics stay authoritative;
-// canary-and-wave policies materialize only their canary batch for a wholly
-// missed occurrence so a previously-started rollout can still continue from
-// persisted history on the current tick.
+// launching its work. A rollout that already has persisted history is left
+// alone so the current tick can continue it. A wholly missed rollout is closed
+// by recording every matched server as missed, preventing current-tick rollout
+// continuation from manufacturing downstream rollout_gate history.
 func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, policyIDs map[int64]struct{}) error {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
@@ -272,6 +317,21 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 			continue
 		}
 		scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
+		if policy.RolloutMode == RolloutCanaryWaves {
+			if deps.ListRolloutRuns == nil {
+				return errors.New("policy rollout history dependency is incomplete")
+			}
+			existing, err := deps.ListRolloutRuns([]RolloutRunScope{{PolicyID: policy.ID, ScheduledForUTC: scheduledForUTC}})
+			if err != nil {
+				return err
+			}
+			if len(existing) > 0 {
+				// This rollout started before the scheduler gap. Do not rewrite
+				// its origin as missed; ProcessDueSlot on the current tick will
+				// reconcile persisted history and release or stop later waves.
+				continue
+			}
+		}
 		matchedServers := make([]servers.Server, 0)
 		for _, server := range serversSnapshot {
 			if s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
@@ -281,21 +341,6 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		sort.Slice(matchedServers, func(i, j int) bool {
 			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
 		})
-		if policy.RolloutMode == RolloutCanaryWaves && len(matchedServers) > 0 {
-			names := make([]string, 0, len(matchedServers))
-			serverByName := make(map[string]servers.Server, len(matchedServers))
-			for _, server := range matchedServers {
-				names = append(names, server.Name)
-				serverByName[server.Name] = server
-			}
-			batches := BuildRolloutBatches(policy, names)
-			matchedServers = matchedServers[:0]
-			if len(batches) > 0 {
-				for _, name := range batches[0].Servers {
-					matchedServers = append(matchedServers, serverByName[name])
-				}
-			}
-		}
 		for _, server := range matchedServers {
 			if missedReason == RunReasonMaintenance {
 				recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)

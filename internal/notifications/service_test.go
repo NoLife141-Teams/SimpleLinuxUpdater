@@ -234,6 +234,9 @@ func TestNotificationDeliveryLifecycleWaitsForTransientSQLiteContention(t *testi
 	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
 		t.Fatalf("release SQLite lock: %v", err)
 	}
+	if err := lockConn.Close(); err != nil {
+		t.Fatalf("release SQLite connection: %v", err)
+	}
 	select {
 	case got := <-admission:
 		if got.State != AdmissionAdmitted {

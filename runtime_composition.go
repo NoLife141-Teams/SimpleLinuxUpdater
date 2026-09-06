@@ -44,6 +44,9 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
 		}
 	}
+	if c.deps.PolicyService != nil {
+		c.deps.PolicyService.ClearMissedTicks()
+	}
 	if c.resetCaches != nil {
 		c.resetCaches()
 	}
@@ -73,6 +76,15 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	db := deps.DB()
 	if db == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
+	}
+	if watermarkRepository, ok := deps.PolicyRepository.(policySchedulerWatermarkRepository); ok {
+		now := time.Now().UTC()
+		if deps.Now != nil {
+			now = deps.Now().UTC()
+		}
+		if err := watermarkRepository.SaveSchedulerWatermark(now.Truncate(time.Minute)); err != nil {
+			return fmt.Errorf("rebase restored policy scheduler watermark: %w", err)
+		}
 	}
 	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
 		if err := reloader.ReloadPersistence(ctx); err != nil {

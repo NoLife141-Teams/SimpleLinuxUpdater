@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,11 @@ type policySchedulerWatermarkRepository interface {
 	SaveSchedulerStateFingerprint(string) error
 	HasSchedulerRecoveryScope(int64, string) (bool, error)
 	MarkSchedulerRecoveryScope(int64, string) error
+}
+
+type policySchedulerCheckpointRepository interface {
+	LoadSchedulerCheckpoint() (policypkg.SchedulerCheckpoint, bool, error)
+	SaveSchedulerCheckpoint(policypkg.SchedulerCheckpoint) error
 }
 
 var (
@@ -110,12 +117,96 @@ func startPolicyScheduler(service *PolicyService, repository policypkg.Repositor
 		service.StartScheduler(ctx, options)
 		return
 	}
-	service.StartSchedulerWithRecovery(ctx, options, policypkg.SchedulerWatermarkStore{
+
+	store := policypkg.SchedulerWatermarkStore{
 		Load:                 watermarkRepository.LoadSchedulerWatermark,
 		Save:                 watermarkRepository.SaveSchedulerWatermark,
 		LoadStateFingerprint: watermarkRepository.LoadSchedulerStateFingerprint,
 		SaveStateFingerprint: watermarkRepository.SaveSchedulerStateFingerprint,
 		HasRecoveryScope:     watermarkRepository.HasSchedulerRecoveryScope,
 		MarkRecoveryScope:    watermarkRepository.MarkSchedulerRecoveryScope,
-	})
+	}
+	if checkpointRepository, supportsAtomicCheckpoint := repository.(policySchedulerCheckpointRepository); supportsAtomicCheckpoint {
+		store = atomicPolicySchedulerStore(checkpointRepository, watermarkRepository)
+	}
+	service.StartSchedulerWithRecovery(ctx, options, store)
+}
+
+// atomicPolicySchedulerStore adapts the existing two-callback scheduler API to
+// a single durable checkpoint transaction. Save() only stages the watermark in
+// memory; SaveStateFingerprint() commits watermark+fingerprint together. A
+// crash between those callbacks therefore leaves the previous complete
+// checkpoint intact rather than advancing only half of it.
+func atomicPolicySchedulerStore(checkpointRepository policySchedulerCheckpointRepository, recoveryScopes policySchedulerWatermarkRepository) policypkg.SchedulerWatermarkStore {
+	var mu sync.Mutex
+	var loaded policypkg.SchedulerCheckpoint
+	var loadedFound bool
+	var loadedReady bool
+	var pendingWatermark time.Time
+
+	return policypkg.SchedulerWatermarkStore{
+		Load: func() (time.Time, bool, error) {
+			checkpoint, found, err := checkpointRepository.LoadSchedulerCheckpoint()
+			if err != nil {
+				return time.Time{}, false, err
+			}
+			mu.Lock()
+			loaded = checkpoint
+			loadedFound = found
+			loadedReady = true
+			mu.Unlock()
+			return checkpoint.Watermark, found, nil
+		},
+		LoadStateFingerprint: func() (string, bool, error) {
+			mu.Lock()
+			if loadedReady {
+				checkpoint := loaded
+				found := loadedFound
+				loadedReady = false
+				mu.Unlock()
+				fingerprint := strings.TrimSpace(checkpoint.StateFingerprint)
+				return fingerprint, found && fingerprint != "", nil
+			}
+			mu.Unlock()
+			checkpoint, found, err := checkpointRepository.LoadSchedulerCheckpoint()
+			if err != nil {
+				return "", false, err
+			}
+			fingerprint := strings.TrimSpace(checkpoint.StateFingerprint)
+			return fingerprint, found && fingerprint != "", nil
+		},
+		Save: func(value time.Time) error {
+			if value.IsZero() {
+				return errors.New("policy scheduler watermark is required")
+			}
+			mu.Lock()
+			pendingWatermark = value.UTC().Truncate(time.Minute)
+			mu.Unlock()
+			return nil
+		},
+		SaveStateFingerprint: func(value string) error {
+			fingerprint := strings.TrimSpace(value)
+			if fingerprint == "" {
+				return errors.New("policy scheduler state fingerprint is required")
+			}
+			mu.Lock()
+			watermark := pendingWatermark
+			mu.Unlock()
+			if watermark.IsZero() {
+				return errors.New("policy scheduler watermark was not staged")
+			}
+			if err := checkpointRepository.SaveSchedulerCheckpoint(policypkg.SchedulerCheckpoint{
+				Watermark:        watermark,
+				StateFingerprint: fingerprint,
+			}); err != nil {
+				return err
+			}
+			mu.Lock()
+			pendingWatermark = time.Time{}
+			mu.Unlock()
+			return nil
+		},
+		HasRecoveryScope:  recoveryScopes.HasSchedulerRecoveryScope,
+		MarkRecoveryScope: recoveryScopes.MarkSchedulerRecoveryScope,
+	}
 }

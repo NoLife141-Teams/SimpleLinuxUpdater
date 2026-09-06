@@ -25,6 +25,7 @@ type SchedulerWatermarkStore struct {
 	Save                 func(time.Time) error
 	LoadStateFingerprint func() (string, bool, error)
 	SaveStateFingerprint func(string) error
+	LoadStateRevision    func() (int64, error)
 	HasRecoveryScope     func(int64, string) (bool, error)
 	MarkRecoveryScope    func(int64, string) error
 }
@@ -126,9 +127,41 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
 
-	recoverySnapshot, err := s.captureSchedulerRecoverySnapshot()
-	if err != nil {
-		return fmt.Errorf("capture policy scheduler recovery state: %w", err)
+	var recoverySnapshot schedulerRecoverySnapshot
+	stateRevision := int64(0)
+	stateRevisionEnabled := store.LoadStateRevision != nil
+	if stateRevisionEnabled {
+		captured := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			before, loadErr := store.LoadStateRevision()
+			if loadErr != nil {
+				return fmt.Errorf("load policy scheduler state revision before snapshot: %w", loadErr)
+			}
+			snapshot, captureErr := s.captureSchedulerRecoverySnapshot()
+			if captureErr != nil {
+				return fmt.Errorf("capture policy scheduler recovery state: %w", captureErr)
+			}
+			after, loadErr := store.LoadStateRevision()
+			if loadErr != nil {
+				return fmt.Errorf("load policy scheduler state revision after snapshot: %w", loadErr)
+			}
+			if before != after {
+				deps.Logf("policy scheduler state changed while capturing recovery snapshot; retrying capture (attempt %d/3)", attempt)
+				continue
+			}
+			recoverySnapshot = snapshot
+			stateRevision = after
+			captured = true
+			break
+		}
+		if !captured {
+			return errors.New("policy scheduler state changed repeatedly while capturing recovery snapshot")
+		}
+	} else {
+		recoverySnapshot, err = s.captureSchedulerRecoverySnapshot()
+		if err != nil {
+			return fmt.Errorf("capture policy scheduler recovery state: %w", err)
+		}
 	}
 	recoveryService := recoverySnapshot.bind(s)
 
@@ -139,6 +172,9 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		currentFingerprint, err = recoverySnapshot.fingerprint()
 		if err != nil {
 			return fmt.Errorf("fingerprint policy scheduler state: %w", err)
+		}
+		if stateRevisionEnabled {
+			currentFingerprint = fmt.Sprintf("%s:rev:%d", currentFingerprint, stateRevision)
 		}
 		storedFingerprint, fingerprintFound, loadErr := store.LoadStateFingerprint()
 		if loadErr != nil {
@@ -549,6 +585,31 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 			materializeSelected = selectedByRecovery && recoveryManagedRollout
 		}
 
+		selectedCompetitionServers := map[string]struct{}{}
+		if policy.RolloutMode == RolloutCanaryWaves && materializeSelected {
+			serverNames := make([]string, 0, len(matchedServers))
+			for _, server := range matchedServers {
+				serverNames = append(serverNames, server.Name)
+			}
+			batches := BuildRolloutBatches(policy, serverNames)
+			runByKey := make(map[string]Run, len(rolloutRuns))
+			for _, run := range rolloutRuns {
+				runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
+			}
+			elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
+			for batchIndex, batch := range batches {
+				if elapsedMinutes < batch.ReleaseDelayMinutes {
+					continue
+				}
+				if s.reconciledRolloutGateStateAt(policy.ID, scheduledForUTC, batches[:batchIndex], runByKey, slotLocal) != "ready" {
+					continue
+				}
+				for _, serverName := range batch.Servers {
+					selectedCompetitionServers[strings.ToLower(strings.TrimSpace(serverName))] = struct{}{}
+				}
+			}
+		}
+
 		// A selected rollout recovery intentionally closes every missing target
 		// as historical output so a later current tick cannot manufacture
 		// downstream rollout_gate rows. Rollouts that are not recovery-owned
@@ -596,7 +657,8 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 		}
 
 		for _, server := range matchedServers {
-			_, existing := existingByServer[strings.ToLower(strings.TrimSpace(server.Name))]
+			serverKey := strings.ToLower(strings.TrimSpace(server.Name))
+			_, existing := existingByServer[serverKey]
 			if missedReason == RunReasonMaintenance {
 				if materializeSelected && !existing {
 					recordSkipped(policy, server, scheduledForUTC, RunReasonMaintenance)
@@ -608,6 +670,14 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 					recordSkipped(policy, server, scheduledForUTC, RunReasonBlackout)
 				}
 				continue
+			}
+			if policy.RolloutMode == RolloutCanaryWaves && materializeSelected {
+				if _, eligible := selectedCompetitionServers[serverKey]; !eligible {
+					if !existing {
+						recordSkipped(policy, server, scheduledForUTC, missedReason)
+					}
+					continue
+				}
 			}
 			candidatesByServer[server.Name] = append(candidatesByServer[server.Name], missedPolicyCandidate{
 				ScheduledCandidate: ScheduledCandidate{

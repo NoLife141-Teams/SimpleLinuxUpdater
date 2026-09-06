@@ -44,6 +44,9 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
 		}
 	}
+	if c.deps.PolicyService != nil {
+		c.deps.PolicyService.ClearMissedTicks()
+	}
 	if c.resetCaches != nil {
 		c.resetCaches()
 	}

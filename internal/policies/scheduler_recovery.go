@@ -131,7 +131,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if err := s.processMissedDueSlot(slot.At, RunReasonSchedulerMissed, slot.PolicyIDs); err != nil {
 				return err
 			}
-	}
+		}
 	}
 
 	if err := s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true}); err != nil {
@@ -167,8 +167,9 @@ func (s *Service) processDueWithoutDurableRecovery(now time.Time) error {
 // latestMissedScheduledSlots returns one latest missed policy occurrence per
 // enabled policy. Each slot carries the policy IDs whose latest occurrence is
 // that slot so another daily policy cannot be backfilled merely because a
-// weekly policy contributed an older slot. It intentionally does not enumerate
-// every minute or every old daily occurrence after a long outage.
+// weekly policy contributed an older slot. Historical reconstruction is also
+// bounded by the policy's latest persisted configuration timestamp so recovery
+// never projects current configuration into a time before it was effective.
 func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time) ([]missedScheduledSlot, error) {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil {
@@ -201,9 +202,14 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 		if !policy.Enabled {
 			continue
 		}
-		createdAt, createdAtKnown := parsePolicyCreationInstant(policy.CreatedAt, deps.TimestampLayout)
-		if strings.TrimSpace(policy.CreatedAt) != "" && !createdAtKnown {
-			deps.Logf("skipping missed occurrence recovery for policy %d because created_at %q is invalid", policy.ID, policy.CreatedAt)
+		effectiveAt, timestampsValid := policyRecoveryBoundary(policy, deps.TimestampLayout)
+		if !timestampsValid {
+			deps.Logf(
+				"skipping missed occurrence recovery for policy %d because persisted timestamps are invalid: created_at=%q updated_at=%q",
+				policy.ID,
+				policy.CreatedAt,
+				policy.UpdatedAt,
+			)
 			continue
 		}
 		for daysBack := 0; daysBack <= maxDaysBack; daysBack++ {
@@ -213,7 +219,7 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 				continue
 			}
 			slotUTC := slotLocal.UTC().Truncate(time.Minute)
-			if createdAtKnown && slotUTC.Before(createdAt) {
+			if !effectiveAt.IsZero() && slotUTC.Before(effectiveAt) {
 				continue
 			}
 			if !slotUTC.After(lowerBound) || !slotUTC.Before(currentUTC) {
@@ -238,7 +244,30 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 	return slots, nil
 }
 
-func parsePolicyCreationInstant(raw, timestampLayout string) (time.Time, bool) {
+// policyRecoveryBoundary returns the earliest instant at which the current
+// persisted policy representation is safe to use for historical recovery. A
+// policy edit replaces its configuration without version history, so UpdatedAt
+// is a conservative effective boundary for schedule, target, priority and
+// blackout semantics. CreatedAt still bounds never-edited policies.
+func policyRecoveryBoundary(policy Policy, timestampLayout string) (time.Time, bool) {
+	boundary := time.Time{}
+	for _, raw := range []string{policy.CreatedAt, policy.UpdatedAt} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		parsed, ok := parsePolicyInstant(raw, timestampLayout)
+		if !ok {
+			return time.Time{}, false
+		}
+		if boundary.IsZero() || parsed.After(boundary) {
+			boundary = parsed
+		}
+	}
+	return boundary, true
+}
+
+func parsePolicyInstant(raw, timestampLayout string) (time.Time, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, false
@@ -262,10 +291,10 @@ func parsePolicyCreationInstant(raw, timestampLayout string) (time.Time, bool) {
 }
 
 // processMissedDueSlot records an exact historical occurrence without ever
-// launching its work. All policies that were due at the slot participate in
-// priority selection, but only policies selected by the bounded recovery pass
-// may materialize new Scheduled Run rows. This preserves original competition
-// semantics without backfilling older occurrences of unrelated policies.
+// launching its work. All policies that were due and whose current persisted
+// configuration already existed at the slot participate in priority selection,
+// but only policies selected by the bounded recovery pass may materialize new
+// Scheduled Run rows.
 func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, policyIDs map[int64]struct{}) error {
 	deps := s.EnsureDeps()
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
@@ -291,6 +320,7 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		loc = time.Local
 	}
 	slotLocal := slot.In(loc).Truncate(time.Minute)
+	slotUTC := slot.UTC().Truncate(time.Minute)
 	if deps.ApplicationTime != nil {
 		occurrence := deps.ApplicationTime.Current().ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
 		if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
@@ -321,6 +351,20 @@ func (s *Service) processMissedDueSlot(slot time.Time, missedReason string, poli
 		if !policy.Enabled || !s.PolicyDueAt(policy, slotLocal) {
 			continue
 		}
+		effectiveAt, timestampsValid := policyRecoveryBoundary(policy, deps.TimestampLayout)
+		if !timestampsValid {
+			deps.Logf(
+				"excluding policy %d from historical competition because persisted timestamps are invalid: created_at=%q updated_at=%q",
+				policy.ID,
+				policy.CreatedAt,
+				policy.UpdatedAt,
+			)
+			continue
+		}
+		if !effectiveAt.IsZero() && slotUTC.Before(effectiveAt) {
+			continue
+		}
+
 		_, selected := policyIDs[policy.ID]
 		scheduledForUTC := CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation)
 		existingByServer := map[string]struct{}{}
@@ -420,13 +464,11 @@ func rolloutHistoryIsRecoveryOnly(runs []Run) bool {
 		return false
 	}
 	for _, run := range runs {
-		if run.Status != RunSkipped {
-			return false
-		}
-		switch run.Reason {
-		case RunReasonSchedulerMissed, RunReasonMaintenance, RunReasonBlackout, RunReasonSuperseded:
-			continue
-		default:
+		// scheduler_missed is the only skip reason emitted exclusively by the
+		// durable recovery path. Maintenance, blackout and supersedence can be
+		// genuine persisted scheduler history if the process crashed before the
+		// watermark save, so they must remain authoritative rollout state.
+		if run.Status != RunSkipped || run.Reason != RunReasonSchedulerMissed {
 			return false
 		}
 	}

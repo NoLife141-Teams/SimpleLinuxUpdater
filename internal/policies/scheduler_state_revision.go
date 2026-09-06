@@ -3,7 +3,6 @@ package policies
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 )
 
 const SchedulerStateRevisionTable = "update_policy_scheduler_state_revision"
@@ -82,9 +81,9 @@ func ensureSchedulerStateRevisionSchema(db *sql.DB) error {
 	}
 	if settingsExists {
 		for _, trigger := range []string{
-			fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_insert AFTER INSERT ON settings WHEN NEW.key IN (%q, %q) BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`, GlobalBlackoutsSetting, "app_timezone"),
-			fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_update AFTER UPDATE OF value ON settings WHEN NEW.key IN (%q, %q) AND OLD.value IS NOT NEW.value BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`, GlobalBlackoutsSetting, "app_timezone"),
-			fmt.Sprintf(`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_delete AFTER DELETE ON settings WHEN OLD.key IN (%q, %q) BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`, GlobalBlackoutsSetting, "app_timezone"),
+			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_insert AFTER INSERT ON settings WHEN NEW.key IN ('update_policy_global_blackouts', 'app_timezone') BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_update AFTER UPDATE OF value ON settings WHEN NEW.key IN ('update_policy_global_blackouts', 'app_timezone') AND OLD.value IS NOT NEW.value BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_setting_delete AFTER DELETE ON settings WHEN OLD.key IN ('update_policy_global_blackouts', 'app_timezone') BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`,
 		} {
 			if _, err := db.Exec(trigger); err != nil {
 				return err

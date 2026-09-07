@@ -96,6 +96,10 @@ Approval actions:
 
 If an approved security scope contains no eligible packages, the upgrade is skipped and the update completes without applying changes. Approval actions are enabled only when the corresponding fresh simulation is available.
 
+After approval, the runner reconnects as needed and repeats discovery, health checks and the plan-aware disk check. A changed selected package set or removal set returns the update to approval with the refreshed plan. Without approved removals, full upgrades and targeted installations use APT's `--no-remove` guard. Existing non-root targets need **Enable apt** once to install the updated typed helper operations; an outdated helper fails closed and directs you to that action.
+
+Changing a server's host or port invalidates its current health facts and makes it eligible for the next automatic refresh sweep. Historical observations retain their old endpoint identity; renaming the same endpoint preserves health continuity.
+
 ### Pre-checks (fail fast)
 
 Before `apt-get update`, update actions run mandatory pre-checks over SSH:

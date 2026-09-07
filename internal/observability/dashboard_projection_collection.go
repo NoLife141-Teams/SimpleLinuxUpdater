@@ -173,6 +173,13 @@ func (c dashboardProjectionCollector) collectHealth(fact updates.ServerFactsReco
 	} else {
 		health.Source = "unknown"
 	}
+	if overlay.accepted && fact.ValidAfter != "" {
+		observed, observedErr := time.Parse(time.RFC3339Nano, overlay.collectedAt)
+		changed, changedErr := time.Parse(time.RFC3339Nano, fact.ValidAfter)
+		if observedErr != nil || changedErr != nil || observed.Before(changed) {
+			overlay.accepted = false
+		}
+	}
 	if overlay.accepted {
 		UpdateHealthFromResults(&health, overlay.results, "audit", overlay.collectedAt, c.deps)
 	}

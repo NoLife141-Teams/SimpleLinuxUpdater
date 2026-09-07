@@ -296,7 +296,7 @@ func TestProductionHostMaintenanceSessionUsesPackageDiscovery(t *testing.T) {
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return fakeConnection{}, nil
 		},
 		RunCommand: func(_ context.Context, conn SSHConnection, command string, _ HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
@@ -330,7 +330,9 @@ func TestProductionHostMaintenanceSessionPackageDiscoveryFailsWithoutReplay(t *t
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return fakeConnection{}, nil },
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+			return fakeConnection{}, nil
+		},
 		RunCommand: func(_ context.Context, conn SSHConnection, command string, _ HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
 			return runner.run(conn, command, stdin, timeout)
 		},

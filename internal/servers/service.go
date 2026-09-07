@@ -162,6 +162,7 @@ type ServiceDeps struct {
 	RenameJobsServer               func(*sql.Tx, string, string) error
 	RenameServerFacts              func(*sql.Tx, string, string) error
 	DeleteServerFacts              func(*sql.Tx, string) error
+	InvalidateServerEndpoint       func(*sql.Tx, string, string, string) error
 }
 
 type Service struct {
@@ -309,7 +310,7 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if existing.Name != name {
 			continue
 		}
-		if status := state.StatusMap()[name]; status != nil && state.statusInProgress(status.Status) {
+		if status := state.StatusMap()[name]; status != nil && (status.ActionRunning || state.statusInProgress(status.Status)) {
 			return server, ActionError{Status: status.Status}
 		}
 		if strings.TrimSpace(server.Pass) == "" {
@@ -335,6 +336,7 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if ServerEndpointExists(currentServers, server.Host, server.Port, i) {
 			return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 		}
+		endpointChanged := NormalizeServerEndpoint(existing.Host, existing.Port) != NormalizeServerEndpoint(server.Host, server.Port)
 		currentServers[i] = server
 		state.SetServers(currentServers)
 		renamedServer := server.Name != name
@@ -377,6 +379,29 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 				return nil
 			}
 		}
+		if endpointChanged {
+			previousHook := txHook
+			txHook = func(tx *sql.Tx) error {
+				if previousHook != nil {
+					if err := previousHook(tx); err != nil {
+						return err
+					}
+				}
+				if s.deps.InvalidateServerEndpoint != nil {
+					return s.deps.InvalidateServerEndpoint(tx, server.Name, fmt.Sprint(NormalizeServerEndpoint(existing.Host, existing.Port)), fmt.Sprint(NormalizeServerEndpoint(server.Host, server.Port)))
+				}
+				return nil
+			}
+			replacement := NewIdleStatus(server)
+			if previous := prevStatusMap[name]; previous != nil {
+				replacement.ActionGeneration = previous.ActionGeneration + 1
+				if previous.Status == runtimepkg.StatusNeedsReconciliation {
+					replacement.Status = previous.Status
+					replacement.Logs = previous.Logs
+				}
+			}
+			state.StatusMap()[server.Name] = replacement
+		}
 		if err := s.SaveOrRollbackLocked(prevServers, prevStatusMap, txHook); err != nil {
 			return server, err
 		}
@@ -397,7 +422,7 @@ func (s *Service) Delete(name string) error {
 			continue
 		}
 		if status := state.StatusMap()[name]; status != nil &&
-			(state.statusInProgress(status.Status) || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation)) {
+			(status.ActionRunning || state.statusInProgress(status.Status) || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation)) {
 			return ActionError{Status: status.Status}
 		}
 		_ = server

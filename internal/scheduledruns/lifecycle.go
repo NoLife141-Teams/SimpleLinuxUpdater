@@ -982,12 +982,14 @@ func (l *Lifecycle) createServerActionJob(jm *jobs.Manager, state *servers.State
 		return jobs.Record{}, errors.New("job manager is not initialized")
 	}
 	initialLogs := ""
+	var generation uint64
 	if state != nil {
 		if snapshot := state.CurrentStatusSnapshot(serverName); snapshot != nil {
 			initialLogs = snapshot.Logs
+			generation = snapshot.ActionGeneration
 		}
 	}
-	return jm.CreateJob(jobs.CreateParams{
+	record, err := jm.CreateJob(jobs.CreateParams{
 		Kind:            kind,
 		ServerName:      serverName,
 		Actor:           actor,
@@ -997,6 +999,10 @@ func (l *Lifecycle) createServerActionJob(jm *jobs.Manager, state *servers.State
 		RetryPolicyJSON: jobs.MarshalJSON(policy),
 		MetaJSON:        jobs.MarshalJSON(meta),
 	})
+	if err == nil && state != nil && !state.BindActionJob(serverName, record.ID, generation) {
+		return jobs.Record{}, errors.New("server action admission changed while creating job")
+	}
+	return record, err
 }
 
 func stringPointer(value string) *string { return &value }

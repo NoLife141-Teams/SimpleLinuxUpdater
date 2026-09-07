@@ -13,11 +13,12 @@ import (
 )
 
 var (
-	AptUpdateCmd        = nonInteractiveAptCommand("update", "update")
-	AptUpgradeCmd       = nonInteractiveAptCommand("upgrade", "-y upgrade")
-	AptFullUpgradeCmd   = nonInteractiveAptCommand("full-upgrade", "-y full-upgrade")
-	AptAutoremoveCmd    = nonInteractiveAptCommand("autoremove", "-y autoremove")
-	ControlledRebootCmd = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then /usr/bin/systemctl reboot; else sudo -n " + RootHelperPath + " reboot; fi' >/dev/null 2>&1 &"
+	AptUpdateCmd              = nonInteractiveAptCommand("update", "update")
+	AptUpgradeCmd             = nonInteractiveAptCommand("upgrade", "-y upgrade")
+	AptFullUpgradeNoRemoveCmd = nonInteractiveAptCommand("full-upgrade-no-remove", "--no-remove -y full-upgrade")
+	AptFullUpgradeCmd         = nonInteractiveAptCommand("full-upgrade", "-y full-upgrade")
+	AptAutoremoveCmd          = nonInteractiveAptCommand("autoremove", "-y autoremove")
+	ControlledRebootCmd       = "nohup sh -c 'sleep 1; if [ \"$(id -u)\" -eq 0 ]; then /usr/bin/systemctl reboot; else sudo -n " + RootHelperPath + " reboot; fi' >/dev/null 2>&1 &"
 	// AptLockProbeCmd remains the exact pre-helper fallback used only after the
 	// typed extended probe is denied by an older sudoers policy.
 	AptLockProbeCmd         = `if [ "$(id -u)" -eq 0 ]; then /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; else sudo -n /usr/bin/fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; fi`

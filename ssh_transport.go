@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
@@ -103,10 +104,22 @@ func dialRealSSHConnectionWithContext(ctx context.Context, server Server, config
 	if config == nil {
 		return nil, errors.New("missing SSH client config")
 	}
+	// Bound the entire establishment, including the SSH banner and authentication.
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = sshConnectTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	address := sshServerAddress(server)
 	dialer := &net.Dialer{Timeout: config.Timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
+		return nil, err
+	}
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -122,6 +135,10 @@ func dialRealSSHConnectionWithContext(ctx context.Context, server Server, config
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		_ = sshConn.Close()
 		return nil, ctxErr
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = sshConn.Close()
+		return nil, err
 	}
 	return &realSSHConnection{client: ssh.NewClient(sshConn, chans, reqs)}, nil
 }

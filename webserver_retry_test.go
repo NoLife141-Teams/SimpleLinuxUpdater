@@ -275,27 +275,72 @@ func TestRunSSHCommandWithTimeoutReturnsSuccessWhenAptCompletesDuringLockProbe(t
 }
 
 func TestRunSSHCommandWithTimeoutHonorsActivityDuringLockProbe(t *testing.T) {
-	conn := &aptLockAwareTestConnection{
-		extendedAllowed: true,
-		commandDelay:    70 * time.Millisecond,
-		commandOutputAt: 40 * time.Millisecond,
-		lockProbeDelay:  20 * time.Millisecond,
-	}
+	probeEntered := make(chan struct{})
+	progressWritten := make(chan struct{})
+	finishCommand := make(chan struct{})
+	commandFinished := make(chan struct{})
+	probes := 0
+	conn := &gatedActivityConnection{run: func(command string, stdout io.Writer, closed <-chan struct{}) error {
+		if strings.Contains(command, "/usr/bin/fuser") {
+			probes++
+			if probes == 1 {
+				close(probeEntered)
+				<-progressWritten
+			} else if probes == 2 {
+				// Completion is allowed only after progress caused another idle
+				// checkpoint. Ignoring that progress closes the command early.
+				close(finishCommand)
+				<-commandFinished
+			}
+			return errors.New("no process uses the apt locks")
+		}
+		defer close(commandFinished)
+		select {
+		case <-probeEntered:
+		case <-closed:
+			return io.EOF
+		}
+		_, _ = io.WriteString(stdout, "progress\n")
+		close(progressWritten)
+		select {
+		case <-finishCommand:
+			return nil
+		case <-closed:
+			return io.EOF
+		}
+	}}
 
-	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 30*time.Millisecond)
+	stdout, _, err := runSSHCommandWithTimeout(conn, aptUpgradeCmd, updatespkg.HostCommandEffectPackageStateMutation, nil, 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runSSHCommandWithTimeout() error = %v, want output during the lock probe to extend the idle deadline", err)
 	}
 	if !strings.Contains(stdout, "progress\n") {
 		t.Fatalf("runSSHCommandWithTimeout() stdout = %q, want progress emitted during the lock probe", stdout)
 	}
-	conn.mu.Lock()
-	lockProbeCount := conn.lockProbeCount
-	conn.mu.Unlock()
-	if lockProbeCount != 1 {
-		t.Fatalf("apt lock probes = %d, want 1 before output extended the idle deadline", lockProbeCount)
+	if probes != 2 {
+		t.Fatalf("apt lock probes = %d, want a second checkpoint after progress extended the idle deadline", probes)
 	}
 }
+
+type gatedActivityConnection struct {
+	run func(string, io.Writer, <-chan struct{}) error
+}
+
+func (c *gatedActivityConnection) NewSession() (sshSessionRunner, error) {
+	return &gatedActivitySession{run: c.run, closed: make(chan struct{})}, nil
+}
+
+func (*gatedActivityConnection) Close() error { return nil }
+
+type gatedActivitySession struct {
+	aptLockAwareTestSession
+	run    func(string, io.Writer, <-chan struct{}) error
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (s *gatedActivitySession) Run(command string) error { return s.run(command, s.stdout, s.closed) }
+func (s *gatedActivitySession) Close() error             { s.once.Do(func() { close(s.closed) }); return nil }
 
 func TestRunSSHCommandWithTimeoutAllowsQuietAptFinalizationAfterProgress(t *testing.T) {
 	conn := &aptLockAwareTestConnection{

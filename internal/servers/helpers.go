@@ -186,6 +186,8 @@ type ServerEndpoint struct {
 	Port int
 }
 
+func (e ServerEndpoint) String() string { return net.JoinHostPort(e.Host, strconv.Itoa(e.Port)) }
+
 func NormalizeServerEndpoint(host string, port int) ServerEndpoint {
 	return ServerEndpoint{
 		Host: NormalizeServerHost(host),
@@ -812,7 +814,16 @@ func ScanHostKey(host string, port int, timeout time.Duration) (ssh.PublicKey, e
 		HostKeyCallback: captureHostKeyCallback(&scanned),
 		Timeout:         timeout,
 	}
-	client, err := ssh.Dial("tcp", address, cfg)
+	deadline := time.Now().Add(timeout)
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	client, _, _, err := ssh.NewClientConn(conn, address, cfg)
 	if client != nil {
 		_ = client.Close()
 	}

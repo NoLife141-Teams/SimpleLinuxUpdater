@@ -190,8 +190,8 @@ func newHostMaintenanceSessionFactory(
 	inner := updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: buildAuth,
 		HostKeyCallback:  hostKeyCallback,
-		DialSSH: func(server serverpkg.Server, config *ssh.ClientConfig) (sshConnection, error) {
-			return dialSSHConnectionWithContext(lifecycle, dial, server, config)
+		DialSSH: func(ctx context.Context, server serverpkg.Server, config *ssh.ClientConfig) (sshConnection, error) {
+			return dialSSHConnectionWithContext(ctx, dial, server, config)
 		},
 		RunCommand:          runSSHCommandWithContext,
 		RunStreamingCommand: runSSHCommandWithContextStreaming,

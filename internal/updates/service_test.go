@@ -447,7 +447,7 @@ func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(
 			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1002"}},
 		},
 	} {
-		if !service.updatePendingPackageVulnerabilityAssessment("srv", update) {
+		if !service.updatePendingPackageVulnerabilityAssessment("srv", pendingApprovalIdentity{}, update) {
 			t.Fatalf("updatePendingPackageVulnerabilityAssessment(%q) = false", update.InstallPackage)
 		}
 	}
@@ -512,7 +512,7 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 				FullUpgradePackageCount:  2,
 				FullUpgradeNewPackages:   []string{"linux-image-6.1.0-39-amd64"},
 			},
-			wantCmd: AptFullUpgradeCmd,
+			wantCmd: AptFullUpgradeNoRemoveCmd,
 		},
 		{
 			name:  "standard security approval",
@@ -550,7 +550,7 @@ func TestRunUpdateJobApprovalScopesUseExpectedAptCommand(t *testing.T) {
 				KeptBackSecurityPackageCount:  1,
 				KeptBackSecurityNewPackages:   []string{"linux-image-6.1.0-39-amd64"},
 			},
-			wantCmd: BuildSelectedInstallCmd([]string{"linux-image-amd64"}),
+			wantCmd: buildSelectedInstallCmd([]string{"linux-image-amd64"}, false, true),
 			manual:  true,
 		},
 	}

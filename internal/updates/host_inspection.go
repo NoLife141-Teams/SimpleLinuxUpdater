@@ -489,7 +489,9 @@ func (s *productionHostMaintenanceSession) collectServerFacts(ctx context.Contex
 			return health.ProbeResult{}
 		}
 	}}
-	return collector.Capture(ctx, s.request.Server.Name)
+	facts := collector.Capture(ctx, s.request.Server.Name)
+	facts.Endpoint = servers.NormalizeServerEndpoint(s.request.Server.Host, s.request.Server.Port).String()
+	return facts
 }
 
 func inspectionDiskFreeKB(output string) (int64, bool) {

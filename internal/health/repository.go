@@ -27,6 +27,7 @@ type Observation interface {
 	AcceptMaintenance(MaintenanceOutcome) error
 	RenameServerTx(*sql.Tx, string, string) error
 	DeleteServerTx(*sql.Tx, string) error
+	InvalidateEndpointTx(*sql.Tx, string, string, string) error
 }
 
 type ReaderFuncs struct {
@@ -133,6 +134,9 @@ func EnsureServerFactsSchema(db *sql.DB) error {
 		HealthSnapshotRetentionSettingKey,
 		strconv.Itoa(DefaultRetentionDays),
 	); err != nil {
+		return err
+	}
+	if err := ensureEndpointSchema(db); err != nil {
 		return err
 	}
 	return pruneHealthSnapshotsWithDB(db, time.Now().UTC())
@@ -245,6 +249,9 @@ func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := validateCollectedEndpoint(tx, record); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`
 		INSERT INTO server_facts (
 			server_name, collected_at, os_pretty_name, running_kernel_version,
@@ -338,7 +345,13 @@ func (r SQLiteObservation) Latest() (map[string]CollectedFacts, error) {
 		}
 		records[record.ServerName] = record
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return records, r.addEndpointBoundaries(records)
 }
 
 func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapshot, error) {
@@ -352,7 +365,7 @@ func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapsh
 		       snapshot.last_scan_status, snapshot.last_update_status,
 		       snapshot.disk_status, snapshot.disk_free_kb, snapshot.disk_total_kb,
 		       snapshot.apt_status, snapshot.reboot_required, snapshot.os_pretty_name,
-		       snapshot.raw_json
+		       snapshot.raw_json, snapshot.endpoint
 		  FROM server_health_snapshots snapshot
 		 WHERE snapshot.id = (
 		       SELECT candidate.id
@@ -360,6 +373,10 @@ func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapsh
 		        WHERE candidate.server_name = snapshot.server_name
 		        ORDER BY candidate.captured_at DESC, candidate.id DESC
 		        LIMIT 1
+		       ) AND NOT EXISTS (
+		       SELECT 1 FROM server_health_endpoints e
+		        WHERE e.server_name = snapshot.server_name AND
+		              (snapshot.endpoint <> e.endpoint OR julianday(snapshot.captured_at) < julianday(e.changed_at))
 		       )`
 	args := []any{}
 	if strings.TrimSpace(serverName) != "" {
@@ -391,6 +408,7 @@ func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapsh
 			&reboot,
 			&record.OSPrettyName,
 			&record.RawJSON,
+			&record.Endpoint,
 		); err != nil {
 			return nil, err
 		}
@@ -419,6 +437,9 @@ func (r SQLiteObservation) LatestObservations(serverName string) (map[string]Sna
 	}
 	for name, record := range facts {
 		if filter != "" && name != filter {
+			continue
+		}
+		if record.ServerName == "" {
 			continue
 		}
 		candidate := snapshotFromCollectedFacts(record)
@@ -461,6 +482,9 @@ func (r SQLiteObservation) RenameServerTx(tx *sql.Tx, oldName, newName string) e
 	if strings.TrimSpace(oldName) == "" || strings.TrimSpace(newName) == "" || oldName == newName {
 		return nil
 	}
+	if _, err := tx.Exec("UPDATE server_health_endpoints SET server_name = ? WHERE server_name = ?", newName, oldName); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("UPDATE server_facts SET server_name = ? WHERE server_name = ?", newName, oldName); err != nil {
 		return err
 	}
@@ -469,6 +493,9 @@ func (r SQLiteObservation) RenameServerTx(tx *sql.Tx, oldName, newName string) e
 }
 
 func (r SQLiteObservation) DeleteServerTx(tx *sql.Tx, name string) error {
+	if _, err := tx.Exec("DELETE FROM server_health_endpoints WHERE server_name = ?", name); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("DELETE FROM server_facts WHERE server_name = ?", name); err != nil {
 		return err
 	}
@@ -530,8 +557,9 @@ func insertHealthSnapshot(exec healthSnapshotExecer, record Snapshot) error {
 		INSERT INTO server_health_snapshots (
 			server_name, captured_at, source, package_count, security_count,
 			last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
-			apt_status, reboot_required, os_pretty_name, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			apt_status, reboot_required, os_pretty_name, raw_json, endpoint
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		          COALESCE((SELECT endpoint FROM server_health_endpoints WHERE server_name = ?), ''))
 	`,
 		record.ServerName,
 		record.CapturedAt,
@@ -547,6 +575,7 @@ func insertHealthSnapshot(exec healthSnapshotExecer, record Snapshot) error {
 		rebootValue,
 		record.OSPrettyName,
 		record.RawJSON,
+		record.ServerName,
 	)
 	return err
 }
@@ -559,7 +588,7 @@ func (r SQLiteObservation) History(from, to, serverName string) ([]Snapshot, err
 	query := `
 		SELECT id, server_name, captured_at, source, package_count, security_count,
 		       last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
-		       apt_status, reboot_required, os_pretty_name, raw_json
+		       apt_status, reboot_required, os_pretty_name, raw_json, endpoint
 		  FROM server_health_snapshots
 		 WHERE captured_at >= ? AND captured_at <= ?`
 	args := []any{from, to}
@@ -593,6 +622,7 @@ func (r SQLiteObservation) History(from, to, serverName string) ([]Snapshot, err
 			&reboot,
 			&record.OSPrettyName,
 			&record.RawJSON,
+			&record.Endpoint,
 		); err != nil {
 			return nil, err
 		}

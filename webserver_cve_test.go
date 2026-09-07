@@ -862,6 +862,10 @@ func TestStartPendingUpdateCVEEnrichmentCreatesChildJob(t *testing.T) {
 		t.Fatalf("CreateJob(update) unexpected error: %v", err)
 	}
 
+	mu.Lock()
+	statusMap[server.Name].JobID = parentJob.ID
+	mu.Unlock()
+
 	origDial := getDialSSHConnection()
 	setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {
 		return &scriptedSSHConnection{
@@ -938,6 +942,10 @@ func TestStartPendingUpdateCVEEnrichmentPersistsFailedChildJobOnDialFailure(t *t
 		t.Fatalf("CreateJob(update) unexpected error: %v", err)
 	}
 
+	mu.Lock()
+	statusMap[server.Name].JobID = parentJob.ID
+	mu.Unlock()
+
 	origDial := getDialSSHConnection()
 	setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {
 		return nil, errors.New("simulated cve dial failure")
@@ -1005,6 +1013,10 @@ func TestStartPendingUpdateCVEEnrichmentCancelledChildJobUsesCompletePhase(t *te
 	if err != nil {
 		t.Fatalf("CreateJob(update) unexpected error: %v", err)
 	}
+
+	mu.Lock()
+	statusMap[server.Name].JobID = parentJob.ID
+	mu.Unlock()
 
 	origDial := getDialSSHConnection()
 	setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {

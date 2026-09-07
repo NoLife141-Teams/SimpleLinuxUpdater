@@ -100,6 +100,10 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
+	ActionGeneration        uint64          `json:"-"`
+	ApprovalGeneration      uint64          `json:"-"`
+	ActionRunning           bool            `json:"-"`
+	JobRevision             int64           `json:"-"`
 	Name                    string          `json:"name"`
 	JobID                   string          `json:"job_id,omitempty"`
 	Host                    string          `json:"host"`
@@ -322,7 +326,7 @@ func (s *State) ActiveActionNames() []string {
 	defer s.Unlock()
 	names := make([]string, 0)
 	for name, status := range *s.statusMap {
-		if status == nil || !s.statusInProgress(status.Status) {
+		if status == nil || (!status.ActionRunning && !s.statusInProgress(status.Status)) {
 			continue
 		}
 		names = append(names, name)
@@ -351,7 +355,7 @@ func (s *State) ActionStatusInProgressLocked(name string) (bool, string) {
 	if status == nil {
 		return false, ""
 	}
-	return s.statusInProgress(status.Status), status.Status
+	return status.ActionRunning || s.statusInProgress(status.Status), status.Status
 }
 
 func (s *State) ActionStatusInProgress(name string) (bool, string) {
@@ -375,13 +379,16 @@ func (s *State) beginAction(name, newStatus string, packageMutation bool) (Serve
 	if !exists || status == nil {
 		return Server{}, sql.ErrNoRows
 	}
-	if s.statusInProgress(status.Status) || (packageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
+	if status.ActionRunning || s.statusInProgress(status.Status) || (packageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
 		return Server{}, ErrActionInProgress
 	}
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, sql.ErrNoRows
 	}
+	status.ActionGeneration++
+	status.JobID = ""
+	status.JobRevision = -1
 	status.Status = newStatus
 	if strings.TrimSpace(status.Logs) == "" {
 		status.Logs = "Starting Linux Updater..."
@@ -396,7 +403,7 @@ func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerSta
 	if !exists || status == nil {
 		return Server{}, nil, sql.ErrNoRows
 	}
-	if s.statusInProgress(status.Status) {
+	if status.ActionRunning || s.statusInProgress(status.Status) {
 		return Server{}, nil, ErrActionInProgress
 	}
 	server, found := s.FindByNameLocked(name)

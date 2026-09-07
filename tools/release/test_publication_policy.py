@@ -32,6 +32,14 @@ class Backend:
             raise RuntimeError('missing manifest')
         return self.refs.get(ref)
 
+    def capture_command(self, *args):
+        assert args[:2] in [('gh', 'api'), ('git', 'tag')], args
+        return self.command(*args)
+
+    def run_command(self, *args):
+        assert args[:2] not in [('gh', 'api'), ('git', 'tag')], args
+        self.command(*args)
+
     def command(self, *args):
         self.calls.append(args)
         operation = None
@@ -71,7 +79,10 @@ class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.backend = Backend()
         self.enterContext(patch.dict(os.environ, ENV))
-        self.enterContext(patch.object(policy, 'command', side_effect=self.backend.command))
+        self.enterContext(patch.object(policy, 'capture_command', side_effect=self.backend.capture_command))
+        self.enterContext(patch.object(policy, 'run_command', side_effect=self.backend.run_command))
+        # Test runs must never append simulated release results to the runner summary.
+        self.enterContext(patch.dict(os.environ, GITHUB_STEP_SUMMARY=''))
         self.enterContext(patch.object(policy, 'registry_digest', side_effect=self.backend.registry))
         self.enterContext(patch.object(policy, 'releases', side_effect=lambda repo: [self.backend.release]))
         self.identity = policy.identity()
@@ -204,7 +215,7 @@ class PublicationTests(unittest.TestCase):
         with patch.object(policy, 'releases', side_effect=RuntimeError('unavailable')):
             with self.assertRaises(RuntimeError):
                 self.publish()
-        with patch.object(policy, 'command', side_effect=RuntimeError('unavailable')):
+        with patch.object(policy, 'capture_command', side_effect=RuntimeError('unavailable')):
             with self.assertRaises(RuntimeError):
                 policy.plan(self.identity)
         self.assertEqual(self.backend.writes, [])
@@ -218,3 +229,79 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'assets are frozen'):
                 policy.main()
         self.assertFalse(any(c[:2] == ('gh', 'release') for c in self.backend.calls))
+
+    def test_progress_identifies_each_validation_and_flushes_immediately(self):
+        with patch('builtins.print') as printed:
+            self.publish()
+        messages = [call for call in printed.call_args_list if call.args[0].startswith(('START:', 'SUCCESS:'))]
+        self.assertEqual(len(messages), 8)
+        for call in messages:
+            self.assertIn(ENV['RELEASE_TAG'], call.args[0])
+            self.assertIn(D, call.args[0])
+            self.assertTrue(call.kwargs.get('flush'))
+        for platform in policy.PLATFORMS:
+            for check in ('startup/persistence', 'OS/Go scan'):
+                label = f"{check} | {platform} | {ENV['RELEASE_TAG']} | {D}"
+                self.assertIn('START: ' + label, [c.args[0] for c in messages])
+                self.assertIn('SUCCESS: ' + label, [c.args[0] for c in messages])
+
+    def test_summary_records_success_failure_and_unexecuted_checks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            summary = Path(folder) / 'summary'
+            self.backend.fail = 'scan-image.sh:linux/amd64'
+            with patch.dict(os.environ, GITHUB_STEP_SUMMARY=str(summary)), patch('builtins.print') as printed:
+                with self.assertRaises(RuntimeError):
+                    self.publish()
+            text = summary.read_text()
+            self.assertIn(ENV['RELEASE_TAG'], text)
+            self.assertIn(D, text)
+            self.assertIn('| linux/amd64 | startup/persistence | success |', text)
+            self.assertIn('| linux/amd64 | OS/Go scan | failure |', text)
+            self.assertIn('| linux/arm64 | startup/persistence | not executed |', text)
+            self.assertIn('| linux/arm64 | OS/Go scan | not executed |', text)
+            failure = [c for c in printed.call_args_list if c.args[0].startswith('FAILURE:')]
+            self.assertEqual(len(failure), 1)
+            self.assertTrue(failure[0].kwargs.get('flush'))
+            self.assertEqual(self.backend.writes, [])
+
+    def test_successful_checks_do_not_announce_publication_if_finalization_fails(self):
+        with tempfile.TemporaryDirectory() as folder:
+            summary = Path(folder) / 'summary'
+            self.backend.fail = 'finalize'
+            with patch.dict(os.environ, GITHUB_STEP_SUMMARY=str(summary)):
+                with self.assertRaises(RuntimeError):
+                    self.publish()
+            text = summary.read_text()
+            self.assertEqual(text.count('| success |'), 4)
+            self.assertIn('validation results only', text)
+            self.assertNotIn('Published', text)
+            self.assertTrue(self.backend.release['draft'])
+
+    def test_complete_summary_marks_checks_unexecuted_without_side_effects(self):
+        self.publish()
+        self.backend.calls.clear()
+        self.backend.writes.clear()
+        with tempfile.TemporaryDirectory() as folder:
+            summary = Path(folder) / 'summary'
+            with patch.dict(os.environ, GITHUB_STEP_SUMMARY=str(summary)):
+                self.publish()
+            self.assertEqual(summary.read_text().count('| not executed |'), 4)
+            self.assertIn('Already complete', summary.read_text())
+        self.assertEqual(self.backend.writes, [])
+        self.assertFalse(any(c[0] in ('docker', 'bash') for c in self.backend.calls))
+
+    def test_absent_summary_is_optional_for_local_publication(self):
+        with patch.dict(os.environ):
+            os.environ.pop('GITHUB_STEP_SUMMARY', None)
+            self.publish()
+        self.assertFalse(self.backend.release['draft'])
+
+    def test_summary_io_error_cannot_mask_validation_failure_or_block_success(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, GITHUB_STEP_SUMMARY=folder):
+            self.backend.fail = 'docker-smoke.sh:linux/amd64'
+            with self.assertRaisesRegex(RuntimeError, 'simulated failure before acceptance'):
+                self.publish()
+            self.assertEqual(self.backend.writes, [])
+            self.backend.fail = None
+            self.publish()
+            self.assertFalse(self.backend.release['draft'])

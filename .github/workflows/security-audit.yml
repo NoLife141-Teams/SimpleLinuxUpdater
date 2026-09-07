@@ -39,13 +39,46 @@ jobs:
           npm ci
           npm audit --audit-level=moderate
 
-  container-packages:
+  resolve-distribution:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.distribution.outputs.image }}
+      digest: ${{ steps.distribution.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build runtime image without publishing
-        run: docker build --platform linux/amd64 -t slu-audit:local .
-      - name: Scan installed OS packages
-        run: tools/ci/scan-image.sh slu-audit:local
+      - name: Resolve distributed latest once
+        id: distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release/publication-policy.py distributed
+
+  container-packages:
+    needs: resolve-distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Scan distributed OS and Go packages
+        env:
+          IMAGE: ${{ needs.resolve-distribution.outputs.image }}
+          DIGEST: ${{ needs.resolve-distribution.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+          DIAGNOSTICS_DIR: ${{ runner.temp }}/security-diagnostics
+        run: tools/ci/scan-image.sh "$IMAGE@$DIGEST" "$PLATFORM"
+      - name: Retain scan diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-image-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-diagnostics/
+          retention-days: 7

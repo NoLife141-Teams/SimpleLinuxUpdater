@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o webserver . \
     && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o persistence-owner ./cmd/persistence-owner
 
 # Runtime stage
-FROM alpine:3.24
+FROM alpine:3.24 AS runtime
 ENV GIN_MODE=release \
     DEBIAN_UPDATER_LISTEN_ADDR=:8080
 RUN apk --no-cache upgrade \

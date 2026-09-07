@@ -233,7 +233,80 @@ func TestSecurityAuditScansDistributedDigestWithoutRebuilding(t *testing.T) {
 	if strings.Contains(source, "docker build") || strings.Contains(source, "build-push-action") {
 		t.Error("weekly image audit must not rebuild the distributed image")
 	}
-	if !strings.Contains(readWorkflowForTest(t, "Dockerfile"), "FROM alpine:3.24 AS runtime") {
-		t.Error("targeted cache invalidation requires the named runtime stage")
+	if !finalRuntimeStageIsAlpine(readWorkflowForTest(t, "Dockerfile")) {
+		t.Error("targeted cache invalidation requires a final Alpine stage named runtime")
+	}
+}
+
+// Read FROM instructions, rather than matching text in comments or continued RUNs.
+// This intentionally checks the project's literal base-image contract, not ARG expansion.
+func finalRuntimeStageIsAlpine(source string) bool {
+	var finalFrom []string
+	logicalLine := ""
+	for _, line := range strings.Split(source, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# escape=") && line != `# escape=\` {
+			return false // Custom escapes need a parser extension, not a guessed stage.
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		continued := strings.HasSuffix(line, `\`)
+		logicalLine += " " + strings.TrimSuffix(line, `\`)
+		if continued {
+			continue
+		}
+		// The project does not use heredocs. Reject them conservatively so a FROM
+		// inside their contents cannot masquerade as a final stage.
+		if strings.Contains(logicalLine, "<<") {
+			return false
+		}
+		fields := strings.Fields(logicalLine)
+		logicalLine = ""
+		if strings.EqualFold(fields[0], "FROM") {
+			finalFrom = fields[1:]
+		}
+	}
+	if logicalLine != "" {
+		return false // An incomplete instruction is not evidence of a valid final stage.
+	}
+	if len(finalFrom) > 0 && strings.HasPrefix(finalFrom[0], "--platform=") {
+		finalFrom = finalFrom[1:]
+	}
+	alpine := regexp.MustCompile(`^alpine(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$`)
+	return len(finalFrom) == 3 && alpine.MatchString(finalFrom[0]) &&
+		strings.EqualFold(finalFrom[1], "AS") && finalFrom[2] == "runtime"
+}
+
+func TestFinalRuntimeStageIsAlpine(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	for _, tt := range []struct {
+		name, source string
+		want         bool
+	}{
+		{"current", "FROM alpine:3.24 AS runtime\nRUN apk upgrade\n", true},
+		{"version update", "FROM alpine:3.25 AS runtime\n", true},
+		{"tag and digest", "FROM alpine:3.24@" + digest + " AS runtime\n", true},
+		{"digest only", "FROM alpine@" + digest + " AS runtime\n", true},
+		{"case and whitespace", "  from\talpine:3.25 as runtime\n", true},
+		{"platform", "FROM --platform=$TARGETPLATFORM alpine:3.25 AS runtime\n", true},
+		{"builder then runtime", "FROM golang:1.26.6 AS builder\nFROM alpine:3.25 AS runtime\n", true},
+		{"no stage", "# Empty Dockerfile\n", false},
+		{"unnamed", "FROM alpine:3.24\n", false},
+		{"renamed", "FROM alpine:3.24 AS production\n", false},
+		{"not Alpine", "FROM debian:stable AS runtime\n", false},
+		{"lookalike image", "FROM other/alpine:3.24 AS runtime\n", false},
+		{"comment only", "# FROM alpine:3.24 AS runtime\nFROM debian:stable\n", false},
+		{"incompatible final stage", "FROM alpine:3.24 AS runtime\nFROM scratch AS final\n", false},
+		{"unnamed final stage", "FROM alpine:3.24 AS runtime\nFROM alpine:3.24\n", false},
+		{"invalid digest", "FROM alpine:3.24@sha256:abc AS runtime\n", false},
+		{"heredoc mention", "FROM scratch\nCOPY <<EOF /example\nFROM alpine:3.24 AS runtime\nEOF\n", false},
+		{"continued command mention", "FROM scratch\nRUN echo \\\nFROM alpine:3.24 AS runtime\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := finalRuntimeStageIsAlpine(tt.source); got != tt.want {
+				t.Fatalf("finalRuntimeStageIsAlpine(%q) = %v, want %v", tt.source, got, tt.want)
+			}
+		})
 	}
 }

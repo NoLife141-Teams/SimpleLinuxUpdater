@@ -15,8 +15,56 @@ CHECKS = ['runtime-persistence', 'trivy-os-and-go']
 ASSET = 'publication.json'
 
 
-def command(*args):
-    return subprocess.check_output(args, text=True).strip()
+def capture_command(*args):
+    return subprocess.check_output(list(args), text=True).strip()
+
+
+def run_command(*args):
+    # Inherit stdout/stderr so validation output is visible while the child runs.
+    subprocess.run(list(args), check=True)
+
+
+def validation_results():
+    return [dict(platform=platform, check=check, script=script, result='not executed')
+            for platform in PLATFORMS
+            for check, script in [('startup/persistence', 'docker-smoke.sh'),
+                                  ('OS/Go scan', 'scan-image.sh')]]
+
+
+def write_validation_summary(expected, digest, results, *, note='Publication finalization is a separate step; these are validation results only.'):
+    path = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not path:
+        return
+    lines = ['### Release validations', '', f"Version: `{expected['tag']}`",
+             f'Digest: `{digest}`', '', note, '',
+             '| Architecture | Validation | Result |', '| --- | --- | --- |']
+    lines.extend(f"| {row['platform']} | {row['check']} | {row['result']} |" for row in results)
+    try:
+        with open(path, 'a', encoding='utf-8') as stream:
+            stream.write('\n'.join(lines) + '\n\n')
+    except OSError:
+        # Optional reporting must never hide a validation failure or block a local run.
+        print('Warning: unable to write the optional validation summary.', file=sys.stderr, flush=True)
+
+
+def qualify(expected, digest):
+    results = validation_results()
+    root = Path(__file__).resolve().parent.parent
+    try:
+        for row in results:
+            label = f"{row['check']} | {row['platform']} | {expected['tag']} | {digest}"
+            print(f'START: {label}', flush=True)
+            try:
+                run_command('bash', str(root / 'ci' / row['script']),
+                            expected['image'] + '@' + digest, row['platform'])
+            except Exception:
+                row['result'] = 'failure'
+                print(f'FAILURE: {label}', flush=True)
+                raise
+            row['result'] = 'success'
+            print(f'SUCCESS: {label}', flush=True)
+    finally:
+        write_validation_summary(expected, digest, results)
 
 
 def version(tag):
@@ -27,7 +75,7 @@ def version(tag):
 
 
 def releases(repo):
-    pages = json.loads(command('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
+    pages = json.loads(capture_command('gh', 'api', '--paginate', '--slurp', f'repos/{repo}/releases?per_page=100'))
     return [release for page in pages for release in page]
 
 
@@ -48,14 +96,14 @@ def identity():
 
 def read_record(release, expected):
     # Enumerate assets separately: the embedded release asset list may be truncated.
-    pages = json.loads(command('gh', 'api', '--paginate', '--slurp',
+    pages = json.loads(capture_command('gh', 'api', '--paginate', '--slurp',
                                f"repos/{expected['repository']}/releases/{release['id']}/assets?per_page=100"))
     assets = [a for page in pages for a in page if a['name'] == ASSET]
     if not assets:
         return None
     if len(assets) != 1 or not 0 < assets[0]['size'] <= 65536:
         raise ValueError('Invalid publication record asset')
-    record = json.loads(command('gh', 'api', '-H', 'Accept: application/octet-stream',
+    record = json.loads(capture_command('gh', 'api', '-H', 'Accept: application/octet-stream',
                                 f"repos/{expected['repository']}/releases/assets/{assets[0]['id']}"))
     if not isinstance(record, dict) or any(record.get(k) != v for k, v in expected.items()):
         raise ValueError('Publication record identity mismatch')
@@ -100,7 +148,7 @@ def promote_ref(image, tag, digest, *, immutable=False):
         return
     if immutable and existing is not None:
         raise RuntimeError('Refusing to replace an official version digest')
-    command('docker', 'buildx', 'imagetools', 'create', '--tag', image + ':' + tag, image + '@' + digest)
+    run_command('docker', 'buildx', 'imagetools', 'create', '--tag', image + ':' + tag, image + '@' + digest)
     if registry_digest(image, tag) != digest:
         raise RuntimeError('Promotion did not preserve qualified digest')
 
@@ -108,7 +156,9 @@ def promote_ref(image, tag, digest, *, immutable=False):
 def publish(expected):
     mode, record = plan(expected)
     if mode == 'complete':
-        print('Publication already complete; no registry writes required')
+        print('Publication already complete; no registry writes required', flush=True)
+        write_validation_summary(expected, record['digest'], validation_results(),
+                                 note='Already complete; no validations executed in this attempt.')
         return
     digest = require_digest(os.environ['DIGEST'])
     if record and record['digest'] != digest:
@@ -117,11 +167,9 @@ def publish(expected):
     if registry_digest(image, digest) != digest:
         raise RuntimeError('Candidate digest is unavailable')
     root = Path(__file__).resolve().parent.parent
-    for platform in PLATFORMS:
-        command('bash', str(root / 'ci/docker-smoke.sh'), image + '@' + digest, platform)
-        command('bash', str(root / 'ci/scan-image.sh'), image + '@' + digest, platform)
+    qualify(expected, digest)
     # Recheck lineage and durable state after the potentially long qualification.
-    command('bash', str(root / 'release/verify-tag-on-main.sh'))
+    run_command('bash', str(root / 'release/verify-tag-on-main.sh'))
     current_mode, current_record = plan(expected)
     if current_mode == 'complete':
         if current_record['digest'] != digest:
@@ -139,17 +187,17 @@ def publish(expected):
             path = Path(folder) / ASSET
             path.write_text(json.dumps(record, sort_keys=True) + '\n', encoding='utf-8')
             # No --clobber: a lost successful response is recovered by the next plan.
-            command('gh', 'release', 'upload', expected['tag'], str(path), '--repo', expected['repository'])
+            run_command('gh', 'release', 'upload', expected['tag'], str(path), '--repo', expected['repository'])
         _, current_record = plan(expected)
         if current_record != record:
             raise RuntimeError('Publication record was not durably stored')
-    command('git', 'fetch', '--force', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+refs/tags/*:refs/tags/*')
-    tags = command('git', 'tag', '--merged', 'origin/main', '--list', 'v*').splitlines()
+    run_command('git', 'fetch', '--force', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+refs/tags/*:refs/tags/*')
+    tags = capture_command('git', 'tag', '--merged', 'origin/main', '--list', 'v*').splitlines()
     latest = may_promote(expected['tag'], releases(expected['repository']), tags)
     promote_ref(image, expected['tag'], digest, immutable=True)
     if latest:
         promote_ref(image, 'latest', digest)
-    command('gh', 'release', 'edit', expected['tag'], '--repo', expected['repository'],
+    run_command('gh', 'release', 'edit', expected['tag'], '--repo', expected['repository'],
             '--draft=false', '--latest=' + str(latest).lower())
     print(f"Published {expected['tag']}; promoted latest={latest}")
 

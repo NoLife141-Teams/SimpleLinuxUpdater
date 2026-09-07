@@ -78,6 +78,12 @@ archive server's stdout/stderr is retained outside its temporary extraction.
 Failed CI/release qualifications upload those diagnostics for seven days, with
 attempt-specific names. HTTP probes have connection and total time limits.
 Temporary databases and full container configuration are not uploaded.
+Validation commands inherit stdout/stderr; the policy flushes a start and result
+message with the check, architecture, version and digest. API responses and tag
+lists stay captured for parsing. When `GITHUB_STEP_SUMMARY` is available, an
+optional summary distinguishes successful, failed and unexecuted checks. It
+reports validation results separately from publication finalization; a summary
+write failure never replaces a validation error or blocks local execution.
 
 ## Performance and security
 

@@ -15,7 +15,9 @@ func rolloutOriginMatchesPolicy(policy Policy, origin time.Time, runs []Run, tim
 	}
 	// The scheduler admits the whole current minute. A policy created during
 	// that minute can legitimately start after its canonical slot; its first
-	// persisted row must prove the policy already existed when work started.
+	// persisted row must prove the policy already existed when recorded. Its
+	// timestamp can cross the minute boundary while processing the origin tick;
+	// the persisted scheduled_for_utc, not insertion time, identifies that tick.
 	// A subsequent edit must not inherit that earlier configuration's origin.
 	if !boundary.Truncate(time.Minute).Equal(origin) {
 		return false
@@ -30,5 +32,5 @@ func rolloutOriginMatchesPolicy(policy Policy, origin time.Time, runs []Run, tim
 			first = created
 		}
 	}
-	return !first.Before(boundary) && first.Before(origin.Add(time.Minute))
+	return !first.Before(boundary)
 }

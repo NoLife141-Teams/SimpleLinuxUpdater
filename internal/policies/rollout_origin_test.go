@@ -26,6 +26,7 @@ func TestProcessDueRolloutRequiresEffectivePersistedOrigin(t *testing.T) {
 		{name: "edited policy cannot reuse old origin", now: origin.Add(5 * time.Minute), createdAt: origin.Add(-24 * time.Hour), updatedAt: origin.Add(time.Minute), hasCanary: true},
 		{name: "pre-creation history cannot authorize work", now: origin.Add(5 * time.Minute), createdAt: origin.Add(time.Minute), hasCanary: true},
 		{name: "policy created during origin minute continues", now: origin.Add(5 * time.Minute), createdAt: origin.Add(10 * time.Second), hasCanary: true, canaryAt: origin.Add(20 * time.Second), wantServer: "srv-b"},
+		{name: "admission may persist after origin minute", now: origin.Add(5 * time.Minute), createdAt: origin.Add(50 * time.Second), hasCanary: true, canaryAt: origin.Add(61 * time.Second), wantServer: "srv-b"},
 		{name: "same-minute edit cannot reuse earlier admission", now: origin.Add(5 * time.Minute), createdAt: origin.Add(-time.Minute), updatedAt: origin.Add(30 * time.Second), hasCanary: true, canaryAt: origin.Add(20 * time.Second)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

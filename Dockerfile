@@ -1,17 +1,20 @@
 # Build stage
-FROM golang:1.26.6-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o webserver . \
-    && CGO_ENABLED=0 GOOS=linux go build -o persistence-owner ./cmd/persistence-owner
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o webserver . \
+    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o persistence-owner ./cmd/persistence-owner
 
 # Runtime stage
 FROM alpine:3.24
 ENV GIN_MODE=release \
     DEBIAN_UPDATER_LISTEN_ADDR=:8080
-RUN apk --no-cache add ca-certificates su-exec
+RUN apk --no-cache upgrade \
+    && apk --no-cache add ca-certificates su-exec
 RUN addgroup -S app && adduser -S -G app app && mkdir -p /app /data && chown -R app:app /app /data
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/webserver .

@@ -33,3 +33,6 @@ test-results/
 .tmp-e2e/
 .tmp-smoke/
 .tmp-cu-release/
+
+# Python policy regression bytecode
+__pycache__/

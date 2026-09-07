@@ -24,6 +24,8 @@ debian-updater
 
 # local dependency and test artifacts
 node_modules/
+__pycache__/
+**/__pycache__/
 playwright-report/
 test-results/
 .tmp-e2e/

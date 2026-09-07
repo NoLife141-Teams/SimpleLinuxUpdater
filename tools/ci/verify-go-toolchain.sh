@@ -11,9 +11,9 @@ if [[ "$canonical_count" != "1" ]] || ! grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"
   exit 1
 fi
 
-builder_pattern='^FROM[[:space:]]+golang:[0-9]+\.[0-9]+\.[0-9]+-alpine[[:space:]]+AS[[:space:]]+builder[[:space:]]*$'
+builder_pattern='^FROM[[:space:]]+--platform=\$BUILDPLATFORM[[:space:]]+golang:[0-9]+\.[0-9]+\.[0-9]+-alpine[[:space:]]+AS[[:space:]]+builder[[:space:]]*$'
 builder_count="$(grep -Ec "$builder_pattern" Dockerfile || true)"
-builder_version="$(sed -nE 's/^FROM[[:space:]]+golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine[[:space:]]+AS[[:space:]]+builder[[:space:]]*$/\1/p' Dockerfile)"
+builder_version="$(sed -nE 's/^FROM[[:space:]]+--platform=\$BUILDPLATFORM[[:space:]]+golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine[[:space:]]+AS[[:space:]]+builder[[:space:]]*$/\1/p' Dockerfile)"
 if [[ "$builder_count" != "1" ]]; then
   echo "Dockerfile must contain exactly one patch-level golang alpine builder image." >&2
   exit 1

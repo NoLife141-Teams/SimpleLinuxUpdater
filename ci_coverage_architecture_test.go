@@ -8,11 +8,13 @@ import (
 func TestCICoverageRegressionGuard(t *testing.T) {
 	ci := readWorkflowForTest(t, ".github/workflows/ci.yml")
 	release := readWorkflowForTest(t, ".github/workflows/release.yml")
-	testJob := workflowJobForTest(t, ci, "test", "quality")
+	coverageScript := readWorkflowForTest(t, "tools/ci/check-coverage.sh")
+	testJob := workflowJobForTest(t, ci, "test", "quality") + coverageScript
 	requiredJob := workflowJobForTest(t, ci, "ci-required", "")
-	releaseGate := workflowJobForTest(t, release, "release-gate", "publish-release")
+	releaseGate := workflowJobForTest(t, release, "release-gate", "publish-release") + coverageScript
 
 	for _, required := range []string{
+		"ci/check-coverage.sh",
 		"GO_COVERAGE_THRESHOLD: '73.0'",
 		"Measured Go coverage:",
 		"required minimum:",

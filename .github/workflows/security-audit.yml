@@ -1,0 +1,51 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: false
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Audit Go dependencies
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+          govulncheck ./...
+      - name: Audit npm dependencies
+        if: success() || failure()
+        run: |
+          npm ci
+          npm audit --audit-level=moderate
+
+  container-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build runtime image without publishing
+        run: docker build --platform linux/amd64 -t slu-audit:local .
+      - name: Scan installed OS packages
+        run: tools/ci/scan-image.sh slu-audit:local

@@ -20,6 +20,7 @@ This index separates current guidance from historical implementation records. Pr
 
 ## Validation and release operations
 
+- [CI and release validation](ci-and-release.md): required checks, diagnostics, Docker smoke, publication ordering and latest-version policy.
 - [Release smoke checklist](release-smoke.md): authoritative disposable-host release gate.
 - [Computer Use release checklist](computer-use-release-checklist.md): detailed deterministic UI and live-host execution procedure.
 - [Production manual QA](production-manual-qa-checklist.md): non-destructive exploration of an existing deployment.

@@ -15,11 +15,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  changes:
+  preflight:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       go: ${{ steps.filter.outputs.go }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      docker: ${{ steps.filter.outputs.docker }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,6 +36,18 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - '.github/workflows/**'
+              - 'tools/**'
+              - 'docker-entrypoint.sh'
+              - 'Dockerfile'
+              - 'templates/**'
+              - 'static/**'
+              - 'tests/**'
+              - 'package*.json'
+              - 'playwright.config.js'
+              - '.github/dependabot.yml'
+              - 'README.md'
+              - 'AGENTS.md'
+              - 'docs/**'
             e2e:
               - '**/*.go'
               - 'go.mod'
@@ -44,21 +58,28 @@ jobs:
               - 'static/**'
               - 'templates/**'
               - 'tests/e2e/**'
-              - '.github/workflows/ci.yml'
-
-  toolchain-alignment:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              - '.github/workflows/**'
+              - 'tools/ci/**'
+            docker:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'docker-entrypoint.sh'
+              - 'templates/**'
+              - 'static/**'
+              - 'tools/ci/**'
+              - '.github/workflows/**'
 
       - name: Verify canonical Go toolchain alignment
         run: tools/ci/verify-go-toolchain.sh
 
   test:
-    needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.go == 'true'
+    needs: preflight
+    if: github.event_name == 'push' || needs.preflight.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       GO_COVERAGE_THRESHOLD: '73.0'
     strategy:
@@ -85,27 +106,21 @@ jobs:
       - name: Enforce coverage threshold
         if: matrix.name == 'cover'
         run: |
-          coverage_summary="$(go tool cover -func=coverage.out | tail -n 1)"
-          measured="$(printf '%s\n' "$coverage_summary" | awk '{ value = $NF; sub(/%$/, "", value); print value }')"
+          tools/ci/check-coverage.sh
 
-          case "$measured" in
-            ''|*[!0-9.]*)
-              echo "::error::Unable to parse total Go coverage from: $coverage_summary"
-              exit 1
-              ;;
-          esac
-
-          printf 'Measured Go coverage: %s%%; required minimum: %s%%\n' "$measured" "$GO_COVERAGE_THRESHOLD"
-          if ! awk -v measured="$measured" -v threshold="$GO_COVERAGE_THRESHOLD" \
-            'BEGIN { exit !(measured + 0 >= threshold + 0) }'; then
-            echo "::error::Measured Go coverage ${measured}% is below required minimum ${GO_COVERAGE_THRESHOLD}%"
-            exit 1
-          fi
+      - name: Retain coverage report
+        if: always() && matrix.name == 'cover'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-coverage-${{ github.run_attempt }}
+          path: coverage.out
+          retention-days: 7
 
   quality:
-    needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.go == 'true'
+    needs: preflight
+    if: github.event_name == 'push' || needs.preflight.outputs.go == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,8 +149,9 @@ jobs:
       - name: Run actionlint
         run: actionlint
 
-  npm-audit:
+  frontend-quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,27 +168,15 @@ jobs:
       - name: Run npm audit
         run: npm audit --audit-level=moderate
 
-  frontend-unit:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-
       - name: Run frontend unit tests
         run: npm run test:unit
 
   ui-e2e:
-    needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.e2e == 'true'
+    needs: preflight
+    if: github.event_name == 'push' || needs.preflight.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
     steps:
       - name: Checkout
@@ -193,24 +197,21 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Set absolute Playwright browser directory
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+
       - name: Cache Playwright browser
         id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ms-playwright
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
 
       - name: Install E2E dependencies
         run: npm ci
 
       - name: Configure APT network resilience
-        run: |
-          sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null <<'EOF'
-          Acquire::Retries "5";
-          Acquire::http::Timeout "30";
-          Acquire::https::Timeout "30";
-          DPkg::Lock::Timeout "60";
-          EOF
+        run: tools/ci/configure-apt.sh
 
       - name: Install Playwright OS dependencies
         run: npx playwright install-deps chromium
@@ -222,45 +223,64 @@ jobs:
       - name: Run Playwright auth E2E
         run: npm run test:e2e
 
+      - name: Retain Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-playwright-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+  docker-smoke:
+    needs: preflight
+    if: github.event_name == 'push' || needs.preflight.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build container without publishing
+        run: docker build --platform linux/amd64 -t slu-smoke:ci .
+      - name: Verify startup, privileges and persistence
+        run: tools/ci/docker-smoke.sh slu-smoke:ci linux/amd64
+
   ci-required:
     if: always()
     needs:
-      - changes
-      - toolchain-alignment
+      - preflight
       - test
       - quality
-      - npm-audit
-      - frontend-unit
+      - frontend-quality
       - ui-e2e
+      - docker-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Verify required CI results
         env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          TOOLCHAIN_ALIGNMENT_RESULT: ${{ needs.toolchain-alignment.result }}
-          GO_REQUIRED: ${{ github.event_name == 'push' || needs.changes.outputs.go == 'true' }}
-          E2E_REQUIRED: ${{ github.event_name == 'push' || needs.changes.outputs.e2e == 'true' }}
+          CHANGES_RESULT: ${{ needs.preflight.result }}
+          GO_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.go == 'true' }}
+          E2E_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.e2e == 'true' }}
           TEST_RESULT: ${{ needs.test.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
-          NPM_AUDIT_RESULT: ${{ needs.npm-audit.result }}
-          FRONTEND_UNIT_RESULT: ${{ needs.frontend-unit.result }}
+          FRONTEND_QUALITY_RESULT: ${{ needs.frontend-quality.result }}
+          DOCKER_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.docker == 'true' }}
+          DOCKER_RESULT: ${{ needs.docker-smoke.result }}
           UI_E2E_RESULT: ${{ needs.ui-e2e.result }}
         run: |
           printf '%s\n' \
-            "changes=$CHANGES_RESULT" \
-            "toolchain_alignment=$TOOLCHAIN_ALIGNMENT_RESULT" \
+            "preflight=$CHANGES_RESULT" \
             "go_required=$GO_REQUIRED" \
             "e2e_required=$E2E_REQUIRED" \
             "test=$TEST_RESULT" \
             "quality=$QUALITY_RESULT" \
-            "npm_audit=$NPM_AUDIT_RESULT" \
-            "frontend_unit=$FRONTEND_UNIT_RESULT" \
+            "frontend_quality=$FRONTEND_QUALITY_RESULT" \
             "ui_e2e=$UI_E2E_RESULT"
 
           test "$CHANGES_RESULT" = success
-          test "$TOOLCHAIN_ALIGNMENT_RESULT" = success
-          test "$NPM_AUDIT_RESULT" = success
-          test "$FRONTEND_UNIT_RESULT" = success
+          test "$FRONTEND_QUALITY_RESULT" = success
 
           if [ "$GO_REQUIRED" = true ]; then
             test "$TEST_RESULT" = success
@@ -274,4 +294,10 @@ jobs:
             test "$UI_E2E_RESULT" = success
           else
             test "$UI_E2E_RESULT" = skipped
+          fi
+
+          if [ "$DOCKER_REQUIRED" = true ]; then
+            test "$DOCKER_RESULT" = success
+          else
+            test "$DOCKER_RESULT" = skipped
           fi

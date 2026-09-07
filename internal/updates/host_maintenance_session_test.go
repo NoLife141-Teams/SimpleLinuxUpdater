@@ -20,6 +20,54 @@ type maintenanceTestConnection struct {
 	closed int
 }
 
+func TestReconnectUsesOperationCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	dials := 0
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+		DialSSH: func(ctx context.Context, _ servers.Server, _ *ssh.ClientConfig) (SSHConnection, error) {
+			dials++
+			if dials == 1 {
+				return &maintenanceTestConnection{}, nil
+			}
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
+			return "", "", errors.New("connection reset by peer")
+		},
+		Sleep: func(time.Duration) {},
+	})
+	session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{RetryPolicy: RetryPolicy{MaxAttempts: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := session.RunCommand(ctx, HostCommandRequest{Operation: "read", Command: "read", Effect: HostCommandEffectReadOnly})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("reconnect error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconnect ignored the operation context")
+	}
+}
+
 type inspectionExitError struct {
 	code int
 }
@@ -54,7 +102,7 @@ func newInspectionSession(t *testing.T, conn *inspectionTestConnection) HostMain
 		HostKeyCallback: func() (ssh.HostKeyCallback, error) {
 			return ssh.InsecureIgnoreHostKey(), nil
 		},
-		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return conn, nil
 		},
 		RunCommand: func(_ context.Context, got SSHConnection, command string, effect HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
@@ -501,7 +549,7 @@ func TestProductionHostMaintenanceSessionHonorsCancellationAfterInspectionStarts
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			return &inspectionTestConnection{}, nil
 		},
 		RunCommand: func(ctx context.Context, _ SSHConnection, _ string, _ HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
@@ -539,7 +587,7 @@ func TestProductionHostMaintenanceSessionDeadlineInterruptsRetryBackoff(t *testi
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		DialSSH:          func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
 		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			commands++
 			return "", "mirror temporarily unavailable", errors.New("exit status 100")
@@ -592,7 +640,7 @@ func TestProductionHostMaintenanceSessionDoesNotReplayUnknownAptOutcome(t *testi
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		DialSSH:          func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
 		RunCommand: func(_ context.Context, _ SSHConnection, command string, effect HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
 			commands++
 			if command != "simplelinuxupdater-apt apply transaction-42" || effect != HostCommandEffectPackageStateMutation {
@@ -639,7 +687,7 @@ func TestProductionHostMaintenanceSessionNeverReplaysControlledCommand(t *testin
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		DialSSH:          func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
 		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			commands++
 			return "", "connection reset by peer", errors.New("connection reset by peer")
@@ -675,7 +723,7 @@ func TestProductionHostMaintenanceSessionStreamsRequestedCommandOutput(t *testin
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH:          func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
+		DialSSH:          func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) { return conn, nil },
 		RunCommand: func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
 			fallbackCalls++
 			return "fallback", "", nil
@@ -741,7 +789,7 @@ func TestProductionHostMaintenanceSessionCompletesStreamAttemptBeforeRetryNotifi
 	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
 		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
 		HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
-		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			conn := connections[dials]
 			dials++
 			return conn, nil
@@ -916,7 +964,7 @@ func TestProductionHostMaintenanceSessionOwnsReconnectRetryAndClose(t *testing.T
 		HostKeyCallback: func() (ssh.HostKeyCallback, error) {
 			return ssh.InsecureIgnoreHostKey(), nil
 		},
-		DialSSH: func(servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+		DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
 			conn := connections[dials]
 			dials++
 			return conn, nil

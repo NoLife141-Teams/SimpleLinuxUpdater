@@ -261,7 +261,7 @@ func (s *HostMaintenanceSessionFuncs) Close() error {
 type ProductionHostMaintenanceSessionDeps struct {
 	BuildAuthMethods    func(servers.Server) ([]ssh.AuthMethod, error)
 	HostKeyCallback     func() (ssh.HostKeyCallback, error)
-	DialSSH             func(servers.Server, *ssh.ClientConfig) (SSHConnection, error)
+	DialSSH             func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error)
 	RunCommand          func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error)
 	RunStreamingCommand func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error)
 	SSHConnectTimeout   time.Duration
@@ -323,7 +323,7 @@ func (f *productionHostMaintenanceSessionFactory) Open(ctx context.Context, req 
 			return err
 		}
 		session.stats.DialAttempts++
-		conn, dialErr := f.deps.DialSSH(req.Server, config)
+		conn, dialErr := f.deps.DialSSH(ctx, req.Server, config)
 		if dialErr == nil {
 			session.conn = conn
 		}
@@ -367,12 +367,12 @@ func normalizedMaxAttempts(policy RetryPolicy) int {
 	return policy.MaxAttempts
 }
 
-func (s *productionHostMaintenanceSession) reconnect() error {
+func (s *productionHostMaintenanceSession) reconnect(ctx context.Context) error {
 	if s.conn != nil {
 		_ = s.conn.Close()
 		s.conn = nil
 	}
-	conn, err := s.deps.DialSSH(s.request.Server, s.config)
+	conn, err := s.deps.DialSSH(ctx, s.request.Server, s.config)
 	if err != nil {
 		return err
 	}
@@ -390,7 +390,7 @@ func (s *productionHostMaintenanceSession) runWithRetry(ctx context.Context, ope
 		attempts++
 		s.stats.OperationAttempts[operation]++
 		if attempts > 1 {
-			if err := s.reconnect(); err != nil {
+			if err := s.reconnect(ctx); err != nil {
 				return err
 			}
 		}

@@ -49,7 +49,7 @@ func TestProductionHostMaintenanceSessionDepsExposePrimitiveTransportOnly(t *tes
 	want := map[string]reflect.Type{
 		"BuildAuthMethods":    reflect.TypeOf((func(servers.Server) ([]ssh.AuthMethod, error))(nil)),
 		"HostKeyCallback":     reflect.TypeOf((func() (ssh.HostKeyCallback, error))(nil)),
-		"DialSSH":             reflect.TypeOf((func(servers.Server, *ssh.ClientConfig) (SSHConnection, error))(nil)),
+		"DialSSH":             reflect.TypeOf((func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error))(nil)),
 		"RunCommand":          reflect.TypeOf((func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration) (string, string, error))(nil)),
 		"RunStreamingCommand": reflect.TypeOf((func(context.Context, SSHConnection, string, HostCommandEffect, io.Reader, time.Duration, HostCommandOutputHandler) (string, string, error))(nil)),
 		"SSHConnectTimeout":   reflect.TypeOf(time.Duration(0)),

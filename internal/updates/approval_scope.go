@@ -187,7 +187,7 @@ func InterpretApprovedScope(scope string, pending []servers.PendingUpdate, plan 
 		if len(plan.KeptBackSecurityRemovedPackages) > 0 && !opts.ConfirmRemovals {
 			return blockedRunner(result, ApprovalReasonKeptBackSecurityRemovalsUnconfirmed, "kept-back security upgrade would remove packages but removal confirmation was not recorded")
 		}
-		result.Command = BuildSelectedInstallCmd(selected)
+		result.Command = buildSelectedInstallCmd(selected, false, !opts.ConfirmRemovals || len(plan.KeptBackSecurityRemovedPackages) == 0)
 		result.CommandMode = ApprovalCommandModeKeptBackInstall
 		result.RunnerCommandLog = "\nRunning kept-back security apt install..."
 		if result.Command == "" {
@@ -202,6 +202,9 @@ func InterpretApprovedScope(scope string, pending []servers.PendingUpdate, plan 
 			return blockedRunner(result, ApprovalReasonFullUpgradeRemovalsUnconfirmed, "full upgrade would remove packages but removal confirmation was not recorded")
 		}
 		result.Command = AptFullUpgradeCmd
+		if !opts.ConfirmRemovals || len(plan.FullUpgradeRemovedPackages) == 0 {
+			result.Command = AptFullUpgradeNoRemoveCmd
+		}
 		result.CommandMode = ApprovalCommandModeAptFullUpgrade
 		result.RunnerCommandLog = "\nRunning apt full-upgrade..."
 	default:

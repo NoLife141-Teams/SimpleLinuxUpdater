@@ -220,6 +220,13 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 	if status == nil {
 		return
 	}
+	if status.JobID != record.ID && (status.JobID != "" || status.ActionGeneration != 0) {
+		return
+	}
+	if status.JobID == record.ID && record.Revision <= status.JobRevision {
+		return
+	}
+	status.JobRevision = record.Revision
 	status.Status = statusValue
 	status.JobID = record.ID
 	if record.LogsText != "" {

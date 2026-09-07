@@ -69,6 +69,7 @@ Session hardening options:
 
 - Set `DEBIAN_UPDATER_SESSION_COOKIE_SECURE=true` when running behind HTTPS.
 - Optionally set `DEBIAN_UPDATER_SESSION_IDLE_TIMEOUT_HOURS` (hours). Default is `0`/unset, which means no additional idle timeout is applied.
+- Revoking, clearing, rotating or invalidating a session records a durable token tombstone. A request already in flight cannot recreate that token when saving its response, including with idle expiry enabled. Tombstones persist across application restarts and are intentionally retained.
 - Set `DEBIAN_UPDATER_TRUSTED_PROXIES` only to proxies you control. It controls whether forwarded client IP headers affect audit logs and rate limiting.
 
 ## Metrics endpoint protection

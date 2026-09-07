@@ -43,7 +43,7 @@ func (c Collector) Capture(ctx context.Context, serverName string) CollectedFact
 	}
 	facts := CollectedFacts{
 		ServerName:   serverName,
-		CollectedAt:  now.Format(time.RFC3339),
+		CollectedAt:  now.Format(time.RFC3339Nano),
 		OSPrettyName: "Unknown",
 		DiskStatus:   "unknown",
 		AptStatus:    "unknown",

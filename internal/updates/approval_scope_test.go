@@ -126,7 +126,7 @@ func TestApprovalScopeRunnerInterpretation(t *testing.T) {
 
 	t.Run("kept back chooses selected install command", func(t *testing.T) {
 		got := InterpretApprovedScope(ApprovalScopeSecurityKeptBack, pending, servers.UpgradePlan{KeptBackSecurityPlanAvailable: true}, ApprovalScopeOptions{})
-		wantCmd := BuildSelectedInstallCmd([]string{"linux-image-amd64"})
+		wantCmd := buildSelectedInstallCmd([]string{"linux-image-amd64"}, false, true)
 		if !got.Allowed || got.CommandMode != ApprovalCommandModeKeptBackInstall || got.Command != wantCmd {
 			t.Fatalf("kept-back interpretation = %+v, want cmd %q", got, wantCmd)
 		}

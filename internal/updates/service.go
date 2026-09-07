@@ -346,14 +346,17 @@ func (r *withActorRunner) withStatus(update func(*servers.ServerStatus)) bool {
 	}
 	deps.ServerState.Lock()
 	status := deps.ServerState.StatusMap()[r.server.Name]
-	if status == nil {
+	if status == nil || status.JobID != r.jobID {
 		deps.ServerState.Unlock()
 		return false
 	}
+	previousLogs := status.Logs
 	update(status)
+	updatedLogs := status.Logs
+	status.Logs = BoundStatusLogs(status.Logs)
 	snapshot := servers.CloneServerStatus(status)
 	deps.ServerState.Unlock()
-	r.syncJobFromStatus(snapshot)
+	r.syncJobFromStatus(snapshot, previousLogs, updatedLogs)
 	return true
 }
 
@@ -386,11 +389,11 @@ func (r *withActorRunner) appendLiveStatusLogs(outputs []HostCommandOutput) {
 	}
 	deps.ServerState.Lock()
 	status := deps.ServerState.StatusMap()[r.server.Name]
-	if status == nil {
+	if status == nil || status.JobID != r.jobID {
 		deps.ServerState.Unlock()
 		return
 	}
-	status.Logs += line
+	status.Logs = BoundStatusLogs(status.Logs + line)
 	deps.ServerState.Unlock()
 
 	jm := r.currentJobManager()
@@ -418,10 +421,6 @@ func (r *withActorRunner) setSudoPolicyErrorLogs(logs string) {
 }
 
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
-	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
-		r.setSudoPolicyErrorLogs(logs)
-		return
-	}
 	var reconciliation interface{ RequiresReconciliation() bool }
 	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
 		r.lastErrClass = "reconciliation_required"
@@ -429,6 +428,10 @@ func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 			status.Status = runtimepkg.StatusNeedsReconciliation
 			status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
 		})
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
+		r.setSudoPolicyErrorLogs(logs)
 		return
 	}
 	r.setErrorLogs(logs)
@@ -481,7 +484,7 @@ func (r *withActorRunner) interruptForShutdown(summary string) {
 			Status:     &jobStatus,
 			Phase:      &phase,
 			Summary:    &summary,
-			LogsText:   &logs,
+			AppendLog:  "\n" + summary,
 			ErrorClass: &errorClass,
 		}); err != nil {
 			deps.Logf("failed to mark job %q interrupted during application shutdown: %v", r.jobID, err)
@@ -530,7 +533,7 @@ func (r *withActorRunner) requireMutationPhase(phase string) bool {
 	return true
 }
 
-func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
+func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus, previousLogs, updatedLogs string) {
 	if snapshot == nil {
 		return
 	}
@@ -548,6 +551,15 @@ func (r *withActorRunner) syncJobFromStatus(snapshot *servers.ServerStatus) {
 		CurrentPhase:   r.jobPhase,
 		Timestamp:      timestamp,
 	})
+
+	// Live status holds only a bounded preview. Persist additive changes as
+	// fragments so phase/status publication cannot replace the full job log.
+	if strings.HasPrefix(updatedLogs, previousLogs) {
+		update.LogsText = nil
+		update.AppendLog = strings.TrimPrefix(updatedLogs, previousLogs)
+	} else {
+		update.LogsText = &updatedLogs
+	}
 
 	if _, err := jm.TransitionActive(r.jobID, update); err != nil {
 		r.deps().Logf("failed to sync job %q from status %q: %v", r.jobID, snapshot.Status, err)
@@ -648,6 +660,13 @@ func (s *Service) runWithActorShared(
 		commandTimeout: deps.LoadCommandTimeout(),
 		lastErrClass:   "none",
 		startedAt:      deps.Now(),
+	}
+	if deps.ServerState != nil {
+		generation, accepted := deps.ServerState.BeginActionRunner(server.Name, runner.jobID)
+		if !accepted && deps.ServerState.CurrentStatusSnapshot(server.Name) != nil {
+			return
+		}
+		defer deps.ServerState.FinishActionRunner(server.Name, runner.jobID, generation)
 	}
 	auditHandled := false
 	if auditMeta == nil {
@@ -982,114 +1001,160 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				})
 				return
 			}
-			logs = r.currentLogs()
-			deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
-			_ = r.withStatus(func(status *servers.ServerStatus) {
-				status.Status = "pending_approval"
-				status.ApprovalScope = ""
-				status.ApprovalConfirmRemovals = false
-				status.Upgradable = append([]string(nil), discovery.Upgradable...)
-				status.PendingUpdates = servers.ClonePendingUpdates(discovery.PendingUpdates)
-				status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
-				status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(discovery.Upgradable, "\n")
-			})
-			autoApproval := EvaluateAutoApproval(behavior.AutoApproveScope, discovery.PendingUpdates, discovery.UpgradePlan)
-			if !autoApproval.Allowed && autoApproval.RunnerCommandLog != "" {
-				r.appendStatusLog(autoApproval.RunnerCommandLog)
-			}
-			autoApproveScope := ""
-			if autoApproval.Allowed {
-				autoApproveScope = autoApproval.Scope
-			}
-			if autoApproveScope == "" {
-				s.StartPendingCVEEnrichment(r.server, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
-			}
+			approvalChanged := false
+			for {
+				logs = r.currentLogs()
+				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
+				_ = r.withStatus(func(status *servers.ServerStatus) {
+					status.Status = "pending_approval"
+					status.ApprovalScope = ""
+					status.ApprovalConfirmRemovals = false
+					status.Upgradable = append([]string(nil), discovery.Upgradable...)
+					status.PendingUpdates = servers.ClonePendingUpdates(discovery.PendingUpdates)
+					status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
+					status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(discovery.Upgradable, "\n")
+				})
+				autoScope := behavior.AutoApproveScope
+				if approvalChanged {
+					autoScope = ""
+				}
+				autoApproval := EvaluateAutoApproval(autoScope, discovery.PendingUpdates, discovery.UpgradePlan)
+				if !autoApproval.Allowed && autoApproval.RunnerCommandLog != "" {
+					r.appendStatusLog(autoApproval.RunnerCommandLog)
+				}
+				autoApproveScope := ""
+				if autoApproval.Allowed {
+					autoApproveScope = autoApproval.Scope
+				}
+				if autoApproveScope == "" {
+					s.StartPendingCVEEnrichment(r.server, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
+				}
 
-			if autoApproveScope != "" {
-				autoApproved := false
-				if deps.ServerState != nil {
-					deps.ServerState.Lock()
-					status := deps.ServerState.StatusMap()[r.server.Name]
-					if status != nil && status.Status == "pending_approval" {
-						r.approvalScope = autoApproveScope
-						r.approvalConfirmRemovals = false
-						status.ApprovalScope = r.approvalScope
-						status.ApprovalConfirmRemovals = false
-						status.Status = "approved"
-						r.approvedPackages = append([]string(nil), autoApproval.SelectedPackages...)
-						autoApproved = true
-					}
-					deps.ServerState.Unlock()
-				}
-				if !autoApproved {
-					return
-				}
-				r.approvedAt = deps.Now()
-			} else {
-				r.closeSession()
-				approvalDeadline := deps.Now().Add(behavior.ApprovalTimeout)
-				for {
-					if err := deps.WaitForApprovalPollContext(maintenanceCtx); err != nil {
-						if r.handleShutdownCancellation(err, "Update interrupted while waiting for approval.") {
-							return
-						}
-					}
-					approved := false
-					cancelledByUser := false
-					approvalTimedOut := false
+				if autoApproveScope != "" {
+					autoApproved := false
 					if deps.ServerState != nil {
 						deps.ServerState.Lock()
 						status := deps.ServerState.StatusMap()[r.server.Name]
-						if status != nil {
-							if status.Status == "approved" {
-								r.approvalScope = NormalizeApprovalScope(status.ApprovalScope)
-								r.approvalConfirmRemovals = status.ApprovalConfirmRemovals
-								r.approvedPackages = PackagesForApprovalScope(r.approvalScope, status.PendingUpdates)
-								approved = true
-							} else if status.Status == "cancelled" {
-								cancelledByUser = true
-								status.Status = "idle"
-								status.ApprovalScope = ""
-								status.ApprovalConfirmRemovals = false
-								status.Logs = ""
-								status.Upgradable = nil
-								status.PendingUpdates = nil
-								status.UpgradePlan = servers.UpgradePlan{}
-							} else if deps.Now().After(approvalDeadline) {
-								approvalTimedOut = true
-								status.Status = "idle"
-								status.ApprovalScope = ""
-								status.ApprovalConfirmRemovals = false
-								status.Logs = ""
-								status.Upgradable = nil
-								status.PendingUpdates = nil
-								status.UpgradePlan = servers.UpgradePlan{}
-							}
+						if status != nil && status.Status == "pending_approval" {
+							r.approvalScope = autoApproveScope
+							r.approvalConfirmRemovals = false
+							status.ApprovalScope = r.approvalScope
+							status.ApprovalConfirmRemovals = false
+							status.Status = "approved"
+							r.approvedPackages = append([]string(nil), autoApproval.SelectedPackages...)
+							autoApproved = true
 						}
 						deps.ServerState.Unlock()
 					}
-					if approved {
-						r.approvedAt = deps.Now()
-						break
-					}
-					if cancelledByUser {
+					if !autoApproved {
 						return
 					}
-					if approvalTimedOut {
-						jm := deps.CurrentJobManager()
-						if jm != nil && strings.TrimSpace(r.jobID) != "" {
-							jobStatus := jobs.StatusCancelled
-							phase := jobs.PhaseComplete
-							summary := "Approval window expired"
-							_ = jm.Transition(r.jobID, jobs.Intent{
-								Status:  &jobStatus,
-								Phase:   &phase,
-								Summary: &summary,
-							})
+					r.approvedAt = deps.Now()
+				} else {
+					r.closeSession()
+					approvalDeadline := deps.Now().Add(behavior.ApprovalTimeout)
+					for {
+						if err := deps.WaitForApprovalPollContext(maintenanceCtx); err != nil {
+							if r.handleShutdownCancellation(err, "Update interrupted while waiting for approval.") {
+								return
+							}
 						}
-						return
+						approved := false
+						cancelledByUser := false
+						approvalTimedOut := false
+						if deps.ServerState != nil {
+							deps.ServerState.Lock()
+							status := deps.ServerState.StatusMap()[r.server.Name]
+							if status != nil {
+								if status.Status == "approved" {
+									r.approvalScope = NormalizeApprovalScope(status.ApprovalScope)
+									r.approvalConfirmRemovals = status.ApprovalConfirmRemovals
+									r.approvedPackages = PackagesForApprovalScope(r.approvalScope, status.PendingUpdates)
+									approved = true
+								} else if status.Status == "cancelled" {
+									cancelledByUser = true
+									status.Status = "idle"
+									status.ApprovalScope = ""
+									status.ApprovalConfirmRemovals = false
+									status.Logs = ""
+									status.Upgradable = nil
+									status.PendingUpdates = nil
+									status.UpgradePlan = servers.UpgradePlan{}
+								} else if deps.Now().After(approvalDeadline) {
+									approvalTimedOut = true
+									status.Status = "idle"
+									status.ApprovalScope = ""
+									status.ApprovalConfirmRemovals = false
+									status.Logs = ""
+									status.Upgradable = nil
+									status.PendingUpdates = nil
+									status.UpgradePlan = servers.UpgradePlan{}
+								}
+							}
+							deps.ServerState.Unlock()
+						}
+						if approved {
+							r.approvedAt = deps.Now()
+							break
+						}
+						if cancelledByUser {
+							return
+						}
+						if approvalTimedOut {
+							jm := deps.CurrentJobManager()
+							if jm != nil && strings.TrimSpace(r.jobID) != "" {
+								jobStatus := jobs.StatusCancelled
+								phase := jobs.PhaseComplete
+								summary := "Approval window expired"
+								_ = jm.Transition(r.jobID, jobs.Intent{
+									Status:  &jobStatus,
+									Phase:   &phase,
+									Summary: &summary,
+								})
+							}
+							return
+						}
 					}
 				}
+
+				fresh, changed, err := r.revalidateApproval(discovery)
+				if err != nil {
+					if r.handleShutdownCancellation(err, "Update interrupted while revalidating approval.") {
+						return
+					}
+					r.lastErrClass = "approval_revalidation"
+					r.setErrorLogs(r.currentLogs() + fmt.Sprintf("\nApproval revalidation failed: %v", err))
+					return
+				}
+				discovery = fresh
+				r.upgradePlan = fresh.UpgradePlan
+				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
+				if discovery.Empty() {
+					if !r.refreshFactsAfterSuccessfulUpdate() {
+						return
+					}
+					_ = r.withStatus(func(status *servers.ServerStatus) {
+						status.Status = "done"
+						status.ApprovalScope = ""
+						status.ApprovalConfirmRemovals = false
+						status.Upgradable = nil
+						status.PendingUpdates = nil
+						status.UpgradePlan = servers.UpgradePlan{}
+						status.Logs += "\nNo packages remain after approval revalidation."
+					})
+					return
+				}
+				if (r.approvalScope == ApprovalScopeSecurity || r.approvalScope == ApprovalScopeSecurityKeptBack) && len(PackagesForApprovalScope(r.approvalScope, discovery.PendingUpdates)) == 0 {
+					changed = false
+				}
+
+				if !changed {
+					break
+				}
+				approvalChanged = true
+				r.approvedAt = time.Time{}
+				r.approvalConfirmRemovals = false
+				r.appendStatusLog("\nPackage or removal plan changed since approval. Review the refreshed plan and approve again.")
 			}
 
 			approvalRun := InterpretApprovedScope(r.approvalScope, discovery.PendingUpdates, r.upgradePlan, ApprovalScopeOptions{ConfirmRemovals: r.approvalConfirmRemovals})

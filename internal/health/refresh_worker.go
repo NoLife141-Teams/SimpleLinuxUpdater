@@ -78,6 +78,7 @@ func (o RefreshWorkerOptions) withDefaults() RefreshWorkerOptions {
 }
 
 type refreshRetryState struct {
+	endpoint    servers.ServerEndpoint
 	failures    int
 	nextAttempt time.Time
 }
@@ -191,6 +192,10 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 			delete(w.retries, name)
 			continue
 		}
+		endpoint := servers.NormalizeServerEndpoint(server.Host, server.Port)
+		if retry, ok := w.retries[name]; ok && retry.endpoint != endpoint {
+			delete(w.retries, name)
+		}
 		if w.retryPending(name, now) {
 			continue
 		}
@@ -205,6 +210,10 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 			}
 		}
 		w.recordRetry(name, attempt.State, now)
+		if retry, ok := w.retries[name]; ok {
+			retry.endpoint = endpoint
+			w.retries[name] = retry
+		}
 		w.deps.ObserveAttempt(server, attempt)
 	}
 }

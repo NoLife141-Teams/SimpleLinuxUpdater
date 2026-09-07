@@ -309,7 +309,7 @@ func TestAptListUpgradableCmdForcesCLocaleWithoutSudo(t *testing.T) {
 
 func TestBuildSelectedUpgradeCmdUsesValidatedTypedHelperOperation(t *testing.T) {
 	got := BuildSelectedUpgradeCmd([]string{"openssl", "libssl3:amd64"})
-	for _, required := range []string{"/usr/bin/apt-get", "install --only-upgrade -- 'openssl' 'libssl3:amd64'", RootHelperPath + " 'install-only-upgrade' 'openssl' 'libssl3:amd64'"} {
+	for _, required := range []string{"/usr/bin/apt-get", "install --only-upgrade --no-remove -- 'openssl' 'libssl3:amd64'", RootHelperPath + " 'install-only-upgrade-no-remove' 'openssl' 'libssl3:amd64'"} {
 		if !strings.Contains(got, required) {
 			t.Fatalf("BuildSelectedUpgradeCmd() = %q, missing %q", got, required)
 		}

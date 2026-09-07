@@ -772,7 +772,7 @@ func NewSessionManager(db *sql.DB, opts SessionManagerOptions) (*scs.SessionMana
 	}
 
 	sm := scs.New()
-	sm.Store = sqlite3store.New(db)
+	sm.Store = &revocationAwareSessionStore{SQLite3Store: sqlite3store.New(db), db: db}
 	sm.Lifetime = lifetime
 	sm.Cookie.Name = cookieName
 	sm.Cookie.HttpOnly = true

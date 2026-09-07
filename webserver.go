@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/aes"
@@ -468,7 +467,7 @@ func (g *sshCommandOutputGate) close() {
 
 type sshCommandOutputWriter struct {
 	mu         sync.Mutex
-	buffer     bytes.Buffer
+	buffer     updatespkg.OutputBuffer
 	stream     updatespkg.HostCommandOutputStream
 	onOutput   updatespkg.HostCommandOutputHandler
 	onActivity func()
@@ -505,7 +504,7 @@ func (w *sshCommandOutputWriter) String() string {
 	return w.buffer.String()
 }
 
-func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.Reader, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
+func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")
 	}
@@ -516,15 +515,15 @@ func runSSHCommandNoTimeoutStreaming(client sshConnection, cmd string, stdin io.
 	defer session.Close()
 	gate := newSSHCommandOutputGate(onOutput)
 	defer gate.close()
-	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
-	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit}
+	stdout := sshCommandOutputWriter{buffer: commandOutputBuffer(effect), stream: updatespkg.HostCommandStdout, onOutput: gate.emit}
+	stderr := sshCommandOutputWriter{buffer: commandOutputBuffer(effect), stream: updatespkg.HostCommandStderr, onOutput: gate.emit}
 	session.SetStdout(&stdout)
 	session.SetStderr(&stderr)
 	if stdin != nil {
 		session.SetStdin(stdin)
 	}
 	err = session.Run(cmd)
-	return stdout.String(), stderr.String(), err
+	return commandOutputResult(effect, cmd, &stdout, &stderr, err)
 }
 
 func runSSHCommandWithTimeout(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration) (string, string, error) {
@@ -577,7 +576,7 @@ func aptPackageManagerLockState(client sshConnection, commandTimeout time.Durati
 
 func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
 	if timeout <= 0 {
-		return runSSHCommandNoTimeoutStreaming(client, cmd, stdin, onOutput)
+		return runSSHCommandNoTimeoutStreaming(client, cmd, effect, stdin, onOutput)
 	}
 	if client == nil {
 		return "", "", errors.New("missing SSH connection")
@@ -637,8 +636,8 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect 
 		default:
 		}
 	}
-	stdout := sshCommandOutputWriter{stream: updatespkg.HostCommandStdout, onOutput: gate.emit, onActivity: signalActivity}
-	stderr := sshCommandOutputWriter{stream: updatespkg.HostCommandStderr, onOutput: gate.emit, onActivity: signalActivity}
+	stdout := sshCommandOutputWriter{buffer: commandOutputBuffer(effect), stream: updatespkg.HostCommandStdout, onOutput: gate.emit, onActivity: signalActivity}
+	stderr := sshCommandOutputWriter{buffer: commandOutputBuffer(effect), stream: updatespkg.HostCommandStderr, onOutput: gate.emit, onActivity: signalActivity}
 	session.SetStdout(&stdout)
 	session.SetStderr(&stderr)
 	if stdin != nil {
@@ -670,7 +669,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect 
 		select {
 		case runErr := <-runErrCh:
 			_ = session.Close()
-			return stdout.String(), stderr.String(), runErr
+			return commandOutputResult(effect, cmd, &stdout, &stderr, runErr)
 		case <-activityCh:
 			aptActivityObserved = true
 			resetIdleTimer()
@@ -687,7 +686,7 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect 
 				select {
 				case runErr := <-runErrCh:
 					_ = session.Close()
-					return stdout.String(), stderr.String(), runErr
+					return commandOutputResult(effect, cmd, &stdout, &stderr, runErr)
 				default:
 				}
 				select {
@@ -777,7 +776,7 @@ func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection
 		if client != nil {
 			_ = client.Close()
 		}
-		return "", "", ctx.Err()
+		return "", "", classifyCommandTimeout(effect, ctx.Err())
 	}
 }
 
@@ -1593,7 +1592,7 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
 	}
-	return jm.CreateJob(JobCreateParams{
+	record, err := jm.CreateJob(JobCreateParams{
 		Kind:            kind,
 		ServerName:      serverName,
 		Actor:           actor,
@@ -1603,6 +1602,10 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 		RetryPolicyJSON: marshalJobJSON(policy),
 		MetaJSON:        "{}",
 	})
+	if err == nil && state != nil && snapshot != nil && !state.BindActionJob(serverName, record.ID, snapshot.ActionGeneration) {
+		return JobRecord{}, errors.New("server action admission changed while creating job")
+	}
+	return record, err
 }
 
 func statusInProgress(status string) bool {
@@ -1703,27 +1706,6 @@ func uploadedKeyFormErrorStatus(err error) int {
 
 func stringsEqualConstantTime(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-func init() {
-	if err := loadServers(); err != nil {
-		log.Printf("Failed to load initial Server inventory: %v", err)
-	}
-	for _, s := range servers {
-		statusMap[s.Name] = &ServerStatus{
-			Name:           s.Name,
-			Host:           s.Host,
-			Port:           normalizePort(s.Port),
-			User:           s.User,
-			Status:         "idle",
-			Logs:           "",
-			Upgradable:     []string{},
-			PendingUpdates: []PendingUpdate{},
-			HasPassword:    s.Pass != "",
-			HasKey:         s.Key != "",
-			Tags:           s.Tags,
-		}
-	}
 }
 
 func runUpdateWithActor(server Server, actor, clientIP string, policy RetryPolicy) {

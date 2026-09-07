@@ -14,7 +14,7 @@ const (
 	LegacyAptSudoersPath    = "/etc/sudoers.d/apt-nopasswd"
 	rootHelperOwnerMarker   = "# Managed by SimpleLinuxUpdater; do not edit."
 	managedSudoersMarker    = "# Managed by SimpleLinuxUpdater; do not edit."
-	rootHelperScriptVersion = "1"
+	rootHelperScriptVersion = "2"
 )
 
 var (
@@ -51,9 +51,9 @@ func RootOrSudoHelperCommand(rootCommand, operation string, args ...string) stri
 
 func NonInteractiveAptSudoersSpec() string {
 	operations := []string{
-		"update", "upgrade", "full-upgrade", "autoremove", "repair",
+		"update", "upgrade", "full-upgrade", "full-upgrade-no-remove", "autoremove", "repair",
 		"lock-probe", "lock-probe-extended", "dpkg-audit", "apt-check",
-		"install *", "install-only-upgrade *", "reboot",
+		"install *", "install-only-upgrade *", "install-no-remove *", "install-only-upgrade-no-remove *", "reboot",
 	}
 	specs := make([]string, 0, len(operations))
 	for _, operation := range operations {
@@ -143,9 +143,20 @@ case "$operation" in
         require_no_args "$@"
         exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y full-upgrade
         ;;
+    full-upgrade-no-remove)
+        require_no_args "$@"
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold --no-remove -y full-upgrade
+        ;;
     autoremove)
         require_no_args "$@"
         exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y autoremove
+        ;;
+    install-no-remove|install-only-upgrade-no-remove)
+        require_packages "$@"
+        if [ "$operation" = install-only-upgrade-no-remove ]; then
+            exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold --no-remove -y install --only-upgrade -- "$@"
+        fi
+        exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold --no-remove -y install -- "$@"
         ;;
     install|install-only-upgrade)
         require_packages "$@"

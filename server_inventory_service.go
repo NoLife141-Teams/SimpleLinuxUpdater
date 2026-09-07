@@ -68,8 +68,8 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		dbPathProvider = dbPath
 	}
 	var service *ServerInventoryService = serverpkg.NewService(serverpkg.ServiceDeps{
-		State:      state,
-		Repository: newSchedulerRevisionServerRepository(dbProvider, encryptSecret, decryptSecret),
+		State:                          state,
+		Repository:                     newSchedulerRevisionServerRepository(dbProvider, encryptSecret, decryptSecret),
 		KnownHosts:                     appKnownHostsDeps(dbPathProvider),
 		PrunePolicyOverridesForServers: pruneUpdatePolicyOverridesForServersTx,
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,
@@ -77,6 +77,7 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenameJobsServer:               jobspkg.RenameServerTx,
 		RenameServerFacts:              observation.RenameServerTx,
 		DeleteServerFacts:              observation.DeleteServerTx,
+		InvalidateServerEndpoint:       observation.InvalidateEndpointTx,
 	})
 	service.SetLegacyImport(func() bool {
 		return loadLegacyServersIntoService(service, state)

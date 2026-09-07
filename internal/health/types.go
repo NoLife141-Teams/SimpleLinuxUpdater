@@ -2,6 +2,8 @@ package health
 
 // CollectedFacts is the transport-neutral health knowledge collected from a Server.
 type CollectedFacts struct {
+	ValidAfter                   string `json:"-"`
+	Endpoint                     string `json:"endpoint,omitempty"`
 	ServerName                   string `json:"server_name"`
 	CollectedAt                  string `json:"collected_at"`
 	OSPrettyName                 string `json:"os_pretty_name"`
@@ -20,6 +22,7 @@ type CollectedFacts struct {
 
 // Snapshot is one accepted, time-ordered health observation.
 type Snapshot struct {
+	Endpoint         string `json:"endpoint,omitempty"`
 	ID               int64  `json:"id,omitempty"`
 	ServerName       string `json:"server_name"`
 	CapturedAt       string `json:"captured_at"`

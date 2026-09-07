@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	serverpkg "debian-updater/internal/servers"
@@ -78,8 +77,8 @@ func (s *lifecycleHostMaintenanceSession) operationContext(ctx context.Context) 
 
 type lifecycleCommandCapture struct {
 	mu      sync.Mutex
-	stdout  strings.Builder
-	stderr  strings.Builder
+	stdout  updatespkg.OutputBuffer
+	stderr  updatespkg.OutputBuffer
 	forward updatespkg.HostCommandOutputHandler
 }
 

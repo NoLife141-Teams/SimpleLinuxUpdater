@@ -29,6 +29,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Multi-server management (custom SSH ports supported)
 - `apt update` + pending package listing, gated behind approval
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
+- Approval revalidation before execution, with renewed approval for changed package/removal sets and APT enforcement when removals are not approved
 - Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
 - Baseline and plan-aware disk/APT pre-checks before approval, including exact simulated size facts with a conservative fallback, plus post-update health checks
 - Durable APT reconciliation and guided repair after uncertain package-manager outcomes
@@ -93,6 +94,8 @@ Environment variables for job logs:
 
 - `DEBIAN_UPDATER_JOB_LOG_RETENTION_DAYS`: completed-job log retention in days (default `30`, allowed `1..3650`). Expiration removes detailed log content while preserving job status, summary, metadata, and timestamps.
 - `DEBIAN_UPDATER_JOB_LOG_MAX_BYTES`: maximum detailed log bytes persisted per job (default `2097152`, allowed `131072..1073741824`). Oversized logs retain their first 64 KiB and newest output with an explicit truncation marker.
+
+In-memory SSH diagnostics retain at most 256 KiB per stream plus a truncation marker; the live status log retains 32 KiB. Read-only output that must be parsed completely fails explicitly above 4 MiB per stream. These limits do not reduce the configured persisted job-log limit.
 
 Environment variable for host facts:
 

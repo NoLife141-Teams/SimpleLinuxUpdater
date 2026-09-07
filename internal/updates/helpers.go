@@ -110,7 +110,8 @@ func IsSudoPolicyError(message string) bool {
 	return strings.Contains(normalized, "a password is required") ||
 		strings.Contains(normalized, "not allowed to run sudo") ||
 		strings.Contains(normalized, "not allowed to execute") ||
-		strings.Contains(normalized, "is not in the sudoers file")
+		strings.Contains(normalized, "is not in the sudoers file") ||
+		strings.Contains(normalized, "refused: unknown operation")
 }
 
 func failedCheckResultsHaveSudoPolicyError(results []PrecheckResult, include func(string) bool) bool {
@@ -948,11 +949,11 @@ func ReadOnlyAptCommand(command string) string {
 }
 
 func BuildSelectedUpgradeCmd(packages []string) string {
-	return buildSelectedInstallCmd(packages, true)
+	return buildSelectedInstallCmd(packages, true, true)
 }
 
 func BuildSelectedInstallCmd(packages []string) string {
-	return buildSelectedInstallCmd(packages, false)
+	return buildSelectedInstallCmd(packages, false, false)
 }
 
 func BuildSelectedInstallSimulationCmd(packages []string) string {
@@ -963,7 +964,7 @@ func BuildSelectedInstallSimulationCmd(packages []string) string {
 	return ReadOnlyAptCommand("apt-get -o Debug::NoLocking=1 --print-uris --yes --download-only install -- " + strings.Join(escaped, " "))
 }
 
-func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
+func buildSelectedInstallCmd(packages []string, onlyUpgrade, noRemove bool) string {
 	selectors := validatedPackageSelectors(packages)
 	if len(selectors) == 0 {
 		return ""
@@ -973,6 +974,10 @@ func buildSelectedInstallCmd(packages []string, onlyUpgrade bool) string {
 	if onlyUpgrade {
 		rootCommand += " --only-upgrade"
 		operation = "install-only-upgrade"
+	}
+	if noRemove {
+		rootCommand += " --no-remove"
+		operation += "-no-remove"
 	}
 	rootCommand += " -- " + strings.Join(validatedShellEscapedPackageArgs(selectors), " ")
 	return RootOrSudoHelperCommand(rootCommand, operation, selectors...)

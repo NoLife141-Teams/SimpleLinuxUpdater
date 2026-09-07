@@ -91,13 +91,17 @@ Typical update:
 5. Standard simulation and read-only `--print-uris --download-only` full/kept-back planning determine pending packages, approval scopes, and APT size facts without fetching archives or changing packages.
 6. The plan-aware disk gate prefers APT's simulated archive and installed-size facts, checks the archive cache and installation paths by filesystem device, and falls back to the conservative package/new-package estimate when exact facts are incomplete or unsafe; it runs before approval is exposed.
 7. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
-8. Approval opens a fresh session, while cancellation or timeout finishes without reconnecting.
-9. The approved standard, security, kept-back security, or full-upgrade command runs with the explicit non-interactive policy through the active session.
-10. A mutating APT timeout remains attached while a second session proves the lock holder is active; an outcome that becomes uncertain is persisted as `needs_reconciliation` and is never replayed automatically.
+8. Approval reconnects when necessary and revalidates discovery, health and disk capacity. Changed selected packages or removals require renewed approval; cancellation or timeout finishes without reconnecting.
+9. The approved command runs through the active session. Targeted installations and full upgrades enforce `--no-remove` unless the current removal set was explicitly approved.
+10. A mutating APT timeout remains attached while a second session proves the lock holder is active. Missing SSH exit status and transport loss after possible dispatch also require reconciliation and disable automatic replay. Failures known to precede command execution retain their retry policy.
 11. Post-update health checks run when enabled.
 12. Job state, status map, audit metadata, server facts, and dashboard events are updated.
 
 Autoremove, sudoers enable/disable, CVE enrichment, and scheduled scans use the same job/status/report foundations.
+
+Server action admission assigns a generation and binds its job before dispatch. The maintenance runner retains admission through terminal persistence, runtime publication, session closure and audit recording. Runtime publication checks job identity and revision. SSH establishment carries caller cancellation through reconnect and bounds TCP plus handshake; successful connections have their negotiation deadline cleared.
+
+Package initialization does not open persistence. Runtime Composition loads inventory explicitly during router setup, allowing empty test processes to remain independent of the configured application database.
 
 ## Scheduled policies
 

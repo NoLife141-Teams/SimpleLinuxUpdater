@@ -43,6 +43,13 @@ to the tag, so older tags cannot replace the current policy.
    Only then is that same digest assigned to `vX.Y.Z`, conditionally to `latest`,
    and finally announced by publishing the GitHub Release.
 
+The Docker qualification runner uses the containerd image store. The classic
+`overlay2` image store cannot retain both platforms under one manifest-list
+digest and can fail with `cannot overwrite digest` when loading the second
+architecture. CI uses the same Docker 28.0.4/containerd configuration and loads
+one local amd64/arm64 build, then runs both smokes against its immutable image ID
+without registry credentials or a push. QEMU and all setup actions remain pinned.
+
 Candidate references in a public registry are publicly accessible but are not
 announced as validated versions. No rebuild occurs between qualification and
 promotion. HTTP/authentication failures are fatal; only an explicit manifest

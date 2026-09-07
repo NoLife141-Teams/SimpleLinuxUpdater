@@ -241,10 +241,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Docker with multi-platform image store
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        with:
+          version: v28.0.4
+          daemon-config: |
+            {"features":{"containerd-snapshotter":true}}
+      - name: Set up QEMU for runtime verification
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+          cache-image: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Build container without publishing
-        run: docker build --platform linux/amd64 -t slu-smoke:ci .
+        run: docker buildx build --platform linux/amd64,linux/arm64 --pull --no-cache-filter runtime --load -t slu-smoke:ci .
       - name: Verify startup, privileges and persistence
-        run: tools/ci/docker-smoke.sh slu-smoke:ci linux/amd64
+        run: |
+          image="$(docker image inspect slu-smoke:ci --format '{{.Id}}')"
+          for platform in linux/amd64 linux/arm64; do
+            tools/ci/docker-smoke.sh "$image" "$platform"
+          done
 
       - name: Retain Docker diagnostics
         if: failure()

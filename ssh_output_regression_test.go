@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -40,6 +41,75 @@ func TestSSHOutputLimitDrainsMutationAndRejectsIncompleteParsedOutput(t *testing
 			}
 		} else if err != nil {
 			t.Fatalf("successful streamed mutation failed: %v", err)
+		}
+	}
+}
+
+func TestMetadataRefreshAndRepairPersistCompleteStreamedOutput(t *testing.T) {
+	for _, kind := range []string{jobKindUpdate, jobKindAptRepair} {
+		for _, fail := range []bool{false, true} {
+			name := kind + "/success"
+			if fail {
+				name = kind + "/transport_loss"
+			}
+			t.Run(name, func(t *testing.T) {
+				app := newIsolatedTestApp(t)
+				server, err := app.Deps.ServerInventoryService.Create(Server{Name: "large-command-log", Host: "192.0.2.94", User: "root"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				payload := "COMPLETE HEAD\n" + strings.Repeat("package diagnostic\n", 24000) + "COMPLETE TAIL\n"
+				stderrPayload := "STDERR HEAD\n" + strings.Repeat("stderr diagnostic\n", 18000) + "STDERR TAIL\n"
+				conn := &reviewMutationConn{output: payload, stderrOutput: stderrPayload}
+				if fail {
+					conn.err = &ssh.ExitMissingError{}
+				}
+				transport := newHostMaintenanceSessionFactory(func(Server) ([]ssh.AuthMethod, error) { return nil, nil }, func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil }, func(Server, *ssh.ClientConfig) (sshConnection, error) { return conn, nil })
+				var auditMeta map[string]any
+				service := NewUpdateService(UpdateServiceDeps{
+					ServerState: app.Deps.ServerState, CurrentJobManager: app.Deps.CurrentJobManager,
+					HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(ctx context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+						real, err := transport.Open(ctx, req)
+						if err != nil {
+							return nil, err
+						}
+						return &HostMaintenanceSessionFuncs{RunCommandFunc: real.RunCommand, CloseFunc: real.Close}, nil
+					}),
+					SaveServerFacts: func(serverFactsRecord) error { return nil },
+					AuditWithActor:  func(_, _, _, _, _, _, _ string, meta map[string]any) { auditMeta = meta },
+				})
+				policy := RetryPolicy{MaxAttempts: 1}
+				job, err := createServerActionJobWithStateAndManager(app.Deps.CurrentJobManager(), app.Deps.ServerState, kind, server.Name, "review", "", policy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == jobKindUpdate {
+					service.RunUpdateJob(UpdateRunRequest{Server: server, JobID: job.ID, Policy: policy})
+				} else {
+					service.RunAptRepairJob(AptRepairRunRequest{Server: server, JobID: job.ID, Policy: policy})
+				}
+				stored, err := app.Deps.CurrentJobManager().GetJobWithLogs(job.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Count(stored.LogsText, payload) != 1 || strings.Count(stored.LogsText, stderrPayload) != 1 {
+					t.Errorf("complete command output was lost or duplicated: retained=%d payload=%d", len(stored.LogsText), len(payload))
+				}
+				status := app.Deps.ServerState.CurrentStatusSnapshot(server.Name)
+				if len(status.Logs) > updatespkg.LiveStatusLogLimit {
+					t.Fatal("live preview exceeded its memory bound")
+				}
+				wantStatus, wantError := "done", "none"
+				if fail {
+					wantStatus, wantError = "needs_reconciliation", "reconciliation_required"
+					if kind == jobKindUpdate {
+						wantStatus, wantError = "error", "transient"
+					}
+				}
+				if status.Status != wantStatus || auditMeta["last_error_class"] != wantError {
+					t.Fatalf("status=%s audit=%+v", status.Status, auditMeta)
+				}
+			})
 		}
 	}
 }

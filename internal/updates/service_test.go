@@ -447,7 +447,7 @@ func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(
 			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1002"}},
 		},
 	} {
-		if !service.updatePendingPackageVulnerabilityAssessment("srv", update) {
+		if !service.updatePendingPackageVulnerabilityAssessment("srv", pendingApprovalIdentity{}, update) {
 			t.Fatalf("updatePendingPackageVulnerabilityAssessment(%q) = false", update.InstallPackage)
 		}
 	}

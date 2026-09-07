@@ -24,6 +24,16 @@ func approvalRemovals(scope string, plan servers.UpgradePlan) []string {
 	return nil
 }
 
+func approvalNewPackages(scope string, plan servers.UpgradePlan) []string {
+	if scope == ApprovalScopeFullUpgrade {
+		return plan.FullUpgradeNewPackages
+	}
+	if scope == ApprovalScopeSecurityKeptBack {
+		return plan.KeptBackSecurityNewPackages
+	}
+	return nil
+}
+
 func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (PackageDiscoveryOutcome, bool, error) {
 	ctx := r.maintenanceContext()
 	if r.session == nil && !r.setupSSH("update.ssh_dial") {
@@ -50,6 +60,7 @@ func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (
 		return fresh, false, fmt.Errorf("approval revalidation disk pre-check failed: %s", disk.Details)
 	}
 	changed := !approvalPackageSetsEqual(approvalRemovals(r.approvalScope, previous.UpgradePlan), approvalRemovals(r.approvalScope, fresh.UpgradePlan)) ||
+		!approvalPackageSetsEqual(approvalNewPackages(r.approvalScope, previous.UpgradePlan), approvalNewPackages(r.approvalScope, fresh.UpgradePlan)) ||
 		!approvalPackageSetsEqual(PackagesForApprovalScope(r.approvalScope, previous.PendingUpdates), PackagesForApprovalScope(r.approvalScope, fresh.PendingUpdates))
 	return fresh, changed, nil
 }

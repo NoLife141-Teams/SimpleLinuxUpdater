@@ -101,6 +101,7 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 
 type ServerStatus struct {
 	ActionGeneration        uint64          `json:"-"`
+	ApprovalGeneration      uint64          `json:"-"`
 	ActionRunning           bool            `json:"-"`
 	JobRevision             int64           `json:"-"`
 	Name                    string          `json:"name"`

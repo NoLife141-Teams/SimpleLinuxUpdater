@@ -155,14 +155,16 @@ func TestReviewRevokedSessionCannotBeResurrectedByInflightRequest(t *testing.T) 
 }
 
 type reviewMutationConn struct {
-	mu       sync.Mutex
-	commands int
-	output   string
-	err      error
+	mu           sync.Mutex
+	commands     int
+	output       string
+	stderrOutput string
+	err          error
 }
 type reviewMutationSession struct {
 	conn   *reviewMutationConn
 	stdout io.Writer
+	stderr io.Writer
 }
 
 func (c *reviewMutationConn) NewSession() (sshSessionRunner, error) {
@@ -171,7 +173,7 @@ func (c *reviewMutationConn) NewSession() (sshSessionRunner, error) {
 func (c *reviewMutationConn) Close() error             { return nil }
 func (s *reviewMutationSession) SetStdin(io.Reader)    {}
 func (s *reviewMutationSession) SetStdout(w io.Writer) { s.stdout = w }
-func (s *reviewMutationSession) SetStderr(io.Writer)   {}
+func (s *reviewMutationSession) SetStderr(w io.Writer) { s.stderr = w }
 func (s *reviewMutationSession) Close() error          { return nil }
 func (s *reviewMutationSession) Run(string) error {
 	s.conn.mu.Lock()
@@ -182,6 +184,9 @@ func (s *reviewMutationSession) Run(string) error {
 		output = "Removing old-package (1.0) ...\n"
 	}
 	_, _ = io.WriteString(s.stdout, output)
+	if s.conn.stderrOutput != "" {
+		_, _ = io.WriteString(s.stderr, s.conn.stderrOutput)
+	}
 	return s.conn.err
 }
 func TestReviewAPTTransportLossRequiresReconciliation(t *testing.T) {

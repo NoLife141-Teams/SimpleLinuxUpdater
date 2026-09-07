@@ -1,11 +1,12 @@
 package updates
 
 import (
-	"debian-updater/internal/jobs"
-	"debian-updater/internal/servers"
 	"errors"
 	"strings"
 	"testing"
+
+	"debian-updater/internal/jobs"
+	"debian-updater/internal/servers"
 )
 
 func TestOutputBufferRetainsHeadAndTailAcrossChunkBoundaries(t *testing.T) {

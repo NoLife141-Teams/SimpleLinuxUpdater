@@ -10,6 +10,7 @@ import (
 	"time"
 
 	updatespkg "debian-updater/internal/updates"
+
 	"golang.org/x/crypto/ssh"
 )
 

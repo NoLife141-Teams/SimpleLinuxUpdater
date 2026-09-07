@@ -373,9 +373,11 @@ func (r SQLiteObservation) latestSnapshots(serverName string) (map[string]Snapsh
 		        WHERE candidate.server_name = snapshot.server_name
 		        ORDER BY candidate.captured_at DESC, candidate.id DESC
 		        LIMIT 1
-         ) AND NOT EXISTS (SELECT 1 FROM server_health_endpoints e
-         WHERE e.server_name = snapshot.server_name AND
-         (snapshot.endpoint <> e.endpoint OR julianday(snapshot.captured_at) < julianday(e.changed_at)))`
+		       ) AND NOT EXISTS (
+		       SELECT 1 FROM server_health_endpoints e
+		        WHERE e.server_name = snapshot.server_name AND
+		              (snapshot.endpoint <> e.endpoint OR julianday(snapshot.captured_at) < julianday(e.changed_at))
+		       )`
 	args := []any{}
 	if strings.TrimSpace(serverName) != "" {
 		query += " AND snapshot.server_name = ?"
@@ -556,7 +558,8 @@ func insertHealthSnapshot(exec healthSnapshotExecer, record Snapshot) error {
 			server_name, captured_at, source, package_count, security_count,
 			last_scan_status, last_update_status, disk_status, disk_free_kb, disk_total_kb,
 			apt_status, reboot_required, os_pretty_name, raw_json, endpoint
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT endpoint FROM server_health_endpoints WHERE server_name = ?), ''))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		          COALESCE((SELECT endpoint FROM server_health_endpoints WHERE server_name = ?), ''))
 	`,
 		record.ServerName,
 		record.CapturedAt,

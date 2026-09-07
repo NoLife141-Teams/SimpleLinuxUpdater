@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	jobspkg "debian-updater/internal/jobs"
-	serverpkg "debian-updater/internal/servers"
-	updatespkg "debian-updater/internal/updates"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +14,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	jobspkg "debian-updater/internal/jobs"
+	serverpkg "debian-updater/internal/servers"
+	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"

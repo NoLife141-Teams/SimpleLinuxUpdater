@@ -112,7 +112,7 @@ jobs:
         if: always() && matrix.name == 'cover'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-coverage
+          name: ci-coverage-${{ github.run_attempt }}
           path: coverage.out
           retention-days: 7
 
@@ -227,7 +227,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ci-playwright
+          name: ci-playwright-${{ github.run_attempt }}
           path: |
             playwright-report/
             test-results/

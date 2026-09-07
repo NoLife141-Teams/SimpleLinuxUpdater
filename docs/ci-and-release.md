@@ -5,6 +5,8 @@ alignment and path selection; frontend quality combines npm audit and Node unit
 tests. Go tests, Go quality, Playwright and Docker must succeed when selected,
 and must be skipped otherwise. Pushes to `main` run all checks. CodeQL remains
 a separate GitHub protection.
+The helper regression tests use Bash and Python 3 on Linux/macOS and skip on
+Windows, matching the existing release-lineage script tests.
 
 The Go filter includes scripts, templates, static resources and documentation
 inspected by architecture tests. Docker validation builds amd64 without registry
@@ -15,6 +17,7 @@ only its own temporary container and volume.
 Playwright and the cache action share an absolute directory under `RUNNER_TEMP`.
 OS dependencies are installed each time with shared APT retry settings. Coverage
 and Playwright reports/traces are retained for seven days, including failed runs.
+Artifact names include the attempt number so retries preserve earlier diagnostics.
 Temporary application databases are excluded. Playwright keeps one CI worker.
 
 ## Publication sequence
@@ -58,6 +61,8 @@ The Docker builder runs on `BUILDPLATFORM`, cross-compiling both executables wit
 `TARGETOS` and `TARGETARCH`. Runtime package installation and smoke tests still
 execute on each target architecture. Toolchain alignment checks the new builder
 form against the exact Go version in `go.mod`.
+The runtime stage upgrades installed Alpine packages before adding its runtime
+dependencies, so a cached base image does not retain already-fixed packages.
 
 Race and coverage remain separate CI matrix entries. Combining them requires
 comparable timing and coverage measurements; fewer commands alone do not imply

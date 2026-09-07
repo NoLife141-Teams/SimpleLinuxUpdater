@@ -4,11 +4,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestCIRequiredRejectsUnexpectedJobResults(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("CI helper scripts target the Linux GitHub Actions runner")
+	}
 	workflow := readWorkflowForTest(t, ".github/workflows/ci.yml")
 	job := workflowJobForTest(t, workflow, "ci-required", "")
 	_, body, ok := strings.Cut(job, "        run: |\n")
@@ -66,6 +70,9 @@ func TestCIRequiredRejectsUnexpectedJobResults(t *testing.T) {
 }
 
 func TestReleasePublicationPolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release publication targets the Linux GitHub Actions runner")
+	}
 	cmd := exec.Command("python3", "-m", "unittest", "discover", "-s", "tools/release", "-p", "test_*.py", "-v")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("publication policy regression: %v\n%s", err, output)
@@ -73,6 +80,9 @@ func TestReleasePublicationPolicy(t *testing.T) {
 }
 
 func TestCoverageScriptRejectsMalformedAndLowCoverage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("coverage helper targets the Linux GitHub Actions runner")
+	}
 	root := t.TempDir()
 	mock := filepath.Join(root, "go")
 	if err := os.WriteFile(mock, []byte("#!/bin/sh\nprintf 'total: (statements) %s\\n' \"$TEST_COVERAGE\"\n"), 0755); err != nil {

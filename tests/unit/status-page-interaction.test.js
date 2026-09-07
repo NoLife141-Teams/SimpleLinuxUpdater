@@ -941,3 +941,12 @@ test("browser adapters do not restore superseded action globals or DOM-derived b
         "dashboardExtraErrors"
     ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain owned by Status Page Interaction`));
 });
+
+test("status sort captures newly arriving hosts without changing existing keys", () => {
+    const store = createStore();
+    store.dispatch({ type: "sortChanged", key: "status" });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "zulu", status: "done" }, { name: "alpha", status: "updating" }] });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "alpha"]);
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "zulu", status: "updating" }, { name: "alpha", status: "done" }, { name: "new", status: "error" }] });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "new", "alpha"]);
+});

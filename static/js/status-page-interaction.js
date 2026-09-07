@@ -371,6 +371,12 @@
             serversByName = new Map(servers.map(server => [server.name, server]));
             const effects = [];
             const retainedNames = new Set(servers.map(server => server.name));
+            statusSortValues.forEach((_, name) => {
+                if (!retainedNames.has(name)) statusSortValues.delete(name);
+            });
+            servers.forEach(server => {
+                if (!statusSortValues.has(server.name)) statusSortValues.set(server.name, server.status);
+            });
             Array.from(jobLogsByServer.keys()).forEach(name => {
                 if (!retainedNames.has(name)) jobLogsByServer.delete(name);
             });

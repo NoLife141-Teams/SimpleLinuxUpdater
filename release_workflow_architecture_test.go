@@ -155,7 +155,7 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 		}
 	}
 	docker := workflowJobForTest(t, release, "publish-docker", "")
-	if !workflowStepsOrdered(docker, "Plan publication before registry writes", "Build and push candidate image", "Qualify digest and finalize coordinated publication") {
+	if !workflowStepsOrdered(docker, "Plan publication before registry writes", "Build and push candidate image", "Qualify digest and promote image") {
 		t.Error("publication must plan before building and qualify before finalization")
 	}
 	for _, required := range []string{"if: steps.publication.outputs.mode == 'build'", "tags: ${{ steps.publication.outputs.candidate }}", "no-cache-filters: runtime", "pull: true", "steps.publication.outputs.digest || steps.build.outputs.digest"} {
@@ -211,7 +211,7 @@ func workflowStepsOrdered(source string, steps ...string) bool {
 }
 
 func TestPublicationOrderDetectsRemovedAndReorderedSteps(t *testing.T) {
-	steps := []string{"Plan publication before registry writes", "Build and push candidate image", "Qualify digest and finalize coordinated publication"}
+	steps := []string{"Plan publication before registry writes", "Build and push candidate image", "Qualify digest and promote image"}
 	source := readWorkflowForTest(t, ".github/workflows/release.yml")
 	for _, step := range steps {
 		if workflowStepsOrdered(strings.Replace(source, step, "removed", 1), steps...) {

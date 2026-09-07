@@ -12,6 +12,10 @@ env:
   RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
   RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
 
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+
 jobs:
   release-gate:
     if: >-
@@ -19,11 +23,11 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
       GO_COVERAGE_THRESHOLD: '73.0'
-      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
       PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
     steps:
       - name: Checkout
@@ -34,6 +38,9 @@ jobs:
 
       - name: Verify trusted release signal and main ancestry
         run: tools/release/verify-tag-on-main.sh
+
+      - name: Preserve trusted validation and publication helpers
+        run: cp -R tools "$RUNNER_TEMP/trusted-tools"
 
       - name: Check out verified release commit
         run: git checkout --detach "$RELEASE_SHA"
@@ -50,11 +57,14 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Set absolute Playwright browser directory
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+
       - name: Cache Playwright browser
         id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ms-playwright
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
           key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
 
       - name: Install release tooling
@@ -66,6 +76,9 @@ jobs:
 
       - name: Install UI dependencies
         run: npm ci
+
+      - name: Configure APT network resilience
+        run: bash "$RUNNER_TEMP/trusted-tools/ci/configure-apt.sh"
 
       - name: Install Playwright browser and OS dependencies
         if: steps.playwright-cache.outputs.cache-hit != 'true'
@@ -82,27 +95,31 @@ jobs:
           staticcheck ./...
           govulncheck ./...
           actionlint
-          go test -count=1 ./...
           go test -race -count=1 ./...
           go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
-          coverage_summary="$(go tool cover -func=coverage.out | tail -n 1)"
-          measured="$(printf '%s\n' "$coverage_summary" | awk '{ value = $NF; sub(/%$/, "", value); print value }')"
-          case "$measured" in
-            ''|*[!0-9.]*)
-              echo "::error::Unable to parse total Go coverage from: $coverage_summary"
-              exit 1
-              ;;
-          esac
-          printf 'Measured Go coverage: %s%%; required minimum: %s%%\n' "$measured" "$GO_COVERAGE_THRESHOLD"
-          if ! awk -v measured="$measured" -v threshold="$GO_COVERAGE_THRESHOLD" \
-            'BEGIN { exit !(measured + 0 >= threshold + 0) }'; then
-            echo "::error::Measured Go coverage ${measured}% is below required minimum ${GO_COVERAGE_THRESHOLD}%"
-            exit 1
-          fi
+          bash "$RUNNER_TEMP/trusted-tools/ci/check-coverage.sh"
           go build -o webserver .
           npm run test:unit
           npm audit --audit-level=moderate
           npm run test:e2e
+
+      - name: Retain Playwright diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-playwright
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Retain coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-coverage
+          path: coverage.out
+          retention-days: 7
 
       - name: Verify release metadata
         run: |
@@ -137,6 +154,7 @@ jobs:
   publish-release:
     needs: release-gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -148,6 +166,9 @@ jobs:
 
       - name: Verify trusted release signal and main ancestry
         run: tools/release/verify-tag-on-main.sh
+
+      - name: Preserve trusted validation and publication helpers
+        run: cp -R tools "$RUNNER_TEMP/trusted-tools"
 
       - name: Check out verified release commit
         run: git checkout --detach "$RELEASE_SHA"
@@ -225,9 +246,19 @@ jobs:
           fi
           echo "path=$NOTES_FILE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate archives
+        run: bash "$RUNNER_TEMP/trusted-tools/release/verify-archives.sh"
+
+      - name: Refuse replacement of an already published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$RUNNER_TEMP/trusted-tools/release/publication-policy.py" draft
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          draft: true
+          make_latest: false
           tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ env.RELEASE_SHA }}
           body_path: ${{ steps.release_notes.outputs.path }}
@@ -239,8 +270,9 @@ jobs:
   publish-docker:
     needs: [release-gate, publish-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - name: Checkout
@@ -252,8 +284,14 @@ jobs:
       - name: Verify trusted release signal and main ancestry
         run: tools/release/verify-tag-on-main.sh
 
+      - name: Preserve trusted validation and publication helpers
+        run: cp -R tools "$RUNNER_TEMP/trusted-tools"
+
       - name: Check out verified release commit
         run: git checkout --detach "$RELEASE_SHA"
+
+      - name: Set up QEMU for runtime verification
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -278,11 +316,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }}
-            type=raw,value=latest
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -295,3 +334,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify published version on both architectures
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          bash "$RUNNER_TEMP/trusted-tools/ci/docker-smoke.sh" "$IMAGE@$DIGEST" linux/amd64
+          bash "$RUNNER_TEMP/trusted-tools/ci/docker-smoke.sh" "$IMAGE@$DIGEST" linux/arm64
+
+      - name: Finalize coordinated publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: python3 "$RUNNER_TEMP/trusted-tools/release/publication-policy.py" finalize

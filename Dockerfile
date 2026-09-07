@@ -1,11 +1,13 @@
 # Build stage
-FROM golang:1.26.6-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o webserver . \
-    && CGO_ENABLED=0 GOOS=linux go build -o persistence-owner ./cmd/persistence-owner
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o webserver . \
+    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o persistence-owner ./cmd/persistence-owner
 
 # Runtime stage
 FROM alpine:3.24

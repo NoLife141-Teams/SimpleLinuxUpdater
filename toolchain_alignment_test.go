@@ -28,7 +28,7 @@ func canonicalGoVersion(t *testing.T) string {
 func TestDockerBuilderMatchesCanonicalGoVersion(t *testing.T) {
 	canonical := canonicalGoVersion(t)
 	dockerfile := readToolchainFile(t, "Dockerfile")
-	match := regexp.MustCompile(`(?m)^FROM\s+golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine\s+AS\s+builder\s*$`).FindStringSubmatch(dockerfile)
+	match := regexp.MustCompile(`(?m)^FROM\s+--platform=\$BUILDPLATFORM\s+golang:([0-9]+\.[0-9]+\.[0-9]+)-alpine\s+AS\s+builder\s*$`).FindStringSubmatch(dockerfile)
 	if len(match) != 2 {
 		t.Fatal("Dockerfile must use one exact golang patch-level alpine builder tag")
 	}
@@ -42,10 +42,10 @@ func TestGoToolchainValidationIsRequiredInCIAndRelease(t *testing.T) {
 	release := readToolchainFile(t, ".github/workflows/release.yml")
 
 	for _, required := range []string{
-		"toolchain-alignment:",
+		"preflight:",
 		"run: tools/ci/verify-go-toolchain.sh",
-		"TOOLCHAIN_ALIGNMENT_RESULT: ${{ needs.toolchain-alignment.result }}",
-		`test "$TOOLCHAIN_ALIGNMENT_RESULT" = success`,
+		"CHANGES_RESULT: ${{ needs.preflight.result }}",
+		`test "$CHANGES_RESULT" = success`,
 	} {
 		if !strings.Contains(ci, required) {
 			t.Errorf("CI does not require Go toolchain alignment contract %q", required)

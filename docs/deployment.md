@@ -124,7 +124,7 @@ If an attacker obtains both the SQLite DB and the encryption key file, stored se
 5. Deploy the new version with the same `/data` volume or binary data directory.
 6. Confirm login, server inventory, Status health, scheduled policies, notification settings, and `/metrics` credential state before starting maintenance.
 
-Prefer immutable `vX.Y.Z` image tags for controlled deployments. The `latest` tag follows the newest published release and is less suitable when rollback reproducibility matters.
+Prefer immutable `vX.Y.Z` image tags for controlled deployments. The `latest` tag advances only for the highest eligible stable version under the [publication policy](ci-and-release.md#publication-sequence) and is less suitable when rollback reproducibility matters. A newer pending or draft version prevents older attempts from taking `latest`.
 
 ## Single-instance operation
 

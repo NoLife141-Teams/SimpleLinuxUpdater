@@ -242,10 +242,11 @@ func TestSecurityAuditScansDistributedDigestWithoutRebuilding(t *testing.T) {
 // This intentionally checks the project's literal base-image contract, not ARG expansion.
 func finalRuntimeStageIsAlpine(source string) bool {
 	var finalFrom []string
+	escapeDirective := regexp.MustCompile(`(?i)^#\s*escape\s*=\s*(\S+)\s*$`)
 	logicalLine := ""
 	for _, line := range strings.Split(source, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "# escape=") && line != `# escape=\` {
+		if directive := escapeDirective.FindStringSubmatch(line); directive != nil && directive[1] != `\` {
 			return false // Custom escapes need a parser extension, not a guessed stage.
 		}
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -291,6 +292,10 @@ func TestFinalRuntimeStageIsAlpine(t *testing.T) {
 		{"case and whitespace", "  from\talpine:3.25 as runtime\n", true},
 		{"platform", "FROM --platform=$TARGETPLATFORM alpine:3.25 AS runtime\n", true},
 		{"builder then runtime", "FROM golang:1.26.6 AS builder\nFROM alpine:3.25 AS runtime\n", true},
+		{"custom escape mixed case", "# Escape=`\nFROM alpine:3.24 AS runtime\nARG VALUE=\\\nFROM debian:stable AS final\n", false},
+		{"custom escape no space", "#escape=`\nFROM alpine:3.24 AS runtime\nENV VALUE=\\\nFROM debian:stable AS final\n", false},
+		{"custom escape spaced", "# ESCAPE = `\nFROM alpine:3.24 AS runtime\nARG VALUE=\\\nFROM debian:stable AS final\n", false},
+		{"default escape spaced", "# EsCaPe = \\\nFROM alpine:3.25 AS runtime\n", true},
 		{"no stage", "# Empty Dockerfile\n", false},
 		{"unnamed", "FROM alpine:3.24\n", false},
 		{"renamed", "FROM alpine:3.24 AS production\n", false},

@@ -1696,7 +1696,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(cveRows.first()).toHaveAttribute('data-name', 'cve-host');
   });
 
-  test('maintenance queue starts with recommended actions and lets the operator reverse the order', async ({ page }) => {
+  test('maintenance queue starts by name and lets the operator reverse the order', async ({ page }) => {
     const servers = [
       makeServer('healthy-host', 'done'),
       makeServer('monitor-host', 'upgrading'),
@@ -1710,25 +1710,15 @@ test.describe.serial('setup and login flows', () => {
 
     const rows = page.locator('#servers-table tbody tr[data-name]');
     await expect(rows).toHaveCount(6);
-    await expect(page.locator('#servers-table th[data-sort-key="recommendation"]')).toHaveAttribute('aria-sort', 'descending');
+    await expect(page.locator('#servers-table th[data-sort-key="name"]')).toHaveAttribute('aria-sort', 'ascending');
     await expect.poll(() => rows.evaluateAll(elements => elements.map(element => element.dataset.name))).toEqual([
-      'repair-host',
-      'failure-host',
-      'approval-host',
-      'refresh-host',
-      'monitor-host',
-      'healthy-host',
+      'approval-host', 'failure-host', 'healthy-host', 'monitor-host', 'refresh-host', 'repair-host',
     ]);
 
-    await page.getByRole('button', { name: 'Sort by recommended action' }).click();
-    await expect(page.locator('#servers-table th[data-sort-key="recommendation"]')).toHaveAttribute('aria-sort', 'ascending');
+    await page.getByRole('button', { name: 'Sort by Server' }).click();
+    await expect(page.locator('#servers-table th[data-sort-key="name"]')).toHaveAttribute('aria-sort', 'descending');
     await expect.poll(() => rows.evaluateAll(elements => elements.map(element => element.dataset.name))).toEqual([
-      'healthy-host',
-      'monitor-host',
-      'refresh-host',
-      'approval-host',
-      'failure-host',
-      'repair-host',
+      'repair-host', 'refresh-host', 'monitor-host', 'healthy-host', 'failure-host', 'approval-host',
     ]);
   });
 

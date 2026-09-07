@@ -52,8 +52,10 @@ func TestReviewSSHHandshakeHonorsConfiguredTimeout(t *testing.T) {
 				}
 				done <- e
 			}()
+			var peer net.Conn
 			select {
 			case c := <-accepted:
+				peer = c
 				defer c.Close()
 			case <-time.After(time.Second):
 				t.Fatal("no accepted connection")
@@ -65,6 +67,7 @@ func TestReviewSSHHandshakeHonorsConfiguredTimeout(t *testing.T) {
 				}
 			case <-time.After(500 * time.Millisecond):
 				cancel()
+				_ = peer.Close() // Also release a regressed, non-cancellable host-key scan.
 				<-done
 				t.Fatal("SSH handshake still blocked at 10x the configured connect timeout")
 			}

@@ -20,79 +20,37 @@ test("snapshot intake clones adapter-owned data", () => {
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
 });
 
-test("recommended actions order the default maintenance queue by operator priority", () => {
+test("maintenance rows keep their positions across activity and recommendation changes", () => {
     const store = createStore();
-    store.dispatch({
-        type: "serversSnapshotReceived",
-        servers: [
-            { name: "healthy", status: "done" },
-            { name: "monitor", status: "upgrading" },
-            { name: "refresh", status: "done" },
-            { name: "reboot", status: "done" },
-            { name: "approval", status: "pending_approval" },
-            { name: "failure", status: "error" },
-            { name: "disk", status: "error" },
-            { name: "sudo", status: "error" },
-            { name: "repair", status: "needs_reconciliation" }
-        ]
-    });
-    store.dispatch({
-        type: "dashboardSnapshotReceived",
-        snapshot: {
-            servers: [
-                { name: "healthy", recommended_action: { key: "healthy" } },
-                { name: "monitor", recommended_action: { key: "monitor_apt" } },
-                { name: "refresh", recommended_action: { key: "refresh_host_facts" } },
-                { name: "reboot", recommended_action: { key: "reboot_and_verify" } },
-                { name: "approval", recommended_action: { key: "review_approval" } },
-                { name: "failure", recommended_action: { key: "review_failure" } },
-                { name: "disk", recommended_action: { key: "review_disk_capacity" } },
-                { name: "sudo", recommended_action: { key: "enable_apt_access" } },
-                { name: "repair", recommended_action: { key: "repair_package_state" } }
-            ]
-        }
-    });
-
-    const view = store.getView();
-    assert.deepEqual(view.visibleServers.map(server => server.name), [
-        "repair", "sudo", "disk", "failure", "approval", "reboot", "refresh", "monitor", "healthy"
-    ]);
-    assert.deepEqual(view.sort, { key: "recommendation", dir: "desc" });
-});
-
-test("recommended action sorting is deterministic and remains operator controlled", () => {
-    const store = createStore();
-    store.dispatch({
-        type: "serversSnapshotReceived",
-        servers: [
-            { name: "zulu", status: "error" },
-            { name: "alpha", status: "error" },
-            { name: "healthy", status: "done" }
-        ]
-    });
-    store.dispatch({
-        type: "dashboardSnapshotReceived",
-        snapshot: {
-            servers: [
-                { name: "zulu", recommended_action: { key: "review_failure" } },
-                { name: "alpha", recommended_action: { key: "review_failure" } },
-                { name: "healthy", recommended_action: { key: "healthy" } }
-            ]
-        }
-    });
-
-    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "zulu", "healthy"]);
-    store.dispatch({ type: "sortChanged", key: "recommendation" });
-    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["healthy", "alpha", "zulu"]);
+    const snapshot = (status, key) => {
+        store.dispatch({ type: "serversSnapshotReceived", servers: [
+            { name: "alpha", status: "done" }, { name: "zulu", status }
+        ] });
+        store.dispatch({ type: "dashboardSnapshotReceived", snapshot: { servers: [
+            { name: "alpha", recommended_action: { key: "healthy" } },
+            { name: "zulu", recommended_action: { key } }
+        ] } });
+    };
+    snapshot("done", "healthy");
+    assert.deepEqual(store.getView().sort, { key: "name", dir: "asc" });
+    for (const [status, key] of [["updating", "monitor_apt"], ["pending_approval", "review_approval"], ["error", "review_failure"], ["done", "healthy"]]) {
+        snapshot(status, key);
+        assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "zulu"]);
+        assert.equal(store.getServer("zulu").status, status);
+    }
     store.dispatch({ type: "sortChanged", key: "name" });
-    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "healthy", "zulu"]);
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "alpha"]);
+    snapshot("updating", "monitor_apt");
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "alpha"]);
+    store.dispatch({ type: "sortChanged", key: "status" });
+    snapshot("autoremove", "monitor_apt");
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["alpha", "zulu"]);
 });
 
-test("maintenance table exposes recommended-action sorting as the initial accessible sort", () => {
+test("maintenance table exposes name sorting without a priority sort control", () => {
     const template = fs.readFileSync(path.resolve(__dirname, "../../templates/index.html"), "utf8");
-    assert.match(template, /data-sort-key="recommendation" data-sort-dir="desc" aria-sort="descending"/);
-    assert.match(template, /data-sort-trigger="recommendation" aria-label="Sort by recommended action"/);
-    assert.match(template, /data-sort-key="name" aria-sort="none"/);
+    assert.match(template, /data-sort-key="name" data-sort-dir="asc" aria-sort="ascending"/);
+    assert.doesNotMatch(template, /data-sort-(?:key|trigger)="recommendation"/);
     assert.equal((template.match(/aria-sort="(?:ascending|descending)"/g) || []).length, 1);
 });
 
@@ -982,4 +940,13 @@ test("browser adapters do not restore superseded action globals or DOM-derived b
         "let globalKeyAvailable",
         "dashboardExtraErrors"
     ].forEach(legacyName => assert.equal(adapterSource.includes(legacyName), false, `${legacyName} must remain owned by Status Page Interaction`));
+});
+
+test("status sort captures newly arriving hosts without changing existing keys", () => {
+    const store = createStore();
+    store.dispatch({ type: "sortChanged", key: "status" });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "zulu", status: "done" }, { name: "alpha", status: "updating" }] });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "alpha"]);
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "zulu", status: "updating" }, { name: "alpha", status: "done" }, { name: "new", status: "error" }] });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "new", "alpha"]);
 });

@@ -41,22 +41,11 @@
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
-    const allowedSortKeys = new Set(["recommendation", "name", "status"]);
+    const allowedSortKeys = new Set(["name", "status"]);
     const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
-    const recommendationPriority = Object.freeze({
-        repair_package_state: 900,
-        enable_apt_access: 850,
-        review_disk_capacity: 800,
-        review_failure: 750,
-        review_approval: 700,
-        reboot_and_verify: 600,
-        refresh_host_facts: 500,
-        monitor_apt: 400,
-        healthy: 0
-    });
 
     function cloneValue(value) {
         if (Array.isArray(value)) {
@@ -219,7 +208,8 @@
             quick: "",
             tag: ""
         };
-        let sort = { key: "recommendation", dir: "desc" };
+        let sort = { key: "name", dir: "asc" };
+        let statusSortValues = new Map();
         let page = 1;
         let pageSize = 25;
         let primaryServerName = "";
@@ -381,6 +371,12 @@
             serversByName = new Map(servers.map(server => [server.name, server]));
             const effects = [];
             const retainedNames = new Set(servers.map(server => server.name));
+            statusSortValues.forEach((_, name) => {
+                if (!retainedNames.has(name)) statusSortValues.delete(name);
+            });
+            servers.forEach(server => {
+                if (!statusSortValues.has(server.name)) statusSortValues.set(server.name, server.status);
+            });
             Array.from(jobLogsByServer.keys()).forEach(name => {
                 if (!retainedNames.has(name)) jobLogsByServer.delete(name);
             });
@@ -503,35 +499,18 @@
             return haystack.includes(search);
         }
 
-        function recommendedActionPriority(server) {
-            const dashboardServer = dashboardServerFor(server);
-            const recommendationKey = String(dashboardServer && dashboardServer.recommended_action && dashboardServer.recommended_action.key || "").toLowerCase();
-            if (Object.hasOwn(recommendationPriority, recommendationKey)) {
-                return recommendationPriority[recommendationKey];
-            }
-
-            const status = String(server && server.status || "").toLowerCase();
-            if (status === "needs_reconciliation") return recommendationPriority.repair_package_state;
-            if (status === "error") return recommendationPriority.review_failure;
-            if (isPendingApproval(server)) return recommendationPriority.review_approval;
-            const factsState = String(dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.facts_state || "").toLowerCase();
-            if (["stale", "unknown"].includes(factsState)) return recommendationPriority.refresh_host_facts;
-            if (activeStatuses.has(status)) return recommendationPriority.monitor_apt;
-            return recommendationKey ? 450 : recommendationPriority.healthy;
-        }
-
         function sortedVisibleServers() {
             const direction = sort.dir === "desc" ? -1 : 1;
             return servers.filter(matchesFilters).slice().sort((left, right) => {
-                if (sort.key === "recommendation") {
-                    const priorityDifference = (recommendedActionPriority(left) - recommendedActionPriority(right)) * direction;
-                    if (priorityDifference !== 0) return priorityDifference;
-                } else {
-                    const leftValue = String(left[sort.key] || "").toLowerCase();
-                    const rightValue = String(right[sort.key] || "").toLowerCase();
-                    const valueDifference = leftValue.localeCompare(rightValue) * direction;
-                    if (valueDifference !== 0) return valueDifference;
-                }
+                // Status sorting uses values captured by the operator's sort action.
+                // Live progress must not move a row underneath the pointer.
+                const valueFor = server => sort.key === "status"
+                    ? statusSortValues.get(server.name) || ""
+                    : server.name;
+                const leftValue = String(valueFor(left) || "").toLowerCase();
+                const rightValue = String(valueFor(right) || "").toLowerCase();
+                const valueDifference = leftValue.localeCompare(rightValue) * direction;
+                if (valueDifference !== 0) return valueDifference;
                 return String(left.name || "").localeCompare(String(right.name || ""));
             });
         }
@@ -975,11 +954,12 @@
                 return stateEffects({ persist: true });
             } else if (event.type === "sortChanged") {
                 lastBulkResult = null;
-                const key = normalizedChoice(event.key, allowedSortKeys, "recommendation");
+                const key = normalizedChoice(event.key, allowedSortKeys, "name");
+                statusSortValues = new Map(servers.map(server => [server.name, server.status]));
                 if (sort.key === key) {
                     sort = { key, dir: sort.dir === "asc" ? "desc" : "asc" };
                 } else {
-                    sort = { key, dir: key === "recommendation" ? "desc" : "asc" };
+                    sort = { key, dir: "asc" };
                 }
                 reconcileNavigation();
                 return stateEffects();

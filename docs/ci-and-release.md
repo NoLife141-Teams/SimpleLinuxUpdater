@@ -63,6 +63,9 @@ execute on each target architecture. Toolchain alignment checks the new builder
 form against the exact Go version in `go.mod`.
 The runtime stage upgrades installed Alpine packages before adding its runtime
 dependencies, so a cached base image does not retain already-fixed packages.
+The QEMU action and its nested binfmt image are both pinned; only arm64 emulation
+is installed. Image caching in the QEMU action is disabled so the daemon fetches
+the content-addressed image rather than restoring a separate image tar cache.
 
 Race and coverage remain separate CI matrix entries. Combining them requires
 comparable timing and coverage measurements; fewer commands alone do not imply

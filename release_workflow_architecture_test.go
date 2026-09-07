@@ -171,3 +171,20 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseQEMUHelperCannotFollowMutableImageTag(t *testing.T) {
+	release := readWorkflowForTest(t, ".github/workflows/release.yml")
+	_, setup, found := strings.Cut(release, "      - name: Set up QEMU for runtime verification\n")
+	if !found {
+		t.Fatal("missing release QEMU setup")
+	}
+	setup, _, _ = strings.Cut(setup, "\n      - name:")
+	if !regexp.MustCompile(`(?m)^\s+image: docker\.io/tonistiigi/binfmt:[^\s@]+@sha256:[0-9a-f]{64}$`).MatchString(setup) {
+		t.Error("privileged QEMU helper must be pinned by digest as well as the action SHA")
+	}
+	for _, required := range []string{"platforms: arm64", "cache-image: false"} {
+		if !strings.Contains(setup, required) {
+			t.Errorf("QEMU setup missing %q", required)
+		}
+	}
+}

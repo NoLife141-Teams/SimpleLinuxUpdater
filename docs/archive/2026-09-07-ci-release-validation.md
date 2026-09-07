@@ -84,3 +84,15 @@ Both coverage and Playwright diagnostic artifacts were uploaded successfully.
 The final PR additionally gives artifacts attempt-specific names so reruns keep
 earlier diagnostics. Final-head status and subsequent cache evidence are tracked
 on the PR.
+
+The [second CI run](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/runs/34140896001)
+also passes and confirms restoration of the same Playwright browser cache. The
+browser-download step is skipped and E2E succeeds using the restored files.
+
+Security review identified the QEMU action's nested mutable image. The helper is
+now pinned to `qemu-v10.2.3-68` and digest
+`sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`.
+Its manifest source revision matches the official release tag
+`e29e7d72c9672c8c8bf846655ab149b50e1a62bd`. Only arm64 emulation is installed;
+the action's separate image-tar cache is disabled. A workflow regression requires
+the nested digest pin in addition to the action SHA.

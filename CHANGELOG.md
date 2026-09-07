@@ -6,6 +6,27 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.9] - 2026-09-07
+
+### Security
+
+- Reject notification redirects and apply the current destination policy to
+  stored and restored generic webhooks. Preserve invalid destinations encrypted
+  but disable delivery until the operator replaces them with a compliant URL.
+- Harden Docker persistence ownership repair with a root-owned helper that uses
+  descriptor-relative, no-follow operations on known persistence paths instead
+  of recursively changing ownership of application-writable content.
+- Refresh Alpine runtime packages during release builds and require OS and Go
+  binary vulnerability scans of the exact candidate image before promotion.
+  Runtime cache invalidation ensures package upgrades execute on each build.
+
+### Added
+
+- Persist a scheduler checkpoint and record the latest missed occurrence per
+  enabled policy within a seven-day recovery horizon as `scheduler_missed`.
+  Historical occurrences are skipped, never replayed as package work; first use
+  initializes the checkpoint without manufacturing earlier history.
+
 ### Fixed
 
 - Canonicalize IPv4 and IPv6 server literals for SSH endpoint identity and
@@ -15,6 +36,52 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Keep authenticated Dashboard SSE streams alive beyond the global HTTP write
   timeout by renewing a bounded stream-specific deadline on every event and
   heartbeat, while retaining the existing timeout for normal HTTP routes.
+- Make SSH-backed maintenance cooperate with application shutdown after the
+  existing runner grace period. Interrupted package mutations retain the
+  non-retryable reconciliation path rather than being replayed automatically.
+- Recover transient failures to persist maintenance release state through
+  bounded retries and the next admission attempt, without admitting work before
+  the inactive state is durable or allowing a stale lease to clear newer work.
+- Prune host-facts refresh retry state when servers leave inventory so a newly
+  created server with the same name does not inherit an obsolete retry delay.
+- Require persisted, current-configuration rollout origins before continuing
+  older canary/wave occurrences; do not admit occurrences before policy creation.
+- Reload the restored application timezone before rebasing the scheduler and
+  resuming services, without requiring an application restart.
+- Keep server rows stable during live maintenance updates. The default is
+  alphabetical; explicit status sorting captures its order when requested.
+
+### Changed
+
+- Qualify an attempt-specific Docker candidate on amd64 and arm64, record its
+  version/commit/digest association in `publication.json`, then promote that same
+  digest to the official version and, when eligible, `latest`. Retries reuse the
+  recorded digest and cannot replace an already published official version.
+- Audit the distributed `latest` digest weekly on both architectures without
+  rebuilding it. Keep vulnerability findings separate from source-code audits.
+- Add Docker validation before merge, preserve Docker/archive/Playwright
+  diagnostics, stream release-validation progress, and retain strict coverage,
+  provenance, security and required-check gates.
+- Pin CI actions and the QEMU helper, repair Playwright cache handling, align
+  notification SQLite test setup with production, and stabilize UI tests under
+  reduced motion.
+
+### Compatibility / migration
+
+- Back up persistent data before upgrading. Docker still runs the application
+  as `app`; persisted symlinks or unsafe traversal in ownership-repair paths now
+  cause startup to fail rather than being followed with root privileges.
+- Generic webhook endpoints must accept the configured URL directly without a
+  redirect. Replace a disabled legacy destination before re-enabling delivery.
+- Missed scheduler history is informational; upgrading does not replay missed
+  maintenance. The Maintenance priority sort control is removed; attention and
+  reboot panels continue to identify work needing operator attention.
+
+### Validation
+
+- Pre-publication checks and their limits are recorded in the
+  [v0.4.9 release readiness record](docs/release-v0.4.9-readiness.md).
+  Preparing this release does not publish a tag, GitHub Release or image.
 
 ## [v0.4.8] - 2026-09-03
 

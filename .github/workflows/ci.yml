@@ -246,6 +246,14 @@ jobs:
       - name: Verify startup, privileges and persistence
         run: tools/ci/docker-smoke.sh slu-smoke:ci linux/amd64
 
+      - name: Retain Docker diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-docker-${{ github.run_attempt }}
+          path: .tmp-smoke/diagnostics/
+          retention-days: 7
+
   ci-required:
     if: always()
     needs:

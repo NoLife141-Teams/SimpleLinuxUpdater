@@ -79,7 +79,7 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 	for _, required := range []string{
 		"tag_name: ${{ env.RELEASE_TAG }}",
 		"target_commitish: ${{ env.RELEASE_SHA }}",
-		"type=raw,value=${{ env.RELEASE_TAG }}",
+		"org.opencontainers.image.version=${{ env.RELEASE_TAG }}",
 	} {
 		if !strings.Contains(release, required) {
 			t.Errorf("publication does not use the verified release identity %q", required)
@@ -137,7 +137,7 @@ func TestReleaseWorkflowPinsActionsByCommit(t *testing.T) {
 
 func TestReleasePublicationIsCoordinated(t *testing.T) {
 	release := readWorkflowForTest(t, ".github/workflows/release.yml")
-	for _, required := range []string{"group: release-publication", "cancel-in-progress: false", "draft: true", "make_latest: false", "verify-archives.sh", "publication-policy.py\" draft", "publication-policy.py\" finalize", "linux/amd64", "linux/arm64"} {
+	for _, required := range []string{"group: release-publication", "cancel-in-progress: false", "draft: true", "make_latest: false", "verify-archives.sh", "publication-policy.py\" draft", "publication-policy.py\" publish", "linux/amd64", "linux/arm64"} {
 		if !strings.Contains(release, required) {
 			t.Errorf("missing coordinated publication contract %q", required)
 		}
@@ -155,8 +155,16 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 		}
 	}
 	docker := workflowJobForTest(t, release, "publish-docker", "")
-	if strings.Index(docker, "Verify published version on both architectures") > strings.Index(docker, "Finalize coordinated publication") {
-		t.Error("finalization must follow both runtime smoke tests")
+	if !workflowStepsOrdered(docker, "Plan publication before registry writes", "Build and push candidate image", "Qualify digest and finalize coordinated publication") {
+		t.Error("publication must plan before building and qualify before finalization")
+	}
+	for _, required := range []string{"if: steps.publication.outputs.mode == 'build'", "tags: ${{ steps.publication.outputs.candidate }}", "no-cache-filters: runtime", "pull: true", "steps.publication.outputs.digest || steps.build.outputs.digest"} {
+		if !strings.Contains(docker, required) {
+			t.Errorf("missing candidate/retry contract %q", required)
+		}
+	}
+	if strings.Contains(docker, "type=raw,value=${{ env.RELEASE_TAG }}") {
+		t.Error("build must never push the official version tag")
 	}
 	ci := readWorkflowForTest(t, ".github/workflows/ci.yml")
 	smoke := workflowJobForTest(t, ci, "docker-smoke", "ci-required")
@@ -186,5 +194,46 @@ func TestReleaseQEMUHelperCannotFollowMutableImageTag(t *testing.T) {
 		if !strings.Contains(setup, required) {
 			t.Errorf("QEMU setup missing %q", required)
 		}
+	}
+}
+
+// Missing steps must fail just as reordered steps do (strings.Index returns -1).
+func workflowStepsOrdered(source string, steps ...string) bool {
+	previous := -1
+	for _, step := range steps {
+		index := strings.Index(source, step)
+		if index < 0 || index <= previous {
+			return false
+		}
+		previous = index
+	}
+	return true
+}
+
+func TestPublicationOrderDetectsRemovedAndReorderedSteps(t *testing.T) {
+	steps := []string{"Plan publication before registry writes", "Build and push candidate image", "Qualify digest and finalize coordinated publication"}
+	source := readWorkflowForTest(t, ".github/workflows/release.yml")
+	for _, step := range steps {
+		if workflowStepsOrdered(strings.Replace(source, step, "removed", 1), steps...) {
+			t.Errorf("removing %q must fail the order assertion", step)
+		}
+	}
+	if workflowStepsOrdered(strings.Join([]string{steps[1], steps[0], steps[2]}, "\n"), steps...) {
+		t.Error("reordered steps must fail")
+	}
+}
+
+func TestSecurityAuditScansDistributedDigestWithoutRebuilding(t *testing.T) {
+	source := readWorkflowForTest(t, ".github/workflows/security-audit.yml")
+	for _, required := range []string{"publication-policy.py distributed", "needs: resolve-distribution", "platform: [linux/amd64, linux/arm64]", `tools/ci/scan-image.sh "$IMAGE@$DIGEST" "$PLATFORM"`} {
+		if !strings.Contains(source, required) {
+			t.Errorf("missing distributed scan contract %q", required)
+		}
+	}
+	if strings.Contains(source, "docker build") || strings.Contains(source, "build-push-action") {
+		t.Error("weekly image audit must not rebuild the distributed image")
+	}
+	if !strings.Contains(readWorkflowForTest(t, "Dockerfile"), "FROM alpine:3.24 AS runtime") {
+		t.Error("targeted cache invalidation requires the named runtime stage")
 	}
 }

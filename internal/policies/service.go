@@ -890,8 +890,11 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		}
 	}
 	runByKey := make(map[string]Run, len(rolloutRuns))
+	runsByScope := make(map[RolloutRunScope][]Run)
 	for _, run := range rolloutRuns {
 		runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
+		scope := RolloutRunScope{PolicyID: run.PolicyID, ScheduledForUTC: run.ScheduledForUTC}
+		runsByScope[scope] = append(runsByScope[scope], run)
 	}
 
 	var queueErrs []error
@@ -921,6 +924,14 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			continue
 		}
 		policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+		if policy.RolloutMode == RolloutCanaryWaves && rolloutSlot.Before(slotLocal) {
+			// An older slot may only continue an existing rollout under the
+			// configuration that was effective at its origin. Unstarted slots
+			// belong to missed-occurrence recovery, never to current dispatch.
+			if !rolloutOriginMatchesPolicy(policy, rolloutSlot, runsByScope[RolloutRunScope{PolicyID: policy.ID, ScheduledForUTC: policyScheduledForUTC}], deps.TimestampLayout) {
+				continue
+			}
+		}
 		matchedServers := make([]servers.Server, 0)
 		for _, server := range serversSnapshot {
 			if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {

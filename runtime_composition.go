@@ -77,6 +77,11 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if db == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
 	}
+	if deps.ApplicationTime != nil {
+		if err := deps.ApplicationTime.Initialize(ctx); err != nil {
+			return fmt.Errorf("reload restored Application Time Interpretation: %w", err)
+		}
+	}
 	if watermarkRepository, ok := deps.PolicyRepository.(policySchedulerWatermarkRepository); ok {
 		now := time.Now().UTC()
 		if deps.Now != nil {

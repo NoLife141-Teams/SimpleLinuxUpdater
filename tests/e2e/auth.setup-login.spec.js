@@ -1622,16 +1622,13 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
 
     await page.setViewportSize({ width: 390, height: 844 });
-    const mobilePendingLayout = await pendingPanel.locator('.table-wrap').evaluate(element => {
+    await expect.poll(() => pendingPanel.locator('.table-wrap').evaluate(element => {
       const cells = Array.from(element.querySelectorAll('tbody tr:first-child td'));
       return {
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth,
+        fitsWithoutHorizontalScrolling: element.scrollWidth <= element.clientWidth + 1,
         labels: cells.map(cell => getComputedStyle(cell, '::before').content.replaceAll('"', '')),
       };
-    });
-    expect(mobilePendingLayout.scrollWidth, 'mobile pending updates must fit without horizontal scrolling').toBeLessThanOrEqual(mobilePendingLayout.clientWidth + 1);
-    expect(mobilePendingLayout.labels).toEqual(['Package', 'Version', 'Risk']);
+    })).toEqual({ fitsWithoutHorizontalScrolling: true, labels: ['Package', 'Version', 'Risk'] });
   });
 
   test('stale facts recommendation renders its refresh action in the table and inspector', async ({ page }) => {
@@ -3955,7 +3952,11 @@ test.describe.serial('setup and login flows', () => {
       await page.locator('#servers-table tbody tr[data-name="inspector-host"]').click();
       await expect(page.locator('#selected-host-title')).toHaveText('inspector-host');
 
-      const layout = await page.locator('.context-panel').evaluate(element => {
+      const layout = await page.locator('.context-panel').evaluate(async element => {
+        // Clicking the row can scroll it into view. Measure the initial layout
+        // at a known scroll position before testing the sticky state below.
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const bounds = element.getBoundingClientRect();
         const timeline = document.querySelector('.timeline-workspace').getBoundingClientRect();
         const table = document.querySelector('.timeline-workspace .table-wrap').getBoundingClientRect();
@@ -3963,6 +3964,7 @@ test.describe.serial('setup and login flows', () => {
         return {
           position: getComputedStyle(element).position,
           overflowY: getComputedStyle(element).overflowY,
+          scrollY: window.scrollY,
           top: Math.round(bounds.top),
           timelineTop: Math.round(timeline.top),
           viewportHeight: window.innerHeight,
@@ -3974,6 +3976,7 @@ test.describe.serial('setup and login flows', () => {
       });
       expect(layout.position).toBe('sticky');
       expect(layout.overflowY).toBe('auto');
+      expect(layout.scrollY).toBe(0);
       expect(layout.top).toBeLessThanOrEqual(layout.timelineTop);
       expect(layout.top).toBeLessThan(layout.viewportHeight);
       expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);

@@ -40,8 +40,24 @@ to the tag, so older tags cannot replace the current policy.
    non-root/persistence checks and an OS + Go binary vulnerability scan.
 4. The qualified version, commit, image digest, architectures, checks and run
    identity are uploaded as `publication.json` to the draft, without clobbering.
-   Only then is that same digest assigned to `vX.Y.Z`, conditionally to `latest`,
-   and finally announced by publishing the GitHub Release.
+   Only then is that same digest assigned to `vX.Y.Z` and conditionally to `latest`.
+5. A separate finalization step rechecks the durable record, official digest,
+   main ancestry and latest eligibility before publishing the GitHub Release.
+
+The optional Actions secret `RELEASE_TOKEN` is used only by the GitHub draft
+creation/update action and the finalization step. A fine-grained token must be
+limited to this repository with Contents and Workflows write permissions when
+publishing an older target whose workflows differ from current `main`; GitHub's
+automatic token cannot receive the latter permission. Without this secret, those
+operations use the automatic token, retaining the normal same-target behavior.
+Remove the secret after revoking or expiring its token so future releases can use
+that fallback. Never store the token in repository files or logs.
+
+Builds, runtime checks, scans, registry authentication and promotion retain the
+automatic token. The finalization helper removes `RELEASE_TOKEN` from its child
+environment and passes it as `GH_TOKEN` only to `gh release edit`; registry and
+lineage checks continue to use the automatic token. No token is put in command
+arguments. The workflow's existing write permissions are unchanged.
 
 The Docker qualification runner uses the containerd image store. The classic
 `overlay2` image store cannot retain both platforms under one manifest-list

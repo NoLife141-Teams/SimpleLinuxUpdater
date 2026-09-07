@@ -36,7 +36,7 @@ class Backend:
         assert args[:2] in [('gh', 'api'), ('git', 'tag')], args
         return self.command(*args)
 
-    def run_command(self, *args):
+    def run_command(self, *args, env=None):
         assert args[:2] not in [('gh', 'api'), ('git', 'tag')], args
         self.command(*args)
 
@@ -89,6 +89,7 @@ class PublicationTests(unittest.TestCase):
 
     def publish(self):
         policy.publish(self.identity)
+        policy.finalize(self.identity)
 
     def test_numeric_order_and_reserved_drafts(self):
         self.assertFalse(policy.may_promote('v0.4.9', [], ['v0.4.10']))
@@ -125,6 +126,70 @@ class PublicationTests(unittest.TestCase):
         self.assertTrue(all(c[2] == ENV['IMAGE'] + '@' + D for c in checks))
         self.assertEqual(self.backend.refs['v0.4.9'], D)
         self.assertEqual(self.backend.refs['latest'], D)
+
+    def test_image_publication_leaves_github_draft_for_separate_finalization(self):
+        policy.publish(self.identity)
+        self.assertTrue(self.backend.release['draft'])
+        self.assertEqual(self.backend.writes, ['record', 'v0.4.9', 'latest'])
+
+    def test_finalization_token_is_only_passed_to_github_release_edit(self):
+        policy.publish(self.identity)
+        self.backend.calls.clear()
+        with patch.dict(os.environ, GH_TOKEN='automatic-token', RELEASE_TOKEN='release-only-token'), \
+                patch.object(policy.sys, 'argv', ['policy', 'finalize']), \
+                patch.object(policy, 'run_command', wraps=self.backend.run_command) as commands:
+            policy.main()
+            self.assertEqual(os.environ['GH_TOKEN'], 'automatic-token')
+            self.assertNotIn('RELEASE_TOKEN', os.environ)
+        authenticated = [c for c in commands.call_args_list if c.kwargs.get('env') is not None]
+        self.assertEqual(len(authenticated), 1)
+        self.assertEqual(authenticated[0].args[:3], ('gh', 'release', 'edit'))
+        self.assertEqual(authenticated[0].kwargs['env']['GH_TOKEN'], 'release-only-token')
+        self.assertNotIn('RELEASE_TOKEN', authenticated[0].kwargs['env'])
+        self.assertFalse(any(c[0] == 'docker' or c[0] == 'bash' and c[1].endswith(('docker-smoke.sh', 'scan-image.sh'))
+                             for c in self.backend.calls))
+
+    def test_finalization_rejects_missing_record_official_digest_or_latest_promotion(self):
+        with self.assertRaises(RuntimeError):
+            policy.finalize(self.identity)
+        policy.publish(self.identity)
+        for reference in ('v0.4.9', 'latest'):
+            for replacement in (None, OTHER):
+                with self.subTest(reference=reference, replacement=replacement):
+                    self.backend.writes.clear()
+                    if replacement is None:
+                        self.backend.refs.pop(reference, None)
+                    else:
+                        self.backend.refs[reference] = replacement
+                    with self.assertRaises(RuntimeError):
+                        policy.finalize(self.identity)
+                    self.assertEqual(self.backend.writes, [])
+                    self.backend.refs[reference] = D
+
+    def test_finalization_rechecks_newer_reservations_without_registry_writes(self):
+        policy.publish(self.identity)
+        self.backend.tags = 'v0.4.10'
+        self.backend.refs['latest'] = OTHER
+        self.backend.writes.clear()
+        policy.finalize(self.identity)
+        self.assertEqual(self.backend.writes, ['finalize'])
+        self.assertEqual(self.backend.refs['latest'], OTHER)
+        self.assertEqual(self.backend.calls[-1][-1], '--latest=false')
+
+    def test_failed_finalization_can_resume_without_rebuilding_or_requalifying(self):
+        policy.publish(self.identity)
+        record = self.backend.record.copy()
+        self.backend.fail = 'finalize'
+        with self.assertRaises(RuntimeError):
+            policy.finalize(self.identity)
+        self.backend.fail = None
+        self.backend.calls.clear()
+        self.backend.writes.clear()
+        policy.finalize(self.identity)
+        self.assertEqual(self.backend.writes, ['finalize'])
+        self.assertEqual(self.backend.record, record)
+        self.assertFalse(any(c[0] == 'docker' or c[0] == 'bash' and c[1].endswith(('docker-smoke.sh', 'scan-image.sh'))
+                             for c in self.backend.calls))
 
     def test_partial_rerun_after_publication_is_noop_before_any_build_or_write(self):
         self.publish()

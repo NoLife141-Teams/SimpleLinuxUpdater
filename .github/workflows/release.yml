@@ -259,6 +259,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
           draft: true
           make_latest: false
           tag_name: ${{ env.RELEASE_TAG }}
@@ -363,13 +364,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Qualify digest and finalize coordinated publication
+      - name: Qualify digest and promote image
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ steps.image.outputs.name }}
           DIGEST: ${{ steps.publication.outputs.digest || steps.build.outputs.digest }}
           DIAGNOSTICS_DIR: ${{ runner.temp }}/release-docker-diagnostics
         run: python3 "$RUNNER_TEMP/trusted-tools/release/publication-policy.py" publish
+
+      - name: Finalize GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: python3 "$RUNNER_TEMP/trusted-tools/release/publication-policy.py" finalize
 
       - name: Retain Docker qualification diagnostics
         if: failure()

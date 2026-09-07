@@ -19,9 +19,9 @@ def capture_command(*args):
     return subprocess.check_output(list(args), text=True).strip()
 
 
-def run_command(*args):
+def run_command(*args, env=None):
     # Inherit stdout/stderr so validation output is visible while the child runs.
-    subprocess.run(list(args), check=True)
+    subprocess.run(list(args), check=True, env=env)
 
 
 def validation_results():
@@ -153,6 +153,12 @@ def promote_ref(image, tag, digest, *, immutable=False):
         raise RuntimeError('Promotion did not preserve qualified digest')
 
 
+def latest_is_eligible(expected):
+    run_command('git', 'fetch', '--force', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+refs/tags/*:refs/tags/*')
+    tags = capture_command('git', 'tag', '--merged', 'origin/main', '--list', 'v*').splitlines()
+    return may_promote(expected['tag'], releases(expected['repository']), tags)
+
+
 def publish(expected):
     mode, record = plan(expected)
     if mode == 'complete':
@@ -191,18 +197,38 @@ def publish(expected):
         _, current_record = plan(expected)
         if current_record != record:
             raise RuntimeError('Publication record was not durably stored')
-    run_command('git', 'fetch', '--force', 'origin', 'refs/heads/main:refs/remotes/origin/main', '+refs/tags/*:refs/tags/*')
-    tags = capture_command('git', 'tag', '--merged', 'origin/main', '--list', 'v*').splitlines()
-    latest = may_promote(expected['tag'], releases(expected['repository']), tags)
+    latest = latest_is_eligible(expected)
     promote_ref(image, expected['tag'], digest, immutable=True)
     if latest:
         promote_ref(image, 'latest', digest)
+    print(f"Qualified and promoted {expected['tag']}; GitHub release remains a draft", flush=True)
+
+
+def finalize(expected, release_token=None):
+    mode, record = plan(expected)
+    if mode == 'complete':
+        print('Publication already complete; no finalization required', flush=True)
+        return
+    if record is None:
+        raise RuntimeError('Cannot finalize without a durable qualification record')
+    if registry_digest(expected['image'], expected['tag'], allow_missing=True) != record['digest']:
+        raise RuntimeError('Cannot finalize before the qualified official image is promoted')
+    root = Path(__file__).resolve().parent.parent
+    run_command('bash', str(root / 'release/verify-tag-on-main.sh'))
+    latest = latest_is_eligible(expected)
+    if latest and registry_digest(expected['image'], 'latest', allow_missing=True) != record['digest']:
+        raise RuntimeError('Cannot finalize latest before the qualified image is promoted')
+    # Only this child receives the optional release credential. Registry reads
+    # above continue to use the automatic token, which supports GHCR access.
+    env = dict(os.environ, GH_TOKEN=release_token) if release_token else None
     run_command('gh', 'release', 'edit', expected['tag'], '--repo', expected['repository'],
-            '--draft=false', '--latest=' + str(latest).lower())
+            '--draft=false', '--latest=' + str(latest).lower(), env=env)
     print(f"Published {expected['tag']}; promoted latest={latest}")
 
 
 def main():
+    # Do not propagate the release credential to verification subprocesses.
+    release_token = os.environ.pop('RELEASE_TOKEN', None)
     mode = sys.argv[1]
     if mode == 'distributed':
         image = image_for_repo(os.environ['GITHUB_REPOSITORY'])
@@ -225,6 +251,8 @@ def main():
                candidate=f"{expected['image']}:candidate-{expected['tag']}-{run}-{attempt}")
     elif mode == 'publish':
         publish(expected)
+    elif mode == 'finalize':
+        finalize(expected, release_token)
     else:
         raise ValueError('Unknown publication mode')
 

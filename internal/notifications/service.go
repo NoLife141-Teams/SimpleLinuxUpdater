@@ -460,6 +460,9 @@ func (s *Service) beginPersistence(ctx context.Context) bool {
 			return true
 		}
 		s.persistenceMu.Unlock()
+		if s.isClosing() {
+			return false
+		}
 		timer := time.NewTimer(2 * time.Millisecond)
 		select {
 		case <-ctx.Done():

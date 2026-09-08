@@ -495,7 +495,12 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 				t.Fatalf("CreateJob(%s) error = %v", tc.server, err)
 			}
 
-			successRec := performContractRequest(app.Handler, http.MethodPost, tc.path, nil, sessionCookie, true)
+			bindLatestPendingApprovalFixture(t, tc.server)
+			identityBody, err := json.Marshal(approvalIdentityForTest(routeState, tc.server))
+			if err != nil {
+				t.Fatal(err)
+			}
+			successRec := performContractRequest(app.Handler, http.MethodPost, tc.path, bytes.NewBuffer(identityBody), sessionCookie, true)
 			if successRec.Code != http.StatusOK {
 				t.Fatalf("POST %s status = %d, want %d (body=%s)", tc.path, successRec.Code, http.StatusOK, successRec.Body.String())
 			}
@@ -504,7 +509,7 @@ func TestBackendContractUpdateApproveCancel(t *testing.T) {
 			}
 			waitForUpdateRunners()
 
-			conflictRec := performContractRequest(app.Handler, http.MethodPost, tc.path, nil, sessionCookie, true)
+			conflictRec := performContractRequest(app.Handler, http.MethodPost, tc.path, bytes.NewBuffer(identityBody), sessionCookie, true)
 			if conflictRec.Code != http.StatusConflict {
 				t.Fatalf("POST %s second status = %d, want %d (body=%s)", tc.path, conflictRec.Code, http.StatusConflict, conflictRec.Body.String())
 			}

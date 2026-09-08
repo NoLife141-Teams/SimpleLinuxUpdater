@@ -133,20 +133,13 @@ func TestRuntimeCompositionReloadRestoredStateHonorsCancellation(t *testing.T) {
 }
 
 func TestRuntimeCompositionReloadRestoredStateRehydratesNotificationPersistence(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "reload-notifications.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	reloadErr := errors.New("restored notification outbox unavailable")
 	notifications := &reloadTrackingNotificationLifecycle{reloadErr: reloadErr}
-	composition := newRuntimeComposition(AppDeps{
-		DB:                  func() *sql.DB { return db },
-		NotificationService: notifications,
-	})
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "reload-notifications.db"), AppDeps{NotificationService: notifications})
+	composition := newRuntimeComposition(app.Deps)
 	composition.resetCaches = func() {}
 
-	err = composition.ReloadRestoredState(context.Background())
+	err := composition.ReloadRestoredState(context.Background())
 	if !errors.Is(err, reloadErr) || !strings.Contains(err.Error(), "reload restored Notification Delivery Lifecycle") {
 		t.Fatalf("ReloadRestoredState() error=%v, want labelled notification reload failure", err)
 	}

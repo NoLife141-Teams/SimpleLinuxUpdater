@@ -950,3 +950,23 @@ test("status sort captures newly arriving hosts without changing existing keys",
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "zulu", status: "updating" }, { name: "alpha", status: "done" }, { name: "new", status: "error" }] });
     assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["zulu", "new", "alpha"]);
 });
+
+test("single and bulk approval plans keep the displayed job and generation", () => {
+    const store = createStore();
+    const server = {
+        name: "alpha", status: "pending_approval", job_id: "job-1", approval_generation: 1,
+        pending_updates: [{ package: "openssl", security: true }],
+        upgrade_plan: { full_upgrade_plan_available: true, full_upgrade_removed_packages: ["old-obsolete"] }
+    };
+    store.dispatch({ type: "serversSnapshotReceived", servers: [server] });
+    store.dispatch({ type: "selectionChanged", name: "alpha", selected: true });
+    const single = store.planAction("alpha", "approve_full");
+    const bulk = store.planBulkAction("approve_all");
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ ...server, approval_generation: 2,
+        upgrade_plan: { full_upgrade_plan_available: true, full_upgrade_removed_packages: ["application-service"] }
+    }] });
+    assert.deepEqual(single.payloadFacts.approvalIdentity, { job_id: "job-1", approval_generation: 1 });
+    assert.deepEqual(bulk.payloadFacts.alpha.approvalIdentity, { job_id: "job-1", approval_generation: 1 });
+    assert.deepEqual(single.payloadFacts.counts.removedPackages, ["old-obsolete"]);
+    assert.equal(store.planAction("alpha", "approve_full").payloadFacts.approvalIdentity.approval_generation, 2);
+});

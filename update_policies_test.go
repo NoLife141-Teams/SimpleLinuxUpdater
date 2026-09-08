@@ -2098,7 +2098,7 @@ func TestRunUpdateJobWithActorScheduledApprovalRequiredCancelledKeepsMeta(t *tes
 	}, "scheduled approval-required job status to become waiting_approval")
 
 	cancelRec := httptest.NewRecorder()
-	cancelReq := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
+	cancelReq := pendingDecisionRequestForTest(t, "/api/cancel/"+server.Name, globalServerState(), server.Name, false)
 	cancelReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(cancelReq)
 	handler.ServeHTTP(cancelRec, cancelReq)

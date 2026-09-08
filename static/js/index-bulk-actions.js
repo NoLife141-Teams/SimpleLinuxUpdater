@@ -91,16 +91,11 @@
             };
         }
 
-        function bulkActionRequestOptions(actionPath, name) {
-            if (actionPath !== "approve-security-kept-back") {
-                return {};
-            }
-            const counts = getPendingApprovalCounts(getServerByName(name));
-            const body = counts.keptBackSecurityRemovedPackages.length > 0 ? { confirm_removals: true } : {};
-            return {
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body)
-            };
+        function bulkActionRequestOptions(actionPath, facts) {
+            if (!actionPath.startsWith("approve") && actionPath !== "cancel") return {};
+            const confirmRemovals = actionPath === "approve-security-kept-back"
+                && facts.counts.keptBackSecurityRemovedPackages.length > 0;
+            return pendingApprovalRequestOptions(facts.approvalIdentity, confirmRemovals);
         }
 
 	        async function runBulkAction(actionPath, actionLabel) {
@@ -120,7 +115,7 @@
 	            if (!getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
 	            try {
 	                const jobs = plan.eligibleNames.map(async (name) => {
-	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST', ...bulkActionRequestOptions(actionPath, name) });
+	                    const response = await fetch(`/api/${actionPath}/${encodeURIComponent(name)}`, { method: 'POST', ...bulkActionRequestOptions(actionPath, plan.payloadFacts[name]) });
 	                    if (!response.ok) {
 	                        const payload = await response.json().catch(() => ({}));
 	                        const detail = typeof payload.error === 'string' && payload.error.trim()

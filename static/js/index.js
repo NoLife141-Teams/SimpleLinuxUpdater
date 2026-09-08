@@ -2268,11 +2268,18 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        });
 
 
+        function pendingApprovalRequestOptions(identity, confirmRemovals = false) {
+            const body = { ...identity };
+            if (confirmRemovals) body.confirm_removals = true;
+            return { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+        }
+
         async function postServerAction(url, fallbackMessage, options = {}) {
             try {
                 const response = await fetch(url, { method: 'POST', ...options });
                 if (!response.ok) {
                     statusActionAdapter.notify(await parseErrorResponse(response, fallbackMessage));
+                    if (response.status === 409) await fetchServers(true, "action-conflict");
                     return false;
                 }
                 return true;
@@ -2645,31 +2652,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
 
 	        async function approveAllUpdates(name) {
-	            await runSingleHostAction(name, "approve_all", "approve", async () => {
+	            await runSingleHostAction(name, "approve_all", "approve", async (plan) => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
 	                    statusActionAdapter.notify("No standard updates are eligible for approval.");
 	                    return false;
 	                }
-	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.');
+	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity));
 	            });
 	        }
 
 	        async function approveSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve_security", "approve security", async () => {
+	            await runSingleHostAction(name, "approve_security", "approve security", async (plan) => {
 	                const server = getServerByName(name);
 	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
 	                    statusActionAdapter.notify("No standard security updates are eligible for approval.");
 	                    return false;
 	                }
-	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.');
+	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity));
 	            });
 	        }
 
 	        async function approveKeptBackSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve_security_kept_back", "approve kept-back security", async () => {
+	            await runSingleHostAction(name, "approve_security_kept_back", "approve kept-back security", async (plan) => {
 	                const server = getServerByName(name);
-	                const counts = getPendingApprovalCounts(server);
+	                const counts = plan.payloadFacts.counts;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_kept_back_security) {
 	                    if (!counts.keptBackSecurityPlanAvailable) {
@@ -2683,7 +2690,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    statusActionAdapter.notify("Run a fresh package scan before approving kept-back security updates.");
 	                    return false;
 	                }
-	                const pendingUpdates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
+	                const pendingUpdates = plan.payloadFacts.pendingUpdates;
 	                const packages = pendingUpdates
 	                    .filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade))
 	                    .map(update => update?.install_package || update?.package)
@@ -2700,18 +2707,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
 	                if (!await statusActionAdapter.confirm(confirmText)) return false;
-	                const body = removed.length ? { confirm_removals: true } : {};
-	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', {
-	                    headers: { 'Content-Type': 'application/json' },
-	                    body: JSON.stringify(body)
-	                });
+	                const options = pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity, removed.length > 0);
+	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', options);
 	            });
 	        }
 
 	        async function approveFullUpgrade(name) {
-	            await runSingleHostAction(name, "approve_full", "approve full upgrade", async () => {
+	            await runSingleHostAction(name, "approve_full", "approve full upgrade", async (plan) => {
 	                const server = getServerByName(name);
-	                const counts = getPendingApprovalCounts(server);
+	                const counts = plan.payloadFacts.counts;
 	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
 	                if (!triage.can_approve_full) {
 	                    if (!counts.fullPlanAvailable) {
@@ -2735,17 +2739,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    impact.join("\n")
 	                ].filter(Boolean).join("\n\n");
 	                if (!await statusActionAdapter.confirm(confirmText)) return false;
-	                const body = removed.length ? { confirm_removals: true } : {};
-	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', {
-	                    headers: { 'Content-Type': 'application/json' },
-	                    body: JSON.stringify(body)
-	                });
+	                const options = pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity, removed.length > 0);
+	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', options);
 	            });
 	        }
 
 	        async function cancelUpgrade(name) {
-	            const cancelled = await runSingleHostAction(name, "cancel", "cancel", () => (
-	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.')
+	            const cancelled = await runSingleHostAction(name, "cancel", "cancel", (plan) => (
+	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity))
 	            ));
 	            if (cancelled) {
 	                // The runner clears the short-lived cancelled state after its

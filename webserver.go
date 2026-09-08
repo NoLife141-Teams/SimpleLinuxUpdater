@@ -2366,60 +2366,38 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		writeServerActionLifecycleResult(c, lifecycle.StartSudoersDisable(name, actorFromContext(c), clientIPFromContext(c), req.Password))
 	})
 
-	r.POST("/api/approve/:name", func(c *gin.Context) {
-		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-			audit(c, action, targetType, targetName, status, message, meta)
-		})
-		writeServerActionLifecycleResult(c, lifecycle.ApproveAll(c.Param("name")))
-	})
-
-	r.POST("/api/approve-security/:name", func(c *gin.Context) {
-		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-			audit(c, action, targetType, targetName, status, message, meta)
-		})
-		writeServerActionLifecycleResult(c, lifecycle.ApproveSecurity(c.Param("name")))
-	})
-
-	r.POST("/api/approve-security-kept-back/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		var req struct {
-			ConfirmRemovals bool `json:"confirm_removals"`
-		}
-		if c.Request.Body != nil {
+	for _, route := range []struct {
+		path  string
+		apply func(*serverActionLifecycle, string, serverActionApprovalRequest) serverActionLifecycleResult
+	}{
+		{"/api/approve/:name", func(l *serverActionLifecycle, name string, r serverActionApprovalRequest) serverActionLifecycleResult {
+			return l.ApproveAll(name, r.serverActionApprovalIdentity)
+		}},
+		{"/api/approve-security/:name", func(l *serverActionLifecycle, name string, r serverActionApprovalRequest) serverActionLifecycleResult {
+			return l.ApproveSecurity(name, r.serverActionApprovalIdentity)
+		}},
+		{"/api/approve-security-kept-back/:name", func(l *serverActionLifecycle, name string, r serverActionApprovalRequest) serverActionLifecycleResult {
+			return l.ApproveKeptBackSecurity(name, r.ConfirmRemovals, r.serverActionApprovalIdentity)
+		}},
+		{"/api/approve-full/:name", func(l *serverActionLifecycle, name string, r serverActionApprovalRequest) serverActionLifecycleResult {
+			return l.ApproveFullUpgrade(name, r.ConfirmRemovals, r.serverActionApprovalIdentity)
+		}},
+		{"/api/cancel/:name", func(l *serverActionLifecycle, name string, r serverActionApprovalRequest) serverActionLifecycleResult {
+			return l.Cancel(name, r.serverActionApprovalIdentity)
+		}},
+	} {
+		r.POST(route.path, func(c *gin.Context) {
+			var req serverActionApprovalRequest
 			if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 				return
 			}
-		}
-		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-			audit(c, action, targetType, targetName, status, message, meta)
+			lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
+				audit(c, action, targetType, targetName, status, message, meta)
+			})
+			writeServerActionLifecycleResult(c, route.apply(lifecycle, c.Param("name"), req))
 		})
-		writeServerActionLifecycleResult(c, lifecycle.ApproveKeptBackSecurity(name, req.ConfirmRemovals))
-	})
-
-	r.POST("/api/approve-full/:name", func(c *gin.Context) {
-		name := c.Param("name")
-		var req struct {
-			ConfirmRemovals bool `json:"confirm_removals"`
-		}
-		if c.Request.Body != nil {
-			if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
-				return
-			}
-		}
-		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-			audit(c, action, targetType, targetName, status, message, meta)
-		})
-		writeServerActionLifecycleResult(c, lifecycle.ApproveFullUpgrade(name, req.ConfirmRemovals))
-	})
-
-	r.POST("/api/cancel/:name", func(c *gin.Context) {
-		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-			audit(c, action, targetType, targetName, status, message, meta)
-		})
-		writeServerActionLifecycleResult(c, lifecycle.Cancel(c.Param("name")))
-	})
+	}
 
 }
 

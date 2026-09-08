@@ -4384,4 +4384,54 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#manage-summary-missing-auth')).toHaveText('1');
     await expect(page.locator('#manage-summary-host-trust')).toHaveText('2');
   });
+  test('an old full-upgrade dialog keeps its approval identity after another tab refreshes the plan', async ({ page }) => {
+    let servers = [makeServer('approval-host', 'pending_approval', [{ package: 'openssl', security: true }], {
+      has_password: true, job_id: 'approval-job', approval_generation: 1,
+      upgrade_plan: { standard_package_count: 1, full_upgrade_package_count: 1, full_upgrade_plan_available: true,
+        full_upgrade_removed_packages: ['old-obsolete'] }
+    })];
+    const requests = [];
+    const second = await page.context().newPage();
+    try {
+      for (const tab of [page, second]) {
+        await stubDashboardApi(tab, () => servers);
+        await tab.route('**/api/jobs/*/logs*', route => fulfillJson(route, { fragments: [], has_more: false }));
+        await tab.route('**/api/approve-full/approval-host', route => {
+          const body = route.request().postDataJSON();
+          requests.push(body);
+          if (body.job_id !== 'approval-job' || body.approval_generation !== servers[0].approval_generation) {
+            return route.fulfill({ status: 409, contentType: 'application/json',
+              body: JSON.stringify({ error: 'The pending update changed. Refresh the package plan and confirm again.' }) });
+          }
+          servers = [{ ...servers[0], approval_generation: 2,
+            upgrade_plan: { ...servers[0].upgrade_plan, full_upgrade_removed_packages: ['application-service'] } }];
+          return fulfillJson(route, { message: 'Full upgrade approved' });
+        });
+      }
+      await ensureAuthenticatedSession(page);
+      await second.goto('/');
+      const fullButton = tab => tab.locator('#servers-table [data-action="approve-full"][data-name="approval-host"]');
+      await fullButton(second).click();
+      await expect(second.locator('#action-confirm-message')).toContainText('old-obsolete');
+      await fullButton(page).click();
+      await page.locator('#action-confirm-submit').click();
+      await expect.poll(() => requests.length).toBe(1);
+      await second.evaluate(() => fetchServers(true, 'approval-generation-test'));
+      await expect.poll(() => second.evaluate(() => getServerByName('approval-host')?.approval_generation)).toBe(2);
+      await expect(second.locator('#action-confirm-message')).toContainText('old-obsolete');
+      await second.locator('#action-confirm-submit').click();
+      await expect.poll(() => requests.length).toBe(2);
+      expect(requests).toEqual([
+        { job_id: 'approval-job', approval_generation: 1, confirm_removals: true },
+        { job_id: 'approval-job', approval_generation: 1, confirm_removals: true }
+      ]);
+      await expect(second.locator('.app-feedback')).toContainText('pending update changed');
+      await fullButton(second).click();
+      await expect(second.locator('#action-confirm-message')).toContainText('application-service');
+      await second.locator('#action-confirm-cancel').click();
+    } finally {
+      await second.close();
+    }
+  });
+
 });

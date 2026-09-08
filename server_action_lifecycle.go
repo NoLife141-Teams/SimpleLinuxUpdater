@@ -3,14 +3,12 @@ package main
 import (
 	"database/sql"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
-	updatespkg "debian-updater/internal/updates"
 )
 
 type serverActionLifecycle struct {
@@ -41,16 +39,6 @@ type serverActionStartSpec struct {
 	packageMutation        bool
 	preserveReconciliation bool
 	runWithJob             func(*UpdateService, Server, string, string, RetryPolicy, string, string)
-}
-
-type serverActionApprovalSpec struct {
-	scope             string
-	rollbackLogPrefix string
-	notFoundMeta      map[string]any
-}
-
-type serverActionApprovalOptions struct {
-	confirmRemovals bool
 }
 
 func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targetName, status, message string, meta map[string]any)) *serverActionLifecycle {
@@ -267,14 +255,14 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 			return jsonResult(http.StatusConflict, readiness.Message)
 		}
 	}
-	var server Server
-	var err error
-	if spec.packageMutation {
-		server, err = l.serverState.BeginPackageMutation(name, spec.status)
-	} else {
-		server, err = l.serverState.BeginAction(name, spec.status)
-	}
+	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
+		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
+	})
 	if err != nil {
+		if errors.Is(err, serverpkg.ErrActionNotAllowed) {
+			l.recordAudit(spec.auditAction, name, "ignored", spec.invalidStatus, retryMeta)
+			return jsonResult(http.StatusConflict, spec.invalidStatus)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			l.recordAudit(spec.auditAction, name, "failure", "Server not found", retryMeta)
 			return jsonResult(http.StatusNotFound, "Server not found")
@@ -287,9 +275,11 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "failure", spec.startFailure, retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.startFailure)
 	}
+	preStartStatus = admittedSnapshot
+	admittedGeneration := admittedSnapshot.ActionGeneration + 1
 	job, err := createServerActionJobWithStateAndManager(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy)
 	if err != nil {
-		l.serverState.RestoreStatusSnapshot(name, preStartStatus)
+		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 		retryMeta["error"] = err.Error()
 		l.recordAudit(spec.auditAction, name, "failure", "Failed to create job", retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)
@@ -297,179 +287,16 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	preserveReconciliation := spec.preserveReconciliation && preStartStatus != nil && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation)
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
 		if preserveReconciliation {
-			defer l.serverState.RestoreStatusSnapshot(name, preStartStatus)
+			defer l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 		}
 		spec.runWithJob(l.updateService, server, actor, clientIP, policy, job.ID, sudoPassword)
 	}, func() {
-		l.serverState.RestoreStatusSnapshot(name, preStartStatus)
+		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 	})
 	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	return serverActionLifecycleResult{
 		statusCode: http.StatusOK,
 		body:       map[string]any{"message": spec.successMessage, "job_id": job.ID},
-	}
-}
-
-func (l *serverActionLifecycle) ApproveAll(name string) serverActionLifecycleResult {
-	return l.approve(name, serverActionApprovalOptions{}, serverActionApprovalSpec{
-		scope:             updatespkg.ApprovalScopeAll,
-		rollbackLogPrefix: "update approve",
-	})
-}
-
-func (l *serverActionLifecycle) ApproveSecurity(name string) serverActionLifecycleResult {
-	return l.approve(name, serverActionApprovalOptions{}, serverActionApprovalSpec{
-		scope:             updatespkg.ApprovalScopeSecurity,
-		rollbackLogPrefix: "security approve",
-		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeSecurity},
-	})
-}
-
-func (l *serverActionLifecycle) ApproveKeptBackSecurity(name string, confirmRemovals bool) serverActionLifecycleResult {
-	return l.approve(name, serverActionApprovalOptions{confirmRemovals: confirmRemovals}, serverActionApprovalSpec{
-		scope:             updatespkg.ApprovalScopeSecurityKeptBack,
-		rollbackLogPrefix: "kept-back security approve",
-		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeSecurityKeptBack},
-	})
-}
-
-func (l *serverActionLifecycle) ApproveFullUpgrade(name string, confirmRemovals bool) serverActionLifecycleResult {
-	return l.approve(name, serverActionApprovalOptions{confirmRemovals: confirmRemovals}, serverActionApprovalSpec{
-		scope:             updatespkg.ApprovalScopeFullUpgrade,
-		rollbackLogPrefix: "full approve",
-		notFoundMeta:      map[string]any{"scope": updatespkg.ApprovalScopeFullUpgrade},
-	})
-}
-
-func (l *serverActionLifecycle) approve(name string, opts serverActionApprovalOptions, spec serverActionApprovalSpec) serverActionLifecycleResult {
-	preApproveStatus := l.serverState.CurrentStatusSnapshot(name)
-	if preApproveStatus == nil {
-		l.recordAuditWithMeta("update.approve", name, "failure", "Server not found", spec.notFoundMeta)
-		return jsonResult(http.StatusNotFound, "Server not found")
-	}
-	if preApproveStatus.Status != "pending_approval" {
-		l.recordAuditWithMeta("update.approve", name, "ignored", "Server not pending approval", map[string]any{"scope": spec.scope})
-		return jsonResult(http.StatusConflict, "Server not pending approval")
-	}
-	approval := updatespkg.EvaluateManualApproval(preApproveStatus, spec.scope, updatespkg.ApprovalScopeOptions{ConfirmRemovals: opts.confirmRemovals})
-	if !approval.Allowed {
-		l.recordAuditWithMeta("update.approve", name, approval.AuditStatus, approval.AuditMessage, approval.AuditMeta)
-		if len(approval.RemovedPackages) > 0 {
-			return serverActionLifecycleResult{
-				statusCode: http.StatusConflict,
-				body: map[string]any{
-					"error":            approval.BodyMessage,
-					"removed_packages": approval.RemovedPackages,
-				},
-			}
-		}
-		return jsonResult(http.StatusConflict, approval.BodyMessage)
-	}
-
-	jm := l.currentJobManager()
-	if jm == nil {
-		l.recordAuditWithMeta("update.approve", name, "failure", "Failed to persist approval", map[string]any{"scope": spec.scope, "error": "job manager unavailable"})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist approval")
-	}
-	job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-	if err != nil {
-		l.recordAuditWithMeta("update.approve", name, "failure", "Failed to persist approval", map[string]any{"scope": spec.scope, "error": err.Error()})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist approval")
-	}
-	status := jobStatusRunning
-	phase := jobPhaseAptUpgrade
-	logs := preApproveStatus.Logs
-	if err := jm.Transition(job.ID, JobTransitionIntent{
-		Kind:     jobIntentResumeApproval,
-		Status:   &status,
-		Phase:    &phase,
-		Summary:  &approval.JobSummary,
-		LogsText: &logs,
-	}); err != nil {
-		l.recordAuditWithMeta("update.approve", name, "failure", "Failed to persist approval", map[string]any{"scope": spec.scope, "error": err.Error()})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist approval")
-	}
-	approvalOptions := serverpkg.ApprovalOptions{ConfirmRemovals: approval.StateOptions.ConfirmRemovals}
-	exists, approved := l.updateService.ApprovePendingUpdateWithOptions(name, spec.scope, approvalOptions)
-	if !exists || !approved {
-		rollbackStatus := jobStatusWaitingApproval
-		rollbackPhase := jobPhaseApprovalWait
-		rollbackSummary := "Waiting for approval"
-		if rollbackErr := jm.Transition(job.ID, JobTransitionIntent{
-			Kind:     jobIntentWaitApproval,
-			Status:   &rollbackStatus,
-			Phase:    &rollbackPhase,
-			Summary:  &rollbackSummary,
-			LogsText: &logs,
-		}); rollbackErr != nil {
-			log.Printf("%s rollback failed for job %q: %v", spec.rollbackLogPrefix, job.ID, rollbackErr)
-		}
-		l.recordAuditWithMeta("update.approve", name, "ignored", "Server not pending approval", map[string]any{"scope": spec.scope})
-		return jsonResult(http.StatusConflict, "Server not pending approval")
-	}
-	l.recordAuditWithMeta("update.approve", name, approval.AuditStatus, approval.AuditMessage, approval.AuditMeta)
-	return serverActionLifecycleResult{
-		statusCode: http.StatusOK,
-		body:       map[string]any{"message": approval.SuccessMessage},
-	}
-}
-
-func (l *serverActionLifecycle) Cancel(name string) serverActionLifecycleResult {
-	preCancelStatus := l.serverState.CurrentStatusSnapshot(name)
-	if preCancelStatus == nil {
-		l.recordAuditWithMeta("update.cancel", name, "failure", "Server not found", nil)
-		return jsonResult(http.StatusNotFound, "Server not found")
-	}
-	if preCancelStatus.Status != "pending_approval" {
-		l.recordAuditWithMeta("update.cancel", name, "ignored", "Server not pending approval", nil)
-		return jsonResult(http.StatusConflict, "Server not pending approval")
-	}
-	logsBeforeCancel := preCancelStatus.Logs
-
-	jm := l.currentJobManager()
-	if jm == nil {
-		l.recordAuditWithMeta("update.cancel", name, "failure", "Failed to persist cancelled update", map[string]any{"error": "job manager unavailable"})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist cancelled update")
-	}
-	job, err := jm.FindLatestActiveJobByServerAndKind(name, jobKindUpdate)
-	if err != nil {
-		l.recordAuditWithMeta("update.cancel", name, "failure", "Failed to persist cancelled update", map[string]any{"error": err.Error()})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist cancelled update")
-	}
-	status := jobStatusCancelled
-	phase := jobPhaseComplete
-	summary := "Update cancelled"
-	if err := jm.Transition(job.ID, JobTransitionIntent{
-		Kind:     jobIntentCancel,
-		Status:   &status,
-		Phase:    &phase,
-		Summary:  &summary,
-		LogsText: &logsBeforeCancel,
-	}); err != nil {
-		l.recordAuditWithMeta("update.cancel", name, "failure", "Failed to persist cancelled update", map[string]any{"error": err.Error()})
-		return jsonResult(http.StatusInternalServerError, "Failed to persist cancelled update")
-	}
-	exists, cancelled := l.updateService.CancelPendingUpdate(name)
-	if !exists || !cancelled {
-		rollbackStatus := jobStatusWaitingApproval
-		rollbackPhase := jobPhaseApprovalWait
-		rollbackSummary := "Waiting for approval"
-		if rollbackErr := jm.Transition(job.ID, JobTransitionIntent{
-			Kind:     jobIntentWaitApproval,
-			Status:   &rollbackStatus,
-			Phase:    &rollbackPhase,
-			Summary:  &rollbackSummary,
-			LogsText: &logsBeforeCancel,
-		}); rollbackErr != nil {
-			log.Printf("cancel rollback failed for job %q: %v", job.ID, rollbackErr)
-		}
-		l.recordAuditWithMeta("update.cancel", name, "ignored", "Server not pending approval", nil)
-		return jsonResult(http.StatusConflict, "Server not pending approval")
-	}
-	l.recordAuditWithMeta("update.cancel", name, "success", "Upgrade cancelled", nil)
-	return serverActionLifecycleResult{
-		statusCode: http.StatusOK,
-		body:       map[string]any{"message": "Upgrade cancelled"},
 	}
 }
 

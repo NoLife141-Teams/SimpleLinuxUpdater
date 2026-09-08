@@ -6,6 +6,18 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- Bind every approval and cancellation to the displayed job and approval
+  generation, rejecting stale decisions from other tabs without changing the
+  current plan. API clients must send `job_id` and `approval_generation`.
+- Preserve complete stored job output when approving or cancelling an update.
+- Recheck allowed server status atomically when admitting an action, preventing
+  a controlled reboot from bypassing a newly required reconciliation.
+- Close SQLite users before restore snapshots and file replacement. Keep
+  maintenance active and retain private rollback files when recovery cannot be
+  completed; document the operator recovery procedure.
+
 ## [v0.4.9] - 2026-09-07
 
 ### Security

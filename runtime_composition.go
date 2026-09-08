@@ -91,11 +91,7 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 			return fmt.Errorf("rebase restored policy scheduler watermark: %w", err)
 		}
 	}
-	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
-		if err := reloader.ReloadPersistence(ctx); err != nil {
-			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
-		}
-	}
+
 	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
 		if err := deps.MaintenanceCoordinator.Initialize(ctx); err != nil {
 			return fmt.Errorf("restore Maintenance Coordination: %w", err)
@@ -146,6 +142,12 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 		return fmt.Errorf("rebuild restored auth session manager: %w", err)
 	}
 	deps.SetSessionManager(sm)
+	// Resume notification persistence only after the other restored runtime owners are ready.
+	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
+		if err := reloader.ReloadPersistence(ctx); err != nil {
+			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
+		}
+	}
 	return nil
 }
 

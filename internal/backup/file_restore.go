@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime/multipart"
@@ -344,6 +345,9 @@ func restoreFileSnapshots(snapshots []fileRestoreSnapshot, ensurePrivateDirForFi
 }
 
 func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string, restoreHandoff func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	configData, err := readPathBounded(files["config.json"], MaxUploadBytes)
 	if err != nil {
 		return fmt.Errorf("read restored config: %w", err)
@@ -360,6 +364,12 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		return err
 	}
 	defer preparedDB.Remove()
+	// Invalidate archived sessions before replacement, so a successful runtime
+	// reload is the final fallible operation and notification writers resume
+	// only after all archive changes have been prepared.
+	if err := clearPreparedDatabaseSessions(ctx, preparedDB.Path); err != nil {
+		return err
+	}
 
 	dbTarget := s.deps.DBPath()
 	knownHostsTarget := filepath.Join(filepath.Dir(dbTarget), "known_hosts")
@@ -371,34 +381,55 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if _, ok := files["known_hosts"]; ok {
 		targets = append(targets, knownHostsTarget)
 	}
-	snapshotDir, snapshots, err := snapshotFilesToDirectory(s.deps.TempDir(), targets)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	defer os.RemoveAll(snapshotDir)
-
+	// Drain writers and close SQLite before copying the database/sidecars.
 	if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); err != nil {
-		return fmt.Errorf("prepare restored persistence replacement: %w", err)
+		return &IncompleteRecoveryError{Cause: err, Recovery: errors.New("persistence preparation did not complete")}
 	}
+	snapshotDir, snapshots, err := snapshotFilesToDirectory(s.deps.TempDir(), targets)
+	if err != nil {
+		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+	}
+	manifest, err := json.MarshalIndent(snapshots, "", "  ")
+	if err == nil {
+		err = os.WriteFile(filepath.Join(snapshotDir, "recovery.json"), manifest, 0600)
+	}
+	if err != nil {
+		_ = os.RemoveAll(snapshotDir)
+		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+	}
+	keepSnapshots := false
+	defer func() {
+		if !keepSnapshots {
+			_ = os.RemoveAll(snapshotDir)
+		}
+	}()
 	rollback := func(cause error) error {
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancelRollback()
-		errs := []error{cause}
-		if restoreErr := restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); restoreErr != nil {
-			errs = append(errs, fmt.Errorf("rollback restore snapshots: %w", restoreErr))
+		incomplete := func(recovery error) error {
+			keepSnapshots = true
+			return &IncompleteRecoveryError{Cause: cause, Recovery: recovery, SnapshotDir: snapshotDir}
 		}
-		if prepareErr := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); prepareErr != nil {
-			errs = append(errs, fmt.Errorf("rollback prepare restored persistence replacement: %w", prepareErr))
+		// Forward reload can already have opened the replacement database. Stop
+		// every user before changing any file; do not reload a partial rollback.
+		if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); err != nil {
+			return incomplete(fmt.Errorf("rollback prepare persistence: %w", err))
+		}
+		if err := restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); err != nil {
+			return incomplete(fmt.Errorf("rollback restore snapshots: %w", err))
 		}
 		if restoreHandoff != nil {
-			if handoffErr := restoreHandoff(rollbackCtx); handoffErr != nil {
-				errs = append(errs, fmt.Errorf("rollback maintenance handoff: %w", handoffErr))
+			if err := restoreHandoff(rollbackCtx); err != nil {
+				return incomplete(fmt.Errorf("rollback maintenance handoff: %w", err))
 			}
 		}
-		if reloadErr := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); reloadErr != nil {
-			errs = append(errs, fmt.Errorf("rollback reload runtime state after reset: %w", reloadErr))
+		if err := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); err != nil {
+			return incomplete(fmt.Errorf("rollback reload runtime state: %w", err))
 		}
-		return errors.Join(errs...)
+		return cause
 	}
 	if err := RemoveSQLiteSidecars(dbTarget); err != nil {
 		return rollback(err)
@@ -422,10 +453,31 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
 		return rollback(err)
 	}
-	if err := s.ClearPersistedSessions(); err != nil {
-		return rollback(err)
-	}
 	return nil
+}
+
+func clearPreparedDatabaseSessions(ctx context.Context, path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return fmt.Errorf("open prepared sessions: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	err = clearDatabaseSessions(ctx, db)
+	return errors.Join(err, db.Close())
+}
+
+func (s *Service) reloadOriginalPersistence(ctx context.Context, cause error, restoreHandoff func(context.Context) error) error {
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	if restoreHandoff != nil {
+		if err := restoreHandoff(recoveryCtx); err != nil {
+			return &IncompleteRecoveryError{Cause: cause, Recovery: err}
+		}
+	}
+	if err := s.deps.RestoredRuntime.ReloadRestoredState(recoveryCtx); err != nil {
+		return &IncompleteRecoveryError{Cause: cause, Recovery: err}
+	}
+	return cause
 }
 
 func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string) []ResourceReview {

@@ -1076,6 +1076,17 @@
             return id;
         }
 
+        function approvalPayloadFacts(server) {
+            return {
+                counts: canonicalApprovalCounts(server),
+                approvalIdentity: {
+                    job_id: String(server?.job_id || ""),
+                    approval_generation: Number(server?.approval_generation) || 0
+                },
+                pendingUpdates: cloneValue(server?.pending_updates || [])
+            };
+        }
+
         function planAction(name, actionKey, options = {}) {
             const normalizedName = String(name || "");
             const server = actionServer(normalizedName);
@@ -1096,7 +1107,7 @@
                 reason: defaultActionReason(actionKey, server, action, canonicalApprovalCounts),
                 readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
                 blockingStatus: String(action.blocking_status || ""),
-                payloadFacts: { counts: canonicalApprovalCounts(server) }
+                payloadFacts: approvalPayloadFacts(server)
             };
         }
 
@@ -1137,7 +1148,7 @@
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, { counts: canonicalApprovalCounts(actionServer(name)) }]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, approvalPayloadFacts(actionServer(name))]))
             };
         }
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"strings"
+	"time"
 
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
@@ -428,7 +430,11 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		return backupOperationOutcome{Kind: backupOperationMaintenanceActivateFailed, JobID: job.ID, PublicError: "failed to activate maintenance mode", Err: err}
 	}
 	var restoredCompletion *JobRecord
+	recoveryIncomplete := false
 	defer func() {
+		if recoveryIncomplete {
+			return
+		}
 		var err error
 		if cmd.Lease != nil {
 			err = cmd.Lease.Close()
@@ -463,6 +469,12 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			summary := "Applying restored backup files"
 			_ = jm.Transition(job.ID, JobTransitionIntent{Phase: &phase, Summary: &summary})
 		},
+		PrepareReplacement: func(ctx context.Context, db *sql.DB) error {
+			if cmd.Lease == nil {
+				return errors.New("maintenance lease is not configured")
+			}
+			return cmd.Lease.PrepareReplacement(ctx, db)
+		},
 		RestoreHandoff: func(ctx context.Context) error {
 			if cmd.Lease == nil {
 				return errors.New("maintenance lease is not configured")
@@ -477,6 +489,22 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		result, err = deps.Archive.RestoreArchiveWithOptions(ctx, cmd.Blob, cmd.Passphrase, restoreOptions)
 	}
 	if err != nil {
+		var incomplete *internalbackup.IncompleteRecoveryError
+		if errors.As(err, &incomplete) {
+			recoveryIncomplete = true
+			if cmd.Lease != nil {
+				latchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				latchErr := cmd.Lease.RetainForRecovery(latchCtx)
+				cancel()
+				if latchErr != nil {
+					deps.Logf("backup recovery latch persistence failed: %v", latchErr)
+				}
+			}
+			deps.Logf("backup restore requires operator recovery: %v", err)
+			// Database and notification persistence may still be unavailable or
+			// paused. Do not issue ordinary audit/job writes after failed recovery.
+			return backupOperationOutcome{Kind: backupOperationRestoreApplyFailed, JobID: job.ID, PublicError: "backup recovery incomplete; maintenance remains active", Err: err}
+		}
 		return l.failRestoreArchive(job, cmd, err)
 	}
 	jm = deps.CurrentJobManager()

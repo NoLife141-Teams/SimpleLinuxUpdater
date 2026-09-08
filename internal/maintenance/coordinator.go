@@ -28,19 +28,21 @@ const (
 )
 
 type State struct {
-	Active    bool   `json:"active"`
-	Kind      string `json:"kind"`
-	JobID     string `json:"job_id"`
-	StartedAt string `json:"started_at"`
-	Actor     string `json:"actor"`
-	Message   string `json:"message"`
+	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	Active           bool   `json:"active"`
+	Kind             string `json:"kind"`
+	JobID            string `json:"job_id"`
+	StartedAt        string `json:"started_at"`
+	Actor            string `json:"actor"`
+	Message          string `json:"message"`
 }
 
 type Snapshot struct {
-	Active    bool   `json:"active"`
-	Kind      string `json:"kind"`
-	StartedAt string `json:"started_at"`
-	Message   string `json:"message"`
+	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	Active           bool   `json:"active"`
+	Kind             string `json:"kind"`
+	StartedAt        string `json:"started_at"`
+	Message          string `json:"message"`
 }
 
 type Decision struct {
@@ -89,6 +91,12 @@ func (c *Coordinator) Initialize(ctx context.Context) error {
 	state, err := c.deps.Store.Load(ctx)
 	if err != nil {
 		return err
+	}
+	if state.Active && (state.RecoveryRequired || state.Kind == string(OperationBackupRestore)) {
+		state.RecoveryRequired = true
+		state.Message = recoveryRequiredMessage
+		c.publish(state)
+		return nil
 	}
 	if state.Active {
 		state = State{}
@@ -215,6 +223,29 @@ func (l *ExclusiveLease) Handoff(ctx context.Context) error {
 	return l.coordinator.deps.Store.Save(ctx, state)
 }
 
+const recoveryRequiredMessage = "Backup recovery is incomplete. Stop the application and restore verified state before resuming. See the recovery steps in docs/troubleshooting.md."
+
+// RetainForRecovery releases the request's gate but keeps admission closed.
+// Close (including a middleware defer) cannot clear this recovery latch.
+func (l *ExclusiveLease) RetainForRecovery(ctx context.Context) error {
+	if l == nil || l.coordinator == nil {
+		return errors.New("maintenance lease is not configured")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	state := l.activeState
+	state.Active = true
+	state.RecoveryRequired = true
+	state.Message = recoveryRequiredMessage
+	l.coordinator.publish(state)
+	l.closed = true
+	l.releaseGate()
+	return l.coordinator.deps.Store.Save(ctx, state)
+}
+
 func (l *ExclusiveLease) Close() error {
 	if l == nil || l.coordinator == nil {
 		return nil
@@ -315,10 +346,11 @@ func (c *Coordinator) publish(state State) {
 
 func snapshot(state State) Snapshot {
 	return Snapshot{
-		Active:    state.Active,
-		Kind:      state.Kind,
-		StartedAt: state.StartedAt,
-		Message:   state.Message,
+		RecoveryRequired: state.RecoveryRequired,
+		Active:           state.Active,
+		Kind:             state.Kind,
+		StartedAt:        state.StartedAt,
+		Message:          state.Message,
 	}
 }
 

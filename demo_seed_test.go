@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -79,4 +83,56 @@ func (r failingDemoSeedRepository) Save([]serverpkg.Server, serverpkg.TxHook) er
 
 func (r failingDemoSeedRepository) UpdateServerKey(string, string) error {
 	return nil
+}
+
+func TestDemoSeedPendingApprovalsAcceptDisplayedIdentity(t *testing.T) {
+	for _, action := range []string{"approve", "approve-security", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			app := newIsolatedTestApp(t)
+			cookie := app.authenticate(t)
+			t.Setenv("DEBIAN_UPDATER_DEMO_SEED", "variant-c")
+			t.Setenv("DEBIAN_UPDATER_DEMO_RESET", "1")
+			seedVariantCDemoIfRequested(app.Deps)
+			for _, name := range []string{"edge-cache-03", "prod-web-01"} {
+				req := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+				req.AddCookie(cookie)
+				rec := httptest.NewRecorder()
+				app.Handler.ServeHTTP(rec, req)
+				var statuses []ServerStatus
+				if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &statuses) != nil {
+					t.Fatalf("load displayed demo status: %d %s", rec.Code, rec.Body.String())
+				}
+				var displayed *ServerStatus
+				for i := range statuses {
+					if statuses[i].Name == name {
+						displayed = &statuses[i]
+					}
+				}
+				if displayed == nil || displayed.Status != "pending_approval" {
+					t.Fatalf("missing pending demo host %s: %+v", name, displayed)
+				}
+				body, err := json.Marshal(serverActionApprovalIdentity{JobID: displayed.JobID, Generation: displayed.ApprovalGeneration})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req = httptest.NewRequest(http.MethodPost, "/api/"+action+"/"+name, bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.AddCookie(cookie)
+				markSameOriginAuthRequest(req)
+				rec = httptest.NewRecorder()
+				app.Handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Errorf("seeded %s %s rejected: %d %s", name, action, rec.Code, rec.Body.String())
+				}
+				job, err := app.Deps.CurrentJobManager().GetJob(displayed.JobID)
+				wantStatus := jobStatusRunning
+				if action == "cancel" {
+					wantStatus = jobStatusCancelled
+				}
+				if err != nil || job.Status != wantStatus || job.ServerName != name {
+					t.Errorf("seeded decision did not transition matching job: %+v %v", job, err)
+				}
+			}
+		})
+	}
 }

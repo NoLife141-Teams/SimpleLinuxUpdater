@@ -14,10 +14,11 @@ import (
 
 func publicMaintenanceSnapshotPayload(state maintenancepkg.Snapshot) gin.H {
 	return gin.H{
-		"active":     state.Active,
-		"kind":       state.Kind,
-		"started_at": state.StartedAt,
-		"message":    state.Message,
+		"active":            state.Active,
+		"recovery_required": state.RecoveryRequired,
+		"kind":              state.Kind,
+		"started_at":        state.StartedAt,
+		"message":           state.Message,
 	}
 }
 

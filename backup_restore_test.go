@@ -128,6 +128,7 @@ func TestBackupRestoreRollbackUsesSameRestoredRuntimeInterface(t *testing.T) {
 	rollbackErr := errors.New("rollback runtime reload failed")
 	reloads := 0
 	service := NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+		TempDir: t.TempDir,
 		RestoredRuntime: restoredRuntimeAdapter{
 			prepare: resetRuntimeCaches,
 			reload: func(context.Context) error {

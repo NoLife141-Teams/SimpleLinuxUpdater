@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	demoEdgeApprovalJobID = "demo-edge-approval"
+	demoWebApprovalJobID  = "demo-web-approval"
+)
+
 func seedVariantCDemoIfRequested(deps AppDeps) {
 	if strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_DEMO_SEED")) != "variant-c" {
 		return
@@ -62,6 +67,14 @@ func seedVariantCDemoRuntime(deps AppDeps) error {
 			demoUpdate("tzdata", false),
 		}),
 		"worker-04": newDemoStatus(demoServers[4], "done", "Maintenance completed successfully", nil),
+	}
+
+	for name, jobID := range map[string]string{
+		"edge-cache-03": demoEdgeApprovalJobID,
+		"prod-web-01":   demoWebApprovalJobID,
+	} {
+		demoStatuses[name].JobID = jobID
+		demoStatuses[name].ApprovalGeneration = 1
 	}
 
 	var prevServers []Server
@@ -223,10 +236,10 @@ func insertDemoJobs(tx *sql.Tx, now time.Time) error {
 		started, finished                        time.Time
 	}
 	rows := []job{
-		{"demo-edge-approval", "edge-cache-03", jobStatusWaitingApproval, jobPhaseApprovalWait, "Waiting for approval", "Waiting for security-only approval", now.Add(-35 * time.Minute), time.Time{}},
+		{demoEdgeApprovalJobID, "edge-cache-03", jobStatusWaitingApproval, jobPhaseApprovalWait, "Waiting for approval", "Waiting for security-only approval", now.Add(-35 * time.Minute), time.Time{}},
 		{"demo-lab-failed", "lab-node-05", jobStatusFailed, jobPhasePostchecks, "Post-check failed after package update", "Post-check failed after package update", now.Add(-95 * time.Minute), now.Add(-82 * time.Minute)},
 		{"demo-db-running", "prod-db-02", jobStatusRunning, jobPhaseAptUpdate, "Running apt update and package discovery", "Running apt update and package discovery", now.Add(-9 * time.Minute), time.Time{}},
-		{"demo-web-approval", "prod-web-01", jobStatusWaitingApproval, jobPhaseApprovalWait, "Waiting for approval", "Waiting for approval: 4 packages, 3 CVE", now.Add(-22 * time.Minute), time.Time{}},
+		{demoWebApprovalJobID, "prod-web-01", jobStatusWaitingApproval, jobPhaseApprovalWait, "Waiting for approval", "Waiting for approval: 4 packages, 3 CVE", now.Add(-22 * time.Minute), time.Time{}},
 		{"demo-worker-done", "worker-04", jobStatusSucceeded, jobPhaseComplete, "Maintenance completed successfully", "Maintenance completed successfully", now.Add(-2 * time.Hour), now.Add(-110 * time.Minute)},
 	}
 	for _, row := range rows {

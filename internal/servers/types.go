@@ -18,6 +18,7 @@ var (
 	ErrEndpointExists      = errors.New("server endpoint already exists")
 	ErrNotFound            = errors.New("server not found")
 	ErrActionInProgress    = errors.New("action already in progress")
+	ErrActionNotAllowed    = errors.New("action is not available for the current server status")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
 
@@ -101,7 +102,7 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 
 type ServerStatus struct {
 	ActionGeneration        uint64          `json:"-"`
-	ApprovalGeneration      uint64          `json:"-"`
+	ApprovalGeneration      uint64          `json:"approval_generation,omitempty"`
 	ActionRunning           bool            `json:"-"`
 	JobRevision             int64           `json:"-"`
 	Name                    string          `json:"name"`
@@ -372,20 +373,36 @@ func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
 	return s.beginAction(name, newStatus, true)
 }
 
+type ActionAdmissionOptions struct {
+	PackageMutation bool
+	AllowedStatuses map[string]bool
+}
+
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
+	server, _, err := s.BeginActionWithOptions(name, newStatus, ActionAdmissionOptions{PackageMutation: packageMutation})
+	return server, err
+}
+
+// BeginActionWithOptions checks the current action contract and captures rollback
+// state under the same lock that reserves the next action generation.
+func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmissionOptions) (Server, *ServerStatus, error) {
 	s.Lock()
 	defer s.Unlock()
 	status, exists := (*s.statusMap)[name]
 	if !exists || status == nil {
-		return Server{}, sql.ErrNoRows
+		return Server{}, nil, sql.ErrNoRows
 	}
-	if status.ActionRunning || s.statusInProgress(status.Status) || (packageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
-		return Server{}, ErrActionInProgress
+	if status.ActionRunning || s.statusInProgress(status.Status) || (opts.PackageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
+		return Server{}, nil, ErrActionInProgress
+	}
+	if len(opts.AllowedStatuses) > 0 && !opts.AllowedStatuses[strings.ToLower(strings.TrimSpace(status.Status))] {
+		return Server{}, nil, ErrActionNotAllowed
 	}
 	server, found := s.FindByNameLocked(name)
 	if !found {
-		return Server{}, sql.ErrNoRows
+		return Server{}, nil, sql.ErrNoRows
 	}
+	previous := CloneServerStatus(status)
 	status.ActionGeneration++
 	status.JobID = ""
 	status.JobRevision = -1
@@ -393,7 +410,21 @@ func (s *State) beginAction(name, newStatus string, packageMutation bool) (Serve
 	if strings.TrimSpace(status.Logs) == "" {
 		status.Logs = "Starting Linux Updater..."
 	}
-	return server, nil
+	return server, previous, nil
+}
+
+// RestoreAdmittedAction cannot roll back a newer admission. Keep generations
+// monotonic even when restoring an earlier status snapshot.
+func (s *State) RestoreAdmittedAction(name string, generation uint64, previous *ServerStatus) {
+	s.Lock()
+	defer s.Unlock()
+	current := (*s.statusMap)[name]
+	if current == nil || previous == nil || current.ActionGeneration != generation {
+		return
+	}
+	restored := CloneServerStatus(previous)
+	restored.ActionGeneration = generation
+	(*s.statusMap)[name] = restored
 }
 
 func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerStatus, error) {

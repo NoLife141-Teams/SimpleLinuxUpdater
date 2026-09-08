@@ -17,6 +17,7 @@
 - [Controlled reboot verification failures](#controlled-reboot-verification-failures)
 - [CVE enrichment issues](#cve-enrichment-issues)
 - [Notification delivery failures](#notification-delivery-failures)
+- [Incomplete backup recovery](#incomplete-backup-recovery)
 - [Database and file permissions](#database-and-file-permissions)
 
 ## Setup and login issues
@@ -209,3 +210,15 @@ Fix:
 
 - Ensure the process user can read/write the data directory.
 - In Docker, mount a volume to `/data`.
+
+## Incomplete backup recovery
+
+If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests and scheduled work stay blocked. An interrupted restore also stays blocked on startup. The replacement database carries an active restore marker before any live file is replaced, covering interruption between database and host-key replacement. A restart alone does not clear a saved recovery latch.
+
+1. Stop attempts to use the app and inspect its process/container logs. The `backup restore requires operator recovery` entry identifies the error and, when available, the retained rollback directory. Rollback directories (`slu-restore-rollback-*`) are stored beside the application database, so they share its persistent volume (normally `/data` in Docker). Preserve that volume and the recovery directory until recovery is verified.
+2. Stop the application before changing persistence files. Keep an untouched copy of the current database, sidecars, configuration and host-key file for diagnosis.
+3. Restore a verified, consistent set of original files. A retained rollback directory contains `recovery.json`, mapping each original `Target` to its `BackupPath` and recording whether it originally existed. Use the entire recorded set, including SQLite sidecars and any included host-key file; do not mix files from different attempts. A target recorded as absent must remain absent. Keep private file permissions. The rollback database uses the current configuration's encryption key.
+4. Verify SQLite integrity on the recovered set (for example, `PRAGMA quick_check`), confirm the expected inventory and configuration, and resolve the runtime reload error from the logs. Integrity alone does not establish that the chosen inventory/configuration is the intended one. If no usable rollback files exist, recover from an independent verified backup instead.
+5. Only after recovery is verified, and while the application is stopped, clear the saved maintenance latch in the recovered database: `DELETE FROM settings WHERE key = 'maintenance_state';`. Start the app and check its startup logs and inventory before initiating maintenance on a host.
+
+If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.

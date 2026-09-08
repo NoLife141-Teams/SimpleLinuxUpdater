@@ -61,3 +61,22 @@ func (s SQLiteStore) Save(ctx context.Context, state State) error {
 	)
 	return err
 }
+
+// PrepareReplacement stamps the owning restore into an offline replacement
+// database without changing the live lease. Successful restores clear it through
+// normal Close after handoff/reload. Startup treats either this recovery marker or the
+// active restore written by Handoff as an interrupted operation.
+func (l *ExclusiveLease) PrepareReplacement(ctx context.Context, db *sql.DB) error {
+	if l == nil || l.coordinator == nil {
+		return errors.New("maintenance lease is not configured")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed || l.releasePending || !l.activated || l.operation != OperationBackupRestore {
+		return errors.New("active backup restore lease is required for replacement preparation")
+	}
+	state := l.activeState
+	state.RecoveryRequired = true
+	state.Message = recoveryRequiredMessage
+	return (SQLiteStore{DB: func() *sql.DB { return db }}).Save(ctx, state)
+}

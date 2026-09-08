@@ -351,10 +351,23 @@ func (r *withActorRunner) withStatus(update func(*servers.ServerStatus)) bool {
 		return false
 	}
 	previousLogs := status.Logs
-	update(status)
-	updatedLogs := status.Logs
-	status.Logs = BoundStatusLogs(status.Logs)
 	snapshot := servers.CloneServerStatus(status)
+	update(snapshot)
+	updatedLogs := snapshot.Logs
+	snapshot.Logs = BoundStatusLogs(snapshot.Logs)
+	if snapshot.Status == "pending_approval" {
+		if err := r.commitPendingApproval(snapshot, previousLogs, updatedLogs); err != nil {
+			deps.ServerState.Unlock()
+			r.lastErrClass = "persistence"
+			deps.Logf("failed to persist pending approval for job %q: %v", r.jobID, err)
+			r.setErrorLogs(r.currentLogs() + fmt.Sprintf("\nUnable to persist pending approval; update aborted before approval or package mutation: %v", err))
+			return false
+		}
+		*status = *snapshot
+		deps.ServerState.Unlock()
+		return true
+	}
+	*status = *snapshot
 	deps.ServerState.Unlock()
 	r.syncJobFromStatus(snapshot, previousLogs, updatedLogs)
 	return true
@@ -1012,7 +1025,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			for {
 				logs = r.currentLogs()
 				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
-				_ = r.withStatus(func(status *servers.ServerStatus) {
+				if !r.withStatus(func(status *servers.ServerStatus) {
 					status.ApprovalGeneration++
 					status.Status = "pending_approval"
 					status.ApprovalScope = ""
@@ -1021,7 +1034,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					status.PendingUpdates = servers.ClonePendingUpdates(discovery.PendingUpdates)
 					status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
 					status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(discovery.Upgradable, "\n")
-				})
+				}) {
+					return
+				}
 				autoScope := behavior.AutoApproveScope
 				if approvalChanged {
 					autoScope = ""
@@ -1070,6 +1085,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 						approved := false
 						cancelledByUser := false
 						approvalTimedOut := false
+						approvalUnavailable := false
 						if deps.ServerState != nil {
 							deps.ServerState.Lock()
 							status := deps.ServerState.StatusMap()[r.server.Name]
@@ -1088,6 +1104,8 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 									status.Upgradable = nil
 									status.PendingUpdates = nil
 									status.UpgradePlan = servers.UpgradePlan{}
+								} else if status.Status != "pending_approval" {
+									approvalUnavailable = true
 								} else if deps.Now().After(approvalDeadline) {
 									approvalTimedOut = true
 									status.Status = "idle"
@@ -1105,7 +1123,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 							r.approvedAt = deps.Now()
 							break
 						}
-						if cancelledByUser {
+						if cancelledByUser || approvalUnavailable {
 							return
 						}
 						if approvalTimedOut {

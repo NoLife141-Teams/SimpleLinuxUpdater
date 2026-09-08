@@ -528,7 +528,8 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	}
 
 	approveRec := httptest.NewRecorder()
-	approveReq := httptest.NewRequest(http.MethodPost, "/api/approve/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	approveReq := pendingDecisionRequestForTest(t, "/api/approve/"+server.Name, globalServerState(), server.Name, false)
 	approveReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(approveReq)
 	app.Handler.ServeHTTP(approveRec, approveReq)
@@ -546,7 +547,8 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	}
 
 	approveAgainRec := httptest.NewRecorder()
-	approveAgainReq := httptest.NewRequest(http.MethodPost, "/api/approve/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	approveAgainReq := pendingDecisionRequestForTest(t, "/api/approve/"+server.Name, globalServerState(), server.Name, false)
 	approveAgainReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(approveAgainReq)
 	app.Handler.ServeHTTP(approveAgainRec, approveAgainReq)
@@ -581,7 +583,8 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	}
 
 	cancelRec := httptest.NewRecorder()
-	cancelReq := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	cancelReq := pendingDecisionRequestForTest(t, "/api/cancel/"+server.Name, globalServerState(), server.Name, false)
 	cancelReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(cancelReq)
 	app.Handler.ServeHTTP(cancelRec, cancelReq)
@@ -602,7 +605,8 @@ func TestApproveCancelRoutesRespectPendingState(t *testing.T) {
 	}
 
 	cancelAgainRec := httptest.NewRecorder()
-	cancelAgainReq := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	cancelAgainReq := pendingDecisionRequestForTest(t, "/api/cancel/"+server.Name, globalServerState(), server.Name, false)
 	cancelAgainReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(cancelAgainReq)
 	app.Handler.ServeHTTP(cancelAgainRec, cancelAgainReq)
@@ -638,7 +642,8 @@ func TestCancelRouteReturnsFailureWhenPendingJobCannotBePersisted(t *testing.T) 
 	}()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	req := pendingDecisionRequestForTest(t, "/api/cancel/"+server.Name, globalServerState(), server.Name, false)
 	req.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(req)
 	handler.ServeHTTP(rec, req)
@@ -698,7 +703,8 @@ func TestApproveRouteUpdatesJobWithoutOverwritingApprovedRuntimeState(t *testing
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/approve/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	req := pendingDecisionRequestForTest(t, "/api/approve/"+server.Name, globalServerState(), server.Name, false)
 	req.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(req)
 	handler.ServeHTTP(rec, req)
@@ -1017,6 +1023,8 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 			if restored == nil {
 				t.Fatalf("%s status snapshot missing after rollback", tc.name)
 			}
+			// Rollback restores the snapshot but must not reuse an admitted generation.
+			original.ActionGeneration++
 			if !reflect.DeepEqual(restored, original) {
 				t.Fatalf("%s restored status = %+v, want %+v", tc.name, restored, original)
 			}
@@ -1197,7 +1205,8 @@ func TestApproveFullRouteRequiresRemovalConfirmation(t *testing.T) {
 	}
 
 	staleRec := httptest.NewRecorder()
-	staleReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	bindLatestPendingApprovalFixture(t, server.Name)
+	staleReq := pendingDecisionRequestForTest(t, "/api/approve-full/"+server.Name, globalServerState(), server.Name, true)
 	staleReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(staleReq)
 	staleReq.Header.Set("Content-Type", "application/json")
@@ -1215,7 +1224,8 @@ func TestApproveFullRouteRequiresRemovalConfirmation(t *testing.T) {
 	}()
 
 	blockedRec := httptest.NewRecorder()
-	blockedReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	blockedReq := pendingDecisionRequestForTest(t, "/api/approve-full/"+server.Name, globalServerState(), server.Name, false)
 	blockedReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(blockedReq)
 	handler.ServeHTTP(blockedRec, blockedReq)
@@ -1231,7 +1241,8 @@ func TestApproveFullRouteRequiresRemovalConfirmation(t *testing.T) {
 	}
 
 	confirmedRec := httptest.NewRecorder()
-	confirmedReq := httptest.NewRequest(http.MethodPost, "/api/approve-full/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	bindLatestPendingApprovalFixture(t, server.Name)
+	confirmedReq := pendingDecisionRequestForTest(t, "/api/approve-full/"+server.Name, globalServerState(), server.Name, true)
 	confirmedReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(confirmedReq)
 	confirmedReq.Header.Set("Content-Type", "application/json")
@@ -1304,7 +1315,8 @@ func TestApproveKeptBackSecurityRouteRequiresRemovalConfirmation(t *testing.T) {
 	}
 
 	blockedRec := httptest.NewRecorder()
-	blockedReq := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	blockedReq := pendingDecisionRequestForTest(t, "/api/approve-security-kept-back/"+server.Name, globalServerState(), server.Name, false)
 	blockedReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(blockedReq)
 	handler.ServeHTTP(blockedRec, blockedReq)
@@ -1323,7 +1335,8 @@ func TestApproveKeptBackSecurityRouteRequiresRemovalConfirmation(t *testing.T) {
 	}
 
 	confirmedRec := httptest.NewRecorder()
-	confirmedReq := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, bytes.NewBufferString(`{"confirm_removals":true}`))
+	bindLatestPendingApprovalFixture(t, server.Name)
+	confirmedReq := pendingDecisionRequestForTest(t, "/api/approve-security-kept-back/"+server.Name, globalServerState(), server.Name, true)
 	confirmedReq.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(confirmedReq)
 	confirmedReq.Header.Set("Content-Type", "application/json")
@@ -1391,7 +1404,8 @@ func TestApproveKeptBackSecurityRouteUsesTargetedRemovalPlan(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/approve-security-kept-back/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	req := pendingDecisionRequestForTest(t, "/api/approve-security-kept-back/"+server.Name, globalServerState(), server.Name, false)
 	req.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(req)
 	handler.ServeHTTP(rec, req)
@@ -1508,13 +1522,15 @@ func TestCancelRouteDoesNotRehydrateClearedRuntimeLogsFromJobSync(t *testing.T) 
 		Status:     jobStatusWaitingApproval,
 		Phase:      jobPhaseApprovalWait,
 		Summary:    "Waiting for approval",
+		LogsText:   "pending",
 	})
 	if err != nil {
 		t.Fatalf("CreateJob(update pending approval) unexpected error: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/cancel/"+server.Name, nil)
+	bindLatestPendingApprovalFixture(t, server.Name)
+	req := pendingDecisionRequestForTest(t, "/api/cancel/"+server.Name, globalServerState(), server.Name, false)
 	req.AddCookie(sessionCookie)
 	markSameOriginAuthRequest(req)
 	handler.ServeHTTP(rec, req)
@@ -1619,7 +1635,8 @@ func TestApproveRoutesReturnFailureWhenPendingJobCannotBePersisted(t *testing.T)
 			}()
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf(tc.path, server.Name), nil)
+			bindLatestPendingApprovalFixture(t, server.Name)
+			req := pendingDecisionRequestForTest(t, fmt.Sprintf(tc.path, server.Name), globalServerState(), server.Name, false)
 			req.AddCookie(sessionCookie)
 			markSameOriginAuthRequest(req)
 			handler.ServeHTTP(rec, req)

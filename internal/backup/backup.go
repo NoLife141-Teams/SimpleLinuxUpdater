@@ -173,8 +173,12 @@ type ArchiveInspection struct {
 }
 
 type RestoreOptions struct {
-	BeforeApply    func()
-	RestoreHandoff func(context.Context) error
+	BeforeApply func()
+	// PrepareReplacement and RestoreHandoff are paired maintenance callbacks.
+	// Stage the active restore in the prepared database before replacing files;
+	// hand it back to the live runtime after replacement.
+	PrepareReplacement func(context.Context, *sql.DB) error
+	RestoreHandoff     func(context.Context) error
 }
 
 type ExportStage string
@@ -232,6 +236,20 @@ func (e *RestoreError) Unwrap() error {
 	return e.Err
 }
 
+// IncompleteRecoveryError means persistence/runtime recovery was not verified.
+// Callers must retain maintenance instead of resuming ordinary work.
+type IncompleteRecoveryError struct {
+	Cause       error
+	Recovery    error
+	SnapshotDir string
+}
+
+func (e *IncompleteRecoveryError) Error() string {
+	return fmt.Sprintf("backup recovery incomplete (rollback snapshots: %q): %v; recovery: %v", e.SnapshotDir, e.Cause, e.Recovery)
+}
+
+func (e *IncompleteRecoveryError) Unwrap() []error { return []error{e.Cause, e.Recovery} }
+
 type ServiceDeps struct {
 	DB                            func() *sql.DB
 	DBPath                        func() string
@@ -254,6 +272,8 @@ type ServiceDeps struct {
 
 // RestoredRuntime prepares persistence replacement and rehydrates app-scoped state afterward.
 type RestoredRuntime interface {
+	// A preparation failure must leave original persistence usable, or return
+	// IncompleteRecoveryError if it cannot safely unwind partial preparation.
 	PreparePersistenceReplacement(context.Context) error
 	ReloadRestoredState(context.Context) error
 }
@@ -943,93 +963,49 @@ func (s *Service) PrepareRuntimeFiles(ctx context.Context, files map[string][]by
 }
 
 func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error {
-	return s.applyFiles(ctx, files, nil)
+	return s.applyFiles(ctx, files)
 }
 
-func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, restoreHandoff func(context.Context) error) error {
-	dbTarget := s.deps.DBPath()
-	knownHostsTarget := filepath.Join(filepath.Dir(s.deps.DBPath()), "known_hosts")
-	if p, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(p) != "" {
-		knownHostsTarget = p
-	}
-	files, err := s.PrepareRuntimeFiles(ctx, files)
+// Keep byte-oriented callers on the same bounded file replacement and recovery
+// path used by uploaded archives.
+func (s *Service) applyFiles(ctx context.Context, files map[string][]byte) error {
+	dir, err := os.MkdirTemp(s.deps.TempDir(), "slu-restore-input-*")
 	if err != nil {
 		return err
 	}
-
-	targets := []string{dbTarget}
-	targets = append(targets, SQLiteSidecarPaths(dbTarget)...)
-	if _, ok := files["known_hosts"]; ok {
-		targets = append(targets, knownHostsTarget)
-	}
-
-	snaps, err := SnapshotExistingFiles(targets)
-	if err != nil {
-		return err
-	}
-
-	if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); err != nil {
-		return fmt.Errorf("prepare restored persistence replacement: %w", err)
-	}
-	rollback := func(cause error) error {
-		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
-		defer cancelRollback()
-		errs := []error{cause}
-		if restoreErr := RestoreSnapshots(snaps, s.deps.EnsurePrivateDirForFile); restoreErr != nil {
-			errs = append(errs, fmt.Errorf("rollback restore snapshots: %w", restoreErr))
+	defer os.RemoveAll(dir)
+	paths := make(map[string]string, len(files))
+	for name, data := range files {
+		file, err := createTemporaryFile(dir, "input-*")
+		if err != nil {
+			return err
 		}
-		if prepareErr := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); prepareErr != nil {
-			errs = append(errs, fmt.Errorf("rollback prepare restored persistence replacement: %w", prepareErr))
+		if _, err := copyFileBounded(file, bytes.NewReader(data), MaxExtractedBytes); err != nil {
+			_ = file.Close()
+			return err
 		}
-		if restoreHandoff != nil {
-			if handoffErr := restoreHandoff(rollbackCtx); handoffErr != nil {
-				errs = append(errs, fmt.Errorf("rollback maintenance handoff: %w", handoffErr))
-			}
+		if err := file.Close(); err != nil {
+			return err
 		}
-		if reloadErr := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); reloadErr != nil {
-			errs = append(errs, fmt.Errorf("rollback reload runtime state after reset: %w", reloadErr))
-		}
-		return errors.Join(errs...)
+		paths[name] = file.Name()
 	}
-
-	if err := RemoveSQLiteSidecars(dbTarget); err != nil {
-		return rollback(err)
-	}
-	if err := WriteAtomicFile(dbTarget, files["servers.db"], 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-		return rollback(err)
-	}
-	if err := RemoveSQLiteSidecars(dbTarget); err != nil {
-		return rollback(err)
-	}
-	if khData, ok := files["known_hosts"]; ok {
-		if err := WriteAtomicFile(knownHostsTarget, khData, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-			return rollback(err)
-		}
-	}
-	if restoreHandoff != nil {
-		if err := restoreHandoff(ctx); err != nil {
-			return rollback(fmt.Errorf("maintenance restore handoff: %w", err))
-		}
-	}
-	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
-		return rollback(err)
-	}
-	if err := s.ClearPersistedSessions(); err != nil {
-		return rollback(err)
-	}
-	return nil
+	return s.applyArchiveFiles(ctx, paths, RestoreOptions{})
 }
 
 func (s *Service) ClearPersistedSessions() error {
-	tx, err := s.deps.DB().BeginTx(context.Background(), nil)
+	return clearDatabaseSessions(context.Background(), s.deps.DB())
+}
+
+func clearDatabaseSessions(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin session clear: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM sessions"); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM sessions"); err != nil {
 		return fmt.Errorf("clear sessions: %w", err)
 	}
-	if _, err := tx.Exec("DELETE FROM auth_session_metadata"); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM auth_session_metadata"); err != nil {
 		return fmt.Errorf("clear session metadata: %w", err)
 	}
 	return tx.Commit()

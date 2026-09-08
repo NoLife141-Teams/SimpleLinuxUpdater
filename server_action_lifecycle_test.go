@@ -38,6 +38,10 @@ func newLifecycleTestHarness(t *testing.T, server Server, status *ServerStatus) 
 	statuses := map[string]*ServerStatus{}
 	if status != nil {
 		statuses[server.Name] = cloneServerStatus(status)
+		if status.Status == "pending_approval" {
+			statuses[server.Name].JobID = "pending-job"
+			statuses[server.Name].ApprovalGeneration = 1
+		}
 	}
 	state := serverpkg.NewState(&stateMu, &servers, &statuses, statusInProgress)
 
@@ -102,6 +106,12 @@ func (h *lifecycleTestHarness) createPendingUpdateJob(t *testing.T, serverName s
 	if err != nil {
 		t.Fatalf("create pending update job: %v", err)
 	}
+	h.state.Lock()
+	if status := h.state.StatusMap()[serverName]; status != nil {
+		status.JobID = job.ID
+		status.ApprovalGeneration = 1
+	}
+	h.state.Unlock()
 	return job
 }
 
@@ -401,7 +411,7 @@ func TestServerActionLifecycleApproveSuccessUpdatesJobFirst(t *testing.T) {
 	})
 	job := h.createPendingUpdateJob(t, server.Name)
 
-	result := h.lifecycle().ApproveSecurity(server.Name)
+	result := h.lifecycle().ApproveSecurity(server.Name, approvalIdentityForTest(h.state, server.Name))
 
 	if result.statusCode != http.StatusOK || result.body["message"] != "Security updates approved" {
 		t.Fatalf("approve result = %+v, want security approval success", result)
@@ -424,7 +434,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 
 	t.Run("not pending", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "idle"})
-		result := h.lifecycle().ApproveAll(server.Name)
+		result := h.lifecycle().ApproveAll(server.Name, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Server not pending approval" {
 			t.Fatalf("not pending result = %+v, want conflict", result)
 		}
@@ -432,7 +442,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 
 	t.Run("kept back requires packages", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "pending_approval"})
-		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false)
+		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "No kept-back security updates pending" {
 			t.Fatalf("kept-back no packages result = %+v", result)
 		}
@@ -444,7 +454,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 			Status:         "pending_approval",
 			PendingUpdates: []PendingUpdate{{Package: "linux-image", Security: true, KeptBack: true, RequiresFull: true}},
 		})
-		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false)
+		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Kept-back security upgrade requires a fresh package scan" {
 			t.Fatalf("kept-back stale scan result = %+v", result)
 		}
@@ -460,7 +470,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 				KeptBackSecurityRemovedPackages: []string{"old-kernel"},
 			},
 		})
-		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false)
+		result := h.lifecycle().ApproveKeptBackSecurity(server.Name, false, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Kept-back security upgrade may remove packages; confirmation required" {
 			t.Fatalf("kept-back confirmation result = %+v", result)
 		}
@@ -468,7 +478,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 
 	t.Run("full requires fresh scan", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "pending_approval"})
-		result := h.lifecycle().ApproveFullUpgrade(server.Name, false)
+		result := h.lifecycle().ApproveFullUpgrade(server.Name, false, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Full upgrade requires a fresh package scan" {
 			t.Fatalf("full stale scan result = %+v", result)
 		}
@@ -483,7 +493,7 @@ func TestServerActionLifecycleApprovePreconditions(t *testing.T) {
 				FullUpgradeRemovedPackages: []string{"obsolete"},
 			},
 		})
-		result := h.lifecycle().ApproveFullUpgrade(server.Name, false)
+		result := h.lifecycle().ApproveFullUpgrade(server.Name, false, approvalIdentityForTest(h.state, server.Name))
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Full upgrade would remove packages; confirmation required" {
 			t.Fatalf("full confirmation result = %+v", result)
 		}
@@ -496,7 +506,7 @@ func TestServerActionLifecycleApproveJobManagerUnavailable(t *testing.T) {
 	lifecycle := h.lifecycle()
 	lifecycle.currentJobManager = func() *JobManager { return nil }
 
-	result := lifecycle.ApproveAll(server.Name)
+	result := lifecycle.ApproveAll(server.Name, approvalIdentityForTest(h.state, server.Name))
 
 	if result.statusCode != http.StatusInternalServerError || result.body["error"] != "Failed to persist approval" {
 		t.Fatalf("no manager result = %+v, want persist approval failure", result)
@@ -507,21 +517,19 @@ func TestServerActionLifecycleApproveJobManagerUnavailable(t *testing.T) {
 	}
 }
 
-func TestServerActionLifecycleApproveRaceRollsBackJob(t *testing.T) {
+func TestServerActionLifecycleApprovePersistenceFailureLeavesPendingPlanUnchanged(t *testing.T) {
 	server := Server{Name: "srv-approve-race", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "pending_approval", Logs: "pending logs"})
 	job := h.createPendingUpdateJob(t, server.Name)
 
-	var otherMu sync.Mutex
-	otherServers := []Server{server}
-	otherStatuses := map[string]*ServerStatus{}
-	otherState := serverpkg.NewState(&otherMu, &otherServers, &otherStatuses, statusInProgress)
-	h.updateSvc = NewUpdateService(UpdateServiceDeps{ServerState: otherState})
+	if _, err := h.db.Exec(`CREATE TRIGGER reject_approval BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
 
-	result := h.lifecycle().ApproveAll(server.Name)
+	result := h.lifecycle().ApproveAll(server.Name, approvalIdentityForTest(h.state, server.Name))
 
-	if result.statusCode != http.StatusConflict || result.body["error"] != "Server not pending approval" {
-		t.Fatalf("race result = %+v, want not pending conflict", result)
+	if result.statusCode != http.StatusInternalServerError || result.body["error"] != "Failed to persist approval" {
+		t.Fatalf("race result = %+v, want persistence failure", result)
 	}
 	var jobStatus, phase, summary string
 	if err := h.db.QueryRow("SELECT status, phase, summary FROM jobs WHERE id = ?", job.ID).Scan(&jobStatus, &phase, &summary); err != nil {
@@ -543,7 +551,7 @@ func TestServerActionLifecycleCancelSuccess(t *testing.T) {
 	})
 	job := h.createPendingUpdateJob(t, server.Name)
 
-	result := h.lifecycle().Cancel(server.Name)
+	result := h.lifecycle().Cancel(server.Name, approvalIdentityForTest(h.state, server.Name))
 
 	if result.statusCode != http.StatusOK || result.body["message"] != "Upgrade cancelled" {
 		t.Fatalf("cancel result = %+v, want success", result)

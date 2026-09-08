@@ -16,7 +16,11 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   a controlled reboot from bypassing a newly required reconciliation.
 - Close SQLite users before restore snapshots and file replacement. Keep
   maintenance active and retain private rollback files when recovery cannot be
-  completed; document the operator recovery procedure.
+  completed; document the operator recovery procedure. Stage the active restore
+  marker before replacing the database so interrupted file replacement stays
+  blocked on restart.
+- Give seeded demo pending approvals their matching job identities and nonzero
+  generations so approval and cancellation remain usable.
 
 ## [v0.4.9] - 2026-09-07
 

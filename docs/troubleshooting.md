@@ -213,7 +213,7 @@ Fix:
 
 ## Incomplete backup recovery
 
-If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests and scheduled work stay blocked. An interrupted restore also stays blocked on startup. A restart alone does not clear a saved recovery latch.
+If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests and scheduled work stay blocked. An interrupted restore also stays blocked on startup. The replacement database carries an active restore marker before any live file is replaced, covering interruption between database and host-key replacement. A restart alone does not clear a saved recovery latch.
 
 1. Stop attempts to use the app and inspect its process/container logs. The `backup restore requires operator recovery` entry identifies the error and, when available, the retained rollback directory. Copy that private directory to durable storage before removing a container or its temporary files.
 2. Stop the application before changing persistence files. Keep an untouched copy of the current database, sidecars, configuration and host-key file for diagnosis.

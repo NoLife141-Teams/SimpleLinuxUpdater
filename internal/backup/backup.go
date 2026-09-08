@@ -173,8 +173,12 @@ type ArchiveInspection struct {
 }
 
 type RestoreOptions struct {
-	BeforeApply    func()
-	RestoreHandoff func(context.Context) error
+	BeforeApply func()
+	// PrepareReplacement and RestoreHandoff are paired maintenance callbacks.
+	// Stage the active restore in the prepared database before replacing files;
+	// hand it back to the live runtime after replacement.
+	PrepareReplacement func(context.Context, *sql.DB) error
+	RestoreHandoff     func(context.Context) error
 }
 
 type ExportStage string
@@ -959,12 +963,12 @@ func (s *Service) PrepareRuntimeFiles(ctx context.Context, files map[string][]by
 }
 
 func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error {
-	return s.applyFiles(ctx, files, nil)
+	return s.applyFiles(ctx, files)
 }
 
 // Keep byte-oriented callers on the same bounded file replacement and recovery
 // path used by uploaded archives.
-func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, restoreHandoff func(context.Context) error) error {
+func (s *Service) applyFiles(ctx context.Context, files map[string][]byte) error {
 	dir, err := os.MkdirTemp(s.deps.TempDir(), "slu-restore-input-*")
 	if err != nil {
 		return err
@@ -985,7 +989,7 @@ func (s *Service) applyFiles(ctx context.Context, files map[string][]byte, resto
 		}
 		paths[name] = file.Name()
 	}
-	return s.applyArchiveFiles(ctx, paths, restoreHandoff)
+	return s.applyArchiveFiles(ctx, paths, RestoreOptions{})
 }
 
 func (s *Service) ClearPersistedSessions() error {

@@ -344,7 +344,11 @@ func restoreFileSnapshots(snapshots []fileRestoreSnapshot, ensurePrivateDirForFi
 	return errors.Join(errs...)
 }
 
-func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string, restoreHandoff func(context.Context) error) error {
+func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string, opts RestoreOptions) error {
+	if (opts.PrepareReplacement == nil) != (opts.RestoreHandoff == nil) {
+		return errors.New("restore maintenance preparation and handoff must be configured together")
+	}
+	restoreHandoff := opts.RestoreHandoff
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -367,7 +371,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	// Invalidate archived sessions before replacement, so a successful runtime
 	// reload is the final fallible operation and notification writers resume
 	// only after all archive changes have been prepared.
-	if err := clearPreparedDatabaseSessions(ctx, preparedDB.Path); err != nil {
+	if err := prepareRestoredDatabase(ctx, preparedDB.Path, opts.PrepareReplacement); err != nil {
 		return err
 	}
 
@@ -458,13 +462,18 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	return nil
 }
 
-func clearPreparedDatabaseSessions(ctx context.Context, path string) error {
+func prepareRestoredDatabase(ctx context.Context, path string, prepareReplacement func(context.Context, *sql.DB) error) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return fmt.Errorf("open prepared sessions: %w", err)
+		return fmt.Errorf("open prepared restore database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	err = clearDatabaseSessions(ctx, db)
+	if err == nil && prepareReplacement != nil {
+		// The staged marker travels with the database's first rename. A process
+		// exit before known_hosts replacement or handoff must block startup.
+		err = prepareReplacement(ctx, db)
+	}
 	return errors.Join(err, db.Close())
 }
 
@@ -606,7 +615,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if opts.BeforeApply != nil {
 		opts.BeforeApply()
 	}
-	if err := s.applyArchiveFiles(ctx, inspection.Files, opts.RestoreHandoff); err != nil {
+	if err := s.applyArchiveFiles(ctx, inspection.Files, opts); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
 	globalKeyPresent := false

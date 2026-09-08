@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
 	"strings"
@@ -467,6 +468,12 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			phase := jobPhaseApply
 			summary := "Applying restored backup files"
 			_ = jm.Transition(job.ID, JobTransitionIntent{Phase: &phase, Summary: &summary})
+		},
+		PrepareReplacement: func(ctx context.Context, db *sql.DB) error {
+			if cmd.Lease == nil {
+				return errors.New("maintenance lease is not configured")
+			}
+			return cmd.Lease.PrepareReplacement(ctx, db)
 		},
 		RestoreHandoff: func(ctx context.Context) error {
 			if cmd.Lease == nil {

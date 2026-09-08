@@ -6,11 +6,35 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.10] - 2026-09-07
+
+### Upgrade notes
+
+- Existing non-root SSH targets need **Enable apt** once to install the updated
+  typed helper operations. An outdated helper fails closed with that guidance.
+- API clients must send the displayed `job_id` and `approval_generation` when
+  approving or cancelling a pending update; stale decisions are rejected.
+
 ### Fixed
+
+- Preserve action ownership through job completion and reject delayed status
+  publication from older jobs or revisions.
+- Require reconciliation after SSH transport loss when an APT mutation may have
+  started; never replay a command with an unknown outcome. Bound SSH negotiation
+  and propagate cancellation through connection and reconnect.
+- Prevent in-flight requests from recreating revoked or expired sessions.
+- Rediscover packages and rerun health and disk checks after approval. Changed
+  package plans require renewed approval, and typed helper operations prevent
+  unapproved removals. Reject stale CVE enrichment for an older approval plan.
+- Invalidate host facts after endpoint changes while preserving rename continuity.
+- Stream package maintenance output into stored logs, bound live previews, and
+  fail explicitly when output needed for parsing exceeds its limit.
+- Load inventory only during runtime composition, avoiding database access from
+  package initialization.
 
 - Bind every approval and cancellation to the displayed job and approval
   generation, rejecting stale decisions from other tabs without changing the
-  current plan. API clients must send `job_id` and `approval_generation`.
+  current plan.
 - Commit the waiting job before displaying an approval plan; stop with a
   persistence error if that write fails.
 - Preserve complete stored job output when approving or cancelling an update.
@@ -18,11 +42,16 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   a controlled reboot from bypassing a newly required reconciliation.
 - Close SQLite users before restore snapshots and file replacement. Keep
   maintenance active and retain private rollback files beside the database when
-  recovery cannot be completed; document the operator recovery procedure. Stage the active restore
-  marker before replacing the database so interrupted file replacement stays
-  blocked on restart.
+  recovery cannot be completed; document the operator recovery procedure. Stage
+  the active restore marker before replacing the database so interrupted file
+  replacement stays blocked on restart.
 - Give seeded demo pending approvals their matching job identities and nonzero
   generations so approval and cancellation remain usable.
+- Qualify both container architectures using the containerd image store and scope
+  the optional release token to GitHub release operations.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.10 release readiness record](docs/release-v0.4.10-readiness.md).
 
 ## [v0.4.9] - 2026-09-07
 

@@ -386,7 +386,9 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	// Drain writers and close SQLite before copying the database/sidecars.
 	if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(ctx); err != nil {
-		return &IncompleteRecoveryError{Cause: err, Recovery: errors.New("persistence preparation did not complete")}
+		// Preparation errors leave original persistence usable; no files have
+		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
+		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
 	snapshotDir, snapshots, err := snapshotFilesToDirectory(s.deps.TempDir(), targets)
 	if err != nil {

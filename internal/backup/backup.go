@@ -268,6 +268,8 @@ type ServiceDeps struct {
 
 // RestoredRuntime prepares persistence replacement and rehydrates app-scoped state afterward.
 type RestoredRuntime interface {
+	// A preparation failure must leave original persistence usable, or return
+	// IncompleteRecoveryError if it cannot safely unwind partial preparation.
 	PreparePersistenceReplacement(context.Context) error
 	ReloadRestoredState(context.Context) error
 }

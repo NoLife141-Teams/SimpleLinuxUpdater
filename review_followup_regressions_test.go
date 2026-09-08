@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -178,9 +179,10 @@ func TestSecondReviewFailedRollbackKeepsMaintenanceClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tempRoot := t.TempDir()
 	reloads := 0
 	h.lifecycle.deps.Archive = NewBackupServiceWithDeps(internalbackup.ServiceDeps{
-		DBPath: func() string { return target }, CurrentEncryptionKey: func() []byte { return key }, TempDir: t.TempDir,
+		DBPath: func() string { return target }, CurrentEncryptionKey: func() []byte { return key }, TempDir: func() string { return tempRoot },
 		RestoredRuntime: restoredRuntimeAdapter{prepare: func() {}, reload: func(context.Context) error { reloads++; return errors.New("runtime inventory unavailable") }},
 	})
 	store := &secondReviewMaintenanceStore{}
@@ -194,8 +196,45 @@ func TestSecondReviewFailedRollbackKeepsMaintenanceClosed(t *testing.T) {
 	if !errors.As(outcome.Err, &incomplete) {
 		t.Fatalf("missing typed incomplete recovery: %v", outcome.Err)
 	}
-	if _, err := os.Stat(filepath.Join(incomplete.SnapshotDir, "recovery.json")); err != nil {
+	if filepath.Dir(incomplete.SnapshotDir) != filepath.Dir(target) {
+		t.Errorf("rollback snapshots are outside persistent database storage: %s", incomplete.SnapshotDir)
+	}
+	if err := os.RemoveAll(tempRoot); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(incomplete.SnapshotDir); err != nil || info.Mode().Perm() != 0700 {
+		t.Errorf("retained snapshot directory missing or not private: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(incomplete.SnapshotDir, "recovery.json"))
+	if err != nil {
 		t.Fatalf("rollback recovery files were discarded: %v", err)
+	}
+	var snapshots []struct {
+		Target, BackupPath string
+		Exists             bool
+	}
+	if err := json.Unmarshal(manifestData, &snapshots); err != nil {
+		t.Fatal(err)
+	}
+	foundOriginal := false
+	for _, snapshot := range snapshots {
+		if !snapshot.Exists {
+			continue
+		}
+		info, err := os.Stat(snapshot.BackupPath)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("retained snapshot missing or not private: %s %v", snapshot.BackupPath, err)
+		}
+		if snapshot.Target == target {
+			data, err := os.ReadFile(snapshot.BackupPath)
+			if err != nil || !bytes.Equal(data, original) {
+				t.Fatalf("original database snapshot did not survive temporary storage removal: %v", err)
+			}
+			foundOriginal = true
+		}
+	}
+	if !foundOriginal {
+		t.Fatal("recovery manifest omits the original database")
 	}
 	if len(h.audits) != 0 {
 		t.Fatal("ordinary audit persistence used after failed runtime recovery")

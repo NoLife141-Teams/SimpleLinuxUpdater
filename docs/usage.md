@@ -94,6 +94,8 @@ Approval actions:
 - Approve kept-back security updates from the separately simulated targeted plan
 - Approve the complete `apt-get full-upgrade` plan, with explicit confirmation when packages would be removed
 
+A pending plan becomes available only after its waiting job state is committed. If that write fails, the update stops with a persistence error before approval or package mutation.
+
 Approval and cancellation requests identify the exact pending plan displayed in the browser. If another tab or a fresh scan changes it, the server rejects the old decision with HTTP 409 and the page refreshes the plan for another review. An old removal confirmation cannot authorize the new plan. Existing tabs should be reloaded after updating the app.
 
 API clients must include `job_id` and `approval_generation` from `GET /api/servers` in the JSON body of every `/api/approve*` and `/api/cancel/:name` request. Capture those values when presenting the plan, not immediately before sending a previously confirmed decision. Full-upgrade and kept-back security approval additionally accept `confirm_removals: true` when the displayed removals have been confirmed. Missing identities are rejected; job IDs and generations from another plan cannot be reused.

@@ -394,7 +394,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
-	snapshotDir, snapshots, err := snapshotFilesToDirectory(s.deps.TempDir(), targets)
+	snapshotDir, snapshots, err := snapshotFilesToDirectory(filepath.Dir(dbTarget), targets)
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
 	}

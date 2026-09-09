@@ -1,6 +1,7 @@
 package policies
 
 import (
+	"errors"
 	"sort"
 	"time"
 
@@ -39,10 +40,13 @@ func (s *Service) unfinishedRolloutSlots(policy Policy, latest, now time.Time, i
 	return slots
 }
 
-func (r *SQLiteRepository) ListRolloutOrigins(policyIDs []int64) ([]RolloutRunScope, error) {
+func (r *SQLiteRepository) ListRolloutOrigins(ranges []RolloutOriginRange) ([]RolloutRunScope, error) {
 	origins := make([]RolloutRunScope, 0)
-	for _, id := range policyIDs {
-		rows, err := r.database().Query(`SELECT DISTINCT policy_id, scheduled_for_utc FROM update_policy_runs WHERE policy_id = ? ORDER BY scheduled_for_utc`, id)
+	for _, interval := range ranges {
+		if interval.PolicyID <= 0 || interval.FromUTC == "" || interval.BeforeUTC == "" || interval.FromUTC >= interval.BeforeUTC {
+			return nil, errors.New("rollout origin range requires policy ID and increasing UTC bounds")
+		}
+		rows, err := r.database().Query(rolloutOriginsQuery, interval.PolicyID, interval.FromUTC, interval.BeforeUTC)
 		if err != nil {
 			return nil, err
 		}
@@ -80,3 +84,8 @@ func (s *Service) rolloutHorizon(policy Policy, inventory []servers.Server, over
 
 	return horizon
 }
+
+const rolloutOriginsQuery = `SELECT DISTINCT policy_id, scheduled_for_utc
+ FROM update_policy_runs
+ WHERE policy_id = ? AND scheduled_for_utc >= ? AND scheduled_for_utc < ?
+ ORDER BY scheduled_for_utc`

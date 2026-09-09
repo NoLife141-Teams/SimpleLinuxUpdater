@@ -23,7 +23,7 @@ type ServiceDeps struct {
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
 	ListRuns            func(int) ([]Run, error)
 	ListRolloutRuns     func([]RolloutRunScope) ([]Run, error)
-	ListRolloutOrigins  func([]int64) ([]RolloutRunScope, error)
+	ListRolloutOrigins  func([]RolloutOriginRange) ([]RolloutRunScope, error)
 	ReconcileRun        func(Run) (Run, error)
 	SnapshotServers     func() []servers.Server
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
@@ -886,13 +886,18 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	// Include persisted origins so a newer cadence occurrence cannot hide an
 	// unfinished wave. History remains scoped to enabled wave policies.
 	if deps.ListRolloutOrigins != nil {
-		ids := make([]int64, 0)
+		ranges := make([]RolloutOriginRange, 0)
 		for _, policy := range policies {
 			if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
-				ids = append(ids, policy.ID)
+				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
+				horizon := s.rolloutHorizon(policy, serversSnapshot, overrides)
+				if !due || horizon <= 0 {
+					continue
+				}
+				ranges = append(ranges, RolloutOriginRange{PolicyID: policy.ID, FromUTC: CanonicalScheduledForUTC(latest.Add(-horizon), deps.TimestampLayout, deps.CurrentLocation), BeforeUTC: CanonicalScheduledForUTC(latest, deps.TimestampLayout, deps.CurrentLocation)})
 			}
 		}
-		origins, originErr := deps.ListRolloutOrigins(ids)
+		origins, originErr := deps.ListRolloutOrigins(ranges)
 		if originErr != nil {
 			return originErr
 		}

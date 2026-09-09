@@ -333,3 +333,11 @@ type RunUpdate struct {
 	StartedAt  *string
 	FinishedAt *string
 }
+
+// RolloutOriginRange bounds prior occurrences by an inclusive lower bound and
+// an exclusive upper bound, both expressed in canonical UTC timestamps.
+type RolloutOriginRange struct {
+	PolicyID  int64
+	FromUTC   string
+	BeforeUTC string
+}

@@ -77,7 +77,7 @@ func TestDailyRolloutContinuesPastNextOccurrence(t *testing.T) {
 				}
 				return out, nil
 			}
-			deps.ListRolloutOrigins = func([]int64) ([]RolloutRunScope, error) {
+			deps.ListRolloutOrigins = func([]RolloutOriginRange) ([]RolloutRunScope, error) {
 				origins := []RolloutRunScope{}
 				seen := map[string]bool{}
 				for _, run := range runs {

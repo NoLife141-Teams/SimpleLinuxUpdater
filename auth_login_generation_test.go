@@ -96,6 +96,14 @@ func testLoginRejectsObsoleteCredentialsAtSessionCommit(t *testing.T, phase stri
 	if ok, err := app.Deps.AuthService.Authenticate("reviewadmin", oldPassword); ok || err != nil {
 		t.Fatalf("old password not invalidated: %v %v", ok, err)
 	}
+	// SCS commits before forwarding the handler's status to the client.
+	// A rejected commit must never become a successful HTTP login response.
+	if recorder.Code < http.StatusBadRequest {
+		t.Fatalf("obsolete login returned success status %d", recorder.Code)
+	}
+	if len(recorder.Result().Cookies()) != 0 {
+		t.Fatal("obsolete login issued a session cookie")
+	}
 	t.Logf("rotation HTTP=%d; in-flight old-password login HTTP=%d", rotationRec.Code, recorder.Code)
 	check := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
 	for _, cookie := range recorder.Result().Cookies() {

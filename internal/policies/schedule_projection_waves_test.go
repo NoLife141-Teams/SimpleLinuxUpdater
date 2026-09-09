@@ -57,6 +57,9 @@ func TestWaveScheduleProjectionUsesReleaseAndCompleteHistory(t *testing.T) {
 			if next.ScheduledForUTC != tc.want.Format(DefaultTimestampLayout) {
 				t.Fatalf("next = %+v, want %s", next, tc.want)
 			}
+			if tc.status == RunSucceeded && (next.Reason == "rollout_waiting" || strings.Contains(next.Summary, "preceding batch")) {
+				t.Fatalf("resolved predecessor still presented as waiting: %+v", next)
+			}
 			if tc.wantWait && !strings.Contains(next.Summary, "waiting for preceding batch") {
 				t.Fatalf("missing wait caveat: %+v", next)
 			}

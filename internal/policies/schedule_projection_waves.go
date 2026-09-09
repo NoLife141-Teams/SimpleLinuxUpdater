@@ -79,10 +79,10 @@ func (s *Service) nextWaveScheduleProjection(policy Policy, serverName string, i
 			policy: policy, scheduledLocal: release,
 			scheduledUTC: CanonicalScheduledForUTC(release, deps.TimestampLayout, deps.CurrentLocation),
 		}
-		if batchIndex > 0 || historyGate == "waiting" {
+		if gate == "waiting" || historyGate == "waiting" {
 			candidate.summary = "Wave release subject to preceding batch success"
 			candidate.reason = "rollout_waiting"
-			if origin.Before(now) && (gate == "waiting" || historyGate == "waiting") {
+			if origin.Before(now) {
 				candidate.summary = "Wave waiting for preceding batch success"
 			}
 		}

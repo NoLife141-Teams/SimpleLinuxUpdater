@@ -886,6 +886,7 @@ const dashboardEventsWriteTimeout = 2 * dashboardEventsHeartbeatInterval
 type dashboardEventsStreamConfig struct {
 	heartbeatInterval time.Duration
 	writeTimeout      time.Duration
+	validateSession   func() bool
 }
 
 func handleDashboardEventsWithBroker(c *gin.Context, broker *events.Broker) {
@@ -915,6 +916,9 @@ func handleDashboardEventsWithConfig(c *gin.Context, broker *events.Broker, conf
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	writeAndFlush := func(parts ...string) bool {
+		if config.validateSession != nil && !config.validateSession() {
+			return false
+		}
 		if err := responseController.SetWriteDeadline(time.Now().Add(config.writeTimeout)); err != nil {
 			return false
 		}
@@ -1903,7 +1907,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 		handleBackupStatusWithService(c, deps.BackupService)
 	})
 	r.GET("/api/dashboard/events", func(c *gin.Context) {
-		handleDashboardEventsWithBroker(c, deps.DashboardEventBroker)
+		handleDashboardEventsWithConfig(c, deps.DashboardEventBroker, dashboardEventsStreamConfig{
+			heartbeatInterval: dashboardEventsHeartbeatInterval, writeTimeout: dashboardEventsWriteTimeout, validateSession: dashboardSessionValidator(c),
+		})
 	})
 	r.GET("/api/app-settings/timezone", handleAppTimezoneStatusWithModule(deps.ApplicationTime))
 	r.PUT("/api/app-settings/timezone", handleAppTimezoneUpdateWithModule(deps.ApplicationTime))

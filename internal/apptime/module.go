@@ -50,17 +50,22 @@ type Deps struct {
 }
 
 type Module struct {
-	deps Deps
-	mu   sync.RWMutex
-	now  Interpretation
+	deps          Deps
+	configureLock chan struct{}
+	mu            sync.RWMutex
+	now           Interpretation
 }
 
-func New(deps Deps) *Module { return &Module{deps: deps} }
+func New(deps Deps) *Module { return &Module{deps: deps, configureLock: make(chan struct{}, 1)} }
 
 func (m *Module) Initialize(ctx context.Context) error {
 	if m == nil || m.deps.Store == nil {
 		return errors.New("application time persistence is not configured")
 	}
+	if err := m.acquireConfiguration(ctx); err != nil {
+		return err
+	}
+	defer func() { <-m.configureLock }()
 	raw, err := m.deps.Store.Load(ctx)
 	if err != nil {
 		return err
@@ -89,6 +94,10 @@ func (m *Module) Configure(ctx context.Context, raw string) (Interpretation, err
 	if m == nil || m.deps.Store == nil {
 		return Interpretation{}, errors.New("application time persistence is not configured")
 	}
+	if err := m.acquireConfiguration(ctx); err != nil {
+		return Interpretation{}, err
+	}
+	defer func() { <-m.configureLock }()
 	interpretation, persisted, err := m.resolve(raw)
 	if err != nil {
 		return Interpretation{}, err
@@ -306,4 +315,18 @@ func (s *MemoryStore) Save(_ context.Context, value string) error {
 	}
 	s.value = value
 	return nil
+}
+
+// Serialize persistence and publication while allowing queued requests to cancel.
+func (m *Module) acquireConfiguration(ctx context.Context) error {
+	select {
+	case m.configureLock <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-m.configureLock
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

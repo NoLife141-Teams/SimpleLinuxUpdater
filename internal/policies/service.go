@@ -23,6 +23,7 @@ type ServiceDeps struct {
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
 	ListRuns            func(int) ([]Run, error)
 	ListRolloutRuns     func([]RolloutRunScope) ([]Run, error)
+	ListRolloutOrigins  func([]int64) ([]RolloutRunScope, error)
 	ReconcileRun        func(Run) (Run, error)
 	SnapshotServers     func() []servers.Server
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
@@ -879,6 +880,33 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			ScheduledForUTC: CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation),
 		})
 	}
+	// Include persisted origins so a newer cadence occurrence cannot hide an
+	// unfinished wave. History remains scoped to enabled wave policies.
+	if deps.ListRolloutOrigins != nil {
+		ids := make([]int64, 0)
+		for _, policy := range policies {
+			if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
+				ids = append(ids, policy.ID)
+			}
+		}
+		origins, originErr := deps.ListRolloutOrigins(ids)
+		if originErr != nil {
+			return originErr
+		}
+		for _, scope := range origins {
+			for _, policy := range policies {
+				if policy.ID != scope.PolicyID || !policy.Enabled || policy.RolloutMode != RolloutCanaryWaves {
+					continue
+				}
+				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
+				origin, parseErr := time.Parse(deps.TimestampLayout, scope.ScheduledForUTC)
+				if !due || parseErr != nil || !origin.Before(latest) || origin.Add(s.rolloutHorizon(policy, serversSnapshot, overrides)).Before(latest) {
+					continue
+				}
+				rolloutScopes = append(rolloutScopes, scope)
+			}
+		}
+	}
 	if len(rolloutScopes) > 0 && deps.ListRolloutRuns == nil {
 		return errors.New("policy rollout history dependency is incomplete")
 	}
@@ -922,6 +950,9 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
 		if !rolloutDue {
 			continue
+		}
+		if policy.RolloutMode == RolloutCanaryWaves {
+			rolloutSlot = s.unfinishedRolloutSlot(policy, rolloutSlot, slotLocal, serversSnapshot, overrides, runsByScope)
 		}
 		policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
 		if policy.RolloutMode == RolloutCanaryWaves && rolloutSlot.Before(slotLocal) {
@@ -972,7 +1003,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 					recordSkipped(policy, server, policyScheduledForUTC, RunReasonMaintenance)
 					continue
 				}
-				if s.BlackoutApplies(rolloutSlot, globalBlackouts) || s.BlackoutApplies(rolloutSlot, policy.PolicyBlackouts) {
+				if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
 					recordSkipped(policy, server, policyScheduledForUTC, RunReasonBlackout)
 					continue
 				}

@@ -27,6 +27,7 @@ type Repository interface {
 	UpdateRun(id int64, update RunUpdate) error
 	ListRuns(limit int) ([]Run, error)
 	ListRolloutRuns(scopes []RolloutRunScope) ([]Run, error)
+	ListRolloutOrigins(policyIDs []int64) ([]RolloutRunScope, error)
 	QueryRuns(query RunQuery) (RunPage, error)
 	MarkInterruptedRuns() error
 	LoadGlobalBlackouts() ([]BlackoutWindow, error)

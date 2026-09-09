@@ -968,3 +968,17 @@ func handleAuthLogout(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "logout successful"})
 }
+
+// Revalidate long-lived streams against durable session state, including expiry
+// and runtime replacement, rather than the request's cached authentication.
+func dashboardSessionValidator(c *gin.Context) func() bool {
+	sm := sessionManagerForContext(c)
+	token := currentSessionToken(c)
+	return func() bool {
+		if sm == nil || token == "" || sessionManagerForContext(c) != sm {
+			return false
+		}
+		_, found, err := sm.Store.Find(token)
+		return err == nil && found
+	}
+}

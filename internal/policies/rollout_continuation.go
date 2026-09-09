@@ -1,23 +1,24 @@
 package policies
 
 import (
+	"sort"
 	"time"
 
 	"debian-updater/internal/servers"
 )
 
-// Prefer an incomplete persisted origin whose wave release horizon overlaps
-// the latest occurrence. Never replay unstarted or obsolete historical work.
-func (s *Service) unfinishedRolloutSlot(policy Policy, latest, now time.Time, inventory []servers.Server, overrides map[int64]map[string]bool, scopes map[RolloutRunScope][]Run) time.Time {
+// Include incomplete persisted origins whose wave release horizons overlap
+// the latest occurrence, without displacing its new canary.
+func (s *Service) unfinishedRolloutSlots(policy Policy, latest, now time.Time, inventory []servers.Server, overrides map[int64]map[string]bool, scopes map[RolloutRunScope][]Run) []time.Time {
 	deps := s.EnsureDeps()
-	selected := latest
+	slots := []time.Time{latest}
 	horizon := s.rolloutHorizon(policy, inventory, overrides)
 	for scope, runs := range scopes {
 		if scope.PolicyID != policy.ID {
 			continue
 		}
 		origin, err := time.Parse(deps.TimestampLayout, scope.ScheduledForUTC)
-		if err != nil || !origin.Before(selected) || origin.After(now) || origin.Add(horizon).Before(latest) {
+		if err != nil || !origin.Before(latest) || origin.After(now) || origin.Add(horizon).Before(latest) {
 			continue
 		}
 		if !rolloutOriginMatchesPolicy(policy, origin, runs, deps.TimestampLayout) {
@@ -29,12 +30,13 @@ func (s *Service) unfinishedRolloutSlot(policy Policy, latest, now time.Time, in
 		}
 		for _, server := range inventory {
 			if s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) && !present[server.Name] {
-				selected = origin.In(now.Location())
+				slots = append(slots, origin.In(now.Location()))
 				break
 			}
 		}
 	}
-	return selected
+	sort.Slice(slots, func(i, j int) bool { return slots[i].Before(slots[j]) })
+	return slots
 }
 
 func (r *SQLiteRepository) ListRolloutOrigins(policyIDs []int64) ([]RolloutRunScope, error) {

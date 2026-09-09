@@ -103,6 +103,9 @@ func TestDailyRolloutContinuesPastNextOccurrence(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if waveRuns["srv-a"] != 4 {
+				t.Fatalf("daily canary runs=%d, want 4", waveRuns["srv-a"])
+			}
 			for _, server := range deps.SnapshotServers() {
 				if waveRuns[server.Name] == 0 {
 					t.Fatalf("%s never dispatched: %+v", server.Name, runs)

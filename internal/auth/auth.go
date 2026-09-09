@@ -323,6 +323,9 @@ func (r *SQLiteRepository) ClearSessions() (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE auth_login_generation SET generation = generation + 1 WHERE id = 1"); err != nil {
+		return 0, err
+	}
 	result, err := tx.Exec("DELETE FROM sessions")
 	if err != nil {
 		return 0, err
@@ -484,6 +487,9 @@ func (r *SQLiteRepository) ClearOtherSessions(currentToken string) (int64, error
 		return 0, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE auth_login_generation SET generation = generation + 1 WHERE id = 1"); err != nil {
+		return 0, err
+	}
 	result, err := tx.Exec("DELETE FROM sessions WHERE token <> ?", currentToken)
 	if err != nil {
 		return 0, err

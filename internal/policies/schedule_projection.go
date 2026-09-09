@@ -18,6 +18,8 @@ type projectedScheduleCandidate struct {
 	policy         Policy
 	scheduledLocal time.Time
 	scheduledUTC   string
+	summary        string
+	reason         string
 }
 
 func (s *Service) ProjectSchedule(req ScheduleProjectionRequest) (ScheduleProjection, error) {
@@ -83,7 +85,9 @@ func (s *Service) ProjectSchedule(req ScheduleProjectionRequest) (ScheduleProjec
 		}
 		s.mergePersistedScheduleRuns(projection.Servers, runs, now)
 	}
-	s.mergeProjectedScheduleRuns(projection.Servers, serverList, policyList, overrides, globalBlackouts, now.In(loc))
+	if err := s.mergeProjectedScheduleRuns(projection.Servers, serverList, policyList, overrides, globalBlackouts, now.In(loc)); err != nil {
+		return ScheduleProjection{}, err
+	}
 	return projection, nil
 }
 
@@ -129,13 +133,24 @@ func (s *Service) mergePersistedScheduleRuns(result map[string]ServerSchedulePro
 	}
 }
 
-func (s *Service) mergeProjectedScheduleRuns(result map[string]ServerScheduleProjection, serverList []servers.Server, policyList []Policy, overrides map[int64]map[string]bool, globalBlackouts []BlackoutWindow, localNow time.Time) {
+func (s *Service) mergeProjectedScheduleRuns(result map[string]ServerScheduleProjection, serverList []servers.Server, policyList []Policy, overrides map[int64]map[string]bool, globalBlackouts []BlackoutWindow, localNow time.Time) error {
 	deps := s.EnsureDeps()
 	localNow = localNow.Truncate(time.Minute)
+	runByKey, runsByScope, err := s.loadRolloutHistory(policyList, serverList, overrides, localNow)
+	if err != nil {
+		return err
+	}
 	projectedByServer := map[string]projectedScheduleCandidate{}
 	for _, server := range serverList {
 		for _, policy := range policyList {
 			if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
+				continue
+			}
+			if policy.RolloutMode == RolloutCanaryWaves {
+				projected, ok := s.nextWaveScheduleProjection(policy, server.Name, serverList, overrides, globalBlackouts, localNow, runByKey, runsByScope)
+				if ok && s.projectedScheduleBefore(projected, projectedByServer[server.Name]) {
+					projectedByServer[server.Name] = projected
+				}
 				continue
 			}
 			slotLocal, ok := s.nextScheduleProjectionOccurrenceLocal(policy, localNow, globalBlackouts)
@@ -169,9 +184,14 @@ func (s *Service) mergeProjectedScheduleRuns(result map[string]ServerSchedulePro
 			ScheduledForUTC: projected.scheduledUTC,
 			Status:          ScheduleProjectionStateScheduled,
 			Summary:         "Scheduled run pending",
+			Reason:          projected.reason,
+		}
+		if projected.summary != "" {
+			current.NextRun.Summary = projected.summary
 		}
 		result[serverName] = current
 	}
+	return nil
 }
 
 func (s *Service) nextScheduleProjectionOccurrenceLocal(policy Policy, fromLocal time.Time, globalBlackouts []BlackoutWindow) (time.Time, bool) {

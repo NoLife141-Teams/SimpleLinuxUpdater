@@ -762,7 +762,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <div class="mini-row compact-row">
                         <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
                             <strong>${safeName}</strong>
-                            <span>${escapeHtml(label)} · ${escapeHtml(when)}</span>
+                            <span>${escapeHtml(label)} · ${escapeHtml(when)}${nextRun.reason === "rollout_waiting" ? ` · ${escapeHtml(nextRun.summary)}` : ""}</span>
                         </button>
                         <span class="mini-badge">${escapeHtml(nextRun.status || "scheduled")}</span>
                     </div>
@@ -947,7 +947,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             packageSummaryParts.push(`${Number(triage.cve_count || 0)} CVE`);
             const packageSummary = packageSummaryParts.join(" · ");
             const lastUpdateSummary = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history";
-            const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}` : "No scheduled run";
+            const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}${nextRun.reason === "rollout_waiting" ? ` · ${nextRun.summary}` : ""}` : "No scheduled run";
             title.textContent = server.name || "Selected host";
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
             panel.innerHTML = `

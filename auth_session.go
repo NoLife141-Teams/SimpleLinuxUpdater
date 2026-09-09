@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -968,3 +969,24 @@ func handleAuthLogout(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "logout successful"})
 }
+
+// Revalidate long-lived streams against durable session state, including expiry
+// and runtime replacement, rather than the request's cached authentication.
+func dashboardSessionValidator(c *gin.Context) func() bool {
+	sm := sessionManagerForContext(c)
+	token := currentSessionToken(c)
+	username := sessionUsername(c)
+	return func() bool {
+		if sm == nil || token == "" || username == "" || sessionManagerForContext(c) != sm {
+			return false
+		}
+		loaded, err := sm.Load(freshSessionContext{c.Request.Context()}, token)
+		return err == nil && strings.TrimSpace(sm.GetString(loaded, authpkg.SessionUserKey)) == username
+	}
+}
+
+// Keep cancellation and deadlines but omit the request's cached session data,
+// forcing Load to consult and decode the persisted session on every check.
+type freshSessionContext struct{ context.Context }
+
+func (freshSessionContext) Value(any) any { return nil }

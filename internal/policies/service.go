@@ -23,6 +23,7 @@ type ServiceDeps struct {
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
 	ListRuns            func(int) ([]Run, error)
 	ListRolloutRuns     func([]RolloutRunScope) ([]Run, error)
+	ListRolloutOrigins  func([]RolloutOriginRange) ([]RolloutRunScope, error)
 	ReconcileRun        func(Run) (Run, error)
 	SnapshotServers     func() []servers.Server
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
@@ -769,6 +770,9 @@ func (s *Service) ComparePolicyCandidates(a, b ScheduledCandidate) bool {
 		}
 		return pa[i] < pb[i]
 	}
+	if a.Policy.ID == b.Policy.ID {
+		return a.ScheduledForUTC < b.ScheduledForUTC
+	}
 	if a.Policy.CreatedAt == b.Policy.CreatedAt {
 		return a.Policy.ID < b.Policy.ID
 	}
@@ -879,6 +883,38 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			ScheduledForUTC: CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation),
 		})
 	}
+	// Include persisted origins so a newer cadence occurrence cannot hide an
+	// unfinished wave. History remains scoped to enabled wave policies.
+	if deps.ListRolloutOrigins != nil {
+		ranges := make([]RolloutOriginRange, 0)
+		for _, policy := range policies {
+			if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
+				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
+				horizon := s.rolloutHorizon(policy, serversSnapshot, overrides)
+				if !due || horizon <= 0 {
+					continue
+				}
+				ranges = append(ranges, RolloutOriginRange{PolicyID: policy.ID, FromUTC: CanonicalScheduledForUTC(latest.Add(-horizon), deps.TimestampLayout, deps.CurrentLocation), BeforeUTC: CanonicalScheduledForUTC(latest, deps.TimestampLayout, deps.CurrentLocation)})
+			}
+		}
+		origins, originErr := deps.ListRolloutOrigins(ranges)
+		if originErr != nil {
+			return originErr
+		}
+		for _, scope := range origins {
+			for _, policy := range policies {
+				if policy.ID != scope.PolicyID || !policy.Enabled || policy.RolloutMode != RolloutCanaryWaves {
+					continue
+				}
+				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
+				origin, parseErr := time.Parse(deps.TimestampLayout, scope.ScheduledForUTC)
+				if !due || parseErr != nil || !origin.Before(latest) || origin.Add(s.rolloutHorizon(policy, serversSnapshot, overrides)).Before(latest) {
+					continue
+				}
+				rolloutScopes = append(rolloutScopes, scope)
+			}
+		}
+	}
 	if len(rolloutScopes) > 0 && deps.ListRolloutRuns == nil {
 		return errors.New("policy rollout history dependency is incomplete")
 	}
@@ -923,64 +959,70 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		if !rolloutDue {
 			continue
 		}
-		policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
-		if policy.RolloutMode == RolloutCanaryWaves && rolloutSlot.Before(slotLocal) {
-			// An older slot may only continue an existing rollout under the
-			// configuration that was effective at its origin. Unstarted slots
-			// belong to missed-occurrence recovery, never to current dispatch.
-			if !rolloutOriginMatchesPolicy(policy, rolloutSlot, runsByScope[RolloutRunScope{PolicyID: policy.ID, ScheduledForUTC: policyScheduledForUTC}], deps.TimestampLayout) {
-				continue
-			}
+		slots := []time.Time{rolloutSlot}
+		if policy.RolloutMode == RolloutCanaryWaves {
+			slots = s.unfinishedRolloutSlots(policy, rolloutSlot, slotLocal, serversSnapshot, overrides, runsByScope)
 		}
-		matchedServers := make([]servers.Server, 0)
-		for _, server := range serversSnapshot {
-			if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
-				continue
+		for _, rolloutSlot := range slots {
+			policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+			if policy.RolloutMode == RolloutCanaryWaves && rolloutSlot.Before(slotLocal) {
+				// An older slot may only continue an existing rollout under the
+				// configuration that was effective at its origin. Unstarted slots
+				// belong to missed-occurrence recovery, never to current dispatch.
+				if !rolloutOriginMatchesPolicy(policy, rolloutSlot, runsByScope[RolloutRunScope{PolicyID: policy.ID, ScheduledForUTC: policyScheduledForUTC}], deps.TimestampLayout) {
+					continue
+				}
 			}
-			matchedServers = append(matchedServers, server)
-		}
-		sort.Slice(matchedServers, func(i, j int) bool {
-			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
-		})
-		serverByName := make(map[string]servers.Server, len(matchedServers))
-		matchedNames := make([]string, 0, len(matchedServers))
-		for _, server := range matchedServers {
-			serverByName[server.Name] = server
-			matchedNames = append(matchedNames, server.Name)
-		}
-		batches := BuildRolloutBatches(policy, matchedNames)
-		elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
-		for batchIndex, batch := range batches {
-			if elapsedMinutes < batch.ReleaseDelayMinutes {
-				continue
+			matchedServers := make([]servers.Server, 0)
+			for _, server := range serversSnapshot {
+				if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
+					continue
+				}
+				matchedServers = append(matchedServers, server)
 			}
-			gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
-			if gate == "waiting" {
-				continue
+			sort.Slice(matchedServers, func(i, j int) bool {
+				return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
+			})
+			serverByName := make(map[string]servers.Server, len(matchedServers))
+			matchedNames := make([]string, 0, len(matchedServers))
+			for _, server := range matchedServers {
+				serverByName[server.Name] = server
+				matchedNames = append(matchedNames, server.Name)
 			}
-			for _, serverName := range batch.Servers {
-				server := serverByName[serverName]
-				key := rolloutRunKey(policy.ID, policyScheduledForUTC, server.Name)
-				if _, exists := runByKey[key]; exists {
+			batches := BuildRolloutBatches(policy, matchedNames)
+			elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
+			for batchIndex, batch := range batches {
+				if elapsedMinutes < batch.ReleaseDelayMinutes {
 					continue
 				}
-				if gate == "failed" {
-					recordSkipped(policy, server, policyScheduledForUTC, RunReasonRolloutGate)
+				gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
+				if gate == "waiting" {
 					continue
 				}
-				if req.MaintenanceActive {
-					recordSkipped(policy, server, policyScheduledForUTC, RunReasonMaintenance)
-					continue
+				for _, serverName := range batch.Servers {
+					server := serverByName[serverName]
+					key := rolloutRunKey(policy.ID, policyScheduledForUTC, server.Name)
+					if _, exists := runByKey[key]; exists {
+						continue
+					}
+					if gate == "failed" {
+						recordSkipped(policy, server, policyScheduledForUTC, RunReasonRolloutGate)
+						continue
+					}
+					if req.MaintenanceActive {
+						recordSkipped(policy, server, policyScheduledForUTC, RunReasonMaintenance)
+						continue
+					}
+					if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
+						recordSkipped(policy, server, policyScheduledForUTC, RunReasonBlackout)
+						continue
+					}
+					candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
+						Policy:          policy,
+						Server:          server,
+						ScheduledForUTC: policyScheduledForUTC,
+					})
 				}
-				if s.BlackoutApplies(rolloutSlot, globalBlackouts) || s.BlackoutApplies(rolloutSlot, policy.PolicyBlackouts) {
-					recordSkipped(policy, server, policyScheduledForUTC, RunReasonBlackout)
-					continue
-				}
-				candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
-					Policy:          policy,
-					Server:          server,
-					ScheduledForUTC: policyScheduledForUTC,
-				})
 			}
 		}
 	}

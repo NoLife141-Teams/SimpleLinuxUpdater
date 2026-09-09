@@ -580,6 +580,7 @@ func SanitizeMeta(meta map[string]any) string {
 			"fields":          len(redacted),
 			"preview":         "",
 		}
+		retainOperationalMeta(truncated, redacted)
 		previewRunes := []rune(string(raw))
 		lo := 0
 		hi := len(previewRunes)

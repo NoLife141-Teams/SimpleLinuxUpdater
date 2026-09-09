@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,20 @@ type RouterConfig struct {
 
 func NewRouter(config RouterConfig) (*gin.Engine, error) {
 	r := gin.Default()
+	// Match encoded separators as part of a parameter, then decode path values
+	// exactly once. PathUnescape preserves literal plus signs in server names.
+	r.UseRawPath = true
+	r.UnescapePathValues = false
+	r.Use(func(c *gin.Context) {
+		if c.Request.URL.RawPath != "" {
+			for i := range c.Params {
+				if value, err := url.PathUnescape(c.Params[i].Value); err == nil {
+					c.Params[i].Value = value
+				}
+			}
+		}
+		c.Next()
+	})
 	trustedProxies := []string(nil)
 	if config.TrustedProxies != nil {
 		trustedProxies = config.TrustedProxies()

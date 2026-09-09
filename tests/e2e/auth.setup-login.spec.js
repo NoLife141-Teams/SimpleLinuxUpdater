@@ -1503,6 +1503,29 @@ test.describe.serial('setup and login flows', () => {
     await expect(page).toHaveURL(/server=prod-failing#server-directory$/);
   });
 
+  test('scheduled wave shows its release time and predecessor caveat', async ({ page }) => {
+    const caveat = 'Wave waiting for preceding batch success';
+    const servers = [makeServer('wave-host', 'updated', [], {
+      next_run: {
+        state: 'scheduled', policy_name: 'Security waves', status: 'scheduled',
+        scheduled_for_utc: '2026-09-09T03:10:00Z', scheduled_for_display: 'Sep 9, 2026 03:10',
+        reason: 'rollout_waiting', summary: caveat,
+      },
+    })];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    const row = page.locator('#servers-table tbody tr[data-name="wave-host"]');
+    await expect(row).toBeVisible();
+    await page.locator('#status-supporting-details > summary').click();
+    await expect(page.locator('#selected-host-panel')).toContainText('Sep 9, 2026 03:10');
+    await expect(page.locator('#scheduled-runs')).toContainText(caveat);
+    await expect(page.locator('#selected-host-panel')).toContainText(caveat);
+    await expect(page.locator('#selected-host-panel')).toContainText('Security waves');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('#selected-host-panel')).toContainText(caveat);
+    expect(await page.evaluate(() => document.body.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  });
+
   test('pending updates drawer keeps scroll position after server refresh', async ({ page }) => {
     let servers = [
       makeServer('demo-host', 'pending_approval', makePendingUpdates(80), { tags: ['prod'], has_key: true }),

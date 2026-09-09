@@ -52,8 +52,15 @@ func (s scsAuthSessionLifecycle) Stage(ctx context.Context, username string) err
 	if err := sm.RenewToken(ctx); err != nil {
 		return err
 	}
+	if err := authpkg.StageAuthentication(ctx, sm); err != nil {
+		return err
+	}
 	sm.Put(ctx, authSessionUserKey, username)
 	return nil
+}
+
+func (s scsAuthSessionLifecycle) PrepareAuthentication(ctx context.Context) (context.Context, error) {
+	return authpkg.PrepareAuthentication(ctx, s.manager())
 }
 
 func (s scsAuthSessionLifecycle) Destroy(ctx context.Context) error {
@@ -496,6 +503,14 @@ func (m *authSessionCommands) Login(ctx context.Context, cmd authLoginCommand) a
 	}
 	if required {
 		return authLoginOutcome{Kind: authLoginSetupRequired}
+	}
+	if preparer, ok := deps.Session.(interface {
+		PrepareAuthentication(context.Context) (context.Context, error)
+	}); ok {
+		ctx, err = preparer.PrepareAuthentication(ctx)
+		if err != nil {
+			return authLoginOutcome{Kind: authLoginAuthenticationFailed, Err: err}
+		}
 	}
 	ok, err := deps.Account.Authenticate(cmd.Username, cmd.Password)
 	if errors.Is(err, authpkg.ErrSetupRequired) {

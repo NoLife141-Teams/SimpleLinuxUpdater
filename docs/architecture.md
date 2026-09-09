@@ -57,7 +57,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 SQLite table ownership:
 
 - `internal/servers`: `servers`.
-- `internal/auth`: `auth_users`, `sessions`, and `sessions_expiry_idx`.
+- `internal/auth`: `auth_users`, `sessions`, `sessions_expiry_idx`, session metadata/revocations, and the durable `auth_login_generation`.
 - `internal/audit`: `audit_events` and audit indexes.
 - `internal/health`: `server_facts`, `server_health_snapshots`, and their indexes.
 - `internal/jobs`: `jobs`, `job_log_chunks`, and job/log indexes.
@@ -106,6 +106,8 @@ Package initialization does not open persistence. Runtime Composition loads inve
 ## Scheduled policies
 
 Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, per-policy blackout windows, and optional canary/wave rollout settings. `PolicyService` sorts matched server names, releases the canary batch at the canonical occurrence, and releases each delayed wave only after every previous run succeeded. Terminal failure stops later waves with a persisted `rollout_gate` skip. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
+
+The failed-run gate uses the complete persisted occurrence history even when inventory edits remove or rename a predecessor. Policy Schedule Projection shares that history with dispatch, shows each server's wave release time, and labels pending predecessor conditions. It includes unfinished and overlapping origins without treating unstarted past occurrences as upcoming waves.
 
 Policy route adapters still live in `package main` and keep the existing wire format. Matching, validation, persistence, skipped-run recording, scheduler ticks, and missed-tick replay live in `internal/policies`.
 

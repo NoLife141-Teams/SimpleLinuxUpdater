@@ -58,6 +58,8 @@ SimpleLinuxUpdater uses:
     - No inline `style=` attributes
   - CI includes strict-CSP template checks and fails on inline regressions
 
+A login captures a durable authentication generation before checking credentials. Password rotation and session clearing advance that generation; SQLite checks it again when inserting the new session. An in-flight login cannot create a valid session from obsolete credentials after either boundary. Existing sessions explicitly preserved by the operator can still refresh normally.
+
 Setup enforces a password policy for the local admin user in `auth_users`:
 
 - Minimum length: 10 characters

@@ -869,68 +869,9 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		}
 	}
 	serversSnapshot := deps.SnapshotServers()
-	rolloutScopes := make([]RolloutRunScope, 0)
-	for _, policy := range policies {
-		if !policy.Enabled || policy.RolloutMode != RolloutCanaryWaves {
-			continue
-		}
-		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
-		if !rolloutDue {
-			continue
-		}
-		rolloutScopes = append(rolloutScopes, RolloutRunScope{
-			PolicyID:        policy.ID,
-			ScheduledForUTC: CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation),
-		})
-	}
-	// Include persisted origins so a newer cadence occurrence cannot hide an
-	// unfinished wave. History remains scoped to enabled wave policies.
-	if deps.ListRolloutOrigins != nil {
-		ranges := make([]RolloutOriginRange, 0)
-		for _, policy := range policies {
-			if policy.Enabled && policy.RolloutMode == RolloutCanaryWaves {
-				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
-				horizon := s.rolloutHorizon(policy, serversSnapshot, overrides)
-				if !due || horizon <= 0 {
-					continue
-				}
-				ranges = append(ranges, RolloutOriginRange{PolicyID: policy.ID, FromUTC: CanonicalScheduledForUTC(latest.Add(-horizon), deps.TimestampLayout, deps.CurrentLocation), BeforeUTC: CanonicalScheduledForUTC(latest, deps.TimestampLayout, deps.CurrentLocation)})
-			}
-		}
-		origins, originErr := deps.ListRolloutOrigins(ranges)
-		if originErr != nil {
-			return originErr
-		}
-		for _, scope := range origins {
-			for _, policy := range policies {
-				if policy.ID != scope.PolicyID || !policy.Enabled || policy.RolloutMode != RolloutCanaryWaves {
-					continue
-				}
-				latest, due := s.rolloutScheduledSlot(policy, slotLocal)
-				origin, parseErr := time.Parse(deps.TimestampLayout, scope.ScheduledForUTC)
-				if !due || parseErr != nil || !origin.Before(latest) || origin.Add(s.rolloutHorizon(policy, serversSnapshot, overrides)).Before(latest) {
-					continue
-				}
-				rolloutScopes = append(rolloutScopes, scope)
-			}
-		}
-	}
-	if len(rolloutScopes) > 0 && deps.ListRolloutRuns == nil {
-		return errors.New("policy rollout history dependency is incomplete")
-	}
-	rolloutRuns := []Run{}
-	if len(rolloutScopes) > 0 {
-		rolloutRuns, err = deps.ListRolloutRuns(rolloutScopes)
-		if err != nil {
-			return err
-		}
-	}
-	runByKey := make(map[string]Run, len(rolloutRuns))
-	runsByScope := make(map[RolloutRunScope][]Run)
-	for _, run := range rolloutRuns {
-		runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
-		scope := RolloutRunScope{PolicyID: run.PolicyID, ScheduledForUTC: run.ScheduledForUTC}
-		runsByScope[scope] = append(runsByScope[scope], run)
+	runByKey, runsByScope, err := s.loadRolloutHistory(policies, serversSnapshot, overrides, slotLocal)
+	if err != nil {
+		return err
 	}
 
 	var queueErrs []error
@@ -990,12 +931,18 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				matchedNames = append(matchedNames, server.Name)
 			}
 			batches := BuildRolloutBatches(policy, matchedNames)
+			// Persisted failures belong to the occurrence, even when an
+			// inventory edit removes or reorders their server names.
+			historyGate := s.rolloutHistoryGate(policy.ID, policyScheduledForUTC, matchedNames, runByKey, true)
 			elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
 			for batchIndex, batch := range batches {
 				if elapsedMinutes < batch.ReleaseDelayMinutes {
 					continue
 				}
 				gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
+				if historyGate == "failed" || (gate == "ready" && historyGate == "waiting") {
+					gate = historyGate
+				}
 				if gate == "waiting" {
 					continue
 				}

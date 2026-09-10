@@ -66,6 +66,10 @@ Evidence to capture:
 5. Confirm the fingerprint with the release owner or target console.
 6. Trust the host key and confirm it is written to the disposable `known_hosts` file.
 7. Refresh the page and confirm the host remains saved with secrets hidden.
+8. Disable the idle target. Confirm Status hides it under the default Enabled
+   filter, the Disabled and All filters show it, manual maintenance is blocked,
+   and policy previews exclude it with a disabled-server reason. Restart the
+   disposable app and confirm the disabled state persists, then enable it again.
 
 Evidence to capture:
 
@@ -106,6 +110,11 @@ Evidence to capture:
 5. Select **Canary, then waves**, set a one-host canary, save, and confirm the preview/policy summary retains the rollout settings. With one disposable target, it should be labelled canary; record downstream wave execution as skipped for lack of additional disposable targets.
 6. Set the policy time to the next minute in the app timezone, save it, and leave the app running until the scheduler tick passes.
 7. Confirm the scheduled run record appears with a clear status and report link.
+8. When two disposable targets are available, verify that a successful canary
+   releases the downstream wave only after its delay. Repeat with an unavailable
+   canary and confirm the downstream host gets no job, including after disabling
+   the failed canary. Verify a disabled target is excluded from scheduled work
+   and re-enabling it restores eligibility.
 
 Evidence to capture:
 
@@ -138,6 +147,9 @@ Evidence to capture:
 3. Confirm the `.slubkp` file downloads.
 4. Verify the downloaded archive with the same passphrase and confirm verification does not change application state.
 5. Do not restore over a non-disposable app instance. If restore must be tested, start another temp app DB and restore there.
+6. For an isolated restore, include a disabled server in the backup. Confirm its
+   availability, credentials, policies, and history survive, old destination
+   sessions are invalidated, and maintenance is released after restoration.
 
 Evidence to capture:
 

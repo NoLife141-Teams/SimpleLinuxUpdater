@@ -6,6 +6,23 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.11] - 2026-09-09
+
+### Upgrade notes
+
+- Existing servers remain enabled after upgrading. Disabled servers retain their
+  configuration and history; re-enable them in Manage Servers to resume maintenance.
+- Upgrades from v0.4.10 require no new SSH helper installation or API approval
+  changes. Installations upgrading from older versions must also follow the
+  v0.4.10 upgrade notes below.
+
+### Security
+
+- Reject in-flight login attempts when password rotation or session revocation
+  invalidates their authentication generation before session commit.
+- Close Dashboard event streams when their session is revoked, expires, cannot
+  be read, or belongs to a replaced application runtime.
+
 ### Added
 
 - Enable and disable servers in Manage Servers without deleting their configuration or history. Disabled servers are excluded from scheduled maintenance and automatic refreshes, and manual maintenance is blocked until they are re-enabled. The Status page shows enabled servers by default, with a remembered filter for disabled or all servers.
@@ -13,6 +30,26 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 ### Fixed
 
 - Let Status-page metric labels wrap without overlapping their values while keeping numbers aligned across each row.
+- Exclude disabled servers from policy previews and occurrence counts, with a
+  clear reason in the preview's skipped-host list.
+- Preserve failed-canary gates when server inventory changes, and continue delayed
+  rollout waves across later schedule occurrences without losing the original
+  occurrence in job and audit records.
+- Apply no-run windows when delayed work is admitted, and display each wave's
+  actual release time and predecessor requirement in the Status page.
+- Accept server names containing encoded slashes, percent signs, plus signs, and
+  spaces without routing or double-decoding errors.
+- Preserve operational counts, durations, failure details, and health-check
+  statuses when large audit metadata is truncated.
+- Serialize timezone persistence and runtime publication so concurrent changes
+  cannot leave stored settings and scheduler behavior inconsistent.
+
+### Changed
+
+- Update SQLite, Playwright, and pinned CI/release actions.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.11 release readiness record](docs/release-v0.4.11-readiness.md).
 
 ## [v0.4.10] - 2026-09-07
 

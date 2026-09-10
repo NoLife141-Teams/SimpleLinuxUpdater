@@ -2,8 +2,6 @@ package updates
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -39,16 +37,8 @@ func newUpdateShutdownHarness(t *testing.T, lifecycle context.Context, session *
 	}
 	state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
 
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "update-shutdown.db"))
-	if err != nil {
-		t.Fatalf("open jobs db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := jobs.EnsureSchema(db); err != nil {
-		t.Fatalf("ensure jobs schema: %v", err)
-	}
 	jobID := "update-shutdown-job"
-	jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{NewID: func() string { return jobID }})
+	jm := newShutdownJobManager(t, jobID)
 	if _, err := jm.CreateJob(jobs.CreateParams{
 		Kind:       jobs.KindUpdate,
 		ServerName: server.Name,
@@ -72,8 +62,8 @@ func newUpdateShutdownHarness(t *testing.T, lifecycle context.Context, session *
 				audits <- updateShutdownAudit{status: status, message: message, meta: meta}
 			}
 		},
-		LoadPostUpdateCheckConfig: func() PostUpdateCheckConfig { return PostUpdateCheckConfig{Enabled: false} },
-		LoadScheduledJobBehavior:  func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: time.Hour} },
+		LoadPostUpdateCheckConfig:    func() PostUpdateCheckConfig { return PostUpdateCheckConfig{Enabled: false} },
+		LoadScheduledJobBehavior:     func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: time.Hour} },
 		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
 	}
 	if configure != nil {
@@ -158,7 +148,7 @@ func TestRunUpdateJobCancelsApprovalWait(t *testing.T) {
 	waiting := make(chan struct{})
 	var waitingOnce sync.Once
 	session := &HostMaintenanceSessionFuncs{
-		RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
+		RunUpdatePrechecksFunc:     func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
 		ListFailedSystemdUnitsFunc: func(context.Context) ([]string, string, error) { return nil, "", nil },
 		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
 			return HostCommandResult{Attempts: 1}, nil
@@ -213,7 +203,7 @@ func TestRunUpdateJobDoesNotPersistCancelledFinalFacts(t *testing.T) {
 	var factsOnce sync.Once
 	savedFacts := false
 	session := &HostMaintenanceSessionFuncs{
-		RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
+		RunUpdatePrechecksFunc:     func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
 		ListFailedSystemdUnitsFunc: func(context.Context) ([]string, string, error) { return nil, "", nil },
 		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
 			return HostCommandResult{Attempts: 1}, nil

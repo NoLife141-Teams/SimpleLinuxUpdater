@@ -3,7 +3,6 @@ package updates
 import (
 	"context"
 	"database/sql"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +15,14 @@ import (
 
 func newShutdownJobManager(t *testing.T, jobID string) *jobs.Manager {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), jobID+".db"))
+	// These tests measure lifecycle cancellation, not filesystem sync latency.
+	// Keep the real SQL repository while isolating each test to one in-memory DB.
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open jobs db: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	if err := jobs.EnsureSchema(db); err != nil {
 		t.Fatalf("ensure jobs schema: %v", err)

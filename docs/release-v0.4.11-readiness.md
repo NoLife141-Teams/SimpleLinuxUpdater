@@ -62,6 +62,13 @@ workflow must qualify its own final artifacts.
 See [release smoke results](release-v0.4.11-smoke.md) for live behavior and the
 explicit container/systemd limitations.
 
+The first two PR coverage attempts hit one-second setup deadlines in different
+shutdown tests, before cancellation began. The lifecycle fixtures now share an
+isolated, single-connection in-memory SQLite helper to remove filesystem sync
+latency while retaining the real SQL repository. Both affected tests passed 100
+repetitions. Separate negative controls that ignore cancellation still fail at
+the unchanged one-second cancellation deadline; job and audit assertions remain.
+
 ## Before tagging
 
 1. Review and merge this preparation PR after its CI and CodeQL succeed.

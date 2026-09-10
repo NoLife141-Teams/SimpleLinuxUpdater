@@ -677,6 +677,9 @@ func blackoutWindowOvernight(window BlackoutWindow) bool {
 }
 
 func policyPreviewExclusionReason(policy Policy, server servers.Server, overrides map[int64]map[string]bool) string {
+	if server.Disabled {
+		return servers.MaintenanceReadinessDisabled
+	}
 	if len(policy.ExcludeTags) > 0 && ServerHasAnyTag(server, policy.ExcludeTags) {
 		return "excluded_tag"
 	}

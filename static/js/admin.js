@@ -2309,6 +2309,8 @@ function renderGlobalSettingsDraftState() {
 
 function policyPreviewReasonLabel(reason) {
     switch (String(reason || "")) {
+        case "server_disabled":
+            return "server disabled";
         case "excluded_tag":
             return "excluded tag";
         case "disabled_by_override":

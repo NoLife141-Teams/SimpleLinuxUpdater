@@ -853,6 +853,7 @@ test.describe.serial('setup and login flows', () => {
         ],
         excluded_servers: [
           { name: 'srv-db-01', tags: ['prod', 'db'], reason: 'excluded_tag' },
+          { name: 'srv-paused', tags: ['prod'], reason: 'server_disabled' },
         ],
         disabled_by_override: [],
         warnings: ['Explicit server "srv-missing" is not in the current inventory.'],
@@ -2206,6 +2207,8 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#policy-preview')).toContainText('2 matched');
     await expect(page.locator('#policy-preview')).toContainText('srv-web-02');
     await expect(page.locator('#policy-preview')).toContainText('srv-db-01');
+    await expect(page.locator('#policy-preview')).toContainText('srv-paused');
+    await expect(page.locator('#policy-preview')).toContainText('server disabled');
     await expect(page.locator('#policy-preview-occurrences')).toContainText('2026-05-17 03:45');
     await expect(page.locator('#policy-preview-occurrences')).toContainText('America/Toronto');
     await expect(page.locator('#policy-preview-occurrences')).toContainText('UTC 2026-05-17T07:45:00.000000000Z');

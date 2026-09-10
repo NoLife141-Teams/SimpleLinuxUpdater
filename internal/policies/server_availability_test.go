@@ -56,3 +56,33 @@ func TestSchedulerRecoveryFingerprintIncludesServerAvailability(t *testing.T) {
 		t.Fatal("availability change did not invalidate scheduler recovery snapshot")
 	}
 }
+
+func TestPolicyPreviewExcludesDisabledServersFromMatchesAndOccurrences(t *testing.T) {
+	for _, policyEnabled := range []bool{true, false} {
+		deps := testServiceDeps()
+		inventory := []servers.Server{{Name: "active"}, {Name: "paused", Disabled: true}}
+		deps.SnapshotServers = func() []servers.Server { return inventory }
+		service := NewService(deps)
+		policy := Policy{Name: "preview", Enabled: policyEnabled, TargetServers: []string{"active", "paused"},
+			PackageScope: PackageScopeFull, ExecutionMode: ExecutionScanOnly, CadenceKind: CadenceDaily,
+			TimeLocal: "03:00", RolloutMode: RolloutCanaryWaves, CanaryCount: 1, WaveSize: 1, WaveDelayMinutes: 1}
+		preview, err := service.PreviewPolicy(policy)
+		if err != nil || len(preview.ValidationErrors) != 0 {
+			t.Fatalf("preview failed: %+v, %v", preview, err)
+		}
+		if len(preview.MatchedServers) != 1 || preview.MatchedServers[0].Name != "active" || preview.MatchedServers[0].RolloutStage != "canary" {
+			t.Fatalf("disabled server affected rollout matches: %+v", preview.MatchedServers)
+		}
+		if len(preview.ExcludedServers) != 1 || preview.ExcludedServers[0].Name != "paused" || preview.ExcludedServers[0].Reason != servers.MaintenanceReadinessDisabled {
+			t.Fatalf("disabled exclusion missing: %+v", preview.ExcludedServers)
+		}
+		if len(preview.UpcomingOccurrences) == 0 || preview.UpcomingOccurrences[0].MatchedServerCount != 1 {
+			t.Fatalf("occurrence count includes disabled server: %+v", preview.UpcomingOccurrences)
+		}
+		inventory[1].Disabled = false
+		preview, err = service.PreviewPolicy(policy)
+		if err != nil || len(preview.MatchedServers) != 2 || len(preview.ExcludedServers) != 0 {
+			t.Fatalf("reenabled server did not return to preview: %+v, %v", preview, err)
+		}
+	}
+}

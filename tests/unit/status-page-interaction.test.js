@@ -478,6 +478,7 @@ test("navigation restore validates persisted filters and emits persistence as da
     });
 
     assert.deepEqual(store.getView().filters, {
+        availability: "enabled",
         search: "prod",
         status: "",
         auth: "key",
@@ -969,4 +970,57 @@ test("single and bulk approval plans keep the displayed job and generation", () 
     assert.deepEqual(bulk.payloadFacts.alpha.approvalIdentity, { job_id: "job-1", approval_generation: 1 });
     assert.deepEqual(single.payloadFacts.counts.removedPackages, ["old-obsolete"]);
     assert.equal(store.planAction("alpha", "approve_full").payloadFacts.approvalIdentity.approval_generation, 2);
+});
+
+test("disabled servers reject single and bulk actions even with stale dashboard eligibility", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "paused", status: "idle", disabled: true }] });
+    for (const snapshot of [{ servers: [] }, { servers: [{ name: "paused", actions: { update: { enabled: true } } }] }]) {
+        store.dispatch({ type: "dashboardSnapshotReceived", snapshot });
+        assert.equal(store.getAction("paused", "update").enabled, false);
+        assert.equal(store.getAction("paused", "update").blocking_status, "server_disabled");
+    }
+});
+
+test("availability defaults to enabled and composes with search, grouping, and pagination", () => {
+    const store = createStore();
+    const inventory = [{ name: "enabled", tags: ["prod"] }, { name: "paused", disabled: true, tags: ["prod"] }];
+    store.dispatch({ type: "serversSnapshotReceived", servers: inventory });
+    assert.equal(store.getView().filters.availability, "enabled");
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["enabled"]);
+    assert.equal(store.getView().servers.length, 2);
+    let effects = store.dispatch({ type: "filtersChanged", patch: { availability: "disabled", groupBy: "tag", search: "paused" } });
+    assert.equal(effects.find(effect => effect.type === "persistFilters").value.availabilityFilter, "disabled");
+    assert.deepEqual(store.getView().groups[0].items.map(server => server.name), ["paused"]);
+    assert.equal(store.getView().primaryServerName, "paused");
+    store.dispatch({ type: "filtersChanged", patch: { availability: "all", search: "" } });
+    assert.deepEqual(store.getView().visibleServers.map(server => server.name), ["enabled", "paused"]);
+    store.dispatch({ type: "filtersChanged", patch: { availability: "invalid" } });
+    assert.equal(store.getView().filters.availability, "enabled");
+});
+
+test("availability restore migrates saved filters and preserves explicit choices", () => {
+    for (const [saved, expected] of [[{}, "enabled"], [{ availabilityFilter: "invalid" }, "enabled"], [{ availabilityFilter: "all" }, "all"], [{ availabilityFilter: "disabled" }, "disabled"]]) {
+        const store = createStore();
+        store.dispatch({ type: "navigationRestored", value: saved });
+        assert.equal(store.getView().filters.availability, expected);
+    }
+});
+
+test("availability changes remove hidden selections and close the hidden host drawer", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha" }, { name: "beta" }] });
+    store.dispatch({ type: "selectionChanged", name: "alpha", selected: true });
+    store.dispatch({ type: "drawerOpened", name: "alpha" });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", disabled: true }, { name: "beta" }] });
+    assert.deepEqual(store.getView().selectedNames, []);
+    assert.equal(store.getView().primaryServerName, "beta");
+    assert.equal(store.getView().drawer.open, false);
+    store.dispatch({ type: "drawerOpened", name: "alpha" });
+    assert.equal(store.getView().drawer.open, false);
+    store.dispatch({ type: "filtersChanged", patch: { availability: "disabled" } });
+    store.dispatch({ type: "drawerOpened", name: "alpha" });
+    assert.equal(store.getView().drawer.open, true);
+    store.dispatch({ type: "filtersChanged", patch: { availability: "enabled" } });
+    assert.equal(store.getView().drawer.open, false);
 });

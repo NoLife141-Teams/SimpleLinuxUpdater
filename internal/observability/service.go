@@ -789,6 +789,12 @@ func buildDashboardActions(serverName string, status *servers.ServerStatus, time
 		dashboardActionRepairApt:               dashboardAptRepairAction(serverName, statusValue),
 		dashboardActionReboot:                  dashboardRebootAction(serverName, statusValue, timeline, health),
 	}
+	if readiness.Code == servers.MaintenanceReadinessDisabled {
+		for key := range actions {
+			actions[key] = dashboardBlockedAction(dashboardActionReadinessUnavailable, readiness.Message, readiness.Code)
+		}
+		return actions
+	}
 	if !readiness.Ready {
 		for _, key := range []string{
 			dashboardActionUpdate,

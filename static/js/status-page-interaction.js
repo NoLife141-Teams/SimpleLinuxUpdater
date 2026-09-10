@@ -37,6 +37,7 @@
         refresh_facts: "can_refresh_facts"
     });
 
+    const allowedAvailabilityFilters = new Set(["enabled", "disabled", "all"]);
     const allowedStatusFilters = new Set(["", "idle", "updating", "pending_approval", "upgrading", "autoremove", "repairing", "needs_reconciliation", "done", "error"]);
     const allowedAuthFilters = new Set(["", "password", "key"]);
     const allowedGroupings = new Set(["", "status", "tag"]);
@@ -201,6 +202,7 @@
             policySummary: null
         };
         let filters = {
+            availability: "enabled",
             search: "",
             status: "",
             auth: "",
@@ -462,7 +464,13 @@
             return isPendingApproval(server) && Array.isArray(server && server.pending_updates) && server.pending_updates.length > 0;
         }
 
+        function matchesAvailability(server) {
+            return filters.availability === "all"
+                || (filters.availability === "disabled" ? !!server.disabled : !server.disabled);
+        }
+
         function matchesFilters(server) {
+            if (!matchesAvailability(server)) return false;
             const status = String(server.status || "").toLowerCase();
             const search = filters.search.trim().toLowerCase();
             const dashboardServer = dashboardServerFor(server);
@@ -517,7 +525,7 @@
 
         function reconcileNavigation() {
             const previousPrimaryServerName = primaryServerName;
-            const loadedNames = new Set(servers.map(server => server.name));
+            const loadedNames = new Set(servers.filter(matchesAvailability).map(server => server.name));
             selectedServerNames = new Set(Array.from(selectedServerNames).filter(name => loadedNames.has(name)));
             const visible = sortedVisibleServers();
             if (!visible.some(server => server.name === primaryServerName)) {
@@ -535,6 +543,7 @@
 
         function persistenceValue() {
             return {
+                availabilityFilter: filters.availability,
                 search: filters.search,
                 statusFilter: filters.status,
                 authFilter: filters.auth,
@@ -633,6 +642,7 @@
         function restoreNavigation(value) {
             const saved = value && typeof value === "object" ? value : {};
             filters = {
+                availability: normalizedChoice(saved.availabilityFilter, allowedAvailabilityFilters, "enabled"),
                 search: normalizedString(saved.search, ""),
                 status: normalizedChoice(saved.statusFilter, allowedStatusFilters),
                 auth: normalizedChoice(saved.authFilter, allowedAuthFilters),
@@ -941,6 +951,7 @@
                 lastBulkResult = null;
                 const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
                 filters = {
+                    availability: Object.hasOwn(patch, "availability") ? normalizedChoice(patch.availability, allowedAvailabilityFilters, "enabled") : filters.availability,
                     search: Object.hasOwn(patch, "search") ? normalizedString(patch.search, "") : filters.search,
                     status: Object.hasOwn(patch, "status") ? normalizedChoice(patch.status, allowedStatusFilters) : filters.status,
                     auth: Object.hasOwn(patch, "auth") ? normalizedChoice(patch.auth, allowedAuthFilters) : filters.auth,
@@ -971,7 +982,7 @@
             } else if (event.type === "selectionChanged") {
                 lastBulkResult = null;
                 const name = String(event.name || "");
-                if (serversByName.has(name)) {
+                if (serversByName.has(name) && matchesAvailability(serversByName.get(name))) {
                     if (event.selected) selectedServerNames.add(name);
                     else selectedServerNames.delete(name);
                 }
@@ -993,7 +1004,7 @@
                 ];
             } else if (event.type === "drawerOpened") {
                 const name = String(event.name || "");
-                if (serversByName.has(name)) {
+                if (serversByName.has(name) && matchesAvailability(serversByName.get(name))) {
                     drawer = {
                         open: true,
                         serverName: name,
@@ -1059,6 +1070,9 @@
             const canonical = normalizeCanonicalAction(dashboardServer && dashboardServer.actions && dashboardServer.actions[key]);
             const action = canonical || legacyAction(server, dashboardServer, key, canonicalApprovalCounts);
             if (!action) return null;
+            if (server?.disabled) {
+                return { ...cloneValue(action), enabled: false, reason: "Server is disabled; enable it in Manage Servers to resume maintenance.", readiness: "unavailable", blocking_status: "server_disabled" };
+            }
             if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
                 return {
                     ...cloneValue(action),
@@ -1191,6 +1205,7 @@
                 : [{ key: "", items: cloneValue(pageServers) }];
             return {
                 servers: cloneValue(servers),
+                availabilityServers: cloneValue(servers.filter(matchesAvailability)),
                 dashboardSnapshot: cloneValue(dashboardSnapshot),
                 dashboardServers: cloneValue(dashboardServers),
                 globalKeyAvailable,

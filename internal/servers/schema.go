@@ -14,7 +14,8 @@ func EnsureSchema(db *sql.DB) error {
 			pass_enc TEXT NOT NULL,
 			key_enc TEXT NOT NULL DEFAULT '',
 			key_path TEXT NOT NULL DEFAULT '',
-			tags TEXT NOT NULL DEFAULT ''
+			tags TEXT NOT NULL DEFAULT '',
+			disabled INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return err
@@ -28,6 +29,7 @@ func EnsureSchema(db *sql.DB) error {
 	hasKeyEnc := false
 	hasTags := false
 	hasPort := false
+	hasDisabled := false
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -45,12 +47,20 @@ func EnsureSchema(db *sql.DB) error {
 		if name == "tags" {
 			hasTags = true
 		}
+		if name == "disabled" {
+			hasDisabled = true
+		}
 		if name == "port" {
 			hasPort = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	if !hasDisabled {
+		if _, err := db.Exec("ALTER TABLE servers ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
 	}
 	if !hasKeyPath {
 		if _, err := db.Exec("ALTER TABLE servers ADD COLUMN key_path TEXT NOT NULL DEFAULT ''"); err != nil {

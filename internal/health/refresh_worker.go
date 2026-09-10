@@ -185,6 +185,10 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 			return
 		}
 		name := strings.TrimSpace(server.Name)
+		if server.Disabled {
+			delete(w.retries, name)
+			continue
+		}
 		if name == "" {
 			continue
 		}

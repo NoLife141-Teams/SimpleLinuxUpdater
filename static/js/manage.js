@@ -402,12 +402,13 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                     const safeUser = escapeHtml(server.user);
                     const safeDataName = escapeHtml(server.name);
                     row.innerHTML = `
-                        <td>${safeName}</td>
+                        <td>${safeName}<small class="server-availability" title="${escapeHtml(server.availability.description)}">${server.availability.label}</small></td>
                         <td><span class="server-endpoint"><span>${safeHost}</span><small>SSH port ${escapeHtml(server.port || 22)}</small></span></td>
                         <td>${safeUser}</td>
                         <td>${renderTags(server.tags)}</td>
                         <td>${renderAccessPosture(server)}</td>
                         <td><div class="row-actions">
+                            <button type="button" class="btn-ghost inline-btn" data-action="toggle-server" data-name="${safeDataName}" title="${escapeHtml(server.availability.description)}" ${server.availability.busy ? "disabled" : ""}>${server.availability.actionLabel}</button>
                             <button type="button" class="btn-ghost" data-action="edit-server" data-name="${safeDataName}">Edit</button>
                             <details class="row-actions-menu">
                                 <summary class="btn-ghost inline-btn" aria-label="More actions for ${safeName}">More</summary>
@@ -429,6 +430,10 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             const action = button.dataset.action || "";
             if (action === "edit-server") {
                 editServer(name);
+                return;
+            }
+            if (action === "toggle-server") {
+                toggleServerAvailability(name);
                 return;
             }
             if (action === "delete-server") {
@@ -1008,6 +1013,26 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
                 }
             }
         });
+
+        async function toggleServerAvailability(name) {
+            const execution = commandExecution('setServerDisabled', { serverName: name });
+            if (!execution) return;
+            renderTable();
+            try {
+                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/availability`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ disabled: execution.plan.payload.disabled })
+                });
+                if (!response.ok) throw new Error(await parseErrorResponse(response, 'Failed to change server availability.'));
+                const message = execution.plan.payload.disabled ? 'Server disabled. Maintenance is paused.' : 'Server enabled. Maintenance can resume.';
+                await settleCommand('commandCompleted', execution.plan, message);
+            } catch (error) {
+                await settleCommand('commandFailed', execution.plan, error?.message || 'Failed to change server availability.');
+            } finally {
+                renderTable();
+            }
+        }
 
         async function deleteServer(name) {
             if (await window.confirmTypedAction(`Delete server "${name}"?`, name)) {

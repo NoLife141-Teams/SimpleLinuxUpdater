@@ -6,6 +6,14 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Enable and disable servers in Manage Servers without deleting their configuration or history. Disabled servers are excluded from scheduled maintenance and automatic refreshes, and manual maintenance is blocked until they are re-enabled. The Status page shows enabled servers by default, with a remembered filter for disabled or all servers.
+
+### Fixed
+
+- Let Status-page metric labels wrap without overlapping their values while keeping numbers aligned across each row.
+
 ## [v0.4.10] - 2026-09-07
 
 ### Upgrade notes

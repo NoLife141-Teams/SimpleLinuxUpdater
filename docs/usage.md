@@ -25,6 +25,20 @@ Use the Manage page to add, edit, or delete servers. Authentication options:
 - SSH key per server (uploaded via UI)
 - Global SSH key (uploaded via UI and reused when per-server key is missing)
 
+Use **Disable** in a server's directory row to pause manual maintenance, scheduled
+runs, and automatic host-facts refreshes. The server stays in Manage Servers, and its
+credentials, tags, policy settings, and history are retained. **Enable** resumes
+normal maintenance eligibility. A running action or pending approval must finish
+or be cancelled before the server can be disabled. Existing servers remain enabled
+when upgrading. The Status page defaults to **Enabled servers**; choose
+**Disabled servers** or **All servers** in the Server availability filter to
+include paused hosts. This selection is remembered in your browser.
+
+API clients can set the same state with `PUT /api/servers/:name/availability` and
+`{"disabled": true}` or `{"disabled": false}`. Ordinary server edits preserve this
+setting. Availability changes appear in the audit trail as `server.disable` and
+`server.enable`.
+
 ## Authentication flow
 
 UI/API access uses the built-in local login:

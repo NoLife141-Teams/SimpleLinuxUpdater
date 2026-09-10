@@ -280,3 +280,27 @@ test("group rows span every rendered status table column", () => {
     assert.ok(renderedColumnCount > 0, "status table must declare its rendered columns");
     assert.equal(groupColspan, renderedColumnCount);
 });
+
+test("availability scope excludes hidden hosts from fleet totals, attention panels, tags, and activity", () => {
+    const enabled = { name: "enabled", status: "done", tags: ["live"] };
+    const paused = { name: "paused", disabled: true, status: "error", tags: ["retired"], pending_updates: [{ cves: ["CVE-1"], security: true }] };
+    for (const scoped of [[enabled], [paused], []]) {
+        const result = project({
+            statusView: statusView({
+                servers: [enabled, paused], availabilityServers: scoped, visibleServers: scoped, pageServers: scoped,
+                primaryServerName: scoped[0]?.name || "",
+                dashboardSnapshot: { fleet: { pending_packages: 99, high_risk_cve: 1 } }
+            }),
+            extras: { recentActivity: [
+                { target_type: "server", target_name: "enabled" },
+                { target_type: "server", target_name: "paused" },
+                { target_type: "system", target_name: "settings" }
+            ] }
+        });
+        assert.equal(result.fleet.total, scoped.length);
+        assert.equal(result.fleet.pendingPackages, scoped.includes(paused) ? 1 : 0);
+        assert.deepEqual(result.panels.failed.map(model => model.name), scoped.includes(paused) ? ["paused"] : []);
+        assert.deepEqual(result.panels.tags.map(item => item.tag), scoped.flatMap(server => server.tags));
+        assert.equal(result.panels.recentActivity.length, scoped.length + 1);
+    }
+});

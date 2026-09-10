@@ -183,3 +183,32 @@ func TestRefreshWorkerResetsBackoffWhenAnotherPathRefreshesFacts(t *testing.T) {
 		t.Fatalf("attempts = %d, want external fresh facts to reset retry backoff", attempts)
 	}
 }
+
+func TestRefreshWorkerSkipsDisabledServersAndResumesWhenEnabled(t *testing.T) {
+	server := servers.Server{Name: "paused", Disabled: true}
+	attempts := 0
+	worker := NewRefreshWorker(RefreshWorkerDeps{
+		SnapshotServers: func() []servers.Server { return []servers.Server{server} },
+		LatestFacts:     func() (map[string]CollectedFacts, error) { return nil, nil },
+		Refresh: func(context.Context, servers.Server) RefreshAttempt {
+			attempts++
+			return RefreshAttempt{State: RefreshAttemptFailed}
+		},
+	}, RefreshWorkerOptions{})
+	worker.RunOnce(context.Background())
+	if attempts != 0 {
+		t.Fatal("disabled server refreshed")
+	}
+	server.Disabled = false
+	worker.RunOnce(context.Background())
+	if attempts != 1 {
+		t.Fatal("enabled server was not refreshed")
+	}
+	server.Disabled = true
+	worker.RunOnce(context.Background())
+	server.Disabled = false
+	worker.RunOnce(context.Background())
+	if attempts != 2 {
+		t.Fatal("old retry backoff prevented resumed refresh")
+	}
+}

@@ -312,7 +312,7 @@ func BuildRolloutBatches(policy Policy, serverNames []string) []RolloutBatch {
 }
 
 func (s *Service) PolicyMatchesServer(policy Policy, server servers.Server, ctx MatchContext) bool {
-	if !policy.Enabled {
+	if !policy.Enabled || server.Disabled {
 		return false
 	}
 	if len(policy.ExcludeTags) > 0 && ServerHasAnyTag(server, policy.ExcludeTags) {

@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
-    <link rel="stylesheet" href="/static/css/index.css?v=status-sync-warning-20260804">
+    <link rel="stylesheet" href="/static/css/index.css?v=metric-label-height-20260910">
 </head>
 <body class="status-page">
     <div class="dashboard-shell">
@@ -37,6 +37,11 @@
 	                    <div class="controls">
 	                        <label class="sr-only" for="search">Search</label>
 	                        <input type="text" id="search" placeholder="Search hosts or tags">
+                            <select id="availability-filter" aria-label="Server availability">
+                                <option value="enabled">Enabled servers</option>
+                                <option value="disabled">Disabled servers</option>
+                                <option value="all">All servers</option>
+                            </select>
 	                        <select id="status-filter" aria-label="Status">
 	                            <option value="">All statuses</option>
 	                            <option value="idle">Idle</option>
@@ -401,8 +406,8 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/dashboard-projection-consumption.js?v=status-sync-warning-20260804"></script>
-    <script src="/static/js/status-page-interaction.js?v=approval-identity-20260907"></script>
+    <script src="/static/js/dashboard-projection-consumption.js?v=availability-filter-20260910"></script>
+    <script src="/static/js/status-page-interaction.js?v=availability-filter-20260910"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-rendering.js?v=status-sync-warning-20260804"></script>
@@ -410,6 +415,6 @@
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/index-bulk-actions.js?v=approval-identity-20260907"></script>
-    <script src="/static/js/index.js?v=approval-identity-20260907"></script>
+    <script src="/static/js/index.js?v=availability-filter-20260910"></script>
 </body>
 </html>

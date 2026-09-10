@@ -259,6 +259,11 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
 	})
 	if err != nil {
+		if errors.Is(err, serverpkg.ErrDisabled) {
+			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessDisabled
+			l.recordAudit(spec.auditAction, name, "ignored", err.Error(), retryMeta)
+			return jsonResult(http.StatusConflict, err.Error())
+		}
 		if errors.Is(err, serverpkg.ErrActionNotAllowed) {
 			l.recordAudit(spec.auditAction, name, "ignored", spec.invalidStatus, retryMeta)
 			return jsonResult(http.StatusConflict, spec.invalidStatus)

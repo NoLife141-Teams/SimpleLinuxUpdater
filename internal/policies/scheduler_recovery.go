@@ -48,8 +48,9 @@ type schedulerStateOverride struct {
 }
 
 type schedulerStateServer struct {
-	Name string   `json:"name"`
-	Tags []string `json:"tags"`
+	Disabled bool     `json:"disabled,omitempty"`
+	Name     string   `json:"name"`
+	Tags     []string `json:"tags"`
 }
 
 type schedulerStateFingerprintPayload struct {

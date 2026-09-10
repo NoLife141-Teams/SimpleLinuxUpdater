@@ -647,3 +647,10 @@
 .audit-filter-chip[hidden] {
     display: none;
 }
+
+.server-availability {
+    display: block;
+    color: var(--subtle);
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+}

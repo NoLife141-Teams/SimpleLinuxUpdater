@@ -1679,6 +1679,39 @@ test.describe.serial('setup and login flows', () => {
     await expect.poll(() => state.refreshFacts).toBe(1);
   });
 
+  test('status availability defaults to enabled and remembers disabled or all server views', async ({ page }) => {
+    const servers = [
+      makeServer('enabled-host', 'done'),
+      makeServer('disabled-host', 'error', [], { disabled: true, tags: ['paused-only'] }),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    const availability = page.getByRole('combobox', { name: 'Server availability' });
+    const rows = page.locator('#servers-table tbody tr[data-name]');
+    await expect(availability).toHaveValue('enabled');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'enabled-host');
+    await expect(page.locator('#metric-total-hosts')).toHaveText('1');
+    await expect(page.locator('#fleet-tag-list')).not.toContainText('paused-only');
+    await availability.selectOption('disabled');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'disabled-host');
+    await expect(rows.first()).toContainText('Disabled');
+    await expect(page.locator('#fleet-tag-list')).toContainText('paused-only');
+    await page.reload();
+    await expect(availability).toHaveValue('disabled');
+    await expect(rows.first()).toHaveAttribute('data-name', 'disabled-host');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await availability.selectOption('all');
+    await expect(rows).toHaveCount(2);
+    await expect(page.locator('#metric-total-hosts')).toHaveText('2');
+    await page.reload();
+    await expect(availability).toHaveValue('all');
+    await expect(rows).toHaveCount(2);
+    await availability.selectOption('enabled');
+    await expect(rows).toHaveCount(1);
+  });
+
   test('attention metrics and filters use the same facts and CVE semantics', async ({ page }) => {
     const servers = [
       makeServer('fresh-host', 'done'),
@@ -3477,6 +3510,39 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('body')).not.toContainText('192.168.1.44');
   });
 
+  test('manage server availability persists and blocks real maintenance requests', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    const serverName = 'availability + / test';
+    const encodedName = encodeURIComponent(serverName);
+    const create = await page.evaluate(async name => {
+      const response = await fetch('/api/servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, host: 'availability.example.test', user: 'root', pass: 'test-credential' }) });
+      return response.status;
+    }, serverName);
+    expect(create).toBe(201);
+    try {
+      await page.goto('/manage');
+      const row = page.locator('#manage-servers-table tbody tr').filter({ has: page.locator('button[data-name="' + serverName + '"]') });
+      await row.getByRole('button', { name: 'Disable', exact: true }).click();
+      await expect(row.locator('.server-availability')).toHaveText('Disabled');
+      await expect(row.getByRole('button', { name: 'Enable', exact: true })).toBeEnabled();
+      await page.reload();
+      await expect(row.locator('.server-availability')).toHaveText('Disabled');
+      const blocked = await page.evaluate(async name => {
+        const response = await fetch('/api/update/' + name, { method: 'POST' });
+        return { status: response.status, body: await response.json() };
+      }, encodedName);
+      expect(blocked.status).toBe(409);
+      expect(blocked.body.error).toContain('disabled');
+      await page.setViewportSize({ width: 390, height: 844 });
+      await row.getByRole('button', { name: 'Enable', exact: true }).click();
+      await expect(row.locator('.server-availability')).toHaveText('Enabled');
+      await page.reload();
+      await expect(row.getByRole('button', { name: 'Disable', exact: true })).toBeEnabled();
+    } finally {
+      await page.evaluate(name => fetch('/api/servers/' + name, { method: 'DELETE' }), encodedName);
+    }
+  });
+
   test('manage typed confirmations gate destructive host and audit actions', async ({ page, context }) => {
     const state = {};
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'http://127.0.0.1:8080' });
@@ -3823,7 +3889,7 @@ test.describe.serial('setup and login flows', () => {
 
   test('status metrics stay compact without secondary descriptions', async ({ page }) => {
     await ensureAuthenticatedSession(page);
-    for (const viewport of [{ width: 1920, height: 1080 }, { width: 1216, height: 879 }]) {
+    for (const viewport of [{ width: 1512, height: 1100 }, { width: 1920, height: 1100 }, { width: 1216, height: 879 }, { width: 980, height: 1100 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await page.goto('/');
 
@@ -3840,6 +3906,14 @@ test.describe.serial('setup and login flows', () => {
         numberTops: [...element.querySelectorAll('.metric-item')]
           .filter(item => getComputedStyle(item).display !== 'none')
           .map(item => Math.round(item.querySelector('strong').getBoundingClientRect().top)),
+        overlappingLabels: [...element.querySelectorAll('.metric-item')]
+          .filter(item => getComputedStyle(item).display !== 'none')
+          .filter(item => {
+            const range = document.createRange();
+            range.selectNodeContents(item.querySelector('span'));
+            return range.getBoundingClientRect().bottom > item.querySelector('strong').getBoundingClientRect().top;
+          })
+          .map(item => item.querySelector('span').textContent.trim()),
         visibleDescriptions: [...element.querySelectorAll('small')]
           .filter(item => getComputedStyle(item).display !== 'none')
           .map(item => item.textContent.trim()),
@@ -3850,11 +3924,20 @@ test.describe.serial('setup and login flows', () => {
 
       expect(metricState.visibleDescriptions).toEqual([]);
       expect(metricState.visibleLegacyMetrics).toEqual([]);
-      expect(new Set(metricState.rowTops).size).toBe(1);
-      expect(new Set(metricState.labelTops).size).toBe(1);
-      expect(new Set(metricState.numberTops).size).toBe(1);
-      expect(metricState.timelineGap).toBeLessThanOrEqual(24);
-      expect(metricState.height).toBeLessThan(300);
+      expect(metricState.overlappingLabels, `Labels must not overlap values at ${viewport.width}px`).toEqual([]);
+      if (viewport.width >= 981) {
+        expect(new Set(metricState.rowTops).size).toBe(1);
+        expect(new Set(metricState.labelTops).size).toBe(1);
+        expect(metricState.timelineGap).toBeLessThanOrEqual(24);
+      }
+      const numbersByRow = new Map();
+      metricState.rowTops.forEach((rowTop, index) => {
+        if (!numbersByRow.has(rowTop)) numbersByRow.set(rowTop, new Set());
+        numbersByRow.get(rowTop).add(metricState.numberTops[index]);
+      });
+      expect([...numbersByRow.values()].every(values => values.size === 1), 'Numbers remain aligned within each row').toBe(true);
+      if (viewport.width >= 981) expect(metricState.height).toBeLessThan(300);
+      else expect(metricState.height / new Set(metricState.rowTops).size).toBeLessThan(120);
     }
   });
 

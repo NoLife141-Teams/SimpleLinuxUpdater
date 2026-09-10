@@ -1118,6 +1118,11 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	server, preRefreshStatus, err := state.BeginTransientAction(name, "facts_refresh")
+	if errors.Is(err, serverpkg.ErrDisabled) {
+		audit(c, serverFactsRefreshAction, "server", name, "ignored", err.Error(), map[string]any{"reason_code": serverpkg.MaintenanceReadinessDisabled})
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
@@ -2101,6 +2106,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	inventoryService := deps.ServerInventoryService
 	inventoryCommands := serverpkg.NewCommandService(inventoryService)
+	registerServerAvailabilityRoutes(r, deps, inventoryCommands)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState
 	}

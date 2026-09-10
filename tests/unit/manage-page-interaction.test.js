@@ -749,3 +749,19 @@ test("editor replacement invalidates host-key and policy requests from the old s
     assert.equal(store.getView().editor.hostKey.fingerprint, "SHA256:new");
     assert.deepEqual(store.getView().editor.policyContext.policies.map(policy => policy.name), ["New"]);
 });
+
+test("server availability plans are reversible and exclude competing edits", () => {
+    const store = createStore();
+    store.dispatch({ type: "inventorySnapshotReceived", items: [{ name: "paused", disabled: true }] });
+    assert.equal(store.getView().inventory.items[0].availability.actionLabel, "Enable");
+    const execution = store.dispatch({ type: "commandRequested", command: "setServerDisabled", payload: { serverName: "paused" } }).find(effect => effect.type === "executeCommand");
+    assert.deepEqual(execution.plan.payload, { serverName: "paused", disabled: false });
+    assert.equal(store.getView().inventory.items[0].availability.busy, true);
+    assert.equal(store.dispatch({ type: "commandRequested", command: "deleteServer", payload: { serverName: "paused" } })[0].type, "commandRejected");
+    store.dispatch({ type: "commandFailed", plan: execution.plan });
+    assert.equal(store.getView().inventory.items[0].disabled, true);
+    assert.equal(store.getView().inventory.items[0].availability.busy, false);
+    store.dispatch({ type: "inventorySnapshotReceived", items: [{ name: "paused", disabled: false }] });
+    const disable = store.dispatch({ type: "commandRequested", command: "setServerDisabled", payload: { serverName: "paused" } }).find(effect => effect.type === "executeCommand");
+    assert.equal(disable.plan.payload.disabled, true);
+});

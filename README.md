@@ -27,6 +27,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 ## Features
 
 - Multi-server management (custom SSH ports supported)
+- Enable or disable servers from Manage Servers. Disabling preserves credentials and history while blocking manual maintenance, scheduled runs, and automatic host-facts refreshes. Finish or cancel any active operation before disabling a server; re-enable it to resume normal scheduling.
 - `apt update` + pending package listing, gated behind approval
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
 - Approval bound to the displayed job and plan generation, revalidation before execution, and APT enforcement when removals are not approved

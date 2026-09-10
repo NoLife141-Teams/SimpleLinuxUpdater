@@ -25,7 +25,7 @@ type schedulerRecoverySnapshot struct {
 type schedulerRecoveryTimeStore struct{}
 
 func (schedulerRecoveryTimeStore) Load(context.Context) (string, error) { return "", nil }
-func (schedulerRecoveryTimeStore) Save(context.Context, string) error  { return nil }
+func (schedulerRecoveryTimeStore) Save(context.Context, string) error   { return nil }
 
 func (s *Service) captureSchedulerRecoverySnapshot() (schedulerRecoverySnapshot, error) {
 	deps := s.EnsureDeps()
@@ -127,8 +127,9 @@ func (snapshot schedulerRecoverySnapshot) fingerprint() (string, error) {
 	serverState := make([]schedulerStateServer, 0, len(snapshot.Servers))
 	for _, server := range snapshot.Servers {
 		serverState = append(serverState, schedulerStateServer{
-			Name: strings.TrimSpace(server.Name),
-			Tags: NormalizeStringList(server.Tags),
+			Disabled: server.Disabled,
+			Name:     strings.TrimSpace(server.Name),
+			Tags:     NormalizeStringList(server.Tags),
 		})
 	}
 	sort.Slice(serverState, func(i, j int) bool {

@@ -72,6 +72,29 @@ func TestSchedulerRevisionServerRepositoryTracksOnlyMatchingState(t *testing.T) 
 		t.Fatalf("revision after key rotation = %d, want unchanged %d", afterKeyRotation, afterCreate)
 	}
 
+	credentialOnly[0].Disabled = true
+	if err := repository.Save(credentialOnly, nil); err != nil {
+		t.Fatal(err)
+	}
+	afterDisable, err := policyRepo.LoadSchedulerStateRevision()
+	if err != nil || afterDisable <= afterKeyRotation {
+		t.Fatalf("disable revision = %d, %v", afterDisable, err)
+	}
+	if err := repository.Save(credentialOnly, nil); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := policyRepo.LoadSchedulerStateRevision()
+	if err != nil || unchanged != afterDisable {
+		t.Fatalf("unchanged availability revision = %d, %v", unchanged, err)
+	}
+	if _, err := db.Exec("UPDATE servers SET disabled = 0 WHERE name = 'srv-a'"); err != nil {
+		t.Fatal(err)
+	}
+	afterEnable, err := policyRepo.LoadSchedulerStateRevision()
+	if err != nil || afterEnable <= afterDisable {
+		t.Fatalf("direct availability update revision = %d, %v", afterEnable, err)
+	}
+
 	tagChanged := append([]serverpkg.Server(nil), credentialOnly...)
 	tagChanged[0].Tags = []string{"prod", "db"}
 	if err := repository.Save(tagChanged, nil); err != nil {

@@ -17,6 +17,10 @@ func maintenanceReadinessForServers(deps AppDeps, serverList []Server) map[strin
 	}
 	result := make(map[string]serverpkg.MaintenanceReadiness, len(serverList))
 	for _, server := range serverList {
+		if server.Disabled {
+			result[server.Name] = serverpkg.DisabledReadiness()
+			continue
+		}
 		result[server.Name] = serverpkg.EvaluateMaintenanceReadiness(
 			strings.TrimSpace(server.Pass) != "",
 			strings.TrimSpace(server.Key) != "",

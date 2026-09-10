@@ -148,7 +148,12 @@
         }
         function projectedServer(server) {
             const auth = effectiveAuth(server);
-            return { ...clone(server), effectiveAuth: auth, authenticationAmbiguous: ambiguousAuthentication.has(auth) };
+            return { ...clone(server), effectiveAuth: auth, authenticationAmbiguous: ambiguousAuthentication.has(auth), availability: {
+                label: server.disabled ? "Disabled" : "Enabled",
+                actionLabel: server.disabled ? "Enable" : "Disable",
+                description: server.disabled ? "Maintenance is paused. Configuration and history are retained." : "Disable to pause manual maintenance, scheduled runs, and automatic refreshes.",
+                busy: inFlightCommandScopes.has(`server:${server.name}`)
+            } };
         }
         function inventorySummary() {
             const summary = {
@@ -381,6 +386,11 @@
                 }
                 if (!editorDirty()) return { enabled: false, reason: "The server draft is unchanged." };
                 return { enabled: true, key, scope, command, payload: { ...draft, originalName: editor.originalName, sessionID: editor.sessionID, keyReplacement: !!editor.keyReplacement, policyOverrides: policyOverrideChanges() } };
+            }
+            if (command === "setServerDisabled") {
+                const server = inventory.find(item => item.name === target);
+                if (!server) return { enabled: false, reason: "Server is no longer in the inventory." };
+                return { enabled: true, key, scope, command, payload: { serverName: target, disabled: !server.disabled } };
             }
             if (command === "trustHostKey") {
                 const hostKey = editor.hostKey;

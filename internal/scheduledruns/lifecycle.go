@@ -276,6 +276,9 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled update"
+		if errors.Is(err, servers.ErrDisabled) {
+			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
+		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped
 			reason = policies.RunReasonBusy
@@ -367,6 +370,9 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled scan"
+		if errors.Is(err, servers.ErrDisabled) {
+			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
+		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped
 			reason = policies.RunReasonBusy

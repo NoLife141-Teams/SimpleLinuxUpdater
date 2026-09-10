@@ -627,7 +627,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const staleCount = dashboardPresentation.fleet.staleFacts;
                 const highRiskCount = dashboardPresentation.fleet.highRiskCVE;
                 const filters = [
-                    { key: "", label: "All", count: allServers.length },
+                    { key: "", label: "All", count: dashboardPresentation.fleet.total },
                     { key: "pending_approval", label: "Pending", count: dashboardPresentation.fleet.pendingApproval },
                     { key: "active", label: "Active", count: activeCount },
                     { key: "stale_facts", label: "Facts refresh", count: staleCount },
@@ -650,7 +650,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return;
             }
 	            tagEl.innerHTML = [
-	                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${allServers.length}</strong></button>`,
+	                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${dashboardPresentation.fleet.total}</strong></button>`,
 	                ...entries.slice(0, 8).map(([tag, count]) => `
 	                    <button type="button" class="filter-pill${view.filters.tag === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
 	                        <span>${escapeHtml(tag)}</span>
@@ -952,7 +952,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
             panel.innerHTML = `
                 <div class="selected-status-row">
-                    <span class="status-pill status-${safeStatus}">${escapeHtml(statusLabel(server.status))}</span>
+                    <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
@@ -1504,6 +1504,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             dispatchStatusInteraction({ type: "navigationRestored", value: saved });
             const view = getStatusView();
             document.getElementById("search").value = view.filters.search;
+            document.getElementById("availability-filter").value = view.filters.availability;
             document.getElementById("status-filter").value = view.filters.status;
             document.getElementById("auth-filter").value = view.filters.auth;
             document.getElementById("group-by").value = view.filters.groupBy;
@@ -1841,7 +1842,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const isBusy = isServerActionBusy(server);
 	                    const busyActionLabel = serverBusyActionLabel(server);
                     const safeNameHtml = escapeHtml(server.name);
-                    const safeStatusText = escapeHtml(statusLabel(server.status));
+                    const safeStatusText = escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status));
                     const safeStatus = safeStatusClass(server.status);
                     const safeDataName = escapeHtml(server.name);
 	                    const intelligence = presentation.intelligence;
@@ -2234,6 +2235,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         document.getElementById('search').addEventListener('input', (event) => {
             dispatchStatusInteraction({ type: "filtersChanged", patch: { search: event.target.value } });
             renderTable({ refreshPanels: false });
+        });
+        document.getElementById('availability-filter').addEventListener('change', (event) => {
+            dispatchStatusInteraction({ type: "filtersChanged", patch: { availability: event.target.value } });
+            renderServerState();
         });
         document.getElementById('status-filter').addEventListener('change', (event) => {
             dispatchStatusInteraction({ type: "filtersChanged", patch: { status: event.target.value } });

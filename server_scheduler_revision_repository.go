@@ -58,7 +58,7 @@ func schedulerServerMatchingStateChanged(dbProvider func() *sql.DB, desired []se
 	if dbProvider == nil || dbProvider() == nil {
 		return false, fmt.Errorf("compare scheduler server matching state: database is unavailable")
 	}
-	rows, err := dbProvider().Query("SELECT name, tags FROM servers")
+	rows, err := dbProvider().Query("SELECT name, tags, disabled FROM servers")
 	if err != nil {
 		return false, fmt.Errorf("load scheduler server matching state: %w", err)
 	}
@@ -67,10 +67,11 @@ func schedulerServerMatchingStateChanged(dbProvider func() *sql.DB, desired []se
 	current := make([]string, 0)
 	for rows.Next() {
 		var name, tags string
-		if err := rows.Scan(&name, &tags); err != nil {
+		var disabled bool
+		if err := rows.Scan(&name, &tags, &disabled); err != nil {
 			return false, fmt.Errorf("scan scheduler server matching state: %w", err)
 		}
-		current = append(current, schedulerServerMatchingKey(name, serverpkg.ParseTags(tags)))
+		current = append(current, schedulerServerMatchingKey(name, serverpkg.ParseTags(tags))+"\x00"+fmt.Sprint(disabled))
 	}
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("iterate scheduler server matching state: %w", err)
@@ -78,7 +79,7 @@ func schedulerServerMatchingStateChanged(dbProvider func() *sql.DB, desired []se
 
 	wanted := make([]string, 0, len(desired))
 	for _, server := range desired {
-		wanted = append(wanted, schedulerServerMatchingKey(server.Name, server.Tags))
+		wanted = append(wanted, schedulerServerMatchingKey(server.Name, server.Tags)+"\x00"+fmt.Sprint(server.Disabled))
 	}
 	sort.Strings(current)
 	sort.Strings(wanted)
@@ -117,7 +118,7 @@ func bumpSchedulerServerStateRevisionIfPresent(tx *sql.Tx) error {
 		return nil
 	}
 	if _, err := tx.Exec(
-		"UPDATE "+policypkg.SchedulerStateRevisionTable+" SET revision = revision + 1 WHERE id = 1",
+		"UPDATE " + policypkg.SchedulerStateRevisionTable + " SET revision = revision + 1 WHERE id = 1",
 	); err != nil {
 		return fmt.Errorf("bump scheduler server state revision: %w", err)
 	}

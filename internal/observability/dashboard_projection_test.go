@@ -460,3 +460,22 @@ func TestDashboardProjectionUsesCollectedHealthAndFreshnessFacts(t *testing.T) {
 		t.Fatalf("malformed facts state = %q, want stale", malformed.ApprovalTriage.FactsState)
 	}
 }
+
+func TestDashboardProjectionDisabledServerBlocksAllActions(t *testing.T) {
+	summary := testDashboardProjection(time.Now()).Project(dashboardProjectionInput{
+		servers: []dashboardServerProjectionInput{{
+			server:    servers.Server{Name: "paused", Disabled: true},
+			status:    &servers.ServerStatus{Name: "paused", Status: "idle"},
+			readiness: servers.MaintenanceReadiness{Ready: true},
+		}},
+	})
+	server := summary.Servers[0]
+	for name, action := range server.Actions {
+		if action.Enabled || action.BlockingStatus != servers.MaintenanceReadinessDisabled {
+			t.Fatalf("disabled action %s = %+v", name, action)
+		}
+	}
+	if server.RecommendedAction.Key != "disabled" {
+		t.Fatalf("recommendation = %+v", server.RecommendedAction)
+	}
+}

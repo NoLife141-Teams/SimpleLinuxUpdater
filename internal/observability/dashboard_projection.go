@@ -80,6 +80,9 @@ func (p dashboardProjection) Project(input dashboardProjectionInput) DashboardSu
 }
 
 func (p dashboardProjection) projectServer(input dashboardServerProjectionInput) DashboardServerSummary {
+	if input.server.Disabled {
+		input.readiness = servers.DisabledReadiness()
+	}
 	health := input.health
 	nextRun := input.nextRun
 	if nextRun.State == "" {
@@ -98,6 +101,9 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage, health, input.readiness)
 	triage = mirrorApprovalTriageActions(triage, actions)
 	recommendedAction := buildDashboardRecommendedAction(input.status, timeline, health, input.triageTime, input.failure, actions)
+	if input.server.Disabled {
+		recommendedAction = DashboardRecommendedActionInfo{Key: "disabled", Label: "Server disabled", Detail: "Enable this server in Manage Servers to resume maintenance."}
+	}
 
 	return DashboardServerSummary{
 		Name:              input.server.Name,

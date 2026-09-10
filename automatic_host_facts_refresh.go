@@ -115,6 +115,9 @@ func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candida
 		recordAutomaticHostFactsRefreshAudit(deps, candidate, attempt)
 		return attempt
 	}
+	if server.Disabled {
+		return healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptDeferred, Reason: serverpkg.ErrDisabled.Error(), ReasonCode: serverpkg.MaintenanceReadinessDisabled}
+	}
 	if deps.MaintenanceReadiness != nil {
 		readiness := deps.MaintenanceReadiness([]Server{server})[server.Name]
 		if !readiness.Ready {
@@ -123,10 +126,13 @@ func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candida
 			return attempt
 		}
 	}
-	server, previousStatus, err := deps.ServerState.BeginTransientAction(server.Name, "facts_refresh")
+	admittedServer, previousStatus, err := deps.ServerState.BeginTransientAction(server.Name, "facts_refresh")
 	if err != nil {
 		attempt := healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptFailed, Reason: err.Error(), ReasonCode: "admission_failed", Err: err}
-		if errors.Is(err, serverpkg.ErrActionInProgress) {
+		if errors.Is(err, serverpkg.ErrDisabled) {
+			attempt.State = healthpkg.RefreshAttemptDeferred
+			attempt.ReasonCode = serverpkg.MaintenanceReadinessDisabled
+		} else if errors.Is(err, serverpkg.ErrActionInProgress) {
 			attempt.State = healthpkg.RefreshAttemptDeferred
 			attempt.Reason = "another server action is active"
 			attempt.ReasonCode = "busy"
@@ -138,6 +144,7 @@ func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candida
 		recordAutomaticHostFactsRefreshAudit(deps, server, attempt)
 		return attempt
 	}
+	server = admittedServer
 	defer deps.ServerState.RestoreStatusSnapshot(server.Name, previousStatus)
 
 	record, err := deps.UpdateService.RefreshServerFacts(ctx, server, automaticHostFactsRefreshDial)

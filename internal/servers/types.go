@@ -18,6 +18,7 @@ var (
 	ErrEndpointExists      = errors.New("server endpoint already exists")
 	ErrNotFound            = errors.New("server not found")
 	ErrActionInProgress    = errors.New("action already in progress")
+	ErrDisabled            = errors.New("server is disabled; enable it in Manage Servers before starting maintenance")
 	ErrActionNotAllowed    = errors.New("action is not available for the current server status")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
@@ -35,29 +36,32 @@ func (e EndpointConflictError) Unwrap() error {
 }
 
 type Server struct {
-	Name string   `json:"name"`
-	Host string   `json:"host"`
-	Port int      `json:"port"`
-	User string   `json:"user"`
-	Pass string   `json:"pass"`
-	Key  string   `json:"-"`
-	Tags []string `json:"tags"`
+	Disabled bool     `json:"disabled"`
+	Name     string   `json:"name"`
+	Host     string   `json:"host"`
+	Port     int      `json:"port"`
+	User     string   `json:"user"`
+	Pass     string   `json:"pass"`
+	Key      string   `json:"-"`
+	Tags     []string `json:"tags"`
 }
 
 func (s Server) MarshalJSON() ([]byte, error) {
 	type serverResponse struct {
-		Name string   `json:"name"`
-		Host string   `json:"host"`
-		Port int      `json:"port"`
-		User string   `json:"user"`
-		Tags []string `json:"tags"`
+		Disabled bool     `json:"disabled"`
+		Name     string   `json:"name"`
+		Host     string   `json:"host"`
+		Port     int      `json:"port"`
+		User     string   `json:"user"`
+		Tags     []string `json:"tags"`
 	}
 	return json.Marshal(serverResponse{
-		Name: s.Name,
-		Host: s.Host,
-		Port: s.Port,
-		User: s.User,
-		Tags: append([]string(nil), s.Tags...),
+		Disabled: s.Disabled,
+		Name:     s.Name,
+		Host:     s.Host,
+		Port:     s.Port,
+		User:     s.User,
+		Tags:     append([]string(nil), s.Tags...),
 	})
 }
 
@@ -71,6 +75,7 @@ const (
 
 const (
 	MaintenanceReadinessReady                    = "ready"
+	MaintenanceReadinessDisabled                 = "server_disabled"
 	MaintenanceReadinessMissingAuthentication    = "missing_authentication"
 	MaintenanceReadinessAuthenticationUnknown    = "authentication_unavailable"
 	MaintenanceReadinessHostKeyNotTrusted        = "host_key_not_trusted"
@@ -101,6 +106,7 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
+	Disabled                bool            `json:"disabled"`
 	ActionGeneration        uint64          `json:"-"`
 	ApprovalGeneration      uint64          `json:"approval_generation,omitempty"`
 	ActionRunning           bool            `json:"-"`
@@ -286,6 +292,7 @@ func (s *State) ListStatuses() []ServerStatus {
 		if status == nil {
 			continue
 		}
+		status.Disabled = server.Disabled
 		status.Host = server.Host
 		status.Port = NormalizePort(server.Port)
 		status.User = server.User
@@ -402,6 +409,9 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
 	}
+	if server.Disabled {
+		return Server{}, nil, ErrDisabled
+	}
 	previous := CloneServerStatus(status)
 	status.ActionGeneration++
 	status.JobID = ""
@@ -440,6 +450,9 @@ func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerSta
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
+	}
+	if server.Disabled {
+		return Server{}, nil, ErrDisabled
 	}
 	snapshot := CloneServerStatus(status)
 	status.Status = newStatus
@@ -547,6 +560,7 @@ func CloneServerStatus(status *ServerStatus) *ServerStatus {
 
 func NewIdleStatus(server Server) *ServerStatus {
 	return &ServerStatus{
+		Disabled:       server.Disabled,
 		Name:           server.Name,
 		Host:           server.Host,
 		Port:           NormalizePort(server.Port),
@@ -570,6 +584,7 @@ func UpdateStatusFromServer(statusMap map[string]*ServerStatus, name string, ser
 			PendingUpdates: []PendingUpdate{},
 		}
 	}
+	statusMap[name].Disabled = server.Disabled
 	statusMap[name].Host = server.Host
 	statusMap[name].Port = NormalizePort(server.Port)
 	statusMap[name].User = server.User

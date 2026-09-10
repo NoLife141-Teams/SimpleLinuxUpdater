@@ -2096,11 +2096,14 @@ body.status-page .timeline-column .metric-hidden {
 
 body.status-page .timeline-column .metric-item:not(.metric-hidden) {
     display: grid;
-    grid-template-rows: 27px auto;
+    grid-row: span 2;
+    grid-template-rows: subgrid;
+    row-gap: 0;
     align-content: start;
 }
 
 body.status-page .timeline-column .metric-item > span {
+    min-height: 27px;
     align-self: start;
     line-height: 1.35;
 }

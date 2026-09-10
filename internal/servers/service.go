@@ -52,7 +52,7 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 	if db == nil {
 		return nil, errors.New("database is not initialized")
 	}
-	rows, err := db.Query("SELECT name, host, port, user, pass_enc, key_enc, tags FROM servers ORDER BY name")
+	rows, err := db.Query("SELECT name, host, port, user, pass_enc, key_enc, tags, disabled FROM servers ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,8 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 	for rows.Next() {
 		var name, host, user, passEnc, keyEnc, tags string
 		var port int
-		if err := rows.Scan(&name, &host, &port, &user, &passEnc, &keyEnc, &tags); err != nil {
+		var disabled bool
+		if err := rows.Scan(&name, &host, &port, &user, &passEnc, &keyEnc, &tags, &disabled); err != nil {
 			return nil, err
 		}
 		pass, err := r.decrypt(passEnc)
@@ -73,13 +74,14 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 			return nil, fmt.Errorf("decrypt SSH key for %s: %w", name, err)
 		}
 		loaded = append(loaded, Server{
-			Name: name,
-			Host: host,
-			Port: NormalizePort(port),
-			User: user,
-			Pass: pass,
-			Key:  key,
-			Tags: ParseTags(tags),
+			Disabled: disabled,
+			Name:     name,
+			Host:     host,
+			Port:     NormalizePort(port),
+			User:     user,
+			Pass:     pass,
+			Key:      key,
+			Tags:     ParseTags(tags),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -101,7 +103,7 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		_ = tx.Rollback()
 		return fmt.Errorf("clear servers table: %w", err)
 	}
-	stmt, err := tx.Prepare("INSERT INTO servers (name, host, port, user, pass_enc, key_enc, tags) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO servers (name, host, port, user, pass_enc, key_enc, tags, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("prepare insert: %w", err)
@@ -120,7 +122,7 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		}
 		tags := JoinTags(server.Tags)
 		port := NormalizePort(server.Port)
-		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags); err != nil {
+		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags, server.Disabled); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert server %s: %w", server.Name, err)
 		}
@@ -313,6 +315,8 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if status := state.StatusMap()[name]; status != nil && (status.ActionRunning || state.statusInProgress(status.Status)) {
 			return server, ActionError{Status: status.Status}
 		}
+		// Availability changes use SetDisabled so ordinary edits preserve operator intent.
+		server.Disabled = existing.Disabled
 		if strings.TrimSpace(server.Pass) == "" {
 			server.Pass = existing.Pass
 		}

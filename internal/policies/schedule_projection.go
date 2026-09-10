@@ -88,6 +88,11 @@ func (s *Service) ProjectSchedule(req ScheduleProjectionRequest) (ScheduleProjec
 	if err := s.mergeProjectedScheduleRuns(projection.Servers, serverList, policyList, overrides, globalBlackouts, now.In(loc)); err != nil {
 		return ScheduleProjection{}, err
 	}
+	for _, server := range serverList {
+		if server.Disabled {
+			projection.Servers[server.Name] = ServerScheduleProjection{}
+		}
+	}
 	return projection, nil
 }
 

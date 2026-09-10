@@ -20,7 +20,7 @@ func (r *SQLiteRepository) LoadSchedulerStateRevision() (int64, error) {
 		return 0, err
 	}
 	var revision int64
-	if err := db.QueryRow("SELECT revision FROM "+SchedulerStateRevisionTable+" WHERE id = 1").Scan(&revision); err != nil {
+	if err := db.QueryRow("SELECT revision FROM " + SchedulerStateRevisionTable + " WHERE id = 1").Scan(&revision); err != nil {
 		return 0, err
 	}
 	return revision, nil
@@ -87,6 +87,11 @@ func ensureSchedulerStateRevisionSchema(db *sql.DB) error {
 				UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1;
 			END
 		`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE TRIGGER IF NOT EXISTS trg_scheduler_state_server_availability_update
+			AFTER UPDATE OF disabled ON servers WHEN OLD.disabled IS NOT NEW.disabled
+			BEGIN UPDATE update_policy_scheduler_state_revision SET revision = revision + 1 WHERE id = 1; END`); err != nil {
 			return err
 		}
 	}

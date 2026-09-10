@@ -379,7 +379,11 @@
         const dashboardByName = new Map(dashboardServers.map(item => [text(record(item).name), record(item)]));
         const actionViews = record(statusView.actionViews);
         const inFlightNames = new Set(list(record(statusView.actions).inFlightServerNames).map(name => text(name)));
-        const models = list(statusView.servers).map(server => projectServer(server, dashboardByName.get(text(record(server).name)), actionViews[text(record(server).name)], !!input.globalKeyAvailable, inFlightNames));
+        const allServers = list(statusView.servers);
+        const scopedServers = Array.isArray(statusView.availabilityServers) ? statusView.availabilityServers : allServers;
+        const scopedNames = new Set(scopedServers.map(server => server.name));
+        const hiddenNames = new Set(allServers.filter(server => !scopedNames.has(server.name)).map(server => server.name));
+        const models = scopedServers.map(server => projectServer(server, dashboardByName.get(text(record(server).name)), actionViews[text(record(server).name)], !!input.globalKeyAvailable, inFlightNames));
         const byName = Object.fromEntries(models.map(model => [model.name, model]));
         const visibleModels = list(statusView.visibleServers).map(server => byName[text(record(server).name)]).filter(Boolean);
         const pageModels = list(statusView.pageServers).map(server => byName[text(record(server).name)]).filter(Boolean);
@@ -410,7 +414,7 @@
             pageServers: pageModels,
             groups,
             selectedHost,
-            fleet: fleetProjection(models, dashboardSnapshot.fleet),
+            fleet: fleetProjection(models, hiddenNames.size ? null : dashboardSnapshot.fleet),
             auth: authPosture(models),
             panels: {
                 active: models.filter(model => model.active),
@@ -420,7 +424,7 @@
                 approval,
                 scheduled,
                 commandHistory: selectedHost ? selectedHost.commandHistory : [],
-                recentActivity: projectActivity(extras.recentActivity),
+                recentActivity: projectActivity(list(extras.recentActivity).filter(event => record(event).target_type !== "server" || !hiddenNames.has(record(event).target_name))),
                 tags: Array.from(tagCounts.entries()).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).map(([tag, total]) => ({ tag, total }))
             },
             summaries: {

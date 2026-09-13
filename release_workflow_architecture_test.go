@@ -172,7 +172,7 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 		t.Error("PR Docker validation must build and test without registry credentials")
 	}
 	for _, workflow := range []string{ci, release} {
-		for _, required := range []string{`PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright`, "path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}", "retention-days: 7", "playwright-report/", "test-results/"} {
+		for _, required := range []string{`PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright`, "path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}", "retention-days: 1", "playwright-report/", "test-results/"} {
 			if !strings.Contains(workflow, required) {
 				t.Errorf("missing browser cache or diagnostic contract %q", required)
 			}

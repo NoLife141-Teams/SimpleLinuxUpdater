@@ -81,4 +81,4 @@ jobs:
         with:
           name: security-image-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/security-diagnostics/
-          retention-days: 7
+          retention-days: 1

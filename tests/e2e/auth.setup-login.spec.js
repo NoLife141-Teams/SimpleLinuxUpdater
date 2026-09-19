@@ -4018,10 +4018,53 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#command-history-panel')).not.toContainText('server.noisy.');
   });
 
+  test('status rows reduce repetition and bulk controls follow selection', async ({ page }) => {
+    await stubDashboardApi(page, () => [
+      makeServer('approval-host', 'pending_approval', makePendingUpdates(3)),
+      makeServer('running-host', 'upgrading'),
+      makeServer('done-host', 'done'),
+    ]);
+    await ensureAuthenticatedSession(page);
+    await page.goto('/');
+    const approval = page.locator('#servers-table tr[data-name="approval-host"]');
+    await expect(approval).toBeVisible();
+    await expect(approval.locator('.timeline-progress-copy strong')).toHaveCount(0);
+    await expect(approval.locator('.package-summary')).toContainText('3 pending packages');
+    await expect(approval.locator('.package-summary')).not.toContainText('0 kept');
+    for (const width of [1196, 1920, 390]) {
+      await page.setViewportSize({ width, height: 875 });
+      const summary = await approval.locator('.package-summary').evaluate(element => ({
+        clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+        clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+      }));
+      expect(summary.scrollWidth).toBeLessThanOrEqual(summary.clientWidth);
+      expect(summary.scrollHeight).toBeLessThanOrEqual(summary.clientHeight);
+    }
+    await expect(page.locator('tr[data-name="done-host"] .package-summary')).toHaveCount(0);
+    const colors = await page.locator('#servers-table .status-pill').evaluateAll(elements =>
+      elements.map(element => getComputedStyle(element).color));
+    expect(new Set(colors).size).toBe(3);
+    await expect(page.locator('#select-all')).toBeVisible();
+    await expect(page.locator('#bulk-update')).toBeHidden();
+    await approval.locator('.row-select').check();
+    await expect(page.locator('#bulk-update')).toBeVisible();
+    await expect(page.locator('#bulk-approve')).toBeEnabled();
+    await approval.locator('.row-select').uncheck();
+    await expect(page.locator('#bulk-update')).toBeHidden();
+    await page.locator('#select-all').check();
+    await expect(page.locator('#bulk-update')).toBeVisible();
+    await page.locator('#select-all').uncheck();
+    await expect(page.locator('#bulk-update')).toBeHidden();
+  });
+
   test('desktop bulk actions share one width and keep labels fully visible', async ({ page }) => {
+    await stubDashboardApi(page, () => [makeServer('busy-host', 'upgrading')]);
     await ensureAuthenticatedSession(page);
     await page.setViewportSize({ width: 1565, height: 875 });
     await page.goto('/');
+
+    await page.locator('#select-all').check();
+    await expect(page.locator('#bulk-update')).toBeVisible();
 
     const labelLayout = await page.locator('.rail-bulk .bulk-actions').evaluate(element =>
       ['bulk-update', 'bulk-approve', 'bulk-approve-security', 'bulk-approve-kept-security', 'bulk-cancel', 'bulk-autoremove'].map(id => element.querySelector(`#${id}`)).map(button => ({
@@ -4051,7 +4094,9 @@ test.describe.serial('setup and login flows', () => {
   });
 
   test('selected host inspector stays accessible at common desktop widths and follows the timeline on mobile', async ({ page }) => {
-    const servers = [makeServer('inspector-host', 'pending_approval', makePendingUpdates(3))];
+    // Enough rows to exercise sticky positioning even when bulk controls are collapsed.
+    const servers = [makeServer('inspector-host', 'pending_approval', makePendingUpdates(3)),
+      ...Array.from({ length: 10 }, (_, index) => makeServer(`other-host-${index}`))];
     await stubDashboardApi(page, () => servers);
     await ensureAuthenticatedSession(page);
 

@@ -956,7 +956,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
-                <section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
+                ${recommendedAction.key !== "healthy" ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
                     <div class="recommended-action-copy">
                         <span class="mini-label">Recommended action</span>
                         <strong>${escapeHtml(recommendedAction.label || "Healthy")}</strong>
@@ -966,7 +966,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     ${recommendedAction.action === "enable_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="enable-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRunSudoers, "Re-enable passwordless APT access", "Host cannot change passwordless APT access while another action is active")}>Enable apt</button>` : ""}
                     ${recommendedAction.action === "reboot" ? `<button type="button" class="inline-btn btn-warning" data-action="reboot-server" data-name="${safeDataName}" ${buttonStateAttrs(canReboot, "Reboot and verify this host", "Controlled reboot is not available for the current state")}>Reboot and verify</button>` : ""}
                     ${recommendedAction.action === "refresh_facts" ? `<button type="button" class="inline-btn btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>` : ""}
-                </section>
+                </section>` : ""}
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
                     ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
@@ -1858,6 +1858,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
 	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
 	                    const timelineLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
+                        const repeatsStatus = timelineLabel.toLowerCase() === statusLabel(server.status).toLowerCase();
+                        const recommendationHtml = recommendedAction.key && recommendedAction.key !== "healthy"
+                            ? `<span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label)}</span>` : "";
+                        const packageSummary = [
+                            [triage.pending_packages, "pending package", "pending packages"],
+                            [triage.kept_back_packages, "kept-back package", "kept-back packages"],
+                            [triage.security_updates, "security update", "security updates"],
+                            [triage.cve_count, "CVE", "CVEs"],
+                        ].filter(([count]) => Number(count) > 0)
+                            .map(([count, singular, plural]) => `${Number(count)} ${Number(count) === 1 ? singular : plural}`).join(" · ");
 	                    const approvalCounts = presentation.approvalCounts;
 	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
 	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
@@ -1954,12 +1964,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             <div class="timeline-progress-content">
                                 ${timelineProgressRing(timeline)}
                                 <div class="timeline-progress-copy">
-                                    <strong>${escapeHtml(timelineLabel)}</strong>
+                                    ${repeatsStatus ? "" : `<strong>${escapeHtml(timelineLabel)}</strong>`}
                                     <span>${escapeHtml(timelineSummary)}</span>
-                                    <span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label || "Healthy")}</span>
+                                    ${recommendationHtml}
                                     ${failureReasonHtml}
                                     ${driftReasonHtml}
-                                    <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                                    ${packageSummary ? `<span class="package-summary">${escapeHtml(packageSummary)}</span>` : ""}
                                 </div>
                             </div>
                         </td>

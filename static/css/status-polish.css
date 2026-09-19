@@ -219,3 +219,26 @@ body.status-page .metric-item .status-section-icon { width: 13px; height: 13px; 
         transition: none;
     }
 }
+
+/* State color communicates whether maintenance is running, waiting, or complete. */
+body.status-page :is(.status-running, .status-started, .status-updating,
+    .status-upgrading, .status-autoremove, .status-repairing, .status-rebooting,
+    .status-facts_refresh) {
+    color: var(--accent-text);
+}
+body.status-page :is(.status-done, .status-success, .status-succeeded) {
+    color: var(--success);
+}
+body.status-page :is(.status-pending_approval, .status-waiting_approval, .status-queued) {
+    color: var(--warning);
+}
+body.status-page .bulk-actions.is-empty > button {
+    display: none;
+}
+
+body.status-page .timeline-progress-copy .package-summary {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.45;
+}

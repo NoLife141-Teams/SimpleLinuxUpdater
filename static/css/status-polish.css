@@ -97,13 +97,8 @@ body.status-page .rail-controls select {
     line-height: 1.3;
     transition: background-color 140ms ease, border-color 140ms ease;
 }
-body.status-page #servers-table .timeline-actions {
-    grid-auto-rows: 1fr;
-    align-items: stretch;
-}
 body.status-page #servers-table .timeline-actions button {
-    min-height: 46px;
-    align-self: stretch;
+    min-height: 34px;
     padding: 6px 8px;
     font-size: 12px;
     font-weight: 550;

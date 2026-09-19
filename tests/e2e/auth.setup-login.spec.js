@@ -4224,6 +4224,37 @@ test.describe.serial('setup and login flows', () => {
     expect(mobileHead.descriptionWidth, 'mobile dashboard description must use the available row').toBeGreaterThan(mobileHead.headWidth * 0.8);
   });
 
+  test('maintenance row borders align across every column', async ({ page }) => {
+    const servers = [
+      makeServer('approval-host', 'pending_approval', makePendingUpdates(15)),
+      makeServer('error-host', 'error'),
+      makeServer('running-host', 'upgrading'),
+      makeServer('done-host', 'done'),
+    ];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.goto('/');
+    const rows = page.locator('#servers-table tbody tr[data-name]');
+    await expect(rows).toHaveCount(4);
+    for (const width of [1196, 1024, 1920, 390]) {
+      await page.setViewportSize({ width, height: 875 });
+      const layouts = await rows.evaluateAll(elements => elements.map(row => ({
+        name: row.dataset.name,
+        cells: [...row.cells].map(cell => {
+          const rect = cell.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom };
+        }),
+      })));
+      for (const row of layouts) {
+        for (const edge of ['top', 'bottom']) {
+          const positions = row.cells.map(cell => cell[edge]);
+          expect(Math.max(...positions) - Math.min(...positions),
+            `${row.name} ${edge} borders at ${width}px`).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
+
   test('pending approval actions keep cancel and complete labels visible', async ({ page }) => {
     const servers = [makeServer('approval-host', 'pending_approval', makePendingUpdates(15))];
     await stubDashboardApi(page, () => servers);

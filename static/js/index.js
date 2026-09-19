@@ -1951,14 +1951,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
                         </td>
                         <td class="timeline-progress-col">
-                            ${timelineProgressRing(timeline)}
-                            <div class="timeline-progress-copy">
-                                <strong>${escapeHtml(timelineLabel)}</strong>
-                                <span>${escapeHtml(timelineSummary)}</span>
-								<span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label || "Healthy")}</span>
-                                ${failureReasonHtml}
-                                ${driftReasonHtml}
-                                <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                            <div class="timeline-progress-content">
+                                ${timelineProgressRing(timeline)}
+                                <div class="timeline-progress-copy">
+                                    <strong>${escapeHtml(timelineLabel)}</strong>
+                                    <span>${escapeHtml(timelineSummary)}</span>
+                                    <span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label || "Healthy")}</span>
+                                    ${failureReasonHtml}
+                                    ${driftReasonHtml}
+                                    <span>${escapeHtml(`${Number(triage.pending_packages || 0)} pkg · ${Number(triage.kept_back_packages || 0)} kept · ${Number(triage.security_updates || 0)} sec · ${Number(triage.cve_count || 0)} CVE`)}</span>
+                                </div>
                             </div>
                         </td>
                         <td class="actions-col">${actionButtons}</td>

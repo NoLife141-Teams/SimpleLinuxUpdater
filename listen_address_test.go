@@ -44,7 +44,8 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 		"http_server_lifecycle.go": {
 			"resolveListenAddr(os.Getenv)",
 			"net.Listen(\"tcp\", listenAddr)",
-			"Addr:         listenAddr",
+			"Addr:              listenAddr",
+			"newApplicationHTTPServer(listenAddr, sessionHandler(r))",
 			"server.Serve(listener)",
 		},
 		"Dockerfile": {

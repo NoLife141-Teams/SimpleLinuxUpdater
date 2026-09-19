@@ -27,8 +27,7 @@ import (
 )
 
 const (
-	maxEnvelopeMetadataBytes = 1024 * 1024
-	maxManifestBytes         = 1024 * 1024
+	maxManifestBytes = 1024 * 1024
 )
 
 // TemporaryFile is a bounded, caller-owned file produced by the Backup pipeline.
@@ -347,9 +346,9 @@ func (s *Service) buildTarGzFile(paths map[string]string) (TemporaryFile, error)
 		_ = os.Remove(path)
 		return TemporaryFile{}, err
 	}
-	if result.Size > MaxUploadBytes {
+	if result.Size > MaxArchiveBytes {
 		_ = result.Remove()
-		return TemporaryFile{}, fmt.Errorf("backup archive is too large (max %d bytes)", MaxUploadBytes)
+		return TemporaryFile{}, fmt.Errorf("backup archive is too large (max %d bytes)", MaxArchiveBytes)
 	}
 	return result, nil
 }
@@ -388,7 +387,7 @@ func (s *Service) encryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil {
 		return TemporaryFile{}, err
 	}
-	plain, err := readRegularPathBounded(path, MaxUploadBytes, int64(gcm.Overhead()))
+	plain, err := readRegularPathBounded(path, MaxArchiveBytes, int64(gcm.Overhead()))
 	if err != nil {
 		return TemporaryFile{}, err
 	}
@@ -842,7 +841,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 				encodedPath = encoded.Name()
 				target = encoded
 			}
-			if _, err := readJSONString(reader, target, MaxUploadBytes); err != nil {
+			if _, err := readJSONString(reader, target, maxEncodedPayloadBytes); err != nil {
 				return Envelope{}, TemporaryFile{}, ErrMalformed
 			}
 		} else {
@@ -920,7 +919,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 	}
 	cipherPath := ciphertext.Name()
 	decoder := base64.NewDecoder(base64.StdEncoding, encodedInput)
-	written, copyErr := copyFileBounded(ciphertext, decoder, MaxUploadBytes)
+	written, copyErr := copyFileBounded(ciphertext, decoder, maxCiphertextBytes)
 	if copyErr != nil || written == 0 {
 		_ = ciphertext.Close()
 		_ = os.Remove(cipherPath)
@@ -956,7 +955,7 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil || len(nonce) != 12 {
 		return TemporaryFile{}, ErrMalformed
 	}
-	ciphertext, err := readRegularPathBounded(ciphertextFile.Path, MaxUploadBytes, 0)
+	ciphertext, err := readRegularPathBounded(ciphertextFile.Path, maxCiphertextBytes, 0)
 	if err != nil {
 		return TemporaryFile{}, err
 	}
@@ -977,7 +976,7 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	if err != nil {
 		return TemporaryFile{}, errors.New("invalid passphrase or corrupted backup")
 	}
-	if int64(len(plain)) > MaxUploadBytes {
+	if int64(len(plain)) > MaxArchiveBytes {
 		return TemporaryFile{}, ErrMalformed
 	}
 	out, err := createTemporaryFile(s.deps.TempDir(), "slu-backup-plain-*.tar.gz")

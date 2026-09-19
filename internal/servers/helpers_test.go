@@ -258,6 +258,34 @@ func TestKnownHostsRecognizesEquivalentIPv6TokenOnCustomPort(t *testing.T) {
 	}
 }
 
+func TestRemoveKnownHostEntriesPreservesFileWhenAtomicReplacementCannotStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known_hosts")
+	before := []byte("example.com ssh-ed25519 AAAAEXAMPLE\nother.example ssh-ed25519 AAAAOTHER\n")
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	injectedErr := errors.New("injected atomic replacement failure")
+	deps := KnownHostsDeps{
+		Getenv: func(string) string { return path },
+		CreateTemp: func(string, string) (*os.File, error) {
+			return nil, injectedErr
+		},
+	}
+	if _, err := RemoveKnownHostEntries(deps, "example.com", 22); err == nil {
+		t.Fatal("RemoveKnownHostEntries() error = nil, want atomic replacement creation failure")
+	} else if !errors.Is(err, injectedErr) {
+		t.Fatalf("RemoveKnownHostEntries() error = %v, want injected failure", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("known_hosts changed after failed replacement:\n got %q\nwant %q", after, before)
+	}
+}
+
 func TestKnownHostsCanonicalFallbackDoesNotBypassRevokedIPv6Key(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

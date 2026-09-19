@@ -29,6 +29,14 @@ type KnownHostsDeps struct {
 	KnownHostsMu        *sync.Mutex
 	SSHConnectTimeout   time.Duration
 	ConstantTimeCompare func(string, string) bool
+	CreateTemp          func(string, string) (*os.File, error)
+}
+
+func (d KnownHostsDeps) createTemp(dir, pattern string) (*os.File, error) {
+	if d.CreateTemp != nil {
+		return d.CreateTemp(dir, pattern)
+	}
+	return os.CreateTemp(dir, pattern)
 }
 
 func (d KnownHostsDeps) dbPath() string {
@@ -563,14 +571,14 @@ func ReplaceKnownHostLine(deps KnownHostsDeps, host string, port int, line strin
 	}
 	updatedLines = append(updatedLines, cleanLine)
 	updated := strings.TrimRight(strings.Join(updatedLines, "\n"), "\n") + "\n"
-	if err := writeKnownHostsAtomically(path, []byte(updated)); err != nil {
+	if err := writeKnownHostsAtomically(path, []byte(updated), deps.createTemp); err != nil {
 		return false, err
 	}
 	return false, nil
 }
 
-func writeKnownHostsAtomically(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".known_hosts-*")
+func writeKnownHostsAtomically(path string, data []byte, createTemp func(string, string) (*os.File, error)) error {
+	tmp, err := createTemp(filepath.Dir(path), ".known_hosts-*")
 	if err != nil {
 		return fmt.Errorf("create temporary known_hosts: %w", err)
 	}
@@ -793,7 +801,7 @@ func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, er
 	if updated != "" {
 		updated += "\n"
 	}
-	if err := os.WriteFile(path, []byte(updated), 0600); err != nil {
+	if err := writeKnownHostsAtomically(path, []byte(updated), deps.createTemp); err != nil {
 		return 0, fmt.Errorf("write known_hosts: %w", err)
 	}
 	return removed, nil

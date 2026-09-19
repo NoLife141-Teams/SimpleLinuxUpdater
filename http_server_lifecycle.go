@@ -14,6 +14,9 @@ import (
 )
 
 const serverShutdownTimeout = 10 * time.Second
+const serverReadHeaderTimeout = 15 * time.Second
+const serverWriteTimeout = 60 * time.Second
+const serverIdleTimeout = 120 * time.Second
 const notificationShutdownTimeout = 10 * time.Second
 const maintenanceCancellationDrainTimeout = 5 * time.Second
 
@@ -72,6 +75,16 @@ func startTrackedActionRunner(run func()) { updateRunners.start(run) }
 func waitForUpdateRunners() { _ = updateRunners.wait(context.Background()) }
 
 func waitForUpdateRunnersContext(ctx context.Context) error { return updateRunners.wait(ctx) }
+
+func newApplicationHTTPServer(listenAddr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
 
 func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMaintenance func(), closeNotifications func(context.Context) error) {
 	if server != nil {
@@ -140,13 +153,7 @@ func main() {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
 	}
 	defer StopAuthRateLimiters()
-	server := &http.Server{
-		Addr:         listenAddr,
-		Handler:      sessionHandler(r),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
+	server := newApplicationHTTPServer(listenAddr, sessionHandler(r))
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()

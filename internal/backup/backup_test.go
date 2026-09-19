@@ -316,7 +316,7 @@ func TestFilePipelineReadsLegacyEnvelopeAndCleansArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decryptFile(legacy envelope) error = %v", err)
 	}
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, workDir, MaxUploadBytes, MaxExtractedBytes)
+	inspection, err := InspectTarGzFileWithLimits(plain.Path, workDir, MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		_ = plain.Remove()
 		t.Fatalf("InspectTarGzFileWithLimits(legacy envelope) error = %v", err)

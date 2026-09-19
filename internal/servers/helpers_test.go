@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -255,6 +256,34 @@ func TestKnownHostsRecognizesEquivalentIPv6TokenOnCustomPort(t *testing.T) {
 	address := "[2001:db8::1]:2201"
 	if err := callback(address, knownHostsRemoteAddr(address), hostKey); err != nil {
 		t.Fatalf("HostKeyCallback(custom port equivalent IPv6) error = %v", err)
+	}
+}
+
+func TestRemoveKnownHostEntriesPreservesFileWhenAtomicReplacementCannotStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory write permissions do not provide the same atomic-write failure seam on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known_hosts")
+	before := []byte("example.com ssh-ed25519 AAAAEXAMPLE\nother.example ssh-ed25519 AAAAOTHER\n")
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0700) })
+
+	deps := KnownHostsDeps{Getenv: func(string) string { return path }}
+	if _, err := RemoveKnownHostEntries(deps, "example.com", 22); err == nil {
+		t.Fatal("RemoveKnownHostEntries() error = nil, want atomic replacement creation failure")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("known_hosts changed after failed replacement:\n got %q\nwant %q", after, before)
 	}
 }
 

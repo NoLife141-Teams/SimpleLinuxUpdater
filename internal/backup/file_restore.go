@@ -352,7 +352,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	configData, err := readPathBounded(files["config.json"], MaxUploadBytes)
+	configData, err := readPathBounded(files["config.json"], MaxExtractedBytes)
 	if err != nil {
 		return fmt.Errorf("read restored config: %w", err)
 	}
@@ -537,7 +537,7 @@ func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
 	defer plain.Remove()
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxUploadBytes, MaxExtractedBytes)
+	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
@@ -560,7 +560,7 @@ func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "missing_required_resource", Message: "The backup is missing required resources: " + strings.Join(inspection.MissingResources, ", ") + "."})
 		return result, nil
 	}
-	configData, err := readPathBounded(inspection.Files["config.json"], MaxUploadBytes)
+	configData, err := readPathBounded(inspection.Files["config.json"], MaxExtractedBytes)
 	if err != nil {
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "invalid_configuration", Message: "The archived configuration cannot be restored safely."})
 		return result, nil
@@ -601,7 +601,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
 	defer plain.Remove()
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxUploadBytes, MaxExtractedBytes)
+	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}

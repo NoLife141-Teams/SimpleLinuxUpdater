@@ -793,7 +793,7 @@ func RemoveKnownHostEntries(deps KnownHostsDeps, host string, port int) (int, er
 	if updated != "" {
 		updated += "\n"
 	}
-	if err := os.WriteFile(path, []byte(updated), 0600); err != nil {
+	if err := writeKnownHostsAtomically(path, []byte(updated)); err != nil {
 		return 0, fmt.Errorf("write known_hosts: %w", err)
 	}
 	return removed, nil

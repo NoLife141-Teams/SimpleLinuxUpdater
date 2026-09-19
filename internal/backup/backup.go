@@ -29,18 +29,27 @@ import (
 )
 
 const (
-	FileExtension         = ".slubkp"
-	FormatName            = "simplelinuxupdater-backup"
-	FormatVersion         = 1
-	MaxUploadBytes        = 256 * 1024 * 1024
-	MaxExtractedBytes     = MaxUploadBytes
-	MaxExportRequestBytes = 1024 * 1024
-	MinPassphraseLength   = 12
-	rollbackTimeout       = 30 * time.Second
-	ScryptN               = 32768
-	ScryptR               = 8
-	ScryptP               = 1
-	KeyLen                = 32
+	FileExtension     = ".slubkp"
+	FormatName        = "simplelinuxupdater-backup"
+	FormatVersion     = 1
+	MaxExtractedBytes = 256 * 1024 * 1024
+	// Tar and gzip framing can expand an otherwise incompressible accepted payload.
+	backupArchiveFramingAllowance = 1024 * 1024
+	MaxArchiveBytes               = MaxExtractedBytes + backupArchiveFramingAllowance
+	backupGCMOverheadBytes        = 16
+	maxCiphertextBytes            = MaxArchiveBytes + backupGCMOverheadBytes
+	// The encrypted payload is stored as base64 inside a bounded JSON envelope.
+	maxEncodedPayloadBytes   = ((maxCiphertextBytes + 2) / 3) * 4
+	maxEnvelopeMetadataBytes = 1024 * 1024
+	maxEnvelopeFramingBytes  = 4 * 1024
+	MaxUploadBytes           = maxEncodedPayloadBytes + maxEnvelopeMetadataBytes + maxEnvelopeFramingBytes
+	MaxExportRequestBytes    = 1024 * 1024
+	MinPassphraseLength      = 12
+	rollbackTimeout          = 30 * time.Second
+	ScryptN                  = 32768
+	ScryptR                  = 8
+	ScryptP                  = 1
+	KeyLen                   = 32
 )
 
 var (
@@ -612,7 +621,7 @@ func InspectEnvelope(encrypted []byte) (Envelope, error) {
 }
 
 func ExtractTarGz(payload []byte) (map[string][]byte, Manifest, error) {
-	return ExtractTarGzWithLimits(payload, MaxUploadBytes, MaxExtractedBytes)
+	return ExtractTarGzWithLimits(payload, MaxExtractedBytes, MaxExtractedBytes)
 }
 
 func ExtractTarGzWithLimits(payload []byte, maxFileBytes, maxTotalBytes int64) (map[string][]byte, Manifest, error) {

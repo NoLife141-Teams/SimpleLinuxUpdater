@@ -1,0 +1,221 @@
+/* Visual refinement of the existing status workspace. Layout and theme tokens
+   remain owned by base.css and index.css; all rules are scoped to this page. */
+
+/* Typography: make host identity and values the strongest scanning anchors. */
+body.status-page .variant-c-dashboard .dashboard-head h1 {
+    font-size: clamp(1.7rem, 2vw, 2.15rem);
+    line-height: 1.15;
+    font-weight: 650;
+}
+body.status-page .variant-c-dashboard .dashboard-head .muted {
+    max-width: 64ch;
+    font-size: 13px;
+    line-height: 1.5;
+}
+body.status-page .eyebrow,
+body.status-page .rail-label,
+body.status-page .mini-label,
+body.status-page .host-facts dt,
+body.status-page .maintenance-table th,
+body.status-page .triage-table th,
+body.status-page .timeline-column .metric-item > span {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+    color: var(--muted);
+}
+body.status-page .eyebrow,
+body.status-page .rail-label,
+body.status-page .mini-label {
+    font-size: 11px;
+}
+body.status-page #servers-table td.name-cell .select-host {
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.35;
+}
+body.status-page .server-subline,
+body.status-page .timeline-progress-copy span {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.45;
+}
+body.status-page .timeline-progress-copy strong {
+    font-size: 13px;
+    font-weight: 600;
+}
+body.status-page #selected-host-title {
+    font-size: 18px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+}
+
+/* Keep charcoal surfaces distinct with quiet borders, not stacked shadows. */
+body.status-page {
+    background: var(--bg);
+}
+body.status-page .fleet-rail,
+body.status-page .context-panel,
+body.status-page .timeline-workspace,
+body.status-page .approval-triage-panel,
+body.status-page .ops-panel,
+body.status-page .supporting-details {
+    background: var(--card);
+    border-color: rgba(var(--border-rgb), 0.6);
+    box-shadow: none;
+}
+body.status-page .timeline-column .metric-strip {
+    background: var(--card);
+    border-color: rgba(var(--border-rgb), 0.6);
+    box-shadow: none;
+}
+body.status-page .priority-attention-strip:not(.hidden) {
+    background: var(--card);
+    border-color: rgba(var(--border-rgb), 0.6);
+    border-left: 3px solid rgba(var(--danger-rgb), 0.7);
+}
+body.status-page .priority-panel {
+    background: transparent;
+}
+body.status-page .inspector-tools,
+body.status-page .recommended-action {
+    box-shadow: none;
+}
+
+/* Consistent controls. Primary commands retain their established blue/green. */
+body.status-page .timeline-actions button,
+body.status-page .triage-actions button,
+body.status-page .inspector-actions button,
+body.status-page .mini-action,
+body.status-page .rail-controls input,
+body.status-page .rail-controls select {
+    min-height: 34px;
+    padding: 6px 9px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.3;
+    transition: background-color 140ms ease, border-color 140ms ease;
+}
+body.status-page #servers-table .timeline-actions button {
+    min-height: 34px;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-weight: 550;
+}
+body.status-page .timeline-actions .btn-ghost,
+body.status-page .inspector-actions .btn-ghost,
+body.status-page .mini-action {
+    background: transparent;
+    border-color: rgba(var(--border-rgb), 0.8);
+    color: var(--muted);
+    box-shadow: none;
+}
+body.status-page #servers-table .timeline-actions .btn-security:not(:disabled),
+body.status-page .inspector-actions .btn-security:not(:disabled) {
+    background: rgba(var(--warning-rgb), 0.08);
+    border-color: rgba(var(--warning-rgb), 0.35);
+    color: var(--warning-text);
+}
+body.status-page #servers-table .timeline-actions .btn-danger:not(:disabled),
+body.status-page .inspector-actions .btn-danger:not(:disabled) {
+    background: rgba(var(--danger-rgb), 0.08);
+    border-color: rgba(var(--danger-rgb), 0.35);
+    color: #ff9999;
+}
+body.status-page .timeline-actions .btn-ghost:hover:not(:disabled),
+body.status-page .inspector-actions .btn-ghost:hover:not(:disabled),
+body.status-page .mini-action:hover:not(:disabled) {
+    background: var(--card-alt);
+    border-color: var(--subtle);
+    color: var(--text);
+}
+
+/* Slightly more breathing room, with selection independent of status color. */
+body.status-page .maintenance-table tbody td {
+    padding-block: 9px;
+    border-bottom-color: rgba(var(--border-rgb), 0.6);
+}
+body.status-page .maintenance-table th {
+    padding-block: 10px;
+    background: var(--card-alt);
+}
+body.status-page .maintenance-table tbody tr {
+    transition: background-color 140ms ease;
+}
+body.status-page .maintenance-table tbody tr.row-selected,
+body.status-page .maintenance-table tbody tr.row-selected:hover,
+body.status-page .maintenance-table tbody tr.row-selected.row-hover {
+    background: rgba(var(--accent-rgb), 0.09);
+}
+body.status-page .maintenance-table tbody tr.row-selected td {
+    border-bottom-color: rgba(var(--accent-rgb), 0.22);
+}
+body.status-page .maintenance-table tbody tr.row-selected td:first-child {
+    box-shadow: inset 2px 0 var(--accent);
+}
+
+/* Shared label rows keep values aligned even when a label wraps. */
+body.status-page .timeline-column .metric-item:not(.metric-hidden) {
+    padding: 9px 10px;
+    opacity: 1;
+    row-gap: 5px;
+}
+body.status-page .timeline-column .metric-item > span {
+    font-size: 11px;
+    line-height: 1.35;
+    min-height: 30px;
+}
+body.status-page .timeline-column .metric-item strong {
+    margin-top: 0;
+    font-size: 23px;
+    line-height: 1.15;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+body.status-page .metric-button.active {
+    box-shadow: inset 0 -2px var(--accent);
+}
+body.status-page .status-section-icon {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    margin-right: 6px;
+    vertical-align: -3px;
+    color: var(--muted);
+    pointer-events: none;
+}
+body.status-page .priority-panel .status-section-icon { color: var(--warning); }
+body.status-page .priority-panel:first-child .status-section-icon { color: var(--danger); }
+body.status-page .metric-item .status-section-icon { width: 13px; height: 13px; margin-right: 4px; vertical-align: -2px; }
+
+@media (min-width: 601px) and (max-width: 980px) {
+    body.status-page .timeline-column .metric-strip {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+@media (max-width: 600px) {
+    body.status-page .timeline-column .metric-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    body.status-page .timeline-column .metric-item:not(.metric-hidden) {
+        padding: 7px 10px;
+    }
+    body.status-page .timeline-column .metric-item > span {
+        min-height: 15px;
+    }
+    body.status-page .timeline-column .metric-item strong {
+        font-size: 21px;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    body.status-page .timeline-actions button,
+    body.status-page .triage-actions button,
+    body.status-page .inspector-actions button,
+    body.status-page .mini-action,
+    body.status-page .rail-controls input,
+    body.status-page .rail-controls select,
+    body.status-page .maintenance-table tbody tr {
+        transition: none;
+    }
+}

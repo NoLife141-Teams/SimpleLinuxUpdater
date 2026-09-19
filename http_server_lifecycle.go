@@ -79,11 +79,34 @@ func waitForUpdateRunnersContext(ctx context.Context) error { return updateRunne
 func newApplicationHTTPServer(listenAddr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              listenAddr,
-		Handler:           handler,
+		Handler:           backupTransferDeadlineHandler(handler),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadHeaderTimeout,
 		WriteTimeout:      serverWriteTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
+}
+
+func backupTransferDeadlineHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		controller := http.NewResponseController(w)
+		switch r.URL.Path {
+		case "/api/backup/restore", "/api/backup/verify":
+			if err := controller.SetReadDeadline(time.Time{}); err != nil {
+				log.Printf("Failed to relax backup upload deadline: %v", err)
+				http.Error(w, "backup transfer unavailable", http.StatusInternalServerError)
+				return
+			}
+			fallthrough
+		case "/api/backup/export":
+			if err := controller.SetWriteDeadline(time.Time{}); err != nil {
+				log.Printf("Failed to relax backup response deadline: %v", err)
+				http.Error(w, "backup transfer unavailable", http.StatusInternalServerError)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMaintenance func(), closeNotifications func(context.Context) error) {

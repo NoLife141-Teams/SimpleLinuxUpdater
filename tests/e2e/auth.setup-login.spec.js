@@ -4266,6 +4266,22 @@ test.describe.serial('setup and login flows', () => {
     await expect(row.locator('.timeline-progress-ring')).toContainText('60%');
     await expect(row.locator('button[data-action="cancel-upgrade"]')).toHaveText('Cancel');
     await expect(row.locator('button[data-action="approve-security"]')).toHaveText('Standard security (5)');
+    for (const width of [1196, 1024, 1922, 390]) {
+      await page.setViewportSize({ width, height: 1176 });
+      const buttons = await row.locator('.timeline-actions button').evaluateAll(elements => elements.map(button => ({
+        width: button.getBoundingClientRect().width,
+        height: button.getBoundingClientRect().height,
+        clientHeight: button.clientHeight,
+        scrollHeight: button.scrollHeight,
+      })));
+      expect(buttons.length).toBeGreaterThan(1);
+      for (const button of buttons) {
+        expect(Math.abs(button.width - buttons[0].width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(button.height - buttons[0].height)).toBeLessThanOrEqual(1);
+        expect(button.scrollHeight).toBeLessThanOrEqual(button.clientHeight);
+      }
+    }
+    await page.setViewportSize({ width: 1922, height: 1176 });
     const selectedActions = page.locator('#selected-host-panel .inspector-actions-primary');
     await expect(selectedActions.locator('button[data-action="cancel-upgrade"]')).toHaveText('Cancel');
     await expect(selectedActions.locator('button[data-action="approve-security"]')).toHaveText('Standard security (5)');

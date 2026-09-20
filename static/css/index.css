@@ -2273,7 +2273,7 @@ body.status-page .maintenance-table {
     white-space: nowrap;
 }
 
-.timeline-progress-col {
+.timeline-progress-content {
     display: grid;
     grid-template-columns: 40px minmax(0, 1fr);
     gap: 10px;
@@ -2971,7 +2971,7 @@ body.status-page .table-wrap {
     .col-progress { width: 260px; }
     .col-actions { width: 262px; }
 
-    .timeline-progress-col {
+    .timeline-progress-content {
         grid-template-columns: 36px minmax(0, 1fr);
         gap: 8px;
     }

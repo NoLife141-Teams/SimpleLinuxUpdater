@@ -40,6 +40,7 @@
 	            const autoremoveCount = autoremovePlan.eligibleNames.length;
 	            const bulk = view.actions.bulk;
 	            const lastBulkResult = view.actions.lastBulkResult;
+                document.getElementById("bulk-action-controls")?.classList.toggle("is-empty", selectedCount === 0 && !bulk);
 
 	            if (hint) {
 	                if (bulk) {

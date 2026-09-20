@@ -582,9 +582,11 @@ test("Status labels describe CVE exposure and facts that need refresh", () => {
 
 test("Status keeps one attention surface and defers supporting detail", () => {
     const template = fs.readFileSync(path.resolve(__dirname, "../../templates/index.html"), "utf8");
+    // Decorative icons do not change the attention headings or their count.
+    const headingMarkup = template.replace(/<svg\b[^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/svg>/g, "");
 
-    assert.equal((template.match(/<h2>Needs attention<\/h2>/g) || []).length, 1);
-    assert.equal((template.match(/<h2>Restart required<\/h2>/g) || []).length, 1);
+    assert.equal((headingMarkup.match(/<h2>Needs attention<\/h2>/g) || []).length, 1);
+    assert.equal((headingMarkup.match(/<h2>Restart required<\/h2>/g) || []).length, 1);
     assert.match(template, /<details class="supporting-details fade-in" id="status-supporting-details">/);
     assert.match(template, /<summary>[\s\S]*Supporting details[\s\S]*Approvals, audit, tags, and command history/);
     assert.doesNotMatch(template, /id="failed-hosts-panel"/);

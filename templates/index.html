@@ -7,6 +7,7 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=segoe-global-20260727">
     <link rel="stylesheet" href="/static/css/index.css?v=metric-label-height-20260910">
+    <link rel="stylesheet" href="/static/css/status-polish.css?v=20260919">
 </head>
 <body class="status-page">
     <div class="dashboard-shell">
@@ -73,7 +74,7 @@
 	                </div>
 	                <div class="rail-section rail-bulk">
 	                    <div class="rail-label">Bulk actions</div>
-	                    <div class="bulk-actions">
+	                    <div class="bulk-actions is-empty" id="bulk-action-controls">
 	                        <label class="select-page"><input type="checkbox" id="select-all" aria-label="Select all visible hosts on this page"> Select page</label>
 	                        <button class="inline-btn primary-action" type="button" id="bulk-update" disabled>Update</button>
 	                        <button class="inline-btn" type="button" id="bulk-approve" disabled>Approve standard</button>
@@ -133,7 +134,7 @@
                             <small>Across approval queues</small>
                         </article>
                         <article class="metric-item">
-                            <span>Security updates</span>
+                            <span><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#shield"></use></svg>Security updates</span>
                             <strong id="metric-security-updates">0</strong>
                             <small>Security-marked packages</small>
                         </article>
@@ -164,7 +165,7 @@
 	                            <div class="panel-head">
 	                                <div>
 	                                    <div class="eyebrow">Failures</div>
-	                                    <h2>Needs attention</h2>
+	                                    <h2><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#alert"></use></svg>Needs attention</h2>
 	                                </div>
 	                                <span class="mini-badge danger" id="priority-failures-count">0</span>
 	                            </div>
@@ -174,7 +175,7 @@
 	                            <div class="panel-head">
 	                                <div>
 	                                    <div class="eyebrow">Reboot</div>
-	                                    <h2>Restart required</h2>
+	                                    <h2><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#power"></use></svg>Restart required</h2>
 	                                </div>
 	                                <span class="mini-badge warning" id="priority-reboot-count">0</span>
 	                            </div>
@@ -186,7 +187,7 @@
                         <div class="workspace-head">
                             <div>
                                 <div class="eyebrow">Maintenance queue</div>
-                                <h2 id="maintenance-timeline-title">Maintenance timeline</h2>
+                                <h2 id="maintenance-timeline-title"><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#activity"></use></svg>Maintenance timeline</h2>
                                 <div class="phase-legend" aria-label="Timeline state legend">
                                     <span><i class="legend-dot phase-waiting"></i>Waiting</span>
                                     <span><i class="legend-dot phase-active"></i>Running</span>
@@ -318,7 +319,7 @@
                         <article class="ops-panel ops-panel-wide">
                             <div class="panel-head">
                                 <div>
-                                    <div class="eyebrow">Selected host</div>
+                                    <div class="eyebrow"><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#server"></use></svg>Selected host</div>
                                     <h2>Command history</h2>
                                 </div>
                                 <span class="mini-badge" id="command-history-count">0</span>
@@ -332,7 +333,7 @@
 
                 <aside class="context-panel fade-in" aria-label="Selected host">
                     <div class="context-block">
-                        <div class="eyebrow">Selected host</div>
+                        <div class="eyebrow"><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#server"></use></svg>Selected host</div>
                         <h2 id="selected-host-title">Selected host</h2>
                         <p class="muted" id="selected-host-subtitle">Select a table row to inspect host details.</p>
                     </div>

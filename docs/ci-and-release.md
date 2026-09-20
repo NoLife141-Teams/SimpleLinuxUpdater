@@ -16,7 +16,7 @@ only its own temporary container and volume.
 
 Playwright and the cache action share an absolute directory under `RUNNER_TEMP`.
 OS dependencies are installed each time with shared APT retry settings. Coverage
-and Playwright reports/traces are retained for seven days, including failed runs.
+and Playwright reports/traces are retained for one day, including failed runs.
 Artifact names include the attempt number so retries preserve earlier diagnostics.
 Temporary application databases are excluded. Playwright keeps one CI worker.
 
@@ -98,7 +98,7 @@ workflow concurrency lock. Conflicting recorded versions fail closed.
 
 Docker logs and filtered container state are captured before cleanup, and the
 archive server's stdout/stderr is retained outside its temporary extraction.
-Failed CI/release qualifications upload those diagnostics for seven days, with
+Failed CI/release qualifications upload those diagnostics for one day, with
 attempt-specific names. HTTP probes have connection and total time limits.
 Temporary databases and full container configuration are not uploaded.
 Validation commands inherit stdout/stderr; the policy flushes a start and result

@@ -6,6 +6,35 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.12] - 2026-09-20
+
+### Upgrade notes
+
+- Upgrades from v0.4.11 require no new SSH helper installation, configuration,
+  or API approval changes.
+
+### Fixed
+
+- Keep large encrypted backup exports and restores within distinct archive,
+  ciphertext, envelope, and extracted-data limits so valid near-limit backups
+  are accepted without weakening decompression safeguards.
+- Allow long-running backup transfers without disabling bounded HTTP timeouts
+  for ordinary application requests.
+- Replace and remove SSH host-trust entries atomically, preserving the existing
+  file when a temporary write cannot be created.
+- Improve Status-page readability, state colors, responsive metrics, and action
+  visibility while removing redundant healthy recommendations and empty bulk
+  action controls.
+
+### Changed
+
+- Update `golang.org/x/crypto`, `golang.org/x/net`, and their transitive Go
+  dependencies.
+- Retain CI, release, and security-audit diagnostic artifacts for one day.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.12 release readiness record](docs/release-v0.4.12-readiness.md).
+
 ## [v0.4.11] - 2026-09-09
 
 ### Upgrade notes

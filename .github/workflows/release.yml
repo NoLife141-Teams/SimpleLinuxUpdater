@@ -318,7 +318,7 @@ jobs:
 
       - name: Set up Docker with multi-platform image store
         if: steps.publication.outputs.mode != 'complete'
-        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: v28.0.4
           daemon-config: |

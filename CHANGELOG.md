@@ -6,6 +6,31 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.13] - 2026-10-02
+
+### Upgrade notes
+
+- Upgrades from v0.4.12 require no new SSH helper installation, configuration,
+  database schema migration, or API approval changes. Installations upgrading
+  from older versions must also follow the applicable earlier upgrade notes.
+
+### Fixed
+
+- Update the SQLite driver to handle faults when reading a WAL shared-memory
+  file as database I/O errors rather than crashing the process, and improve
+  argument binding for statements with large numbers of parameters.
+
+### Changed
+
+- Update `modernc.org/sqlite` from 1.58.0 to 1.60.1 and align its required
+  `modernc.org/libc` dependency to 1.77.1. The embedded SQLite version remains
+  3.53.4; these are driver and runtime dependency updates.
+- Update the pinned Docker setup, QEMU, Buildx, and build/push actions, including
+  protection against workflow command injection in build metadata logs.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.13 release readiness record](docs/release-v0.4.13-readiness.md).
+
 ## [v0.4.12] - 2026-09-20
 
 ### Upgrade notes

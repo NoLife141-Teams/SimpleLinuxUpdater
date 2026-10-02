@@ -318,7 +318,7 @@ jobs:
 
       - name: Set up Docker with multi-platform image store
         if: steps.publication.outputs.mode != 'complete'
-        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
         with:
           version: v28.0.4
           daemon-config: |
@@ -326,7 +326,7 @@ jobs:
 
       - name: Set up QEMU for runtime verification
         if: steps.publication.outputs.mode != 'complete'
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
           image: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
@@ -334,7 +334,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.publication.outputs.mode != 'complete'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
         if: steps.publication.outputs.mode != 'complete'
@@ -347,7 +347,7 @@ jobs:
       - name: Build and push candidate image
         if: steps.publication.outputs.mode == 'build'
         id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           DOCKER_BUILD_RECORD_UPLOAD: false
         with:

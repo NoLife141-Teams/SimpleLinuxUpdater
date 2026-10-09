@@ -907,90 +907,18 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
         addServerField('key').addEventListener('change', () => clearEditedAddServerField('key'));
 
-        document.getElementById('add-server-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const name = document.getElementById('name').value;
-            const host = document.getElementById('host').value;
-            const portValue = document.getElementById('port').value;
-            const user = document.getElementById('user').value;
-            const pass = document.getElementById('pass').value;
-            const tagsRaw = document.getElementById('tags').value;
-            const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
-            const keyFileInput = document.getElementById('key_file');
-            const trimmedName = name.trim();
-            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'createServer', payload: {
-                name,
-                host,
-                port: portValue,
-                user,
-                tags,
-                hasPassword: !!pass,
-                hasKeyFile: !!keyFileInput?.files?.length,
-                trustHostKey: document.getElementById('trust-host-key').checked
-            } });
-            const execution = command.find(effect => effect.type === 'executeCommand');
-            if (!execution) {
-                const rejection = command.find(effect => effect.type === 'commandRejected');
-                showAddServerValidation(rejection);
-                return;
-            }
-            clearAddServerValidation();
-            try {
-                const accepted = execution.plan.payload;
-                const createRes = await fetch('/api/servers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: accepted.authMethod === 'password' ? pass : '', tags: accepted.tags })
-                });
-                if (!createRes.ok) {
-                    throw new Error(await parseErrorResponse(createRes, 'Failed to add server.'));
-                }
-                const created = await createRes.json().catch(() => ({
-                    name: trimmedName || name,
-                    host: host.trim(),
-                    port: normalizePort(portValue, 22)
-                }));
-                if (accepted.uploadKey && keyFileInput?.files?.length) {
-                    const form = new FormData();
-                    form.append('key', keyFileInput.files[0]);
-                    const serverName = created.name || trimmedName || name;
-                    const res = await fetch(`/api/servers/${encodeURIComponent(serverName)}/key`, { method: 'POST', body: form });
-                    if (!res.ok) {
-                        const uploadError = await parseErrorResponse(res, 'Failed to upload key.');
-                        const rollback = await fetch(`/api/servers/${encodeURIComponent(serverName)}`, { method: 'DELETE' }).catch(() => null);
-                        await settleCommand('commandFailed', execution.plan, uploadError, { announce: false });
-                        if (rollback && rollback.ok) {
-                            window.notifyApp(`Server was not saved because key upload failed: ${uploadError}`);
-                        } else {
-                            window.notifyApp(`Key upload failed and the server could not be removed automatically: ${uploadError}`);
-                            fetchManageServers();
-                        }
-                        return;
-                    }
-                }
-                if (accepted.trustHostKey) {
-                    try {
-                        await trustHostKeyFlow(created.host || host.trim(), normalizePort(created.port, 22));
-                    } catch (err) {
-                        window.notifyApp(`Server added, but host key was not trusted: ${err.message || 'unknown error'}`);
-                    }
-                }
-                await settleCommand('commandCompleted', execution.plan, 'Server added.', { announce: false });
-                if (keyFileInput) {
-                    keyFileInput.value = '';
-                    resetFileInputLabel(keyFileInput);
-                    document.getElementById('server-key-file-selection').textContent = 'No file selected';
-                }
-                e.target.reset();
-                managePageInteraction.dispatch({
-                    type: 'creationAuthenticationChanged',
-                    authenticationMethod: 'password'
-                });
-                document.getElementById('trust-host-key').checked = true;
+        window.ServerOnboarding.mount({
+            store: managePageInteraction,
+            clearValidation: clearAddServerValidation,
+            showValidation: showAddServerValidation,
+            settle: settleCommand,
+            onSaved() {
+                const keyFileInput = document.getElementById('key_file');
+                keyFileInput.value = '';
+                resetFileInputLabel(keyFileInput);
+                document.getElementById('server-key-file-selection').textContent = 'No file selected';
+                managePageInteraction.dispatch({ type: 'creationAuthenticationChanged', authenticationMethod: 'password' });
                 renderAddAuthMethod();
-            } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to add server.', { announce: false });
-                document.getElementById('add-server-error').textContent = err?.message || 'Failed to add server.';
             }
         });
 

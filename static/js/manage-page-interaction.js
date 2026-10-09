@@ -432,6 +432,7 @@
                 case "auditDetailSelected": audit.selectedID = String(input.id || ""); return [effect("render", { area: "auditDetail" })];
                 case "snapshotRequested": return request(input.stream, input.payload);
                 case "snapshotFailed": return failed(input.stream, input.requestID, input.error);
+                case "creationValidationRequested": { const plan = commandPlan("createServer", input.payload); return [effect(plan.enabled ? "creationValidated" : "commandRejected", plan)]; }
                 case "commandRequested": { const plan = commandPlan(input.command, input.payload); if (!plan.enabled) return [effect("commandRejected", plan)]; inFlightCommands.add(plan.key); inFlightCommandScopes.add(plan.scope); return [effect("executeCommand", { plan })]; }
                 case "commandCompleted": case "commandPartiallyCompleted": case "commandFailed": { const plan = input.plan || {}; inFlightCommands.delete(plan.key); inFlightCommandScopes.delete(plan.scope); const failed = input.type === "commandFailed"; const partial = input.type === "commandPartiallyCompleted"; const error = failed || partial; return [effect("announce", { message: input.message || (partial ? "Manage action partially completed." : (failed ? "Manage action failed." : "Manage action completed.")), error }), ...(failed ? [] : [effect("refresh", { streams: ["inventory", "globalKey", "audit"] })])]; }
                 default: return [];

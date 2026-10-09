@@ -247,6 +247,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.ServerInventoryService == nil {
 		deps.ServerInventoryService = newServerInventoryServiceWithHealthObservation(deps.ServerState, deps.DB, deps.DBPath, deps.HostHealthObservation)
 	}
+	if deps.ServerOnboardingService == nil {
+		deps.ServerOnboardingService = newServerOnboardingService(deps)
+	}
 	if deps.MaintenanceReadiness == nil {
 		readinessDeps := deps
 		deps.MaintenanceReadiness = func(serverList []Server) map[string]serverpkg.MaintenanceReadiness {

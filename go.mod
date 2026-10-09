@@ -1,6 +1,6 @@
 module debian-updater
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/alexedwards/argon2id v1.0.0
@@ -9,7 +9,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/goccy/go-yaml v1.19.2
 	golang.org/x/crypto v0.57.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	modernc.org/sqlite v1.60.1
 )
 

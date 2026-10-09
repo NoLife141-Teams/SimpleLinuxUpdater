@@ -63,6 +63,8 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodPost, "/api/audit-events/prune"},
 		{http.MethodGet, "/api/servers"},
 		{http.MethodPost, "/api/servers"},
+		{http.MethodPost, "/api/servers/onboarding/check"},
+		{http.MethodPost, "/api/servers/onboarding"},
 		{http.MethodPut, "/api/servers/:name"},
 		{http.MethodDelete, "/api/servers/:name"},
 		{http.MethodDelete, "/api/servers/:name/password"},

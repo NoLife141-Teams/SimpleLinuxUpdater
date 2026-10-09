@@ -28,6 +28,7 @@ type AppDeps struct {
 	NotificationService       NotificationDeliveryLifecycle
 	ServerState               *serverpkg.State
 	ServerInventoryService    *ServerInventoryService
+	ServerOnboardingService   *serverpkg.OnboardingService
 	PolicyService             *PolicyService
 	PolicyRepository          policypkg.Repository
 	UpdateService             *UpdateService

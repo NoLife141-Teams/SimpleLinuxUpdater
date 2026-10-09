@@ -264,6 +264,8 @@ func (s *OnboardingService) verify(ctx context.Context, draft OnboardingDraft, c
 // while preserving changed and revoked entries in the configured trust stores.
 func OnboardingHostKeyCallback(deps KnownHostsDeps, fingerprint string) (ssh.HostKeyCallback, error) {
 	var existing ssh.HostKeyCallback
+	var canonicalIPKeys canonicalKnownHostsIPKeys
+	existingPaths := []string{}
 	for _, path := range KnownHostsPaths(deps) {
 		_, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {
@@ -272,11 +274,18 @@ func OnboardingHostKeyCallback(deps KnownHostsDeps, fingerprint string) (ssh.Hos
 		if err != nil {
 			return nil, err
 		}
+		existingPaths = append(existingPaths, path)
+	}
+	if len(existingPaths) > 0 {
+		var err error
 		existing, err = HostKeyCallback(deps)
 		if err != nil {
 			return nil, err
 		}
-		break
+		canonicalIPKeys, err = loadKnownHostsCanonicalIPKeys(existingPaths)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return func(host string, remote net.Addr, key ssh.PublicKey) error {
 		if !deps.constantTimeCompare(ssh.FingerprintSHA256(key), fingerprint) {
@@ -287,6 +296,14 @@ func OnboardingHostKeyCallback(deps KnownHostsDeps, fingerprint string) (ssh.Hos
 			var unknown *knownhosts.KeyError
 			if err != nil && !(errors.As(err, &unknown) && len(unknown.Want) == 0) {
 				return err
+			}
+			// OpenSSH may report an unknown textual address even though an
+			// equivalent IP spelling already has a different saved key. That
+			// endpoint is changed trust, not a new host eligible for onboarding.
+			if err != nil {
+				if endpoint, ok := parseKnownHostsIPToken(host); ok && len(canonicalIPKeys.trusted[endpoint]) > 0 {
+					return errors.New("SSH identity differs from saved trust for this endpoint")
+				}
 			}
 		}
 		return nil

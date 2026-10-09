@@ -3,8 +3,11 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -257,6 +260,60 @@ func TestOnboardingAcceptsScopedIPv6Addresses(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil || string(data) != BuildKnownHostsLine(host, draft.Port, key)+"\n" {
 				t.Fatal("scoped IPv6 host trust was not persisted")
+			}
+		})
+	}
+}
+
+func TestOnboardingHostKeyCallbackPreservesCanonicalEndpointTrust(t *testing.T) {
+	for _, tc := range []struct {
+		name, storedHost, submittedHost string
+		port                            int
+	}{
+		{"expanded IPv6", "2001:0db8:0:0:0:0:0:1", "2001:db8::1", 22},
+		{"custom port IPv6", "2001:0db8:0:0:0:0:0:1", "2001:db8::1", 2222},
+		{"mapped IPv4", "::ffff:192.0.2.24", "192.0.2.24", 22},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, repo, draft, path := newOnboardingTest(t)
+			draft.Host, draft.Port = tc.submittedHost, tc.port
+			key, err := svc.deps.Inventory.deps.KnownHosts.scanHostKey(draft.Host, draft.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other, err := ssh.ParsePrivateKey([]byte(testPrivateKeyPEM(t)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			storedAddress := tc.storedHost
+			if tc.port != 22 {
+				storedAddress = fmt.Sprintf("[%s]:%d", tc.storedHost, tc.port)
+			}
+			address := net.JoinHostPort(tc.submittedHost, strconv.Itoa(tc.port))
+			for _, sameKey := range []bool{true, false} {
+				storedKey := key
+				if !sameKey {
+					storedKey = other.PublicKey()
+				}
+				line := knownhosts.Line([]string{storedAddress}, storedKey) + "\n"
+				if err := os.WriteFile(path, []byte(line), 0600); err != nil {
+					t.Fatal(err)
+				}
+				callback, err := OnboardingHostKeyCallback(svc.deps.Inventory.deps.KnownHosts, draft.Fingerprint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if accepted := callback(address, knownHostsRemoteAddr(address), key) == nil; accepted != sameKey {
+					t.Fatalf("canonical saved key accepted=%v, sameKey=%v", accepted, sameKey)
+				}
+				if !sameKey {
+					if _, _, err := svc.Create(context.Background(), draft); err == nil || repo.saveCalls != 0 {
+						t.Fatal("confirmation bypassed changed canonical trust")
+					}
+					if data, err := os.ReadFile(path); err != nil || string(data) != line {
+						t.Fatal("confirmation appended trust despite a changed canonical identity")
+					}
+				}
 			}
 		})
 	}

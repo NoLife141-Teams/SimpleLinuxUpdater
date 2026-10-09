@@ -236,3 +236,28 @@ func TestOnboardingGlobalCredentialIsReferencedAndMustRemainCurrent(t *testing.T
 		})
 	}
 }
+
+func TestOnboardingAcceptsScopedIPv6Addresses(t *testing.T) {
+	for _, host := range []string{"fe80::1%eth0", "[fe80::1%ETH0]"} {
+		t.Run(host, func(t *testing.T) {
+			svc, _, repo, draft, path := newOnboardingTest(t)
+			draft.Host = host
+			report, err := svc.Check(context.Background(), draft)
+			if err != nil || !report.Ready || repo.saveCalls != 0 {
+				t.Fatalf("scoped IPv6 verification failed: ready=%v, err=%v", report.Ready, err)
+			}
+			result, report, err := svc.Create(context.Background(), draft)
+			if err != nil || !report.Ready || !result.Succeeded() || len(repo.saved) != 1 || repo.saved[0].Host != host {
+				t.Fatalf("scoped IPv6 creation failed: err=%v, result=%+v", err, result)
+			}
+			key, err := svc.deps.Inventory.deps.KnownHosts.scanHostKey(host, draft.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != BuildKnownHostsLine(host, draft.Port, key)+"\n" {
+				t.Fatal("scoped IPv6 host trust was not persisted")
+			}
+		})
+	}
+}

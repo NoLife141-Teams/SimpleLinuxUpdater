@@ -127,7 +127,7 @@ func (s *OnboardingService) prepare(ctx context.Context, draft OnboardingDraft) 
 }
 
 func validOnboardingHost(host string) bool {
-	if net.ParseIP(ServerHostForTransport(host)) != nil {
+	if _, ok := parseServerIPLiteral(host); ok {
 		return true
 	}
 	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {

@@ -2107,6 +2107,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	inventoryService := deps.ServerInventoryService
 	inventoryCommands := serverpkg.NewCommandService(inventoryService)
 	registerServerAvailabilityRoutes(r, deps, inventoryCommands)
+	registerServerOnboardingRoutes(r, deps)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState
 	}

@@ -25,6 +25,40 @@ Use the Manage page to add, edit, or delete servers. Authentication options:
 - SSH key per server (uploaded via UI)
 - Global SSH key (uploaded via UI and reused when per-server key is missing)
 
+**Add Server** now guides you through four steps:
+
+1. Enter the SSH address, user and selected credential.
+2. Compare the scanned SSH fingerprint with a trusted source (for example the
+   server console), then explicitly confirm it. Changed or revoked saved keys
+   remain blocking errors.
+3. Verify authenticated SSH, Debian/Ubuntu, APT/dpkg tools, maintenance
+   permissions, free space on `/`, `/var` and `/boot`, and unfinished dpkg
+   configuration. Failed checks block saving; correct them and retry or return
+   to the connection details. Less than 200 MiB available on any checked
+   filesystem blocks adding; less than 1 GiB is a warning.
+4. Review and confirm. Checks run again before the SSH identity is trusted and
+   the server and selected credential are saved together. No update starts.
+
+Example verification step using test data:
+
+![Server onboarding prerequisite checks](images/server-onboarding-checks.png)
+
+Verification does not refresh package metadata, install the managed helper,
+change sudoers, repair packages or reboot. For non-root accounts the permission
+check requires the managed helper, checks sudo policy for its `update` and
+`upgrade` commands, and runs its read-only `dpkg-audit` command without a
+password. This establishes maintenance prerequisites; it cannot guarantee every
+future update will succeed. Actual operation permissions, APT locks and disk
+requirements are checked again during maintenance.
+
+Authenticated API clients can use `POST /api/servers/onboarding/check` to verify
+a draft and `POST /api/servers/onboarding` to verify and create it. Both accept
+`name`, `host`, `port`, `user`, `tags`, `auth_method` (`password`,
+`per-server-key`, or `global-key`), the applicable `pass` or `key`,
+`fingerprint_sha256`, and `confirmed: true`. Draft checks do not persist
+credentials or host trust. The existing `POST /api/servers` remains available
+for compatible inventory imports without these remote checks.
+
 Use **Disable** in a server's directory row to pause manual maintenance, scheduled
 runs, and automatic host-facts refreshes. The server stays in Manage Servers, and its
 credentials, tags, policy settings, and history are retained. **Enable** resumes

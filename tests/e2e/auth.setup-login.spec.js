@@ -86,9 +86,9 @@ test.describe.serial('setup and login flows', () => {
     await rememberAuthCookies(page);
   }
 
-  async function fulfillJson(route, payload) {
+  async function fulfillJson(route, payload, status = 200) {
     await route.fulfill({
-      status: 200,
+      status,
       contentType: 'application/json',
       body: JSON.stringify(payload),
     });
@@ -915,6 +915,34 @@ test.describe.serial('setup and login flows', () => {
   }
 
   async function stubManageApi(page, state = {}) {
+    const onboardingReport = () => ({
+      ready: state.onboardingReady !== false,
+      distribution: 'ubuntu 24.04',
+      disk_available_kb: 5000000,
+      checks: [
+        { id: 'ssh', status: 'passed', message: 'Authenticated SSH connection with the confirmed fingerprint.' },
+        { id: 'distribution', status: 'passed', message: 'ubuntu 24.04' },
+        { id: 'apt', status: 'passed', message: 'APT and dpkg are available.' },
+        {
+          id: 'sudo', status: state.onboardingReady === false ? 'failed' : 'passed',
+          message: state.onboardingReady === false ? 'Maintenance permissions are missing.' : 'Maintenance permissions verified.',
+          remediation: state.onboardingReady === false ? 'Install the managed root helper and sudoers policy.' : '',
+        },
+        { id: 'disk', status: 'passed', message: 'At least 4.8 GiB available across /, /var and /boot.' },
+        { id: 'packages', status: 'passed', message: 'No unfinished dpkg configuration detected.' },
+      ],
+    });
+    await page.route('**/api/servers/onboarding/check', async route => {
+      state.onboardingCheckCount = (state.onboardingCheckCount || 0) + 1;
+      return fulfillJson(route, onboardingReport());
+    });
+    await page.route('**/api/servers/onboarding', async route => {
+      state.onboardingCreateCount = (state.onboardingCreateCount || 0) + 1;
+      state.onboardingDraft = route.request().postDataJSON();
+      if (state.onboardingReady === false) return route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: 'Verification failed.', report: onboardingReport() }) });
+      const { name, host, port, user, tags } = state.onboardingDraft;
+      return fulfillJson(route, { name, host, port, user, tags }, 201);
+    });
     await page.route('**/api/servers', route => {
       state.inventoryLoadCount = (state.inventoryLoadCount || 0) + 1;
       return fulfillJson(route, state.servers || [makeServer('demo-host')]);
@@ -3793,7 +3821,7 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-save')).toBeEnabled();
   });
 
-  test('successful per-server-key creation clears the displayed filename', async ({ page }) => {
+  test('successful per-server-key creation clears the displayed filename', async ({ page }, testInfo) => {
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubManageApi(page, state);
@@ -3804,7 +3832,6 @@ test.describe.serial('setup and login flows', () => {
     await page.locator('#name').fill('new-host');
     await page.locator('#host').fill('new-host.example.test');
     await page.locator('#user').fill('root');
-    await page.locator('#trust-host-key').uncheck();
     await page.locator('#key_file').setInputFiles({
       name: 'id_ed25519',
       mimeType: 'application/octet-stream',
@@ -3812,9 +3839,26 @@ test.describe.serial('setup and login flows', () => {
     });
     await expect(page.locator('#server-key-file-selection')).toHaveText('id_ed25519');
 
-    await page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true }).click();
-
-    await expect.poll(() => state.uploadServerKeyCount || 0).toBe(1);
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('#onboarding-fingerprint')).toHaveText('SHA256:trusted');
+    await expect(page.locator('#onboarding-next')).toBeDisabled();
+    await page.locator('#trust-host-key').check();
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('#onboarding-check-result')).toContainText('Prerequisites verified');
+    await page.setViewportSize({ width: 1440, height: 1800 });
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    const screenshotPath = testInfo.outputPath('server-onboarding-checks.png');
+    await page.locator('#manage-section-add-server').screenshot({ path: screenshotPath });
+    await testInfo.attach('server-onboarding-checks', {
+      path: screenshotPath,
+      contentType: 'image/png',
+    });
+    await expect.poll(() => state.onboardingCreateCount || 0).toBe(0);
+    await page.locator('#onboarding-next').click();
+    await page.locator('#onboarding-next').click();
+    await expect.poll(() => state.onboardingCreateCount || 0).toBe(1);
+    expect(state.onboardingDraft.key).toBe('test-private-key');
+    expect(state.uploadServerKeyCount || 0).toBe(0);
     await expect(page.locator('#server-key-file-selection')).toHaveText('No file selected');
   });
 
@@ -3824,7 +3868,7 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/manage');
     await page.getByRole('link', { name: /Add Server Create an SSH target/ }).click();
-    const submit = page.locator('#add-server-form').getByRole('button', { name: 'Add Server', exact: true });
+    const submit = page.locator('#onboarding-next');
     await submit.click();
 
     await expect(page.locator('#add-server-error')).toContainText('name, host, user required');
@@ -3842,6 +3886,37 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#add-server-error')).toContainText('SSH port must be a whole number');
     await expect(page.locator('#port')).toHaveAttribute('aria-invalid', 'true');
     await expect(page.locator('#port')).toBeFocused();
+  });
+
+  test('onboarding failed checks block saving and allow correction and retry', async ({ page }) => {
+    const state = { onboardingReady: false };
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, state);
+    await page.goto('/manage');
+    await page.locator('#add-server-action').click();
+    await page.locator('#name').fill('new-host');
+    await page.locator('#host').fill('new-host.example.test');
+    await page.locator('#user').fill('deployer');
+    await page.locator('#pass').fill('test-password');
+    await page.locator('#onboarding-next').click();
+    await page.locator('#trust-host-key').check();
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('#onboarding-checks')).toContainText('Install the managed root helper');
+    await expect(page.locator('#onboarding-next')).toBeDisabled();
+    expect(state.onboardingCreateCount || 0).toBe(0);
+    state.onboardingReady = true;
+    await page.locator('#onboarding-retry').click();
+    await expect(page.locator('#onboarding-check-result')).toContainText('Prerequisites verified');
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('#onboarding-summary')).toContainText('new-host');
+    state.onboardingReady = false;
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('[data-onboarding-panel="3"]')).toBeVisible();
+    await expect(page.locator('#onboarding-next')).toBeDisabled();
+    await page.locator('#onboarding-back').click();
+    await expect(page.locator('#name')).toHaveValue('new-host');
+    await page.locator('#onboarding-next').click();
+    await expect(page.locator('#trust-host-key')).not.toBeChecked();
   });
 
   test('manage known host controls expose trust, replace, and remove states', async ({ page }) => {

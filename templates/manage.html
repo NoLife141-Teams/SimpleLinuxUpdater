@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=modal-scroll-lock-20260729">
-    <link rel="stylesheet" href="/static/css/manage.css?v=server-availability-20260910">
+    <link rel="stylesheet" href="/static/css/manage.css?v=server-onboarding-20261009">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -90,6 +90,16 @@
                     </div>
                     <div class="manage-section-content" id="manage-section-add-server-content" data-manage-section-content="add-server" hidden>
                         <form id="add-server-form" class="add-server-form" novalidate>
+                            <ol class="onboarding-steps full-width" aria-label="Add server progress">
+                                <li data-onboarding-step="1" aria-current="step">1 · Connection</li>
+                                <li data-onboarding-step="2">2 · SSH identity</li>
+                                <li data-onboarding-step="3">3 · Checks</li>
+                                <li data-onboarding-step="4">4 · Confirmation</li>
+                            </ol>
+                            <p class="muted full-width">Verify access before saving the server. These checks do not install anything or start an update.</p>
+                            <p class="full-width" id="onboarding-status" role="status" aria-live="polite">Step 1 of 4</p>
+                            <fieldset class="onboarding-connection full-width" id="onboarding-connection" data-onboarding-panel="1">
+                            <legend class="sr-only">SSH connection details</legend>
                             <fieldset class="auth-method-fieldset" id="add-auth-methods">
                                 <legend>Authentication method</legend>
                                 <label><input type="radio" name="add-auth-method" value="password" checked> Password</label>
@@ -127,10 +137,38 @@
                                 <label class="file-btn" for="key_file">Choose per-server key</label>
                                 <span class="file-selection muted" id="server-key-file-selection">No file selected</span>
                             </div>
-                            <label class="checkbox-inline"><input type="checkbox" id="trust-host-key" checked> Trust SSH host key now after confirming its fingerprint</label>
+                            </fieldset>
+                            <section class="onboarding-panel full-width" data-onboarding-panel="2" hidden>
+                                <h3 tabindex="-1">Is this your server?</h3>
+                                <p id="onboarding-identity-target"></p>
+                                <code class="onboarding-fingerprint" id="onboarding-fingerprint"></code>
+                                <p class="muted" id="onboarding-identity-note"></p>
+                                <label class="checkbox-inline"><input type="checkbox" id="trust-host-key"> I verified this fingerprint using a trusted source.</label>
+                            </section>
+                            <section class="onboarding-panel full-width" data-onboarding-panel="3" hidden>
+                                <h3 tabindex="-1">Connection and maintenance checks</h3>
+                                <ul class="onboarding-checks" id="onboarding-checks"></ul>
+                                <p id="onboarding-check-result" role="status" aria-live="polite"></p>
+                                <p class="muted">These checks verify prerequisites at this moment. Update permissions and disk requirements are checked again when maintenance runs.</p>
+                            </section>
+                            <section class="onboarding-panel full-width" data-onboarding-panel="4" hidden>
+                                <h3 tabindex="-1">Ready to add this server?</h3>
+                                <p class="onboarding-summary" id="onboarding-summary"></p>
+                                <p>Saving confirms the SSH identity and stores the selected credential securely. Checks run again before saving.</p>
+                                <p class="muted">No update will be started. You approve maintenance separately.</p>
+                            </section>
+                            <section class="onboarding-panel full-width" data-onboarding-panel="5" hidden>
+                                <h3 tabindex="-1">Server added</h3>
+                                <p><strong id="onboarding-saved-name"></strong> is now in your inventory.</p>
+                                <p class="muted">No update has been started.</p>
+                                <a href="#manage-section-directory">View server directory</a>
+                            </section>
                             <div id="add-server-error" class="form-error full-width" role="alert" aria-live="assertive"></div>
                             <div class="form-actions">
-                                <button class="primary-action action-left" type="submit">Add Server</button>
+                                <button class="btn-ghost" id="onboarding-back" type="button" hidden>Back to checks</button>
+                                <button class="btn-ghost" id="onboarding-retry" type="button" hidden>Retry checks</button>
+                                <button class="primary-action action-left" id="onboarding-next" type="submit">Continue</button>
+                                <button class="primary-action" id="onboarding-reset" type="button" hidden>Add another server</button>
                             </div>
                         </form>
                     </div>
@@ -428,9 +466,11 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=server-availability-20260910"></script>
+    <script src="/static/js/manage-page-interaction.js?v=server-onboarding-20261009"></script>
+    <script src="/static/js/server-onboarding-interaction.js?v=server-onboarding-20261009"></script>
+    <script src="/static/js/server-onboarding.js?v=server-onboarding-20261009"></script>
     <script src="/static/js/manage-modals.js?v=modal-scroll-lock-20260729"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=server-availability-20260910"></script>
+    <script src="/static/js/manage.js?v=server-onboarding-20261009"></script>
 </body>
 </html>

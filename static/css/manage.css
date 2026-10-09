@@ -141,6 +141,61 @@
     grid-template-columns: repeat(3, minmax(170px, 1fr));
 }
 
+.onboarding-connection {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+}
+
+.onboarding-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.onboarding-steps li {
+    padding: 12px;
+    color: var(--subtle);
+    background: var(--card-alt);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+.onboarding-steps [aria-current="step"] {
+    color: var(--text);
+    border-color: var(--accent);
+}
+
+.onboarding-panel { min-width: 0; }
+.onboarding-summary { white-space: pre-line; overflow-wrap: anywhere; }
+.onboarding-fingerprint {
+    display: block;
+    padding: 16px;
+    background: var(--card-alt);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow-wrap: anywhere;
+}
+.onboarding-checks { display: grid; gap: 10px; list-style: none; padding: 0; }
+.onboarding-check { padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.onboarding-check p { margin: 6px 0 0; }
+.onboarding-check.is-failed { border-color: #f87171; }
+.onboarding-check.is-warning { border-color: #fbbf24; }
+.onboarding-check.is-passed { border-color: var(--accent); }
+.add-server-form [hidden] { display: none !important; }
+
+@media (max-width: 640px) {
+    .onboarding-connection { grid-template-columns: minmax(0, 1fr); }
+    .onboarding-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .auth-method-fieldset,
 .form-note,
 .add-server-form .checkbox-inline,

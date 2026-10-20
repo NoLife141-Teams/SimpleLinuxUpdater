@@ -12,6 +12,26 @@ function readyDraft(patch = {}) {
     };
 }
 
+test("autoremove has an independent weekly schedule and excludes update-only settings", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft({
+        name: "Weekly cleanup", execution_mode: "autoremove", package_scope: "security",
+        upgrade_mode: "full", approval_timeout_minutes: 90, weekdays: ["sun"], time_local: "04:30"
+    }) });
+    const view = store.getView();
+    assert.equal(view.editor.draft.execution_mode, "autoremove");
+    assert.match(view.editor.summary.body, /Every Sun at 04:30/);
+    assert.match(view.editor.summary.body, /Autoremove: automatically remove unused packages/);
+    assert.doesNotMatch(view.editor.summary.body, /Security updates|Full updates|upgrade|approval window/);
+    const result = store.validatePolicyDraft();
+    assert.equal(result.ok, true);
+    assert.equal(result.payload.execution_mode, "autoremove");
+    assert.equal(result.payload.package_scope, "full");
+    assert.equal(result.payload.upgrade_mode, "standard");
+    assert.equal(result.payload.approval_timeout_minutes, 0);
+    assert.deepEqual(result.payload.weekdays, ["sun"]);
+});
+
 test("editor normalizes weekdays and projects a deterministic schedule summary", () => {
     const store = createStore();
     store.dispatch({ type: "editorChanged", patch: readyDraft() });

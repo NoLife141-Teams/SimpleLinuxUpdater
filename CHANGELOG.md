@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Schedule independent daily or weekly `apt autoremove` policies for selected
+  servers or tags. Cleanup reuses maintenance admission, no-run windows, staged
+  rollouts, persisted jobs, reports, and scheduled-run audit/notification history.
+  Existing policies retain their behavior; cleanup must be explicitly configured.
+
 ## [v0.4.14] - 2026-10-19
 
 ### Upgrade notes

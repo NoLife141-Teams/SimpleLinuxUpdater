@@ -2049,6 +2049,8 @@ function humanizeExecutionMode(mode) {
             return "Approval required";
         case "auto_apply":
             return "Auto apply";
+        case "autoremove":
+            return "Autoremove";
         default:
             return "Unknown mode";
     }
@@ -2234,6 +2236,12 @@ function setPolicyEditorModeLabel(text) {
 function refreshPolicyFormVisibility() {
     const cadence = document.getElementById("policy-cadence-kind").value;
     const executionMode = document.getElementById("policy-execution-mode").value;
+    const cleanup = executionMode === "autoremove";
+    ["policy-package-scope", "policy-upgrade-mode"].forEach((id) => {
+        document.getElementById(`${id}-wrap`)?.classList.toggle("is-hidden", cleanup);
+        document.getElementById(id).disabled = cleanup;
+    });
+    document.getElementById("policy-autoremove-help")?.classList.toggle("is-hidden", !cleanup);
     const weekdaySection = document.getElementById("policy-weekday-section");
     const approvalWrap = document.getElementById("policy-approval-timeout-wrap");
     const rolloutFields = document.getElementById("policy-rollout-fields");
@@ -2526,8 +2534,8 @@ function formatCadence(policy) {
 
 function renderPolicyExecution(policy) {
 	const mode = humanizeExecutionMode(policy.execution_mode);
-	const scope = humanizePackageScope(policy.package_scope);
-	const upgradeMode = humanizeUpgradeMode(policy.upgrade_mode || "standard");
+	const scope = policy.execution_mode === "autoremove" ? "Remove unused packages automatically" : humanizePackageScope(policy.package_scope);
+	const upgradeMode = policy.execution_mode === "autoremove" ? "" : ` · ${humanizeUpgradeMode(policy.upgrade_mode || "standard")}`;
 	const timeout = policy.execution_mode === "approval_required"
 		? ` · ${policy.approval_timeout_minutes || 720} minute approval window`
 		: "";
@@ -2536,7 +2544,7 @@ function renderPolicyExecution(policy) {
 		: " · immediate rollout";
 	return `
 		<div>${escapeHtml(mode)}</div>
-		<div class="table-secondary">${escapeHtml(`${scope} · ${upgradeMode}${timeout}${rollout}`)}</div>
+		<div class="table-secondary">${escapeHtml(`${scope}${upgradeMode}${timeout}${rollout}`)}</div>
 	`;
 }
 
@@ -2907,7 +2915,7 @@ function renderCalendarSlot(slot) {
     const details = [
         slot?.timezone_offset || "",
         humanizeExecutionMode(slot?.execution_mode),
-        humanizePackageScope(slot?.package_scope),
+        slot?.execution_mode === "autoremove" ? "Remove unused packages" : humanizePackageScope(slot?.package_scope),
         pluralize(serverCount, "server", "servers")
     ].filter(Boolean).join(" · ");
     return `

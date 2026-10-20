@@ -38,7 +38,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Per-server Recommended action guidance on Status and immediate eligibility-aware bulk actions
 - Scheduled policies with dry-run previews, maintenance windows, and success-gated canary/wave rollouts
 - Generic webhook, Discord, and Telegram notifications with delivery diagnostics
-- On-demand `apt autoremove`
+- On-demand `apt autoremove` and independent daily or weekly cleanup policies
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
 - Built-in single-user login with first-run setup, Argon2id password hashing, and SQLite-backed sessions

@@ -237,9 +237,37 @@ From the Status page, you can enable or disable passwordless apt per server. Thi
 
 After upgrading from a release that used `/etc/sudoers.d/apt-nopasswd`, run **Enable apt** once on every non-root target. An exact previous SimpleLinuxUpdater rule is migrated automatically. If the legacy file is customized or cannot be identified exactly, the action stops without overwriting or deleting it; inspect and migrate that administrator-owned policy manually. **Disable apt** likewise removes only recognized, root-owned, owner-marked files.
 
+## Scheduled autoremove
+
+In **Admin → Policy control → Policy Editor**, choose **Autoremove (automatic
+cleanup)** as the execution mode. Select the target servers or tags, then choose
+a daily or weekly cadence, weekdays and local time. The schedule uses the
+application timezone. Preview the matches and occurrences, then save the policy.
+For example, a weekly Sunday cleanup at 04:30 can run independently of a nightly
+update policy.
+
+![Autoremove policy execution controls](images/scheduled-autoremove.png)
+
+This mode automatically runs the existing noninteractive `apt autoremove`
+command, removing dependency packages that APT no longer considers necessary.
+There is no per-run approval prompt. Package scope, upgrade mode and approval
+timeout do not apply; no update or upgrade command is run. It does not clean APT
+download caches, application data or logs. No cleanup policy is enabled by
+default, and existing SSH maintenance permissions need no helper update.
+
+Global and policy no-run windows, disabled-server controls, overrides and
+maintenance/backup exclusion also apply to cleanup. An occupied server is skipped
+and recorded. When a cleanup and an update or scan target the same server in the
+same slot, the update or scan takes priority; schedule cleanup at a separate time
+to avoid a superseded run. Canary/wave rollout is available for cleanup as well.
+
+Follow the execution in **Scheduled Runs**, job logs and reports. Success and
+failure appear in the audit trail; failed scheduled cleanup uses the existing
+failed-scheduled-run notification setting.
+
 ## Scheduled canary and wave rollouts
 
-In **Admin → Scheduled Update Policies → Execution**, choose **Canary, then waves** to avoid releasing one scheduled policy to the whole matched fleet at once. Configure:
+In **Admin → Policy control → Execution**, choose **Canary, then waves** to avoid releasing one scheduled policy to the whole matched fleet at once. Configure:
 
 - the number of canary servers (`1–50`);
 - the maximum servers in each following wave (`1–200`);

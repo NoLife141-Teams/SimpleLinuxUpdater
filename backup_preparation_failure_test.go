@@ -40,7 +40,13 @@ func TestBackupPreparationFailureReleasesMaintenanceWithoutReplacingPersistence(
 
 	// Exercise the production notification preparer and Runtime Composition.
 	// Renaming the outbox makes preparation fail after pausing persistence.
-	notifications := notificationpkg.NewService(notificationpkg.ServiceDeps{DB: func() *sql.DB { return h.db }, Logf: func(string, ...any) {}})
+	notifications := notificationpkg.NewService(notificationpkg.ServiceDeps{
+		DB: func() *sql.DB { return h.db },
+		// Retry the unavailable outbox immediately so resumed notification work
+		// overlaps the terminal restore job write and catches pool configuration drift.
+		PollInterval: time.Nanosecond,
+		Logf:         func(string, ...any) {},
+	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

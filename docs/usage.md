@@ -103,7 +103,9 @@ curl -X POST http://localhost:8080/api/auth/login \
 
 ## Trust a host key
 
-In the Add/Edit server form, use "Trust SSH host key now" to:
+When adding a server, confirm its fingerprint in the Add Server assistant;
+trust is saved when the verified server is created. In the Edit Server form,
+use "Trust SSH host key now" to:
 
 - Scan the server host key
 - Show its fingerprint for verification

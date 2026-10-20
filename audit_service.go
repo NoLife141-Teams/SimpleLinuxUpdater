@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	healthpkg "debian-updater/internal/health"
 	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
+	"debian-updater/internal/policies"
 )
 
 type AuditEvent = auditpkg.Event
@@ -119,6 +121,15 @@ func maintenanceCompletionFromAuditEvent(evt auditpkg.Event) (healthpkg.Maintena
 	case updateCompleteAction:
 		kind = healthpkg.MaintenanceKindUpdate
 	case "schedule.run.completed", "schedule.run.failed":
+		var meta struct {
+			ExecutionMode string `json:"execution_mode"`
+			JobKind       string `json:"job_kind"`
+		}
+		_ = json.Unmarshal([]byte(evt.MetaJSON), &meta)
+		if meta.ExecutionMode == policies.ExecutionAutoremove || meta.JobKind == jobKindAutoremove {
+			// Cleanup does not discover pending updates or observe scan health.
+			return healthpkg.MaintenanceOutcome{}, false
+		}
 		kind = healthpkg.MaintenanceKindScheduledRun
 	default:
 		return healthpkg.MaintenanceOutcome{}, false

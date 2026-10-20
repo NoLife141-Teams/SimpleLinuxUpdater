@@ -306,6 +306,8 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		_ = l.deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
+			"execution_mode":    policy.ExecutionMode,
+			"job_kind":          kind,
 			"scheduled_for_utc": run.ScheduledForUTC,
 		})
 		return status, "", updateErr
@@ -332,6 +334,8 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		_ = l.deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
+			"execution_mode":    policy.ExecutionMode,
+			"job_kind":          kind,
 			"scheduled_for_utc": run.ScheduledForUTC,
 			"error":             err.Error(),
 		})
@@ -677,6 +681,8 @@ func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy po
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", jobSummary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
+		"execution_mode":    policy.ExecutionMode,
+		"job_kind":          job.Kind,
 		"scheduled_for_utc": run.ScheduledForUTC,
 		"job_id":            job.ID,
 		"error":             persistenceErr.Error(),

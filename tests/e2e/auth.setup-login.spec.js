@@ -2296,6 +2296,8 @@ test.describe.serial('setup and login flows', () => {
       weekdays: ['sun'], time_local: '04:30', package_scope: 'full',
       upgrade_mode: 'standard', approval_timeout_minutes: 0,
     });
+    // The received request precedes the response and editor reset.
+    await expect(page.locator('#update-policy-status')).toHaveText('Policy created.');
     await page.locator('#policy-execution-mode').selectOption('approval_required');
     await expect(page.locator('#policy-package-scope')).toBeVisible();
     await expect(page.locator('#policy-upgrade-mode')).toBeEnabled();

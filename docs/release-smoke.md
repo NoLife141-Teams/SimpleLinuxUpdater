@@ -116,6 +116,15 @@ Evidence to capture:
    the failed canary. Verify a disabled target is excluded from scheduled work
    and re-enabling it restores eligibility.
 
+For scheduled cleanup qualification, use a disposable target containing only
+release-fixture packages that are safe to remove. Create a separate
+**Autoremove (automatic cleanup)** policy at the next minute, targeting that host
+explicitly. Confirm the job kind is `autoremove`, its command log shows unused
+package removal, and the run/report and audit records retain the policy, run,
+job and scheduled-occurrence identity. Verify the fixture package is removed and
+scan-health history is preserved. Cleanup must not issue an update or upgrade
+command. Never run this check against existing inventory or production hosts.
+
 Evidence to capture:
 
 - Policy summary showing explicit target.

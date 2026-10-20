@@ -6,12 +6,39 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.15] - 2026-10-20
+
+### Upgrade notes
+
+- Upgrades from v0.4.14 require no database schema migration, configuration
+  change, or SSH helper update. Follow the applicable earlier notes when
+  upgrading from an older version.
+- Cleanup is opt-in: create a separate **Autoremove (automatic cleanup)** policy
+  in Admin and review its targets, timezone and schedule. An enabled policy
+  removes unused dependency packages automatically, without per-run approval.
+  Existing update and scan policies keep their behavior.
+
 ### Added
 
 - Schedule independent daily or weekly `apt autoremove` policies for selected
   servers or tags. Cleanup reuses maintenance admission, no-run windows, staged
   rollouts, persisted jobs, reports, and scheduled-run audit/notification history.
   Existing policies retain their behavior; cleanup must be explicitly configured.
+
+### Fixed
+
+- Keep scheduled cleanup success and failure events out of scan-health history
+  so autoremove does not reset pending/security package counts to zero or produce
+  misleading scan outcomes in Observability. Cleanup audit events, reports and
+  failure notifications remain available.
+
+### Changed
+
+- Stabilize the scheduled-cleanup browser regression by waiting for completed
+  policy saving before editing the next draft.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.15 release readiness record](docs/release-v0.4.15-readiness.md).
 
 ## [v0.4.14] - 2026-10-19
 

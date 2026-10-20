@@ -192,6 +192,12 @@ func TestLifecycleHandlesSkippedCandidateIdempotently(t *testing.T) {
 }
 
 func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing.T) {
+	for _, mode := range []string{policies.ExecutionAutoApply, policies.ExecutionAutoremove} {
+		t.Run(mode, func(t *testing.T) { testLifecycleMutationStartPersistenceFailure(t, mode) })
+	}
+}
+
+func testLifecycleMutationStartPersistenceFailure(t *testing.T, mode string) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
@@ -250,7 +256,7 @@ func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing
 		Policy: policies.Policy{
 			ID:            52,
 			Name:          "nightly updates",
-			ExecutionMode: policies.ExecutionAutoApply,
+			ExecutionMode: mode,
 			PackageScope:  policies.PackageScopeFull,
 			UpgradeMode:   policies.UpgradeModeStandard,
 		},

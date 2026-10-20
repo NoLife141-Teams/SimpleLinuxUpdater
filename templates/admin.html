@@ -72,7 +72,7 @@
                             </div>
                             <div>
                                 <dt>Used for</dt>
-                                <dd>Scheduled updates and application timestamps</dd>
+                                <dd>Scheduled maintenance and application timestamps</dd>
                             </div>
                         </dl>
                     </div>
@@ -412,7 +412,7 @@
         <section class="workspace fade-in section-spaced admin-workspace-section" id="admin-section-scheduled-policies" data-admin-section="scheduled-policies" aria-labelledby="admin-section-scheduled-policies-heading">
             <div class="workspace-head">
                 <div>
-                    <div class="eyebrow">Scheduled updates</div>
+                    <div class="eyebrow">Scheduled maintenance</div>
                     <h2 id="admin-section-scheduled-policies-heading" tabindex="-1">Policy control</h2>
                     <p class="muted workspace-note">Define recurring policies, execution modes, and guided no-run windows.</p>
                 </div>
@@ -569,7 +569,7 @@
                         <div class="field-span form-section">
                             <div class="form-section-head">
                                 <h4>Execution</h4>
-                                <p class="muted">Choose whether the policy only scans, waits for approval, or auto-applies updates.</p>
+                                <p class="muted">Choose a scan, an update, or an independent cleanup schedule.</p>
                             </div>
                             <div class="section-grid">
                                 <div>
@@ -578,16 +578,18 @@
                                         <option value="scan_only">Scan only</option>
                                         <option value="approval_required">Approval required</option>
                                         <option value="auto_apply">Auto apply</option>
+                                        <option value="autoremove">Autoremove (automatic cleanup)</option>
                                     </select>
                                 </div>
-                                <div>
+                                <p id="policy-autoremove-help" class="field-span muted is-hidden">Automatically runs apt autoremove to remove unused dependency packages, including old kernels when APT marks them removable. No update or upgrade is run. Review the target servers and schedule before saving.</p>
+                                <div id="policy-package-scope-wrap">
                                     <label for="policy-package-scope" class="form-label">Package scope</label>
                                     <select id="policy-package-scope">
                                         <option value="security">Security only</option>
                                         <option value="full">Full updates</option>
                                     </select>
                                 </div>
-                                <div>
+                                <div id="policy-upgrade-mode-wrap">
                                     <label for="policy-upgrade-mode" class="form-label">Upgrade mode</label>
                                     <select id="policy-upgrade-mode">
                                         <option value="standard">Standard upgrade</option>
@@ -649,7 +651,7 @@
                     <div class="block-head">
                         <div>
                             <h3>Global Schedule Settings</h3>
-                            <p class="muted block-summary">Set fleet-wide no-run windows that apply to every scheduled update policy.</p>
+                            <p class="muted block-summary">Set fleet-wide no-run windows that apply to every scheduled policy.</p>
                         </div>
                     </div>
                     <div class="timezone-card">
@@ -705,7 +707,7 @@
                 <div class="table-shell-head">
                     <div class="table-shell-title">
                         <span class="table-shell-label">Policy table</span>
-                        <span class="table-shell-subtle">Saved recurring update policies.</span>
+                        <span class="table-shell-subtle">Saved recurring maintenance policies.</span>
                     </div>
                 </div>
                 <div class="table-wrap">
@@ -1053,9 +1055,9 @@
     <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=timezone-controls-20260727a"></script>
-    <script src="/static/js/scheduled-policy-administration-interaction.js?v=canary-waves-20260731"></script>
+    <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-module-split-20260903"></script>
-    <script src="/static/js/admin.js?v=availability-preview-20260910"></script>
+    <script src="/static/js/admin.js?v=scheduled-autoremove-20261020"></script>
 </body>
 </html>

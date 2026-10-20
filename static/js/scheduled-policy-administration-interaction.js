@@ -119,7 +119,7 @@
         const base = defaultDraft();
         const source = draft && typeof draft === "object" ? draft : {};
         const cadence = source.cadence_kind === "weekly" ? "weekly" : "daily";
-        const execution = ["scan_only", "approval_required", "auto_apply"].includes(source.execution_mode)
+        const execution = ["scan_only", "approval_required", "auto_apply", "autoremove"].includes(source.execution_mode)
             ? source.execution_mode : base.execution_mode;
         return {
             ...base,
@@ -130,8 +130,8 @@
             include_tags: normalizeList(source.include_tags),
             exclude_tags: normalizeList(source.exclude_tags),
             target_servers: normalizeList(source.target_servers),
-            package_scope: source.package_scope === "full" ? "full" : "security",
-            upgrade_mode: source.upgrade_mode === "full" ? "full" : "standard",
+            package_scope: execution === "autoremove" || source.package_scope === "full" ? "full" : "security",
+            upgrade_mode: execution !== "autoremove" && source.upgrade_mode === "full" ? "full" : "standard",
             execution_mode: execution,
             cadence_kind: cadence,
             time_local: normalizeTime(source.time_local, base.time_local),
@@ -192,6 +192,9 @@
         const execution = draft.execution_mode.replace(/_/g, " ");
         const scope = draft.package_scope === "full" ? "Full updates" : "Security updates";
         const upgrade = draft.upgrade_mode === "full" ? "Full upgrade" : "Standard upgrade";
+        const action = draft.execution_mode === "autoremove"
+            ? "Autoremove: automatically remove unused packages"
+            : `${execution.charAt(0).toUpperCase()}${execution.slice(1)}, ${scope}, ${upgrade}`;
         const timeout = draft.execution_mode === "approval_required" ? `, ${draft.approval_timeout_minutes || 720} minute approval window` : "";
         const rollout = draft.rollout_mode === "canary_waves"
             ? `Canary ${draft.canary_count}, then waves of ${draft.wave_size} every ${draft.wave_delay_minutes} minutes`
@@ -199,7 +202,7 @@
         const windows = blackouts.length ? `${blackouts.length} no-run window${blackouts.length === 1 ? "" : "s"} configured` : "No policy no-run windows";
         return {
             title: draft.name || "Unnamed policy",
-            body: `${schedule} (${timezone || "UTC"}), ${execution.charAt(0).toUpperCase()}${execution.slice(1)}, ${scope}, ${upgrade}${timeout}, ${rollout}, ${targets.join("; ") || "no target"}. ${windows}.`
+            body: `${schedule} (${timezone || "UTC"}), ${action}${timeout}, ${rollout}, ${targets.join("; ") || "no target"}. ${windows}.`
         };
     }
 

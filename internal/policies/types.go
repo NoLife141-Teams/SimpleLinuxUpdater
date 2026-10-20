@@ -10,6 +10,7 @@ const (
 	ExecutionScanOnly         = "scan_only"
 	ExecutionApprovalRequired = "approval_required"
 	ExecutionAutoApply        = "auto_apply"
+	ExecutionAutoremove       = "autoremove"
 
 	PackageScopeSecurity = "security"
 	PackageScopeFull     = "full"

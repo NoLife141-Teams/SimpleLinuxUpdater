@@ -17,7 +17,7 @@ The operator's chosen package set for a pending update, including whether it tar
 _Avoid_: Approval intent, upgrade mode
 
 **Scheduled Run**:
-One scheduler-created attempt to apply a scheduled update policy to one server for one scheduled time, including skipped, queued, running, waiting-approval, succeeded, failed, cancelled, and interrupted outcomes.
+One scheduler-created attempt to apply a scheduled maintenance policy (scan, update, or autoremove) to one server for one scheduled time, including skipped, queued, running, waiting-approval, succeeded, failed, cancelled, and interrupted outcomes.
 _Avoid_: Scheduled policy execution, policy job
 
 **Job State Transition**:

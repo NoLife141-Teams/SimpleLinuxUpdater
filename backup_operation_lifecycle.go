@@ -628,7 +628,9 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			job.Summary = summary
 			job.ErrorClass = errorClass
 			job.FinishedAt = finishedAt
-			_ = jm.ImportJobRecord(job)
+			if importErr := jm.ImportJobRecord(job); importErr != nil {
+				deps.Logf("[DEBUG-dep-ci] restore failure job import: %v", importErr)
+			}
 		}
 		deps.RecordAudit(backupOperationAuditRecord{
 			Actor:      cmd.Actor,

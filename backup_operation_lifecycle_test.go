@@ -104,6 +104,9 @@ func newBackupLifecycleHarness(t *testing.T) *backupLifecycleHarness {
 	if err != nil {
 		t.Fatalf("open lifecycle test db: %v", err)
 	}
+	// Match the production pool so the resumed notification worker and the
+	// terminal restore job write cannot contend through separate connections.
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() {
 		_ = db.Close()
 	})

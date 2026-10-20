@@ -60,11 +60,11 @@ Evidence to capture:
 ## 2) Add Disposable Host and Trust Key
 
 1. Open `/manage`.
-2. Add the disposable target with a clearly disposable name, for example `release-smoke-target`.
-3. Confirm missing required fields are rejected before saving the valid host.
-4. Scan the host key.
-5. Confirm the fingerprint with the release owner or target console.
-6. Trust the host key and confirm it is written to the disposable `known_hosts` file.
+2. Open **Add Server** and enter the disposable target with a clearly disposable name, for example `release-smoke-target`, and its selected credential.
+3. Confirm missing required fields are rejected before continuing.
+4. Continue to the scanned host key and compare its fingerprint with the target console or another trusted source, then explicitly confirm it.
+5. Continue to the prerequisite checks. Confirm authenticated SSH, Debian/Ubuntu, APT/dpkg, maintenance permissions, disk space and package configuration pass. Failed checks must block saving; retry after correcting the disposable target. Non-root accounts need the existing managed helper and sudo policy provisioned beforehand.
+6. Confirm draft verification has not saved inventory or host trust. Review and create the server; checks must run again, and the selected credential and inventory entry must be saved together. Confirm the trusted identity is written to the disposable `known_hosts` file and no update starts.
 7. Refresh the page and confirm the host remains saved with secrets hidden.
 8. Disable the idle target. Confirm Status hides it under the default Enabled
    filter, the Disabled and All filters show it, manual maintenance is blocked,

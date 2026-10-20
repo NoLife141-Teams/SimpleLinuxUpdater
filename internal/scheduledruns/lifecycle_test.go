@@ -3,6 +3,7 @@ package scheduledruns_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -582,6 +583,13 @@ func TestReconcileRunCorrectsRestartInterruptedProjectionFromTerminalJob(t *test
 		!strings.Contains(listed.Items[0].MetaJSON, `"pending_package_count":2`) ||
 		!strings.Contains(listed.Items[0].MetaJSON, `"security_package_count":1`) {
 		t.Fatalf("terminal audit meta = %s, want policy and discovery facts", listed.Items[0].MetaJSON)
+	}
+	var identity struct {
+		RunID int64  `json:"run_id"`
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(listed.Items[0].MetaJSON), &identity); err != nil || identity.RunID != run.ID || identity.JobID != job.ID {
+		t.Fatalf("recovered scan audit identity = %+v, %v", identity, err)
 	}
 }
 

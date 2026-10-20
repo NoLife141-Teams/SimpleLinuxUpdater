@@ -647,7 +647,7 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 		return fmt.Errorf("scheduled run %d terminal timestamp does not match job %q", runID, job.ID)
 	}
 	if claimedTerminal && hasMeta {
-		l.recordScheduledTerminalAudit(job, meta)
+		l.recordScheduledTerminalAudit(runID, job, meta)
 	}
 	return nil
 }
@@ -683,7 +683,7 @@ func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy po
 	})
 }
 
-func (l *Lifecycle) recordScheduledTerminalAudit(job jobs.Record, meta updates.ScheduledJobMeta) {
+func (l *Lifecycle) recordScheduledTerminalAudit(runID int64, job jobs.Record, meta updates.ScheduledJobMeta) {
 	if (job.Kind != jobs.KindScheduledScan && job.Kind != jobs.KindAutoremove) || meta.Trigger != "scheduled" {
 		return
 	}
@@ -693,7 +693,7 @@ func (l *Lifecycle) recordScheduledTerminalAudit(job jobs.Record, meta updates.S
 	}
 	auditMeta := map[string]any{
 		"policy_id": meta.PolicyID, "policy_name": meta.PolicyName,
-		"run_id": meta.RunID, "job_id": job.ID, "job_kind": job.Kind,
+		"run_id": runID, "job_id": job.ID, "job_kind": job.Kind,
 		"scheduled_for_utc": meta.ScheduledFor, "execution_mode": meta.ExecutionMode,
 	}
 	summary := strings.TrimSpace(job.Summary)

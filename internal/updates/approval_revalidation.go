@@ -1,8 +1,10 @@
 package updates
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
+	"strings"
 
 	"debian-updater/internal/servers"
 )
@@ -34,6 +36,51 @@ func approvalNewPackages(scope string, plan servers.UpgradePlan) []string {
 	return nil
 }
 
+// Compare the package facts shown for the selected operation. CVE enrichment
+// is deliberately excluded: it may finish while an approval is pending, but
+// it does not change the package that APT will install.
+type approvalPackageIdentity struct {
+	Package, InstallPackage, CurrentVersion, CandidateVersion, Source, Raw string
+	Security, KeptBack, RequiresFull                                       bool
+}
+
+func approvalSelectedPackagesEqual(scope string, previous, fresh []servers.PendingUpdate) bool {
+	selectedBefore := PackagesForApprovalScope(scope, previous)
+	selectedAfter := PackagesForApprovalScope(scope, fresh)
+	if !approvalPackageSetsEqual(selectedBefore, selectedAfter) {
+		return false
+	}
+	identities := func(updates []servers.PendingUpdate, selected []string) []approvalPackageIdentity {
+		wanted := make(map[string]struct{}, len(selected))
+		for _, name := range selected {
+			wanted[name] = struct{}{}
+		}
+		result := make([]approvalPackageIdentity, 0, len(selected))
+		for _, update := range updates {
+			selector := update.Package
+			if NormalizeApprovalScope(scope) == ApprovalScopeSecurityKeptBack && strings.TrimSpace(update.InstallPackage) != "" {
+				selector = strings.TrimSpace(update.InstallPackage)
+			}
+			if _, ok := wanted[selector]; !ok {
+				continue
+			}
+			result = append(result, approvalPackageIdentity{
+				Package: update.Package, InstallPackage: update.InstallPackage,
+				CurrentVersion: update.CurrentVersion, CandidateVersion: update.CandidateVersion,
+				Source: update.Source, Raw: update.Raw,
+				Security: update.Security, KeptBack: update.KeptBack, RequiresFull: update.RequiresFull,
+			})
+		}
+		slices.SortFunc(result, func(a, b approvalPackageIdentity) int {
+			return cmp.Or(strings.Compare(a.Package, b.Package), strings.Compare(a.InstallPackage, b.InstallPackage),
+				strings.Compare(a.CurrentVersion, b.CurrentVersion), strings.Compare(a.CandidateVersion, b.CandidateVersion),
+				strings.Compare(a.Source, b.Source), strings.Compare(a.Raw, b.Raw))
+		})
+		return result
+	}
+	return slices.Equal(identities(previous, selectedBefore), identities(fresh, selectedAfter))
+}
+
 func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (PackageDiscoveryOutcome, bool, error) {
 	ctx := r.maintenanceContext()
 	if r.session == nil && !r.setupSSH("update.ssh_dial") {
@@ -61,6 +108,6 @@ func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (
 	}
 	changed := !approvalPackageSetsEqual(approvalRemovals(r.approvalScope, previous.UpgradePlan), approvalRemovals(r.approvalScope, fresh.UpgradePlan)) ||
 		!approvalPackageSetsEqual(approvalNewPackages(r.approvalScope, previous.UpgradePlan), approvalNewPackages(r.approvalScope, fresh.UpgradePlan)) ||
-		!approvalPackageSetsEqual(PackagesForApprovalScope(r.approvalScope, previous.PendingUpdates), PackagesForApprovalScope(r.approvalScope, fresh.PendingUpdates))
+		!approvalSelectedPackagesEqual(r.approvalScope, previous.PendingUpdates, fresh.PendingUpdates)
 	return fresh, changed, nil
 }

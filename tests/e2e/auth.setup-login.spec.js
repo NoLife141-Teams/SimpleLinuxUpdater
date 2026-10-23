@@ -2270,6 +2270,40 @@ test.describe.serial('setup and login flows', () => {
     });
   });
 
+  test('admin schedules independent autoremove without upgrade controls', async ({ page }) => {
+    const state = {};
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await page.locator('#policy-name').fill('Weekly cleanup');
+    await page.locator('#policy-target-tag').fill('prod');
+    await page.locator('#policy-upgrade-mode').selectOption('full');
+    await page.locator('#policy-execution-mode').selectOption('autoremove');
+    await expect(page.locator('#policy-package-scope')).toBeHidden();
+    await expect(page.locator('#policy-upgrade-mode')).toBeDisabled();
+    await expect(page.locator('#policy-approval-timeout')).toBeHidden();
+    await expect(page.locator('#policy-autoremove-help')).toBeVisible();
+    await page.locator('#policy-cadence-kind').selectOption('weekly');
+    await page.locator('#policy-weekday-section button[data-weekday="sun"]').click();
+    await page.locator('#policy-time-local').fill('04:30');
+    await expect(page.locator('#policy-summary')).toContainText('Every Sun at 04:30');
+    await expect(page.locator('#policy-summary')).toContainText('Autoremove: automatically remove unused packages');
+    await expect(page.locator('#policy-summary')).not.toContainText('Full upgrade');
+    await page.locator('#policy-save-btn').click();
+    await expect.poll(() => state.policyPayload).toMatchObject({
+      name: 'Weekly cleanup', execution_mode: 'autoremove', cadence_kind: 'weekly',
+      weekdays: ['sun'], time_local: '04:30', package_scope: 'full',
+      upgrade_mode: 'standard', approval_timeout_minutes: 0,
+    });
+    // The received request precedes the response and editor reset.
+    await expect(page.locator('#update-policy-status')).toHaveText('Policy created.');
+    await page.locator('#policy-execution-mode').selectOption('approval_required');
+    await expect(page.locator('#policy-package-scope')).toBeVisible();
+    await expect(page.locator('#policy-upgrade-mode')).toBeEnabled();
+    await expect(page.locator('#policy-approval-timeout')).toBeVisible();
+  });
+
   test('admin scheduled run history filters, paginates, and exposes existing investigation details', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

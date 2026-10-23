@@ -80,7 +80,7 @@ func TestServerAvailabilityAPIBlocksMaintenanceAndPreservesConfiguration(t *test
 }
 
 func TestScheduledRunRechecksServerAvailabilityBeforeDispatch(t *testing.T) {
-	for _, mode := range []string{policypkg.ExecutionScanOnly, policypkg.ExecutionApprovalRequired} {
+	for _, mode := range []string{policypkg.ExecutionScanOnly, policypkg.ExecutionApprovalRequired, policypkg.ExecutionAutoremove} {
 		t.Run(mode, func(t *testing.T) {
 			server := Server{Name: "srv", Host: "host", User: "root"}
 			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "disabled-schedule.db", server, "idle")

@@ -6,6 +6,74 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.15] - 2026-10-20
+
+### Upgrade notes
+
+- Upgrades from v0.4.14 require no database schema migration, configuration
+  change, or SSH helper update. Follow the applicable earlier notes when
+  upgrading from an older version.
+- Cleanup is opt-in: create a separate **Autoremove (automatic cleanup)** policy
+  in Admin and review its targets, timezone and schedule. An enabled policy
+  removes unused dependency packages automatically, without per-run approval.
+  Existing update and scan policies keep their behavior.
+
+### Added
+
+- Schedule independent daily or weekly `apt autoremove` policies for selected
+  servers or tags. Cleanup reuses maintenance admission, no-run windows, staged
+  rollouts, persisted jobs, reports, and scheduled-run audit/notification history.
+  Existing policies retain their behavior; cleanup must be explicitly configured.
+
+### Fixed
+
+- Keep scheduled cleanup success and failure events out of scan-health history
+  so autoremove does not reset pending/security package counts to zero or produce
+  misleading scan outcomes in Observability. Cleanup audit events, reports and
+  failure notifications remain available.
+
+### Changed
+
+- Stabilize the scheduled-cleanup browser regression by waiting for completed
+  policy saving before editing the next draft.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.15 release readiness record](docs/release-v0.4.15-readiness.md).
+
+## [v0.4.14] - 2026-10-19
+
+### Upgrade notes
+
+- Upgrades from v0.4.13 require no database schema migration, configuration
+  change, new SSH helper installation, or API approval changes. Installations
+  upgrading from older versions must also follow the applicable earlier notes.
+- Adding a server in Manage now requires verified SSH access and prerequisite
+  checks. Non-root accounts need the existing managed helper and passwordless
+  maintenance permissions before onboarding; the assistant does not install them.
+  Existing inventory entries and the compatible inventory-import API are retained.
+
+### Added
+
+- Guide new server creation through SSH connection details, explicit fingerprint
+  confirmation, read-only prerequisite checks, and final review. Verify Debian
+  or Ubuntu, APT/dpkg tools, maintenance permissions, disk space and unfinished
+  package configuration before saving; repeat checks at creation and save the
+  selected credential together with the inventory entry.
+
+### Changed
+
+- Update Go from 1.26.6 to 1.26.9 and `golang.org/x/crypto` from 0.57.0 to
+  0.58.0, `golang.org/x/net` from 0.59.0 to 0.61.0, and their transitive
+  `x/sys` and `x/text` dependencies.
+- Update Playwright from 1.63.0 to 1.64.0 and the pinned setup-node and
+  upload-artifact actions to 7.1.0 and 7.0.2 respectively.
+- Stabilize the restore preparation-failure regression test by matching the
+  production SQLite connection limit and forcing notification retry overlap.
+  Production restore behavior is unchanged.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.14 release readiness record](docs/release-v0.4.14-readiness.md).
+
 ## [v0.4.13] - 2026-10-02
 
 ### Upgrade notes

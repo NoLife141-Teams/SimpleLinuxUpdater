@@ -182,6 +182,11 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 	if policy.TargetTag == "" && len(policy.IncludeTags) == 0 && len(policy.TargetServers) == 0 {
 		return errors.New("at least one target tag, included tag, or explicit server is required")
 	}
+	if strings.EqualFold(strings.TrimSpace(policy.ExecutionMode), ExecutionAutoremove) {
+		// Cleanup has no upgrade plan or security-only package scope.
+		policy.PackageScope = PackageScopeFull
+		policy.UpgradeMode = UpgradeModeStandard
+	}
 	switch strings.ToLower(strings.TrimSpace(policy.PackageScope)) {
 	case PackageScopeSecurity:
 		policy.PackageScope = PackageScopeSecurity
@@ -205,8 +210,10 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 		policy.ExecutionMode = ExecutionApprovalRequired
 	case ExecutionAutoApply:
 		policy.ExecutionMode = ExecutionAutoApply
+	case ExecutionAutoremove:
+		policy.ExecutionMode = ExecutionAutoremove
 	default:
-		return errors.New("execution_mode must be 'scan_only', 'approval_required', or 'auto_apply'")
+		return errors.New("execution_mode must be 'scan_only', 'approval_required', 'auto_apply', or 'autoremove'")
 	}
 	switch strings.ToLower(strings.TrimSpace(policy.CadenceKind)) {
 	case CadenceDaily:
@@ -756,6 +763,8 @@ func (s *Service) CandidatePriority(policy Policy) [3]int {
 		modeRank = 1
 	case ExecutionScanOnly:
 		modeRank = 2
+	case ExecutionAutoremove:
+		modeRank = 3
 	}
 	scopeRank := 1
 	if policy.PackageScope == PackageScopeFull {

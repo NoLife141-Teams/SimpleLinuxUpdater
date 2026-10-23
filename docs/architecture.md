@@ -105,6 +105,15 @@ Package initialization does not open persistence. Runtime Composition loads inve
 
 ## Scheduled policies
 
+Execution modes are `scan_only`, `approval_required`, `auto_apply`, and
+`autoremove`. Cleanup is independently scheduled through the same policy model;
+it dispatches an `autoremove` package-mutation job through the existing Host
+Maintenance Session command runner, without package discovery or upgrade steps.
+Update-only scope and upgrade settings normalize to `full` and `standard` for
+storage compatibility and are not used by cleanup. Coincident update/scan
+candidates retain priority over cleanup. Scheduled cleanup records policy, run,
+job and occurrence identifiers in command and scheduled-run audit events.
+
 Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, per-policy blackout windows, and optional canary/wave rollout settings. `PolicyService` sorts matched server names, releases the canary batch at the canonical occurrence, and releases each delayed wave only after every previous run succeeded. Terminal failure stops later waves with a persisted `rollout_gate` skip. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
 
 The failed-run gate uses the complete persisted occurrence history even when inventory edits remove or rename a predecessor. Policy Schedule Projection shares that history with dispatch, shows each server's wave release time, and labels pending predecessor conditions. It includes unfinished and overlapping origins without treating unstarted past occurrences as upcoming waves.

@@ -3,6 +3,7 @@ package scheduledruns_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -192,6 +193,12 @@ func TestLifecycleHandlesSkippedCandidateIdempotently(t *testing.T) {
 }
 
 func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing.T) {
+	for _, mode := range []string{policies.ExecutionAutoApply, policies.ExecutionAutoremove} {
+		t.Run(mode, func(t *testing.T) { testLifecycleMutationStartPersistenceFailure(t, mode) })
+	}
+}
+
+func testLifecycleMutationStartPersistenceFailure(t *testing.T, mode string) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
@@ -250,7 +257,7 @@ func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing
 		Policy: policies.Policy{
 			ID:            52,
 			Name:          "nightly updates",
-			ExecutionMode: policies.ExecutionAutoApply,
+			ExecutionMode: mode,
 			PackageScope:  policies.PackageScopeFull,
 			UpgradeMode:   policies.UpgradeModeStandard,
 		},
@@ -576,6 +583,13 @@ func TestReconcileRunCorrectsRestartInterruptedProjectionFromTerminalJob(t *test
 		!strings.Contains(listed.Items[0].MetaJSON, `"pending_package_count":2`) ||
 		!strings.Contains(listed.Items[0].MetaJSON, `"security_package_count":1`) {
 		t.Fatalf("terminal audit meta = %s, want policy and discovery facts", listed.Items[0].MetaJSON)
+	}
+	var identity struct {
+		RunID int64  `json:"run_id"`
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(listed.Items[0].MetaJSON), &identity); err != nil || identity.RunID != run.ID || identity.JobID != job.ID {
+		t.Fatalf("recovered scan audit identity = %+v, %v", identity, err)
 	}
 }
 

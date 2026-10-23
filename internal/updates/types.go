@@ -204,6 +204,7 @@ type ScheduledJobBehavior struct {
 type ScheduledJobDiscovery = PackageDiscoveryOutcome
 
 type ScheduledJobMeta struct {
+	RunID                  int64                  `json:"run_id,omitempty"`
 	Trigger                string                 `json:"trigger,omitempty"`
 	PolicyID               int64                  `json:"policy_id,omitempty"`
 	PolicyName             string                 `json:"policy_name,omitempty"`

@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.4.13
+Version: v0.4.15
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -38,7 +38,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Per-server Recommended action guidance on Status and immediate eligibility-aware bulk actions
 - Scheduled policies with dry-run previews, maintenance windows, and success-gated canary/wave rollouts
 - Generic webhook, Discord, and Telegram notifications with delivery diagnostics
-- On-demand `apt autoremove`
+- On-demand `apt autoremove` and independent daily or weekly cleanup policies
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
 - Built-in single-user login with first-run setup, Argon2id password hashing, and SQLite-backed sessions
@@ -50,8 +50,8 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.13
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.13
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
 ```
 
 Open `http://localhost:8080`.
@@ -116,7 +116,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.4.13"
+VERSION="0.4.15"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

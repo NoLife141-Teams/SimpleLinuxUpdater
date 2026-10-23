@@ -803,7 +803,9 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 }
 
 func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]any {
-	return map[string]any{
+	meta := map[string]any{
+		"job_id":                 r.jobID,
+		"job_kind":               r.jobKind,
 		"status":                 finalStatus,
 		"ssh_dial_attempts_used": r.sshDialAttempts,
 		"command_attempts_used":  r.commandAttempts,
@@ -811,6 +813,8 @@ func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]a
 		"last_error_class":       r.lastErrClass,
 		"retry_exhausted":        r.retryExhausted,
 	}
+	r.addScheduledCommandAuditMeta(meta)
+	return meta
 }
 
 func (r *withActorRunner) refreshFactsAfterSuccessfulUpdate() bool {

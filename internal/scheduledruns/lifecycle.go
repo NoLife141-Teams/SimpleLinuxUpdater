@@ -166,8 +166,16 @@ func (l *Lifecycle) executeByMode(run policies.Run, policy policies.Policy, serv
 	switch policy.ExecutionMode {
 	case policies.ExecutionScanOnly:
 		return l.runScan(run, policy, server)
+	case policies.ExecutionApprovalRequired, policies.ExecutionAutoApply, policies.ExecutionAutoremove:
+		return l.runPackageMutation(run, policy, server)
 	default:
-		return l.runUpdate(run, policy, server)
+		status, reason := policies.RunFailed, policies.RunReasonReadiness
+		summary := fmt.Sprintf("Unsupported scheduled execution mode %q", policy.ExecutionMode)
+		finishedAt := l.deps.JobTimestampNow()
+		err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+			Status: &status, Reason: &reason, Summary: &summary, FinishedAt: &finishedAt,
+		})
+		return status, "", errors.Join(errors.New(summary), err)
 	}
 }
 
@@ -269,20 +277,24 @@ func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Pol
 	})
 }
 
-func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
+func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
+	kind, operation, runtimeStatus := jobs.KindUpdate, "update", "updating"
+	if policy.ExecutionMode == policies.ExecutionAutoremove {
+		kind, operation, runtimeStatus = jobs.KindAutoremove, "autoremove", "autoremove"
+	}
 	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
-	serverForRun, err := l.deps.ServerState.BeginPackageMutation(server.Name, "updating")
+	serverForRun, err := l.deps.ServerState.BeginPackageMutation(server.Name, runtimeStatus)
 	if err != nil {
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
-		summary := "Server unavailable for scheduled update"
+		summary := "Server unavailable for scheduled " + operation
 		if errors.Is(err, servers.ErrDisabled) {
 			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
 		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped
 			reason = policies.RunReasonBusy
-			summary = "Server busy; scheduled update skipped"
+			summary = "Server busy; scheduled " + operation + " skipped"
 		}
 		finishedAt := l.deps.JobTimestampNow()
 		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
@@ -294,6 +306,8 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		_ = l.deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
+			"execution_mode":    policy.ExecutionMode,
+			"job_kind":          kind,
 			"scheduled_for_utc": run.ScheduledForUTC,
 		})
 		return status, "", updateErr
@@ -301,12 +315,13 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
-	job, err := l.createServerActionJob(l.deps.CurrentJobManager(), l.deps.ServerState, jobs.KindUpdate, server.Name, "system", "", retryPolicy, meta)
+	meta.RunID = run.ID
+	job, err := l.createServerActionJob(l.deps.CurrentJobManager(), l.deps.ServerState, kind, server.Name, "system", "", retryPolicy, meta)
 	if err != nil {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		status := policies.RunFailed
 		reason := policies.RunReasonPersistence
-		summary := "Failed to create scheduled update job"
+		summary := "Failed to create scheduled " + operation + " job"
 		auditAction := "schedule.run.failed"
 		auditStatus := "failure"
 		finishedAt := l.deps.JobTimestampNow()
@@ -319,6 +334,8 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 		_ = l.deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
+			"execution_mode":    policy.ExecutionMode,
+			"job_kind":          kind,
 			"scheduled_for_utc": run.ScheduledForUTC,
 			"error":             err.Error(),
 		})
@@ -327,27 +344,35 @@ func (l *Lifecycle) runUpdate(run policies.Run, policy policies.Policy, server s
 
 	runningStatus := policies.RunRunning
 	startedAt := l.deps.JobTimestampNow()
-	summary := "Scheduled update started"
+	summary := "Scheduled " + operation + " started"
 	if err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:    &runningStatus,
 		Summary:   &summary,
 		JobID:     &job.ID,
 		StartedAt: &startedAt,
 	}); err != nil {
-		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, "update", err)
-		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled update running state: %w", err)
+		l.handleRunStartPersistenceFailure(run, policy, server, job, preStartStatus, operation, err)
+		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled %s running state: %w", operation, err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
 		"job_id":            job.ID,
+		"run_id":            run.ID,
+		"job_kind":          kind,
 		"execution_mode":    policy.ExecutionMode,
 		"package_scope":     policy.PackageScope,
 		"upgrade_mode":      policy.UpgradeMode,
 	})
 	l.deps.StartJobRunner(job.ID, func() {
 		defer l.reconcileCurrentJob(run.ID, job.ID)
+		if policy.ExecutionMode == policies.ExecutionAutoremove {
+			l.deps.UpdateService.RunAutoremoveJob(updates.AutoremoveRunRequest{
+				Server: serverForRun, Actor: "system", Policy: retryPolicy, JobID: job.ID,
+			})
+			return
+		}
 		l.deps.UpdateService.RunUpdateJob(updates.UpdateRunRequest{
 			Server:   serverForRun,
 			Actor:    "system",
@@ -626,7 +651,7 @@ func (l *Lifecycle) reconcileJob(ctx context.Context, runID int64, job jobs.Reco
 		return fmt.Errorf("scheduled run %d terminal timestamp does not match job %q", runID, job.ID)
 	}
 	if claimedTerminal && hasMeta {
-		l.recordScheduledScanTerminalAudit(job, meta)
+		l.recordScheduledTerminalAudit(runID, job, meta)
 	}
 	return nil
 }
@@ -656,25 +681,32 @@ func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy po
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", jobSummary, map[string]any{
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
+		"execution_mode":    policy.ExecutionMode,
+		"job_kind":          job.Kind,
 		"scheduled_for_utc": run.ScheduledForUTC,
 		"job_id":            job.ID,
 		"error":             persistenceErr.Error(),
 	})
 }
 
-func (l *Lifecycle) recordScheduledScanTerminalAudit(job jobs.Record, meta updates.ScheduledJobMeta) {
-	if job.Kind != jobs.KindScheduledScan || meta.Trigger != "scheduled" {
+func (l *Lifecycle) recordScheduledTerminalAudit(runID int64, job jobs.Record, meta updates.ScheduledJobMeta) {
+	if (job.Kind != jobs.KindScheduledScan && job.Kind != jobs.KindAutoremove) || meta.Trigger != "scheduled" {
 		return
+	}
+	operation := "scan"
+	if job.Kind == jobs.KindAutoremove {
+		operation = "autoremove"
+	}
+	auditMeta := map[string]any{
+		"policy_id": meta.PolicyID, "policy_name": meta.PolicyName,
+		"run_id": runID, "job_id": job.ID, "job_kind": job.Kind,
+		"scheduled_for_utc": meta.ScheduledFor, "execution_mode": meta.ExecutionMode,
 	}
 	summary := strings.TrimSpace(job.Summary)
 	switch job.Status {
 	case jobs.StatusSucceeded:
 		if summary == "" {
-			summary = "Scheduled scan completed"
-		}
-		auditMeta := map[string]any{
-			"policy_id":   meta.PolicyID,
-			"policy_name": meta.PolicyName,
+			summary = "Scheduled " + operation + " completed"
 		}
 		if meta.Discovery != nil {
 			auditMeta["pending_package_count"] = meta.Discovery.PendingPackageCount
@@ -683,14 +715,9 @@ func (l *Lifecycle) recordScheduledScanTerminalAudit(job jobs.Record, meta updat
 		_ = l.deps.AuditService.Record("system", "", "schedule.run.completed", "server", job.ServerName, "success", summary, auditMeta)
 	case jobs.StatusFailed:
 		if summary == "" {
-			summary = "Scheduled scan failed"
+			summary = "Scheduled " + operation + " failed"
 		}
-		auditMeta := map[string]any{
-			"policy_id":      meta.PolicyID,
-			"policy_name":    meta.PolicyName,
-			"execution_mode": meta.ExecutionMode,
-			"package_scope":  meta.PackageScope,
-		}
+		auditMeta["package_scope"] = meta.PackageScope
 		if strings.TrimSpace(meta.Error) != "" {
 			auditMeta["error"] = meta.Error
 		}

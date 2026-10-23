@@ -2574,6 +2574,68 @@ test.describe.serial('setup and login flows', () => {
     await expect(saveTimezone).toBeDisabled();
   });
 
+  for (const [label, policyName] of [
+    ['a saved policy', 'Disabled dev validation'],
+    ['a long policy name', 'Nightly security maintenance for production application servers in the primary datacenter'],
+  ]) {
+    test(`admin maintenance calendar fits mobile widths with ${label}`, async ({ page }) => {
+      const state = {
+        policies: [{
+          id: 12, name: policyName, enabled: false, target_tag: 'prod',
+          execution_mode: 'scan_only', package_scope: 'full',
+          cadence_kind: 'daily', time_local: '02:00', weekdays: [], matched_servers: [],
+        }],
+      };
+      await ensureAuthenticatedSession(page);
+      await stubAdminApi(page, state);
+      const calendarRequests = [];
+      page.on('request', request => {
+        const url = new URL(request.url());
+        if (url.pathname === '/api/update-policies/calendar') calendarRequests.push(url);
+      });
+      await page.goto('/admin#admin-section-scheduled-policies');
+      const filter = page.getByRole('combobox', { name: 'Calendar policy filter' });
+      const refresh = page.locator('#maintenance-calendar-refresh');
+      await expect(filter.locator('option[value="12"]')).toHaveText(policyName);
+
+      for (const width of [390, 360, 430, 1280]) {
+        await page.setViewportSize({ width, height: 844 });
+        await filter.scrollIntoViewIfNeeded();
+        const layout = await filter.evaluate(async element => {
+          await document.fonts.ready;
+          const head = element.closest('.table-shell-head');
+          const controls = [element, head.querySelector('button')];
+          return {
+            viewport: document.documentElement.clientWidth,
+            documentWidth: document.documentElement.scrollWidth,
+            bodyWidth: document.body.scrollWidth,
+            head: { left: head.getBoundingClientRect().left, right: head.getBoundingClientRect().right },
+            controls: controls.map(control => ({ left: control.getBoundingClientRect().left, right: control.getBoundingClientRect().right })),
+          };
+        });
+        expect(layout.documentWidth, `document at ${width}px`).toBeLessThanOrEqual(layout.viewport);
+        expect(layout.bodyWidth, `body at ${width}px`).toBeLessThanOrEqual(layout.viewport);
+        for (const control of layout.controls) {
+          expect(control.left).toBeGreaterThanOrEqual(layout.head.left - 1);
+          expect(control.right).toBeLessThanOrEqual(layout.head.right + 1);
+        }
+        await expect(filter).toBeInViewport({ ratio: 1 });
+        await Promise.all([
+          page.waitForResponse(response => {
+            const url = new URL(response.url());
+            return url.pathname === '/api/update-policies/calendar' && url.searchParams.get('policy_id') === '12';
+          }),
+          filter.selectOption('12'),
+        ]);
+        await expect(filter).toHaveValue('12');
+        const requestCount = calendarRequests.length;
+        await refresh.click();
+        await expect.poll(() => calendarRequests.length).toBeGreaterThan(requestCount);
+        expect(calendarRequests.at(-1).searchParams.get('policy_id')).toBe('12');
+      }
+    });
+  }
+
   test('admin workspace navigation restores disclosure and focuses deep links', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

@@ -169,7 +169,22 @@
             blocked: Boolean(data.blocked),
             reason: String(data.reason || data.maintenance_reason || "").trim(),
             status: clone(data),
+            automation: normalizeBackupAutomation(data.automation),
             recoveryHealth: normalizeRecoveryHealth(data.recovery_health)
+        };
+    }
+
+    function normalizeBackupAutomation(data = {}) {
+        const config = data.config || {};
+        return {
+            state: String(data.state || "unavailable"),
+            message: String(data.message || "Automated backup status is unavailable."),
+            configured: Boolean(data.configured),
+            nextAt: String(data.next_at || ""),
+            retryAt: String(data.retry_at || ""),
+            lastAttemptAt: String(data.last_attempt_at || ""),
+            lastSuccessAt: String(data.last_success_at || ""),
+            config: { enabled: Boolean(config.enabled), cadence: config.cadence || "daily", time: config.time || "02:00", weekday: Number(config.weekday) || 0, retain: Number(config.retain) || 7, include_known_hosts: config.include_known_hosts !== false }
         };
     }
 
@@ -298,6 +313,7 @@
             reason: "",
             status: null,
             recoveryHealth: null,
+            automation: normalizeBackupAutomation(),
             selectedFile: null,
             credentialValid: false,
             credentialRevision: 0,
@@ -671,6 +687,15 @@
                 }
                 case "rotateMetricsToken": case "disableMetricsToken": return { enabled: true, command, key, payload: {} };
                 case "copyMetricsToken": return metrics.revealedToken ? { enabled: true, command, key, payload: { token: metrics.revealedToken } } : { enabled: false, command, key, reason: "No revealed metrics token is available." };
+                case "saveBackupSchedule": {
+                    const config = payload.config || {};
+                    if (!["daily", "weekly"].includes(config.cadence) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(config.time || "") || !Number.isInteger(config.retain) || config.retain < 1 || config.retain > 100 || !Number.isInteger(config.weekday) || config.weekday < 0 || config.weekday > 6) return { enabled: false, command, key, reason: "Choose a valid cadence, time, weekday and retention between 1 and 100." };
+                    return { enabled: true, command, key, payload: { config: clone(config) } };
+                }
+                case "runBackupSchedule":
+                    return backup.automation?.configured && !backup.blocked
+                        ? { enabled: true, command, key, payload: {} }
+                        : { enabled: false, command, key, reason: "Save and validate the local backup destination and secret first." };
                 case "exportBackup":
                     if (backup.blocked) return { enabled: false, command, key, reason: backup.reason || "Backup is unavailable." };
                     if (!payload.passphraseValid || !payload.passwordsMatch) return { enabled: false, command, key, reason: "A valid matching backup passphrase is required." };
@@ -707,6 +732,7 @@
             if (plan.command === "clearSessions" && !failed) applyAccount(data || {});
             if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {}, true);
             if (plan.command === "disableMetricsToken" && !failed) metrics = normalizeMetrics(data || {});
+            if (["saveBackupSchedule", "runBackupSchedule"].includes(plan.command) && !failed) backup.automation = normalizeBackupAutomation(data || {});
             if (plan.command === "verifyBackup") {
                 if (!failed && backupBindingMatches(plan.binding)) {
                     backup.review = normalizeBackupReview(data || {});

@@ -410,6 +410,7 @@ func sameOriginWriteMiddleware() gin.HandlerFunc {
 }
 
 const maintenanceExclusiveLeaseContextKey = "maintenance_exclusive_lease"
+const maintenanceSharedLeaseContextKey = "maintenance_shared_lease"
 
 func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator, applicationTimes ...*apptimepkg.Module) gin.HandlerFunc {
 	var applicationTime *apptimepkg.Module
@@ -443,6 +444,7 @@ func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator, 
 			return
 		}
 		defer lease.Close()
+		c.Set(maintenanceSharedLeaseContextKey, lease)
 		c.Next()
 	}
 }

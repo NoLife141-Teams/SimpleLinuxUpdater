@@ -840,3 +840,30 @@ test("Admin adapter does not own accepted interaction state globals", () => {
     assert.doesNotMatch(source, /let\s+adminMetricsToken\s*=/);
     assert.doesNotMatch(source, /let\s+adminBackupState\s*=/);
 });
+
+test("automated backups project configured, suspended, deferred and failed states and guard control runs", () => {
+    const store = createStore();
+    assert.equal(store.planCommand("runBackupSchedule").enabled, false);
+    for (const state of ["configured", "suspended", "deferred", "failed"]) {
+        store.dispatch({ type: "backupSnapshotReceived", data: { automation: {
+            state, configured: state !== "suspended", message: `Backup ${state}`,
+            next_at: "2026-10-26T02:00:00Z", last_attempt_at: "2026-10-25T02:00:00Z", last_success_at: "2026-10-24T02:00:00Z",
+            config: { enabled: true, cadence: "weekly", time: "02:00", weekday: 1, retain: 3, include_known_hosts: true }
+        } } });
+        const view = store.getView().backup.automation;
+        assert.equal(view.state, state);
+        assert.equal(view.message, `Backup ${state}`);
+        assert.equal(view.nextAt, "2026-10-26T02:00:00Z");
+        assert.equal(view.lastSuccessAt, "2026-10-24T02:00:00Z");
+        assert.equal(store.planCommand("runBackupSchedule").enabled, state !== "suspended");
+    }
+    const invalid = store.planCommand("saveBackupSchedule", { config: { cadence: "daily", time: "25:00", retain: 0 } });
+    assert.equal(invalid.enabled, false);
+    const config = { enabled: false, cadence: "daily", time: "03:15", weekday: 0, retain: 1, include_known_hosts: false };
+    const first = effect(store.dispatch({ type: "commandRequested", command: "saveBackupSchedule", payload: { config } }), "executeCommand");
+    assert.deepEqual(first.plan.payload.config, config);
+    assert.equal(store.dispatch({ type: "commandRequested", command: "saveBackupSchedule", payload: { config } })[0].type, "commandRejected");
+    store.dispatch({ type: "commandCompleted", plan: first.plan, data: { config, configured: true, state: "disabled" } });
+    assert.equal(store.getView().backup.automation.config.enabled, false);
+    assert.equal(store.planCommand("runBackupSchedule").enabled, true);
+});

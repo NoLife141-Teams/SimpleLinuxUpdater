@@ -10,6 +10,7 @@
 - [Metrics API token](#metrics-api-token)
 - [Notification destinations](#notification-destinations)
 - [Backup and restore](#backup-and-restore)
+  - [Automated backups](#automated-backups)
 - [Storage paths](#storage-paths)
 - [Job log storage and retention](#job-log-storage-and-retention)
 - [Retry policy](#retry-policy)
@@ -123,13 +124,36 @@ Behavior:
 - Verify checks the archive manifest and decryptability without replacing the database or other application state.
 - Restore replaces `servers.db` and optional `known_hosts`; backup `config.json` is validated, but the local `config.json` remains in place and restored secrets are re-encrypted to its key.
 - Recovery health treats successful export and verification evidence as stale after 7 days (168 hours).
-- Recovery evidence comes from audit history and is retained for up to 90 days. Exported archives are downloaded to operator-managed storage; the app does not retain, schedule, rotate, or automatically delete them.
+- Recovery evidence comes from audit history and is retained for up to 90 days. Manual exports are downloaded to operator-managed storage. Optional automated backups use a separately configured destination and retention, described below.
 
 What backup does not include:
 
 - Reverse-proxy certificates/keys and external proxy config
 - Container runtime settings outside the app data paths
 - Any external secret manager state
+
+### Automated backups
+
+Automated backups extend Backup Operation Lifecycle with a daily or weekly schedule. They are disabled by default and use the same encrypted `.slubkp` format, verification pipeline and restore workflow as manual exports.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `DEBIAN_UPDATER_BACKUP_DIR` | unset | Absolute path to an existing dedicated archive directory; an external filesystem mount is supported. |
+| `DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE` | unset | Absolute path to an existing private regular file containing the archive passphrase (12–4096 bytes, surrounding whitespace ignored). |
+
+Set both variables together. The directory must be separate from the directories containing the active DB, config and writable known_hosts, and must not be writable by group or others (`0700` recommended). The secret must be outside the archive directory, use owner-only permissions (`0600`), and must not be an active data file. Neither path may contain a symlink. Local filesystem semantics must support hard links and directory fsync for atomic, no-overwrite publication. The app does not create or change permissions on deployment-provided directories or secret files.
+
+Mount the secret separately from the archives and back it up in a separate secret store. Losing it makes those encrypted archives unrecoverable. The passphrase is never returned over HTTP, stored in SQLite, written to audit, or included in the archive. Rotation affects future archives; retain previous passphrases for older archives. The application creates a private `<database path>.backup-instance` identity file next to its DB; this file is also excluded from archives. Preserve it with the installation if retaining ownership of existing automated archives is desired. Losing or replacing it suspends automation and prevents the new identity from deleting the old instance's archives.
+
+In **Admin → Backup & Restore → Automated encrypted backups**, choose daily/weekly cadence, application-local time, weekday (Sunday=0), inclusion of known_hosts and retention count (1–100). **Save and Validate** checks the local secret and destination and enables the chosen schedule. It also supports validation while scheduling is disabled, allowing **Run Control Backup** before enabling automatic runs. Disabling remains possible when local deployment validation fails.
+
+**Timing and active work:** the worker checks once per minute and uses Application Time Interpretation. A nonexistent DST time is skipped; an ambiguous time runs at its first occurrence only. A timezone change rebases the next future occurrence. Active server work or a shared maintenance lease causes a visible five-minute deferral, bounded to one hour. A deferred control run is retried even with recurring scheduling disabled. An exclusive backup/restore blocks admission without accessing persistence being replaced. Occurrences older than one hour expire instead of producing an unbounded catchup queue. A claimed occurrence is persisted before export; restart reports an interrupted attempt and never replays the same claimed occurrence. The next future attempt remains scheduled.
+
+**Publication and retention:** the existing Backup Operation Lifecycle retains exclusive Maintenance Coordination through export, destination copy, restore-readiness verification, publication and retention. Destination temporary and final files are private. Publication uses an atomic same-filesystem hard link that refuses to overwrite any existing filename, followed by temporary-link removal and directory fsync. Only registered temporary files owned by this installation are cleaned after failure or restart. A crash after publication may leave a safe extra archive; an unregistered file is never adopted or deleted. Retention runs only after new verified publication, matches the installation identity and recorded content digest, and preserves at least one verified archive. Changed files, symlinks, unrecognized archives and manual exports are not removed. Retention failure is visible and can leave more archives than configured.
+
+The UI reports configuration/suspension, next attempt, last attempt, last verified success, deferral and failure. Audit actions `backup.automatic.succeeded`, `backup.automatic.failed`, and `backup.automatic.deferred` carry occurrence metadata for later notification consumers; this feature does not add notification delivery subscriptions. Published verification also updates existing recovery-health evidence.
+
+Restoration preserves historical configuration and results but clears local approval, even when restoring into the same installation. Revalidate destination and secret in Admin before resuming. Existing manual exports and archives remain compatible. No S3/SFTP backend or remote-server filesystem snapshot is provided.
 
 ## Storage paths
 

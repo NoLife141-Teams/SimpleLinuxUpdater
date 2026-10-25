@@ -77,6 +77,11 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if db == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
 	}
+	if deps.BackupAutomation != nil {
+		if err := deps.BackupAutomation.SuspendAfterRestore(ctx); err != nil {
+			return fmt.Errorf("suspend restored backup automation: %w", err)
+		}
+	}
 	if deps.ApplicationTime != nil {
 		if err := deps.ApplicationTime.Initialize(ctx); err != nil {
 			return fmt.Errorf("reload restored Application Time Interpretation: %w", err)
@@ -473,6 +478,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			GlobalSSHCredential: deps.GlobalSSHCredential,
 			RestoredRuntime:     c,
 		})
+	}
+	if deps.BackupAutomation == nil {
+		deps.BackupAutomation = newBackupAutomation(deps)
 	}
 	c.deps = deps
 	return deps

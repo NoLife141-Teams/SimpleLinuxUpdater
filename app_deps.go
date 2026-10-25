@@ -18,6 +18,7 @@ import (
 )
 
 type AppDeps struct {
+	BackupAutomation   *backupAutomation
 	VulnerabilityScans *vulnerabilityScanLifecycle
 	DB                 func() *sql.DB
 	DBPath             func() string

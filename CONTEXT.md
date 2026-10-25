@@ -85,7 +85,7 @@ The read-only discovery of pending Debian/Ubuntu package updates after package m
 _Avoid_: Apt helper parsing, upgradable list helper
 
 **Backup Operation Lifecycle**:
-The lifecycle of an operator-initiated backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, audit recording, restored-runtime handoff, session invalidation, and final operation outcome.
+The lifecycle of an operator-initiated or scheduled backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, verified automated publication and retention, audit recording, restored-runtime handoff, session invalidation, and final operation outcome. Scheduled occurrences are durable, use Application Time Interpretation, and remain suspended after restoration until local destination and secret revalidation.
 _Avoid_: Backup route flow, restore handler logic
 
 **Maintenance Coordination**:

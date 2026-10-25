@@ -430,6 +430,42 @@ func TestBackupAutomationHTTPValidationAndRunAdmission(t *testing.T) {
 	}
 }
 
+func TestBackupAutomationDisabledConfigurationReportsValidationFailure(t *testing.T) {
+	app, a, _ := newBackupAutomationTest(t)
+	cookie := app.authenticate(t)
+	if err := os.Remove(a.deployment.SecretFile); err != nil {
+		t.Fatal(err)
+	}
+	config := defaultBackupSchedule()
+	config.Enabled = false
+	body, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := performContractRequest(app.Handler, http.MethodPut, "/api/backup/automation", bytes.NewBuffer(body), cookie, true)
+	if result.Code != http.StatusOK {
+		t.Fatalf("disabling invalid deployment: %d %s", result.Code, result.Body.String())
+	}
+	for _, response := range []*httptest.ResponseRecorder{result, performContractRequest(app.Handler, http.MethodGet, "/api/backup/automation", nil, cookie, false)} {
+		var status backupAutomationStatus
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		if status.Config.Enabled || status.Configured || status.State != "disabled" || !strings.Contains(status.Message, "Backup secret is unavailable") {
+			t.Fatalf("disabled validation failure was hidden: %+v", status)
+		}
+	}
+	// Repairing the local secret and validating again must clear the diagnostic
+	// and permit a control backup while recurring scheduling remains disabled.
+	if err := os.WriteFile(a.deployment.SecretFile, []byte("a repaired automated backup secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Configure(context.Background(), config)
+	if err != nil || status.Config.Enabled || !status.Configured || strings.Contains(status.Message, "failed") {
+		t.Fatalf("revalidation did not clear the failure: %+v %v", status, err)
+	}
+}
+
 func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 	// The source and destination use the normal global DB reopening adapter so the
 	// real restore handoff exercises persistence replacement and runtime reload.

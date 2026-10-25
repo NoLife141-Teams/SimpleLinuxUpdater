@@ -362,7 +362,7 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	if !s.Config.Enabled {
 		if s.PendingAt != "" {
 			status.NextAt = s.RetryAt
-		} else if s.Outcome == "configured" || s.Outcome == "disabled" {
+		} else if s.Outcome == "configured" {
 			status.State = "disabled"
 			status.Message = "Automated backups are disabled."
 		}
@@ -418,6 +418,10 @@ func (a *backupAutomation) Configure(ctx context.Context, c backupScheduleConfig
 	s.RetryAt = ""
 	s.Outcome = "configured"
 	s.Message = "Local backup destination and secret validated."
+	if validationErr != nil {
+		s.Outcome = "disabled"
+		s.Message = "Automated backups are disabled. Local validation failed: " + validationErr.Error()
+	}
 	if err = a.save(ctx, s); err != nil {
 		return backupAutomationStatus{}, err
 	}

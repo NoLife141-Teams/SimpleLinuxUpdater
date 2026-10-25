@@ -1778,6 +1778,57 @@ function renderBackupRestoreReview() {
     renderAdminDestructiveControls();
 }
 
+function renderBackupAutomation(updateForm = false) {
+    const view = adminPageView().backup.automation;
+    const status = document.getElementById("backup-automation-status");
+    if (!status || !view) return;
+    status.textContent = `${view.state}: ${view.message}`;
+    document.getElementById("backup-automation-next").textContent = view.nextAt ? formatSessionTime(view.nextAt) : "Not scheduled";
+    document.getElementById("backup-automation-attempt").textContent = view.lastAttemptAt ? formatSessionTime(view.lastAttemptAt) : "Never";
+    document.getElementById("backup-automation-success").textContent = view.lastSuccessAt ? formatSessionTime(view.lastSuccessAt) : "Never";
+    document.getElementById("backup-automation-run").disabled = !adminPageInteraction.planCommand("runBackupSchedule").enabled;
+    if (updateForm) {
+        const config = view.config;
+        for (const name of ["cadence", "time", "weekday", "retain"]) document.getElementById(`backup-automation-${name}`).value = config[name];
+        document.getElementById("backup-automation-enabled").checked = config.enabled;
+        document.getElementById("backup-automation-known-hosts").checked = config.include_known_hosts;
+    }
+}
+
+async function submitBackupAutomation(runNow = false) {
+    const config = {
+        enabled: document.getElementById("backup-automation-enabled").checked,
+        cadence: document.getElementById("backup-automation-cadence").value,
+        time: document.getElementById("backup-automation-time").value,
+        weekday: Number(document.getElementById("backup-automation-weekday").value),
+        retain: Number(document.getElementById("backup-automation-retain").value),
+        include_known_hosts: document.getElementById("backup-automation-known-hosts").checked
+    };
+    const command = runNow ? "runBackupSchedule" : "saveBackupSchedule";
+    const plan = beginAdminCommand(command, { config });
+    if (!plan) { window.notifyApp(adminPageInteraction.planCommand(command, { config }).reason); return; }
+    const save = document.getElementById("backup-automation-save");
+    const run = document.getElementById("backup-automation-run");
+    save.disabled = true; run.disabled = true;
+    try {
+        const res = await fetch(runNow ? "/api/backup/automation/run" : "/api/backup/automation", {
+            method: runNow ? "POST" : "PUT",
+            headers: { "Content-Type": "application/json" },
+            ...(runNow ? {} : { body: JSON.stringify(plan.payload.config) })
+        });
+        if (!res.ok) throw new Error(await parseErrorResponse(res, "Automated backup request failed."));
+        const data = await res.json();
+        finishAdminCommand(plan, data, data.message);
+        window.notifyApp(data.message);
+    } catch (err) {
+        finishAdminCommand(plan, null, err.message, true);
+        window.notifyApp(err.message);
+    } finally {
+        save.disabled = false;
+        await fetchBackupStatus();
+    }
+}
+
 async function fetchBackupStatus() {
     const status = document.getElementById("backup-status");
     if (!status) return;
@@ -1793,6 +1844,7 @@ async function fetchBackupStatus() {
         const data = await res.json().catch(() => ({}));
         adminPageInteraction.dispatch({ type: "backupSnapshotReceived", requestID, receivedAt: new Date().toISOString(), data });
         renderBackupRecoveryHealth();
+        renderBackupAutomation(true);
         const knownHostsState = data.known_hosts_exists ? "present" : "missing";
         status.textContent = `Backup paths: DB=${data.db_path || "-"}, config=${data.config_path || "-"}, known_hosts=${data.known_hosts_path || "-"} (${knownHostsState})`;
         renderAdminWorkspace();
@@ -3519,6 +3571,8 @@ document.getElementById("metrics-token-generate").addEventListener("click", () =
 document.getElementById("metrics-token-rotate").addEventListener("click", () => rotateMetricsToken(true));
 document.getElementById("metrics-token-disable").addEventListener("click", disableMetricsToken);
 document.getElementById("metrics-token-copy").addEventListener("click", copyMetricsToken);
+document.getElementById("backup-automation-form").addEventListener("submit", event => { event.preventDefault(); submitBackupAutomation(false); });
+document.getElementById("backup-automation-run").addEventListener("click", () => submitBackupAutomation(true));
 document.getElementById("backup-export-btn").addEventListener("click", exportBackup);
 document.getElementById("backup-verify-btn").addEventListener("click", verifyBackup);
 document.getElementById("backup-restore-btn").addEventListener("click", restoreBackup);

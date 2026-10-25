@@ -3189,6 +3189,48 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#notification-diagnostics-error-row')).toBeHidden();
   });
 
+  test('automated backups validate configuration and display suspended, deferred and failed results', async ({ page }) => {
+    const config = { enabled: true, cadence: 'weekly', time: '03:15', weekday: 1, retain: 3, include_known_hosts: true };
+    const state = { backupStatusResponse: {
+      db_path: '/tmp/test.db', recovery_health: backupRecoveryHealthFixture('healthy'),
+      automation: { config, configured: true, state: 'configured', message: 'Local destination validated.', next_at: '2026-10-26T03:15:00Z', last_attempt_at: '2026-10-25T03:15:00Z', last_success_at: '2026-10-25T03:15:00Z' }
+    } };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    let saved = null;
+    await page.route('**/api/backup/automation', async route => {
+      saved = route.request().postDataJSON();
+      state.backupStatusResponse.automation = { ...state.backupStatusResponse.automation, config: saved, state: 'configured', message: 'Local destination validated.' };
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(state.backupStatusResponse.automation) });
+    });
+    await page.route('**/api/backup/automation/run', route => {
+      state.backupStatusResponse.automation = { ...state.backupStatusResponse.automation, state: 'deferred', message: 'Backup deferred for active work.', next_at: '2026-10-25T03:20:00Z', retry_at: '2026-10-25T03:20:00Z' };
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(state.backupStatusResponse.automation) });
+    });
+    await page.goto('/admin#admin-section-backup');
+    await expect(page.locator('#backup-automation-status')).toContainText('configured: Local destination validated.');
+    await expect(page.locator('#backup-automation-cadence')).toHaveValue('weekly');
+    await expect(page.locator('#backup-automation-time')).toHaveValue('03:15');
+    await expect(page.locator('#backup-automation-success')).not.toHaveText('Never');
+    await page.locator('#backup-automation-retain').fill('2');
+    await page.locator('#backup-automation-save').click();
+    await expect.poll(() => saved?.retain).toBe(2);
+    expect(saved).not.toHaveProperty('passphrase');
+    expect(saved).not.toHaveProperty('directory');
+    await expect(page.locator('#backup-automation-run')).toBeEnabled();
+    await page.locator('#backup-automation-run').click();
+    await expect(page.locator('#backup-automation-status')).toContainText('deferred: Backup deferred for active work.');
+    for (const result of ['suspended', 'failed']) {
+      state.backupStatusResponse.automation = { ...state.backupStatusResponse.automation, state: result, configured: result !== 'suspended', message: `Backup ${result}.` };
+      await page.reload();
+      await expect(page.locator('#backup-automation-status')).toContainText(`${result}: Backup ${result}.`);
+      if (result === 'suspended') await expect(page.locator('#backup-automation-run')).toBeDisabled();
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('#backup-automation-save')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test('backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

@@ -69,10 +69,13 @@ type backupOperationLifecycle struct {
 }
 
 type backupExportCommand struct {
-	Actor    string
-	ClientIP string
-	Request  backupExportRequest
-	Lease    *maintenancepkg.ExclusiveLease
+	// Automated publication must finish under the same exclusive lease as export.
+	Finalize  func(context.Context, internalbackup.TemporaryFile) error
+	HoldLease bool
+	Actor     string
+	ClientIP  string
+	Request   backupExportRequest
+	Lease     *maintenancepkg.ExclusiveLease
 }
 
 type backupRestoreCommand struct {
@@ -252,9 +255,9 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	var completion *JobTransitionIntent
 	defer func() {
 		var err error
-		if cmd.Lease != nil {
+		if cmd.Lease != nil && !cmd.HoldLease {
 			err = cmd.Lease.Close()
-		} else {
+		} else if cmd.Lease == nil {
 			err = deps.DeactivateMaintenance()
 		}
 		if err != nil {
@@ -282,6 +285,17 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	if err != nil {
 		return l.failExportArchive(jm, job.ID, cmd, err)
 	}
+	if cmd.Finalize != nil {
+		if err := cmd.Finalize(ctx, fileResult.File); err != nil {
+			_ = fileResult.File.Remove()
+			failure := l.failExportArchive(jm, job.ID, cmd, err)
+			failure.PublicError = err.Error()
+			summary := "Automated backup verification or publication failed"
+			_ = jm.Transition(job.ID, JobTransitionIntent{Summary: &summary})
+			return failure
+		}
+	}
+
 	exportBytes := int64(len(result.Bytes))
 	knownHostsIncluded := result.KnownHostsIncluded
 	if fileBacked {

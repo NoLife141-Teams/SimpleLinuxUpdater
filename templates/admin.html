@@ -840,7 +840,7 @@
                     <div>
                         <dt>Next backup</dt>
                         <dd id="backup-recovery-next">No backup is scheduled.</dd>
-                        <small>The app does not provide a backup scheduler.</small>
+                        <small>Scheduled times use the application timezone.</small>
                     </div>
                     <div>
                         <dt>Recency threshold</dt>
@@ -853,6 +853,29 @@
                     <span id="backup-recovery-retention-evidence">Recovery evidence is unavailable.</span>
                     <span id="backup-recovery-retention-archive">Exported archives are operator-managed.</span>
                 </div>
+            </section>
+            <section class="backup-block" aria-labelledby="backup-automation-title">
+                <h3 id="backup-automation-title">Automated encrypted backups</h3>
+                <p class="muted">The deployment supplies a dedicated archive directory and a separate private passphrase file. Save to validate them locally. Restored settings remain suspended until validated.</p>
+                <p id="backup-automation-status" role="status">Loading automated backup status.</p>
+                <dl class="backup-recovery-health-facts">
+                    <div><dt>Next attempt</dt><dd id="backup-automation-next">—</dd></div>
+                    <div><dt>Last attempt</dt><dd id="backup-automation-attempt">—</dd></div>
+                    <div><dt>Last verified success</dt><dd id="backup-automation-success">—</dd></div>
+                </dl>
+                <form id="backup-automation-form">
+                    <label class="checkbox-inline"><input type="checkbox" id="backup-automation-enabled"> Enable scheduled backups</label>
+                    <div class="backup-grid">
+                        <div><label for="backup-automation-cadence">Cadence</label><select id="backup-automation-cadence"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                        <div><label for="backup-automation-time">Time (application timezone)</label><input type="time" id="backup-automation-time" value="02:00" required></div>
+                        <div><label for="backup-automation-weekday">Weekday (weekly only)</label><select id="backup-automation-weekday"><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
+                        <div><label for="backup-automation-retain">Archives to retain</label><input type="number" id="backup-automation-retain" min="1" max="100" value="7" required></div>
+                    </div>
+                    <label class="checkbox-inline"><input type="checkbox" id="backup-automation-known-hosts" checked> Include known_hosts</label>
+                    <button type="submit" class="primary-action" id="backup-automation-save">Save and Validate</button>
+                    <button type="button" class="btn-ghost" id="backup-automation-run" disabled>Run Control Backup</button>
+                </form>
+                <p class="muted">Active work defers a backup by five minutes, for at most one hour. Missing DST times are skipped; repeated times run once. Retention runs only after a new verified archive is published.</p>
             </section>
             <div class="backup-grid">
                 <div class="backup-block">

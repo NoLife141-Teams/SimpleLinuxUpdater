@@ -98,7 +98,7 @@ func backupTransferDeadlineHandler(next http.Handler) http.Handler {
 				return
 			}
 			fallthrough
-		case "/api/backup/export":
+		case "/api/backup/export", "/api/backup/automation/run":
 			if err := controller.SetWriteDeadline(time.Time{}); err != nil {
 				log.Printf("Failed to relax backup response deadline: %v", err)
 				http.Error(w, "backup transfer unavailable", http.StatusInternalServerError)
@@ -148,6 +148,9 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMai
 }
 
 func main() {
+	if _, err := loadBackupAutomationDeployment(); err != nil {
+		log.Fatalf("Invalid automated backup configuration: %v", err)
+	}
 	if _, err := loadVulnerabilityScanConfig(); err != nil {
 		log.Fatalf("Invalid vulnerability scan configuration: %v", err)
 	}
@@ -181,6 +184,9 @@ func main() {
 	if deps.VulnerabilityScans != nil {
 		deps.VulnerabilityScans.Start(shutdownCtx)
 	}
+	if deps.BackupAutomation != nil {
+		deps.BackupAutomation.Start(shutdownCtx)
+	}
 	defer StopAuthRateLimiters()
 	server := newApplicationHTTPServer(listenAddr, sessionHandler(r))
 	shutdownDone := make(chan struct{})
@@ -188,6 +194,9 @@ func main() {
 		<-shutdownCtx.Done()
 		shutdownApplication(server, func() {
 			deps.PolicyService.WaitScheduler()
+			if deps.BackupAutomation != nil {
+				deps.BackupAutomation.Wait()
+			}
 			if deps.VulnerabilityScans != nil {
 				deps.VulnerabilityScans.Wait()
 			}

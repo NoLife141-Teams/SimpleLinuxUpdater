@@ -207,13 +207,25 @@ func applyBackupFiles(ctx context.Context, files map[string][]byte) error {
 	return defaultBackupService().ApplyFiles(ctx, files)
 }
 
-func handleBackupStatusWithService(c *gin.Context, service *BackupService) {
+func handleBackupStatusWithService(c *gin.Context, service *BackupService, automation ...*backupAutomation) {
 	if service == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "backup service unavailable"})
 		return
 	}
 	status := service.Status()
+	var automationStatus *backupAutomationStatus
 	recoveryHealth, err := service.RecoveryHealth(c.Request.Context())
+	if len(automation) > 0 && automation[0] != nil {
+		if scheduled, scheduleErr := automation[0].Status(c.Request.Context()); scheduleErr == nil {
+			automationStatus = &scheduled
+			recoveryHealth.Schedule.Scheduled = scheduled.Config.Enabled && scheduled.Configured
+			recoveryHealth.Schedule.NextBackupAt = scheduled.NextAt
+			recoveryHealth.Schedule.Message = scheduled.Message
+			recoveryHealth.Retention.ArchiveRetained = scheduled.LocalArchiveCount > 0
+			recoveryHealth.Retention.AutomaticDeletion = scheduled.Config.Enabled && scheduled.Configured
+			recoveryHealth.Retention.ArchiveDescription = fmt.Sprintf("Automated backups retain up to %d verified archives owned by this instance, after a new verified success. Manual downloads remain operator-managed.", scheduled.Config.Retain)
+		}
+	}
 	status.RecoveryHealth = recoveryHealth
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
@@ -222,7 +234,10 @@ func handleBackupStatusWithService(c *gin.Context, service *BackupService) {
 		})
 		return
 	}
-	c.JSON(http.StatusOK, status)
+	c.JSON(http.StatusOK, struct {
+		internalbackup.StatusResponse
+		Automation *backupAutomationStatus `json:"automation,omitempty"`
+	}{status, automationStatus})
 }
 
 func handleBackupExportWithDeps(c *gin.Context, deps AppDeps) {

@@ -467,7 +467,7 @@ func maintenanceExclusiveLeaseFromContext(c *gin.Context) *maintenancepkg.Exclus
 }
 
 func maintenanceAdmissionBypassPath(path string) bool {
-	return path == "/api/dashboard/events"
+	return path == "/api/dashboard/events" || path == "/api/backup/automation/run"
 }
 
 func rateLimitClientIP(c *gin.Context) string {

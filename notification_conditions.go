@@ -93,20 +93,22 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT name,lower(hex(randomblob(16))) FROM servers WHERE name NOT IN (SELECT server_name FROM notification_server_identities)`); err != nil {
 			return batch, err
 		}
-		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity FROM notification_server_identities n JOIN servers s ON s.name=n.server_name`)
+		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity,COALESCE(e.changed_at,'') FROM notification_server_identities n JOIN servers s ON s.name=n.server_name LEFT JOIN server_health_endpoints e ON e.server_name=n.server_name`)
 		if err != nil {
 			return batch, err
 		}
 		rebootIDs := map[string]string{}
 		names := map[string]string{}
+		endpointChanges := map[string]string{}
 		for identities.Next() {
-			var name, id string
-			if err := identities.Scan(&name, &id); err != nil {
+			var name, id, changedAt string
+			if err := identities.Scan(&name, &id, &changedAt); err != nil {
 				_ = identities.Close()
 				return batch, err
 			}
 			rebootIDs[name] = "reboot/" + id
 			names["reboot/"+id] = name
+			endpointChanges[name] = changedAt
 		}
 		if err := identities.Err(); err != nil {
 			_ = identities.Close()
@@ -123,6 +125,14 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 				fact.Active = false
 			} else {
 				fact.TargetName = name
+				observed, observedErr := time.Parse(time.RFC3339Nano, fact.CreatedAt)
+				changed, changedErr := time.Parse(time.RFC3339Nano, endpointChanges[name])
+				if observedErr == nil && changedErr == nil && observed.Before(changed) {
+					// An inventory endpoint replacement explicitly invalidates the
+					// old host's evidence; this is not a failed or missing observation.
+					fact.Active = false
+					fact.CreatedAt = endpointChanges[name]
+				}
 			}
 			batch.Facts = append(batch.Facts, fact)
 		}
@@ -277,9 +287,14 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 }
 
 func notificationHealthFacts(ctx context.Context, db notificationFactQuerier, after int64, identities map[string]string, restored bool) ([]notificationpkg.ConditionFact, int64, error) {
-	query := `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM server_health_snapshots h JOIN servers s ON s.name=h.server_name WHERE h.id>? AND h.reboot_required IS NOT NULL ORDER BY h.id`
+	// Keep historical snapshots for reports, but only current endpoint evidence
+	// may establish or resolve a notification condition, including after restore.
+	currentHealth := `WITH current_health AS (SELECT h.* FROM server_health_snapshots h WHERE NOT EXISTS (
+		SELECT 1 FROM server_health_endpoints e WHERE e.server_name=h.server_name AND
+		(h.endpoint<>e.endpoint OR julianday(h.captured_at)<julianday(e.changed_at)))) `
+	query := currentHealth + `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM current_health h JOIN servers s ON s.name=h.server_name WHERE h.id>? AND h.reboot_required IS NOT NULL ORDER BY h.id`
 	if restored {
-		query = `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM server_health_snapshots h JOIN servers s ON s.name=h.server_name WHERE h.reboot_required IS NOT NULL AND h.id=(SELECT h2.id FROM server_health_snapshots h2 WHERE h2.server_name=h.server_name AND h2.reboot_required IS NOT NULL ORDER BY h2.captured_at DESC,h2.id DESC LIMIT 1) AND h.id>? ORDER BY h.id`
+		query = currentHealth + `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM current_health h JOIN servers s ON s.name=h.server_name WHERE h.reboot_required IS NOT NULL AND h.id=(SELECT h2.id FROM current_health h2 WHERE h2.server_name=h.server_name AND h2.reboot_required IS NOT NULL ORDER BY h2.captured_at DESC,h2.id DESC LIMIT 1) AND h.id>? ORDER BY h.id`
 	}
 	rows, err := db.QueryContext(ctx, query, after)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
 	notificationpkg "debian-updater/internal/notifications"
 
 	"modernc.org/sqlite"
@@ -408,5 +409,83 @@ func TestNotificationRestoreReconcilesBackupFailuresWithoutHistoricalExpiry(t *t
 		if fact.EventType == notificationpkg.EventApprovalExpired {
 			t.Fatal("restore replayed historical expiration")
 		}
+	}
+}
+
+func TestNotificationRebootRetiresEvidenceFromPreviousEndpoint(t *testing.T) {
+	for _, mode := range []string{"observed", "unobserved", "restore"} {
+		t.Run(mode, func(t *testing.T) {
+			db := conditionSourceDB(t)
+			now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+			if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('host','192.0.2.1','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('host','2026-10-25T12:00:00Z',1)`); err != nil {
+				t.Fatal(err)
+			}
+			source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+			cursor := ""
+			var previous []notificationpkg.Condition
+			if mode != "unobserved" {
+				batch, err := source(context.Background(), cursor, previous)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cursor, previous = batch.Cursor, conditionPrevious(batch.Facts)
+			}
+			now = now.Add(time.Hour)
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			observation := healthpkg.SQLiteObservation{Now: func() time.Time { return now }}
+			if err := observation.InvalidateEndpointTx(tx, "host", "192.0.2.1:22", "192.0.2.2:22"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(`UPDATE servers SET host='192.0.2.2' WHERE name='host'`); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "restore" {
+				cursor = "restore"
+			}
+			batch, err := source(context.Background(), cursor, previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, fact := range batch.Facts {
+				if fact.EventType == notificationpkg.EventRebootRequired && fact.Active {
+					t.Fatalf("replacement endpoint inherited old reboot evidence: %+v", fact)
+				}
+			}
+			if _, err := db.Exec(`INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required,endpoint) VALUES('host','2026-10-25T13:01:00Z',1,'192.0.2.2:22')`); err != nil {
+				t.Fatal(err)
+			}
+			next, err := source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := false
+			for _, fact := range next.Facts {
+				active = active || (fact.EventType == notificationpkg.EventRebootRequired && fact.Active)
+			}
+			if !active {
+				t.Fatal("current endpoint's confirmed reboot evidence was suppressed")
+			}
+			if _, err := db.Exec(`INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required,endpoint) VALUES('host','2026-10-25T13:02:00Z',NULL,'192.0.2.2:22')`); err != nil {
+				t.Fatal(err)
+			}
+			unknown, err := source(context.Background(), next.Cursor, conditionPrevious(next.Facts))
+			if err != nil {
+				t.Fatal(err)
+			}
+			active = false
+			for _, fact := range unknown.Facts {
+				active = active || (fact.EventType == notificationpkg.EventRebootRequired && fact.Active)
+			}
+			if !active {
+				t.Fatal("unknown observation cleared the current endpoint's confirmed condition")
+			}
+		})
 	}
 }

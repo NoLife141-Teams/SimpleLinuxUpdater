@@ -175,6 +175,9 @@ func main() {
 		log.Fatalf("Failed to setup router: %v", err)
 	}
 	seedVariantCDemoIfRequested(deps)
+	if monitor, ok := deps.NotificationService.(interface{ StartConditionMonitoring() }); ok {
+		monitor.StartConditionMonitoring()
+	}
 	startAuditPruner(shutdownCtx)
 	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
 	startPolicyScheduler(deps.PolicyService, deps.PolicyRepository, shutdownCtx, PolicySchedulerOptions{})

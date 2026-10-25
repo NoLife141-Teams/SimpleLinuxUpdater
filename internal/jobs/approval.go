@@ -1,6 +1,9 @@
 package jobs
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+)
 
 // ResolvePendingApproval atomically persists a decision for the exact waiting
 // job revision. It never replaces logs. Its caller owns pending-plan validation
@@ -40,7 +43,7 @@ func (m *Manager) ResolvePendingApproval(id string, expectedRevision int64, canc
 // CommitPendingApproval persists the waiting phase and its log change before
 // the caller exposes the pending plan. The caller owns runtime publication and
 // holds its state lock; this operation must not invoke SyncRuntime.
-func (m *Manager) CommitPendingApproval(id, appendLog string, replacementLogs *string) (Record, error) {
+func (m *Manager) CommitPendingApproval(id, appendLog string, replacementLogs *string, generation ...uint64) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
 	}
@@ -52,7 +55,18 @@ func (m *Manager) CommitPendingApproval(id, appendLog string, replacementLogs *s
 		return Record{}, ErrTransitionConflict
 	}
 	summary := "Waiting for approval"
-	next, _, err := m.applyIntent(current, Intent{Kind: IntentWaitForApproval, Summary: &summary, AppendLog: appendLog, LogsText: replacementLogs})
+	intent := Intent{Kind: IntentWaitForApproval, Summary: &summary, AppendLog: appendLog, LogsText: replacementLogs}
+	if len(generation) > 0 {
+		meta := map[string]any{}
+		_ = json.Unmarshal([]byte(current.MetaJSON), &meta)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["approval_generation"] = generation[0]
+		raw := MarshalJSON(meta)
+		intent.MetaJSON = &raw
+	}
+	next, _, err := m.applyIntent(current, intent)
 	if err != nil {
 		return Record{}, err
 	}

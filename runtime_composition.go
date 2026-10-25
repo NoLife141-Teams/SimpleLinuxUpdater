@@ -208,7 +208,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.NotificationService == nil {
 		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
-			DB: deps.DB,
+			Now:            deps.Now,
+			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now),
+			DB:             deps.DB,
 		})
 	}
 	if deps.AuthService == nil {

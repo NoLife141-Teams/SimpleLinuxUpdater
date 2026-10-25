@@ -552,6 +552,10 @@ func TestSaveSettingsValidatesURLAndEvents(t *testing.T) {
 	if len(resp.EventTypes) != 0 {
 		t.Fatalf("EventTypes = %+v, want explicit empty selection preserved", resp.EventTypes)
 	}
+	reloaded, err := svc.Settings()
+	if err != nil || len(reloaded.EventTypes) != 0 {
+		t.Fatalf("reloaded empty event selection=%+v err=%v", reloaded.EventTypes, err)
+	}
 }
 
 func TestWebhookSettingsPreserveReplaceClearAndMigrateLegacySecret(t *testing.T) {

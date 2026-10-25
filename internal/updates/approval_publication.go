@@ -24,7 +24,13 @@ func (r *withActorRunner) commitPendingApproval(snapshot *servers.ServerStatus, 
 	} else {
 		replacement = &updatedLogs
 	}
-	committed, err := jm.CommitPendingApproval(r.jobID, appendLog, replacement)
+	generation := snapshot.ApprovalGeneration
+	// Automatic approval uses an internal waiting transition, without an operator
+	// decision. Generation zero excludes it from actionable notification facts.
+	if r.automaticApproval {
+		generation = 0
+	}
+	committed, err := jm.CommitPendingApproval(r.jobID, appendLog, replacement, generation)
 	if err != nil {
 		return err
 	}

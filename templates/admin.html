@@ -245,6 +245,18 @@
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-failed" data-notification-event="schedule.run.failed"><label for="notification-event-schedule-failed">Failed scheduled runs</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-schedule-skipped" data-notification-event="schedule.run.skipped"><label for="notification-event-schedule-skipped">Skipped scheduled runs</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-restore" data-notification-event="backup.restore"><label for="notification-event-backup-restore">Backup restores</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-approval-published" data-notification-event="approval.published"><label for="notification-event-approval-published">Published update approvals</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-approval-expired" data-notification-event="approval.expired"><label for="notification-event-approval-expired">Expired update approvals</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-reboot-required" data-notification-event="reboot.required"><label for="notification-event-reboot-required">Confirmed reboot requirements</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-export-failed" data-notification-event="backup.export.failed"><label for="notification-event-backup-export-failed">Failed backup exports</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-verify-failed" data-notification-event="backup.verify.failed"><label for="notification-event-backup-verify-failed">Failed backup verification</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-coverage-missing" data-notification-event="backup.coverage.missing"><label for="notification-event-backup-coverage-missing">Missing backup recovery evidence</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-coverage-stale" data-notification-event="backup.coverage.stale"><label for="notification-event-backup-coverage-stale">Stale backup recovery evidence</label></div>
+                    <h3>Grouped reminders</h3>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-reminders-enabled"><label for="notification-reminders-enabled">Remind me about unresolved conditions</label></div>
+                    <label for="notification-reminder-interval" class="form-label">Minimum interval (minutes)</label>
+                    <input type="number" id="notification-reminder-interval" min="5" max="43200" step="1" value="1440" aria-describedby="notification-reminder-help notification-error">
+                    <p class="muted" id="notification-reminder-help">Off by default. At most one summary per destination and interval, containing only selected unresolved conditions. Initial alerts are sent promptly. Unavailable observations do not clear an alert.</p>
                     <div class="notification-diagnostics-head">
                         <div>
                             <span class="eyebrow">Delivery lifecycle</span>

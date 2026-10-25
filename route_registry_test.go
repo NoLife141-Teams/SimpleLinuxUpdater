@@ -74,6 +74,8 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodDelete, "/api/keys/global"},
 		{http.MethodGet, "/api/keys/global"},
 		{http.MethodPost, "/api/servers/:name/facts/refresh"},
+		{http.MethodPost, "/api/servers/:name/vulnerabilities/scan"},
+		{http.MethodGet, "/api/servers/:name/vulnerabilities"},
 		{http.MethodPost, "/api/hostkeys/scan"},
 		{http.MethodPost, "/api/hostkeys/trust"},
 		{http.MethodPost, "/api/hostkeys/clear"},

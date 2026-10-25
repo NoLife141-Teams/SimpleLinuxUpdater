@@ -272,3 +272,11 @@ For Docker, `.env` is not automatically loaded unless you pass it:
 ```bash
 docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
 ```
+
+## Installed-package vulnerability scans
+
+`DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED` defaults to `true` and disables both manual and periodic installed-package scans when `false`. Approval-time CVE enrichment remains independent. `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS` defaults to `24` (range `0–8760`); `0` disables the periodic worker. It checks persisted attempt timestamps once per minute, beginning one minute after startup, and defers disabled or busy hosts and exclusive Maintenance Coordination. Failed attempts are retried at the configured interval, or manually.
+
+`DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS` defaults to `300` (range `10–900`). At most two scans run concurrently across manual and periodic admission; the periodic worker visits servers sequentially. There is no unbounded task queue. A scan accepts at most 20,000 installed packages, a 4 MiB inventory, 20,000 findings, and 1,000 advisory detail lookups. OSV requests have a 30-second deadline, an 8 MiB response limit, and at most 100 pages per batch. Exceeding inventory or finding limits preserves the previous accepted result and reports failure.
+
+Optional `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `..._MEDIUM_DAYS`, `..._HIGH_DAYS`, and `..._CRITICAL_DAYS` accept `0–3650` days. Unset or zero disables that objective. The target is measured from `first_seen`; unknown severity has no target. Targets are displayed as operator objectives, never as approval gates or CVSS scores. Invalid scan configuration rejects startup. Freshness uses the configured interval, or 24 hours when periodic scanning is disabled.

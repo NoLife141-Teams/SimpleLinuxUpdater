@@ -10,6 +10,7 @@ import (
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
+	"debian-updater/internal/vulnerabilities"
 )
 
 const (
@@ -104,11 +105,12 @@ type DashboardHealthInfo struct {
 }
 
 type DashboardRiskInfo struct {
-	Level           string   `json:"level"`
-	Summary         string   `json:"summary"`
-	PendingPackages int      `json:"pending_packages"`
-	SecurityUpdates int      `json:"security_updates"`
-	CVEs            []string `json:"cves"`
+	Vulnerability   DashboardVulnerabilityInfo `json:"vulnerability"`
+	Level           string                     `json:"level"`
+	Summary         string                     `json:"summary"`
+	PendingPackages int                        `json:"pending_packages"`
+	SecurityUpdates int                        `json:"security_updates"`
+	CVEs            []string                   `json:"cves"`
 }
 
 type DashboardTimelinePhase struct {
@@ -252,6 +254,10 @@ type HealthTrendResponse struct {
 }
 
 type ServiceDeps struct {
+	VulnerabilityObservations   func(context.Context) (map[string]vulnerabilities.Observation, error)
+	VulnerabilityTargetDays     map[string]int
+	VulnerabilityMaxAge         time.Duration
+	VulnerabilityScanEnabled    bool
 	DB                          func() *sql.DB
 	DBPath                      func() string
 	CurrentTimezone             func() (*time.Location, string)

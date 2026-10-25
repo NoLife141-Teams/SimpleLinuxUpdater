@@ -5,8 +5,8 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function dashboardProjectionConsumptionFactory() {
     "use strict";
 
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
-    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "done"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan"]);
+    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "done"]);
     const fallbackRiskOrder = Object.freeze({ critical: 4, high: 4, elevated: 3, warning: 2, normal: 1, routine: 1 });
 
     function clone(value) {
@@ -187,13 +187,13 @@
             if (cveCount > 0) riskLabel = `${cveCount} CVE`;
             else if (securityUpdates > 0) riskLabel = `${securityUpdates} security`;
             else if (pendingPackages > 0) riskLabel = "Package updates";
-            else riskLabel = "Normal";
+            else riskLabel = "Installed packages not scanned";
         }
-        const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "normal").toLowerCase();
+        const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "unknown").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
         const hasExplicitFactsState = Object.hasOwn(rawTriage, "facts_state") && text(rawTriage.facts_state) !== "";
         const statusValue = text(server.status).toLowerCase();
-        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"].includes(statusValue);
+        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan"].includes(statusValue);
         const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
         const triage = {
             ...clone(rawTriage),
@@ -233,7 +233,7 @@
                 .map(value => text(value))
                 .find(value => value && value.toLowerCase() !== "no maintenance activity") || "Completed with errors"
             : "";
-        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
+        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "scan_vulnerabilities", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
         const reconciliationFallback = statusValue === "needs_reconciliation";
@@ -272,6 +272,7 @@
             runtimePending,
             timelinePending,
             hasPendingUpdates: pendingApproval && pendingUpdates.length > 0,
+            vulnerability: vulnerabilityPresentation(rawRisk.vulnerability),
             risk: { label: riskLabel, level: riskLevel, order: riskOrder, cveCount, securityUpdates, pendingPackages },
             auth,
             driftReason,
@@ -291,6 +292,21 @@
             canReboot: actionEnabled(actionViews, "reboot", false),
             canRunSudoers: actionEnabled(actionViews, "enable_apt", transientFallback),
             canRefreshFacts: actionEnabled(actionViews, "refresh_facts", transientFallback)
+        };
+    }
+
+    function vulnerabilityPresentation(raw) {
+        const info = record(raw);
+        const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running" };
+        const dispositions = { fixed_by_candidate: "Fix available in candidate", still_affected: "Candidate still affected", no_fix_available: "No newer candidate available", candidate_unverified: "Candidate could not be verified" };
+        return {
+            ...clone(info),
+            stateLabel: labels[text(info.state)] || labels.not_scanned,
+            coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
+            freshnessLabel: text(info.freshness, "unknown"),
+            resultLabel: { confirmed_exposure: "Confirmed exposure", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
+            findings: list(info.findings).map(finding => ({ ...clone(record(finding)), dispositionLabel: dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
+            errors: list(info.errors).map(value => text(value))
         };
     }
 
@@ -394,7 +410,7 @@
         const selectedHost = byName[text(statusView.primaryServerName)] || null;
         const failed = models.filter(model => model.failed).sort(compareFailure);
         const reboot = models.filter(model => model.rebootRequired).sort(compareRisk);
-        const risk = models.filter(model => ["critical", "high", "elevated"].includes(model.risk.level)).sort(compareRisk);
+        const risk = models.filter(model => model.risk.cveCount > 0 || ["critical", "high", "elevated"].includes(model.risk.level)).sort(compareRisk);
         const approval = visibleModels.filter(model => model.triage.eligible || model.pendingApproval).sort(compareApproval);
         const scheduled = models
             .filter(model => text(model.nextRun.state).toLowerCase() === "scheduled")

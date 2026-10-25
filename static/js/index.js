@@ -297,11 +297,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getRiskLabel(server) {
-            return serverPresentation(server)?.risk.label || "Normal";
+            return serverPresentation(server)?.risk.label || "Installed packages not scanned";
         }
 
         function getRiskLevel(server) {
-            return serverPresentation(server)?.risk.level || "normal";
+            return serverPresentation(server)?.risk.level || "unknown";
         }
 
         function getServerIntelligence(name) {
@@ -891,6 +891,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
         }
 
+        function vulnerabilitySummaryHtml(selected, safeDataName) {
+            const info = selected.vulnerability;
+            const action = selected.actions.scan_vulnerabilities || {};
+            if (!info) return "";
+            const findings = info.findings.map(finding => `<li>
+                <strong>${escapeHtml(finding.id)} · ${escapeHtml(finding.package)}</strong>
+                <p>Severity: ${escapeHtml(finding.severity || "unknown")} · ${escapeHtml(finding.dispositionLabel)}</p>
+                <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
+                <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
+                <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
+                <p>Source: ${escapeHtml(finding.source || "unknown")}${finding.severity_value ? ` · ${escapeHtml(finding.severity_type)}: ${escapeHtml(finding.severity_value)} · ${escapeHtml(finding.severity_source)} · severity observed ${escapeHtml(finding.severity_observed_at || "unknown")} (${escapeHtml(finding.severity_freshness || "unknown")})` : " · Severity unavailable"}</p>
+            </li>`).join("");
+            return `<section class="vulnerability-summary" aria-label="Installed package vulnerabilities">
+                <h3>Installed package vulnerabilities</h3>
+                <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
+                <p>${escapeHtml(info.coverageLabel)}</p>
+                <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
+                <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
+                ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
+                <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
+                ${findings ? `<details><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
+                <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
+            </section>`;
+        }
+
         function renderSelectedHostPanel() {
             const panel = document.getElementById('selected-host-panel');
             const title = document.getElementById('selected-host-title');
@@ -956,6 +981,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
+                ${vulnerabilitySummaryHtml(selected, safeDataName)}
                 ${recommendedAction.key !== "healthy" ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
                     <div class="recommended-action-copy">
                         <span class="mini-label">Recommended action</span>
@@ -2100,6 +2126,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 disablePasswordlessApt(name);
                 return;
             }
+            if (action === "scan-vulnerabilities") { scanVulnerabilities(name); return; }
             if (action === "refresh-facts") {
                 refreshHostFacts(name);
             }
@@ -2772,6 +2799,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                window.setTimeout(() => fetchServers(true, "cancelled-settled"), cancelledStatusRefreshDelayMs);
 	            }
 	        }
+
+        async function scanVulnerabilities(name) {
+            await runSingleHostAction(name, "scan_vulnerabilities", "scan vulnerabilities", async () => {
+                try {
+                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/vulnerabilities/scan`, { method: "POST" });
+                    if (!response.ok) {
+                        const payload = await response.json().catch(() => ({}));
+                        statusActionAdapter.notify(payload.error || "Failed to start vulnerability scan");
+                        return false;
+                    }
+                    return true;
+                } catch (err) {
+                    statusActionAdapter.notify(err?.message || "Failed to start vulnerability scan");
+                    return false;
+                }
+            }, ["servers", "dashboard"]);
+        }
 
 	        async function refreshHostFacts(name) {
 	            await runSingleHostAction(name, "refresh_facts", "refresh facts", async () => {

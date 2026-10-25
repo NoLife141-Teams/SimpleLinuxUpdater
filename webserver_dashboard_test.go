@@ -334,8 +334,8 @@ func TestBuildDashboardSummaryAggregatesIntelligence(t *testing.T) {
 	if got.AvgDurationMS != 2400 || got.DurationSamples != 1 {
 		t.Fatalf("AvgDurationMS/Samples = %.0f/%d, want 2400/1", got.AvgDurationMS, got.DurationSamples)
 	}
-	if got.Risk.Level != "critical" || len(got.Risk.CVEs) != 1 {
-		t.Fatalf("risk = %+v, want critical with one CVE", got.Risk)
+	if got.Risk.Level != "unknown" || len(got.Risk.CVEs) != 1 {
+		t.Fatalf("risk = %+v, want unknown severity with one CVE", got.Risk)
 	}
 	if got.Health.RebootRequired == nil || !*got.Health.RebootRequired {
 		t.Fatalf("reboot required = %v, want true from postcheck metadata", got.Health.RebootRequired)

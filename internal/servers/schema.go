@@ -2,9 +2,14 @@ package servers
 
 import (
 	"database/sql"
+
+	"debian-updater/internal/vulnerabilities"
 )
 
 func EnsureSchema(db *sql.DB) error {
+	if err := vulnerabilities.EnsureSchema(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS servers (
 			name TEXT PRIMARY KEY,

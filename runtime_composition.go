@@ -376,6 +376,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 		})
 	}
+	if deps.VulnerabilityScans == nil {
+		deps.VulnerabilityScans = newVulnerabilityScanLifecycle(deps)
+	}
 	if deps.HostFactsRefreshWorker == nil {
 		deps.HostFactsRefreshWorker = newAutomaticHostFactsRefreshWorker(deps)
 	}

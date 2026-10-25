@@ -175,3 +175,12 @@ Ways you can help:
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+### Installed-package vulnerability scans
+
+The selected-host panel exposes a read-only **Scan vulnerabilities** action and persisted coverage, freshness, severity, and findings, including packages with no newer candidate. Never-scanned, unavailable, partial, and complete scans are distinct. Failed or partial scans do not resolve prior findings; updates alone do not resolve them either. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans).
+
+- `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
+- `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
+- `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.
+- `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_MEDIUM_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_HIGH_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_CRITICAL_DAYS`: optional remediation objectives, `0–3650` days from first observation; unset or `0` means no target. Unknown severity never receives a deadline. These objectives do not gate approvals.

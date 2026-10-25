@@ -148,3 +148,9 @@ Notification admission consumes sanitized lifecycle intents after accepted audit
 - `setupRouterWithDeps` is the test and composition seam for injecting services, state, DB providers, session managers, job managers, event brokers, rate limiters, and time providers.
 - `newIsolatedTestApp(t)` creates a temp DB, temp `known_hosts`, fresh app-scoped runtime dependencies, and authenticated-session helpers for HTTP contract tests.
 - New domain behavior should go into the owning internal package first, with route adapters limited to request parsing, auth/CSRF placement, response shape preservation, audit calls, and dependency wiring.
+
+## Installed vulnerability observations
+
+`internal/vulnerabilities` owns accepted installed-package observations and finding continuity in `server_vulnerability_observations`. Server inventory transaction hooks rename/delete these observations and invalidate them when the endpoint changes. The DB provider is resolved on every access, so backup replacement and Runtime Composition rehydration cannot retain a stale security cache.
+
+The installed scanner lives in `internal/updates` and uses read-only Host Maintenance Session commands plus bounded OSV requests. Its optional interface extends the existing approval enrichment interface without slowing that path. `vulnerabilityScanLifecycle` coordinates manual/periodic admission, two global scan slots, per-Server transient reservation, a shared Maintenance Coordination lease, cancellation, persistence, and audit. Dashboard Projection derives security state and configured targets from these accepted facts; Dashboard Projection Consumption exposes the same facts to Status and selected-host details.

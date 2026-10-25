@@ -165,7 +165,7 @@ test("unknown data stays explicit and optional extras degrade independently", ()
     const view = project({ statusView: statusView({ servers: [server], dashboardServers: [{ name: "unknown", health: {} }] }), extras: { recentActivity: null, policySummary: null } });
     assert.equal(view.selectedHost.timeline.state, "idle");
     assert.equal(view.selectedHost.triage.facts_state, "unknown");
-    assert.equal(view.selectedHost.risk.label, "Normal");
+    assert.equal(view.selectedHost.risk.label, "Installed packages not scanned");
     assert.deepEqual(view.panels.recentActivity, []);
     assert.equal(view.summaries.policyCount, null);
 });
@@ -302,5 +302,25 @@ test("availability scope excludes hidden hosts from fleet totals, attention pane
         assert.deepEqual(result.panels.failed.map(model => model.name), scoped.includes(paused) ? ["paused"] : []);
         assert.deepEqual(result.panels.tags.map(item => item.tag), scoped.flatMap(server => server.tags));
         assert.equal(result.panels.recentActivity.length, scoped.length + 1);
+    }
+});
+
+test("installed vulnerability confidence and residual exposure survive projection", () => {
+    for (const [state, label] of [["not_scanned", "Never scanned"], ["unavailable", "Scan unavailable"], ["partial", "Partial scan"], ["complete", "Complete scan"]]) {
+        const view = project({ statusView: statusView({
+            servers: [{ name: "alpha", status: "done", pending_updates: [] }],
+            dashboardServers: [{ name: "alpha", risk: {
+                level: "unknown", summary: "1 confirmed CVE · unknown severity",
+                vulnerability: { state, freshness: "stale", result: "confirmed_exposure", inventoried: 10, evaluated: 8, unknown: 1, unsupported: 1,
+                    findings: [{ id: "CVE-2026-1000", package: "pkg", severity: "unknown", disposition: "no_fix_available", first_seen: "2026-10-01T00:00:00Z" }] }
+            }, approval_triage: { cve_count: 1 } }]
+        }) });
+        assert.equal(view.selectedHost.vulnerability.stateLabel, label);
+        assert.equal(view.selectedHost.vulnerability.freshnessLabel, "stale");
+        assert.equal(view.selectedHost.vulnerability.resultLabel, "Confirmed exposure");
+        assert.match(view.selectedHost.vulnerability.coverageLabel, /8 of 10/);
+        assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No newer candidate available");
+        assert.equal(view.selectedHost.risk.level, "unknown");
+        assert.equal(view.panels.risk.length, 1);
     }
 });

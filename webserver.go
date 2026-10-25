@@ -2254,6 +2254,9 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(http.StatusOK, gin.H{"has_key": status.Configured})
 	})
 
+	r.GET("/api/servers/:name/vulnerabilities", func(c *gin.Context) { handleVulnerabilityObservation(c, deps) })
+	r.POST("/api/servers/:name/vulnerabilities/scan", func(c *gin.Context) { handleVulnerabilityScan(c, deps) })
+
 	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {
 		handleServerFactsRefreshWithDeps(c, deps)
 	})

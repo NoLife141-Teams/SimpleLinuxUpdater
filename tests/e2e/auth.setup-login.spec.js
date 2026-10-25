@@ -1762,7 +1762,7 @@ test.describe.serial('setup and login flows', () => {
         findings: exposed ? [{ id: 'CVE-2026-1000', package: 'installed-package', severity: 'unknown', disposition: 'no_fix_available', first_seen: '2026-10-01T00:00:00Z', last_seen: '2026-10-25T00:00:00Z', age_days: 24, source: 'Debian Security Tracker via OSV' }] : []
       }};
       host.approval_triage = { ...host.approval_triage, cve_count: exposed ? 1 : 0, risk_level: 'unknown', risk_label: host.risk.summary };
-      host.actions = { scan_vulnerabilities: { enabled: true, readiness: 'ready', reason: 'Ready' } };
+      host.actions = { scan_vulnerabilities: { enabled: scanState !== 'running', readiness: scanState === 'running' ? 'in_progress' : 'ready', reason: scanState === 'running' ? 'Vulnerability scan in progress' : 'Ready' } };
       return fulfillJson(route, summary);
     });
     await ensureAuthenticatedSession(page);
@@ -1770,11 +1770,16 @@ test.describe.serial('setup and login flows', () => {
     await expect(section).toContainText('Never scanned');
     await section.getByRole('button', { name: 'Scan vulnerabilities' }).click();
     await expect.poll(() => started).toBe(1);
-    for (const [state, label] of [['partial', 'Partial scan'], ['unavailable', 'Scan unavailable'], ['complete', 'Complete scan']]) {
+    for (const [state, label] of [['running', 'Scan running'], ['partial', 'Partial scan'], ['unavailable', 'Scan unavailable'], ['complete', 'Complete scan']]) {
       scanState = state;
+      server.status = state === 'running' ? 'vulnerability_scan' : 'done';
       await page.reload();
       await expect(section).toContainText(label);
-      if (state !== 'complete') {
+      if (state === 'running') {
+        await expect(section.getByRole('button', { name: 'Scan vulnerabilities' })).toBeDisabled();
+        await expect(page.locator('#selected-host-panel .status-pill')).toHaveClass(/status-vulnerability_scan/);
+        await expect(page.locator('#servers-table tr[data-name="installed-host"] .status-pill')).toHaveClass(/status-vulnerability_scan/);
+      } else if (state !== 'complete') {
         await section.locator('summary').click();
         await expect(section).toContainText('CVE-2026-1000');
         await expect(section).toContainText('No newer candidate available');

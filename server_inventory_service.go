@@ -8,6 +8,7 @@ import (
 	healthpkg "debian-updater/internal/health"
 	jobspkg "debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
+	"debian-updater/internal/postchecks"
 	serverpkg "debian-updater/internal/servers"
 	"debian-updater/internal/vulnerabilities"
 
@@ -80,12 +81,18 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenameVulnerabilityObservation: vulnerabilities.RenameServerTx,
 		DeleteVulnerabilityObservation: vulnerabilities.DeleteServerTx,
 		RenameServerFacts: func(tx *sql.Tx, oldName, newName string) error {
+			if err := postchecks.RenameServerTx(tx, oldName, newName); err != nil {
+				return err
+			}
 			if err := observation.RenameServerTx(tx, oldName, newName); err != nil {
 				return err
 			}
 			return notificationpkg.RenameServerIdentityTx(tx, oldName, newName)
 		},
 		DeleteServerFacts: func(tx *sql.Tx, name string) error {
+			if err := postchecks.RenameServerTx(tx, name, ""); err != nil {
+				return err
+			}
 			if err := observation.DeleteServerTx(tx, name); err != nil {
 				return err
 			}

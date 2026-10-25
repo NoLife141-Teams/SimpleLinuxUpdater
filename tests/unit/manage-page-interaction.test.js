@@ -765,3 +765,15 @@ test("server availability plans are reversible and exclude competing edits", () 
     const disable = store.dispatch({ type: "commandRequested", command: "setServerDisabled", payload: { serverName: "paused" } }).find(effect => effect.type === "executeCommand");
     assert.equal(disable.plan.payload.disabled, true);
 });
+
+test("application post-check preview belongs to the matching editor session", () => {
+    const store=createStore();
+    store.dispatch({type:"editorOpened",name:"web",server:{name:"web",host:"example.invalid",user:"operator"}});
+    const first=store.getView().editor.sessionID;
+    store.dispatch({type:"applicationPostchecksReceived",sessionID:first,profile:{id:"app",name:"Web",revision:2,checks:[]}});
+    assert.equal(store.getView().editor.applicationPostchecks.profile.revision,2);
+    store.dispatch({type:"editorClosed"});
+    store.dispatch({type:"editorOpened",name:"other",server:{name:"other",host:"other.invalid",user:"operator"}});
+    store.dispatch({type:"applicationPostchecksReceived",sessionID:first,profile:{id:"app",name:"Stale",revision:3}});
+    assert.equal(store.getView().editor.applicationPostchecks,null);
+});

@@ -3,10 +3,14 @@ package servers
 import (
 	"database/sql"
 
+	"debian-updater/internal/postchecks"
 	"debian-updater/internal/vulnerabilities"
 )
 
 func EnsureSchema(db *sql.DB) error {
+	if err := postchecks.EnsureSchema(db); err != nil {
+		return err
+	}
 	if err := vulnerabilities.EnsureSchema(db); err != nil {
 		return err
 	}

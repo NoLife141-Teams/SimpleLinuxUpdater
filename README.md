@@ -186,3 +186,5 @@ The selected-host panel exposes a read-only **Scan vulnerabilities** action and 
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.
 - `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_MEDIUM_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_HIGH_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_CRITICAL_DAYS`: optional remediation objectives, `0–3650` days from first observation; unset or `0` means no target. Unknown severity never receives a deadline. These objectives do not gate approvals.
+
+Application post-check profiles in Admin can verify remote systemd units and HTTP health endpoints per Server or tag, with bounded recovery and blocking/warning results. See [profile configuration](docs/configuration.md#application-post-check-profiles).

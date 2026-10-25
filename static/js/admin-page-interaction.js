@@ -5,10 +5,11 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory() {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup"];
+    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks"];
     const sectionDefinitions = [
         { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
+ { id: "application-checks", label: "Application Checks" },
         { id: "account-security", label: "Account Security" },
         { id: "recent-activity", label: "Recent Activity" },
         { id: "scheduled-policies", label: "Policies" },
@@ -17,7 +18,7 @@
         { id: "metrics", label: "Metrics" }
     ];
     const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
-    const lazySectionIDs = new Set(["notifications", "recent-activity", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
+    const lazySectionIDs = new Set(["application-checks", "notifications", "recent-activity", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
     const destructiveCommands = new Set([
         "clearSessions",
         "clearOtherSessions",
@@ -297,7 +298,8 @@
         const scheduled = options.scheduled || null;
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
         const inFlight = new Map();
-        let timezone = { configured: "", resolved: "UTC", draft: "" };
+        let postchecks = { accepted: {revision:0,profiles:[]}, draft: {revision:0,profiles:[]}, selectedID:"", busy:false, message:"", error:false, testResults:null, testServer:"", requestID:0 };
+ let timezone = { configured: "", resolved: "UTC", draft: "" };
         let acceptedNotifications = normalizeNotifications();
         let notificationDraft = clone(acceptedNotifications);
         let notificationDiagnostics = normalizeDeliveryDiagnostics();
@@ -595,6 +597,7 @@
             const lifecycle = {
                 "app-time": streams.timezone,
                 notifications: streams.notifications,
+ "application-checks": streams.postchecks,
                 "account-security": streams.account,
                 "recent-activity": streams.activity,
                 "scheduled-policies": aggregateScheduledStatus([
@@ -607,6 +610,7 @@
                 metrics: streams.metrics
             };
             const summaries = {
+ "application-checks": countSummary(postchecks.accepted.profiles.length,"saved profile"),
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
                 notifications: streams.notifications.accepted ? freshnessSummary(notificationSummary(), streams.notifications.freshness === "stale") : "Notification settings unavailable",
                 "account-security": streams.account.accepted ? freshnessSummary(countSummary(account.sessionCount, "active session"), streams.account.freshness === "stale") : "Session status unavailable",
@@ -767,6 +771,33 @@
         }
 
         function dispatch(event = {}) {
+            if (String(event.type).startsWith("postcheck:")) {
+                const type = event.type.slice(10);
+                if (type === "request") { postchecks.busy=true;postchecks.error=false;postchecks.message="";postchecks.requestID++; }
+                if (["loaded","saved","tested","failed"].includes(type) && event.requestID !== postchecks.requestID) return [];
+                if (type === "loaded" || type === "saved") {
+                    postchecks.accepted=clone(event.data);postchecks.draft=clone(event.data);postchecks.busy=false;
+                    if (!postchecks.draft.profiles.some(p=>p.id===postchecks.selectedID)) postchecks.selectedID=postchecks.draft.profiles[0]?.id || "";
+                    postchecks.testResults=null;postchecks.message=type==="saved"?"Application post-check profiles saved.":"";
+                }
+                if (type === "failed") {postchecks.busy=false;postchecks.error=true;postchecks.message=String(event.message || "Request failed.");}
+                if (type === "tested") {postchecks.busy=false;postchecks.testResults=clone(event.data);postchecks.message="Read-only test complete.";}
+                if (!postchecks.busy) {
+                    const selected=()=>postchecks.draft.profiles.find(p=>p.id===postchecks.selectedID);
+                    if(type==="testServer"){postchecks.testServer=String(event.name || "");postchecks.testResults=null;}
+                    if(type==="select")postchecks.selectedID=String(event.id || "");
+                    if(type==="new") {let i=1;while(postchecks.draft.profiles.some(p=>p.id===`profile-${i}`))i++;const p={id:`profile-${i}`,name:"New application profile",revision:0,target_servers:[],target_tags:[],checks:[]};postchecks.draft.profiles.push(p);postchecks.selectedID=p.id;}
+                    if(type==="delete") {postchecks.draft.profiles=postchecks.draft.profiles.filter(p=>p.id!==postchecks.selectedID);postchecks.selectedID=postchecks.draft.profiles[0]?.id || "";}
+                    if(type==="profile" && selected()) Object.assign(selected(),clone(event.patch));
+                    if(type==="addCheck" && selected()) {let i=1;while(selected().checks.some(c=>c.id===`check-${i}`))i++;selected().checks.push({id:`check-${i}`,name:"Application health",kind:"http_status",url:"http://localhost/health",expected_status:200,timeout_seconds:30,interval_seconds:2,mode:"blocking"});}
+                    if(type==="check" && selected()?.checks[event.index]) {const check=selected().checks[event.index];Object.assign(check,clone(event.patch));if(event.patch.kind==="systemd_active"){delete check.url;delete check.expected_status;check.unit="nginx.service";}if(event.patch.kind==="http_status"){delete check.unit;check.url="http://localhost/health";check.expected_status=200;}}
+                    if(type==="removeCheck" && selected())selected().checks.splice(event.index,1);
+                    if(type==="discard"){postchecks.draft=clone(postchecks.accepted);postchecks.selectedID=postchecks.draft.profiles[0]?.id || "";}
+                    if(["profile","check","addCheck","removeCheck","new","delete","discard"].includes(type))postchecks.testResults=null;
+                }
+                return [effect("render",{area:"workspace"})];
+            }
+
             switch (event.type) {
                 case "snapshotRequested": return request(event.stream);
                 case "snapshotFailed": return fail(event.stream, event.requestID, event.error);
@@ -936,10 +967,12 @@
             const dirtySections = [];
             if (timezoneDirty) dirtySections.push("app-time");
             if (notificationDirty) dirtySections.push("notifications");
+ if(!sameValue(postchecks.accepted,postchecks.draft))dirtySections.push("application-checks");
             if (scheduledView?.editor?.dirty || scheduledView?.globalSettings?.dirty) dirtySections.push("scheduled-policies");
             return clone({
                 timezone: { ...timezone, dirty: timezoneDirty },
-                notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
+                postchecks: {...postchecks,dirty:!sameValue(postchecks.accepted,postchecks.draft)},
+ notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 notificationDiagnostics,
                 account: projectAccount(),
                 activity,

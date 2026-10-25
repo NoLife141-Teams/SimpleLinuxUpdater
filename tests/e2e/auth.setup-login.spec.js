@@ -3029,6 +3029,68 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#admin-activity-list .admin-activity-item')).toHaveCount(0);
   });
 
+  test('application post-check profiles edit, persist and test with bounded expectations', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    const original = await page.request.get('/api/postcheck-profiles').then(r => r.json());
+    await page.goto('/admin#admin-section-application-checks');
+    await expect(page.locator('#postcheck-new')).toBeEnabled();
+    await expect(page.locator('#postcheck-feedback')).toHaveText('No unsaved changes.');
+    try {
+      await page.locator('#postcheck-new').click();
+      await page.locator('#postcheck-name').fill('Website recovery');
+      await page.locator('#postcheck-servers').fill('e2e-health');
+      await page.locator('#postcheck-tags').fill('web');
+      await page.locator('#postcheck-add').click();
+      await page.locator('#postcheck-0-name').fill('HTTP readiness');
+      await page.locator('#postcheck-0-url').fill('https://localhost/health');
+      await page.locator('#postcheck-0-timeout_seconds').fill('20');
+      await expect(page.locator('#postcheck-test')).toBeDisabled();
+      await page.locator('#postcheck-save').click();
+      await expect(page.locator('#postcheck-feedback')).toHaveText('Application post-check profiles saved.');
+      await page.reload();
+      await expect(page.locator('#postcheck-name')).toHaveValue('Website recovery');
+      await expect(page.locator('#postcheck-0-url')).toHaveValue('https://localhost/health');
+      const saved=await page.request.get('/api/postcheck-profiles').then(r=>r.json());
+      const profile=saved.profiles.find(p=>p.name==='Website recovery');
+      await page.route('**/api/servers/e2e-health/postchecks/test',route=>route.fulfill({json:{server_name:"e2e-health",profile,results:[{id:'check-1',name:'HTTP readiness',kind:'http_status',mode:'blocking',passed:false,attempts:10,duration_ms:20000,details:'HTTP status 500; expected 200; Recovery timeout reached'}]}}));
+      await page.locator('#postcheck-test-server').fill('e2e-health');
+      await page.locator('#postcheck-test').click();
+      await expect(page.locator('#postcheck-test-results')).toContainText('FAIL HTTP readiness');
+      await expect(page.locator('#postcheck-test-results')).toContainText('HTTP status 500');
+      await page.setViewportSize({width:1440,height:1500});
+      await page.evaluate(()=>window.scrollTo(0,0));
+      await page.locator('#admin-section-application-checks').screenshot({path:'/tmp/468-application-checks-desktop.png'});
+      await page.setViewportSize({width:390,height:2400});
+      await page.evaluate(()=>window.scrollTo(0,0));
+      await page.locator('#admin-section-application-checks').screenshot({path:'/tmp/468-application-checks-mobile.png'});
+      await page.setViewportSize({width:390,height:844});
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBeTruthy();
+      await page.locator('#postcheck-0-kind').selectOption('systemd_active');
+      await expect(page.locator('#postcheck-0-unit')).toHaveValue('nginx.service');
+      await expect(page.locator('#postcheck-test-results')).toHaveText('');
+      await page.locator('#postcheck-discard').click();
+      await expect(page.locator('#postcheck-0-url')).toHaveValue('https://localhost/health');
+      const created=await page.request.post('/api/servers',{headers:{Origin:'http://127.0.0.1:8080'},data:{name:'e2e-health',host:'e2e-health.invalid',port:22,user:'operator',pass:'test-only',tags:['web']}});
+      expect(created.ok(),await created.text()).toBeTruthy();
+      await page.setViewportSize({width:1440,height:1000});
+      await page.goto('/manage');
+      await page.locator('[data-action="edit-server"][data-name="e2e-health"]').click();
+      await expect(page.locator('#edit-application-postchecks')).toContainText('Website recovery · revision 1');
+      await expect(page.getByRole('link',{name:'Configure profiles and run a read-only test in Admin'})).toHaveAttribute('href','/admin#admin-section-application-checks');
+      await page.locator('#edit-application-postchecks').locator('..').screenshot({path:'/tmp/468-manage-postcheck-preview.png'});
+      const pending=makeServer('e2e-health','pending_approval',makePendingUpdates(1),{job_id:'postcheck-job',approval_generation:1,application_postcheck_profile:profile});
+      await stubDashboardApi(page,()=>[pending]);
+      await page.goto('/');
+      await expect(page.locator('#servers-table')).toContainText('Application checks: Website recovery · revision 1');
+      await expect(page.locator('#servers-table')).toContainText('https://localhost/health → HTTP 200');
+    } finally {
+      await page.request.delete('/api/servers/e2e-health',{headers:{Origin:'http://127.0.0.1:8080'}});
+      const current=await page.request.get('/api/postcheck-profiles').then(r=>r.json());
+      const restored=await page.request.put('/api/postcheck-profiles',{headers:{Origin:'http://127.0.0.1:8080'},data:{revision:current.revision,profiles:original.profiles}});
+      expect(restored.ok(),await restored.text()).toBeTruthy();
+    }
+  });
+
   test('notification conditions stay opt-in and grouped reminders validate and save', async ({ page }) => {
     await ensureAuthenticatedSession(page);
     const state = {};

@@ -7,6 +7,7 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=disclosure-chevron-20260729">
     <link rel="stylesheet" href="/static/css/admin.css?v=calendar-mobile-20261023">
+    <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -29,6 +30,7 @@
         <nav class="admin-section-nav fade-in" id="admin-section-nav" aria-label="Admin sections">
             <div class="admin-section-nav-track">
                 <a href="#admin-section-app-time" data-admin-section-link="app-time"><span>App Time</span><small data-admin-section-nav-summary="app-time">Loading</small></a>
+                <a href="#admin-section-application-checks" data-admin-section-link="application-checks"><span>Application Checks</span><small data-admin-section-nav-summary="application-checks">Loading</small></a>
                 <a href="#admin-section-notifications" data-admin-section-link="notifications"><span>Notifications</span><small data-admin-section-nav-summary="notifications">Loading</small></a>
                 <a href="#admin-section-account-security" data-admin-section-link="account-security"><span>Account Security</span><small data-admin-section-nav-summary="account-security">Loading</small></a>
                 <a href="#admin-section-recent-activity" data-admin-section-link="recent-activity"><span>Recent Activity</span><small data-admin-section-nav-summary="recent-activity">Loading</small></a>
@@ -38,6 +40,23 @@
                 <a href="#admin-section-metrics" data-admin-section-link="metrics"><span>Metrics</span><small data-admin-section-nav-summary="metrics">Loading</small></a>
             </div>
         </nav>
+
+
+        <section class="workspace fade-in admin-workspace-section" id="admin-section-application-checks" data-admin-section="application-checks" aria-labelledby="admin-section-application-checks-heading">
+            <div class="workspace-head"><div><div class="eyebrow">Post-update health</div><h2 id="admin-section-application-checks-heading" tabindex="-1">Application Checks</h2><p class="muted">Confirm that hosted applications recover after an upgrade. A direct Server assignment takes precedence over tags; conflicting tag profiles block updates until resolved.</p></div>
+            <div class="admin-section-controls"><span data-admin-section-summary="application-checks" hidden></span><button class="btn-ghost inline-btn" type="button" data-admin-section-toggle="application-checks" aria-expanded="true" aria-controls="admin-section-application-checks-content"><span data-admin-section-toggle-label>Collapse</span></button></div></div>
+            <div id="admin-section-application-checks-content" data-admin-section-content="application-checks">
+                <div class="form-row"><label for="postcheck-profile-select">Saved profiles</label><select id="postcheck-profile-select"></select><button type="button" class="btn-ghost" id="postcheck-new">New profile</button><button type="button" class="btn-ghost" id="postcheck-delete">Remove profile</button></div>
+                <form id="postcheck-profile-form"><fieldset id="postcheck-editor" class="postcheck-editor"><legend>Profile and assignments</legend>
+                    <div class="form-row"><label for="postcheck-name">Profile name</label><input id="postcheck-name" data-profile-field="name" maxlength="100" required></div>
+                    <div class="form-row"><label for="postcheck-servers">Direct Servers (comma separated names)</label><input id="postcheck-servers" data-profile-field="target_servers" placeholder="web-01, web-02"></div>
+                    <div class="form-row"><label for="postcheck-tags">Tags (comma separated)</label><input id="postcheck-tags" data-profile-field="target_tags" placeholder="web, production"></div>
+                    <p id="postcheck-revision" class="muted"></p><div id="postcheck-rows"></div><button type="button" class="btn-ghost" id="postcheck-add">Add check</button>
+                </fieldset><div class="form-row"><button type="submit" id="postcheck-save">Save profiles</button><button type="button" class="btn-ghost" id="postcheck-discard">Discard changes</button><button type="button" class="btn-ghost" id="postcheck-reload">Reload</button></div></form>
+                <div class="admin-block"><label for="postcheck-test-server">Test saved expectations on Server</label><input id="postcheck-test-server" placeholder="Exact Server name"><button type="button" id="postcheck-test">Run read-only test</button><p class="muted">Runs on the remote Server with its existing SSH account. No tools are installed and no services are changed. Save changes before testing.</p><pre id="postcheck-test-results" class="postcheck-test-results"></pre></div>
+                <p id="postcheck-feedback" role="status" aria-live="polite"></p>
+            </div>
+        </section>
 
         <section class="workspace fade-in app-time-card admin-workspace-section" id="admin-section-app-time" data-admin-section="app-time" aria-labelledby="admin-section-app-time-heading">
             <div class="workspace-head">
@@ -1093,6 +1112,7 @@
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-module-split-20260903"></script>
+    <script src="/static/js/application-postcheck-adapter.js?v=1"></script>
     <script src="/static/js/admin.js?v=scheduled-autoremove-20261020"></script>
 </body>
 </html>

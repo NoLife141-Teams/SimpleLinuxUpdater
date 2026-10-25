@@ -984,6 +984,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
                 ${vulnerabilitySummaryHtml(selected, safeDataName)}
+ ${applicationPostchecksHtml(server)}
                 ${recommendedAction.key !== "healthy" ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
                     <div class="recommended-action-copy">
                         <span class="mini-label">Recommended action</span>
@@ -1742,7 +1743,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
             title.textContent = server.name || "Server details";
 	            statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
-	                ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
+	                ${applicationPostchecksHtml(server)}
+ ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
 	            `;
 	            approvalActions.classList.toggle('hidden', !isPendingApproval);
 	            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
@@ -1950,7 +1952,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 							  `
 						: server.status === 'pending_approval'
 	                        ? `
-	                            <div class="actions-grid timeline-actions">
+	                            ${applicationPostchecksHtml(server)}
+ <div class="actions-grid timeline-actions">
 	                                <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>
 	                                <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>${securityApprovalLabel}</button>
 	                                ${keptBackSecurityButton}
@@ -2315,6 +2318,12 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	            updateBulkActionState();
 	        });
 
+
+        function applicationPostchecksHtml(server) {
+            const profile=server.application_postcheck_profile;
+            if(server.status!=="pending_approval" || !profile)return "";
+            return `<section class="inspector-note"><strong>Application checks: ${escapeHtml(profile.name)} · revision ${Number(profile.revision)}</strong><ul>${(profile.checks || []).map(check=>`<li>${escapeHtml(check.name)}: ${escapeHtml(check.kind === "systemd_active" ? check.unit : `${check.url} → HTTP ${check.expected_status}`)} · ${escapeHtml(check.mode)}, up to ${Number(check.timeout_seconds)}s</li>`).join("")}</ul></section>`;
+        }
 
         function pendingApprovalRequestOptions(identity, confirmRemovals = false) {
             const body = { ...identity };

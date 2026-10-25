@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"debian-updater/internal/jobs"
+	"debian-updater/internal/postchecks"
 	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
 )
@@ -81,6 +82,9 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 		d.LoadPostUpdateCheckConfig = func() PostUpdateCheckConfig {
 			return PostUpdateCheckConfig{Enabled: true, BlockOnAptHealth: true, BlockOnFailedUnits: true, RebootRequiredWarning: true}
 		}
+	}
+	if d.LoadApplicationPostchecks == nil {
+		d.LoadApplicationPostchecks = func(servers.Server) (*postchecks.Snapshot, error) { return nil, nil }
 	}
 	if d.LoadScheduledJobBehavior == nil {
 		d.LoadScheduledJobBehavior = func(string) ScheduledJobBehavior { return ScheduledJobBehavior{ApprovalTimeout: 30 * time.Minute} }
@@ -214,12 +218,14 @@ type withActorRunner struct {
 	precheckFailed  string
 	precheckResults []PrecheckResult
 
-	postchecksEnabled bool
-	postchecksPassed  bool
-	postcheckFailed   string
-	postcheckWarnings int
-	postcheckResults  []PrecheckResult
-	upgradeCompleted  bool
+	applicationProfile *postchecks.Snapshot
+	applicationResults []postchecks.Result
+	postchecksEnabled  bool
+	postchecksPassed   bool
+	postcheckFailed    string
+	postcheckWarnings  int
+	postcheckResults   []PrecheckResult
+	upgradeCompleted   bool
 
 	preUpdateFailedUnits []string
 	retryLogFormats      map[string]string
@@ -787,6 +793,8 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 		"prechecks_passed":              r.prechecksPassed,
 		"precheck_failed":               r.precheckFailed,
 		"precheck_results":              r.precheckResults,
+		"application_postcheck_profile": r.applicationProfile,
+		"application_postcheck_results": r.applicationResults,
 		"postchecks_enabled":            r.postchecksEnabled,
 		"postchecks_passed":             r.postchecksPassed,
 		"postcheck_failed":              r.postcheckFailed,
@@ -879,7 +887,22 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 		func(r *withActorRunner) {
 			maintenanceCtx := r.maintenanceContext()
 			r.setJobPhase(jobs.PhasePrechecks)
-			r.postchecksEnabled = postcheckCfg.Enabled
+			if err := r.captureApplicationProfile(); err != nil {
+				r.lastErrClass = "postcheck_configuration"
+				r.setErrorLogs("Application post-check configuration unavailable: " + err.Error())
+				return
+			}
+			isBlocking := func(name string, cfg PostUpdateCheckConfig) bool {
+				if r.applicationProfile != nil {
+					for _, check := range r.applicationProfile.Checks {
+						if name == "application/"+check.ID {
+							return check.Mode == "blocking"
+						}
+					}
+				}
+				return deps.IsPostcheckFailureBlocking(name, cfg)
+			}
+			r.postchecksEnabled = postcheckCfg.Enabled || r.applicationProfile != nil
 			r.appendStatusLog("\nRunning pre-checks...")
 
 			precheckSummary := r.session.RunUpdatePrechecks(maintenanceCtx)
@@ -1028,6 +1051,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					status.Upgradable = nil
 					status.PendingUpdates = nil
 					status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
+					status.ApplicationPostcheckProfile = postchecks.CloneSnapshot(r.applicationProfile)
 					status.Logs += "\nPlan-aware disk pre-check failed. Update aborted before approval or package mutation."
 				})
 				return
@@ -1050,6 +1074,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					status.Upgradable = append([]string(nil), discovery.Upgradable...)
 					status.PendingUpdates = servers.ClonePendingUpdates(discovery.PendingUpdates)
 					status.UpgradePlan = servers.CloneUpgradePlan(discovery.UpgradePlan)
+					status.ApplicationPostcheckProfile = postchecks.CloneSnapshot(r.applicationProfile)
 					status.Logs = logs + "\nUpgradable packages:\n" + strings.Join(discovery.Upgradable, "\n")
 				}) {
 					return
@@ -1187,6 +1212,17 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					changed = false
 				}
 
+				profileChanged, profileErr := r.applicationProfileChanged()
+				if profileErr != nil {
+					r.lastErrClass = "postcheck_configuration"
+					r.setErrorLogs(r.currentLogs() + "\nApplication post-check revalidation failed: " + profileErr.Error())
+					return
+				}
+				if profileChanged {
+					r.postchecksEnabled = postcheckCfg.Enabled || r.applicationProfile != nil
+					changed = true
+					r.appendStatusLog("\nApplication post-check profile changed. Review the refreshed expectations and approve again.")
+				}
 				if !changed {
 					break
 				}
@@ -1270,7 +1306,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 			r.upgradeCompleted = true
 
-			if !postcheckCfg.Enabled {
+			if !postcheckCfg.Enabled && r.applicationProfile == nil {
 				r.postchecksPassed = true
 				if !r.refreshFactsAfterSuccessfulUpdate() {
 					return
@@ -1296,13 +1332,25 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during post-update health checks.") {
 				return
 			}
-			postcheckSummary := applyPostcheckPolicy(inspectionSummary.Results, postcheckCfg, deps.IsPostcheckFailureBlocking)
+			r.applicationResults = runApplicationChecks(maintenanceCtx, r.session, r.applicationProfile, deps.Now, deps.SleepContext)
+			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during application post-checks.") {
+				return
+			}
+			if err := r.persistApplicationChecks(); err != nil {
+				r.lastErrClass = "persistence"
+				r.setErrorLogs(r.currentLogs() + "\nCould not persist application post-check results.")
+				return
+			}
+			for _, result := range r.applicationResults {
+				inspectionSummary.Results = append(inspectionSummary.Results, PrecheckResult{Name: "application/" + result.ID, Passed: result.Passed, Details: result.Details})
+			}
+			postcheckSummary := applyPostcheckPolicy(inspectionSummary.Results, postcheckCfg, isBlocking)
 			r.postcheckResults = postcheckSummary.Results
 			r.postcheckWarnings = postcheckSummary.Warnings
 			for _, result := range postcheckSummary.Results {
 				state := "PASS"
 				if !result.Passed {
-					if deps.IsPostcheckFailureBlocking(result.Name, postcheckCfg) {
+					if isBlocking(result.Name, postcheckCfg) {
 						state = "FAIL"
 					} else {
 						state = "WARN"
@@ -1319,7 +1367,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				r.postchecksPassed = false
 				logs := r.currentLogs() + fmt.Sprintf("\nUpgrade completed but post-check failed (%s).", postcheckSummary.FailedCheck)
 				if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && failedCheckResultsHaveSudoPolicyError(postcheckSummary.Results, func(name string) bool {
-					return deps.IsPostcheckFailureBlocking(name, postcheckCfg)
+					return isBlocking(name, postcheckCfg)
 				}) {
 					r.lastErrClass = "sudo_policy"
 					_ = r.withStatus(func(status *servers.ServerStatus) {

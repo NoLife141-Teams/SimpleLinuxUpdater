@@ -9,6 +9,7 @@ import (
 	"debian-updater/internal/health"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
+	"debian-updater/internal/postchecks"
 	"debian-updater/internal/servers"
 )
 
@@ -229,6 +230,7 @@ type ServiceDeps struct {
 	JobTimestampNow              func() string
 	LoadCommandTimeout           func() time.Duration
 	LoadPostUpdateCheckConfig    func() PostUpdateCheckConfig
+	LoadApplicationPostchecks    func(servers.Server) (*postchecks.Snapshot, error)
 	LoadScheduledJobBehavior     func(string) ScheduledJobBehavior
 	WaitForApprovalPoll          func()
 	WaitForApprovalPollContext   func(context.Context) error

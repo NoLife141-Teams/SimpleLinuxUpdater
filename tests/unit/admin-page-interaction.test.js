@@ -668,6 +668,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
     assert.deepEqual(store.getView().workspace.sections.map(section => section.id), [
         "app-time",
         "notifications",
+        "application-checks",
         "account-security",
         "recent-activity",
         "scheduled-policies",
@@ -689,6 +690,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
     assert.deepEqual(summaries, {
         "app-time": "America/Toronto",
         "notifications": "1 destination enabled",
+        "application-checks": "0 saved profiles",
         "account-security": "5 active sessions",
         "recent-activity": "1 recent event",
         "scheduled-policies": "2 saved policies",
@@ -893,4 +895,29 @@ test("notification reminders are opt-in, validated, and retained independently o
     store.dispatch({ type: "commandCompleted", plan, data: plan.payload });
     assert.equal(store.getView().notifications.remindersEnabled, true);
     assert.equal(store.getView().notifications.dirty, false);
+});
+
+test("application post-check drafts preserve saved revisions and reject stale responses", () => {
+    const store=createStore();
+    const dispatch=(type,data={})=>store.dispatch({type:`postcheck:${type}`,...data});
+    dispatch("request");const first=store.getView().postchecks.requestID;
+    dispatch("loaded",{requestID:first,data:{revision:3,profiles:[]}});
+    dispatch("new");dispatch("addCheck");dispatch("profile",{patch:{name:"Web",target_servers:["web-01"]}});
+    let view=store.getView();assert.equal(view.postchecks.dirty,true);assert.ok(view.dirtySections.includes("application-checks"));
+    dispatch("check",{index:0,patch:{kind:"systemd_active"}});
+    assert.equal(store.getView().postchecks.draft.profiles[0].checks[0].url,undefined);
+    dispatch("request");const second=store.getView().postchecks.requestID;
+    dispatch("profile",{patch:{name:"Edit while saving"}});
+    assert.equal(store.getView().postchecks.draft.profiles[0].name,"Web");
+    dispatch("loaded",{requestID:first,data:{revision:0,profiles:[]}});
+    assert.equal(store.getView().postchecks.busy,true);
+    const saved=store.getView().postchecks.draft;saved.revision=4;saved.profiles[0].revision=1;
+    dispatch("saved",{requestID:second,data:saved});
+    assert.equal(store.getView().postchecks.dirty,false);
+    dispatch("request");dispatch("tested",{requestID:store.getView().postchecks.requestID,data:{profile:saved.profiles[0],results:[]}});
+    assert.ok(store.getView().postchecks.testResults);
+    dispatch("check",{index:0,patch:{mode:"warning"}});
+    assert.equal(store.getView().postchecks.testResults,null);
+    dispatch("discard");assert.equal(store.getView().postchecks.dirty,false);
+    dispatch("delete");assert.equal(store.getView().postchecks.draft.profiles.length,0);
 });

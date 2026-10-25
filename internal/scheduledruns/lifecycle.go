@@ -1003,9 +1003,7 @@ func (l *Lifecycle) UpdateJobDiscovery(jobID string, discovery updates.PackageDi
 		return
 	}
 	cloned := discovery.Clone()
-	meta.Discovery = &cloned
-	metaJSON := jobs.MarshalJSON(meta)
-	if err := jm.Transition(jobID, jobs.Intent{MetaJSON: &metaJSON}); err != nil {
+	if err := jm.MergeActiveMetadata(jobID, map[string]any{"discovery": &cloned}); err != nil {
 		log.Printf("failed to persist scheduled discovery meta for job %q: %v", jobID, err)
 	}
 }

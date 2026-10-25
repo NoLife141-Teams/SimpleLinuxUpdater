@@ -1781,11 +1781,17 @@ test.describe.serial('setup and login flows', () => {
         await expect(page.locator('#servers-table tr[data-name="installed-host"] .status-pill')).toHaveClass(/status-vulnerability_scan/);
       } else if (state !== 'complete') {
         await section.locator('summary').click();
+        await expect(section.locator('details')).toHaveAttribute('open', '');
+        await page.evaluate(() => window.fetchDashboardSummary(true));
+        await expect(section.locator('details')).toHaveAttribute('open', '');
         await expect(section).toContainText('CVE-2026-1000');
         await expect(section).toContainText('No newer candidate available');
         await expect(section).toContainText('Severity: unknown');
         await expect(section).toContainText('Age: 24 days');
         if (state === 'unavailable') await expect(section).toContainText('Freshness: stale');
+        await section.locator('summary').click();
+        await page.evaluate(() => window.fetchDashboardSummary(true));
+        await expect(section.locator('details')).not.toHaveAttribute('open', '');
       } else {
         await expect(section).toContainText('No findings in evaluated packages');
         await expect(section).not.toContainText('CVE-2026-1000');

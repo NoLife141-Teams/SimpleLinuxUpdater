@@ -13,6 +13,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
         let hoveredName = null;
 	        let expandedHostFactsServers = new Set();
+	        let expandedInstalledVulnerabilityServers = new Set();
 	        let expandedMiniLists = new Set();
 	        let expandedCVEFindings = new Set();
 	        let activePhaseTooltipTarget = null;
@@ -895,6 +896,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const info = selected.vulnerability;
             const action = selected.actions.scan_vulnerabilities || {};
             if (!info) return "";
+            const findingsOpen = expandedInstalledVulnerabilityServers.has(selected.server.name);
             const findings = info.findings.map(finding => `<li>
                 <strong>${escapeHtml(finding.id)} · ${escapeHtml(finding.package)}</strong>
                 <p>Severity: ${escapeHtml(finding.severity || "unknown")} · ${escapeHtml(finding.dispositionLabel)}</p>
@@ -911,7 +913,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
                 ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
                 <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
-                ${findings ? `<details><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
+                ${findings ? `<details class="installed-vulnerability-findings" data-name="${safeDataName}" ${findingsOpen ? "open" : ""}><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
                 <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
             </section>`;
         }
@@ -2845,13 +2847,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         });
         document.getElementById('selected-host-panel').addEventListener('toggle', (e) => {
             const details = e.target;
-            if (!details?.matches?.('details.facts-more')) return;
+            if (!details?.matches?.('details.facts-more, details.installed-vulnerability-findings')) return;
             const hostName = details.dataset.name || getStatusView().primaryServerName;
             if (!hostName) return;
+            const expandedServers = details.matches('details.facts-more') ? expandedHostFactsServers : expandedInstalledVulnerabilityServers;
             if (details.open) {
-                expandedHostFactsServers.add(hostName);
+                expandedServers.add(hostName);
             } else {
-                expandedHostFactsServers.delete(hostName);
+                expandedServers.delete(hostName);
             }
         }, true);
 

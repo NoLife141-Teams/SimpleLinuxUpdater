@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	notificationpkg "debian-updater/internal/notifications"
+
+	"modernc.org/sqlite"
 )
 
 func conditionSourceDB(t *testing.T) *sql.DB {
@@ -23,6 +26,169 @@ func conditionSourceDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
+}
+
+// Interleave a second SQLite connection immediately after one source query has
+// finished, without relying on scheduling or sleeps.
+type conditionReadConnector struct {
+	base      driver.Driver
+	path      string
+	afterRead func(string)
+}
+
+func (c *conditionReadConnector) Connect(context.Context) (driver.Conn, error) {
+	conn, err := c.base.Open(c.path)
+	if err != nil {
+		return nil, err
+	}
+	return &conditionReadConn{Conn: conn, afterRead: c.afterRead}, nil
+}
+
+func (c *conditionReadConnector) Driver() driver.Driver { return &sqlite.Driver{} }
+
+type conditionReadConn struct {
+	driver.Conn
+	afterRead func(string)
+}
+
+func (c *conditionReadConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return &conditionReadRows{Rows: rows, afterClose: func() { c.afterRead(query) }}, nil
+}
+
+func (c *conditionReadConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+}
+
+type conditionReadRows struct {
+	driver.Rows
+	afterClose func()
+}
+
+func (r *conditionReadRows) Close() error {
+	err := r.Rows.Close()
+	if r.afterClose != nil {
+		r.afterClose()
+		r.afterClose = nil
+	}
+	return err
+}
+
+func interleavedConditionDB(t *testing.T, afterRead func(string)) (*sql.DB, *sql.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "interleaved.db")
+	writer, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	if _, err := writer.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSchema(writer); err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(&conditionReadConnector{base: &sqlite.Driver{}, path: path, afterRead: afterRead})
+	t.Cleanup(func() { _ = db.Close() })
+	return db, writer
+}
+
+func TestNotificationSourceKeepsApprovalGenerationAndAuditCursorConsistent(t *testing.T) {
+	var writer *sql.DB
+	interleaved := false
+	db, writeDB := interleavedConditionDB(t, func(query string) {
+		if interleaved || !strings.Contains(query, "FROM audit_events WHERE id>?") {
+			return
+		}
+		interleaved = true
+		appendConditionAudit(t, writer, "2026-10-25T12:00:00Z", "approval.published", "success", `{"job_id":"job","approval_generation":1}`)
+		if _, err := writer.Exec(`UPDATE jobs SET meta_json='{"approval_generation":2}' WHERE id='job'`); err != nil {
+			t.Fatal(err)
+		}
+		appendConditionAudit(t, writer, "2026-10-25T12:00:01Z", "approval.published", "success", `{"job_id":"job","approval_generation":2}`)
+	})
+	writer = writeDB
+	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at) VALUES('job','update','test','tester','waiting_approval','{"approval_generation":1}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now)
+	batch, err := source(context.Background(), "", nil)
+	if err != nil {
+		// A concurrent write can invalidate SQLite's read-to-write upgrade. The
+		// entire observation must then be retried with the unchanged cursor.
+		batch, err = source(context.Background(), "", nil)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursor notificationFactCursor
+	if err := json.Unmarshal([]byte(batch.Cursor), &cursor); err != nil {
+		t.Fatal(err)
+	}
+	if !interleaved || lastConditionFact(batch.Facts, "approval/job").Generation != "2" || cursor.Audit != 2 {
+		t.Fatalf("job generation advanced beyond consumed audits: cursor=%+v facts=%+v", cursor, batch.Facts)
+	}
+	next, err := source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range next.Facts {
+		if fact.ID == "approval/job" && fact.Generation != "2" {
+			t.Fatalf("replayed an obsolete generation: %+v", fact)
+		}
+	}
+}
+
+func TestNotificationSourceKeepsServerIdentityConsistentDuringRename(t *testing.T) {
+	var writer *sql.DB
+	interleaved := false
+	var renameErr error
+	rename := func() error {
+		_, err := writer.Exec(`BEGIN; UPDATE servers SET name='renamed' WHERE name='test'; UPDATE notification_server_identities SET server_name='renamed' WHERE server_name='test'; UPDATE server_health_snapshots SET server_name='renamed' WHERE server_name='test'; COMMIT`)
+		if err != nil {
+			_, _ = writer.Exec(`ROLLBACK`)
+		}
+		return err
+	}
+	db, writeDB := interleavedConditionDB(t, func(query string) {
+		if interleaved || !strings.Contains(query, "SELECT n.server_name,n.identity") {
+			return
+		}
+		interleaved = true
+		renameErr = rename()
+	})
+	writer = writeDB
+	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('test','2026-10-25T12:00:00Z',1)`); err != nil {
+		t.Fatal(err)
+	}
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now)
+	batch, err := source(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity string
+	if err := writer.QueryRow(`SELECT identity FROM notification_server_identities`).Scan(&identity); err != nil {
+		t.Fatal(err)
+	}
+	if !interleaved || !lastConditionFact(batch.Facts, "reboot/"+identity).Active {
+		t.Fatalf("rename detached confirmed health from the durable Server identity: %+v", batch.Facts)
+	}
+	if renameErr != nil {
+		if err := rename(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, err := source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := lastConditionFact(next.Facts, "reboot/"+identity)
+	if !fact.Active || fact.TargetName != "renamed" {
+		t.Fatalf("rename lost the accepted reboot condition: %+v", fact)
+	}
 }
 func appendConditionAudit(t *testing.T, db *sql.DB, at, action, status, meta string) {
 	t.Helper()

@@ -18,6 +18,10 @@ type notificationFactCursor struct {
 	Health int64
 }
 
+type notificationFactQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 // The adapter reads accepted server facts, never browser projections. Audit and
 // health cursors belong to Notification Delivery Lifecycle and commit with admission.
 func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time) notificationpkg.ConditionSource {
@@ -28,6 +32,14 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		if db == nil {
 			return batch, fmt.Errorf("notification fact database unavailable")
 		}
+		// Keep cursor reads, Server identities and the corresponding current job
+		// and health facts in one SQLite snapshot. Mixing revisions can replay an
+		// older approval generation or consume health under a temporary identity.
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return batch, err
+		}
+		defer func() { _ = tx.Rollback() }()
 		cursor := notificationFactCursor{}
 		restored := cursorText == "restore"
 		batch.Rebased = restored
@@ -37,17 +49,17 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 			}
 		}
 		if restored {
-			if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM audit_events`).Scan(&cursor.Audit); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM audit_events`).Scan(&cursor.Audit); err != nil {
 				return batch, err
 			}
 		}
-		facts, auditID, err := notificationAuditFacts(ctx, db, cursor.Audit)
+		facts, auditID, err := notificationAuditFacts(ctx, tx, cursor.Audit)
 		if err != nil {
 			return batch, err
 		}
 		batch.Facts = append(batch.Facts, facts...)
 		if restored {
-			restoredFacts, _, err := notificationAuditFacts(ctx, db, 0)
+			restoredFacts, _, err := notificationAuditFacts(ctx, tx, 0)
 			if err != nil {
 				return batch, err
 			}
@@ -73,15 +85,15 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 				if fact.EventType != notificationpkg.EventRebootRequired || !strings.HasPrefix(fact.ID, "reboot/") {
 					continue
 				}
-				if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT ?,? WHERE EXISTS(SELECT 1 FROM servers WHERE name=?)`, fact.TargetName, strings.TrimPrefix(fact.ID, "reboot/"), fact.TargetName); err != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT ?,? WHERE EXISTS(SELECT 1 FROM servers WHERE name=?)`, fact.TargetName, strings.TrimPrefix(fact.ID, "reboot/"), fact.TargetName); err != nil {
 					return batch, err
 				}
 			}
 		}
-		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT name,lower(hex(randomblob(16))) FROM servers WHERE name NOT IN (SELECT server_name FROM notification_server_identities)`); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT name,lower(hex(randomblob(16))) FROM servers WHERE name NOT IN (SELECT server_name FROM notification_server_identities)`); err != nil {
 			return batch, err
 		}
-		identities, err := db.QueryContext(ctx, `SELECT n.server_name,n.identity FROM notification_server_identities n JOIN servers s ON s.name=n.server_name`)
+		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity FROM notification_server_identities n JOIN servers s ON s.name=n.server_name`)
 		if err != nil {
 			return batch, err
 		}
@@ -115,7 +127,7 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 			batch.Facts = append(batch.Facts, fact)
 		}
 
-		healthFacts, healthID, err := notificationHealthFacts(ctx, db, cursor.Health, rebootIDs, restored)
+		healthFacts, healthID, err := notificationHealthFacts(ctx, tx, cursor.Health, rebootIDs, restored)
 		if err != nil {
 			return batch, err
 		}
@@ -134,7 +146,7 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 				approvals[fact.ID] = fact
 			}
 		}
-		waiting, err := db.QueryContext(ctx, `SELECT id,server_name,meta_json,updated_at FROM jobs WHERE status='waiting_approval'`)
+		waiting, err := tx.QueryContext(ctx, `SELECT id,server_name,meta_json,updated_at FROM jobs WHERE status='waiting_approval'`)
 		if err != nil {
 			return batch, err
 		}
@@ -169,12 +181,12 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 			}
 			_ = json.Unmarshal([]byte(fact.MetaJSON), &meta)
 			var status, name string
-			err := db.QueryRowContext(ctx, `SELECT status,server_name FROM jobs WHERE id=?`, meta.JobID).Scan(&status, &name)
+			err := tx.QueryRowContext(ctx, `SELECT status,server_name FROM jobs WHERE id=?`, meta.JobID).Scan(&status, &name)
 			if err != nil && err != sql.ErrNoRows {
 				return batch, err
 			}
 			var exists int
-			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, name).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, name).Scan(&exists); err != nil {
 				return batch, err
 			}
 			if status != "waiting_approval" || exists == 0 {
@@ -184,6 +196,11 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 			}
 			batch.Facts = append(batch.Facts, fact)
 		}
+		if err := tx.Commit(); err != nil {
+			return batch, err
+		}
+		// Recovery coverage has no cursor or Server identity dependency. Release
+		// the connection before asking its service for this independent projection.
 		health, err := recovery.RecoveryHealth(ctx)
 		if err == nil && health.State != backuppkg.RecoveryStateUnavailable {
 			missing := health.Export.LastSuccessAt == "" || health.Verification.LastSuccessAt == ""
@@ -206,7 +223,7 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 	}
 }
 
-func notificationAuditFacts(ctx context.Context, db *sql.DB, after int64) ([]notificationpkg.ConditionFact, int64, error) {
+func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, after int64) ([]notificationpkg.ConditionFact, int64, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at,action,target_name,status,meta_json FROM audit_events WHERE id>? ORDER BY id`, after)
 	if err != nil {
 		return nil, after, err
@@ -259,7 +276,7 @@ func notificationAuditFacts(ctx context.Context, db *sql.DB, after int64) ([]not
 	return facts, after, rows.Err()
 }
 
-func notificationHealthFacts(ctx context.Context, db *sql.DB, after int64, identities map[string]string, restored bool) ([]notificationpkg.ConditionFact, int64, error) {
+func notificationHealthFacts(ctx context.Context, db notificationFactQuerier, after int64, identities map[string]string, restored bool) ([]notificationpkg.ConditionFact, int64, error) {
 	query := `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM server_health_snapshots h JOIN servers s ON s.name=h.server_name WHERE h.id>? AND h.reboot_required IS NOT NULL ORDER BY h.id`
 	if restored {
 		query = `SELECT h.id,h.server_name,h.captured_at,h.reboot_required FROM server_health_snapshots h JOIN servers s ON s.name=h.server_name WHERE h.reboot_required IS NOT NULL AND h.id=(SELECT h2.id FROM server_health_snapshots h2 WHERE h2.server_name=h.server_name AND h2.reboot_required IS NOT NULL ORDER BY h2.captured_at DESC,h2.id DESC LIMIT 1) AND h.id>? ORDER BY h.id`

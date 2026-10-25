@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	runtimepkg "debian-updater/internal/runtime"
+	"debian-updater/internal/vulnerabilities"
 )
 
 var (
@@ -150,13 +151,7 @@ type PendingUpdate struct {
 	Raw                    string                 `json:"raw"`
 }
 
-type VulnerabilityFinding struct {
-	ID             string `json:"id"`
-	Disposition    string `json:"disposition"`
-	AdvisoryURL    string `json:"advisory_url,omitempty"`
-	Source         string `json:"source,omitempty"`
-	FixedByVersion string `json:"fixed_by_version,omitempty"`
-}
+type VulnerabilityFinding = vulnerabilities.Finding
 
 type UpgradePlan struct {
 	StandardPackageCount             int      `json:"standard_package_count"`

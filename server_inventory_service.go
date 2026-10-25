@@ -8,6 +8,7 @@ import (
 	healthpkg "debian-updater/internal/health"
 	jobspkg "debian-updater/internal/jobs"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -75,6 +76,8 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenamePolicyOverridesServer:    renameUpdatePolicyOverridesServerTx,
 		RenamePolicyTargetServers:      renameUpdatePolicyTargetServersTx,
 		RenameJobsServer:               jobspkg.RenameServerTx,
+		RenameVulnerabilityObservation: vulnerabilities.RenameServerTx,
+		DeleteVulnerabilityObservation: vulnerabilities.DeleteServerTx,
 		RenameServerFacts:              observation.RenameServerTx,
 		DeleteServerFacts:              observation.DeleteServerTx,
 		InvalidateServerEndpoint:       observation.InvalidateEndpointTx,

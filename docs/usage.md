@@ -416,3 +416,28 @@ Cons:
 - SimpleLinuxUpdater: if you want a simple web UI to manage Debian/Ubuntu updates without scripts or playbooks
 - Shell/script automation: if you are comfortable with shell and want quick, custom control
 - Ansible-style automation: if you need large-scale automation, configuration, and repeatability across environments
+
+## Installed-package vulnerability scans
+
+Select a host on Status, then use **Scan vulnerabilities**. The asynchronous, read-only action inventories installed DPKG packages, including those without a newer APT candidate. It does not run `apt-get update`, modify packages, create update jobs, or ask for approval. Consequently candidate/provenance evidence reflects the host's existing APT indexes. Disabled servers and servers with another active action, including pending approval, cannot start a scan. Backup restore/export and shutdown use the existing Maintenance Coordination and Host Maintenance Session boundaries.
+
+The panel separates:
+
+- **State:** never scanned, running, unavailable, partial, or complete.
+- **Coverage:** inventoried, evaluated, unknown, and unsupported package counts.
+- **Freshness:** accepted inventory timestamp and last complete success, distinct from the latest attempt. Failed scans preserve the previous accepted result and mark it stale.
+- **Result and severity:** confirmed exposure, no findings in evaluated packages, or inconclusive. A confirmed CVE with no usable severity is `unknown`, never automatically critical.
+
+Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` means no different candidate was found; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. Only a complete successful scan with verified installed provenance and a stable before/after inventory can resolve absent findings. A reappearing finding keeps its original `first_seen`.
+
+Scan observations are persisted in SQLite and included in backups. Renaming a Server preserves its ledger; deletion removes it. Changing its SSH endpoint clears the old endpoint's observation. Restore reuses restored observations, without a separate runtime cache.
+
+Authenticated API additions: `POST /api/servers/:name/vulnerabilities/scan` returns `202` after admission (`409` if disabled/busy/unavailable; `404` for a missing server). `GET /api/servers/:name/vulnerabilities` returns the full observation, package inventory, last attempt, accepted result and finding ledger, including resolved entries. Dashboard Projection adds `risk.vulnerability` and fleet scan-state counters; existing API fields remain available. The legacy `high_risk_cve` fleet counter continues to mean hosts with confirmed exposure, regardless of severity.
+
+### Source limits
+
+Queries use source-package identities and the existing Debian/Ubuntu archive signature/provenance checks. Supported ecosystems remain Debian 12/13 and Ubuntu 22.04/24.04/26.04. Installed versions missing from local APT metadata, unsigned or third-party origins, and unsupported distributions are not classified as clean. An installed scan requires verified installed provenance; the more permissive approval enrichment label `official_installed_unverified` is not sufficient to resolve findings.
+
+[OSV querybatch](https://google.github.io/osv.dev/post-v1-querybatch/) returns advisory references. The installed scanner retrieves [advisory details](https://google.github.io/osv.dev/get-v1-vulns/) for severity. It interprets complete CVSS v3.0/v3.1 base vectors using the [FIRST equations](https://www.first.org/cvss/v3.1/specification-document#7-1-Base-Metrics-Equations), preserving source, type, and original vector. Missing, malformed, unsupported, or unavailable severity remains unknown. CVSS v2/v4 and temporal/environmental vectors are not scored. Advisory lookup failures retain findings and report a partial scan. Previously sourced severity is retained with its original observation timestamp and shown as stale evidence when it cannot be refreshed. Database priority/urgency is not treated as CVSS. Severity detail lookups beyond the per-scan bound remain unknown.
+
+OSV and distribution trackers can be incomplete or delayed, and version-based assessment does not prove exploitability or inspect locally rebuilt files. A complete scan with no findings means no findings in the supported, verified packages evaluated at that time. It is not proof that the host has no vulnerabilities. Container/application dependencies, network testing, and package removals are outside this feature. Package ecosystem, source name, installed version, and candidate version are sent to OSV; host credentials are not.

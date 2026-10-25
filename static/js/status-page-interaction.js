@@ -24,7 +24,7 @@
         "autoremove",
         "repairing",
         "sudoers",
-        "facts_refresh", "rebooting"
+        "facts_refresh", "vulnerability_scan", "rebooting"
     ]);
 
     const legacyActionFields = Object.freeze({
@@ -43,9 +43,9 @@
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
     const allowedSortKeys = new Set(["name", "status"]);
-    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
+    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "scan_vulnerabilities", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
 
     function cloneValue(value) {

@@ -243,8 +243,8 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 		t.Fatalf("server count = %d, want 1", len(summary.Servers))
 	}
 	got := summary.Servers[0]
-	if got.Risk.Level != "critical" || len(got.Risk.CVEs) != 1 {
-		t.Fatalf("risk = %+v, want critical CVE risk", got.Risk)
+	if got.Risk.Level != "unknown" || len(got.Risk.CVEs) != 1 {
+		t.Fatalf("risk = %+v, want unknown CVE severity", got.Risk)
 	}
 	if got.LastUpdate == nil || got.LastUpdate.DurationMS != 300 {
 		t.Fatalf("last update = %+v, want duration 300", got.LastUpdate)
@@ -270,8 +270,8 @@ func TestServiceBuildDashboardSummaryUsesInjectedState(t *testing.T) {
 	if got.ApprovalTriage.CanRefreshFacts || got.ApprovalTriage.CanRunChecks {
 		t.Fatalf("approval transient actions = %+v, want locked while waiting for approval", got.ApprovalTriage)
 	}
-	if got.ApprovalTriage.FactsState != "fresh" || got.ApprovalTriage.RiskOrder != 4 {
-		t.Fatalf("approval freshness/risk = %+v, want fresh critical ordering", got.ApprovalTriage)
+	if got.ApprovalTriage.FactsState != "fresh" || got.ApprovalTriage.RiskOrder != 1 {
+		t.Fatalf("approval freshness/risk = %+v, want fresh unknown-severity ordering", got.ApprovalTriage)
 	}
 	if summary.Fleet["pending_approval"] != 1 || summary.Fleet["high_risk_cve"] != 1 || summary.Fleet["pending_packages"] != 1 || summary.Fleet["security_updates"] != 1 {
 		t.Fatalf("fleet counts = %+v, want pending approval/high risk/package/security counts", summary.Fleet)
@@ -454,15 +454,17 @@ func TestServiceBuildDashboardSummaryEmptyContract(t *testing.T) {
 		To:          now.Format(time.RFC3339),
 		GeneratedAt: now.Format(time.RFC3339),
 		Fleet: map[string]any{
-			"pending_approval":     0,
-			"prechecks_running":    0,
-			"in_progress":          0,
-			"done":                 0,
-			"pending_packages":     0,
-			"security_updates":     0,
-			"high_risk_cve":        0,
-			"hosts_needing_reboot": 0,
-			"stale_facts":          0,
+			"pending_approval":          0,
+			"prechecks_running":         0,
+			"in_progress":               0,
+			"done":                      0,
+			"pending_packages":          0,
+			"security_updates":          0,
+			"high_risk_cve":             0,
+			"hosts_needing_reboot":      0,
+			"stale_facts":               0,
+			"vulnerability_scan_states": map[string]int{},
+			"stale_vulnerability_scans": 0,
 		},
 		Servers: []DashboardServerSummary{},
 	})

@@ -64,6 +64,10 @@ func (c dashboardProjectionCollector) CollectContextWithOptions(ctx context.Cont
 	for _, server := range serversSnapshot {
 		serverNames = append(serverNames, server.Name)
 	}
+	vulnerabilityByName, err := c.deps.VulnerabilityObservations(ctx)
+	if err != nil {
+		return dashboardProjectionInput{}, err
+	}
 	readinessByName := c.deps.MaintenanceReadiness(serversSnapshot)
 	facts, err := c.deps.HostHealthObservation.Latest()
 	if err != nil {
@@ -118,17 +122,22 @@ func (c dashboardProjectionCollector) CollectContextWithOptions(ctx context.Cont
 		timeline := buildDashboardTimeline(timelineSource, c.deps, loc, timezoneName)
 		failure := c.collectMaintenanceFailure(status, latestUpdateJob, agg.projection.lastFailure)
 		input.servers = append(input.servers, dashboardServerProjectionInput{
-			server:         server,
-			status:         status,
-			health:         health,
-			failure:        failure,
-			readiness:      readinessByName[server.Name],
-			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
-			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
-			timeline:       timeline,
-			triageTime:     c.collectTriageTime(health, agg.projection.lastSuccess, timeline, now, loc, timezoneName),
-			updateHistory:  agg.projection,
-			commandHistory: commandHistory[server.Name],
+			server:                   server,
+			vulnerability:            vulnerabilityByName[server.Name],
+			vulnerabilityTargetDays:  c.deps.VulnerabilityTargetDays,
+			vulnerabilityMaxAge:      c.deps.VulnerabilityMaxAge,
+			vulnerabilityScanEnabled: c.deps.VulnerabilityScanEnabled,
+			now:                      now,
+			status:                   status,
+			health:                   health,
+			failure:                  failure,
+			readiness:                readinessByName[server.Name],
+			nextRun:                  dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
+			noRun:                    dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
+			timeline:                 timeline,
+			triageTime:               c.collectTriageTime(health, agg.projection.lastSuccess, timeline, now, loc, timezoneName),
+			updateHistory:            agg.projection,
+			commandHistory:           commandHistory[server.Name],
 		})
 	}
 	return input, nil

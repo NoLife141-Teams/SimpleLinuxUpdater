@@ -162,6 +162,8 @@ type ServiceDeps struct {
 	RenamePolicyOverridesServer    func(*sql.Tx, string, string) error
 	RenamePolicyTargetServers      func(*sql.Tx, string, string) error
 	RenameJobsServer               func(*sql.Tx, string, string) error
+	RenameVulnerabilityObservation func(*sql.Tx, string, string) error
+	DeleteVulnerabilityObservation func(*sql.Tx, string) error
 	RenameServerFacts              func(*sql.Tx, string, string) error
 	DeleteServerFacts              func(*sql.Tx, string) error
 	InvalidateServerEndpoint       func(*sql.Tx, string, string, string) error
@@ -377,6 +379,11 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 						return err
 					}
 				}
+				if s.deps.RenameVulnerabilityObservation != nil {
+					if err := s.deps.RenameVulnerabilityObservation(tx, oldServerName, newServerName); err != nil {
+						return err
+					}
+				}
 				if s.deps.RenameServerFacts != nil {
 					return s.deps.RenameServerFacts(tx, oldServerName, newServerName)
 				}
@@ -388,6 +395,11 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			txHook = func(tx *sql.Tx) error {
 				if previousHook != nil {
 					if err := previousHook(tx); err != nil {
+						return err
+					}
+				}
+				if s.deps.DeleteVulnerabilityObservation != nil {
+					if err := s.deps.DeleteVulnerabilityObservation(tx, server.Name); err != nil {
 						return err
 					}
 				}
@@ -433,6 +445,11 @@ func (s *Service) Delete(name string) error {
 		state.SetServers(append(currentServers[:i], currentServers[i+1:]...))
 		delete(state.StatusMap(), name)
 		txHook := func(tx *sql.Tx) error {
+			if s.deps.DeleteVulnerabilityObservation != nil {
+				if err := s.deps.DeleteVulnerabilityObservation(tx, name); err != nil {
+					return err
+				}
+			}
 			if s.deps.DeleteServerFacts == nil {
 				return nil
 			}

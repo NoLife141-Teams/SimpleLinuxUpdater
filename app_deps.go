@@ -18,8 +18,9 @@ import (
 )
 
 type AppDeps struct {
-	DB     func() *sql.DB
-	DBPath func() string
+	VulnerabilityScans *vulnerabilityScanLifecycle
+	DB                 func() *sql.DB
+	DBPath             func() string
 
 	AuditService              *AuditService
 	AuthService               *AuthService

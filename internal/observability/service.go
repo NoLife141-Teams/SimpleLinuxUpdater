@@ -18,6 +18,7 @@ import (
 	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
+	"debian-updater/internal/vulnerabilities"
 )
 
 type cacheEntry struct {
@@ -50,6 +51,14 @@ func (s *Service) EnsureDeps() ServiceDeps {
 }
 
 func (d ServiceDeps) withDefaults() ServiceDeps {
+	if d.VulnerabilityObservations == nil {
+		d.VulnerabilityObservations = func(context.Context) (map[string]vulnerabilities.Observation, error) {
+			return map[string]vulnerabilities.Observation{}, nil
+		}
+	}
+	if d.VulnerabilityMaxAge <= 0 {
+		d.VulnerabilityMaxAge = 24 * time.Hour
+	}
 	if d.CurrentTimezone == nil {
 		d.CurrentTimezone = func() (*time.Location, string) { return time.UTC, "UTC" }
 	}
@@ -433,7 +442,8 @@ func PrecheckResultsFromMeta(meta map[string]any, key string) []updates.Precheck
 }
 
 func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
-	risk := DashboardRiskInfo{Level: "unknown", Summary: "No package data", CVEs: []string{}}
+	risk := DashboardRiskInfo{Level: "unknown", Summary: "Installed packages not scanned", CVEs: []string{}}
+	severity := "unknown"
 	if status == nil {
 		return risk
 	}
@@ -448,6 +458,9 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 			risk.SecurityUpdates++
 		}
 		for _, finding := range update.CVEFindings {
+			if finding.SeveritySource != "" && vulnerabilities.SeverityRank(finding.Severity) > vulnerabilities.SeverityRank(severity) {
+				severity = finding.Severity
+			}
 			cve := strings.TrimSpace(finding.ID)
 			if cve == "" {
 				continue
@@ -462,8 +475,8 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 	sort.Strings(risk.CVEs)
 	switch {
 	case len(risk.CVEs) > 0:
-		risk.Level = "critical"
-		risk.Summary = fmt.Sprintf("%d CVE", len(risk.CVEs))
+		risk.Level = severity
+		risk.Summary = fmt.Sprintf("%d confirmed CVE · %s severity", len(risk.CVEs), severity)
 	case risk.SecurityUpdates > 0:
 		risk.Level = "elevated"
 		risk.Summary = fmt.Sprintf("%d security", risk.SecurityUpdates)
@@ -471,8 +484,8 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 		risk.Level = "normal"
 		risk.Summary = fmt.Sprintf("%d package", risk.PendingPackages)
 	default:
-		risk.Level = "normal"
-		risk.Summary = "No CVE exposure"
+		risk.Level = "unknown"
+		risk.Summary = "Installed packages not scanned"
 	}
 	return risk
 }
@@ -712,11 +725,11 @@ func statusLabelText(value string) string {
 
 func dashboardRiskOrder(level string) int {
 	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "critical":
+	case "critical", "high":
 		return 4
-	case "elevated":
+	case "elevated", "medium":
 		return 3
-	case "normal":
+	case "normal", "low":
 		return 2
 	default:
 		return 1

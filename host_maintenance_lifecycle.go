@@ -7,6 +7,7 @@ import (
 
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
+	"debian-updater/internal/vulnerabilities"
 )
 
 // lifecycleHostMaintenanceSessionFactory binds every SSH-backed maintenance
@@ -278,4 +279,14 @@ func mergeMaintenanceContexts(operation, lifecycle context.Context) (context.Con
 		stopLifecycle()
 		cancel()
 	}
+}
+
+func (s *lifecycleVulnerabilityScanner) ScanInstalled(ctx context.Context, session updatespkg.HostMaintenanceSession) (vulnerabilities.Scan, error) {
+	scanner, ok := s.inner.(updatespkg.InstalledVulnerabilityScanner)
+	if !ok {
+		return vulnerabilities.Scan{}, fmt.Errorf("installed vulnerability scanner is unavailable")
+	}
+	opCtx, cancel := mergeMaintenanceContexts(ctx, s.lifecycle)
+	defer cancel()
+	return scanner.ScanInstalled(opCtx, session)
 }

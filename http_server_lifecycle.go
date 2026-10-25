@@ -148,6 +148,9 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMai
 }
 
 func main() {
+	if _, err := loadVulnerabilityScanConfig(); err != nil {
+		log.Fatalf("Invalid vulnerability scan configuration: %v", err)
+	}
 	listenAddr, err := resolveListenAddr(os.Getenv)
 	if err != nil {
 		log.Fatalf("Invalid HTTP listen configuration: %v", err)
@@ -175,6 +178,9 @@ func main() {
 	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
 	}
+	if deps.VulnerabilityScans != nil {
+		deps.VulnerabilityScans.Start(shutdownCtx)
+	}
 	defer StopAuthRateLimiters()
 	server := newApplicationHTTPServer(listenAddr, sessionHandler(r))
 	shutdownDone := make(chan struct{})
@@ -182,6 +188,9 @@ func main() {
 		<-shutdownCtx.Done()
 		shutdownApplication(server, func() {
 			deps.PolicyService.WaitScheduler()
+			if deps.VulnerabilityScans != nil {
+				deps.VulnerabilityScans.Wait()
+			}
 			if deps.HostFactsRefreshWorker != nil {
 				deps.HostFactsRefreshWorker.Wait()
 			}

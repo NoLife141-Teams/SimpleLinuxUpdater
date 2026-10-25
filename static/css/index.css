@@ -608,6 +608,7 @@ body.status-page tbody tr:last-child td {
 .status-repairing,
 .status-rebooting,
 .status-facts_refresh,
+.status-vulnerability_scan,
 .status-waiting_approval,
 .status-skipped,
 .status-pending_approval,
@@ -3085,3 +3086,17 @@ body.status-page .table-wrap {
         justify-content: flex-start;
     }
 }
+
+.vulnerability-summary {
+    margin-block: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card-alt);
+    overflow-wrap: anywhere;
+}
+.vulnerability-summary h3 { margin-top: 0; }
+.vulnerability-summary p { color: var(--subtle); font-size: .85rem; }
+.vulnerability-summary details { margin-top: .75rem; }
+.vulnerability-summary li + li { margin-top: 1rem; }
+.risk-unknown { color: var(--subtle); border-color: var(--border); }

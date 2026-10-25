@@ -1741,6 +1741,68 @@ test.describe.serial('setup and login flows', () => {
     await expect(rows).toHaveCount(1);
   });
 
+  test('installed vulnerability scans show trust states and residual exposure without pending updates', async ({ page }) => {
+    const server = makeServer('installed-host', 'done');
+    let scanState = 'not_scanned';
+    let started = 0;
+    await stubDashboardApi(page, () => [server]);
+    await page.route('**/api/servers/installed-host/vulnerabilities/scan', route => {
+      started += 1;
+      return fulfillJson(route, { status: 'running' }, 202);
+    });
+    await page.route('**/api/dashboard/summary*', route => {
+      const summary = makeDashboardSummary([server]);
+      const host = summary.servers[0];
+      const exposed = scanState === 'partial' || scanState === 'unavailable';
+      host.risk = { level: 'unknown', summary: exposed ? '1 confirmed CVE · unknown severity' : 'Installed packages not scanned', vulnerability: {
+        state: scanState, coverage: scanState === 'not_scanned' ? 'unknown' : scanState,
+        freshness: scanState === 'unavailable' ? 'stale' : 'fresh',
+        result: exposed ? 'confirmed_exposure' : (scanState === 'complete' ? 'no_findings' : 'unknown'),
+        inventoried: 2, evaluated: scanState === 'partial' ? 1 : 2, unknown: scanState === 'partial' ? 1 : 0, unsupported: 0,
+        findings: exposed ? [{ id: 'CVE-2026-1000', package: 'installed-package', severity: 'unknown', disposition: 'no_fix_available', first_seen: '2026-10-01T00:00:00Z', last_seen: '2026-10-25T00:00:00Z', age_days: 24, source: 'Debian Security Tracker via OSV' }] : []
+      }};
+      host.approval_triage = { ...host.approval_triage, cve_count: exposed ? 1 : 0, risk_level: 'unknown', risk_label: host.risk.summary };
+      host.actions = { scan_vulnerabilities: { enabled: scanState !== 'running', readiness: scanState === 'running' ? 'in_progress' : 'ready', reason: scanState === 'running' ? 'Vulnerability scan in progress' : 'Ready' } };
+      return fulfillJson(route, summary);
+    });
+    await ensureAuthenticatedSession(page);
+    const section = page.getByRole('region', { name: 'Installed package vulnerabilities' });
+    await expect(section).toContainText('Never scanned');
+    await section.getByRole('button', { name: 'Scan vulnerabilities' }).click();
+    await expect.poll(() => started).toBe(1);
+    for (const [state, label] of [['running', 'Scan running'], ['partial', 'Partial scan'], ['unavailable', 'Scan unavailable'], ['complete', 'Complete scan']]) {
+      scanState = state;
+      server.status = state === 'running' ? 'vulnerability_scan' : 'done';
+      await page.reload();
+      await expect(section).toContainText(label);
+      if (state === 'running') {
+        await expect(section.getByRole('button', { name: 'Scan vulnerabilities' })).toBeDisabled();
+        await expect(page.locator('#selected-host-panel .status-pill')).toHaveClass(/status-vulnerability_scan/);
+        await expect(page.locator('#servers-table tr[data-name="installed-host"] .status-pill')).toHaveClass(/status-vulnerability_scan/);
+      } else if (state !== 'complete') {
+        await section.locator('summary').click();
+        await expect(section.locator('details')).toHaveAttribute('open', '');
+        await page.evaluate(() => window.fetchDashboardSummary(true));
+        await expect(section.locator('details')).toHaveAttribute('open', '');
+        await expect(section).toContainText('CVE-2026-1000');
+        await expect(section).toContainText('No newer candidate available');
+        await expect(section).toContainText('Severity: unknown');
+        await expect(section).toContainText('Age: 24 days');
+        if (state === 'unavailable') await expect(section).toContainText('Freshness: stale');
+        await section.locator('summary').click();
+        await page.evaluate(() => window.fetchDashboardSummary(true));
+        await expect(section.locator('details')).not.toHaveAttribute('open', '');
+      } else {
+        await expect(section).toContainText('No findings in evaluated packages');
+        await expect(section).not.toContainText('CVE-2026-1000');
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(section).toBeVisible();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    expect(overflow).toBe(false);
+  });
+
   test('attention metrics and filters use the same facts and CVE semantics', async ({ page }) => {
     const servers = [
       makeServer('fresh-host', 'done'),

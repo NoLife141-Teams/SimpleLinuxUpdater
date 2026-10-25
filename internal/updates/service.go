@@ -1333,10 +1333,11 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 			r.applicationResults = runApplicationChecks(maintenanceCtx, r.session, r.applicationProfile, deps.Now, deps.SleepContext)
+			persistErr := r.persistApplicationChecks()
 			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during application post-checks.") {
 				return
 			}
-			if err := r.persistApplicationChecks(); err != nil {
+			if persistErr != nil {
 				r.lastErrClass = "persistence"
 				r.setErrorLogs(r.currentLogs() + "\nCould not persist application post-check results.")
 				return

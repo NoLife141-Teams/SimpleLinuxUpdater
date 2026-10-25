@@ -37,12 +37,17 @@ var (
 )
 
 func (s *productionHostMaintenanceSession) runInspectionCommand(ctx context.Context, command string) (string, string, error) {
-	if err := ctx.Err(); err != nil {
+	if err := s.prepareConnection(ctx); err != nil {
 		return "", "", err
 	}
 	if s.deps.RunCommand == nil {
 		return "", "", fmt.Errorf("host command runner is not configured")
 	}
+	defer func() {
+		if ctx.Err() != nil {
+			s.connectionInterrupted = true
+		}
+	}()
 	return s.deps.RunCommand(ctx, s.conn, command, HostCommandEffectReadOnly, nil, s.request.CommandTimeout)
 }
 

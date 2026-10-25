@@ -16,6 +16,7 @@ import (
 )
 
 var ErrConflict = errors.New("post-check profiles changed; reload before saving")
+var ErrAssignmentConflict = errors.New("resolve conflicting direct post-check assignments in Admin before renaming this Server")
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 var unitName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.@:-]{0,199}\.(service|socket|target|timer|mount|path)$`)
 
@@ -260,6 +261,18 @@ func RenameServerTx(tx *sql.Tx, oldName, newName string) error {
 	if err = json.Unmarshal([]byte(raw), &c); err != nil {
 		return err
 	}
+	if newName != "" {
+		for _, source := range c.Profiles {
+			if !slices.Contains(source.TargetServers, oldName) {
+				continue
+			}
+			for _, target := range c.Profiles {
+				if target.ID != source.ID && slices.Contains(target.TargetServers, newName) {
+					return ErrAssignmentConflict
+				}
+			}
+		}
+	}
 	changed := false
 	for i := range c.Profiles {
 		p := &c.Profiles[i]
@@ -268,10 +281,9 @@ func RenameServerTx(tx *sql.Tx, oldName, newName string) error {
 		for _, name := range p.TargetServers {
 			if name == oldName {
 				found = true
-				if newName != "" {
-					names = append(names, newName)
-				}
-			} else {
+				name = newName
+			}
+			if name != "" && !slices.Contains(names, name) {
 				names = append(names, name)
 			}
 		}
@@ -283,6 +295,9 @@ func RenameServerTx(tx *sql.Tx, oldName, newName string) error {
 	}
 	if !changed {
 		return nil
+	}
+	if err = Validate(c); err != nil {
+		return fmt.Errorf("%w: %v", ErrAssignmentConflict, err)
 	}
 	c.Revision++
 	encoded, err := json.Marshal(c)

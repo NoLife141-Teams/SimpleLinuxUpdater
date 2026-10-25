@@ -18,7 +18,7 @@
             el("profile-select").value=state.selectedID;
             const p=state.draft.profiles.find(item=>item.id===state.selectedID);
             el("editor").hidden=!p;
-            el("editor").disabled=state.busy;
+            el("editor").disabled=state.busy || !p;
             el("name").value=p?.name || "";
             el("servers").value=(p?.target_servers || []).join(", ");
             el("tags").value=(p?.target_tags || []).join(", ");

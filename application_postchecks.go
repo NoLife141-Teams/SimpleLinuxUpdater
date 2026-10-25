@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"debian-updater/internal/postchecks"
+	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 	"github.com/gin-gonic/gin"
 )
@@ -82,6 +83,30 @@ func registerApplicationPostcheckRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(409, gin.H{"error": "Enable this Server before testing its checks"})
 			return
 		}
+		release, admitted := deps.HostFactsRefreshAdmission.TryRefresh(server.Name)
+		if !admitted {
+			c.JSON(409, gin.H{"error": "A host observation is already in progress"})
+			return
+		}
+		defer release()
+		server, previous, err := deps.ServerState.BeginTransientAction(server.Name, runtimepkg.StatusApplicationCheck)
+		if err != nil {
+			code := http.StatusConflict
+			if errors.Is(err, sql.ErrNoRows) {
+				code = http.StatusNotFound
+			}
+			c.JSON(code, gin.H{"error": err.Error()})
+			return
+		}
+		defer func() {
+			deps.ServerState.RestoreStatusSnapshot(server.Name, previous)
+			if deps.NotifyDashboardEvent != nil {
+				deps.NotifyDashboardEvent("postchecks.test.completed")
+			}
+		}()
+		if deps.NotifyDashboardEvent != nil {
+			deps.NotifyDashboardEvent("postchecks.test.started")
+		}
 		profile, err := applicationPostcheckLoader(deps.DB, deps.ServerState)(server)
 		if err != nil {
 			c.JSON(409, gin.H{"error": err.Error()})
@@ -90,18 +115,6 @@ func registerApplicationPostcheckRoutes(r *gin.Engine, deps AppDeps) {
 		if profile == nil {
 			c.JSON(409, gin.H{"error": "No post-check profile is assigned"})
 			return
-		}
-		release, admitted := deps.HostFactsRefreshAdmission.TryRefresh(server.Name)
-		if !admitted {
-			c.JSON(409, gin.H{"error": "A host observation is already in progress"})
-			return
-		}
-		defer release()
-		for _, name := range deps.ServerState.ActiveActionNames() {
-			if name == server.Name {
-				c.JSON(409, gin.H{"error": "Wait for the active maintenance action to finish"})
-				return
-			}
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 11*time.Minute)
 		defer cancel()

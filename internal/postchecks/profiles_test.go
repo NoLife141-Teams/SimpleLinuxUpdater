@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -207,5 +209,57 @@ func TestSavingEmptyProfilesKeepsJSONList(t *testing.T) {
 	loaded, err := Load(context.Background(), db)
 	if err != nil || loaded.Profiles == nil {
 		t.Fatalf("loaded empty %+v %v", loaded, err)
+	}
+}
+
+func TestRenameServerKeepsDirectAssignmentsValid(t *testing.T) {
+	for _, sameProfile := range []bool{true, false} {
+		t.Run(fmt.Sprintf("same_profile_%t", sameProfile), func(t *testing.T) {
+			db := openDB(t)
+			config := validConfig()
+			config.Profiles[0].TargetServers = []string{"old"}
+			if sameProfile {
+				config.Profiles[0].TargetServers = append(config.Profiles[0].TargetServers, "new")
+			} else {
+				config.Profiles = append(config.Profiles, Profile{ID: "future", Name: "Future", TargetServers: []string{"new"}, Checks: []Check{validCheck()}})
+			}
+			saved, err := Save(context.Background(), db, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = RenameServerTx(tx, "old", "new")
+			if !sameProfile {
+				_ = tx.Rollback()
+				if err == nil {
+					t.Fatal("rename accepted conflicting direct assignments")
+				}
+			} else {
+				if err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if err = tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			loaded, err := Load(context.Background(), db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = Validate(loaded); err != nil {
+				t.Fatalf("rename persisted invalid configuration: %v", err)
+			}
+			if sameProfile {
+				if !reflect.DeepEqual(loaded.Profiles[0].TargetServers, []string{"new"}) {
+					t.Fatalf("targets after rename: %v", loaded.Profiles[0].TargetServers)
+				}
+			} else if !reflect.DeepEqual(loaded, saved) {
+				t.Fatal("rejected rename changed saved profiles")
+			}
+		})
 	}
 }

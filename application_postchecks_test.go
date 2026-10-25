@@ -3,19 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
-	policypkg "debian-updater/internal/policies"
-	scheduledrunspkg "debian-updater/internal/scheduledruns"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	maintenancepkg "debian-updater/internal/maintenance"
+	policypkg "debian-updater/internal/policies"
 	"debian-updater/internal/postchecks"
+	scheduledrunspkg "debian-updater/internal/scheduledruns"
+	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 )
 
@@ -90,6 +92,60 @@ func TestApplicationPostcheckAPIRevisionResolutionTestAndMaintenanceGate(t *test
 	got = request("POST", "/api/servers/web/postchecks/test", nil)
 	if got.Code != http.StatusServiceUnavailable || commands != 1 {
 		t.Fatalf("maintenance gate %d commands %d", got.Code, commands)
+	}
+}
+
+func TestApplicationPostcheckTestReservesServerUntilCompletion(t *testing.T) {
+	state := newServerState()
+	started, finish, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var finishOnce sync.Once
+	service := NewUpdateService(UpdateServiceDeps{ServerState: state, HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{
+		RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+			close(started)
+			<-finish
+			return HostCommandResult{Stdout: "200"}, nil
+		},
+	})})
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "postcheck-admission.db"), Deps: AppDeps{ServerState: state, UpdateService: service}})
+	cookie := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "web", Host: "example.invalid", User: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = postchecks.Save(context.Background(), app.Deps.DB(), postchecks.Config{Profiles: []postchecks.Profile{{ID: "web", Name: "Web", TargetServers: []string{server.Name}, Checks: []postchecks.Check{{ID: "http", Name: "Health", Kind: "http_status", URL: "http://localhost/health", ExpectedStatus: 200, TimeoutSeconds: 10, IntervalSeconds: 1, Mode: "blocking"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/servers/web/postchecks/test", nil)
+	req.AddCookie(cookie)
+	markSameOriginAuthRequest(req)
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		app.Handler.ServeHTTP(rec, req)
+	}()
+	defer func() { finishOnce.Do(func() { close(finish) }); <-done }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("application test did not start")
+	}
+	if active, _ := state.ActionStatusInProgress(server.Name); !active {
+		t.Fatal("application test did not reserve server action admission")
+	}
+	if _, err = state.BeginPackageMutation(server.Name, "updating"); !errors.Is(err, serverpkg.ErrActionInProgress) {
+		t.Fatalf("package mutation admitted during application test: %v", err)
+	}
+	if _, err = app.Deps.ServerInventoryService.Update(server.Name, server); !errors.Is(err, serverpkg.ErrActionInProgress) {
+		t.Fatalf("inventory edit admitted during application test: %v", err)
+	}
+	if _, err = app.Deps.ServerInventoryService.SetDisabled(server.Name, true); !errors.Is(err, serverpkg.ErrActionInProgress) {
+		t.Fatalf("disable admitted during application test: %v", err)
+	}
+	finishOnce.Do(func() { close(finish) })
+	<-done
+	if rec.Code != http.StatusOK || state.CurrentStatusSnapshot(server.Name).Status != "idle" {
+		t.Fatalf("application test did not restore admission: response %d, status %+v", rec.Code, state.CurrentStatusSnapshot(server.Name))
 	}
 }
 

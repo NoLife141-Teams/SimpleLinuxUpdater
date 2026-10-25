@@ -5,8 +5,8 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function dashboardProjectionConsumptionFactory() {
     "use strict";
 
-    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan"]);
-    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "done"]);
+    const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test"]);
+    const nonFailedStatuses = new Set(["idle", "updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test", "done"]);
     const fallbackRiskOrder = Object.freeze({ critical: 4, high: 4, elevated: 3, warning: 2, normal: 1, routine: 1 });
 
     function clone(value) {
@@ -193,7 +193,7 @@
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
         const hasExplicitFactsState = Object.hasOwn(rawTriage, "facts_state") && text(rawTriage.facts_state) !== "";
         const statusValue = text(server.status).toLowerCase();
-        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan"].includes(statusValue);
+        const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test"].includes(statusValue);
         const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
         const triage = {
             ...clone(rawTriage),

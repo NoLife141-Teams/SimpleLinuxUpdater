@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
 	"crypto/x509"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"debian-updater/internal/postchecks"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
@@ -147,6 +149,38 @@ func TestServerInventoryServiceRenameMigratesPolicyAndFacts(t *testing.T) {
 	}
 	if len(overrides) != 0 {
 		t.Fatalf("overrides after delete = %+v, want empty", overrides)
+	}
+}
+
+func TestServerInventoryRenameRollsBackPostcheckAssignmentConflict(t *testing.T) {
+	svc := prepareServerInventoryServiceTest(t, "server-postcheck-rename.db")
+	server, err := svc.Create(Server{Name: "old", Host: "old.example", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := postchecks.Check{ID: "web", Name: "Web", Kind: "systemd_active", Unit: "nginx.service", TimeoutSeconds: 1, IntervalSeconds: 1, Mode: "blocking"}
+	config, err := postchecks.Save(context.Background(), getDB(), postchecks.Config{Profiles: []postchecks.Profile{
+		{ID: "existing", Name: "Existing", TargetServers: []string{"old"}, Checks: []postchecks.Check{check}},
+		{ID: "future", Name: "Future", TargetServers: []string{"new"}, Checks: []postchecks.Check{check}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Name = "new"
+	result := serverpkg.NewCommandService(svc).UpdateServer("old", server)
+	if result.Outcome != serverpkg.CommandOutcomeConflict || !strings.Contains(result.Error, "Admin") {
+		t.Fatalf("rename conflict outcome: %+v", result)
+	}
+	if _, found := globalServerState().FindByName("old"); !found {
+		t.Fatal("rejected rename changed runtime inventory")
+	}
+	var persistedName string
+	if err = getDB().QueryRow("SELECT name FROM servers").Scan(&persistedName); err != nil || persistedName != "old" {
+		t.Fatalf("rejected rename changed persisted inventory: %q, %v", persistedName, err)
+	}
+	loaded, err := postchecks.Load(context.Background(), getDB())
+	if err != nil || !reflect.DeepEqual(config, loaded) {
+		t.Fatalf("rejected rename changed profiles: %+v, %v", loaded, err)
 	}
 }
 

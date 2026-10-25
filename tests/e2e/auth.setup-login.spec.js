@@ -3094,6 +3094,18 @@ test.describe.serial('setup and login flows', () => {
       await page.goto('/');
       await expect(page.locator('#servers-table')).toContainText('Application checks: Website recovery · revision 1');
       await expect(page.locator('#servers-table')).toContainText('https://localhost/health → HTTP 200');
+
+      await page.goto('/admin#admin-section-application-checks');
+      await expect(page.locator('#postcheck-name')).toHaveValue('Website recovery');
+      await page.locator('#postcheck-delete').click();
+      await expect(page.locator('#postcheck-editor')).toBeHidden();
+      const removed = page.waitForResponse(response => response.url().endsWith('/api/postcheck-profiles') && response.request().method() === 'PUT');
+      await page.locator('#postcheck-save').click();
+      expect((await removed).ok()).toBeTruthy();
+      await page.reload();
+      await expect(page.locator('#postcheck-profile-select option')).toHaveCount(original.profiles.length);
+      const effective = await page.request.get('/api/servers/e2e-health/postchecks').then(r => r.json());
+      expect(effective.profile).toBeNull();
     } finally {
       await page.request.delete('/api/servers/e2e-health',{headers:{Origin:'http://127.0.0.1:8080'}});
       const current=await page.request.get('/api/postcheck-profiles').then(r=>r.json());

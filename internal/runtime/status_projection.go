@@ -19,6 +19,7 @@ const (
 	StatusSudoers             = "sudoers"
 	StatusFactsRefresh        = "facts_refresh"
 	StatusVulnerabilityScan   = "vulnerability_scan"
+	StatusApplicationCheck    = "postchecks_test"
 	StatusDone                = "done"
 	StatusError               = "error"
 	StatusCancelled           = "cancelled"
@@ -60,7 +61,7 @@ func StatusInProgress(status string) bool {
 		StatusRepairing,
 		StatusRebooting,
 		StatusSudoers,
-		StatusFactsRefresh, StatusVulnerabilityScan:
+		StatusFactsRefresh, StatusVulnerabilityScan, StatusApplicationCheck:
 		return true
 	default:
 		return false
@@ -77,7 +78,7 @@ func BlocksTransientAction(status string) bool {
 		StatusRepairing,
 		StatusRebooting,
 		StatusSudoers,
-		StatusFactsRefresh, StatusVulnerabilityScan:
+		StatusFactsRefresh, StatusVulnerabilityScan, StatusApplicationCheck:
 		return true
 	default:
 		return false
@@ -237,7 +238,7 @@ func TimelineProjectionFromServerStatus(status string) TimelineProjection {
 		return TimelineProjection{CurrentPhase: TimelinePhasePendingApproval, State: TimelineStateWaiting}
 	case StatusUpdating:
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
-	case StatusSudoers, StatusFactsRefresh, StatusVulnerabilityScan:
+	case StatusSudoers, StatusFactsRefresh, StatusVulnerabilityScan, StatusApplicationCheck:
 		return TimelineProjection{CurrentPhase: TimelinePhasePrechecks, State: TimelineStateActive}
 	case StatusUpgrading, StatusAutoremove, StatusRepairing, StatusRebooting:
 		return TimelineProjection{CurrentPhase: TimelinePhaseUpgrade, State: TimelineStateActive}

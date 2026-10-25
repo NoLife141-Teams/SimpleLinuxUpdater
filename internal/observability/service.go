@@ -865,6 +865,9 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
 	}
+	if statusValue == runtimepkg.StatusApplicationCheck {
+		return DashboardRecommendedActionInfo{Key: "monitor_apt", Label: "Monitor application checks", Detail: "A read-only application test is active. Review its results in Admin before taking another action."}
+	}
 	monitoringStatus := statusValue == runtimepkg.StatusUpdating || statusValue == runtimepkg.StatusUpgrading || statusValue == runtimepkg.StatusAutoremove || statusValue == runtimepkg.StatusRepairing || statusValue == runtimepkg.StatusRebooting || statusValue == runtimepkg.StatusSudoers || statusValue == runtimepkg.StatusFactsRefresh
 	if monitoringStatus || runningTimelineState(timeline.State) {
 		return DashboardRecommendedActionInfo{Key: "monitor_apt", Label: "Monitor APT", Detail: "A maintenance command is still active. Follow its live output before taking another action."}

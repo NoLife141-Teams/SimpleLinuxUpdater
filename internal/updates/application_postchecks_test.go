@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,8 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/postchecks"
 	"debian-updater/internal/servers"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func applicationTestProfile(kind, mode string) *postchecks.Snapshot {
@@ -131,9 +136,69 @@ func TestReadOnlyApplicationTestOpensAndClosesSession(t *testing.T) {
 	}
 }
 
+func TestApplicationCheckDeadlineDoesNotPoisonLaterProbes(t *testing.T) {
+	for _, slowFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("slow_first_%t", slowFirst), func(t *testing.T) {
+			dials := 0
+			factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+				BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+				HostKeyCallback:  func() (ssh.HostKeyCallback, error) { return ssh.InsecureIgnoreHostKey(), nil },
+				DialSSH: func(context.Context, servers.Server, *ssh.ClientConfig) (SSHConnection, error) {
+					dials++
+					return &maintenanceTestConnection{}, nil
+				},
+				RunCommand: func(ctx context.Context, connection SSHConnection, command string, _ HostCommandEffect, _ io.Reader, _ time.Duration) (string, string, error) {
+					conn := connection.(*maintenanceTestConnection)
+					if conn.closed > 0 {
+						return "", "", net.ErrClosed
+					}
+					if strings.Contains(command, "/slow") {
+						<-ctx.Done()
+						// The production SSH context adapter closes the transport on cancellation.
+						_ = conn.Close()
+						return "", "", ctx.Err()
+					}
+					return "200", "", nil
+				},
+			})
+			session, err := factory.Open(context.Background(), HostMaintenanceSessionRequest{RetryPolicy: RetryPolicy{MaxAttempts: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			profile := applicationTestProfile("http_status", "warning")
+			slow := profile.Checks[0]
+			slow.TimeoutSeconds = 1
+			slow.URL = "https://localhost/slow"
+			fast := slow
+			fast.ID, fast.URL, fast.Mode = "fast", "https://localhost/health", "blocking"
+			profile.Checks = []postchecks.Check{slow, fast}
+			if !slowFirst {
+				profile.Checks = []postchecks.Check{fast, slow}
+			}
+			results := runApplicationChecks(context.Background(), session, profile, time.Now, ServiceDeps{}.withDefaults().SleepContext)
+			fastIndex := 1
+			if !slowFirst {
+				fastIndex = 0
+			}
+			if len(results) != 2 || !results[fastIndex].Passed || results[1-fastIndex].Passed {
+				t.Fatalf("independent probe results: %+v", results)
+			}
+			if _, _, err = session.ListFailedSystemdUnits(context.Background()); err != nil {
+				t.Fatalf("subsequent host inspection used a closed connection: %v", err)
+			}
+			if dials != 2 {
+				t.Fatalf("dials = %d, want one replacement after the deadline", dials)
+			}
+		})
+	}
+}
+
 func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t *testing.T) {
-	for _, scenario := range []string{"blocking failure", "warning failure", "success", "profile changed", "profile unavailable"} {
+	for _, scenario := range []string{"blocking failure", "warning failure", "success", "profile changed", "profile unavailable", "shutdown"} {
 		t.Run(scenario, func(t *testing.T) {
+			lifecycle, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			clock := time.Now()
 			loads := 0
 			mutations := 0
@@ -141,6 +206,11 @@ func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t 
 			p := applicationTestProfile("http_status", "blocking")
 			if scenario == "warning failure" {
 				p.Checks[0].Mode = "warning"
+			}
+			if scenario == "shutdown" {
+				partial := p.Checks[0]
+				partial.ID = "partial"
+				p.Checks = append(p.Checks, partial)
 			}
 			session := &HostMaintenanceSessionFuncs{
 				DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
@@ -151,6 +221,9 @@ func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t 
 						mutations++
 					}
 					if strings.HasPrefix(r.Operation, "postcheck.application.") {
+						if scenario == "shutdown" && r.Operation == "postcheck.application.partial" {
+							cancel()
+						}
 						code := "200"
 						if strings.Contains(scenario, "failure") {
 							code = "500"
@@ -161,7 +234,7 @@ func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t 
 				},
 			}
 			var state *servers.State
-			service, jm, st, audits := newUpdateShutdownHarness(t, context.Background(), session, func(d *ServiceDeps) {
+			service, jm, st, audits := newUpdateShutdownHarness(t, lifecycle, session, func(d *ServiceDeps) {
 				d.Now = func() time.Time { return clock }
 				d.SleepContext = func(_ context.Context, delay time.Duration) error { clock = clock.Add(delay); return nil }
 				d.SaveServerFacts = func(ServerFactsRecord) error { return nil }
@@ -207,6 +280,9 @@ func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t 
 			if scenario == "blocking failure" || scenario == "profile unavailable" {
 				expected = jobs.StatusFailed
 			}
+			if scenario == "shutdown" {
+				expected = jobs.StatusInterrupted
+			}
 			if job.Status != expected {
 				t.Fatalf("job %+v status %+v", job, state.CurrentStatusSnapshot("srv-shutdown"))
 			}
@@ -234,12 +310,19 @@ func TestUpdateRunnerApplicationChecksPersistAuditAndRequireRefreshedApproval(t 
 			if err = json.Unmarshal(meta["application_postcheck_results"], &results); err != nil {
 				t.Fatal(err)
 			}
-			if len(results) != 1 || results[0].Attempts == 0 {
+			wantResults := 1
+			if scenario == "shutdown" {
+				wantResults = 2
+			}
+			if len(results) != wantResults || results[0].Attempts == 0 {
 				t.Fatalf("results %+v", results)
 			}
 			audit := <-audits
-			if audit.meta["application_postcheck_profile"].(*postchecks.Snapshot).Revision != captured.Revision || len(audit.meta["application_postcheck_results"].([]postchecks.Result)) != 1 {
+			if audit.meta["application_postcheck_profile"].(*postchecks.Snapshot).Revision != captured.Revision || len(audit.meta["application_postcheck_results"].([]postchecks.Result)) != wantResults {
 				t.Fatalf("audit missing exact facts %+v", audit)
+			}
+			if scenario == "shutdown" && (!results[0].Passed || results[1].Passed || !strings.Contains(results[1].Details, "cancelled") || audit.status != "interrupted") {
+				t.Fatalf("interrupted check facts missing: results %+v, audit %+v", results, audit)
 			}
 			if scenario == "warning failure" && (audit.meta["postcheck_warnings"] != 1 || audit.status != "success") {
 				t.Fatalf("warning blocked update %+v", audit)

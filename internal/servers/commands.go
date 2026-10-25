@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"debian-updater/internal/postchecks"
 )
 
 type CommandOutcome string
@@ -95,6 +97,8 @@ func (c *CommandService) UpdateServer(name string, server Server) CommandResult 
 		return failedCommand(CommandOutcomeInvalid, "server.update", "server", name, "Invalid SSH username", "invalid user; allowed characters are letters, digits, '.', '-', '_'", map[string]any{"user": user})
 	case errors.Is(err, ErrActionInProgress):
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server action already in progress", "wait for the active server action to finish before editing this server", actionStatusMeta(err))
+	case errors.Is(err, postchecks.ErrAssignmentConflict):
+		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Post-check assignment conflict", err.Error(), nil)
 	case errors.Is(err, ErrNameExists):
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server name already exists", "Server name already exists", nil)
 	case errors.Is(err, ErrEndpointExists):

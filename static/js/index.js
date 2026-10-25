@@ -46,7 +46,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             "idle", "updating", "pending_approval", "approved", "cancelled",
             "upgrading", "autoremove", "repairing", "needs_reconciliation", "sudoers", "done", "error", "success",
             "failure", "failed", "started", "ignored", "running", "queued", "skipped",
-            "facts_refresh", "vulnerability_scan", "rebooting"
+            "facts_refresh", "vulnerability_scan", "postchecks_test", "rebooting"
         ]);
 
         function getStatusView() {
@@ -1574,6 +1574,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		                return "Refreshing…";
 		            case "vulnerability_scan":
 		                return "Scanning vulnerabilities…";
+		            case "postchecks_test":
+		                return "Testing application checks…";
 		            default:
 		                return "Working…";
 		            }

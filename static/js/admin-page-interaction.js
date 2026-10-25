@@ -88,6 +88,8 @@
             telegramCredentialsIntent: "preserve",
             telegramReplacementProvided: false,
             telegramReplacementValid: true,
+            remindersEnabled: Boolean(data.reminders_enabled ?? data.remindersEnabled),
+            reminderIntervalMinutes: Number(data.reminder_interval_minutes ?? data.reminderIntervalMinutes ?? 1440),
             eventTypes: uniqueStrings(data.event_types ?? data.eventTypes),
             supportedEvents: uniqueStrings(data.supported_events ?? data.supportedEvents)
         };
@@ -418,6 +420,8 @@
                 telegramEnabled: Boolean(value.telegramEnabled),
                 telegramCredentialsIntent: String(value.telegramCredentialsIntent || "preserve"),
                 telegramReplacementProvided: Boolean(value.telegramReplacementProvided),
+                remindersEnabled: Boolean(value.remindersEnabled),
+                reminderIntervalMinutes: Number(value.reminderIntervalMinutes),
                 eventTypes: uniqueStrings(value.eventTypes).sort()
             };
         }
@@ -425,6 +429,9 @@
             return JSON.stringify(notificationComparable(notificationDraft)) !== JSON.stringify(notificationComparable(acceptedNotifications));
         }
         function notificationValidation() {
+            if (!Number.isInteger(Number(notificationDraft.reminderIntervalMinutes)) || Number(notificationDraft.reminderIntervalMinutes) < 5 || Number(notificationDraft.reminderIntervalMinutes) > 43200) {
+                return { valid: false, message: "Reminder interval must be between 5 and 43200 minutes." };
+            }
             const intent = String(notificationDraft.webhookURLIntent || "preserve");
             if (intent === "replace" && !notificationDraft.replacementProvided) {
                 return { valid: false, message: "Enter the replacement webhook URL." };
@@ -657,6 +664,8 @@
                         enabled: notificationDraft.enabled,
                         webhook_url_intent: notificationDraft.webhookURLIntent,
                         event_types: clone(notificationDraft.eventTypes),
+                        reminders_enabled: notificationDraft.remindersEnabled,
+                        reminder_interval_minutes: Number(notificationDraft.reminderIntervalMinutes),
                         discord: {
                             enabled: notificationDraft.discordEnabled,
                             webhook_url_intent: notificationDraft.discordWebhookURLIntent
@@ -800,6 +809,8 @@
                         telegramCredentialsIntent: event.patch?.telegramCredentialsIntent ?? notificationDraft.telegramCredentialsIntent,
                         telegramReplacementProvided: event.patch?.telegramReplacementProvided ?? notificationDraft.telegramReplacementProvided,
                         telegramReplacementValid: event.patch?.telegramReplacementValid ?? notificationDraft.telegramReplacementValid,
+                        remindersEnabled: event.patch?.remindersEnabled ?? notificationDraft.remindersEnabled,
+                        reminderIntervalMinutes: event.patch?.reminderIntervalMinutes ?? notificationDraft.reminderIntervalMinutes,
                         eventTypes: event.patch?.eventTypes ?? notificationDraft.eventTypes
                     };
                     notificationDraft.webhookURLIntent = ["preserve", "replace", "clear"].includes(notificationDraft.webhookURLIntent)

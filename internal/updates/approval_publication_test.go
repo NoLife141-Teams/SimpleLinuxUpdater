@@ -159,3 +159,92 @@ func TestUpdateRunnerStopsWhenPendingApprovalCannotBePersisted(t *testing.T) {
 		t.Errorf("missing persistence failure audit metadata: %+v", audit)
 	}
 }
+
+func TestUpdateRunnerPublishesAndExpiresApprovalWithDurableGenerationAudit(t *testing.T) {
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	actions := map[string]map[string]any{}
+	session := &HostMaintenanceSessionFuncs{
+		DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+			return HostPackageDiscoveryResult{Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"openssl"}, PendingUpdates: []servers.PendingUpdate{{Package: "openssl", CVEState: "done"}}}}, nil
+		},
+	}
+	service, jm, state, _ := newUpdateShutdownHarness(t, context.Background(), session, func(deps *ServiceDeps) {
+		deps.Now = func() time.Time { return now }
+		deps.WaitForApprovalPollContext = func(context.Context) error { now = now.Add(2 * time.Hour); return nil }
+		deps.AuditWithActor = func(_, _, action, _, _, status, _ string, meta map[string]any) {
+			if action == "approval.published" || action == "approval.expired" {
+				if status != "success" {
+					t.Errorf("accepted transition audit status %s", status)
+				}
+				job, err := deps.CurrentJobManager().GetJob("update-shutdown-job")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if action == "approval.published" && (job.Status != jobs.StatusWaitingApproval || !strings.Contains(job.MetaJSON, `"approval_generation":1`)) {
+					t.Fatalf("audit preceded durable generation: %+v", job)
+				}
+				if action == "approval.expired" && job.Status != jobs.StatusCancelled {
+					t.Fatalf("expiry audit preceded transition: %+v", job)
+				}
+			}
+			actions[action] = meta
+		}
+	})
+	service.RunUpdateJob(UpdateRunRequest{Server: state.CloneServers()[0], JobID: "update-shutdown-job", Actor: "tester", Policy: RetryPolicy{MaxAttempts: 1}})
+	job, err := jm.GetJob("update-shutdown-job")
+	if err != nil || job.Status != jobs.StatusCancelled {
+		t.Fatalf("%+v %v", job, err)
+	}
+	for _, action := range []string{"approval.published", "approval.expired"} {
+		if actions[action]["job_id"] != "update-shutdown-job" || actions[action]["approval_generation"] != uint64(1) {
+			t.Errorf("%s identity: %+v", action, actions[action])
+		}
+	}
+	if actions[UpdateCompleteAction]["upgrade_completed"] != false {
+		t.Fatal("expiry audit incorrectly claims package mutation")
+	}
+}
+
+func TestAutomaticApprovalDoesNotPublishOperatorConditionDuringRevalidation(t *testing.T) {
+	var jm *jobs.Manager
+	discoveries := 0
+	session := &HostMaintenanceSessionFuncs{
+		DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+			discoveries++
+			if discoveries == 2 {
+				job, err := jm.GetJob("update-shutdown-job")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// This deliberately observes the internal waiting job while the second
+				// remote discovery is in progress, before the next persisted runner phase.
+				if !strings.Contains(job.MetaJSON, `"approval_generation":0`) {
+					t.Fatalf("auto approval exposed an actionable generation: %+v", job)
+				}
+			}
+			return HostPackageDiscoveryResult{Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"openssl"}, PendingUpdates: []servers.PendingUpdate{{Package: "openssl", CVEState: "done"}}}}, nil
+		},
+	}
+	service, manager, state, audits := newUpdateShutdownHarness(t, context.Background(), session, func(deps *ServiceDeps) {
+		deps.SaveServerFacts = func(ServerFactsRecord) error { return nil }
+		deps.LoadScheduledJobBehavior = func(string) ScheduledJobBehavior {
+			return ScheduledJobBehavior{ApprovalTimeout: time.Hour, AutoApproveScope: ApprovalScopeAll}
+		}
+		original := deps.AuditWithActor
+		deps.AuditWithActor = func(actor, ip, action, targetType, targetName, status, message string, meta map[string]any) {
+			if action == "approval.published" {
+				t.Error("automatic approval emitted operator publication")
+			}
+			original(actor, ip, action, targetType, targetName, status, message, meta)
+		}
+	})
+	jm = manager
+	service.RunUpdateJob(UpdateRunRequest{Server: state.CloneServers()[0], JobID: "update-shutdown-job", Actor: "tester", Policy: RetryPolicy{MaxAttempts: 1}})
+	if discoveries < 2 {
+		t.Fatal("test never reached approval revalidation")
+	}
+	audit := <-audits
+	if audit.status != "success" || audit.meta["upgrade_completed"] != true {
+		t.Fatalf("automatic update outcome changed: %+v", audit)
+	}
+}

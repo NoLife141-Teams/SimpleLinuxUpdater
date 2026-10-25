@@ -104,7 +104,9 @@ Available destinations:
 - Discord: an official HTTPS incoming-webhook URL.
 - Telegram: a bot token plus a numeric chat ID or public `@channel` name.
 
-Selectable events are completed updates, failed scheduled runs, skipped scheduled runs, and backup restores. Successful update runs that install no packages do not send `update.complete` notifications.
+Selectable events include completed updates, failed/skipped scheduled runs, backup restores, published/expired approvals, confirmed reboot requirements, failed backup exports/verification, and missing/stale recovery evidence. The new condition events require explicit selection; legacy selections stay unchanged. Successful update runs that install no packages do not send `update.complete` notifications.
+
+Grouped reminders are disabled by default. Enable them in Admin and set an interval of 5–43200 minutes (default 1440); each destination receives at most one grouped summary of selected unresolved conditions per interval. These settings are stored in the existing encrypted-destination configuration, with no new environment variables. See [notification lifecycle and recovery behavior](usage.md#notification-hooks) for persistent episodes, destination changes, disablement, Server rename/deletion, and database restoration.
 
 Destination secrets are encrypted before they are stored. Settings responses return only masked configuration state. Delivery is best-effort with bounded retries; Admin exposes per-destination test actions and safe diagnostics such as outcome, attempt count, HTTP status, duration, consecutive failures, and next retry time.
 

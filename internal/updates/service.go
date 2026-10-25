@@ -188,6 +188,8 @@ type withActorRunner struct {
 	startedAt  time.Time
 	approvedAt time.Time
 
+	automaticApproval       bool
+	approvalGeneration      uint64
 	approvalScope           string
 	approvalConfirmRemovals bool
 	approvedPackages        []string
@@ -350,6 +352,7 @@ func (r *withActorRunner) withStatus(update func(*servers.ServerStatus)) bool {
 		deps.ServerState.Unlock()
 		return false
 	}
+	previousGeneration := status.ApprovalGeneration
 	previousLogs := status.Logs
 	snapshot := servers.CloneServerStatus(status)
 	update(snapshot)
@@ -365,6 +368,10 @@ func (r *withActorRunner) withStatus(update func(*servers.ServerStatus)) bool {
 		}
 		*status = *snapshot
 		deps.ServerState.Unlock()
+		r.approvalGeneration = snapshot.ApprovalGeneration
+		if snapshot.ApprovalGeneration != previousGeneration && !r.automaticApproval && r.jobID != "" && deps.AuditWithActor != nil {
+			deps.AuditWithActor(r.actor, "", "approval.published", "server", r.server.Name, "success", "Update approval published", map[string]any{"job_id": r.jobID, "approval_generation": snapshot.ApprovalGeneration})
+		}
 		return true
 	}
 	*status = *snapshot
@@ -1029,6 +1036,12 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			for {
 				logs = r.currentLogs()
 				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
+				autoScope := behavior.AutoApproveScope
+				if approvalChanged {
+					autoScope = ""
+				}
+				autoApproval := EvaluateAutoApproval(autoScope, discovery.PendingUpdates, discovery.UpgradePlan)
+				r.automaticApproval = autoApproval.Allowed
 				if !r.withStatus(func(status *servers.ServerStatus) {
 					status.ApprovalGeneration++
 					status.Status = "pending_approval"
@@ -1041,11 +1054,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				}) {
 					return
 				}
-				autoScope := behavior.AutoApproveScope
-				if approvalChanged {
-					autoScope = ""
-				}
-				autoApproval := EvaluateAutoApproval(autoScope, discovery.PendingUpdates, discovery.UpgradePlan)
+
 				if !autoApproval.Allowed && autoApproval.RunnerCommandLog != "" {
 					r.appendStatusLog(autoApproval.RunnerCommandLog)
 				}
@@ -1136,11 +1145,11 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 								jobStatus := jobs.StatusCancelled
 								phase := jobs.PhaseComplete
 								summary := "Approval window expired"
-								_ = jm.Transition(r.jobID, jobs.Intent{
-									Status:  &jobStatus,
-									Phase:   &phase,
-									Summary: &summary,
-								})
+								if err := jm.Transition(r.jobID, jobs.Intent{
+									Status: &jobStatus, Phase: &phase, Summary: &summary,
+								}); err == nil && deps.AuditWithActor != nil {
+									deps.AuditWithActor(r.actor, "", "approval.expired", "server", r.server.Name, "success", "Update approval expired", map[string]any{"job_id": r.jobID, "approval_generation": r.approvalGeneration})
+								}
 							}
 							return
 						}

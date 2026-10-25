@@ -69,7 +69,7 @@ The accepted operational health knowledge for a Server, combining its latest col
 _Avoid_: Server facts repository, health tables, observability health query
 
 **Notification Delivery Lifecycle**:
-The lifecycle of an accepted outbound notification from event eligibility and admission through payload redaction, delivery attempts, retry, recorded outcome, and graceful shutdown; operator test delivery follows the same lifecycle synchronously.
+The lifecycle of an accepted outbound notification from persisted condition facts, episode/generation deduplication, event eligibility and atomic admission through payload redaction, delivery attempts, retry, recorded outcome, optional grouped reminders, and graceful shutdown. Condition revalidation and restored-persistence continuity belong to this lifecycle; operator test delivery follows the same delivery lifecycle synchronously.
 _Avoid_: Notification goroutine, webhook helper, audit notification callback
 
 **Metrics Access Credential**:

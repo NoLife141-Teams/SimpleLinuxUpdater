@@ -286,9 +286,26 @@ Supported operational events are:
 - completed updates that actually installed packages;
 - failed scheduled runs;
 - skipped scheduled runs;
-- backup restores.
+- backup restores;
+- published operator approvals (`approval.published`) and their expiration (`approval.expired`), with the job ID and exact plan generation;
+- confirmed reboot requirements (`reboot.required`);
+- failed backup exports and restore-readiness verification (`backup.export.failed`, `backup.verify.failed`);
+- missing or stale backup recovery evidence (`backup.coverage.missing`, `backup.coverage.stale`).
 
 Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
+
+The new condition events are opt-in: existing selections remain unchanged. Initial alerts are admitted promptly from persisted server facts, independently of open browser tabs. Automatic approvals do not request an operator decision. Approval acceptance, cancellation, expiration, interruption, or a newer plan stops delivery of the old actionable alert. Expiration is a separate historical event, sent only if selected when it is observed; enabling it later does not replay consumed expirations.
+
+A persistent episode identifies each condition, Server or application backup, and approval generation. Repeated observations and application restarts do not repeat the initial alert. A confirmed healthy observation ends an episode; a later recurrence starts another. Missing or failed observations preserve the previous condition. Manual and automatic backups share the export/verification failure conditions, including automatic scheduling/publication failures. Coverage requires both a successful export and restore-ready verification within the existing seven-day recovery threshold. These are recorded recovery facts, not a fresh scan of operator-managed archive files.
+
+**Grouped reminders** are off by default. When enabled, choose 5–43200 minutes (default 1440). At most one summary is admitted per destination and interval, containing selected unresolved conditions. Expirations are not repeated. Conditions and selection are revalidated before each delivery, including retries; resolved entries disappear from queued summaries. Delivery diagnostics and the existing outbox/retry policy apply to all alerts.
+
+Changing a destination skips deliveries still bound to its previous credentials and admits current selected conditions once for the new destination. Disabling a destination or deselecting an event stops its pending deliveries and reminders; observations continue so a healthy state and subsequent recurrence remain distinct. Re-enabling the same unchanged configuration does not replay an already admitted episode. A Server rename preserves its notification identity and updates the displayed name; deletion retires its conditions. Recreating a deleted Server creates a new identity.
+
+A controlled database restore preserves the live admission ledger and existing outbox replacement protections, skips historical audit replay, and revalidates restored job, Server, and backup facts before delivery. Restored pending jobs interrupted by runtime recovery cannot produce actionable approval reminders. Previously resolved conditions may become new episodes if restored evidence explicitly reports them again. A cold start from an older standalone database backup has only that backup's ledger: external deliveries made after the archive was created cannot be inferred or undone.
+
+Messages contain readable Server/backup and job identifiers, with allowlisted condition metadata. This application has no configured public notification base URL, so these alerts do not invent links. Operators open the authenticated Status or Administration page to review the current facts; notifications do not execute approvals or maintenance actions.
+
 
 ## Audit trail
 

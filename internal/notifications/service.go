@@ -25,11 +25,19 @@ const (
 	DestinationDiscord  = "discord"
 	DestinationTelegram = "telegram"
 
-	EventUpdateComplete     = "update.complete"
-	EventScheduleRunFailed  = "schedule.run.failed"
-	EventScheduleRunSkipped = "schedule.run.skipped"
-	EventBackupRestore      = "backup.restore"
-	EventTest               = "notification.test"
+	EventUpdateComplete        = "update.complete"
+	EventScheduleRunFailed     = "schedule.run.failed"
+	EventScheduleRunSkipped    = "schedule.run.skipped"
+	EventBackupRestore         = "backup.restore"
+	EventTest                  = "notification.test"
+	EventApprovalPublished     = "approval.published"
+	EventApprovalExpired       = "approval.expired"
+	EventRebootRequired        = "reboot.required"
+	EventBackupExportFailed    = "backup.export.failed"
+	EventBackupVerifyFailed    = "backup.verify.failed"
+	EventBackupCoverageMissing = "backup.coverage.missing"
+	EventBackupCoverageStale   = "backup.coverage.stale"
+	EventReminder              = "notification.reminder"
 
 	defaultAttempts                     = 3
 	defaultSQLiteContentionAttempts     = 20
@@ -40,12 +48,14 @@ const (
 	defaultOutboxPruneInterval          = 12 * time.Hour
 )
 
-var supportedEvents = []string{
+var legacyEvents = []string{
 	EventUpdateComplete,
 	EventScheduleRunFailed,
 	EventScheduleRunSkipped,
 	EventBackupRestore,
 }
+
+var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 
@@ -64,36 +74,42 @@ type HTTPClient interface {
 }
 
 type Settings struct {
-	Enabled           bool
-	WebhookURL        string
-	DiscordEnabled    bool
-	DiscordWebhookURL string
-	TelegramEnabled   bool
-	TelegramBotToken  string
-	TelegramChatID    string
-	EventTypes        []string
-	LastDelivery      *DeliveryStatus
-	LastDeliveries    map[string]*DeliveryStatus
+	RemindersEnabled        bool
+	ReminderIntervalMinutes int
+	Enabled                 bool
+	WebhookURL              string
+	DiscordEnabled          bool
+	DiscordWebhookURL       string
+	TelegramEnabled         bool
+	TelegramBotToken        string
+	TelegramChatID          string
+	EventTypes              []string
+	LastDelivery            *DeliveryStatus
+	LastDeliveries          map[string]*DeliveryStatus
 }
 
 type SettingsResponse struct {
-	Enabled           bool             `json:"enabled"`
-	WebhookConfigured bool             `json:"webhook_configured"`
-	WebhookURLMasked  string           `json:"webhook_url_masked,omitempty"`
-	WebhookURLIntent  WebhookURLIntent `json:"webhook_url_intent"`
-	EventTypes        []string         `json:"event_types"`
-	SupportedEvents   []string         `json:"supported_events"`
-	Discord           DiscordResponse  `json:"discord"`
-	Telegram          TelegramResponse `json:"telegram"`
+	RemindersEnabled        bool             `json:"reminders_enabled"`
+	ReminderIntervalMinutes int              `json:"reminder_interval_minutes"`
+	Enabled                 bool             `json:"enabled"`
+	WebhookConfigured       bool             `json:"webhook_configured"`
+	WebhookURLMasked        string           `json:"webhook_url_masked,omitempty"`
+	WebhookURLIntent        WebhookURLIntent `json:"webhook_url_intent"`
+	EventTypes              []string         `json:"event_types"`
+	SupportedEvents         []string         `json:"supported_events"`
+	Discord                 DiscordResponse  `json:"discord"`
+	Telegram                TelegramResponse `json:"telegram"`
 }
 
 type SettingsUpdate struct {
-	Enabled          bool             `json:"enabled"`
-	WebhookURL       string           `json:"webhook_url,omitempty"`
-	WebhookURLIntent WebhookURLIntent `json:"webhook_url_intent,omitempty"`
-	EventTypes       []string         `json:"event_types"`
-	Discord          *DiscordUpdate   `json:"discord,omitempty"`
-	Telegram         *TelegramUpdate  `json:"telegram,omitempty"`
+	RemindersEnabled        bool             `json:"reminders_enabled"`
+	ReminderIntervalMinutes int              `json:"reminder_interval_minutes"`
+	Enabled                 bool             `json:"enabled"`
+	WebhookURL              string           `json:"webhook_url,omitempty"`
+	WebhookURLIntent        WebhookURLIntent `json:"webhook_url_intent,omitempty"`
+	EventTypes              []string         `json:"event_types"`
+	Discord                 *DiscordUpdate   `json:"discord,omitempty"`
+	Telegram                *TelegramUpdate  `json:"telegram,omitempty"`
 }
 
 type DiscordResponse struct {
@@ -125,17 +141,19 @@ type TelegramUpdate struct {
 }
 
 type persistedSettings struct {
-	Enabled             bool                       `json:"enabled"`
-	LegacyWebhookURL    string                     `json:"webhook_url,omitempty"`
-	EncryptedWebhookURL string                     `json:"webhook_url_enc,omitempty"`
-	DiscordEnabled      bool                       `json:"discord_enabled,omitempty"`
-	DiscordWebhookURL   string                     `json:"discord_webhook_url_enc,omitempty"`
-	TelegramEnabled     bool                       `json:"telegram_enabled,omitempty"`
-	TelegramBotToken    string                     `json:"telegram_bot_token_enc,omitempty"`
-	TelegramChatID      string                     `json:"telegram_chat_id_enc,omitempty"`
-	EventTypes          []string                   `json:"event_types"`
-	LastDelivery        *DeliveryStatus            `json:"last_delivery,omitempty"`
-	LastDeliveries      map[string]*DeliveryStatus `json:"last_deliveries,omitempty"`
+	RemindersEnabled        bool                       `json:"reminders_enabled"`
+	ReminderIntervalMinutes int                        `json:"reminder_interval_minutes"`
+	Enabled                 bool                       `json:"enabled"`
+	LegacyWebhookURL        string                     `json:"webhook_url,omitempty"`
+	EncryptedWebhookURL     string                     `json:"webhook_url_enc,omitempty"`
+	DiscordEnabled          bool                       `json:"discord_enabled,omitempty"`
+	DiscordWebhookURL       string                     `json:"discord_webhook_url_enc,omitempty"`
+	TelegramEnabled         bool                       `json:"telegram_enabled,omitempty"`
+	TelegramBotToken        string                     `json:"telegram_bot_token_enc,omitempty"`
+	TelegramChatID          string                     `json:"telegram_chat_id_enc,omitempty"`
+	EventTypes              []string                   `json:"event_types"`
+	LastDelivery            *DeliveryStatus            `json:"last_delivery,omitempty"`
+	LastDeliveries          map[string]*DeliveryStatus `json:"last_deliveries,omitempty"`
 }
 
 type ValidationError struct {
@@ -244,41 +262,49 @@ type WebhookPayload struct {
 }
 
 type ServiceDeps struct {
-	DB              DBProvider
-	HTTPClient      HTTPClient
-	EncryptSecret   func(string) (string, error)
-	DecryptSecret   func(string) (string, error)
-	Now             func() time.Time
-	Backoff         func(attempt int) time.Duration
-	Logf            func(string, ...any)
-	QueueSize       int
-	DeliveryTimeout time.Duration
-	PollInterval    time.Duration
-	ClaimTTL        time.Duration
-	Retention       time.Duration
-	PruneInterval   time.Duration
-	NewID           func() string
-	NextOutboxWake  func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
+	ReadConditions        ConditionSource
+	ConditionPollInterval time.Duration
+	DB                    DBProvider
+	HTTPClient            HTTPClient
+	EncryptSecret         func(string) (string, error)
+	DecryptSecret         func(string) (string, error)
+	Now                   func() time.Time
+	Backoff               func(attempt int) time.Duration
+	Logf                  func(string, ...any)
+	QueueSize             int
+	DeliveryTimeout       time.Duration
+	PollInterval          time.Duration
+	ClaimTTL              time.Duration
+	Retention             time.Duration
+	PruneInterval         time.Duration
+	NewID                 func() string
+	NextOutboxWake        func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
 }
 
 type Service struct {
 	deps ServiceDeps
 
-	settingsMu        sync.Mutex
-	lifecycleMu       sync.Mutex
-	persistenceMu     sync.Mutex
-	persistencePaused bool
-	persistenceActive int
-	replacementRows   *outboxReplacement
-	wake              chan struct{}
-	closing           bool
-	cancel            context.CancelFunc
-	done              chan struct{}
-	initErr           error
+	settingsMu            sync.Mutex
+	lifecycleMu           sync.Mutex
+	persistenceMu         sync.Mutex
+	persistencePaused     bool
+	persistenceActive     int
+	replacementRows       *outboxReplacement
+	replacementConditions *conditionState
+	conditionMu           sync.Mutex
+	monitoringStarted     bool
+	wake                  chan struct{}
+	closing               bool
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	initErr               error
 }
 
 func NewService(deps ServiceDeps) *Service {
 	deps.HTTPClient = secureNotificationHTTPClient(deps.HTTPClient)
+	if deps.ConditionPollInterval <= 0 {
+		deps.ConditionPollInterval = time.Second
+	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -351,6 +377,13 @@ func (s *Service) run(ctx context.Context) {
 	defer close(s.done)
 	pruneTicker := time.NewTicker(s.deps.PruneInterval)
 	defer pruneTicker.Stop()
+	var conditionC <-chan time.Time
+	var conditionTicker *time.Ticker
+	defer func() {
+		if conditionTicker != nil {
+			conditionTicker.Stop()
+		}
+	}()
 	var retryTimer *time.Timer
 	var retryC <-chan time.Time
 	for {
@@ -361,6 +394,7 @@ func (s *Service) run(ctx context.Context) {
 				retryTimer.Stop()
 			}
 			return
+		case <-conditionC:
 		case <-s.wake:
 			if retryTimer != nil {
 				retryTimer.Stop()
@@ -375,6 +409,15 @@ func (s *Service) run(ctx context.Context) {
 		}
 		if !s.beginPersistence(ctx) {
 			return
+		}
+		if s.conditionMonitoringStarted() {
+			if conditionTicker == nil {
+				conditionTicker = time.NewTicker(s.deps.ConditionPollInterval)
+				conditionC = conditionTicker.C
+			}
+			if err := s.reconcileConditions(ctx); err != nil {
+				s.deps.Logf("notification condition reconciliation failed: %v", err)
+			}
 		}
 		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
@@ -524,6 +567,11 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
+	conditions, err := loadConditionState(ctx, s.database())
+	if err != nil {
+		s.resumePersistence()
+		return err
+	}
 	rows, err := loadCurrentOutboxRows(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
@@ -531,6 +579,7 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	}
 	s.persistenceMu.Lock()
 	s.replacementRows = &rows
+	s.replacementConditions = &conditions
 	s.persistenceMu.Unlock()
 	return nil
 }
@@ -568,18 +617,28 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if err := restoreCurrentOutboxRows(ctx, db, rows, s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
+	if err := s.restoreConditions(ctx, db); err != nil {
+		return err
+	}
 	if _, err := pruneOutbox(ctx, db, s.deps.Now(), s.deps.Retention); err != nil {
 		return err
 	}
 	s.initErr = nil
 	s.persistenceMu.Lock()
 	s.replacementRows = nil
+	s.replacementConditions = nil
 	s.persistenceMu.Unlock()
 	s.resumePersistence()
 	return nil
 }
 
 func (s *Service) Accept(intent DeliveryIntent) Admission {
+	if s.conditionMonitoringStarted() {
+		s.signalWorker()
+	}
+	if s.deps.ReadConditions != nil && isConditionEvent(intent.Action) {
+		return Admission{State: AdmissionSkipped}
+	}
 	s.lifecycleMu.Lock()
 	if s.closing {
 		s.lifecycleMu.Unlock()
@@ -694,7 +753,12 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		s.releaseClaim(row, err)
 		return
 	}
-	if !destinationEnabled(settings, row.Destination) || !destinationConfigured(settings, row.Destination) {
+	eligible, eligibilityErr := s.conditionDeliveryEligible(ctx, &row, settings)
+	if eligibilityErr != nil {
+		s.releaseClaim(row, eligibilityErr)
+		return
+	}
+	if !eligible || !destinationEnabled(settings, row.Destination) || !destinationConfigured(settings, row.Destination) {
 		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
 		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -901,7 +965,15 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 	if err != nil {
 		return SettingsResponse{}, err
 	}
+	interval := update.ReminderIntervalMinutes
+	if interval == 0 {
+		interval = 1440
+	}
+	if interval < 5 || interval > 43200 {
+		return SettingsResponse{}, validationError("Reminder interval must be between 5 and 43200 minutes.")
+	}
 	settings := Settings{
+		RemindersEnabled: update.RemindersEnabled, ReminderIntervalMinutes: interval,
 		Enabled:           update.Enabled,
 		WebhookURL:        current.WebhookURL,
 		DiscordEnabled:    current.DiscordEnabled,
@@ -1240,9 +1312,10 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 
 func (s *Service) loadSettings() (Settings, error) {
 	settings := Settings{
-		Enabled:    false,
-		WebhookURL: "",
-		EventTypes: SupportedEvents(),
+		Enabled:                 false,
+		WebhookURL:              "",
+		EventTypes:              append([]string(nil), legacyEvents...),
+		ReminderIntervalMinutes: 1440,
 	}
 	if s == nil || s.deps.DB == nil {
 		return settings, nil
@@ -1262,6 +1335,11 @@ func (s *Service) loadSettings() (Settings, error) {
 	var stored persistedSettings
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return Settings{}, err
+	}
+	settings.RemindersEnabled = stored.RemindersEnabled
+	settings.ReminderIntervalMinutes = stored.ReminderIntervalMinutes
+	if settings.ReminderIntervalMinutes < 5 || settings.ReminderIntervalMinutes > 43200 {
+		settings.ReminderIntervalMinutes = 1440
 	}
 	settings.Enabled = stored.Enabled
 	settings.DiscordEnabled = stored.DiscordEnabled
@@ -1286,11 +1364,11 @@ func (s *Service) loadSettings() (Settings, error) {
 		settings.WebhookURL = strings.TrimSpace(stored.LegacyWebhookURL)
 	}
 	if settings.EventTypes == nil {
-		settings.EventTypes = SupportedEvents()
+		settings.EventTypes = append([]string(nil), legacyEvents...)
 	} else {
 		events, err := normalizeEventTypes(settings.EventTypes)
 		if err != nil {
-			events = SupportedEvents()
+			events = append([]string(nil), legacyEvents...)
 		}
 		settings.EventTypes = events
 	}
@@ -1339,10 +1417,11 @@ func (s *Service) saveSettings(settings Settings) error {
 		return nil
 	}
 	stored := persistedSettings{
+		RemindersEnabled: settings.RemindersEnabled, ReminderIntervalMinutes: settings.ReminderIntervalMinutes,
 		Enabled:         settings.Enabled,
 		DiscordEnabled:  settings.DiscordEnabled,
 		TelegramEnabled: settings.TelegramEnabled,
-		EventTypes:      append([]string(nil), settings.EventTypes...),
+		EventTypes:      append([]string{}, settings.EventTypes...),
 		LastDelivery:    safeDeliveryStatus(settings.LastDelivery),
 		LastDeliveries:  cloneDeliveryStatuses(settings.LastDeliveries),
 	}
@@ -1614,11 +1693,12 @@ func isLocalWebhookHost(host string) bool {
 func settingsResponse(settings Settings, intent, discordIntent, telegramIntent WebhookURLIntent) SettingsResponse {
 	configured := strings.TrimSpace(settings.WebhookURL) != ""
 	return SettingsResponse{
+		RemindersEnabled: settings.RemindersEnabled, ReminderIntervalMinutes: settings.ReminderIntervalMinutes,
 		Enabled:           settings.Enabled,
 		WebhookConfigured: configured,
 		WebhookURLMasked:  maskWebhookURL(settings.WebhookURL),
 		WebhookURLIntent:  intent,
-		EventTypes:        append([]string(nil), settings.EventTypes...),
+		EventTypes:        append([]string{}, settings.EventTypes...),
 		SupportedEvents:   SupportedEvents(),
 		Discord: DiscordResponse{
 			Enabled:          settings.DiscordEnabled,
@@ -1807,4 +1887,20 @@ func truncate(value string, max int) string {
 		return value
 	}
 	return string(runes[:max])
+}
+
+// StartConditionMonitoring is invoked with the application's other background
+// workers, after runtime initialization. Close stops both monitoring and delivery.
+func (s *Service) StartConditionMonitoring() {
+	s.lifecycleMu.Lock()
+	if !s.closing && s.deps.ReadConditions != nil {
+		s.monitoringStarted = true
+	}
+	s.lifecycleMu.Unlock()
+	s.signalWorker()
+}
+func (s *Service) conditionMonitoringStarted() bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.monitoringStarted && !s.closing
 }

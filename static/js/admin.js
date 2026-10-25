@@ -535,6 +535,10 @@ function renderNotificationSettings() {
     const clear = document.getElementById("notification-webhook-clear");
     const eventTypes = view.eventTypes;
     if (enabled) enabled.checked = view.enabled;
+    const reminders = document.getElementById("notification-reminders-enabled");
+    const reminderInterval = document.getElementById("notification-reminder-interval");
+    if (reminders) reminders.checked = view.remindersEnabled;
+    if (reminderInterval) reminderInterval.value = view.reminderIntervalMinutes;
     if (masked) {
         masked.textContent = view.webhookURLIntent === "clear"
             ? "Will be cleared when saved"
@@ -672,6 +676,8 @@ function syncNotificationDraftFromDOM() {
         telegramCredentialsIntent: current.telegramCredentialsIntent,
         telegramReplacementProvided: current.telegramCredentialsIntent === "replace" && telegramToken !== "" && telegramChatID !== "",
         telegramReplacementValid: current.telegramCredentialsIntent !== "replace" || telegramReplacementPolicyValid(telegramToken, telegramChatID),
+        remindersEnabled: Boolean(document.getElementById("notification-reminders-enabled")?.checked),
+        reminderIntervalMinutes: Number(document.getElementById("notification-reminder-interval")?.value),
         eventTypes: selectedNotificationEvents()
     } });
     setNotificationFeedback("", "");
@@ -3598,6 +3604,8 @@ document.getElementById("notification-webhook-replace").addEventListener("click"
 document.getElementById("notification-webhook-clear").addEventListener("click", () => setNotificationWebhookIntent("clear"));
 document.getElementById("notification-webhook-cancel").addEventListener("click", () => setNotificationWebhookIntent("preserve"));
 document.getElementById("notification-enabled").addEventListener("change", syncNotificationDraftFromDOM);
+document.getElementById("notification-reminders-enabled").addEventListener("change", syncNotificationDraftFromDOM);
+document.getElementById("notification-reminder-interval").addEventListener("input", syncNotificationDraftFromDOM);
 document.getElementById("notification-discord-url").addEventListener("input", syncNotificationDraftFromDOM);
 document.getElementById("notification-discord-replace").addEventListener("click", () => setDiscordWebhookIntent("replace"));
 document.getElementById("notification-discord-clear").addEventListener("click", () => setDiscordWebhookIntent("clear"));

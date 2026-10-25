@@ -79,6 +79,8 @@ test("notification administration owns settings, delivery, and command lifecycle
         enabled: false,
         webhook_url_intent: "preserve",
         event_types: ["update.complete"],
+        reminders_enabled: false,
+        reminder_interval_minutes: 1440,
         discord: { enabled: false, webhook_url_intent: "preserve" },
         telegram: { enabled: false, credentials_intent: "preserve" },
     });
@@ -89,6 +91,8 @@ test("notification administration owns settings, delivery, and command lifecycle
         enabled: false,
         webhook_url_intent: "replace",
         event_types: ["update.complete"],
+        reminders_enabled: false,
+        reminder_interval_minutes: 1440,
         discord: { enabled: false, webhook_url_intent: "preserve" },
         telegram: { enabled: false, credentials_intent: "preserve" },
     });
@@ -194,6 +198,8 @@ test("notification URL intents preserve accepted configuration and never retain 
         enabled: false,
         webhook_url_intent: "preserve",
         event_types: ["update.complete"],
+        reminders_enabled: false,
+        reminder_interval_minutes: 1440,
         discord: { enabled: false, webhook_url_intent: "preserve" },
         telegram: { enabled: false, credentials_intent: "preserve" },
     });
@@ -219,6 +225,8 @@ test("notification URL intents preserve accepted configuration and never retain 
         enabled: false,
         webhook_url_intent: "clear",
         event_types: ["update.complete"],
+        reminders_enabled: false,
+        reminder_interval_minutes: 1440,
         discord: { enabled: false, webhook_url_intent: "preserve" },
         telegram: { enabled: false, credentials_intent: "preserve" },
     });
@@ -866,4 +874,23 @@ test("automated backups project configured, suspended, deferred and failed state
     store.dispatch({ type: "commandCompleted", plan: first.plan, data: { config, configured: true, state: "disabled" } });
     assert.equal(store.getView().backup.automation.config.enabled, false);
     assert.equal(store.planCommand("runBackupSchedule").enabled, true);
+});
+
+
+test("notification reminders are opt-in, validated, and retained independently of event selection", () => {
+    const store = createStore();
+    store.dispatch({ type: "notificationSnapshotReceived", data: { event_types: ["update.complete"] } });
+    assert.equal(store.getView().notifications.remindersEnabled, false);
+    assert.equal(store.getView().notifications.reminderIntervalMinutes, 1440);
+    store.dispatch({ type: "notificationDraftChanged", patch: { eventTypes: ["approval.published", "reboot.required"], remindersEnabled: true, reminderIntervalMinutes: 4 } });
+    assert.equal(store.planCommand("saveNotifications").enabled, false);
+    store.dispatch({ type: "notificationDraftChanged", patch: { reminderIntervalMinutes: 60 } });
+    const plan = store.planCommand("saveNotifications");
+    assert.equal(plan.enabled, true);
+    assert.equal(plan.payload.reminders_enabled, true);
+    assert.equal(plan.payload.reminder_interval_minutes, 60);
+    assert.deepEqual(plan.payload.event_types, ["approval.published", "reboot.required"]);
+    store.dispatch({ type: "commandCompleted", plan, data: plan.payload });
+    assert.equal(store.getView().notifications.remindersEnabled, true);
+    assert.equal(store.getView().notifications.dirty, false);
 });

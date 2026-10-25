@@ -506,6 +506,8 @@ test.describe.serial('setup and login flows', () => {
           webhook_url_masked: state.notificationConfiguredURL ? 'https://hooks.example.test/••••' : '',
           webhook_url_intent: state.notificationPayload.webhook_url_intent,
           event_types: state.notificationPayload.event_types,
+          reminders_enabled: state.notificationPayload.reminders_enabled,
+          reminder_interval_minutes: state.notificationPayload.reminder_interval_minutes,
           supported_events: ['update.complete', 'schedule.run.failed', 'schedule.run.skipped', 'backup.restore'],
         });
       }
@@ -3025,6 +3027,31 @@ test.describe.serial('setup and login flows', () => {
     await page.reload();
     await expect(page.locator('#admin-activity-message')).toHaveText('No recent administrative activity.');
     await expect(page.locator('#admin-activity-list .admin-activity-item')).toHaveCount(0);
+  });
+
+  test('notification conditions stay opt-in and grouped reminders validate and save', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    const state = {};
+    await stubAdminApi(page, state);
+    await page.goto('/admin#admin-section-notifications');
+    await page.locator('[data-admin-section-link="notifications"]').click();
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute('data-status', 'current');
+    await expect(page.locator('#notification-event-approval-published')).not.toBeChecked();
+    await expect(page.locator('#notification-reminders-enabled')).not.toBeChecked();
+    await page.locator('#notification-event-approval-published').check();
+    await page.locator('#notification-event-reboot-required').check();
+    await page.locator('#notification-reminders-enabled').check();
+    await page.locator('#notification-reminder-interval').fill('4');
+    await expect(page.locator('#notification-save')).toBeDisabled();
+    await expect(page.locator('#notification-draft-state')).toContainText('between 5 and 43200');
+    await page.locator('#notification-reminder-interval').fill('60');
+    await page.locator('#notification-save').click();
+    await expect.poll(() => state.notificationPayload).toMatchObject({ reminders_enabled: true, reminder_interval_minutes: 60 });
+    expect(state.notificationPayload.event_types).toContain('approval.published');
+    expect(state.notificationPayload.event_types).toContain('reboot.required');
+    await expect(page.locator('#notification-reminders-enabled')).toBeChecked();
+    await expect(page.locator('#notification-reminder-interval')).toHaveValue('60');
+    await expect(page.locator('#notification-save')).toBeDisabled();
   });
 
   test('notification webhook settings preserve, replace, clear, and mask secret-bearing URLs', async ({ page }) => {

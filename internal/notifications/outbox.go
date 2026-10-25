@@ -196,6 +196,9 @@ func EnsureSchema(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
+	if err := ensureConditionSchema(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS notification_outbox (
 			id TEXT PRIMARY KEY,
@@ -334,6 +337,13 @@ func insertOutboxRows(ctx context.Context, db *sql.DB, rows []outboxRow, now str
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := insertOutboxRowsTx(ctx, tx, rows, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertOutboxRowsTx(ctx context.Context, tx *sql.Tx, rows []outboxRow, now string) error {
 	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
@@ -348,7 +358,7 @@ func insertOutboxRows(ctx context.Context, db *sql.DB, rows []outboxRow, now str
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, claimTTL time.Duration) error {

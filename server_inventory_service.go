@@ -7,6 +7,7 @@ import (
 
 	healthpkg "debian-updater/internal/health"
 	jobspkg "debian-updater/internal/jobs"
+	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
 	"debian-updater/internal/vulnerabilities"
 
@@ -78,9 +79,19 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenameJobsServer:               jobspkg.RenameServerTx,
 		RenameVulnerabilityObservation: vulnerabilities.RenameServerTx,
 		DeleteVulnerabilityObservation: vulnerabilities.DeleteServerTx,
-		RenameServerFacts:              observation.RenameServerTx,
-		DeleteServerFacts:              observation.DeleteServerTx,
-		InvalidateServerEndpoint:       observation.InvalidateEndpointTx,
+		RenameServerFacts: func(tx *sql.Tx, oldName, newName string) error {
+			if err := observation.RenameServerTx(tx, oldName, newName); err != nil {
+				return err
+			}
+			return notificationpkg.RenameServerIdentityTx(tx, oldName, newName)
+		},
+		DeleteServerFacts: func(tx *sql.Tx, name string) error {
+			if err := observation.DeleteServerTx(tx, name); err != nil {
+				return err
+			}
+			return notificationpkg.DeleteServerIdentityTx(tx, name)
+		},
+		InvalidateServerEndpoint: observation.InvalidateEndpointTx,
 	})
 	service.SetLegacyImport(func() bool {
 		return loadLegacyServersIntoService(service, state)

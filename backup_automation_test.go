@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	auditpkg "debian-updater/internal/audit"
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
 )
@@ -598,5 +601,149 @@ func TestBackupAutomationLocalArchivesAreNotInferredFromRestoredHistory(t *testi
 	status, err = a.Status(context.Background())
 	if err != nil || status.LastSuccessAt == "" || status.LocalArchiveCount != 0 {
 		t.Fatalf("historical success mistaken for local archive: %+v %v", status, err)
+	}
+}
+
+func TestBackupAutomationInterruptedClaimIsNotDeferredOrReplayed(t *testing.T) {
+	for _, manual := range []bool{false, true} {
+		t.Run(map[bool]string{false: "scheduled", true: "disabled control"}[manual], func(t *testing.T) {
+			_, a, now := newBackupAutomationTest(t)
+			ctx := context.Background()
+			s := backupAutomationStateForTest(t, a)
+			*now = parseBackupStamp(s.NextAt)
+			s.Config.Enabled = !manual
+			s.Outcome = "running"
+			s.PendingManual = manual
+			s.PendingAt = backupStamp(*now)
+			s.OccurrenceAt = s.PendingAt
+			s.NextAt = a.next(s.Config, *now)
+			if err := a.save(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			restarted := newBackupAutomation(a.deps)
+			restarted.deployment = a.deployment
+			restarted.export = func(context.Context, backupExportCommand) backupOperationOutcome {
+				t.Fatal("replayed an already claimed backup occurrence")
+				return backupOperationOutcome{}
+			}
+			shared, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkInteractive)
+			if !decision.Allowed {
+				t.Fatal("shared admission denied")
+			}
+			defer shared.Close()
+			if err := restarted.Tick(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			shared.Close()
+			*now = now.Add(backupRetryDelay)
+			if err := restarted.Tick(ctx, false); err != nil {
+				t.Fatal(err)
+			}
+			after := backupAutomationStateForTest(t, a)
+			if after.Outcome != "failed" || after.PendingAt != "" || after.PendingManual || after.NextAt != s.NextAt {
+				t.Fatalf("interrupted claim was not consumed: %+v", after)
+			}
+			var metadata string
+			if err := a.deps.DB().QueryRow("SELECT meta_json FROM audit_events WHERE action='backup.automatic.failed' ORDER BY id DESC LIMIT 1").Scan(&metadata); err != nil || !strings.Contains(metadata, s.OccurrenceAt) {
+				t.Fatalf("interruption audit metadata=%s error=%v", metadata, err)
+			}
+		})
+	}
+}
+
+func TestBackupAutomationRunBlocksBeforeAuthenticationDuringRestore(t *testing.T) {
+	dbCalls := 0
+	app := newTestApp(t, testAppOptions{Deps: AppDeps{DB: func() *sql.DB {
+		dbCalls++
+		return getDB()
+	}}})
+	lease, decision := app.Deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatal("restore admission denied")
+	}
+	defer lease.Close()
+	dbCalls = 0
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/automation/run", nil)
+	markSameOriginAuthRequest(req)
+	app.Router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || dbCalls != 0 {
+		t.Fatalf("restore admission response=%d database accesses=%d body=%s", rec.Code, dbCalls, rec.Body.String())
+	}
+}
+
+func TestBackupAutomationControlRunProtectsCompletionAndStatus(t *testing.T) {
+	app, a, _ := newBackupAutomationTest(t)
+	cookie := app.authenticate(t)
+	assertAdmissionHeld := func() {
+		t.Helper()
+		if lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore); decision.Allowed {
+			lease.Close()
+			t.Error("backup completion accessed persistence without maintenance admission")
+		}
+	}
+	db := a.deps.DB
+	a.deps.DB = func() *sql.DB {
+		assertAdmissionHeld()
+		return db()
+	}
+	recorded := false
+	a.deps.AuditService = auditpkg.NewService(auditpkg.ServiceOptions{DB: db, OnRecord: func(event auditpkg.Event) {
+		if event.Action == "backup.automatic.succeeded" {
+			recorded = true
+			assertAdmissionHeld()
+		}
+	}})
+	result := performContractRequest(app.Handler, http.MethodPost, "/api/backup/automation/run", nil, cookie, true)
+	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"state":"succeeded"`) || !recorded {
+		t.Fatalf("control run response=%d recorded=%v body=%s", result.Code, recorded, result.Body.String())
+	}
+}
+
+func TestBackupAutomationApprovalBindsDeploymentWithoutPassphrase(t *testing.T) {
+	_, a, _ := newBackupAutomationTest(t)
+	ctx := context.Background()
+	s := backupAutomationStateForTest(t, a)
+	root, pass, owner, binding, err := a.destination(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Close()
+	if binding != owner+"\x00"+a.deployment.Directory+"\x00"+a.deployment.SecretFile || binding != s.Approval {
+		t.Fatal("approval does not bind the exact local deployment")
+	}
+	var raw string
+	if err := a.deps.DB().QueryRow("SELECT value FROM settings WHERE key=?", backupAutomationSettingsKey).Scan(&raw); err != nil || strings.Contains(raw, pass) {
+		t.Fatalf("passphrase persisted or settings unavailable: %v", err)
+	}
+	if err := os.WriteFile(a.deployment.SecretFile, []byte("rotated secret for future archives"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Status(ctx)
+	if err != nil || !status.Configured {
+		t.Fatalf("in-place rotation should preserve local approval: %+v %v", status, err)
+	}
+	previousPath := a.deployment.SecretFile
+	a.deployment.SecretFile = filepath.Join(t.TempDir(), "other-secret")
+	if err := os.WriteFile(a.deployment.SecretFile, []byte("rotated secret for future archives"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, err = a.Status(ctx)
+	if err != nil || status.Configured || status.State != "suspended" {
+		t.Fatalf("changed path must require revalidation: %+v %v", status, err)
+	}
+	a.deployment.SecretFile = previousPath
+	// Previous versions persisted a 64-character hex fingerprint.
+	s.Approval = strings.Repeat("a", sha256.Size*2)
+	if err := a.save(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	status, err = a.Status(ctx)
+	if err != nil || status.Configured || status.State != "suspended" {
+		t.Fatalf("legacy approval must require revalidation: %+v %v", status, err)
+	}
+	status, err = a.Configure(ctx, s.Config)
+	if err != nil || !status.Configured {
+		t.Fatalf("legacy approval revalidation failed: %+v %v", status, err)
 	}
 }

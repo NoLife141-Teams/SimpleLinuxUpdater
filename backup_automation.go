@@ -256,12 +256,12 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 	if err != nil {
 		return fail("Backup destination is unavailable or contains a symbolic link.")
 	}
-	secret, err := backupRealPath(a.deployment.SecretFile)
+	secretPath, err := backupRealPath(a.deployment.SecretFile)
 	if err != nil {
 		return fail("Backup secret is unavailable or contains a symbolic link.")
 	}
 	paths := a.deps.BackupService.Status()
-	secretInfo, err := os.Stat(secret)
+	secretInfo, err := os.Stat(secretPath)
 	if err != nil {
 		return fail("Backup secret cannot be inspected.")
 	}
@@ -278,22 +278,22 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 		}
 		absolute, _ := filepath.Abs(p)
 		activeInfo, activeErr := os.Stat(absolute)
-		if secret == absolute || (activeErr == nil && os.SameFile(secretInfo, activeInfo)) {
+		if secretPath == absolute || (activeErr == nil && os.SameFile(secretInfo, activeInfo)) {
 			return fail("Backup secret must be separate from application data files.")
 		}
 	}
-	if pathWithin(dir, secret) {
+	if pathWithin(dir, secretPath) {
 		return fail("Backup secret must be outside the archive directory.")
 	}
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 {
 		return fail("Backup destination must be a directory without group or world write access.")
 	}
-	info, err = os.Stat(secret)
+	info, err = os.Stat(secretPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || info.Mode().Perm()&0077 != 0 {
 		return fail("Backup secret must be a private regular file of at most 4096 bytes.")
 	}
-	f, err := os.Open(secret)
+	f, err := os.Open(secretPath)
 	if err != nil {
 		return fail("Backup secret cannot be read.")
 	}
@@ -334,8 +334,10 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 			return fail("Backup destination write validation or cleanup failed.")
 		}
 	}
-	binding := sha256.Sum256([]byte(owner + "\x00" + dir + "\x00" + secret))
-	return root, pass, owner, hex.EncodeToString(binding[:]), nil
+	// Approval binds public deployment coordinates, not passphrase contents. NUL
+	// cannot occur in a filesystem path, so the tuple has unambiguous boundaries.
+	binding := owner + "\x00" + dir + "\x00" + secretPath
+	return root, pass, owner, binding, nil
 }
 
 func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationStatus, error) {
@@ -452,13 +454,16 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 	if !decision.Allowed {
 		shared, allowed := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled)
 		if !allowed.Allowed {
-			return errors.New("Backup deferred while exclusive maintenance is active.")
+			return errors.New("backup deferred while exclusive maintenance is active")
 		}
 		defer shared.Close()
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		s, err := a.load(ctx)
 		if err != nil {
+			return err
+		}
+		if err := a.recoverInterrupted(ctx, &s); err != nil {
 			return err
 		}
 		if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
@@ -470,7 +475,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 				_ = root.Close()
 			}
 			if err != nil || binding != s.Approval {
-				return errors.New("Validate the local backup destination and secret before running a control backup.")
+				return errors.New("validate the local backup destination and secret before running a control backup")
 			}
 		}
 		now := a.now()
@@ -508,16 +513,8 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 			}
 		}
 	}
-	if s.Outcome == "running" {
-		s.Outcome = "failed"
-		s.Message = "The previous automated backup was interrupted; its occurrence will not be replayed."
-		s.PendingAt = ""
-		s.PendingManual = false
-		s.RetryAt = ""
-		if err = a.save(ctx, s); err != nil {
-			return err
-		}
-		a.record(s, "backup.automatic.failed", "failure")
+	if err := a.recoverInterrupted(ctx, &s); err != nil {
+		return err
 	}
 	if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
 		return nil
@@ -619,7 +616,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 		// Persist ownership before retention, so interrupted publication never grants
 		// authority to delete an unregistered file discovered in the directory.
 		if err = a.save(ctx, s); err != nil {
-			return errors.New("Published archive retained, but ownership could not be recorded.")
+			return errors.New("published archive retained, but ownership could not be recorded")
 		}
 		a.recordVerifiedPublication(archive, file.Size)
 		if err = a.retain(root, &s); err != nil {
@@ -654,19 +651,41 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 	if err = a.save(context.WithoutCancel(ctx), s); err != nil {
 		return err
 	}
-	if err = lease.Close(); err != nil {
-		s.Outcome = "failed"
-		s.Message = "Backup completed but maintenance mode could not be cleared."
-		_ = a.save(context.WithoutCancel(ctx), s)
-	}
 	if s.Outcome == "succeeded" {
 		a.record(s, "backup.automatic.succeeded", "success")
 	} else {
 		a.record(s, "backup.automatic.failed", "failure")
 	}
+	if err = lease.Close(); err != nil {
+		s.Outcome = "failed"
+		s.Message = "Backup completed but maintenance mode could not be cleared."
+		// Close releases admission even when clearing persistent maintenance fails.
+		// Only write completion evidence if shared admission can be recovered.
+		if shared, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled); decision.Allowed {
+			defer shared.Close()
+			_ = a.save(context.WithoutCancel(ctx), s)
+			a.record(s, "backup.automatic.failed", "failure")
+		}
+	}
 	if s.Outcome != "succeeded" {
 		return errors.New(s.Message)
 	}
+	return nil
+}
+
+func (a *backupAutomation) recoverInterrupted(ctx context.Context, s *backupAutomationState) error {
+	if s.Outcome != "running" {
+		return nil
+	}
+	s.Outcome = "failed"
+	s.Message = "The previous automated backup was interrupted; its occurrence will not be replayed."
+	s.PendingAt = ""
+	s.PendingManual = false
+	s.RetryAt = ""
+	if err := a.save(ctx, *s); err != nil {
+		return err
+	}
+	a.record(*s, "backup.automatic.failed", "failure")
 	return nil
 }
 
@@ -725,7 +744,7 @@ func (a *backupAutomation) cleanupTemporary(root *os.Root, s *backupAutomationSt
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("Owned backup temporary path is not a regular file.")
+		return errors.New("owned backup temporary path is not a regular file")
 	}
 	if err = root.Remove(name); err != nil {
 		return err
@@ -738,12 +757,12 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive := ownedBackupArchive{Name: name, Owner: owner}
 	src, err := os.Open(source.Path)
 	if err != nil {
-		return archive, errors.New("Backup export file cannot be read.")
+		return archive, errors.New("backup export file cannot be read")
 	}
 	defer src.Close()
 	dst, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return archive, errors.New("Private backup temporary file cannot be created.")
+		return archive, errors.New("private backup temporary file cannot be created")
 	}
 	digest := sha256.New()
 	written, err := a.copyArchive(io.MultiWriter(dst, digest), io.LimitReader(src, internalbackup.MaxUploadBytes+1))
@@ -755,14 +774,14 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	}
 	closeErr := dst.Close()
 	if err != nil || closeErr != nil {
-		return archive, errors.New("Backup destination write or sync failed.")
+		return archive, errors.New("backup destination write or sync failed")
 	}
 	if err = ctx.Err(); err != nil {
 		return archive, err
 	}
 	result, err := a.verify(ctx, internalbackup.TemporaryFile{Path: filepath.Join(root.Name(), temp), Size: written}, pass)
 	if err != nil || !result.RestoreReady {
-		return archive, errors.New("Automated archive did not pass restore readiness verification.")
+		return archive, errors.New("automated archive did not pass restore readiness verification")
 	}
 	if err = ctx.Err(); err != nil {
 		return archive, err
@@ -770,19 +789,19 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	// Link provides atomic no-replace publication on the same filesystem. Unlike
 	// Rename it cannot overwrite a foreign file that already has the target name.
 	if err = root.Link(temp, name); err != nil {
-		return archive, errors.New("Verified backup could not be published atomically.")
+		return archive, errors.New("verified backup could not be published atomically")
 	}
 	if err = root.Remove(temp); err != nil {
-		return archive, errors.New("Published backup temporary link could not be removed.")
+		return archive, errors.New("published backup temporary link could not be removed")
 	}
 	dir, err := root.Open(".")
 	if err != nil {
-		return archive, errors.New("Backup directory cannot be synced.")
+		return archive, errors.New("backup directory cannot be synced")
 	}
 	err = dir.Sync()
 	_ = dir.Close()
 	if err != nil {
-		return archive, errors.New("Published backup directory sync failed.")
+		return archive, errors.New("published backup directory sync failed")
 	}
 	archive.SHA256 = hex.EncodeToString(digest.Sum(nil))
 	return archive, nil
@@ -824,7 +843,7 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 		valid++
 		if valid > keep {
 			if err = root.Remove(archive.Name); err != nil {
-				return errors.New("Verified backup published, but an owned archive could not be removed by retention.")
+				return errors.New("verified backup published, but an owned archive could not be removed by retention")
 			}
 		} else {
 			retained = append(retained, archive)
@@ -887,10 +906,23 @@ func handleBackupAutomationConfigure(c *gin.Context, a *backupAutomation) {
 	c.JSON(http.StatusOK, status)
 }
 func handleBackupAutomationRun(c *gin.Context, a *backupAutomation) {
+	// Authentication runs under shared admission. Release that lease before Tick
+	// tries exclusive admission, otherwise every control run defers itself.
+	if value, ok := c.Get(maintenanceSharedLeaseContextKey); ok {
+		if lease, ok := value.(*maintenancepkg.SharedLease); ok {
+			lease.Close()
+		}
+	}
 	if err := a.Tick(c.Request.Context(), true); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
+	lease, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkInteractive)
+	if !decision.Allowed {
+		writeMaintenanceBlockedSnapshotResponseWithTime(c, decision.State, a.deps.ApplicationTime)
+		return
+	}
+	defer lease.Close()
 	handleBackupAutomationStatus(c, a)
 }
 

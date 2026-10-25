@@ -2707,11 +2707,22 @@ test.describe.serial('setup and login flows', () => {
 
     await page.goto('/admin');
     const sectionLinks = page.locator('#admin-section-nav [data-admin-section-link]');
-    await expect(sectionLinks).toHaveCount(8);
+    await expect.poll(() => sectionLinks.evaluateAll(links => links.map(link => link.dataset.adminSectionLink).sort())).toEqual([
+      'account-security', 'app-time', 'application-checks', 'backup', 'metrics',
+      'notifications', 'recent-activity', 'scheduled-policies', 'scheduled-runs',
+    ]);
     await expect(sectionLinks.first()).toHaveAttribute('aria-current', 'location');
 
     await page.locator('#admin-section-account-security').scrollIntoViewIfNeeded();
     await expect(page.locator('[data-admin-section-link="account-security"]')).toHaveAttribute('aria-current', 'location');
+
+    const applicationChecksLink = page.locator('[data-admin-section-link="application-checks"]');
+    await expect(applicationChecksLink).toHaveAttribute('href', '#admin-section-application-checks');
+    await applicationChecksLink.click();
+    await expect(page).toHaveURL(/#admin-section-application-checks$/);
+    await expect(page.locator('#admin-section-application-checks-heading')).toBeFocused();
+    await expect(page.locator('[data-admin-section-content="application-checks"]')).toBeVisible();
+    await expect(applicationChecksLink).toHaveAttribute('aria-current', 'location');
 
     await page.locator('[data-admin-section-link="backup"]').click();
     await expect(page).toHaveURL(/#admin-section-backup$/);

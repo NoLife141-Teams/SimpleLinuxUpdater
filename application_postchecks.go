@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const applicationPostcheckTestTimeout = 11 * time.Minute
+
 func applicationPostcheckLoader(db func() *sql.DB, state *serverpkg.State) func(Server) (*postchecks.Snapshot, error) {
 	return func(server Server) (*postchecks.Snapshot, error) {
 		if state != nil {
@@ -116,7 +118,7 @@ func registerApplicationPostcheckRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(409, gin.H{"error": "No post-check profile is assigned"})
 			return
 		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 11*time.Minute)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), applicationPostcheckTestTimeout)
 		defer cancel()
 		results, err := deps.UpdateService.TestApplicationChecks(ctx, server, profile)
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -90,6 +91,15 @@ func newApplicationHTTPServer(listenAddr string, handler http.Handler) *http.Ser
 func backupTransferDeadlineHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		controller := http.NewResponseController(w)
+		if isApplicationPostcheckTestRequest(r) {
+			// Recovery probes can outlast the ordinary one-minute response budget.
+			// Keep a bounded deadline with time to serialize the final results.
+			if err := controller.SetWriteDeadline(time.Now().Add(applicationPostcheckTestTimeout + time.Minute)); err != nil {
+				log.Printf("Failed to extend application post-check response deadline: %v", err)
+				http.Error(w, "application post-check test unavailable", http.StatusInternalServerError)
+				return
+			}
+		}
 		switch r.URL.Path {
 		case "/api/backup/restore", "/api/backup/verify":
 			if err := controller.SetReadDeadline(time.Time{}); err != nil {
@@ -107,6 +117,15 @@ func backupTransferDeadlineHandler(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isApplicationPostcheckTestRequest(r *http.Request) bool {
+	name, ok := strings.CutPrefix(r.URL.Path, "/api/servers/")
+	if !ok || r.Method != http.MethodPost {
+		return false
+	}
+	name, ok = strings.CutSuffix(name, "/postchecks/test")
+	return ok && name != "" && !strings.ContainsRune(name, '/')
 }
 
 func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMaintenance func(), closeNotifications func(context.Context) error) {

@@ -320,3 +320,5 @@ Profiles run after an actual upgrade, alongside the existing APT/systemd/reboot 
 A blocking failure marks the job and Scheduled Run failed, stopping subsequent rollout waves. Warning failures remain visible in logs, job detail and audits but allow success. Manage's Server editor previews the saved effective profile and links to Admin. Save inventory/tag and profile changes before using **Run read-only test**; this tests the saved effective profile on the chosen Server without package or service changes. Profile saves use optimistic revision checks: after a conflict, discard or copy the draft, then reload before saving.
 
 Read-only tests reserve the Server until completion, preventing concurrent maintenance and inventory changes. A check's recovery timeout does not invalidate later checks: a transport closed by that deadline is reconnected before the next probe. Interrupted updates retain completed and partial application results in both job and audit metadata.
+
+The read-only test response supports the full recovery budget, including profiles that take longer than the ordinary one-minute HTTP response deadline. The test itself is bounded to eleven minutes.

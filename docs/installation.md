@@ -13,7 +13,7 @@
 
 ## Requirements
 
-- The Go version declared by `go.mod`, currently `1.26.9` (only required if building from source)
+- The Go version declared by `go.mod`, currently `1.26.10` (only required if building from source)
 - A Debian-based target host (Debian, Ubuntu, Proxmox, etc.) with `apt`
 - `psmisc` on each target, which provides the required `/usr/bin/fuser` APT-lock check
 - `sudo` for non-root target SSH users; root SSH sessions run maintenance commands directly
@@ -28,8 +28,8 @@ Use the published image from GHCR (recommended):
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
 ```
 
 Open the UI:

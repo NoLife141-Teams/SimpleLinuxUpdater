@@ -6,6 +6,29 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.4.16] - 2026-10-23
+
+### Upgrade notes
+
+- Upgrades from v0.4.15 require no database schema migration, configuration
+  change, SSH helper update, or API request changes. Follow the applicable
+  earlier notes when upgrading from an older version.
+- A pending update can require a new approval when a selected package's
+  installed or candidate version, repository source, or execution selector
+  changes during approval. Review the refreshed plan before confirming again.
+
+### Security
+
+- Require renewed consent when selected package execution facts change during
+  approval, even when package names remain the same. Preserve the job and plan
+  generation checks, and keep CVE-only background enrichment from invalidating
+  an otherwise unchanged plan.
+- Update the canonical Go toolchain and Docker builder from 1.26.9 to 1.26.10
+  for the `crypto/x509` security fix tracked as GO-2026-6809.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.4.16 release readiness record](docs/release-v0.4.16-readiness.md).
+
 ## [v0.4.15] - 2026-10-20
 
 ### Upgrade notes

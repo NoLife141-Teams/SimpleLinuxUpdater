@@ -1,11 +1,11 @@
 # SimpleLinuxUpdater
 
-Version: v0.4.15
+Version: v0.4.16
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.26.9-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+[![Go Version](https://img.shields.io/badge/Go-1.26.10-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![CI](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml/badge.svg)](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml)
 
 ![UI demo](.github/assets/ALSU-screens.gif)
@@ -50,8 +50,8 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.15
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
 ```
 
 Open `http://localhost:8080`.
@@ -116,7 +116,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.4.15"
+VERSION="0.4.16"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

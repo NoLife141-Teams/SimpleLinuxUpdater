@@ -1108,6 +1108,20 @@
     background: rgba(245, 160, 72, 0.08);
 }
 
+.maintenance-calendar-head {
+    flex-wrap: wrap;
+}
+
+.maintenance-calendar-head .table-actions {
+    min-width: 0;
+    max-width: 100%;
+}
+
+#maintenance-calendar-policy {
+    min-width: 0;
+    max-width: 100%;
+}
+
 .calendar-list {
     display: grid;
     gap: 12px;
@@ -1802,6 +1816,10 @@
     .admin-block,
     .block-head,
     .policy-form,
+    .policy-form .form-section,
+    .policy-form input:not([type="checkbox"]),
+    .policy-form select,
+    .policy-form textarea,
     .section-grid,
     .policy-preview,
     .preview-occurrence-section,

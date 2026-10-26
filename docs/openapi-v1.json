@@ -1253,7 +1253,7 @@
           "200": {
             "description": "UTF-8 report or example download",
             "content": {
-              "text/plain": {
+              "text/markdown": {
                 "schema": {
                   "type": "string"
                 }
@@ -1512,7 +1512,7 @@
           "200": {
             "description": "UTF-8 report or example download",
             "content": {
-              "text/plain": {
+              "text/markdown": {
                 "schema": {
                   "type": "string"
                 }
@@ -3310,13 +3310,19 @@
             "description": "Empty unless effective scopes include logs:read."
           },
           "upgradable": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "string"
             }
           },
           "pending_updates": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "object",
               "properties": {

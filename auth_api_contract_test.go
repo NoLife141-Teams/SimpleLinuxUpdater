@@ -39,7 +39,7 @@ func TestPersonalAPIOpenAPIContractMatchesRoutesScopesTypesErrorsAndPagination(t
 			Schemas map[string]struct {
 				Type       string `json:"type"`
 				Properties map[string]struct {
-					Type string `json:"type"`
+					Type any `json:"type"`
 				} `json:"properties"`
 			} `json:"schemas"`
 		} `json:"components"`
@@ -149,8 +149,8 @@ func TestPersonalAPIConfirmationRequestContract(t *testing.T) {
 			Schemas map[string]struct {
 				Required   []string `json:"required"`
 				Properties map[string]struct {
-					Type  string `json:"type"`
-					Const bool   `json:"const"`
+					Type  any  `json:"type"`
+					Const bool `json:"const"`
 				} `json:"properties"`
 			} `json:"schemas"`
 		} `json:"components"`

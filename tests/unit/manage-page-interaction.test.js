@@ -777,3 +777,76 @@ test("application post-check preview belongs to the matching editor session", ()
     store.dispatch({type:"applicationPostchecksReceived",sessionID:first,profile:{id:"app",name:"Stale",revision:3}});
     assert.equal(store.getView().editor.applicationPostchecks,null);
 });
+
+test("inventory import owns selection, explicit confirmation and create-only payload", () => {
+    const store = createStore();
+    store.dispatch({ type: "importFileSelected", name: "inventory.csv", size: 900 });
+    const request = store.dispatch({ type: "importPreviewRequested" }).find(effect => effect.type === "previewImport");
+    assert.equal(request.format, "csv");
+    assert.deepEqual(store.dispatch({ type: "importPreviewRequested" }), []);
+    const rows = [
+        { row: 1, name: "alpha", host: "a.example", port: 22, user: "root", tags: ["prod"], errors: [] },
+        { row: 2, name: "beta", host: "b.example", port: 22, user: "root", tags: [], errors: [] },
+        { row: 3, name: "bad", errors: ["Invalid SSH user"] }
+    ];
+    store.dispatch({ type: "importPreviewReceived", generation: request.generation, preview: { batch_id: "a".repeat(32), rows } });
+    assert.deepEqual(store.getView().inventoryImport.selected, [1, 2]);
+    store.dispatch({ type: "importRowSelectionChanged", row: 3, selected: true });
+    store.dispatch({ type: "importRowSelectionChanged", row: 2, selected: false });
+    assert.deepEqual(store.getView().inventoryImport.selected, [1]);
+    assert.deepEqual(store.dispatch({ type: "importCommitRequested" }), []);
+    store.dispatch({ type: "importConfirmationRequested" });
+    const commit = store.dispatch({ type: "importCommitRequested" }).find(effect => effect.type === "commitImport");
+    assert.deepEqual(commit.selection.rows, [{ row: 1, name: "alpha", host: "a.example", port: 22, user: "root", tags: ["prod"] }]);
+    assert.deepEqual(store.dispatch({ type: "importCommitRequested" }), []);
+    assert.deepEqual(store.dispatch({ type: "importReset" }), []);
+    assert.deepEqual(store.dispatch({ type: "importFileSelected", name: "other.json", size: 2 }), []);
+    store.dispatch({ type: "importCommitReceived", generation: commit.generation, result: { outcome: "success", created: ["alpha"] } });
+    assert.equal(store.getView().inventoryImport.phase, "result");
+    assert.deepEqual(store.getView().inventoryImport.created, ["alpha"]);
+});
+
+test("inventory import draft survives navigation and rejects stale responses after file replacement or reset", () => {
+    const store = createStore();
+    store.dispatch({ type: "importFileSelected", name: "first.json", size: 10 });
+    const old = store.dispatch({ type: "importPreviewRequested" }).find(effect => effect.type === "previewImport");
+    store.dispatch({ type: "importFileSelected", name: "second.csv", size: 20 });
+    assert.deepEqual(store.dispatch({ type: "importPreviewReceived", generation: old.generation, preview: { rows: [{ row: 1 }] } }), []);
+    assert.equal(store.getView().inventoryImport.preview, null);
+    const current = store.dispatch({ type: "importPreviewRequested" }).find(effect => effect.type === "previewImport");
+    store.dispatch({ type: "importPreviewReceived", generation: current.generation, preview: { batch_id: "b".repeat(32), rows: [{ row: 1, name: "current", errors: [] }] } });
+    store.dispatch({ type: "sectionNavigationRequested", sectionID: "directory" });
+    store.dispatch({ type: "editorOpened", name: "existing", server: { name: "existing", host: "old.example", port: 22 } });
+    store.dispatch({ type: "editorChanged", patch: { host: "changed.example" } });
+    store.dispatch({ type: "sectionNavigationRequested", sectionID: "import" });
+    assert.equal(store.getView().editor.draft.host, "changed.example");
+    assert.deepEqual(store.getView().inventoryImport.selected, [1]);
+    assert.equal(store.getView().workspace.sections.find(section => section.id === "import").summary, "1 selected · draft");
+    store.dispatch({ type: "importReset" });
+    assert.deepEqual(store.dispatch({ type: "importRequestFailed", generation: current.generation, error: "stale" }), []);
+    assert.equal(store.getView().inventoryImport.error, "");
+});
+
+test("inventory import validates file boundaries and makes failures retryable with fresh confirmation", () => {
+    const store = createStore();
+    for (const file of [{ name: "inventory.yml", size: 10 }, { name: "inventory.json", size: 2 * 1024 * 1024 + 1 }]) {
+        store.dispatch({ type: "importFileSelected", ...file });
+        assert.equal(store.getView().inventoryImport.fileValid, false);
+        assert.deepEqual(store.dispatch({ type: "importPreviewRequested" }), []);
+    }
+    store.dispatch({ type: "importFileSelected", name: "inventory.JSON", size: 2 * 1024 * 1024 });
+    let request = store.dispatch({ type: "importPreviewRequested" }).find(effect => effect.type === "previewImport");
+    store.dispatch({ type: "importRequestFailed", generation: request.generation, error: "Unavailable" });
+    request = store.dispatch({ type: "importPreviewRequested" }).find(effect => effect.type === "previewImport");
+    assert.ok(request, "network failure can be retried without choosing another file");
+    store.dispatch({ type: "importPreviewReceived", generation: request.generation, preview: { batch_id: "a".repeat(32), rows: [{ row: 1, name: "alpha", errors: [] }, { row: 2, name: "beta", errors: [] }] } });
+    store.dispatch({ type: "importConfirmationRequested" });
+    store.dispatch({ type: "importCommitRequested" });
+    store.dispatch({ type: "importCommitReceived", generation: request.generation, result: { outcome: "conflict", error: "Inventory changed", preview: { batch_id: "a".repeat(32), rows: [{ row: 1, errors: ["Name already exists"] }, { row: 2, errors: [] }] } } });
+    assert.equal(store.getView().inventoryImport.phase, "preview");
+    assert.deepEqual(store.getView().inventoryImport.selected, [2]);
+    assert.deepEqual(store.dispatch({ type: "importCommitRequested" }), []);
+    store.dispatch({ type: "importConfirmationRequested" });
+    store.dispatch({ type: "importSelectionRequested" });
+    assert.equal(store.getView().inventoryImport.phase, "preview");
+});

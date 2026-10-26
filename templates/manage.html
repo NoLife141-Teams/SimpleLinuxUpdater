@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=modal-scroll-lock-20260729">
-    <link rel="stylesheet" href="/static/css/manage.css?v=server-onboarding-20261009">
+    <link rel="stylesheet" href="/static/css/manage.css?v=inventory-import-20261026">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -31,6 +31,7 @@
                 <div class="manage-section-nav-track">
                     <a href="#manage-section-global-key" data-manage-section-link="global-key"><span>Global SSH Credential</span><small data-manage-section-nav-summary="global-key">Checking…</small></a>
                     <a href="#manage-section-add-server" data-manage-section-link="add-server"><span>Add Server</span><small data-manage-section-nav-summary="add-server">Create an SSH target</small></a>
+                    <a href="#manage-section-import" data-manage-section-link="import"><span>Import inventory</span><small data-manage-section-nav-summary="import">CSV or JSON · disabled by default</small></a>
                     <a href="#manage-section-directory" data-manage-section-link="directory" aria-current="location"><span>Server directory</span><small data-manage-section-nav-summary="directory">Loading inventory…</small></a>
                     <a href="#manage-section-audit" data-manage-section-link="audit"><span>Audit trail</span><small data-manage-section-nav-summary="audit">Loading events…</small></a>
                 </div>
@@ -175,6 +176,29 @@
                 </article>
             </section>
 
+            <section class="workspace fade-in section-spaced inventory-import-panel manage-workspace-section" id="manage-section-import" data-manage-section="import" aria-labelledby="manage-section-import-heading">
+                <div class="workspace-head">
+                    <div><div class="eyebrow">Bulk registration</div><h2 id="manage-section-import-heading" tabindex="-1">Import inventory</h2><p class="muted workspace-note">Preview and select servers before adding them. Every imported server starts disabled.</p></div>
+                    <div class="manage-section-controls"><span class="manage-section-summary" data-manage-section-summary="import" hidden>CSV or JSON · disabled by default</span><button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="import" aria-expanded="false" aria-controls="manage-section-import-content"><span data-manage-section-toggle-label>Expand</span><span class="manage-section-toggle-icon" aria-hidden="true"></span></button></div>
+                </div>
+                <div class="manage-section-content" id="manage-section-import-content" data-manage-section-content="import" hidden>
+                    <div id="inventory-import">
+                        <p class="muted">UTF-8 CSV or a JSON array, up to 2 MiB and 1,000 rows. Fields: <code>name,host,port,user,tags</code>. CSV requires all five headers; an empty port defaults to 22. JSON requires name, host and user; port and tags may be omitted.</p>
+                        <p class="muted">Tags use a JSON string array in both formats (for example <code>["production","web"]</code>); quote and escape the CSV cell as shown in the example. Tags are trimmed and deduplicated using inventory rules; commas inside tags separate tags. Credentials, host keys and other fields are rejected.</p>
+                        <div class="import-actions"><a class="btn-ghost inline-btn" href="/api/servers/import/example/csv" download>Download CSV example</a><a class="btn-ghost inline-btn" href="/api/servers/import/example/json" download>Download JSON example</a></div>
+                        <div class="import-actions"><label for="inventory-import-file">Inventory file</label><input id="inventory-import-file" type="file" accept=".csv,.json,text/csv,application/json" aria-describedby="import-file-name"><span class="muted" id="import-file-name">No file selected</span><button class="primary-action" id="import-preview-button" type="button" disabled>Validate file</button><button class="btn-ghost" id="import-reset" type="button">Clear import draft</button></div>
+                        <p id="import-feedback" class="bad" role="status" aria-live="polite" tabindex="-1"></p>
+                        <div id="import-preview" hidden>
+                            <h3 id="import-preview-heading" tabindex="-1">Review normalized rows</h3><p id="import-preview-summary" role="status" aria-live="polite"></p><p class="muted">Only valid rows can be selected. The first valid occurrence of a name or endpoint is kept. Uncheck any row you do not want to create.</p>
+                            <div class="import-table-scroll" tabindex="0" role="region" aria-label="Inventory import preview"><table class="import-table"><thead><tr><th scope="col">Select</th><th scope="col">Row</th><th scope="col">Name</th><th scope="col">Endpoint</th><th scope="col">SSH user</th><th scope="col">Tags</th><th scope="col">Validation</th></tr></thead><tbody id="import-rows"></tbody></table></div>
+                            <button class="primary-action" id="import-review-button" type="button" disabled>Review selected rows</button>
+                        </div>
+                        <div id="import-confirmation" hidden><h3 id="import-confirm-heading" tabindex="-1">Confirm inventory import</h3><p>Create <strong id="import-confirm-count">0</strong> disabled servers? Existing servers will be preserved.</p><p class="muted">This adds connection details only. No credentials or SSH trust are imported, and no SSH connection or maintenance is started. Configure credentials, verify and trust each SSH identity, then enable the server in Manage.</p><div class="import-actions"><button class="btn-ghost" id="import-back-button" type="button">Back to selection</button><button class="primary-action" id="import-confirm-button" type="button">Import disabled servers</button></div></div>
+                        <div id="import-result" hidden><h3 id="import-result-heading" tabindex="-1">Inventory imported</h3><p><strong id="import-result-count">0</strong> servers created and disabled. No maintenance has started.</p><p class="muted">Configure each server using the existing editor: add a password or SSH key (or use the Global SSH Credential), scan and verify its fingerprint against a trusted source, then trust it. Save, then use Enable in the server directory when ready.</p><ul id="import-created" class="import-created"></ul></div>
+                    </div>
+                </div>
+            </section>
+
             <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-directory" data-manage-section="directory" aria-labelledby="manage-section-directory-heading">
                 <div class="workspace-head">
                     <div>
@@ -268,6 +292,7 @@
                         <label class="filter-field" for="audit-action-preset"><span>Preset</span><select id="audit-action-preset">
                             <option value="">Action presets</option>
                             <option value="server.create">Server created</option>
+                            <option value="server.import">Inventory imported</option>
                             <option value="server.update">Server updated</option>
                             <option value="server.delete">Server deleted</option>
                             <option value="update.complete">Update completed</option>
@@ -467,11 +492,12 @@
 
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=server-onboarding-20261009"></script>
+    <script src="/static/js/manage-page-interaction.js?v=inventory-import-20261026"></script>
     <script src="/static/js/server-onboarding-interaction.js?v=server-onboarding-20261009"></script>
     <script src="/static/js/server-onboarding.js?v=server-onboarding-20261009"></script>
     <script src="/static/js/manage-modals.js?v=modal-scroll-lock-20260729"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
-    <script src="/static/js/manage.js?v=server-onboarding-20261009"></script>
+    <script src="/static/js/inventory-import.js?v=inventory-import-20261026"></script>
+    <script src="/static/js/manage.js?v=inventory-import-20261026"></script>
 </body>
 </html>

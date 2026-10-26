@@ -5006,4 +5006,262 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
+  test('inventory import previews real CSV, selects rows, configures credentials and enables explicitly', async ({ page }, testInfo) => {
+    await ensureAuthenticatedSession(page);
+    const state = { servers: [], hasGlobalKey: false, hostKeyState: 'missing' };
+    await stubManageApi(page, state);
+    let selectedRows = [];
+    let sshCalls = 0;
+    page.on('request', request => { if (request.url().includes('/api/hostkeys/')) sshCalls++; });
+    await page.route('**/api/servers/import', async route => {
+      selectedRows = route.request().postDataJSON().rows;
+      const response = await route.fetch();
+      const result = await response.json();
+      if (response.ok()) state.servers = selectedRows.map(row => makeServer(row.name, 'idle', [], { ...row, disabled: true, has_password: false, has_key: false, host_key_status: 'missing' }));
+      await route.fulfill({ response });
+    });
+    await page.route('**/api/servers/*/availability', async route => {
+      state.servers[0].disabled = route.request().postDataJSON().disabled;
+      await fulfillJson(route, state.servers[0]);
+    });
+    await page.goto('/manage#manage-section-import');
+    const download = page.waitForEvent('download');
+    await page.getByRole('link', { name: 'Download CSV example' }).click();
+    expect((await download).suggestedFilename()).toBe('inventory-example.csv');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'fleet.csv', mimeType: 'text/csv', buffer: Buffer.from('name,host,port,user,tags\nweb-import-471,192.0.2.71,,root,"[""production"",""web""]"\nWEB-import-471,192.0.2.72,22,root,[]\ndb-import-471,2001:db8::71,2222,updater,"[""staging""]"\n<img src=x onerror=window.importXSS=1>,https://invalid,22,root,[]\n') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-preview-summary')).toHaveText('4 rows · 2 valid · 2 rejected · 2 selected');
+    await expect(page.locator('#import-preview-heading')).toBeFocused();
+    await expect(page.locator('#import-rows tr').nth(0)).toContainText('192.0.2.71:22');
+    await expect(page.locator('#import-rows input').nth(1)).toBeDisabled();
+    await expect(page.locator('#import-rows tr').nth(3)).toContainText('<img src=x onerror=window.importXSS=1>');
+    expect(await page.evaluate(() => window.importXSS)).toBeUndefined();
+    await expect(page.locator('#import-rows img')).toHaveCount(0);
+    await page.locator('#import-rows input').nth(2).uncheck();
+    const originalSelection = await page.locator('#import-rows input').nth(0).isChecked();
+    await page.locator('[data-manage-section-link="directory"]').click();
+    await page.locator('[data-manage-section-link="import"]').click();
+    expect(await page.locator('#import-rows input').nth(0).isChecked()).toBe(originalSelection);
+    expect(sshCalls).toBe(0);
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.locator('#manage-section-import').screenshot({ path: testInfo.outputPath('inventory-import-preview-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#manage-section-import').screenshot({ path: testInfo.outputPath('inventory-import-preview-mobile.png') });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 1200 });
+    await page.locator('#import-review-button').click();
+    await expect(page.locator('#import-confirm-heading')).toBeFocused();
+    await expect(page.locator('#import-confirm-count')).toHaveText('1');
+    await expect(page.locator('#import-confirmation')).toContainText('No credentials or SSH trust are imported');
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#import-result')).toBeVisible();
+    await expect(page.locator('#import-result-heading')).toBeFocused();
+    expect(selectedRows.map(row => row.name)).toEqual(['web-import-471']);
+    expect(selectedRows[0]).not.toHaveProperty('disabled');
+    expect(selectedRows[0]).not.toHaveProperty('pass');
+    expect(sshCalls).toBe(0);
+    await page.locator('#manage-section-import').screenshot({ path: testInfo.outputPath('inventory-import-result-desktop.png') });
+    await page.getByRole('button', { name: 'Configure web-import-471' }).click();
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('web-import-471');
+    await page.locator('#edit-pass').fill('fixture-password');
+    await page.locator('#edit-trust-known-host').click();
+    await expect(page.locator('#hostkey-modal')).toHaveClass(/active/);
+    await page.locator('#hostkey-modal-trust').click();
+    await expect.poll(() => state.trustHostKeyCount || 0).toBe(1);
+    await page.locator('#edit-save').click();
+    await expect.poll(() => state.serverUpdateCount || 0).toBe(1);
+    await expect(page.locator('#edit-modal')).not.toHaveClass(/active/);
+    await page.locator('[data-manage-section-link="directory"]').click();
+    const server = page.locator('#manage-servers-table tbody tr').filter({ hasText: 'web-import-471' });
+    await expect(server).toContainText('Disabled');
+    await server.getByRole('button', { name: 'Enable', exact: true }).click();
+    await expect(server).toContainText('Enabled');
+    // Delete only this test's actual API fixture; editor operations above are stubbed.
+    await page.request.delete('/api/servers/web-import-471', { headers: { Origin: 'http://127.0.0.1:8080' } });
+  });
+
+  test('inventory import rejects secrets and retries validation and persistence without losing the preview', async ({ page }, testInfo) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [] });
+    let validationAttempts = 0;
+    let commits = 0;
+    await page.route('**/api/servers/import/preview?format=json', async route => {
+      validationAttempts++;
+      if (validationAttempts === 2) return fulfillJson(route, { error: 'Validation temporarily unavailable. Retry.' }, 503);
+      const response = await route.fetch();
+      await route.fulfill({ response });
+    });
+    await page.route('**/api/servers/import', async route => {
+      commits++;
+      const selection = route.request().postDataJSON();
+      if (commits === 1) return fulfillJson(route, { outcome: 'failed', error: 'Inventory could not be saved. No servers were imported; review and retry', created: [], preview: { batch_id: selection.batch_id, rows: selection.rows.map(row => ({ ...row, errors: [] })) } }, 500);
+      const response = await route.fetch();
+      await route.fulfill({ response });
+    });
+    await page.goto('/manage#manage-section-import');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'credentials.json', mimeType: 'application/json', buffer: Buffer.from('[{"name":"unsafe","host":"192.0.2.80","user":"root","pass":"DO-NOT-DISPLAY-THIS-SECRET"}]') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-feedback')).toContainText('credentials and other fields are not supported');
+    await expect(page.locator('#inventory-import')).not.toContainText('DO-NOT-DISPLAY-THIS-SECRET');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'retry.json', mimeType: 'application/json', buffer: Buffer.from('[{"name":"retry-import-471","host":"192.0.2.81","user":"root"}]') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-feedback')).toContainText('temporarily unavailable');
+    await expect(page.locator('#import-preview-button')).toBeEnabled();
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-preview')).toBeVisible();
+    await page.locator('#import-review-button').click();
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#import-feedback')).toContainText('No servers were imported');
+    await expect(page.locator('#import-rows input')).toBeChecked();
+    await expect(page.locator('#import-review-button')).toBeEnabled();
+    await page.locator('#manage-section-import').screenshot({ path: testInfo.outputPath('inventory-import-retry-desktop.png') });
+    await page.locator('#import-review-button').click();
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#import-result')).toBeVisible();
+    expect(commits).toBe(2);
+    await page.request.delete('/api/servers/retry-import-471', { headers: { Origin: 'http://127.0.0.1:8080' } });
+  });
+
+  test('inventory import revalidates a stale preview and creates only the refreshed selection', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [] });
+    await page.goto('/manage#manage-section-import');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'conflict.json', mimeType: 'application/json', buffer: Buffer.from('[{"name":"conflict-import-471","host":"192.0.2.91","user":"root"},{"name":"remaining-import-471","host":"192.0.2.92","user":"root"}]') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-preview-summary')).toContainText('2 selected');
+    const created = await page.request.post('/api/servers', { headers: { Origin: 'http://127.0.0.1:8080' }, data: { name: 'claimed-import-471', host: '192.0.2.91', user: 'root', disabled: true } });
+    expect(created.status()).toBe(201);
+    await page.locator('#import-review-button').click();
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#import-feedback')).toContainText('Inventory changed');
+    await expect(page.locator('#import-rows input').nth(0)).toBeDisabled();
+    await expect(page.locator('#import-rows input').nth(1)).toBeChecked();
+    await expect(page.locator('#import-preview-summary')).toContainText('1 selected');
+    await page.locator('#import-review-button').click();
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#import-created')).toContainText('remaining-import-471');
+    await expect(page.locator('#import-created')).not.toContainText('conflict-import-471');
+    for (const name of ['claimed-import-471', 'remaining-import-471']) await page.request.delete(`/api/servers/${name}`, { headers: { Origin: 'http://127.0.0.1:8080' } });
+  });
+
+  test('inventory import preserves drafts and ignores a preview arriving after replacement or reset', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [makeServer('editor-draft')] });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/servers/import/preview?format=json', async route => {
+      await gate;
+      await fulfillJson(route, { batch_id: 'a'.repeat(32), rows: [{ row: 1, name: 'stale-row', host: '192.0.2.100', port: 22, user: 'root', tags: [], errors: [] }] });
+    });
+    await page.goto('/manage#manage-section-import');
+    await page.locator('#name').evaluate(input => { input.value = 'creation-draft'; });
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'old.json', mimeType: 'application/json', buffer: Buffer.from('[]') });
+    const started = page.waitForRequest('**/api/servers/import/preview?format=json');
+    await page.locator('#import-preview-button').click();
+    await started;
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'replacement.csv', mimeType: 'text/csv', buffer: Buffer.from('name,host,port,user,tags\n') });
+    const done = page.waitForResponse('**/api/servers/import/preview?format=json');
+    release();
+    await done;
+    await expect(page.locator('#import-file-name')).toHaveText('replacement.csv');
+    await expect(page.locator('#import-preview')).toBeHidden();
+    await page.locator('[data-manage-section-link="add-server"]').click();
+    await expect(page.locator('#name')).toHaveValue('creation-draft');
+    await page.locator('[data-manage-section-link="import"]').click();
+    await expect(page.locator('#import-file-name')).toHaveText('replacement.csv');
+    await page.locator('#import-reset').click();
+    await expect(page.locator('#inventory-import-file')).toBeFocused();
+    await expect(page.locator('#import-file-name')).toHaveText('No file selected');
+  });
+
+  test('inventory import preserves navigation and editor focus when validation finishes in the background', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [makeServer('focus-fixture')] });
+    let pendingResponse;
+    await page.route('**/api/servers/import/preview?format=json', async route => {
+      await pendingResponse;
+      await fulfillJson(route, { batch_id: 'a'.repeat(32), rows: [{ row: 1, name: 'background-row', host: '192.0.2.110', port: 22, user: 'root', tags: [], errors: [] }] });
+    });
+    await page.goto('/manage#manage-section-import');
+    for (const openEditor of [false, true]) {
+      let release;
+      pendingResponse = new Promise(resolve => { release = resolve; });
+      await page.locator('[data-manage-section-link="import"]').click();
+      await page.locator('#inventory-import-file').setInputFiles({ name: `${openEditor ? 'editor' : 'directory'}.json`, mimeType: 'application/json', buffer: Buffer.from('[]') });
+      const started = page.waitForRequest('**/api/servers/import/preview?format=json');
+      await page.locator('#import-preview-button').click();
+      await started;
+      await page.locator('[data-manage-section-link="directory"]').click();
+      let focused = page.locator('#manage-section-directory-heading');
+      if (openEditor) {
+        await page.locator('[data-action="edit-server"][data-name="focus-fixture"]').click();
+        focused = page.locator('#edit-host');
+        await focused.fill('operator-draft.example');
+      }
+      await expect(focused).toBeFocused();
+      const done = page.waitForResponse('**/api/servers/import/preview?format=json');
+      release();
+      await done;
+      await expect(page.locator('#import-preview-summary')).toContainText('1 selected');
+      await expect(focused).toBeFocused();
+      if (openEditor) await expect(focused).toHaveValue('operator-draft.example');
+    }
+  });
+
+  async function prepareImportConfigureResult(page) {
+    await ensureAuthenticatedSession(page);
+    const state = { servers: [makeServer('other-editor')] };
+    await stubManageApi(page, state);
+    const entry = { row: 1, name: 'review-import', host: '192.0.2.222', port: 22, user: 'root', tags: [], errors: [] };
+    await page.route('**/api/servers/import/preview?format=json', route => fulfillJson(route, { batch_id: 'a'.repeat(32), rows: [entry] }));
+    await page.route('**/api/servers/import', route => {
+      state.servers.push(makeServer(entry.name, 'idle', [], { ...entry, disabled: true }));
+      return fulfillJson(route, { outcome: 'success', preview: { batch_id: 'a'.repeat(32), rows: [entry] }, created: [entry.name] }, 201);
+    });
+    await page.goto('/manage#manage-section-import');
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('other-editor');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'review.json', mimeType: 'application/json', buffer: Buffer.from('[]') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-preview')).toBeVisible();
+    await page.locator('#import-review-button').click();
+    return state;
+  }
+
+  test('inventory import Configure waits for the automatic inventory refresh', async ({ page }) => {
+    const state = await prepareImportConfigureResult(page);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/servers', async route => { await gate; await fulfillJson(route, state.servers); });
+    const refreshing = page.waitForRequest('**/api/servers');
+    await page.locator('#import-confirm-button').click();
+    await refreshing;
+    await expect(page.locator('#import-result')).toBeVisible();
+    await page.getByRole('button', { name: 'Configure review-import' }).click();
+    release();
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('review-import');
+  });
+
+  test('inventory import delayed Configure preserves a newer editor draft', async ({ page }) => {
+    const state = await prepareImportConfigureResult(page);
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('review-import');
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/servers', async route => { await gate; await fulfillJson(route, state.servers); });
+    const refreshing = page.waitForRequest('**/api/servers');
+    await page.getByRole('button', { name: 'Configure review-import' }).click();
+    await refreshing;
+    await page.locator('[data-manage-section-link="directory"]').click();
+    await page.locator('[data-action="edit-server"][data-name="other-editor"]').click();
+    await page.locator('#edit-host').fill('unsaved-editor.example');
+    const finished = page.waitForResponse('**/api/servers');
+    release();
+    await finished;
+    await page.waitForFunction(() => managePageInteraction.getView().streams.inventory.inFlight === null);
+    await expect(page.locator('#edit-name')).toHaveValue('other-editor');
+    await expect(page.locator('#edit-host')).toHaveValue('unsaved-editor.example');
+  });
+
 });

@@ -258,7 +258,7 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 	var whereParts []string
 	var args []any
 	if filter.Category == ListCategoryAdminActivity {
-		whereParts = append(whereParts, `(action IN (?, ?, ?, ?, ?, ?)
+		whereParts = append(whereParts, `(action IN (?, ?, ?, ?, ?, ?, ?)
 			OR action GLOB ?
 			OR action GLOB ?
 			OR action GLOB ?)`)
@@ -269,6 +269,7 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 			"auth.password.recover",
 			"app_settings.timezone",
 			"backup.restore",
+			"server.import",
 			"metrics.token.*",
 			"notifications.*",
 			"update_policy.*",

@@ -108,3 +108,18 @@ This correction changes only the Python collector and its tests. No CodeQL
 suppression or analysis-model change is used. The business helper remains
 unchanged; Go and Playwright were not repeated. The next remote CodeQL run must
 confirm the sensitive-storage annotation is resolved before delivery.
+
+The follow-up Python SARIF (analysis `2027487469`, PR head `0e2edbc`) traced the
+two mock credential sources through the generic redactor's unchanged-value
+return and dictionary branch to the log write. Strict write-time tests still
+confirmed that no credential reached storage. To make the invariant explicit,
+logs now use a dedicated text redactor: it always masks the primary credential
+and its JSON-escaped form before any optional extra-secret loop. Structured
+reports call that text redactor only for string values. Extra multiline secrets
+remain protected, including a key containing the primary credential.
+
+All 19 harness tests pass, including the unchanged strict checks on every
+evidence write and a new test with an empty optional-redaction list. This is a
+Python-only structural correction; no Go, UI, helper, analysis model or CodeQL
+suppression changes were made. Business/SSH scenarios were not repeated. The
+next remote CodeQL run remains the final analysis check.

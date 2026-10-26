@@ -110,9 +110,16 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertEqual(text, "[REDACTED]" + padding)
         self.assertLessEqual(len(text), 200000)
 
+    def test_primary_credential_is_masked_without_optional_redactions(self):
+        harness, _, _ = self.fake_harness()
+        self.assertEqual(harness.redactions, [])
+        harness.password = 'fixture-only-primary"\\\ncanary'
+        text = "plain=" + harness.password + "; encoded=" + json.dumps(harness.password)[1:-1]
+        self.assertEqual(harness.redact_text(text), "plain=[REDACTED]; encoded=[REDACTED]")
+
     def test_report_redacts_nested_multiline_values_before_json_encoding(self):
         harness, _, _ = self.fake_harness()
-        key = "-----BEGIN PRIVATE KEY-----\nfixture-only-quote\"-slash\\-canary\n-----END PRIVATE KEY-----\n"
+        key = "-----BEGIN PRIVATE KEY-----\nfixture-only-quote\"-slash\\-canary-" + harness.password + "\n-----END PRIVATE KEY-----\n"
         harness.redactions.append(key)
         harness.records = [{"scenario": "failure", "status": "failed", "error": key,
                             "nested": {"detail": [harness.password, (key,)]},

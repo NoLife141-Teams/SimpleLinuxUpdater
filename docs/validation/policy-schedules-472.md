@@ -85,4 +85,4 @@ recovered; its first observation freezes then-eligible members and retains every
 persisted predecessor as a gate. An older backup cannot recover operations
 performed after export. These limits and the policy-lifetime consumption rule
 are documented in [usage](../usage.md#policy-schedule-cadences-and-recovery).
-Issue #473 package reports and automatic fleet reboots remain out of scope.
+Issue #473 package deferrals and automatic fleet reboots remain out of scope.

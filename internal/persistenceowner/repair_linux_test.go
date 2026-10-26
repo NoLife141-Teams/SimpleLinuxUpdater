@@ -57,6 +57,7 @@ func TestRepairNormalizesPathsAndRepairsRollbackJournal(t *testing.T) {
 		dbPath + "-wal",
 		dbPath + "-shm",
 		dbPath + "-journal",
+		dbPath + ".lock",
 		filepath.Join(filepath.Dir(dbPath), "config.json"),
 		knownHosts,
 	} {
@@ -82,6 +83,7 @@ func TestRepairNormalizesPathsAndRepairsRollbackJournal(t *testing.T) {
 		filepath.Join(dataRoot, "tenant", "state"),
 		dbPath,
 		dbPath + "-journal",
+		dbPath + ".lock",
 		filepath.Dir(knownHosts),
 		knownHosts,
 	} {

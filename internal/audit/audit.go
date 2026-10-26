@@ -112,7 +112,17 @@ func NewSQLiteRepository(db DBProvider) *SQLiteRepository {
 }
 
 func (r *SQLiteRepository) Write(evt Event) error {
-	db := r.db()
+	return writeEvent(r.db(), evt)
+}
+
+// WriteTx records an already prepared event in its caller's atomic operation.
+func WriteTx(tx *sql.Tx, evt Event) error { return writeEvent(tx, evt) }
+
+type eventExecutor interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func writeEvent(db eventExecutor, evt Event) error {
 	_, err := db.Exec(
 		`INSERT INTO audit_events (created_at, actor, action, target_type, target_name, status, message, meta_json, request_id, client_ip)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

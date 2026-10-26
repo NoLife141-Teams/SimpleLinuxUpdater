@@ -97,7 +97,7 @@ The app-wide interpretation of a configured or system-local timezone into effect
 _Avoid_: App timezone helpers, local time callbacks, timezone formatting
 
 **Auth Session Command**:
-An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing.
+An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing. Local account recovery uses an exclusive installation process lock and commits the existing account's new password, authentication generation, session revocation and audit together before any runtime workers start.
 _Avoid_: Auth route flow, session handler logic
 
 **Runtime Composition**:

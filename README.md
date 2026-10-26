@@ -42,6 +42,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
 - Built-in single-user login with first-run setup, Argon2id password hashing, and SQLite-backed sessions
+- Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
 ## Quick start

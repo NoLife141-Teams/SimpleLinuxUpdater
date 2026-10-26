@@ -35,17 +35,42 @@ Checks:
 
 ## Forgotten admin password
 
-For single-user deployments, password recovery is a reset flow:
+Use local account recovery with the same binary and database path as the service. Stop the service first, then run as the service's local OS user; authorized administrators can use `sudo -u SERVICE_USER` when necessary. This keeps the stable lock file owned by the service account:
 
-1. Stop the application.
-2. Back up `servers.db` before editing it.
-3. In one SQLite transaction, delete rows from `sessions` and then `auth_users`.
-4. Start the application again and revisit `/setup` to create a new admin user.
+```bash
+systemctl stop simplelinuxupdater
+DEBIAN_UPDATER_DB_PATH=/var/lib/simplelinuxupdater/servers.db \
+  ./webserver admin reset-password --username admin
+systemctl start simplelinuxupdater
+```
 
-Impact:
+Adjust the service name, account and path for your installation. Without `--username`, the terminal asks for the target account. It then asks for the new password and confirmation **without echo**. The current password policy applies. Ctrl-C/SIGTERM cancels entry, restores terminal settings and discards pending input. Recovery is dispatched before HTTP, schedulers, notifications or other workers start.
 
-- Deleting `sessions` and `auth_users` resets login and invalidates existing authenticated sessions while preserving inventory and operational history.
-- Dropping the entire DB also removes saved servers, audit history, and app settings.
+The command updates the existing account, advances the established authentication generation, revokes all sessions in the current single-account model, and writes `auth.password.recover` with actor `local-recovery` in one transaction. Audit/write failure rolls the transaction back and returns a nonzero exit; an unconfirmed commit is reported explicitly. The account is not recreated and `/setup` stays closed. Inventory, SSH credentials, `known_hosts`, policies, historical audits and encrypted configuration are preserved. Sign in again after restarting the service; every previous browser session and the old password are invalid.
+
+The server and recovery command hold the same OS lock on `<database path>.lock` throughout their process lifetime, including database restore/replacement and shutdown. The command refuses an active server or another recovery command. **Keep this sidecar file**: deleting it while a process runs defeats process coordination. Stop older binaries that predate installation locking before upgrading/recovering. Parent directory symlinks resolve to the same lock; symbolic/hard links for the database or lock file are rejected so another filename cannot bypass exclusivity. Use a local filesystem with working OS advisory locks, and the same configured path for all processes.
+
+Recovery requires an existing valid writable database and the current auth/audit schema. It does not create a database, run migrations or import legacy inventories. If an old database needs migration, start the current server once and stop it before recovery. Permission, missing-account, weak-password and confirmation failures return errors without resetting the account. A stale `.lock` file after a crash is normal; the OS releases its lock when the process exits.
+
+For Docker, stop the app container, run a temporary container from the **same image** against the same named volume and configured database path, then restart the app:
+
+```bash
+docker stop simplelinuxupdater
+docker run --rm -it -v simplelinuxupdater-data:/data IMAGE \
+  ./webserver admin reset-password --username admin
+docker start simplelinuxupdater
+```
+
+Replace `IMAGE` and the volume/container names with your deployment's values. Reproduce custom volume mounts and `DEBIAN_UPDATER_DB_PATH` when applicable. The image entrypoint repairs owned persistence paths (including the stable lock) and drops to the application user. `docker exec` against a running server is refused by the lock; use a stopped installation. These commands do not require deleting the account or editing SQL.
+
+For automation, `--password-stdin` explicitly opts into redirected input and requires `--username`. Supply two newline-terminated lines containing the new password and matching confirmation from a protected secret source; the command rejects terminal input in this mode. Do not pass passwords in arguments, environment variables, shell command literals or shell history. For example, a root/service-readable secret file containing those two lines can be redirected without exposing its contents:
+
+```bash
+./webserver admin reset-password --username admin --password-stdin < /run/secrets/recovery-password
+# Docker automation uses -i (without -t) and the same protected input source.
+```
+
+Remove the temporary secret source through your secret-management procedure after use. Passwords and hashes are never included in CLI output or the recovery audit.
 
 ## Metrics authentication issues
 

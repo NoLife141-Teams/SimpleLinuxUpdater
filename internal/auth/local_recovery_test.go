@@ -92,6 +92,10 @@ func TestLocalRecoveryIsAtomicAndRejectsStaleSessions(t *testing.T) {
 	if err = db.QueryRow("SELECT actor,action,meta_json FROM audit_events").Scan(&actor, &action, &meta); err != nil || actor != "local-recovery" || action != "auth.password.recover" || strings.Contains(meta, "Password") {
 		t.Fatalf("audit %s/%s/%s %v", actor, action, meta, err)
 	}
+	activity, err := audit.NewService(audit.ServiceOptions{DB: func() *sql.DB { return db }}).List(audit.ListFilter{Category: audit.ListCategoryAdminActivity, Page: 1, PageSize: 8})
+	if err != nil || activity.Total != 1 || len(activity.Items) != 1 || activity.Items[0].Action != "auth.password.recover" || activity.Items[0].Actor != "local-recovery" {
+		t.Fatalf("local recovery missing from Admin security timeline: %+v %v", activity, err)
+	}
 	// Repeating recovery with already-revoked sessions remains a valid atomic operation.
 	if result, err = ResetLocalPassword(context.Background(), db, "admin", "ThirdPassword789!", "ThirdPassword789!"); err != nil || result.RevokedSessions != 0 {
 		t.Fatalf("repeat %+v %v", result, err)

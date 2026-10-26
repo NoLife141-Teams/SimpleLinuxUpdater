@@ -216,12 +216,7 @@ func openRecoveryDatabase(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, errors.New("invalid database path")
 	}
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
-	q := u.Query()
-	q.Set("mode", "rw")
-	q.Set("_pragma", "busy_timeout(5000)")
-	u.RawQuery = q.Encode()
-	database, err := sql.Open("sqlite", u.String())
+	database, err := sql.Open("sqlite", recoveryDatabaseDSN(abs))
 	if err != nil {
 		return nil, errors.New("database could not be opened for recovery")
 	}
@@ -232,4 +227,20 @@ func openRecoveryDatabase(path string) (*sql.DB, error) {
 		return nil, errors.New("database is invalid or inaccessible; recovery was not performed")
 	}
 	return database, nil
+}
+
+func recoveryDatabaseDSN(absolutePath string) string {
+	path := filepath.ToSlash(absolutePath)
+	// A Windows drive letter belongs in the URI path, not its authority.
+	// Without the leading slash URL.String emits file://C:/..., which SQLite
+	// rejects before opening the database.
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	q := u.Query()
+	q.Set("mode", "rw")
+	q.Set("_pragma", "busy_timeout(5000)")
+	u.RawQuery = q.Encode()
+	return u.String()
 }

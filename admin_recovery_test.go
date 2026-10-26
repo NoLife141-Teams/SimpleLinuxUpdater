@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +118,28 @@ func TestRecoveryCommandDoesNotCreateOrMigrateInvalidDatabase(t *testing.T) {
 	after, _ := os.ReadFile(path)
 	if !bytes.Equal(original, after) {
 		t.Fatal("invalid DB changed")
+	}
+}
+
+func TestRecoveryDatabaseDSNKeepsDriveLettersInPath(t *testing.T) {
+	for _, tc := range []struct{ path, wantPath string }{
+		{"C:/data/servers.db", "/C:/data/servers.db"},
+		{"D:/private data/servers#1%.db", "/D:/private data/servers#1%.db"},
+		{"/var/lib/simplelinuxupdater/servers.db", "/var/lib/simplelinuxupdater/servers.db"},
+		{"//server/share/servers.db", "//server/share/servers.db"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			u, err := url.Parse(recoveryDatabaseDSN(tc.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.Scheme != "file" || u.Host != "" || u.Path != tc.wantPath || u.Fragment != "" {
+				t.Fatalf("recovery URI = %+v, want a local file URI for %q", u, tc.wantPath)
+			}
+			if u.Query().Get("mode") != "rw" || u.Query().Get("_pragma") != "busy_timeout(5000)" {
+				t.Fatalf("recovery URI lost its existing-database/write timeout settings: %s", u)
+			}
+		})
 	}
 }
 

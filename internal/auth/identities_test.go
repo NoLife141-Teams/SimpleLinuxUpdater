@@ -17,6 +17,13 @@ import (
 func identityTestService(t *testing.T) (*Service, *sql.DB, *time.Time) {
 	t.Helper()
 	db := newTestDB(t)
+	// Runtime Composition uses one SQLite connection plus a busy timeout.
+	// Match that admission contract while issuing genuinely concurrent commands.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Unix(2000000000, 0).UTC()
 	s := NewService(ServiceOptions{DB: func() *sql.DB { return db }, Now: func() time.Time { return now }, Encrypt: func(v string) (string, error) {
 		return "test-envelope:" + base64.StdEncoding.EncodeToString([]byte(v)), nil
@@ -281,6 +288,8 @@ func TestMFAConcurrentRecoveryAndTOTPAreSingleUse(t *testing.T) {
 			for err := range results {
 				if err == nil {
 					accepted++
+				} else if !errors.Is(err, ErrFactorInvalid) {
+					t.Fatalf("unexpected concurrent factor error: %v", err)
 				}
 			}
 			if accepted != 1 {

@@ -52,17 +52,29 @@ loopback sandbox escalation.
 
 | Check | Result | Local evidence |
 | --- | --- | --- |
-| `go test -timeout=180s ./...` | Pass; root package 77.014 s | `/tmp/slu-474-go-delivery.log` |
-| `go test -race -count=1 -timeout=600s ./...` | Pass; root package 232.204 s, no race report | `/tmp/slu-474-race-delivery.log` |
-| `go test -count=1 -covermode=atomic -coverprofile=/tmp/slu-474-coverage-delivery.out -timeout=240s ./...` | Pass; total **76.2%**, minimum 73% | `/tmp/slu-474-coverage-delivery.log`, `/tmp/slu-474-coverage-delivery.out` |
-| `go vet ./...`, `go build ./...`, `gofmt`, `git diff --check` | Pass | Executed locally; no findings |
-| `staticcheck ./...` with a temporary writable cache | Pass, v0.7.0 | `/tmp/slu-474-staticcheck-delivery.log` |
+| `go test -timeout=180s ./...` | Pass, complete command exit 0; root package 56.094 s | `/tmp/slu-474-go-delivery-final.log` |
+| `go test -race -count=1 -timeout=600s ./...` | Pass, complete command exit 0; root package 232.204 s, no race report | `/tmp/slu-474-race-delivery.log` |
+| `go test -count=1 -covermode=atomic -coverprofile=/tmp/slu-474-coverage-delivery.out -timeout=240s ./...` | Pass, complete command exit 0; total **76.2%**, minimum 73% | `/tmp/slu-474-coverage-delivery.log`, `/tmp/slu-474-coverage-delivery.out` |
+| `go vet ./...`, `go build ./...`, `gofmt`, `git diff --check` | Pass | Each command exit 0; `/tmp/slu-474-quality-delivery-final.log` and `.json` |
+| `staticcheck ./...` with a temporary writable cache | Exit 0, v0.7.0 | `/tmp/slu-474-quality-delivery-final.log`, `/tmp/slu-474-staticcheck-delivery.log` |
 | `npm run test:unit` with local IPC enabled | **200 individual tests passed** | `/tmp/slu-474-jsunit-real-final.log` |
 | `npm run test:e2e -- --workers=1` | **96 passed**, 2.7 min: 94 historical + 2 isolated identity flows | `/tmp/slu-474-playwright-full-second.log` |
 | Final-binary setup/login + accounts/PAT/MFA Playwright selection | **5 passed**, 15.5 s, after per-account/restore epoch changes | `/tmp/slu-474-playwright-final.log` |
 | Final audit-sentinel correction, route matrix and obsolete-credential tests with `-race` | Pass, 7.779 s; vet/staticcheck/build rechecked | `/tmp/slu-474-audit-regression.log` |
+| Production-config concurrent MFA/last-admin repetition, `go test -race -count=20` | Pass, exit 0, 16.822 s | `/tmp/slu-474-auth-concurrency-repeat.log` |
 | SSH/APT harness safety and cleanup unit checks | 19 passed | `/tmp/slu-474-harness-safety.log` |
 | Real Debian 13 / Ubuntu 24.04 SSH/APT qualification | 7 real scenarios passed per distribution; cleanup passed | `debian13/report.json`, `ubuntu2404/report.json` |
+
+One earlier complete run (`/tmp/slu-474-go-delivery.log`) exited 1: the new
+concurrent recovery-code test used SQLite's unlimited default connection pool
+instead of production's `MaxOpenConns(1)` and `busy_timeout=5000`, producing a
+transient SQL-lock error under load. The fixture now explicitly matches those
+production settings. The assertion remains strict: exactly one acceptance and
+all other results must be `ErrFactorInvalid`, with unexpected SQL errors failing
+the test. Twenty race-enabled repetitions passed, followed by the corrected
+complete Go command above (exit 0). This failed attempt is not counted as a pass.
+The full race/coverage commands exited 0 on unchanged production code; the final
+fixture-only correction has the repeated race proof and complete Go rerun.
 
 The full Go/race/coverage runs cover the final account/installation epochs,
 async runner audit identity, bounded metadata retention and audit-sentinel

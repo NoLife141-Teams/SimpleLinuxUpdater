@@ -2239,6 +2239,16 @@
               }
             }
           },
+          "502": {
+            "description": "The read-only remote operation could not complete, including an SSH transport failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -2284,12 +2294,12 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Success",
+          "202": {
+            "description": "Scan accepted asynchronously. Poll GET /api/servers/{name}/vulnerabilities for the persisted result.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BusinessObject"
+                  "$ref": "#/components/schemas/VulnerabilityScanAccepted"
                 }
               }
             }
@@ -2501,6 +2511,16 @@
           },
           "500": {
             "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The read-only remote operation could not complete, including an SSH transport failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3460,6 +3480,27 @@
             "type": "boolean",
             "const": true,
             "description": "Explicit confirmation is required before a controlled reboot or APT repair is admitted."
+          }
+        }
+      },
+      "VulnerabilityScanAccepted": {
+        "type": "object",
+        "required": [
+          "status",
+          "scope"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "running"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "installed_packages"
+            ]
           }
         }
       }

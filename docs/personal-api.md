@@ -178,6 +178,13 @@ Log pagination uses `after_seq` (default 0) and `limit` (default 100, max 500),
 with `next_sequence` and `has_more` in the response. Server discovery returns a
 complete array without pagination.
 
+Installed vulnerability scans (`POST /api/servers/{name}/vulnerabilities/scan`)
+return `202` with `{"status":"running","scope":"installed_packages"}` once
+admitted. Poll `GET /api/servers/{name}/vulnerabilities` for their persisted
+result. Host facts refresh and application-check tests run synchronously and
+return `502` if the remote operation cannot complete, including an SSH transport
+failure.
+
 Controlled reboot (`POST /api/reboot/{name}`) and APT repair
 (`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
 and `Content-Type: application/json`. Both use `maintenance:write`; omitted or

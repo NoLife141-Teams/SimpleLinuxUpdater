@@ -1,15 +1,116 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"mime"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"debian-updater/internal/postchecks"
+	"debian-updater/internal/vulnerabilities"
 	"github.com/gin-gonic/gin"
 )
+
+func personalAPIResponseSchema(t *testing.T, path string, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	data, err := os.ReadFile("docs/openapi-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema struct {
+						Ref string `json:"$ref"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	if err = json.Unmarshal(data, &spec); err != nil {
+		t.Fatal(err)
+	}
+	response, ok := spec.Paths[path]["post"].Responses[strconv.Itoa(rec.Code)]
+	if !ok {
+		t.Fatalf("HTTP %d from POST %s is absent from OpenAPI", rec.Code, path)
+	}
+	mediaType, _, err := mime.ParseMediaType(rec.Header().Get("Content-Type"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, ok := response.Content[mediaType]
+	if !ok {
+		t.Fatalf("HTTP %d media type %q is absent from OpenAPI", rec.Code, mediaType)
+	}
+	return content.Schema.Ref
+}
+
+func TestPersonalAPIVulnerabilityScanAcceptedResponseContract(t *testing.T) {
+	app := vulnerabilityTestApp(t, installedScannerFixture{scan: func(context.Context) (vulnerabilities.Scan, error) {
+		return vulnerabilities.Scan{State: "complete", Inventoried: 1, Evaluated: 1}, nil
+	}})
+	_ = app.authenticate(t)
+	_, secret, err := app.Deps.AuthService.CreatePersonalToken(1, "scan contract", []string{"maintenance:write"}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := identityRequest(app, "POST", "/api/servers/one/vulnerabilities/scan", nil, secret, nil)
+	waitForUpdateRunners()
+	if rec.Code != http.StatusAccepted {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	if schema := personalAPIResponseSchema(t, "/api/servers/{name}/vulnerabilities/scan", rec); schema != "#/components/schemas/VulnerabilityScanAccepted" {
+		t.Fatalf("accepted scan has no typed response schema: %q", schema)
+	}
+	response := decodeContractJSON(t, rec)
+	if response["status"] != "running" || response["scope"] != "installed_packages" {
+		t.Fatal("accepted scan lost its asynchronous response facts", response)
+	}
+}
+
+func TestPersonalAPIRemoteFailureResponseContracts(t *testing.T) {
+	for _, action := range []string{"facts/refresh", "postchecks/test"} {
+		t.Run(action, func(t *testing.T) {
+			state := newServerState()
+			opens := 0
+			service := NewUpdateService(UpdateServiceDeps{ServerState: state, HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+				opens++
+				return nil, errors.New("synthetic SSH transport unavailable")
+			})})
+			app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "gateway-contract.db"), AppDeps{ServerState: state, UpdateService: service})
+			_ = app.authenticate(t)
+			if _, err := app.Deps.ServerInventoryService.Create(Server{Name: "contract", Host: "synthetic.invalid", User: "root"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := postchecks.Save(t.Context(), app.Deps.DB(), postchecks.Config{Profiles: []postchecks.Profile{{ID: "contract", Name: "Contract", TargetServers: []string{"contract"}, Checks: []postchecks.Check{{ID: "service", Name: "Service", Kind: "systemd_active", Unit: "synthetic.service", TimeoutSeconds: 1, IntervalSeconds: 1, Mode: "blocking"}}}}}); err != nil {
+				t.Fatal(err)
+			}
+			_, secret, err := app.Deps.AuthService.CreatePersonalToken(1, "remote failure contract", []string{"maintenance:write"}, time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := identityRequest(app, "POST", "/api/servers/contract/"+action, nil, secret, nil)
+			if rec.Code != http.StatusBadGateway || opens != 1 {
+				t.Fatalf("expected one failed SSH attempt, got %d opens and HTTP %d: %s", opens, rec.Code, rec.Body.String())
+			}
+			if schema := personalAPIResponseSchema(t, "/api/servers/{name}/"+action, rec); schema != "#/components/schemas/Error" {
+				t.Fatalf("gateway failure has no typed error schema: %q", schema)
+			}
+			if message, ok := decodeContractJSON(t, rec)["error"].(string); !ok || message == "" {
+				t.Fatal("gateway failure lost its error message")
+			}
+		})
+	}
+}
 
 func TestPersonalAPIReportMediaTypesMatchHTTPResponses(t *testing.T) {
 	data, err := os.ReadFile("docs/openapi-v1.json")

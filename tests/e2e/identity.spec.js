@@ -73,6 +73,34 @@ test.describe.serial('named identities on isolated installations', () => {
     expect((await api(page, '/api/update/missing', 'POST')).status).toBe(403);
     await page.goto(`${baseURL}/account`); await expect(page.locator('#identity-summary')).toContainText('reader · reader'); await expect(page.locator('#accounts-section')).toBeHidden();
   });
+  test('status controls and background reads follow reader and operator roles', async ({ page }) => {
+    for (const role of ['reader', 'operator']) {
+      expect((await api(page, '/api/auth/accounts', 'POST', { username: role, password, role })).status).toBe(201);
+    }
+    expect((await api(page, '/api/servers', 'POST', { name: 'presentation-host', host: 'synthetic.invalid', user: 'root', pass: 'SyntheticSSH123!' })).status).toBe(201);
+    const forbiddenReads = [];
+    page.on('response', response => {
+      if (response.request().method() === 'GET' && response.status() === 403) forbiddenReads.push(new URL(response.url()).pathname);
+    });
+    for (const role of ['reader', 'operator']) {
+      await page.locator('#logout-btn').click(); await expect(page).toHaveURL(`${baseURL}/login`);
+      await page.locator('#username').fill(role); await page.locator('#password').fill(password);
+      await page.getByRole('button', { name: 'Sign in', exact: true }).click(); await expect(page).toHaveURL(`${baseURL}/`);
+      await expect(page.locator('body')).toHaveAttribute('data-account-role', role);
+      await expect(page.locator('#servers-table')).toContainText('presentation-host');
+      expect(await page.evaluate(() => window.canUseScope('maintenance:write'))).toBe(role === 'operator');
+      expect(await page.evaluate(() => window.canUseScope('audit:read'))).toBe(false);
+      if (role === 'reader') {
+        await expect(page.locator('[data-action="update-server"]:visible')).toHaveCount(0);
+        await expect(page.locator('[data-action="refresh-facts"]:visible')).toHaveCount(0);
+        await expect(page.locator('#bulk-update')).toBeHidden();
+      } else {
+        await expect(page.locator('[data-action="refresh-facts"]:visible').first()).toBeVisible();
+        await expect(page.locator('[data-action="enable-apt"]:visible')).toHaveCount(0);
+      }
+    }
+    expect(forbiddenReads).toEqual([]);
+  });
   test('confirmed MFA challenge, recovery replay rejection and sensitive reauthentication', async ({ page }) => {
     await page.goto(`${baseURL}/account`); await page.getByRole('button', { name: 'Set up authenticator' }).click();
     await expect(page.locator('#mfa-secret')).toHaveText(/^[A-Z2-7]+$/);

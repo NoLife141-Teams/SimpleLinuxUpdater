@@ -177,3 +177,8 @@ Audit pagination uses `page` (default 1) and `page_size` (default 50, max 200).
 Log pagination uses `after_seq` (default 0) and `limit` (default 100, max 500),
 with `next_sequence` and `has_more` in the response. Server discovery returns a
 complete array without pagination.
+
+Controlled reboot (`POST /api/reboot/{name}`) and APT repair
+(`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
+and `Content-Type: application/json`. Both use `maintenance:write`; omitted or
+false confirmation returns `400` before any host operation is admitted.

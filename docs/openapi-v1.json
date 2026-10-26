@@ -1983,12 +1983,11 @@
           }
         },
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": true
+                "$ref": "#/components/schemas/Confirmation"
               }
             }
           }
@@ -2118,12 +2117,11 @@
           }
         },
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": true
+                "$ref": "#/components/schemas/Confirmation"
               }
             }
           }
@@ -3445,6 +3443,19 @@
         "type": "object",
         "additionalProperties": true,
         "description": "Domain response with the stable route-specific fields described in the operator/API guide."
+      },
+      "Confirmation": {
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "const": true,
+            "description": "Explicit confirmation is required before a controlled reboot or APT repair is admitted."
+          }
+        }
       }
     }
   }

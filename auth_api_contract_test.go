@@ -129,6 +129,67 @@ func TestPersonalAPIOpenAPIContractMatchesRoutesScopesTypesErrorsAndPagination(t
 	}
 }
 
+func TestPersonalAPIConfirmationRequestContract(t *testing.T) {
+	data, err := os.ReadFile("docs/openapi-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Paths map[string]map[string]struct {
+			RequestBody struct {
+				Required bool `json:"required"`
+				Content  map[string]struct {
+					Schema struct {
+						Ref string `json:"$ref"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"requestBody"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Required   []string `json:"required"`
+				Properties map[string]struct {
+					Type  string `json:"type"`
+					Const bool   `json:"const"`
+				} `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err = json.Unmarshal(data, &spec); err != nil {
+		t.Fatal(err)
+	}
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	issued := identityRequest(app, "POST", "/api/auth/tokens", admin, "", gin.H{"name": "confirmation contract", "scopes": []string{"maintenance:write"}, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	if issued.Code != 201 {
+		t.Fatal(issued.Code, issued.Body.String())
+	}
+	secret := decodeContractJSON(t, issued)["secret"].(string)
+	for _, action := range []string{"repair", "reboot"} {
+		t.Run(action, func(t *testing.T) {
+			body := spec.Paths["/api/"+action+"/{name}"]["post"].RequestBody
+			if !body.Required {
+				t.Error("OpenAPI must require the confirmation request body")
+			}
+			ref := body.Content["application/json"].Schema.Ref
+			schema := spec.Components.Schemas[strings.TrimPrefix(ref, "#/components/schemas/")]
+			confirm := schema.Properties["confirm"]
+			if confirm.Type != "boolean" || !confirm.Const || !reflect.DeepEqual(schema.Required, []string{"confirm"}) {
+				t.Error("OpenAPI must describe the required confirm:true field")
+			}
+			for _, input := range []struct {
+				body any
+				want int
+			}{{nil, 400}, {gin.H{}, 400}, {gin.H{"confirm": false}, 400}, {gin.H{"confirm": true}, 404}} {
+				rec := identityRequest(app, "POST", "/api/"+action+"/missing", nil, secret, input.body)
+				if rec.Code != input.want {
+					t.Errorf("body %v: HTTP %d want %d; %s", input.body, rec.Code, input.want, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
 func TestPersonalAPIRealDiscoveryPlanApprovalRunnerAndAudit(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
 	t.Setenv(postchecksEnabledEnv, "true")

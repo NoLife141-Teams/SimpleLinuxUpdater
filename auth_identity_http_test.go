@@ -48,6 +48,27 @@ func identityLogin(t *testing.T, app *testApp, username string) *http.Cookie {
 	}
 	return testSessionCookieFromRecorder(t, rec)
 }
+
+func TestIdentityStatusPageExposesAuthenticatedRole(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	for _, role := range []string{"reader", "operator", "admin"} {
+		t.Run(role, func(t *testing.T) {
+			cookie := admin
+			if role != "admin" {
+				if _, err := app.Deps.AuthService.CreateAccount(role, testPasswordStrong, role); err != nil {
+					t.Fatal(err)
+				}
+				cookie = identityLogin(t, app, role)
+			}
+			rec := identityRequest(app, "GET", "/", cookie, "", nil)
+			if rec.Code != 200 || !strings.Contains(rec.Body.String(), `data-account-role="`+role+`"`) {
+				t.Fatalf("Status page does not expose authenticated role %q (HTTP %d)", role, rec.Code)
+			}
+		})
+	}
+}
+
 func TestIdentityEveryRoutePermissionMatrixWithRealCookiesAndPersonalTokens(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	adminCookie := app.authenticate(t)

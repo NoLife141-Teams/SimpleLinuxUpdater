@@ -150,6 +150,9 @@ func updateServiceDepsWithDefaults(d UpdateServiceDeps) UpdateServiceDeps {
 	if d.LoadCommandTimeout == nil {
 		d.LoadCommandTimeout = loadSSHCommandTimeoutFromEnv
 	}
+	if d.LoadApplicationPostchecks == nil {
+		d.LoadApplicationPostchecks = applicationPostcheckLoader(getDB, d.ServerState)
+	}
 	if d.LoadPostUpdateCheckConfig == nil {
 		d.LoadPostUpdateCheckConfig = loadPostUpdateCheckConfigFromEnv
 	}

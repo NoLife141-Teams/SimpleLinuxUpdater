@@ -20,6 +20,13 @@ function statusView(overrides = {}) {
     };
 }
 
+test("read-only application tests remain active without failure presentation", () => {
+    const view = project({ statusView: statusView({ servers: [{ name: "web", status: "postchecks_test", has_password: true }] }) });
+    assert.equal(view.selectedHost.busy, true);
+    assert.equal(view.selectedHost.canRunUpdate, false);
+    assert.equal(view.selectedHost.failed, false);
+});
+
 test("canonical dashboard facts win and accepted action views remain authoritative", () => {
     const view = project({
         statusView: statusView({

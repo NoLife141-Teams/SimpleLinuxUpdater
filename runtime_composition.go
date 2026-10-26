@@ -368,12 +368,13 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 		)
 		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
-			ServerState:             deps.ServerState,
-			HostMaintenanceSessions: hostMaintenanceSessions,
-			CurrentJobManager:       deps.CurrentJobManager,
-			StartJobRunner:          func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
-			AuditWithActor:          recordAudit,
-			SaveServerFacts:         factsRepo.AcceptCollectedFacts,
+			ServerState:               deps.ServerState,
+			HostMaintenanceSessions:   hostMaintenanceSessions,
+			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
+			CurrentJobManager:         deps.CurrentJobManager,
+			StartJobRunner:            func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
+			AuditWithActor:            recordAudit,
+			SaveServerFacts:           factsRepo.AcceptCollectedFacts,
 			UpdateScheduledDiscoveryMeta: func(jobID string, discovery PackageDiscoveryOutcome) {
 				scheduledRunLifecycleFromComposedApp(deps).UpdateJobDiscovery(jobID, discovery)
 			},

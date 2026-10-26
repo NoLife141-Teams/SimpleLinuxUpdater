@@ -982,9 +982,26 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
         }
 
+let applicationPostcheckPreviewController=null;
+        async function loadApplicationPostcheckPreview(name) {
+            applicationPostcheckPreviewController?.abort();
+            const controller=new AbortController();applicationPostcheckPreviewController=controller;
+            const sessionID=managePageInteraction.getView().editor.sessionID;
+            document.getElementById('edit-application-postchecks').textContent='Loading saved expectations…';
+            try {
+                const response=await fetch(`/api/servers/${encodeURIComponent(name)}/postchecks`,{cache:'no-store',signal:controller.signal});
+                const data=await response.json();
+                managePageInteraction.dispatch({type:'applicationPostchecksReceived',sessionID,profile:response.ok?data.profile:null,error:response.ok?'':data.error || 'Post-check profile unavailable.'});
+            }catch(error){if(controller.signal.aborted)return;managePageInteraction.dispatch({type:'applicationPostchecksReceived',sessionID,error:'Post-check profile unavailable.'});}
+            const editor=managePageInteraction.getView().editor;if(!editor.open||editor.sessionID!==sessionID)return;
+            const fact=editor.applicationPostchecks;
+            document.getElementById('edit-application-postchecks').textContent=fact?.error || (fact?.profile?`${fact.profile.name} · revision ${fact.profile.revision} · ${fact.profile.checks.map(c=>`${c.name} (${c.mode})`).join(', ')}`:'No application profile assigned. Existing post-check settings apply.');
+        }
+
             async function editServer(name) {
                 const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === name) || {};
                 managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
+ void loadApplicationPostcheckPreview(name);
             document.getElementById('edit-name').value = current.name || name;
             document.getElementById('edit-host').value = current.host || '';
             document.getElementById('edit-port').value = current.port || '';
@@ -1017,6 +1034,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
 
             function closeEditModal() {
+ applicationPostcheckPreviewController?.abort();
 	                const editModal = document.getElementById('edit-modal');
 	                editModal.classList.remove('active');
 	                releaseModalFocus(editModal);

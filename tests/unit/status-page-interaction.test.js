@@ -5,6 +5,14 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("read-only application tests block competing status actions", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "web", status: "postchecks_test", has_password: true, host_key_status: "trusted" }] });
+    assert.equal(store.getServer("web").status, "postchecks_test");
+    assert.equal(store.planAction("web", "update").enabled, false);
+    assert.equal(store.planAction("web", "refresh_facts").enabled, false);
+});
+
 test("snapshot intake clones adapter-owned data", () => {
     const store = createStore();
     const servers = [{ name: "alpha", status: "idle", tags: ["prod"] }];

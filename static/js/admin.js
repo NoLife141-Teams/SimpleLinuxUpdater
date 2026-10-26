@@ -165,6 +165,7 @@ function runAdminWorkspaceEffects(effects) {
 
 async function loadAdminSectionData(sectionID, reason = "first-activation") {
     try {
+        if (sectionID === "application-checks") await applicationPostcheckAdapter.load();
         if (sectionID === "app-time") await fetchAppTimezoneSettings(true);
         if (sectionID === "notifications") await Promise.all([
             fetchNotificationSettings(),
@@ -3722,6 +3723,8 @@ window.addEventListener("beforeunload", (event) => {
     event.preventDefault();
     event.returnValue = "";
 });
+
+const applicationPostcheckAdapter = ApplicationPostcheckAdapter.mount({store:adminPageInteraction,onChange:renderAdminWorkspace});
 
 bindPolicyFormInteractions();
 initializeAdminWorkspace();

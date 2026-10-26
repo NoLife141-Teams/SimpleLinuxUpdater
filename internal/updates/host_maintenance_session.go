@@ -350,6 +350,9 @@ type productionHostMaintenanceSession struct {
 	closed   bool
 	closeErr error
 	stats    HostMaintenanceSessionStats
+	// A command context can expire independently of the owning session. The SSH
+	// adapter closes that transport, so the next operation needs a fresh one.
+	connectionInterrupted bool
 }
 
 func (s *productionHostMaintenanceSession) notifyRetry(operation string) func(int, time.Duration, error) {
@@ -378,6 +381,23 @@ func (s *productionHostMaintenanceSession) reconnect(ctx context.Context) error 
 	}
 	s.conn = conn
 	s.stats.Reconnects++
+	s.connectionInterrupted = false
+	return nil
+}
+
+func (s *productionHostMaintenanceSession) prepareConnection(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return errors.New("host maintenance session is closed")
+	}
+	if s.connectionInterrupted {
+		return s.reconnect(ctx)
+	}
 	return nil
 }
 
@@ -432,6 +452,14 @@ func (s *productionHostMaintenanceSession) RunCommand(ctx context.Context, req H
 	if !req.Effect.Valid() {
 		return HostCommandResult{}, fmt.Errorf("host command effect is required for operation %q", req.Operation)
 	}
+	if err := s.prepareConnection(ctx); err != nil {
+		return HostCommandResult{}, &HostMaintenanceError{Stage: HostMaintenanceStageDial, Operation: req.Operation, Err: err}
+	}
+	defer func() {
+		if ctx.Err() != nil {
+			s.connectionInterrupted = true
+		}
+	}()
 	var stdout, stderr string
 	run := func(conn SSHConnection) error {
 		var runErr error

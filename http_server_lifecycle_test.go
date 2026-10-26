@@ -147,6 +147,52 @@ func newDeadlineTestServer(t *testing.T, deadline time.Duration, handler http.Ha
 	return server
 }
 
+func TestApplicationPostcheckResponseOutlivesOrdinaryWriteDeadline(t *testing.T) {
+	const requestDeadline = 75 * time.Millisecond
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		wantOK bool
+	}{
+		{"application test", http.MethodPost, "/api/servers/web/postchecks/test", true},
+		{"profile preview", http.MethodGet, "/api/servers/web/postchecks", false},
+		{"other server action", http.MethodPost, "/api/servers/web/update", false},
+		{"wrong method", http.MethodGet, "/api/servers/web/postchecks/test", false},
+		{"nested path", http.MethodPost, "/api/servers/web/extra/postchecks/test", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(2 * requestDeadline)
+				_, _ = io.WriteString(w, "completed results")
+			})
+			server := newDeadlineTestServer(t, requestDeadline, handler)
+			req, err := http.NewRequest(tc.method, server.URL+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := server.Client().Do(req)
+			if !tc.wantOK {
+				if response != nil {
+					_ = response.Body.Close()
+				}
+				if err == nil {
+					t.Fatal("ordinary response bypassed its write deadline")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("application check results lost after ordinary write deadline: %v", err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || string(body) != "completed results" {
+				t.Fatalf("response = %q, %v", body, err)
+			}
+		})
+	}
+}
+
 func TestBackupTransferDeadlineHandlerLeavesOtherPathsWrapped(t *testing.T) {
 	called := false
 	handler := backupTransferDeadlineHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

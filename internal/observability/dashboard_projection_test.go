@@ -62,6 +62,7 @@ func TestDashboardProjectionRecommendsSafeNextMaintenanceAction(t *testing.T) {
 		wantAction string
 	}{
 		{name: "active", status: "upgrading", timeline: testCollectedTimeline("upgrade", "active", "Upgrading"), wantKey: "monitor_apt"},
+		{name: "application test", status: "postchecks_test", timeline: testCollectedTimeline("done_error", "done", "Previous operation"), wantKey: "monitor_apt"},
 		{name: "reconciliation", status: "needs_reconciliation", timeline: testCollectedTimeline("done_error", "error", "APT uncertain"), wantKey: "repair_package_state", wantAction: dashboardActionRepairApt},
 		{name: "approval", status: "pending_approval", timeline: testCollectedTimeline("pending_approval", "waiting", "Waiting"), wantKey: "review_approval"},
 		{name: "missing facts", status: "done", timeline: testCollectedTimeline("done_error", "done", "Done"), triageTime: testCollectedTriageTime("stale", ""), wantKey: "refresh_host_facts", wantAction: dashboardActionRefreshFacts},
@@ -90,6 +91,14 @@ func TestDashboardProjectionRecommendsSafeNextMaintenanceAction(t *testing.T) {
 			got := summary.Servers[0].RecommendedAction
 			if got.Key != tt.wantKey || got.Action != tt.wantAction {
 				t.Fatalf("recommended action = %+v, want key %q action %q", got, tt.wantKey, tt.wantAction)
+			}
+			if tt.status == "postchecks_test" {
+				if got.Label != "Monitor application checks" {
+					t.Fatalf("application test label = %q", got.Label)
+				}
+				if action := requireDashboardAction(t, summary.Servers[0], dashboardActionUpdate); action.Enabled || action.BlockingStatus != "postchecks_test" {
+					t.Fatalf("update action = %+v, want application test block", action)
+				}
 			}
 			if tt.status == "needs_reconciliation" {
 				if action := requireDashboardAction(t, summary.Servers[0], dashboardActionUpdate); action.Enabled || action.BlockingStatus != "needs_reconciliation" {

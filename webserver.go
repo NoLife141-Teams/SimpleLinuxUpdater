@@ -33,6 +33,7 @@ import (
 	jobsPkg "debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
+	"debian-updater/internal/postchecks"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
@@ -315,6 +316,9 @@ func ensureSchema(db *sql.DB) error {
 }
 
 func ensureSettingsSchema(db *sql.DB) error {
+	if err := postchecks.EnsureSchema(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
 		return err
 	}
@@ -1892,6 +1896,7 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 
 func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
+	registerApplicationPostcheckRoutes(r, deps)
 	r.POST("/api/auth/logout", handleAuthLogout)
 	r.GET("/api/auth/sessions", handleAuthSessionsStatus)
 	r.PUT("/api/auth/password", handleAuthPasswordChange)

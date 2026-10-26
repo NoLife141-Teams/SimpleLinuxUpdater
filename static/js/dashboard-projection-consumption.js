@@ -59,9 +59,10 @@
         const planKeptBack = Number(plan.kept_back_package_count);
         const planStandardSecurity = Number(plan.standard_security_count);
         const planTotalSecurity = Number(plan.total_security_count);
-        const hasPlan = Number.isFinite(planStandard)
+        const hasDeferrals = list(record(plan.package_deferrals).rules).length > 0;
+ const hasPlan = Number.isFinite(planStandard)
             && Number.isFinite(planKeptBack)
-            && (planStandard > 0 || planKeptBack > 0 || count(plan.full_upgrade_package_count) > 0);
+            && (hasDeferrals || planStandard > 0 || planKeptBack > 0 || count(plan.full_upgrade_package_count) > 0);
         const pendingSecurity = pending.filter(update => !!record(update).security);
         const keptSecurity = pendingSecurity.filter(update => !!record(update).kept_back || !!record(update).requires_full_upgrade);
         const upgradableFallback = list(server.upgradable).length;
@@ -72,10 +73,10 @@
             total,
             standard: hasPlan ? planStandard : total,
             keptBack: hasPlan ? planKeptBack : pending.filter(update => !!record(update).kept_back || !!record(update).requires_full_upgrade).length,
-            full: count(plan.full_upgrade_package_count) || total,
+            full: hasDeferrals ? count(plan.full_upgrade_package_count) : count(plan.full_upgrade_package_count) || total,
             security: hasPlan && Number.isFinite(planStandardSecurity) ? planStandardSecurity : (pending.length > 0 ? standardSecurity : null),
             totalSecurity: hasPlan && Number.isFinite(planTotalSecurity) ? planTotalSecurity : (pending.length > 0 ? pendingSecurity.length : null),
-            keptBackSecurity: hasPlan && Number.isFinite(planTotalSecurity) && Number.isFinite(planStandardSecurity)
+            keptBackSecurity: hasDeferrals ? count(plan.kept_back_security_package_count) : hasPlan && Number.isFinite(planTotalSecurity) && Number.isFinite(planStandardSecurity)
                 ? Math.max(0, planTotalSecurity - planStandardSecurity)
                 : (pending.length > 0 ? keptSecurity.length : 0),
             fullPlanAvailable: !!plan.full_upgrade_plan_available,

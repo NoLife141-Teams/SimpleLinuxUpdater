@@ -440,6 +440,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const remainingFindings = findings.filter(finding => finding.disposition === "still_affected");
 
                 const badges = [];
+ if(update.deferred)badges.push(`<span class="pending-badge pending-badge-security">Deferred — security exposure remains</span>`);
                 if (update.security) badges.push(`<span class="pending-badge pending-badge-security">Security</span>`);
                 if (update.kept_back || update.requires_full_upgrade) {
                     badges.push(`<span class="pending-badge">Kept back</span>`);
@@ -485,6 +486,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return `
                 <div class="pending-updates">
                     ${includeHeading ? "<h4>Pending updates (security first)</h4>" : ""}
+ ${window.PackageDeferrals.approvalHTML(server.upgrade_plan)}
                     ${driftReason ? `<p class="pending-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                     <div class="pending-summary">
                         <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>

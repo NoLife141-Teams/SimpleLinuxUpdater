@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/css/base.css?v=disclosure-chevron-20260729">
     <link rel="stylesheet" href="/static/css/admin.css?v=calendar-mobile-20261023">
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
+<link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -476,6 +477,13 @@
                     </div>
                     <form id="update-policy-form" class="policy-form">
                         <input type="hidden" id="policy-id" aria-label="Policy ID">
+<section class="package-deferrals full-width field-span" id="policy-package-deferrals" aria-label="Package deferrals">
+<h4>Package deferrals</h4><p>Security warning: deferring a package can postpone security fixes and leaves its CVE exposure visible. Rules from this Server and all matching enabled policies accumulate. Existing administrator holds and pins are preserved.</p>
+<div data-deferral-list role="status"></div><div class="deferral-fields">
+<label>Exact package (optional :architecture)<input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
+<label>Reason<input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
+<label>Expiry (timestamp with timezone)<input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
+</div><button type="button" class="btn-ghost" data-add-deferral>Add package deferral</button><p data-deferral-feedback role="status" aria-live="polite"></p></section>
                         <div class="field-span policy-draft-action-bar" id="policy-draft-action-bar" hidden>
                             <div>
                                 <strong id="policy-draft-state">Unsaved policy changes</strong>
@@ -1137,6 +1145,7 @@
     <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-module-split-20260903"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=1"></script>
-    <script src="/static/js/admin.js?v=scheduled-autoremove-20261020"></script>
+    <script src="/static/js/package-deferrals.js?v=473"></script>
+<script src="/static/js/admin.js?v=scheduled-autoremove-20261020"></script>
 </body>
 </html>

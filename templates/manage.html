@@ -7,6 +7,7 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=modal-scroll-lock-20260729">
     <link rel="stylesheet" href="/static/css/manage.css?v=inventory-import-20261026">
+<link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
 </head>
 <body>
     <div class="dashboard-shell">
@@ -435,7 +436,14 @@
                     </div>
                     <div id="edit-hostkey-status" class="muted" aria-live="polite" aria-atomic="true"></div>
                 </div>
-                <div class="full-width"><div class="eyebrow">Application post-checks</div><p id="edit-application-postchecks" class="muted" role="status">Loading saved expectations…</p><a href="/admin#admin-section-application-checks">Configure profiles and run a read-only test in Admin</a><p class="muted">Preview uses saved Server tags. Save inventory changes before reviewing the effective profile.</p></div>
+                <section class="package-deferrals full-width field-span" id="server-package-deferrals" aria-label="Package deferrals">
+<h4>Package deferrals</h4><p>Security warning: deferring a package can postpone security fixes and leaves its CVE exposure visible. Rules from this Server and all matching enabled policies accumulate. Existing administrator holds and pins are preserved.</p>
+<div data-deferral-list role="status"></div><div class="deferral-fields">
+<label>Exact package (optional :architecture)<input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
+<label>Reason<input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
+<label>Expiry (timestamp with timezone)<input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
+</div><button type="button" class="btn-ghost" data-add-deferral>Add package deferral</button><p data-deferral-feedback role="status" aria-live="polite"></p></section>
+<div class="full-width"><div class="eyebrow">Application post-checks</div><p id="edit-application-postchecks" class="muted" role="status">Loading saved expectations…</p><a href="/admin#admin-section-application-checks">Configure profiles and run a read-only test in Admin</a><p class="muted">Preview uses saved Server tags. Save inventory changes before reviewing the effective profile.</p></div>
                 <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>
             </div>
             <div class="modal-actions edit-sticky-actions">
@@ -498,6 +506,7 @@
     <script src="/static/js/manage-modals.js?v=modal-scroll-lock-20260729"></script>
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
     <script src="/static/js/inventory-import.js?v=inventory-import-20261026"></script>
-    <script src="/static/js/manage.js?v=inventory-import-20261026"></script>
+    <script src="/static/js/package-deferrals.js?v=473"></script>
+<script src="/static/js/manage.js?v=inventory-import-20261026"></script>
 </body>
 </html>

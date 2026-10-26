@@ -1095,7 +1095,8 @@
                 counts: canonicalApprovalCounts(server),
                 approvalIdentity: {
                     job_id: String(server?.job_id || ""),
-                    approval_generation: Number(server?.approval_generation) || 0
+                    approval_generation: Number(server?.approval_generation) || 0,
+ ...(server?.upgrade_plan?.package_deferrals?.revision ? {deferral_revision:server.upgrade_plan.package_deferrals.revision} : {})
                 },
                 pendingUpdates: cloneValue(server?.pending_updates || [])
             };

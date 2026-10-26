@@ -1001,6 +1001,7 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
         }
 
+const packageDeferralEditor=window.PackageDeferrals.mount(document.getElementById("server-package-deferrals"));
 let applicationPostcheckPreviewController=null;
         async function loadApplicationPostcheckPreview(name) {
             applicationPostcheckPreviewController?.abort();
@@ -1021,6 +1022,7 @@ let applicationPostcheckPreviewController=null;
                 const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === name) || {};
                 managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
  void loadApplicationPostcheckPreview(name);
+ void packageDeferralEditor.select({server_name:name});
             document.getElementById('edit-name').value = current.name || name;
             document.getElementById('edit-host').value = current.host || '';
             document.getElementById('edit-port').value = current.port || '';
@@ -1053,6 +1055,7 @@ let applicationPostcheckPreviewController=null;
             }
 
             function closeEditModal() {
+ void packageDeferralEditor.clear();
  applicationPostcheckPreviewController?.abort();
 	                const editModal = document.getElementById('edit-modal');
 	                editModal.classList.remove('active');

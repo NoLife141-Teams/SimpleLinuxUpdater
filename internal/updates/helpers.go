@@ -876,6 +876,9 @@ func KeptBackSecurityPackagesFromPendingUpdates(updates []servers.PendingUpdate)
 	seen := make(map[string]struct{}, len(updates))
 	packages := make([]string, 0, len(updates))
 	for _, update := range updates {
+		if update.Deferred {
+			continue
+		}
 		if !update.Security || !(update.RequiresFull || update.KeptBack) {
 			continue
 		}
@@ -915,6 +918,9 @@ func packageNamesFromPendingUpdates(updates []servers.PendingUpdate, securityOnl
 	seen := make(map[string]struct{}, len(updates))
 	packages := make([]string, 0, len(updates))
 	for _, update := range updates {
+		if update.Deferred {
+			continue
+		}
 		if securityOnly && !update.Security {
 			continue
 		}
@@ -1032,6 +1038,9 @@ func PreparePendingUpdatesForCVE(updates []servers.PendingUpdate) []servers.Pend
 func PendingCVEPackages(updates []servers.PendingUpdate) []string {
 	pkgs := make([]string, 0)
 	for _, update := range updates {
+		if update.Deferred {
+			continue
+		}
 		if update.CVEState != "pending" {
 			continue
 		}

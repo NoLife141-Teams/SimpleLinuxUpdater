@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"debian-updater/internal/deferrals"
 	healthpkg "debian-updater/internal/health"
 	jobspkg "debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
@@ -81,6 +82,9 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenameVulnerabilityObservation: vulnerabilities.RenameServerTx,
 		DeleteVulnerabilityObservation: vulnerabilities.DeleteServerTx,
 		RenameServerFacts: func(tx *sql.Tx, oldName, newName string) error {
+			if err := deferrals.RenameServerTx(tx, oldName, newName); err != nil {
+				return err
+			}
 			if err := postchecks.RenameServerTx(tx, oldName, newName); err != nil {
 				return err
 			}
@@ -90,6 +94,9 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 			return notificationpkg.RenameServerIdentityTx(tx, oldName, newName)
 		},
 		DeleteServerFacts: func(tx *sql.Tx, name string) error {
+			if err := deferrals.RenameServerTx(tx, name, ""); err != nil {
+				return err
+			}
 			if err := postchecks.RenameServerTx(tx, name, ""); err != nil {
 				return err
 			}

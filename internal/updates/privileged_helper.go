@@ -1,8 +1,8 @@
 package updates
 
 import (
+	"debian-updater/internal/deferrals"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"debian-updater/internal/servers"
@@ -14,24 +14,10 @@ const (
 	LegacyAptSudoersPath    = "/etc/sudoers.d/apt-nopasswd"
 	rootHelperOwnerMarker   = "# Managed by SimpleLinuxUpdater; do not edit."
 	managedSudoersMarker    = "# Managed by SimpleLinuxUpdater; do not edit."
-	rootHelperScriptVersion = "2"
+	rootHelperScriptVersion = "3"
 )
 
-var (
-	packageNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
-	architecturePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-)
-
-func IsValidPackageSelector(selector string) bool {
-	if selector == "" || strings.TrimSpace(selector) != selector || strings.Count(selector, ":") > 1 {
-		return false
-	}
-	name, architecture, hasArchitecture := strings.Cut(selector, ":")
-	if !packageNamePattern.MatchString(name) || strings.HasSuffix(name, "-") || strings.Contains(name, ".+") {
-		return false
-	}
-	return !hasArchitecture || architecturePattern.MatchString(architecture) && !strings.HasSuffix(architecture, "-")
-}
+func IsValidPackageSelector(selector string) bool { return deferrals.ValidSelector(selector) }
 
 func IsValidSudoersUser(user string) bool {
 	return servers.IsValidSSHUsername(user) && strings.TrimSpace(user) == user
@@ -53,7 +39,7 @@ func NonInteractiveAptSudoersSpec() string {
 	operations := []string{
 		"update", "upgrade", "full-upgrade", "full-upgrade-no-remove", "autoremove", "repair",
 		"lock-probe", "lock-probe-extended", "dpkg-audit", "apt-check",
-		"install *", "install-only-upgrade *", "install-no-remove *", "install-only-upgrade-no-remove *", "reboot",
+		"guarded-install *", "install *", "install-only-upgrade *", "install-no-remove *", "install-only-upgrade-no-remove *", "reboot",
 	}
 	specs := make([]string, 0, len(operations))
 	for _, operation := range operations {
@@ -131,6 +117,7 @@ operation=$1
 shift
 
 case "$operation" in
+` + guardedInstallHelperScript() + `
     update)
         require_no_args "$@"
         exec /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold update
@@ -213,6 +200,90 @@ case "$operation" in
         refuse "unknown operation"
         ;;
 esac
+`
+}
+
+// The root-owned, per-invocation hook checks APT's complete transaction before
+// dpkg starts. No persistent preferences, selections, holds or hooks are edited.
+func guardedInstallHelperScript() string {
+	return `    guarded-install)
+        PATH=/usr/sbin:/usr/bin:/sbin:/bin
+        export PATH
+        [ "$#" -ge 7 ] || refuse "guarded transaction arguments missing; update the managed helper"
+        scope=$1; deadline=$2; count=$3; shift 3
+        case "$scope" in all|security|security_kept_back|full_upgrade) ;; *) refuse "invalid guarded scope" ;; esac
+        case "$deadline:$count" in *[!0-9:]*|:*|*:) refuse "invalid guard bounds" ;; esac
+        [ "$count" -gt 0 ] && [ "$count" -le 1000 ] || refuse "invalid deferral count"
+        [ "$(/usr/bin/date +%s)" -lt "$deadline" ] || refuse "package deferral expired; rescan and approve again"
+        guard_dir=$(/usr/bin/mktemp -d /tmp/simplelinuxupdater-guard.XXXXXX)
+        /usr/bin/chmod 0700 "$guard_dir"
+        trap 'rm -rf -- "$guard_dir"' EXIT HUP INT TERM
+        rules=$guard_dir/rules
+        expected=$guard_dir/expected
+        : > "$rules"; : > "$expected"
+        while [ "$count" -gt 0 ]; do
+            [ "$#" -gt 0 ] || refuse "truncated deferrals"
+            valid_package_selector "$1" || refuse "invalid deferred selector"
+            printf '%s\n' "$1" >> "$rules"
+            shift; count=$((count - 1))
+        done
+        # Administrator holds remain effective even for explicitly targeted
+        # installs and locally configured allow-change-held-packages defaults.
+        holds=$(/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /usr/bin/apt-mark showhold) || refuse "administrator holds unavailable"
+        for selector in $holds; do
+            valid_package_selector "$selector" || refuse "invalid administrator hold selector"
+            printf '%s\n' "$selector" >> "$rules"
+        done
+        [ "$#" -gt 0 ] || refuse "missing transaction count"
+        count=$1; shift
+        case "$count" in ''|*[!0-9]*) refuse "invalid transaction count" ;; esac
+        [ "$count" -le 20000 ] || refuse "transaction too large"
+        while [ "$count" -gt 0 ]; do
+            [ "$#" -gt 0 ] || refuse "truncated transaction"
+            selector=${1%%=*}; version=${1#*=}
+            [ "$selector" != "$1" ] && valid_package_selector "$selector" || refuse "invalid transaction selector"
+            case "$version" in ''|*[!a-zA-Z0-9.+:~_-]*) refuse "invalid transaction version" ;; esac
+            printf '%s\n' "$1" >> "$expected"
+            shift; count=$((count - 1))
+        done
+        [ "$#" -ge 2 ] || refuse "missing guarded targets"
+        remove=$1; shift
+        case "$remove" in no-remove|allow-removals) ;; *) refuse "invalid removal gate" ;; esac
+        case "$scope:$remove" in all:allow-removals|security:allow-removals) refuse "scope cannot remove packages" ;; esac
+        require_packages "$@"
+        hook=$guard_dir/check
+        cat > "$hook" <<'SLU_GUARD'
+#!/bin/sh
+set -eu
+base=${0%/*}
+exec /usr/bin/awk -v deadline="$(cat "$base/deadline")" '
+function deny(message) { print "SimpleLinuxUpdater package deferral guard: " message > "/dev/stderr"; failed=1; exit 65 }
+FILENAME==ARGV[1] { deferred[$0]=1; next }
+FILENAME==ARGV[2] { approved[$0]=1; next }
+FNR==1 { if ($0!="VERSION 3") deny("APT transaction protocol 3 required; no packages changed"); header=1; next }
+header && !actions { if ($0=="") actions=1; next }
+actions {
+    if (NF!=9) deny("unrecognized APT transaction; rescan")
+    if ($5==">" && $9!="**REMOVE**") deny("package downgrades are not permitted")
+    name=$1; sub(/:.*/, "", name)
+    arch=($7=="-" ? $3 : $7)
+    if (arch=="-" || arch=="") deny("missing package architecture")
+    selector=name ":" arch
+    if (name in deferred || selector in deferred || (name ":" $3) in deferred) deny("APT would change deferred package " selector "; resolve dependencies or wait for expiry")
+    if (arch=="all") {for (rule in deferred) {split(rule, parts, ":");if (parts[1]==name) deny("APT would change deferred architecture-independent package " name)}}
+    if (!((selector "=" $6) in approved)) deny("APT transaction changed since approval for " selector "; rescan and approve again")
+}
+END { if (failed || !header || !actions) exit 65; if (systime()>=deadline) {print "SimpleLinuxUpdater package deferral expired; rescan and approve again" > "/dev/stderr"; exit 65} }
+' "$base/rules" "$base/expected" -
+SLU_GUARD
+        printf '%s\n' "$deadline" > "$guard_dir/deadline"
+        /usr/bin/chmod 0700 "$hook"
+        # Append to existing administrator hooks. Request v3 explicitly and fail
+        # closed in the hook if an older APT negotiates an older protocol.
+        if [ "$remove" = no-remove ]; then set -- --no-remove "$@"; fi
+        case "$scope" in all|security) set -- --only-upgrade "$@" ;; esac
+        /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C DEBIAN_FRONTEND=noninteractive DEBIAN_PRIORITY=critical APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1 /usr/bin/apt-get -o APT::Ignore-Hold=false -o APT::Get::allow-change-held-packages=false -o APT::Get::allow-downgrades=false -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o "DPkg::Pre-Install-Pkgs::=$hook" -o "DPkg::Tools::Options::$hook::Version=3" -y install "$@"
+        ;;
 `
 }
 

@@ -28,6 +28,7 @@ import (
 	appshell "debian-updater/internal/app"
 	auditpkg "debian-updater/internal/audit"
 	authpkg "debian-updater/internal/auth"
+	"debian-updater/internal/deferrals"
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	jobsPkg "debian-updater/internal/jobs"
@@ -316,6 +317,9 @@ func ensureSchema(db *sql.DB) error {
 }
 
 func ensureSettingsSchema(db *sql.DB) error {
+	if err := deferrals.EnsureSchema(db); err != nil {
+		return err
+	}
 	if err := postchecks.EnsureSchema(db); err != nil {
 		return err
 	}
@@ -1849,6 +1853,7 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	registerPublicRoutes(r, deps)
 	r.Use(authGateMiddleware())
 	r.Use(sameOriginWriteMiddleware())
+	r.Use(packageDeferralPolicyGate(deps))
 	registerProtectedPageRoutes(r)
 	registerProtectedAuthAndSettingsRoutes(r, deps)
 	registerPolicyAuditObservabilityRoutes(r, deps)
@@ -1897,6 +1902,7 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	registerApplicationPostcheckRoutes(r, deps)
+	registerPackageDeferralRoutes(r, deps)
 	r.POST("/api/auth/logout", handleAuthLogout)
 	r.GET("/api/auth/sessions", handleAuthSessionsStatus)
 	r.PUT("/api/auth/password", handleAuthPasswordChange)

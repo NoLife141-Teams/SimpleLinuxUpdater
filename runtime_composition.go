@@ -296,6 +296,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	} else if deps.SetCurrentJobManager == nil {
 		deps.SetCurrentJobManager = setCurrentJobManager
 	}
+	if deps.PackageDeferralGate == nil {
+		deps.PackageDeferralGate = &sync.RWMutex{}
+	}
 	if deps.PolicyRepository == nil {
 		deps.PolicyRepository = policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{
 			DB:          deps.DB,
@@ -376,6 +379,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 			ServerState:               deps.ServerState,
 			HostMaintenanceSessions:   hostMaintenanceSessions,
 			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
+			LoadPackageDeferrals:      packageDeferralLoader(deps),
+			PackageDeferralGate:       deps.PackageDeferralGate,
 			CurrentJobManager:         deps.CurrentJobManager,
 			StartJobRunner:            func(jobID string, run func()) { startJobRunnerWithManager(deps.CurrentJobManager, jobID, run) },
 			AuditWithActor:            recordAudit,

@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "distribution": "debian13",
+  "image": "debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad",
+  "helper_sha256": "9919ee2f34f1cd12b6368e6d3dbe4173e7bdcbb1dbfe6543e032daf34f805ce5",
+  "fixture_sha256": "8bfd35ee388f445fd711bd4cfa29e4cb0ddd1812bb4e1267a6138fca8596aeb6",
+  "container": "slu-package-deferrals-473-07e0cf4042f242cab1fcbc1b447737ea",
+  "network": "none",
+  "mounts": [],
+  "cleanup": "removed-owned-container",
+  "packages": [
+    "apt=3.0.3",
+    "dpkg=1.22.22"
+  ],
+  "baseline": [
+    "slu-admin-held=1",
+    "slu-admin-pinned=1",
+    "slu-deferred=1",
+    "slu-dependent=1",
+    "slu-independent=1",
+    "slu-multi:amd64=1",
+    "slu-multi:i386=1",
+    "slu-victim=1"
+  ],
+  "administrator_holds_and_pins": "preserved",
+  "scenarios": [
+    {
+      "status": "succeeded",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=1",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be upgraded:\n  slu-independent\n1 upgraded, 0 newly installed, 0 to remove and 5 not upgraded.\nNeed to get 0 B/768 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-independent 2 [768 B]\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4960 files and directories currently installed.)\r\nPreparing to unpack ..././slu-independent-2-amd64.deb ...\r\nUnpacking slu-independent (2) over (1) ...\r\nSetting up slu-independent (2) ...\r\n",
+      "scenario": "independent-all"
+    },
+    {
+      "status": "succeeded",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=1",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be upgraded:\n  slu-independent\n1 upgraded, 0 newly installed, 0 to remove and 5 not upgraded.\nNeed to get 0 B/768 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-independent 2 [768 B]\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4960 files and directories currently installed.)\r\nPreparing to unpack ..././slu-independent-2-amd64.deb ...\r\nUnpacking slu-independent (2) over (1) ...\r\nSetting up slu-independent (2) ...\r\n",
+      "scenario": "independent-security"
+    },
+    {
+      "status": "succeeded",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=1",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be upgraded:\n  slu-independent\n1 upgraded, 0 newly installed, 0 to remove and 5 not upgraded.\nNeed to get 0 B/768 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-independent 2 [768 B]\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4960 files and directories currently installed.)\r\nPreparing to unpack ..././slu-independent-2-amd64.deb ...\r\nUnpacking slu-independent (2) over (1) ...\r\nSetting up slu-independent (2) ...\r\n",
+      "scenario": "independent-security_kept_back"
+    },
+    {
+      "status": "succeeded",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=1",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be upgraded:\n  slu-independent\n1 upgraded, 0 newly installed, 0 to remove and 5 not upgraded.\nNeed to get 0 B/768 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-independent 2 [768 B]\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4960 files and directories currently installed.)\r\nPreparing to unpack ..././slu-independent-2-amd64.deb ...\r\nUnpacking slu-independent (2) over (1) ...\r\nSetting up slu-independent (2) ...\r\n",
+      "scenario": "independent-full_upgrade"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "docker failed (100): Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  slu-deferred\nThe following packages will be upgraded:\n  slu-deferred slu-dependent\n2 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\nNeed to get 0 B/1548 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-deferred 2 [764 B]\nGet:2 file:/tmp/slu-repo ./ slu-dependent 2 [784 B]\nSimpleLinuxUpdater package deferral guard: APT would change deferred package slu-deferred:amd64; resolve dependencies or wait for expiry\nE: Sub-process /tmp/simplelinuxupdater-guard.gyK4cy/check returned an error code (65)\nE: Failure running script /tmp/simplelinuxupdater-guard.gyK4cy/check\n",
+      "scenario": "dependency-forces-deferred",
+      "simulation": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  slu-deferred\nThe following packages will be upgraded:\n  slu-deferred slu-dependent\n2 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\nInst slu-deferred [1] (2 localhost [amd64])\nInst slu-dependent [1] (2 localhost [amd64])\nConf slu-deferred (2 localhost [amd64])\nConf slu-dependent (2 localhost [amd64])\n"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "output": "docker failed (100): Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be REMOVED:\n  slu-deferred\nThe following NEW packages will be installed:\n  slu-replacement\n0 upgraded, 1 newly installed, 1 to remove and 4 not upgraded.\nNeed to get 0 B/784 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-replacement 2 [784 B]\nSimpleLinuxUpdater package deferral guard: APT would change deferred package slu-deferred:amd64; resolve dependencies or wait for expiry\nE: Sub-process /tmp/simplelinuxupdater-guard.4s3uGD/check returned an error code (65)\nE: Failure running script /tmp/simplelinuxupdater-guard.4s3uGD/check\n",
+      "scenario": "implicit-removal-of-deferred"
+    },
+    {
+      "status": "succeeded",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-victim=1"
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "output": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following packages will be REMOVED:\n  slu-victim\nThe following NEW packages will be installed:\n  slu-safe-replacement\n0 upgraded, 1 newly installed, 1 to remove and 5 not upgraded.\nNeed to get 0 B/792 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-safe-replacement 2 [792 B]\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4960 files and directories currently installed.)\r\nRemoving slu-victim (1) ...\r\nSelecting previously unselected package slu-safe-replacement.\r\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 4959 files and directories currently installed.)\r\nPreparing to unpack .../slu-safe-replacement-2-amd64.deb ...\r\nUnpacking slu-safe-replacement (2) ...\r\nSetting up slu-safe-replacement (2) ...\r\n",
+      "scenario": "confirmed-independent-removal"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "output": "docker failed (100): Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following held packages will be changed:\n  slu-admin-held\nThe following packages will be upgraded:\n  slu-admin-held\n1 upgraded, 0 newly installed, 0 to remove and 4 not upgraded.\nE: Held packages were changed and -y was used without --allow-change-held-packages.\n",
+      "scenario": "administrator-hold-enforced"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "output": "docker failed (100): Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  slu-multi:i386\nThe following packages will be upgraded:\n  slu-multi slu-multi:i386\n2 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\nNeed to get 0 B/1544 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-multi 2 [772 B]\nGet:2 file:/tmp/slu-repo ./ slu-multi 2 [772 B]\nSimpleLinuxUpdater package deferral guard: APT would change deferred package slu-multi:i386; resolve dependencies or wait for expiry\nE: Sub-process /tmp/simplelinuxupdater-guard.vQHCBi/check returned an error code (65)\nE: Failure running script /tmp/simplelinuxupdater-guard.vQHCBi/check\n",
+      "scenario": "multiarch-dependency"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "output": "docker failed (64): refused: package deferral expired; rescan and approve again\n",
+      "scenario": "expired-rules"
+    },
+    {
+      "status": "blocked",
+      "before": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "after": [
+        "slu-admin-held=1",
+        "slu-admin-pinned=1",
+        "slu-deferred=1",
+        "slu-dependent=1",
+        "slu-independent=2",
+        "slu-multi:amd64=1",
+        "slu-multi:i386=1",
+        "slu-safe-replacement=2",
+        "slu-victim="
+      ],
+      "output": "docker failed (100): Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  slu-deferred\nThe following packages will be upgraded:\n  slu-deferred slu-dependent\n2 upgraded, 0 newly installed, 0 to remove and 3 not upgraded.\nNeed to get 0 B/1548 B of archives.\nAfter this operation, 0 B of additional disk space will be used.\nGet:1 file:/tmp/slu-repo ./ slu-deferred 2 [764 B]\nGet:2 file:/tmp/slu-repo ./ slu-dependent 2 [784 B]\nSimpleLinuxUpdater package deferral guard: APT transaction changed since approval for slu-deferred:amd64; rescan and approve again\nE: Sub-process /tmp/simplelinuxupdater-guard.J4ZDzm/check returned an error code (65)\nE: Failure running script /tmp/simplelinuxupdater-guard.J4ZDzm/check\n",
+      "scenario": "unapproved-dependency-drift"
+    }
+  ]
+}

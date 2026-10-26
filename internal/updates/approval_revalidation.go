@@ -3,6 +3,7 @@ package updates
 import (
 	"cmp"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -98,7 +99,10 @@ func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (
 	if err != nil {
 		return previous, false, err
 	}
-	fresh := result.Outcome
+	fresh, err := r.applyDeferrals(result.Outcome)
+	if err != nil {
+		return previous, false, err
+	}
 	disk := r.session.RunPlanDiskPrecheck(ctx, fresh.UpgradePlan)
 	r.precheckResults = append(r.precheckResults, disk)
 	if !disk.Passed {
@@ -106,7 +110,7 @@ func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (
 		r.precheckFailed = disk.Name
 		return fresh, false, fmt.Errorf("approval revalidation disk pre-check failed: %s", disk.Details)
 	}
-	changed := !approvalPackageSetsEqual(approvalRemovals(r.approvalScope, previous.UpgradePlan), approvalRemovals(r.approvalScope, fresh.UpgradePlan)) ||
+	changed := previous.UpgradePlan.PackageDeferrals.Revision != fresh.UpgradePlan.PackageDeferrals.Revision || !reflect.DeepEqual(previous.UpgradePlan.DeferralScopes, fresh.UpgradePlan.DeferralScopes) || !approvalPackageSetsEqual(approvalRemovals(r.approvalScope, previous.UpgradePlan), approvalRemovals(r.approvalScope, fresh.UpgradePlan)) ||
 		!approvalPackageSetsEqual(approvalNewPackages(r.approvalScope, previous.UpgradePlan), approvalNewPackages(r.approvalScope, fresh.UpgradePlan)) ||
 		!approvalSelectedPackagesEqual(r.approvalScope, previous.PendingUpdates, fresh.PendingUpdates)
 	return fresh, changed, nil

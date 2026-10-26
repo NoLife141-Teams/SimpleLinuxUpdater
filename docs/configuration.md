@@ -254,6 +254,12 @@ updates, controlled reboots, or scheduled scans.
 
 ## Post-update checks
 
+Package deferrals are saved through Manage or the policy editor, with mandatory
+reason and expiration, in the SQLite database. They introduce no environment
+variables. Servers with active rules require the protocol 3 managed root helper,
+including root SSH accounts. See [Package deferrals](usage.md#package-deferrals)
+for cumulative matching, approval invalidation and helper requirements.
+
 After a successful upgrade, the updater can run health checks and optionally block completion.
 
 Environment variables:

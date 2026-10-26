@@ -8,6 +8,14 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Added
 
+- Persistent Server and policy package deferrals with mandatory reasons and
+  expiration, authenticated audit attribution, cumulative policy inheritance,
+  Manage/Admin controls, and security exposure that remains visible.
+- Executable plans for all four Approval Scope choices with exact transaction
+  identities, renewed consent on deferral drift/expiry, and a protocol 3 helper
+  guard that checks dependencies and removals before dpkg starts.
+- Immutable deferral snapshots that preserve complete rule evidence when the
+  bounded audit preview is truncated, including across backup restoration.
 - One-time local-date and monthly numeric/last-day policy schedules, short-month
   diagnostics, explicit canary selection, and revision/stage details in Admin.
 - Durable one-time consumption and accepted rollout manifests that preserve
@@ -15,6 +23,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Upgrade notes
 
+- Servers using package deferrals require the current protocol 3 managed root
+  helper, including root SSH connections. An absent or older helper blocks the
+  protected operation; no unprotected APT fallback is used. Review the
+  [helper requirements](docs/usage.md#package-deferrals) before enabling rules.
+- The additive migration creates `package_deferrals` and
+  `package_deferral_snapshots`. Existing installations start without rules.
+  No new environment variables or authentication roles are introduced.
 - Policy schema migration is additive. Existing daily/weekly policies retain
   automatic canaries. A consumed one-time policy cannot be rearmed by editing it;
   create a new policy for another operation. See the [schedule and recovery

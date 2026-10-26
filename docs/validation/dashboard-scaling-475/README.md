@@ -11,7 +11,8 @@ Dashboard Projection for every measured size.
 Reference production code: `22b7c20d1a40128876b528781ead3277a76c3c19` (including
 #474 named accounts, MFA and personal API tokens). The reference server read only
 tracked files extracted by `git archive` into `/tmp/slu-475-base-v2`; the final
-server read this checkout. The same precompiled SSH-blocked test binary served
+measured server used the frontend at `47e5797503e474d3857b5bcb02d45951cfe305d7`.
+The same precompiled SSH-blocked test binary served
 both. [Provenance](provenance.json) records full source/backend/binary/tool hashes;
 [before](before/provenance.json) and [after](after/provenance.json) record the source
 roots and runtime environment. Production Go is identical; only three frontend
@@ -276,3 +277,23 @@ validation use only existing synthetic fixtures.
 Presentation smoke evidence: [desktop](../../../.github/assets/dashboard-scaling-475/desktop.png),
 [mobile](../../../.github/assets/dashboard-scaling-475/mobile.png). Layout, theme,
 CSP and mobile containment are preserved.
+
+## Review corrections after the measured pair
+
+The timings, source hashes, browser samples and screenshots above remain the
+historical comparison of `22b7c20` against `47e5797`. A subsequent review fixed
+recovery of a followed job that completes offline while a pre-outage log request
+is still in flight. Offline snapshots now retain that job's cursor and request;
+only a page requested on the current live connection can discharge its recovery
+obligation. Late success/failure responses trigger a fresh tail read after
+reconnection, with pagination and superseded-job protection preserved.
+Unit and browser regressions qualify these interleavings separately; no new
+latency, capacity or retained-memory measurement is claimed for the correction.
+
+The HTTP benchmark excerpt previously kept Gin log lines and omitted the final
+numeric result lines. `api/bench-http.txt` now retains all 60 original benchmark
+results, including the 30 HTTP results, recovered without rerunning from
+`/tmp/slu-475-v2-api/bench-http.log` (SHA-256
+`908b6c967d7d83b07ff013c3680c370778524a04f28d4c584129b8d1b8f22d5d`).
+Only benchmark headers and exact numeric results are retained; request logging
+is omitted. [Review validation](review-1.json) records the new checks.

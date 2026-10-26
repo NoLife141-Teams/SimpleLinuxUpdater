@@ -89,3 +89,8 @@ action eligibility, validates role redaction, and rejects detailed log chunks in
 list payloads. There is no hardware-dependent latency threshold. See the
 [measured reference and comparison](validation/dashboard-scaling-475/README.md)
 for exact budgets, results and limitations.
+
+The recorded browser comparison is pinned to its measured source revisions.
+Later reconnect race corrections are qualified with separate unit/browser
+regressions in that report; the historical latency samples are not measurements
+of those subsequent changes.

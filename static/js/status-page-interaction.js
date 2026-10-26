@@ -244,6 +244,7 @@
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
         let jobLogTransportLive = false;
+        let jobLogConnectionGeneration = 0;
         const disconnectedJobLogs = new Map();
 
         function createTerminalState() {
@@ -300,6 +301,7 @@
                 terminal: createTerminalState(),
                 previewOnly: !!preview,
                 recovering: false,
+                recoveryConnectionGeneration: -1,
                 resetPending: false,
                 pending: {},
                 expired: false,
@@ -356,6 +358,7 @@
         function logRecoveryEffect(serverName, state) {
             if (!state || !state.jobId || state.recovering) return [];
             state.recovering = true;
+            state.recoveryConnectionGeneration = jobLogTransportLive ? jobLogConnectionGeneration : -1;
             return [{
                 type: "fetchJobLogs",
                 serverName,
@@ -420,7 +423,9 @@
                             jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
                         }
                         effects.push(...logRecoveryEffect(serverName, jobLogsByServer.get(serverName)));
-                    } else {
+                    } else if (disconnectedJobLogs.get(serverName) !== jobId) {
+                        // Retain followed jobs' cursors and in-flight requests
+                        // through offline polls, including terminal snapshots.
                         jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
                     }
                 }
@@ -752,7 +757,14 @@
                     acceptLogFragment(state, fragment);
                 });
             updateServerLogProjection(serverName, state);
-            if (disconnectedJobLogs.get(serverName) === state.jobId) disconnectedJobLogs.delete(serverName);
+            if (disconnectedJobLogs.get(serverName) === state.jobId && jobLogTransportLive) {
+                // A request started before the outage (or while offline) cannot
+                // establish the reconnected tail, even if its response is late.
+                if (state.recoveryConnectionGeneration !== jobLogConnectionGeneration) {
+                    return [...drawerLogEffects(serverName), ...logRecoveryEffect(serverName, state)];
+                }
+                disconnectedJobLogs.delete(serverName);
+            }
             return drawerLogEffects(serverName);
         }
 
@@ -852,10 +864,15 @@
                 if (state && state.jobId === String(event.jobId || "")) {
                     state.recovering = false;
                     state.resetPending = false;
+                    if (jobLogTransportLive && disconnectedJobLogs.get(String(event.serverName || "")) === state.jobId
+                        && state.recoveryConnectionGeneration !== jobLogConnectionGeneration) {
+                        return logRecoveryEffect(String(event.serverName || ""), state);
+                    }
                 }
                 return [];
             } else if (event.type === "jobLogTransportChanged") {
                 if (jobLogTransportLive && !event.live) {
+                    jobLogConnectionGeneration += 1;
                     jobLogsByServer.forEach((state, serverName) => {
                         if (shouldRecoverServer(serverName, serversByName.get(serverName)) || serverName === primaryServerName) {
                             disconnectedJobLogs.set(serverName, state.jobId);

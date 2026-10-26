@@ -1,0 +1,88 @@
+{
+  "reviewed_head": "47e5797503e474d3857b5bcb02d45951cfe305d7",
+  "review_merge_base": "22b7c20d1a40128876b528781ead3277a76c3c19",
+  "corrected_production_source_sha256": "a4433c3070c3bbe1f13f7df9ddc796e39b705b283900173a49fddc05571a58f6",
+  "scope": "Full cumulative read-only review completed before fixes. Correction covers an outstanding pre-outage log request completing or failing offline/after reconnect, including terminal snapshots, pagination, coalescing and superseded jobs. HTTP benchmark rows recovered from the original raw log; no new performance measurements.",
+  "checks": [
+    {
+      "name": "Node unit tests",
+      "command": "npm run test:unit",
+      "exit_code": 0,
+      "tests": 207,
+      "local_log": "/tmp/slu-487-review1-unit.log"
+    },
+    {
+      "name": "Browser full suite with disposable SSH-blocked installation",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 node tools/performance/dashboard-e2e.cjs /tmp/slu-487-review1.test /tmp/slu-487-review1-e2e",
+      "exit_code": 0,
+      "tests": 99,
+      "local_log": "/tmp/slu-487-review1-e2e.log",
+      "lifecycle": {
+        "playwright": {
+          "code": 0,
+          "signal": null
+        },
+        "server": {
+          "code": 0,
+          "signal": null
+        }
+      }
+    },
+    {
+      "name": "Test binary compile",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -c -o /tmp/slu-487-review1.test .",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-487-review1-compile.log"
+    },
+    {
+      "name": "Go fixture and dashboard budgets",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -count=1 -run '^TestDashboardScalingBudgets$|^TestFixtureIntegrityAndSQLMeter$' . ./internal/testutil/dashboardfixture ./internal/observability",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-487-review1-budgets.log",
+      "packages": {
+        "debian-updater": "pass",
+        "debian-updater/internal/testutil/dashboardfixture": "pass",
+        "debian-updater/internal/observability": "no matching tests"
+      }
+    },
+    {
+      "name": "Go vet",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go vet ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-487-review1-vet.log"
+    },
+    {
+      "name": "Go build",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go build ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-487-review1-build.log"
+    },
+    {
+      "name": "Regression sensitivity against originally reviewed source",
+      "command": "node --test --test-name-pattern='reconnect keeps an offline completion|failed pre-outage recovery' /tmp/slu-487-review1-original/regressions.test.js",
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "tests": 2,
+      "failed": 2,
+      "local_log": "/tmp/slu-487-review1-original-regressions.log",
+      "result": "Both newly added behavior tests fail against the exact originally reviewed status-page-interaction.js."
+    },
+    {
+      "name": "Historical HTTP benchmark integrity",
+      "result": "All 60 numeric rows match /tmp/slu-475-v2-api/bench-http.log exactly after whitespace tokenization; twelve benchmark boundaries each have five repetitions.",
+      "exit_code": 0,
+      "original_log_sha256": "908b6c967d7d83b07ff013c3680c370778524a04f28d4c584129b8d1b8f22d5d"
+    },
+    {
+      "name": "Syntax and patch whitespace",
+      "commands": [
+        "node --check static/js/status-page-interaction.js",
+        "node --check tests/unit/status-page-interaction.test.js",
+        "node --check tests/e2e/auth.setup-login.spec.js",
+        "git diff --check"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "limits": "Go source was not changed by these review fixes. The full Go/race/coverage/staticcheck and measured browser pair remain the historical checks in validation.json; they were not rerun for this JavaScript correction. No new latency, capacity, retained-memory or soak result is claimed."
+}

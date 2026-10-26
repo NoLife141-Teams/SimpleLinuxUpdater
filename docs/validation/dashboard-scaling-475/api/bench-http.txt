@@ -2,16 +2,16 @@ goos: linux
 goarch: amd64
 pkg: debian-updater
 cpu: AMD Ryzen 9 9950X 16-Core Processor
-BenchmarkDashboardScaling/10/InventoryHTTP-2         	[GIN] 2026/10/26 - 18:41:31 | 200 | 381.666µs |       192.0.2.2 | GET      "/api/servers"
-BenchmarkDashboardScaling/10/InventoryHTTP-2         	[GIN] 2026/10/26 - 18:41:31 | 200 | 323.116µs |       192.0.2.2 | GET      "/api/servers"
-BenchmarkDashboardScaling/10/InventoryHTTP-2         	[GIN] 2026/10/26 - 18:41:32 | 200 | 194.426µs |       192.0.2.2 | GET      "/api/servers"
-BenchmarkDashboardScaling/10/InventoryHTTP-2         	[GIN] 2026/10/26 - 18:41:32 | 200 | 234.861µs |       192.0.2.2 | GET      "/api/servers"
-BenchmarkDashboardScaling/10/InventoryHTTP-2         	[GIN] 2026/10/26 - 18:41:33 | 200 | 399.819µs |       192.0.2.2 | GET      "/api/servers"
-BenchmarkDashboardScaling/10/DashboardHTTP-2         	[GIN] 2026/10/26 - 18:41:33 | 200 |   1.56ms |       192.0.2.2 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/10/DashboardHTTP-2         	[GIN] 2026/10/26 - 18:41:33 | 200 | 828.114µs |       192.0.2.2 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/10/DashboardHTTP-2         	[GIN] 2026/10/26 - 18:41:34 | 200 | 919.045µs |       192.0.2.2 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/10/DashboardHTTP-2         	[GIN] 2026/10/26 - 18:41:34 | 200 |   1.57ms |       192.0.2.2 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/10/DashboardHTTP-2         	[GIN] 2026/10/26 - 18:41:35 | 200 |    1.1ms |       192.0.2.2 | GET      "/api/dashboard/summary?include_command_history=false"
+BenchmarkDashboardScaling/10/InventoryHTTP-2	939	    431809 ns/op	  303186 B/op	     871 allocs/op
+BenchmarkDashboardScaling/10/InventoryHTTP-2	844	    413341 ns/op	  304543 B/op	     871 allocs/op
+BenchmarkDashboardScaling/10/InventoryHTTP-2	780	    423228 ns/op	  305666 B/op	     871 allocs/op
+BenchmarkDashboardScaling/10/InventoryHTTP-2	834	    438691 ns/op	  304850 B/op	     871 allocs/op
+BenchmarkDashboardScaling/10/InventoryHTTP-2	751	    448128 ns/op	  305229 B/op	     871 allocs/op
+BenchmarkDashboardScaling/10/DashboardHTTP-2	204	   1538999 ns/op	  720490 B/op	    4210 allocs/op
+BenchmarkDashboardScaling/10/DashboardHTTP-2	230	   1384617 ns/op	  715938 B/op	    4209 allocs/op
+BenchmarkDashboardScaling/10/DashboardHTTP-2	232	   1507818 ns/op	  710549 B/op	    4208 allocs/op
+BenchmarkDashboardScaling/10/DashboardHTTP-2	216	   1575503 ns/op	  715212 B/op	    4209 allocs/op
+BenchmarkDashboardScaling/10/DashboardHTTP-2	265	   1465380 ns/op	  717727 B/op	    4210 allocs/op
 BenchmarkDashboardScaling/10/InventoryService-2      	    4464	     85324 ns/op	   75648 B/op	     481 allocs/op
 BenchmarkDashboardScaling/10/InventoryService-2      	    3680	     85319 ns/op	   75648 B/op	     481 allocs/op
 BenchmarkDashboardScaling/10/InventoryService-2      	    4982	     85950 ns/op	   75648 B/op	     481 allocs/op
@@ -22,16 +22,16 @@ BenchmarkDashboardScaling/10/DashboardService-2      	     319	   1021374 ns/op	
 BenchmarkDashboardScaling/10/DashboardService-2      	     303	   1139074 ns/op	  540073 B/op	    3498 allocs/op
 BenchmarkDashboardScaling/10/DashboardService-2      	     320	   1055073 ns/op	  540072 B/op	    3498 allocs/op
 BenchmarkDashboardScaling/10/DashboardService-2      	     332	   1176035 ns/op	  540077 B/op	    3498 allocs/op
-BenchmarkDashboardScaling/100/InventoryHTTP-2        	[GIN] 2026/10/26 - 18:41:40 | 200 |   3.29ms |      192.0.2.11 | GET      "/api/servers"
-BenchmarkDashboardScaling/100/InventoryHTTP-2        	[GIN] 2026/10/26 - 18:41:40 | 200 |   4.27ms |      192.0.2.11 | GET      "/api/servers"
-BenchmarkDashboardScaling/100/InventoryHTTP-2        	[GIN] 2026/10/26 - 18:41:41 | 200 |   1.53ms |      192.0.2.11 | GET      "/api/servers"
-BenchmarkDashboardScaling/100/InventoryHTTP-2        	[GIN] 2026/10/26 - 18:41:42 | 200 |   2.11ms |      192.0.2.11 | GET      "/api/servers"
-BenchmarkDashboardScaling/100/InventoryHTTP-2        	[GIN] 2026/10/26 - 18:41:42 | 200 |   3.59ms |      192.0.2.11 | GET      "/api/servers"
-BenchmarkDashboardScaling/100/DashboardHTTP-2        	[GIN] 2026/10/26 - 18:41:43 | 200 |   6.65ms |      192.0.2.11 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/100/DashboardHTTP-2        	[GIN] 2026/10/26 - 18:41:43 | 200 |   7.14ms |      192.0.2.11 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/100/DashboardHTTP-2        	[GIN] 2026/10/26 - 18:41:43 | 200 |   7.04ms |      192.0.2.11 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/100/DashboardHTTP-2        	[GIN] 2026/10/26 - 18:41:44 | 200 |   7.45ms |      192.0.2.11 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/100/DashboardHTTP-2        	[GIN] 2026/10/26 - 18:41:44 | 200 |   7.15ms |      192.0.2.11 | GET      "/api/dashboard/summary?include_command_history=false"
+BenchmarkDashboardScaling/100/InventoryHTTP-2	145	   2417889 ns/op	 3059624 B/op	    4900 allocs/op
+BenchmarkDashboardScaling/100/InventoryHTTP-2	145	   2393317 ns/op	 3133730 B/op	    4902 allocs/op
+BenchmarkDashboardScaling/100/InventoryHTTP-2	162	   2527004 ns/op	 3113432 B/op	    4901 allocs/op
+BenchmarkDashboardScaling/100/InventoryHTTP-2	100	   3014700 ns/op	 3353294 B/op	    4905 allocs/op
+BenchmarkDashboardScaling/100/InventoryHTTP-2	150	   2521491 ns/op	 3183155 B/op	    4903 allocs/op
+BenchmarkDashboardScaling/100/DashboardHTTP-2	46	   7312594 ns/op	 4819604 B/op	   31681 allocs/op
+BenchmarkDashboardScaling/100/DashboardHTTP-2	48	   7345560 ns/op	 4906181 B/op	   31685 allocs/op
+BenchmarkDashboardScaling/100/DashboardHTTP-2	48	   6829491 ns/op	 4818685 B/op	   31682 allocs/op
+BenchmarkDashboardScaling/100/DashboardHTTP-2	45	   6999109 ns/op	 4878469 B/op	   31684 allocs/op
+BenchmarkDashboardScaling/100/DashboardHTTP-2	46	   7081414 ns/op	 4819657 B/op	   31682 allocs/op
 BenchmarkDashboardScaling/100/InventoryService-2     	     457	    819618 ns/op	  722176 B/op	    4499 allocs/op
 BenchmarkDashboardScaling/100/InventoryService-2     	     442	    790989 ns/op	  722176 B/op	    4499 allocs/op
 BenchmarkDashboardScaling/100/InventoryService-2     	     420	    783436 ns/op	  722176 B/op	    4499 allocs/op
@@ -42,16 +42,16 @@ BenchmarkDashboardScaling/100/DashboardService-2     	      64	   5692078 ns/op	
 BenchmarkDashboardScaling/100/DashboardService-2     	      56	   5677357 ns/op	 3131164 B/op	   28419 allocs/op
 BenchmarkDashboardScaling/100/DashboardService-2     	      69	   5479011 ns/op	 3131146 B/op	   28418 allocs/op
 BenchmarkDashboardScaling/100/DashboardService-2     	      72	   5218807 ns/op	 3131145 B/op	   28418 allocs/op
-BenchmarkDashboardScaling/1000/InventoryHTTP-2       	[GIN] 2026/10/26 - 18:41:50 | 200 |  33.59ms |     192.0.2.101 | GET      "/api/servers"
-BenchmarkDashboardScaling/1000/InventoryHTTP-2       	[GIN] 2026/10/26 - 18:41:51 | 200 |  31.76ms |     192.0.2.101 | GET      "/api/servers"
-BenchmarkDashboardScaling/1000/InventoryHTTP-2       	[GIN] 2026/10/26 - 18:41:51 | 200 |  38.21ms |     192.0.2.101 | GET      "/api/servers"
-BenchmarkDashboardScaling/1000/InventoryHTTP-2       	[GIN] 2026/10/26 - 18:41:52 | 200 |  29.94ms |     192.0.2.101 | GET      "/api/servers"
-BenchmarkDashboardScaling/1000/InventoryHTTP-2       	[GIN] 2026/10/26 - 18:41:52 | 200 |  32.56ms |     192.0.2.101 | GET      "/api/servers"
-BenchmarkDashboardScaling/1000/DashboardHTTP-2       	[GIN] 2026/10/26 - 18:41:53 | 200 |  80.83ms |     192.0.2.101 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/1000/DashboardHTTP-2       	[GIN] 2026/10/26 - 18:41:53 | 200 |   81.1ms |     192.0.2.101 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/1000/DashboardHTTP-2       	[GIN] 2026/10/26 - 18:41:54 | 200 |  76.36ms |     192.0.2.101 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/1000/DashboardHTTP-2       	[GIN] 2026/10/26 - 18:41:55 | 200 |  77.61ms |     192.0.2.101 | GET      "/api/dashboard/summary?include_command_history=false"
-BenchmarkDashboardScaling/1000/DashboardHTTP-2       	[GIN] 2026/10/26 - 18:41:56 | 200 |  92.23ms |     192.0.2.101 | GET      "/api/dashboard/summary?include_command_history=false"
+BenchmarkDashboardScaling/1000/InventoryHTTP-2	8	  42167022 ns/op	29491405 B/op	   45051 allocs/op
+BenchmarkDashboardScaling/1000/InventoryHTTP-2	10	  39435788 ns/op	28438596 B/op	   45047 allocs/op
+BenchmarkDashboardScaling/1000/InventoryHTTP-2	8	  41016368 ns/op	29490987 B/op	   45047 allocs/op
+BenchmarkDashboardScaling/1000/InventoryHTTP-2	10	  36934131 ns/op	32649236 B/op	   45057 allocs/op
+BenchmarkDashboardScaling/1000/InventoryHTTP-2	10	  37152503 ns/op	30543795 B/op	   45051 allocs/op
+BenchmarkDashboardScaling/1000/DashboardHTTP-2	5	  72597273 ns/op	51000377 B/op	  305873 allocs/op
+BenchmarkDashboardScaling/1000/DashboardHTTP-2	4	  77095344 ns/op	53517260 B/op	  305881 allocs/op
+BenchmarkDashboardScaling/1000/DashboardHTTP-2	4	  80975072 ns/op	53517468 B/op	  305883 allocs/op
+BenchmarkDashboardScaling/1000/DashboardHTTP-2	5	  75256789 ns/op	51000401 B/op	  305874 allocs/op
+BenchmarkDashboardScaling/1000/DashboardHTTP-2	4	  76744022 ns/op	49322858 B/op	  305873 allocs/op
 BenchmarkDashboardScaling/1000/InventoryService-2    	      16	  21581060 ns/op	 7049216 B/op	   44642 allocs/op
 BenchmarkDashboardScaling/1000/InventoryService-2    	      18	  22396533 ns/op	 7049234 B/op	   44642 allocs/op
 BenchmarkDashboardScaling/1000/InventoryService-2    	      15	  21528882 ns/op	 7049223 B/op	   44642 allocs/op

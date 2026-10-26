@@ -415,6 +415,61 @@ test("reconnect preserves jobs completed during an outage and rejects superseded
     assert.doesNotMatch(store.getView().jobLogs.active.rawText, /obsolete|finished during outage/);
 });
 
+test("reconnect keeps an offline completion pending until a new connection reads its tail", () => {
+    for (const responseTiming of ["offline", "reconnected", "paginated", "offline-pagination"]) {
+        const store = createStore();
+        const initial = [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-1" }];
+        const fetches = effects => effects.filter(effect => effect.type === "fetchJobLogs" && effect.serverName === "worker");
+        const receive = (sequence, hasMore = false) => store.dispatch({ type: "jobLogRecoveryReceived", serverName: "worker", jobId: "worker-1", page: { fragments: [{ sequence, data: `line-${sequence}\n` }], has_more: hasMore } });
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        assert.equal(fetches(store.dispatch({ type: "serversSnapshotReceived", servers: initial })).length, 1);
+        store.dispatch({ type: "jobLogTransportChanged", live: false });
+        if (responseTiming === "offline") receive(1);
+        if (responseTiming === "offline-pagination") assert.equal(fetches(receive(1, true))[0].afterSequence, 1);
+        store.dispatch({ type: "serversSnapshotReceived", servers: initial.map(server => ({ ...server, status: "done", logs: "bounded terminal preview" })) });
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        const reopened = fetches(store.dispatch({ type: "jobLogReconnect" }));
+        if (responseTiming === "offline") {
+            assert.deepEqual(reopened.map(effect => effect.afterSequence), [1], "retain the accepted cursor while polling offline");
+        } else {
+            assert.deepEqual(reopened, [], "wait for the outstanding request without overlapping it");
+            const sequence = responseTiming === "offline-pagination" ? 2 : 1;
+            const next = fetches(receive(sequence, responseTiming === "paginated"));
+            assert.deepEqual(next.map(effect => effect.afterSequence), [sequence], "read a fresh tail after reconnection, including a late final page");
+        }
+        assert.deepEqual(fetches(store.dispatch({ type: "jobLogReconnect" })), [], "coalesce repeated reconnect recovery");
+        const finalSequence = responseTiming === "offline-pagination" ? 3 : 2;
+        assert.deepEqual(fetches(receive(finalSequence)), [], "a page fetched on this live connection completes recovery");
+        assert.equal(store.getView().jobLogs.worker.rawText, Array.from({ length: finalSequence }, (_, i) => `line-${i + 1}\n`).join(""));
+        assert.deepEqual(fetches(store.dispatch({ type: "jobLogReconnect" })), [], "completed uninspected detail stays on demand again");
+    }
+});
+
+test("failed pre-outage recovery retries after reconnection without retrying current failures forever", () => {
+    for (const failAfterReconnect of [false, true]) {
+        const store = createStore();
+        const servers = [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-1" }];
+        const fetches = effects => effects.filter(effect => effect.type === "fetchJobLogs" && effect.serverName === "worker");
+        const failure = { type: "jobLogRecoveryFailed", serverName: "worker", jobId: "worker-1" };
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        store.dispatch({ type: "serversSnapshotReceived", servers });
+        store.dispatch({ type: "jobLogTransportChanged", live: false });
+        store.dispatch({ type: "serversSnapshotReceived", servers: servers.map(server => ({ ...server, status: "done" })) });
+        if (!failAfterReconnect) assert.deepEqual(store.dispatch(failure), []);
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        const reopened = fetches(store.dispatch({ type: "jobLogReconnect" }));
+        const retried = failAfterReconnect ? fetches(store.dispatch(failure)) : reopened;
+        assert.equal(retried.length, 1, "late failures still get a request on the new connection");
+        assert.deepEqual(store.dispatch(failure), [], "a current connection failure must not create a retry loop");
+        assert.equal(fetches(store.dispatch({ type: "jobLogReconnect" })).length, 1, "failure retains recovery eligibility");
+        store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-2" }] });
+        assert.deepEqual(store.dispatch({ ...failure, type: "jobLogRecoveryReceived", page: { fragments: [{ sequence: 1, data: "obsolete" }], has_more: false } }), []);
+        assert.deepEqual(store.dispatch(failure), [], "a failed superseded request cannot affect the replacement job");
+        assert.equal(store.getView().jobLogs.worker.recovering, true);
+        assert.doesNotMatch(store.getView().jobLogs.worker.rawText, /obsolete/);
+    }
+});
+
 test("reconnect keeps selected terminal detail while leaving other terminal jobs on demand", () => {
     const store = createStore();
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "a", status: "done", job_id: "job-a" }, { name: "b", status: "done", job_id: "job-b" }, { name: "c", status: "done", job_id: "job-c" }] });

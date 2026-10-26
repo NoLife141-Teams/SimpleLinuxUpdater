@@ -2348,6 +2348,21 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#policy-preview-facts')).toContainText('does not rearm');
   });
 
+  test('policy schedules 472 calendar retains accepted rollouts after the last policy is deleted', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, { policies: [] });
+    await page.route('**/api/update-policies/calendar?*', route => fulfillJson(route, {
+      days: 14, start_date: '2026-10-25', end_date: '2026-11-07', timezone: 'UTC', policies: [],
+      accepted_rollouts: [{ policy: { id: 42, name: 'Deleted policy with pending wave', revision: 3 }, scheduled_for_utc: '2026-10-25T03:00:00Z', batches: [{ index: 0, stage: 'canary', servers: ['srv-web-02'] }, { index: 1, stage: 'wave', servers: ['srv-web-01'], release_delay_minutes: 15 }] }]
+    }));
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Deleted policy with pending wave');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('accepted revision 3');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Wave 1: srv-web-01 (+15 min)');
+    await expect(page.locator('#maintenance-calendar-list')).not.toContainText('No scheduled policies to show.');
+  });
+
   test('admin scheduled policy editor submits rich targeting fields and renders report links', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

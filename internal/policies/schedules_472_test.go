@@ -594,3 +594,89 @@ func TestOnceNoMatchingServersStillHasDurableInvestigableConsumption472(t *testi
 		t.Fatalf("preview=%+v %v", preview, e)
 	}
 }
+
+func TestPolicyScheduleProjectionKeepsElapsedWaveReleaseAcrossFallback472(t *testing.T) {
+	h := newSchedule472Harness(t, "2026-10-24T20:00:00Z")
+	var err error
+	h.loc, err = time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.policy(t, func(p *Policy) {
+		p.DateLocal, p.TimeLocal = "2026-10-25", "01:30"
+		p.RolloutMode, p.WaveSize, p.WaveDelayMinutes = RolloutCanaryWaves, 1, 120
+	})
+	origin := time.Date(2026, 10, 25, 1, 30, 0, 0, h.loc)
+	release := origin.Add(120 * time.Minute) // 02:30 CET, the second repeated hour.
+	assertProjection := func() {
+		t.Helper()
+		projection, err := h.service.ProjectSchedule(ScheduleProjectionRequest{Now: h.now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := projection.Servers["b"].NextRun.ScheduledForUTC, release.UTC().Format(DefaultTimestampLayout); got != want {
+			t.Fatalf("projected wave release = %s, want elapsed release %s", got, want)
+		}
+	}
+	assertProjection()
+	h.tick(t, origin)
+	h.now = origin.Add(time.Minute)
+	assertProjection()
+	h.tick(t, release.Add(-time.Minute))
+	if len(h.requests) != 1 {
+		t.Fatalf("wave started before projected release: %+v", h.requests)
+	}
+	h.tick(t, release)
+	if len(h.requests) != 2 || h.requests[1].Server.Name != "b" || h.requests[1].Outcome != "" {
+		t.Fatalf("wave did not start at projected release: %+v", h.requests)
+	}
+}
+
+func TestPolicyScheduleHistoryKeepsElapsedRangeAcrossFallback472(t *testing.T) {
+	h := newSchedule472Harness(t, "2026-10-25T03:00:00Z")
+	var err error
+	h.loc, err = time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := h.policy(t, func(p *Policy) {
+		p.CadenceKind, p.TimeLocal = CadenceDaily, "04:30"
+		p.RolloutMode, p.WaveSize, p.WaveDelayMinutes = RolloutCanaryWaves, 1, 60
+	})
+	deps := h.service.EnsureDeps()
+	var captured []RolloutOriginRange
+	deps.ListRolloutOrigins = func(ranges []RolloutOriginRange) ([]RolloutRunScope, error) {
+		captured = ranges
+		return nil, nil
+	}
+	service := NewService(deps)
+	// The two-hour horizon starts at 02:30 CET, in the repeated hour.
+	now := time.Date(2026, 10, 25, 4, 30, 0, 0, h.loc)
+	if _, _, err := service.loadRolloutHistory([]Policy{p}, h.inventory, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	want := now.Add(-2 * time.Hour).UTC().Format(DefaultTimestampLayout)
+	if len(captured) != 1 || captured[0].FromUTC != want {
+		t.Fatalf("history range = %+v, want lower bound %s", captured, want)
+	}
+}
+
+func TestAcceptedRolloutRemainsVisibleAndDispatchesAfterLastPolicyDeletion472(t *testing.T) {
+	h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
+	p := h.policy(t, func(p *Policy) {
+		p.RolloutMode, p.WaveSize, p.WaveDelayMinutes = RolloutCanaryWaves, 1, 5
+	})
+	origin := h.now.Add(time.Hour)
+	h.tick(t, origin)
+	if err := h.repo.DeletePolicy(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	calendar, err := h.service.Calendar(CalendarOptions{})
+	if err != nil || len(calendar.Policies) != 0 || len(calendar.AcceptedRollouts) != 1 {
+		t.Fatalf("calendar lost accepted rollout: %+v, %v", calendar, err)
+	}
+	h.tick(t, origin.Add(5*time.Minute))
+	if len(h.requests) != 2 || h.requests[1].Server.Name != "b" || h.requests[1].Outcome != "" {
+		t.Fatalf("accepted wave did not continue: %+v", h.requests)
+	}
+}

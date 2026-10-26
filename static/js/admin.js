@@ -3033,16 +3033,17 @@ function renderMaintenanceCalendar(calendar) {
     const status = document.getElementById("maintenance-calendar-status");
     if (!container) return;
     const policies = Array.isArray(calendar?.policies) ? calendar.policies : [];
+    const acceptedRollouts = Array.isArray(calendar?.accepted_rollouts) ? calendar.accepted_rollouts : [];
     if (status) {
         const range = calendar?.start_date && calendar?.end_date ? `${calendar.start_date} to ${calendar.end_date}` : "";
         const tz = calendar?.timezone || scheduledPolicyView().timezone || "UTC";
         status.textContent = range ? `${range} · ${tz}` : `Calendar timezone: ${tz}`;
     }
-    if (!policies.length) {
+    if (!policies.length && !acceptedRollouts.length) {
         container.innerHTML = '<div class="empty-editor-state subtle">No scheduled policies to show.</div>';
         return;
     }
-    const accepted = (calendar?.accepted_rollouts || []).map(occurrence => `<div class="calendar-policy"><strong>${escapeHtml(occurrence.policy?.name || "Accepted rollout")} · accepted revision ${escapeHtml(String(occurrence.policy?.revision || 1))}</strong><div class="table-secondary">UTC ${escapeHtml(occurrence.scheduled_for_utc || "")} · ${escapeHtml(formatRolloutBatches(occurrence.batches))}</div>${occurrence.block_reason ? `<div class="run-skip-reason">${escapeHtml(occurrence.block_reason)}</div>` : ""}</div>`).join("");
+    const accepted = acceptedRollouts.map(occurrence => `<div class="calendar-policy"><strong>${escapeHtml(occurrence.policy?.name || "Accepted rollout")} · accepted revision ${escapeHtml(String(occurrence.policy?.revision || 1))}</strong><div class="table-secondary">UTC ${escapeHtml(occurrence.scheduled_for_utc || "")} · ${escapeHtml(formatRolloutBatches(occurrence.batches))}</div>${occurrence.block_reason ? `<div class="run-skip-reason">${escapeHtml(occurrence.block_reason)}</div>` : ""}</div>`).join("");
     container.innerHTML = accepted + policies.map((policy) => {
         const days = Array.isArray(policy.days) ? policy.days : [];
         const matchedCount = Array.isArray(policy.matched_servers) ? policy.matched_servers.length : 0;

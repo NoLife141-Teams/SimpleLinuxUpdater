@@ -90,7 +90,9 @@ func (s *Service) nextWaveScheduleProjection(policy Policy, serverName string, i
 		}
 		candidate := projectedScheduleCandidate{
 			policy: policy, scheduledLocal: release,
-			scheduledUTC: CanonicalScheduledForUTC(release, deps.TimestampLayout, deps.CurrentLocation),
+			// The origin is already canonical. A delay is elapsed time, so a
+			// release in the second fallback hour must keep its actual instant.
+			scheduledUTC: release.UTC().Format(deps.TimestampLayout),
 		}
 		if gate == "waiting" || historyGate == "waiting" {
 			candidate.summary = "Wave release subject to preceding batch success"

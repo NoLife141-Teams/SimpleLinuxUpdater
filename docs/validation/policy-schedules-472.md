@@ -86,3 +86,26 @@ persisted predecessor as a gate. An older backup cannot recover operations
 performed after export. These limits and the policy-lifetime consumption rule
 are documented in [usage](../usage.md#policy-schedule-cadences-and-recovery).
 Issue #473 package deferrals and automatic fleet reboots remain out of scope.
+
+## Independent review follow-up
+
+The complete cumulative change at `d76cb8a3175cc6976be27663e61654ac95012908`
+was reviewed against the base above. Two defects were corrected:
+
+- Future wave releases and history bounds retain their elapsed UTC instant
+  across a fall-back overlap. Reapplying local occurrence canonicalization had
+  moved a Berlin wave in the second repeated hour one hour earlier in projection.
+- Calendar rendering keeps accepted rollout manifests visible when deleting the
+  last policy leaves no current policy rows. Accepted waves continue to dispatch.
+
+The three added Go regressions passed. Both DST regressions failed with the
+original production files supplied through a temporary Go overlay, confirming
+the prior behavior. `go test ./...` passed (root package 57.914 s) and
+`go test -race -count=1 ./...` passed without a race report (root 175.847 s), as did
+`go vet ./...`, `go build ./...`, staticcheck v0.7.0, `npm run test:unit`,
+JavaScript syntax checks and `git diff --check`. The explicit runner/audit checks
+passed, including all six daily/one-time/monthly blocking/warning postcheck cases.
+The affected Playwright schedule group passed **4/4**, exit **0**. The earlier
+91-scenario browser run and coverage figures above were not repeated for these
+localized fixes. All follow-up tests used disposable persistence, localhost
+services or simulated maintenance sessions; no real SSH host was accessed.

@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	auditpkg "debian-updater/internal/audit"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/ssh"
@@ -196,5 +198,75 @@ func TestInventoryImportMultipleServersPersistAsDisabledBatch(t *testing.T) {
 	var jobs int
 	if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM jobs").Scan(&jobs); err != nil || jobs != 0 {
 		t.Fatalf("import launched maintenance: jobs=%d err=%v", jobs, err)
+	}
+}
+
+func TestInventoryImportLargeBatchRetainsAllAuditFacts(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	cookie := app.authenticate(t)
+	selection := serverpkg.ImportSelection{BatchID: strings.Repeat("a", 32)}
+	for i := range 100 {
+		// Quotes and HTML-sensitive characters exercise the actual JSON byte cap.
+		name := fmt.Sprintf("%03d-%s", i, strings.Repeat("<\"", 50))
+		selection.Rows = append(selection.Rows, serverpkg.ImportEntry{Row: i + 1, Name: name, Host: fmt.Sprintf("host%d.example", i), Port: 22, User: "root", Tags: []string{}})
+	}
+	body, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := importAPIRequest(app, cookie, http.MethodPost, "/api/servers/import", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("import = %d %s", response.Code, response.Body.String())
+	}
+	rows, err := app.Deps.DB().Query("SELECT actor, target_name, meta_json FROM audit_events WHERE action = 'server.import' AND status = 'success' ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	created := map[string]bool{}
+	records := 0
+	parts := 0
+	for rows.Next() {
+		var actor, batchID, raw string
+		if err := rows.Scan(&actor, &batchID, &raw); err != nil {
+			t.Fatal(err)
+		}
+		var meta struct {
+			BatchID       string   `json:"batch_id"`
+			SelectedCount int      `json:"selected_count"`
+			CreatedCount  int      `json:"created_count"`
+			CreatedNames  []string `json:"created_names"`
+			Part          int      `json:"part"`
+			Parts         int      `json:"parts"`
+			Truncated     bool     `json:"_truncated"`
+		}
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			t.Fatal(err)
+		}
+		records++
+		if actor != "admin" || batchID != selection.BatchID || meta.BatchID != selection.BatchID || meta.SelectedCount != len(selection.Rows) || meta.CreatedCount != len(selection.Rows) || meta.Truncated || len(raw) > auditpkg.MetaMaxLen || meta.Part != records {
+			t.Fatalf("audit facts lost: actor=%s target=%s meta=%s", actor, batchID, raw)
+		}
+		if parts != 0 && meta.Parts != parts {
+			t.Fatal("inconsistent audit part counts")
+		}
+		parts = meta.Parts
+		for _, name := range meta.CreatedNames {
+			if created[name] {
+				t.Fatalf("name recorded more than once: %q", name)
+			}
+			created[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if records < 2 || records != parts || len(created) != len(selection.Rows) {
+		t.Fatalf("audit records=%d parts=%d names=%d, want %d names", records, parts, len(created), len(selection.Rows))
+	}
+	for _, row := range selection.Rows {
+		if !created[row.Name] {
+			t.Fatalf("missing created name: %q", row.Name)
+		}
 	}
 }

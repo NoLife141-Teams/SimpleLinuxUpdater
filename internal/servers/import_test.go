@@ -244,3 +244,48 @@ func TestInventoryImportSelectionRejectsBypassFieldsAndDuplicateRows(t *testing.
 		t.Fatal("duplicate row IDs accepted")
 	}
 }
+
+func TestInventoryImportSelectionAcceptsExpandedCSVPreview(t *testing.T) {
+	for _, tag := range []string{strings.Repeat("t", 2020), strings.Repeat("<", 2020)} {
+		t.Run(fmt.Sprintf("escaped=%v", strings.Contains(tag, "<")), func(t *testing.T) {
+			var input strings.Builder
+			input.WriteString("name,host,port,user,tags\n")
+			for i := range MaxImportRows {
+				fmt.Fprintf(&input, "h%d,h%d.example,,root,\"[\"\"%s\"\"]\"\n", i, i, tag)
+			}
+			if input.Len() > MaxImportBytes {
+				t.Fatalf("CSV fixture exceeds upload limit: %d", input.Len())
+			}
+			rows, err := ParseInventoryImport(strings.NewReader(input.String()), "csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc, _, _, _ := newTestService(&fakeRepo{}, nil)
+			preview, err := NewCommandService(svc).PreviewImport(rows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection := ImportSelection{BatchID: preview.BatchID}
+			for _, row := range preview.Rows {
+				if len(row.Errors) != 0 {
+					t.Fatalf("fixture row rejected: %+v", row)
+				}
+				selection.Rows = append(selection.Rows, row.ImportEntry)
+			}
+			encoded, err := json.Marshal(selection)
+			if err != nil || len(encoded) <= MaxImportBytes {
+				t.Fatalf("fixture must expand beyond upload limit: bytes=%d err=%v", len(encoded), err)
+			}
+			decoded, err := DecodeImportSelection(strings.NewReader(string(encoded)))
+			if err != nil || !reflect.DeepEqual(decoded, selection) {
+				t.Fatalf("valid preview cannot be committed: rows=%d err=%v", len(decoded.Rows), err)
+			}
+			if result := NewCommandService(svc).CommitImport(decoded); result.Outcome != CommandOutcomeSuccess || len(result.Created) != MaxImportRows {
+				t.Fatalf("valid decoded selection cannot be committed: outcome=%s created=%d", result.Outcome, len(result.Created))
+			}
+		})
+	}
+	if _, err := DecodeImportSelection(strings.NewReader(strings.Repeat(" ", maxImportSelectionBytes+1))); err == nil {
+		t.Fatal("oversized selection accepted")
+	}
+}

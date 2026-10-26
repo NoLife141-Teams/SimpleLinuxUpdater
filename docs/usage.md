@@ -117,7 +117,8 @@ is lost, refresh the directory before retrying; already-created names/endpoints
 will be rejected. The `server.import` audit event records the authenticated
 actor, batch ID, selected/created counts and created server names, without the
 raw file or credentials. It is available in Manage audit presets and Admin
-activity.
+activity. Large batches use numbered audit records with the same batch ID and
+total counts so every created server name remains available.
 
 Authenticated API clients can upload raw file bytes to
 `POST /api/servers/import/preview?format=csv` (or `json`), then submit

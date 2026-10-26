@@ -5175,4 +5175,38 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#import-file-name')).toHaveText('No file selected');
   });
 
+  test('inventory import preserves navigation and editor focus when validation finishes in the background', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubManageApi(page, { servers: [makeServer('focus-fixture')] });
+    let pendingResponse;
+    await page.route('**/api/servers/import/preview?format=json', async route => {
+      await pendingResponse;
+      await fulfillJson(route, { batch_id: 'a'.repeat(32), rows: [{ row: 1, name: 'background-row', host: '192.0.2.110', port: 22, user: 'root', tags: [], errors: [] }] });
+    });
+    await page.goto('/manage#manage-section-import');
+    for (const openEditor of [false, true]) {
+      let release;
+      pendingResponse = new Promise(resolve => { release = resolve; });
+      await page.locator('[data-manage-section-link="import"]').click();
+      await page.locator('#inventory-import-file').setInputFiles({ name: `${openEditor ? 'editor' : 'directory'}.json`, mimeType: 'application/json', buffer: Buffer.from('[]') });
+      const started = page.waitForRequest('**/api/servers/import/preview?format=json');
+      await page.locator('#import-preview-button').click();
+      await started;
+      await page.locator('[data-manage-section-link="directory"]').click();
+      let focused = page.locator('#manage-section-directory-heading');
+      if (openEditor) {
+        await page.locator('[data-action="edit-server"][data-name="focus-fixture"]').click();
+        focused = page.locator('#edit-host');
+        await focused.fill('operator-draft.example');
+      }
+      await expect(focused).toBeFocused();
+      const done = page.waitForResponse('**/api/servers/import/preview?format=json');
+      release();
+      await done;
+      await expect(page.locator('#import-preview-summary')).toContainText('1 selected');
+      await expect(focused).toBeFocused();
+      if (openEditor) await expect(focused).toHaveValue('operator-draft.example');
+    }
+  });
+
 });

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
+	auditpkg "debian-updater/internal/audit"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +33,9 @@ func registerServerInventoryImportRoutes(r *gin.Engine, deps AppDeps, commands *
 			return
 		}
 		result := commands.CommitImport(selection)
-		audit(c, result.Audit.Action, result.Audit.TargetType, result.Audit.TargetName, result.Audit.Status, result.Audit.Message, result.Audit.Meta)
+		for _, event := range inventoryImportAuditRecords(result.Audit) {
+			audit(c, event.Action, event.TargetType, event.TargetName, event.Status, event.Message, event.Meta)
+		}
 		status := http.StatusCreated
 		switch result.Outcome {
 		case serverpkg.CommandOutcomeConflict:
@@ -63,4 +68,43 @@ func registerServerInventoryImportRoutes(r *gin.Engine, deps AppDeps, commands *
 		c.Header("Content-Disposition", "attachment; filename=inventory-example."+strings.TrimSpace(format))
 		c.Data(http.StatusOK, contentType, []byte(data))
 	})
+}
+
+// Large imports must retain every created name as structured audit facts.
+// Split only oversized records, preserving the batch identity and total counts
+// in each numbered part instead of relying on the audit truncation preview.
+func inventoryImportAuditRecords(event serverpkg.CommandAudit) []serverpkg.CommandAudit {
+	raw, err := json.Marshal(event.Meta)
+	names, ok := event.Meta["created_names"].([]string)
+	if err != nil || len(raw) <= auditpkg.MetaMaxLen || !ok || len(names) == 0 {
+		return []serverpkg.CommandAudit{event}
+	}
+	metaFor := func(names []string, part, parts int) map[string]any {
+		meta := make(map[string]any, len(event.Meta)+2)
+		for key, value := range event.Meta {
+			meta[key] = value
+		}
+		meta["created_names"], meta["part"], meta["parts"] = names, part, parts
+		return meta
+	}
+	chunks := [][]string{}
+	start := 0
+	for end := 1; end <= len(names); end++ {
+		// Reserve the largest possible part numbers before measuring. Names
+		// passed Server Inventory Command validation and each fits on its own.
+		candidate, _ := json.Marshal(metaFor(names[start:end], serverpkg.MaxImportRows, serverpkg.MaxImportRows))
+		if len(candidate) > auditpkg.MetaMaxLen && end-start > 1 {
+			chunks = append(chunks, names[start:end-1])
+			start = end - 1
+		}
+	}
+	chunks = append(chunks, names[start:])
+	records := make([]serverpkg.CommandAudit, 0, len(chunks))
+	for index, chunk := range chunks {
+		record := event
+		record.Message = fmt.Sprintf("%s (part %d of %d)", event.Message, index+1, len(chunks))
+		record.Meta = metaFor(chunk, index+1, len(chunks))
+		records = append(records, record)
+	}
+	return records
 }

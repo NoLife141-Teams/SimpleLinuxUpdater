@@ -82,7 +82,11 @@ window.InventoryImport = Object.freeze({
         async function run(effects) {
             for (const effect of effects) {
                 if (effect.type === 'render') render();
-                if (effect.type === 'focusImport') document.getElementById(effect.id)?.focus();
+                if (effect.type === 'focusImport'
+                    && store.getView().workspace.activeSection === 'import'
+                    && !document.querySelector('.modal-backdrop.active')) {
+                    document.getElementById(effect.id)?.focus();
+                }
                 if (effect.type === 'refresh') await refresh(effects);
                 if (!['previewImport', 'commitImport'].includes(effect.type)) continue;
                 try {
@@ -104,17 +108,24 @@ window.InventoryImport = Object.freeze({
             }
         }
 
+        function dispatchIntent(event) {
+            // A direct interaction owns the section even if viewport tracking
+            // still points at a neighbor after scrolling or resizing.
+            store.dispatch({ type: 'sectionActivated', sectionID: 'import' });
+            return run(store.dispatch(event));
+        }
+
         file.addEventListener('change', () => {
             const selected = file.files[0];
-            void run(store.dispatch({ type: 'importFileSelected', name: selected?.name, size: selected?.size }));
+            void dispatchIntent({ type: 'importFileSelected', name: selected?.name, size: selected?.size });
         });
-        previewButton.addEventListener('click', () => void run(store.dispatch({ type: 'importPreviewRequested' })));
+        previewButton.addEventListener('click', () => void dispatchIntent({ type: 'importPreviewRequested' }));
         rows.addEventListener('change', event => {
             const row = event.target.dataset.importRow;
-            if (row) void run(store.dispatch({ type: 'importRowSelectionChanged', row, selected: event.target.checked }));
+            if (row) void dispatchIntent({ type: 'importRowSelectionChanged', row, selected: event.target.checked });
         });
         for (const [id, type] of Object.entries({ 'import-review-button': 'importConfirmationRequested', 'import-back-button': 'importSelectionRequested', 'import-confirm-button': 'importCommitRequested', 'import-reset': 'importReset' })) {
-            document.getElementById(id).addEventListener('click', () => void run(store.dispatch({ type })));
+            document.getElementById(id).addEventListener('click', () => void dispatchIntent({ type }));
         }
         render();
     }

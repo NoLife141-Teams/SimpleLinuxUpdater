@@ -18,6 +18,11 @@ import (
 const MaxImportBytes = 2 * 1024 * 1024
 const MaxImportRows = 1000
 
+// A normalized selection adds row IDs, field names and JSON escaping to an
+// upload. Allow six bytes per original byte (the maximum JSON string escape)
+// plus bounded per-row metadata, while keeping the file limit at 2 MiB.
+const maxImportSelectionBytes = 6*MaxImportBytes + 512*MaxImportRows
+
 // ImportEntry deliberately has no credentials, availability or trust fields.
 type ImportEntry struct {
 	Row  int      `json:"row"`
@@ -223,8 +228,8 @@ func ParseInventoryImport(reader io.Reader, format string) ([]ImportRow, error) 
 // DecodeImportSelection uses the same closed schema as upload parsing. Client
 // supplied rows are always treated as untrusted and validated again at commit.
 func DecodeImportSelection(reader io.Reader) (ImportSelection, error) {
-	raw, err := io.ReadAll(io.LimitReader(reader, MaxImportBytes+1))
-	if err != nil || len(raw) > MaxImportBytes || !utf8.Valid(raw) {
+	raw, err := io.ReadAll(io.LimitReader(reader, maxImportSelectionBytes+1))
+	if err != nil || len(raw) > maxImportSelectionBytes || !utf8.Valid(raw) {
 		return ImportSelection{}, errImportFormat
 	}
 	fields, err := strictObject(raw, map[string]bool{"batch_id": true, "rows": true})

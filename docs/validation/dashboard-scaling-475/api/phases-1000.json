@@ -1,0 +1,37 @@
+{
+  "manifest": {
+    "version": 2,
+    "seed": 475,
+    "clock": "2026-10-25T12:00:00Z",
+    "servers": 1000,
+    "active": 100,
+    "approvals": 200,
+    "terminal": 700,
+    "package_hosts": 600,
+    "packages_per_host": 20,
+    "preview_bytes_per_host": 4096,
+    "commands_per_host": 10,
+    "updates_per_host": 4,
+    "detailed_log_bytes_per_host": 32768,
+    "policies": 3,
+    "trusted_hosts": 800,
+    "sha256": "78acab0892ff0e71054b40242cb900c22ba14f4e686974461baccb40b31670ee"
+  },
+  "measurements": [
+    {
+      "n": 15,
+      "name": "collect",
+      "p50_ms": 29.787386,
+      "p95_ms": 33.906255,
+      "sql_statements": 12
+    },
+    {
+      "n": 15,
+      "name": "project",
+      "p50_ms": 4.333794,
+      "p95_ms": 8.224757,
+      "sql_statements": 0
+    }
+  ],
+  "scope": "collector uses real SQLite health/policy/jobs/audit; default UTC formatting and ready action projection; HTTP composition measured separately"
+}

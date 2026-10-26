@@ -1,0 +1,133 @@
+{
+  "checks": [
+    {
+      "name": "Go full suite",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -count=1 -timeout=10m ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-go-test.log"
+    },
+    {
+      "name": "Full race suite",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -race -count=1 -timeout=10m ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-race.log"
+    },
+    {
+      "name": "Canonical v2 fixture race",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -race -count=1 -run '^TestDashboardScalingBudgets$|^TestFixtureIntegrityAndSQLMeter$' . ./internal/testutil/dashboardfixture",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-race-fixture.log"
+    },
+    {
+      "name": "Full coverage suite",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -count=1 -timeout=10m -covermode=atomic -coverprofile=/tmp/slu-475-v2-coverage.out ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-coverage.log"
+    },
+    {
+      "name": "Coverage threshold",
+      "command": "go tool cover -func=/tmp/slu-475-v2-coverage.out; assert total >= 73%",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-coverage-summary.txt"
+    },
+    {
+      "name": "Final budgets and integrity",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -count=1 -run '^TestDashboardScalingBudgets$|^TestFixtureIntegrityAndSQLMeter$' . ./internal/testutil/dashboardfixture",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-final-budgets.log"
+    },
+    {
+      "name": "Go vet",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go vet ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-vet.log"
+    },
+    {
+      "name": "Go build",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go build ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-build.log"
+    },
+    {
+      "name": "Staticcheck",
+      "command": "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 XDG_CACHE_HOME=/tmp/slu-475-staticcheck-cache /tmp/slu-final-tools/staticcheck ./...",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-staticcheck.log"
+    },
+    {
+      "name": "Node unit tests",
+      "command": "npm run test:unit",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-unit.log"
+    },
+    {
+      "name": "Playwright full suite with owned test installation",
+      "command": "node tools/performance/dashboard-e2e.cjs /tmp/slu-475-v2.test /tmp/slu-475-v2-e2e",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-e2e.log"
+    },
+    {
+      "name": "Canonical v2 HTTP/SQL/SSE",
+      "command": "SLU_SCALING_OUTPUT=/tmp/slu-475-v2-api GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -count=1 -timeout=3m -run '^TestDashboardScaling(Measurements|PhaseMeasurements|SSE)$' . ./internal/observability",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-measure.log"
+    },
+    {
+      "name": "Sequential API/phase, five-repeat benchmarks and profiles",
+      "command": "bash /tmp/slu-475-v2-go-measurements.sh",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-go-steps.log"
+    },
+    {
+      "name": "Chromium exact-base v2",
+      "command": "node /home/jeremie/code/SimpleLinuxUpdater/tools/performance/dashboard-browser.cjs /tmp/slu-475-v2.test /tmp/slu-475-v2-before",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-before.log",
+      "working_directory": "/tmp/slu-475-base-v2"
+    },
+    {
+      "name": "Chromium final v2",
+      "command": "node tools/performance/dashboard-browser.cjs /tmp/slu-475-v2.test /tmp/slu-475-v2-after",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-after.log"
+    },
+    {
+      "name": "Desktop/mobile v2 captures and overflow assertions",
+      "command": "node tools/performance/dashboard-screenshots.cjs /tmp/slu-475-v2.test .github/assets/dashboard-scaling-475",
+      "exit_code": 0,
+      "local_log": "/tmp/slu-475-v2-screenshots.log"
+    }
+  ],
+  "coverage_percent": 76.3,
+  "minimum_coverage_percent": 73,
+  "node_tests": 205,
+  "playwright_tests": 97,
+  "playwright_lifecycle": {
+    "playwright": {
+      "code": 0,
+      "signal": null
+    },
+    "server": {
+      "code": 0,
+      "signal": null
+    }
+  },
+  "syntax_and_formatting": "bash -n; individual node --check for all five CJS scripts; gofmt -l on all added Go files; git diff --check: all exit 0",
+  "prior_attempts": [
+    {
+      "check": "initial staticcheck",
+      "result": "deprecated test-driver Stmt.Query/Exec; replaced by context-aware adapters; final exit 0"
+    },
+    {
+      "check": "initial full PW invoker",
+      "exit_code": 143,
+      "result": "97 scenarios printed passed, but webServer group shutdown interrupted command; not accepted; final lifecycle supervisor exited 0/0"
+    },
+    {
+      "check": "exploratory performance fixture v1",
+      "result": "invalid persisted terminal job status; rejected; no v1 data retained in this directory"
+    }
+  ],
+  "measurement_order": "All race/PW/coverage workloads completed before canonical v2 measurements. API/phases repeated with -p=1; all benchmark/profile/browser stages sequential. The complete dashboard.sh need not be rerun: every component command completed with exit 0.",
+  "safety": "No production app main, SSH connections, scheduler or host worker for measurements. E2E uses empty owned DB/config/known_hosts and explicitly unavailable SSH transports. Only synthetic data. Raw traces remain local."
+}

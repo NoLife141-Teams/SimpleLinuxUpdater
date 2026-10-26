@@ -1,0 +1,18 @@
+{
+  "head": "22b7c20d1a40128876b528781ead3277a76c3c19",
+  "source_root": "/tmp/slu-475-base-v2",
+  "production_source_sha256": "93ca718239307aca5bfa75ece10b44e162aa6eb00e1348f54dd5f4767c6c6477",
+  "hash_recipe": "sha256 of sorted tracked production Go, go.mod, go.sum, templates, static/js, static/css: filename NUL contents NUL; excludes _test.go and /testutil/",
+  "os": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+  "logical_cpus": 4,
+  "meminfo": [
+    "MemTotal:       12248248 kB",
+    "MemAvailable:    9688388 kB"
+  ],
+  "go": "go version go1.26.10 linux/amd64",
+  "node": "v22.23.3",
+  "playwright": "1.63.0",
+  "gomaxprocs": "2",
+  "utc": "2026-10-26T18:51:04Z"
+}

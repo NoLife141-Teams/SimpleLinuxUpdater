@@ -244,6 +244,8 @@
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
         let jobLogTransportLive = false;
+        let jobLogConnectionGeneration = 0;
+        const disconnectedJobLogs = new Map();
 
         function createTerminalState() {
             return { lines: [], current: "", currentStream: "", pendingCR: false };
@@ -299,6 +301,7 @@
                 terminal: createTerminalState(),
                 previewOnly: !!preview,
                 recovering: false,
+                recoveryConnectionGeneration: -1,
                 resetPending: false,
                 pending: {},
                 expired: false,
@@ -355,6 +358,7 @@
         function logRecoveryEffect(serverName, state) {
             if (!state || !state.jobId || state.recovering) return [];
             state.recovering = true;
+            state.recoveryConnectionGeneration = jobLogTransportLive ? jobLogConnectionGeneration : -1;
             return [{
                 type: "fetchJobLogs",
                 serverName,
@@ -380,7 +384,10 @@
                 if (!statusSortValues.has(server.name)) statusSortValues.set(server.name, server.status);
             });
             Array.from(jobLogsByServer.keys()).forEach(name => {
-                if (!retainedNames.has(name)) jobLogsByServer.delete(name);
+                if (!retainedNames.has(name)) {
+                    jobLogsByServer.delete(name);
+                    disconnectedJobLogs.delete(name);
+                }
             });
             servers.forEach(server => {
                 const serverName = server.name;
@@ -416,11 +423,14 @@
                             jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
                         }
                         effects.push(...logRecoveryEffect(serverName, jobLogsByServer.get(serverName)));
-                    } else {
+                    } else if (disconnectedJobLogs.get(serverName) !== jobId) {
+                        // Retain followed jobs' cursors and in-flight requests
+                        // through offline polls, including terminal snapshots.
                         jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
                     }
                 }
                 const accepted = jobLogsByServer.get(serverName);
+                if (disconnectedJobLogs.get(serverName) !== accepted?.jobId) disconnectedJobLogs.delete(serverName);
                 if (accepted) updateServerLogProjection(serverName, accepted);
             });
             return effects;
@@ -747,6 +757,14 @@
                     acceptLogFragment(state, fragment);
                 });
             updateServerLogProjection(serverName, state);
+            if (disconnectedJobLogs.get(serverName) === state.jobId && jobLogTransportLive) {
+                // A request started before the outage (or while offline) cannot
+                // establish the reconnected tail, even if its response is late.
+                if (state.recoveryConnectionGeneration !== jobLogConnectionGeneration) {
+                    return [...drawerLogEffects(serverName), ...logRecoveryEffect(serverName, state)];
+                }
+                disconnectedJobLogs.delete(serverName);
+            }
             return drawerLogEffects(serverName);
         }
 
@@ -763,7 +781,11 @@
         function recoverKnownJobLogs() {
             const effects = [];
             jobLogsByServer.forEach((state, serverName) => {
-                effects.push(...logRecoveryEffect(serverName, state));
+                if (shouldRecoverServer(serverName, serversByName.get(serverName))
+                    || serverName === primaryServerName
+                    || disconnectedJobLogs.get(serverName) === state.jobId) {
+                    effects.push(...logRecoveryEffect(serverName, state));
+                }
             });
             return effects;
         }
@@ -842,9 +864,21 @@
                 if (state && state.jobId === String(event.jobId || "")) {
                     state.recovering = false;
                     state.resetPending = false;
+                    if (jobLogTransportLive && disconnectedJobLogs.get(String(event.serverName || "")) === state.jobId
+                        && state.recoveryConnectionGeneration !== jobLogConnectionGeneration) {
+                        return logRecoveryEffect(String(event.serverName || ""), state);
+                    }
                 }
                 return [];
             } else if (event.type === "jobLogTransportChanged") {
+                if (jobLogTransportLive && !event.live) {
+                    jobLogConnectionGeneration += 1;
+                    jobLogsByServer.forEach((state, serverName) => {
+                        if (shouldRecoverServer(serverName, serversByName.get(serverName)) || serverName === primaryServerName) {
+                            disconnectedJobLogs.set(serverName, state.jobId);
+                        }
+                    });
+                }
                 jobLogTransportLive = !!event.live;
                 return jobLogTransportLive ? recoverVisibleJobLogs() : [];
             } else if (event.type === "jobLogReconnect") {
@@ -1127,10 +1161,9 @@
         }
 
         function planBulkAction(actionKey, options = {}) {
-            const projection = projectView();
-            const selectedNames = interaction.actionContext ? interaction.actionContext.selectedNames : projection.selectedNames;
-            const visibleSelectedNames = interaction.actionContext ? interaction.actionContext.visibleSelectedNames : projection.visibleSelectedNames;
-            const hiddenSelectedNames = interaction.actionContext ? interaction.actionContext.hiddenSelectedNames : projection.hiddenSelectedNames;
+            // Command planning needs selection and current eligibility, not the
+            // fleet's log/history/presentation snapshots for every toolbar button.
+            const { selectedNames, visibleSelectedNames, hiddenSelectedNames } = interaction.actionContext || projectNavigation();
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
@@ -1175,7 +1208,7 @@
             return effects;
         }
 
-        function projectView() {
+        function projectNavigation() {
             const visibleServers = sortedVisibleServers();
             const totalPages = Math.max(1, Math.ceil(visibleServers.length / pageSize));
             const safePage = Math.max(1, Math.min(page, totalPages));
@@ -1185,6 +1218,11 @@
             const selectedNames = Array.from(selectedServerNames);
             const visibleSelectedNames = selectedNames.filter(name => pageNames.has(name));
             const hiddenSelectedNames = selectedNames.filter(name => !pageNames.has(name));
+            return { visibleServers, totalPages, safePage, pageServers, selectedNames, visibleSelectedNames, hiddenSelectedNames };
+        }
+
+        function projectView() {
+            const { visibleServers, totalPages, safePage, pageServers, selectedNames, visibleSelectedNames, hiddenSelectedNames } = projectNavigation();
             const grouped = new Map();
             if (filters.groupBy === "status") {
                 pageServers.forEach(server => {

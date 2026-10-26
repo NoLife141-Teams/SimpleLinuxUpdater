@@ -194,3 +194,7 @@ The selected-host panel exposes a read-only **Scan vulnerabilities** action and 
 Application post-check profiles in Admin can verify remote systemd units and HTTP health endpoints per Server or tag, with bounded recovery and blocking/warning results. See [profile configuration](docs/configuration.md#application-post-check-profiles).
 
 Developers can run the [real SSH/APT qualification harness](docs/ssh-apt-qualification.md) against disposable Debian/Ubuntu targets. PR CI covers fixture upgrades, trust, approval drift and interrupted-mutation repair; systemd/reboot VM evidence is reported separately.
+
+The [dashboard scaling harness](docs/dashboard-scaling.md) measures synthetic fleets
+of 10, 100 and 1,000 Servers through authenticated APIs, Chromium and SSE, with
+isolated SQLite fixtures and no SSH connections.

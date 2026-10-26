@@ -1,0 +1,126 @@
+{
+  "go": "go1.26.10",
+  "gomaxprocs": 2,
+  "goroutines": 16,
+  "heap_alloc_after_gc": 1851048,
+  "manifest": {
+    "version": 2,
+    "seed": 475,
+    "clock": "2026-10-25T12:00:00Z",
+    "servers": 10,
+    "active": 1,
+    "approvals": 2,
+    "terminal": 7,
+    "package_hosts": 6,
+    "packages_per_host": 20,
+    "preview_bytes_per_host": 4096,
+    "commands_per_host": 10,
+    "updates_per_host": 4,
+    "detailed_log_bytes_per_host": 32768,
+    "policies": 3,
+    "trusted_hosts": 8,
+    "sha256": "83a0a075c1d957f02724f6ebae2b4850154a942c3e7c03e340ea26a4b745be4e"
+  },
+  "measurements": [
+    {
+      "name": "auth-cookie",
+      "n": 15,
+      "p50_ms": 0.183155,
+      "p95_ms": 0.273694,
+      "json_bytes": 122,
+      "sql_statements": null,
+      "allocs_per_op": 437,
+      "allocated_bytes_per_op": 24569
+    },
+    {
+      "name": "inventory-cookie",
+      "n": 15,
+      "p50_ms": 0.532049,
+      "p95_ms": 1.366254,
+      "json_bytes": 85697,
+      "sql_statements": null,
+      "allocs_per_op": 872,
+      "allocated_bytes_per_op": 303925
+    },
+    {
+      "name": "inventory-viewer",
+      "n": 15,
+      "p50_ms": 0.308499,
+      "p95_ms": 0.767751,
+      "json_bytes": 43377,
+      "sql_statements": null,
+      "allocs_per_op": 869,
+      "allocated_bytes_per_op": 197718
+    },
+    {
+      "name": "inventory-pat-read",
+      "n": 15,
+      "p50_ms": 0.270027,
+      "p95_ms": 0.658346,
+      "json_bytes": 43377,
+      "sql_statements": null,
+      "allocs_per_op": 635,
+      "allocated_bytes_per_op": 203259
+    },
+    {
+      "name": "dashboard-cookie",
+      "n": 15,
+      "p50_ms": 1.40659,
+      "p95_ms": 2.109209,
+      "json_bytes": 47698,
+      "sql_statements": null,
+      "allocs_per_op": 4209,
+      "allocated_bytes_per_op": 706949
+    },
+    {
+      "name": "dashboard-legacy",
+      "n": 15,
+      "p50_ms": 2.27552,
+      "p95_ms": 3.4411,
+      "json_bytes": 61988,
+      "sql_statements": null,
+      "allocs_per_op": 5501,
+      "allocated_bytes_per_op": 794536
+    },
+    {
+      "name": "dashboard-pat-read",
+      "n": 15,
+      "p50_ms": 1.346818,
+      "p95_ms": 1.669974,
+      "json_bytes": 47698,
+      "sql_statements": null,
+      "allocs_per_op": 3975,
+      "allocated_bytes_per_op": 712424
+    },
+    {
+      "name": "inventory-service",
+      "n": 15,
+      "p50_ms": 0.038553,
+      "p95_ms": 0.072127,
+      "sql_statements": null,
+      "allocs_per_op": 481,
+      "allocated_bytes_per_op": 75696
+    },
+    {
+      "name": "dashboard-service",
+      "n": 15,
+      "p50_ms": 0.955754,
+      "p95_ms": 2.005594,
+      "sql_statements": null,
+      "allocs_per_op": 3498,
+      "allocated_bytes_per_op": 540152
+    },
+    {
+      "name": "dashboard-json",
+      "n": 15,
+      "p50_ms": 0.060915,
+      "p95_ms": 0.114215,
+      "json_bytes": 47699,
+      "sql_statements": null,
+      "allocs_per_op": 310,
+      "allocated_bytes_per_op": 66586
+    }
+  ],
+  "sql_instrumented": false,
+  "warmup": 1
+}

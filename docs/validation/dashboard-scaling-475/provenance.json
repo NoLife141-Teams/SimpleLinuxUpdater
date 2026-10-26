@@ -1,0 +1,18 @@
+{
+  "base": "22b7c20d1a40128876b528781ead3277a76c3c19",
+  "before_production_source_sha256": "93ca718239307aca5bfa75ece10b44e162aa6eb00e1348f54dd5f4767c6c6477",
+  "after_production_source_sha256": "6ad0a28d041daf254827d319ee7e439a6cf5409a9e0a1055b1815ff079188ea5",
+  "unchanged_backend_sha256": "fc52cb191e78f309f0ec8877bade6342e580bb2a4300ef0c794c75ca700dae32",
+  "paired_test_binary_sha256": "a0025c25dd0edc0f1dba3eefcd3e1970b89a2a6d53e0b80fa8d1b31eb742fbb9",
+  "before_source_root": "/tmp/slu-475-base-v2",
+  "after_source_root": "/home/jeremie/code/SimpleLinuxUpdater",
+  "only_changed_production_files": [
+    "static/js/index.js",
+    "static/js/status-page-interaction.js",
+    "static/js/status-rendering.js",
+    "templates/index.html"
+  ],
+  "browser_script_sha256": "de8e991ff2dd5bfb4197d49b06242b0ec6e5c3096b113230edba8f5712a48eae",
+  "fixture_generator_sha256": "25e623e385aafc2987d80f0e6710b98e35fb3d07eb75211a898e71acadc95aee",
+  "presentation_clock": "manifest UTC via page.clock.setFixedTime; real timers/performance; auth expiry remains real"
+}

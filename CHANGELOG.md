@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Added
 
+- Reproducible synthetic Dashboard Projection measurements for 10, 100 and 1,000
+  Servers, authenticated API and browser benchmarks, SSE reconnection evidence,
+  and CI budgets for payloads, SQL statements and allocations.
+
 - Stable named local accounts with reader/operator/administrator permissions,
   optional confirmed TOTP MFA and single-use recovery codes, scoped expiring
   personal API tokens, and a versioned cookie-free operational API contract.
@@ -25,6 +29,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   diagnostics, explicit canary selection, and revision/stage details in Admin.
 - Durable one-time consumption and accepted rollout manifests that preserve
   members and policy revision across edits, restarts, timezone changes and backups.
+
+### Changed
+
+- Status renders reuse a snapshot within one synchronous render, bulk previews
+  avoid unrelated fleet log/package projections, and SSE reconnections recover
+  active/inspected jobs plus jobs followed before a connection loss. Terminal
+  job output remains available on demand.
 
 ### Upgrade notes
 

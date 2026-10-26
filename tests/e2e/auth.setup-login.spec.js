@@ -2085,6 +2085,61 @@ test.describe.serial('setup and login flows', () => {
     expect(serverRequests).toBe(requestsBeforeLogs);
   });
 
+  for (const responseTiming of ['offline', 'reconnected']) {
+    test(`SSE reconnect recovers a completed unselected job after an ${responseTiming} log response`, async ({ page }) => {
+      await ensureAuthenticatedSession(page);
+      await page.addInitScript(() => {
+        window.__recoveryEventSources = [];
+        window.EventSource = class {
+          constructor() {
+            this.listeners = new Map();
+            window.__recoveryEventSources.push(this);
+            if (window.__recoveryEventSources.length === 1) setTimeout(() => this.emit('open'), 0);
+          }
+          addEventListener(name, handler) {
+            if (!this.listeners.has(name)) this.listeners.set(name, []);
+            this.listeners.get(name).push(handler);
+          }
+          emit(name) { (this.listeners.get(name) || []).forEach(handler => handler({})); }
+          close() {}
+        };
+      });
+      let servers = [makeServer('anchor', 'done', [], { job_id: 'job-anchor' }), makeServer('worker', 'updating', [], { job_id: 'job-worker' })];
+      await stubDashboardApi(page, () => servers);
+      let releaseFirst;
+      const firstPage = new Promise(resolve => { releaseFirst = resolve; });
+      const cursors = [];
+      await page.route('**/api/jobs/*/logs*', async route => {
+        if (!route.request().url().includes('/job-worker/')) return fulfillJson(route, { fragments: [], has_more: false });
+        cursors.push(Number(new URL(route.request().url()).searchParams.get('after_seq')));
+        const first = cursors.length === 1;
+        if (first) await firstPage;
+        return fulfillJson(route, { fragments: [{ sequence: first ? 1 : 2, data: first ? 'before outage\n' : 'completed during outage\n' }], has_more: false });
+      });
+      try {
+        await page.goto('/');
+        await expect.poll(() => cursors.length).toBe(1);
+        await expect.poll(() => page.evaluate(() => window.statusPageInteraction.getView().primaryServerName)).toBe('anchor');
+        await page.evaluate(() => window.__recoveryEventSources[0].emit('error'));
+        servers = servers.map(server => ({ ...server, status: 'done', logs: 'bounded terminal preview' }));
+        await page.evaluate(() => window.fetchServers(true, 'offline-completion'));
+        if (responseTiming === 'offline') {
+          releaseFirst();
+          await expect.poll(() => page.evaluate(() => window.statusPageInteraction.getView().jobLogs.worker.lastSequence)).toBe(1);
+        }
+        await expect.poll(() => page.evaluate(() => window.__recoveryEventSources.length)).toBe(2);
+        await page.evaluate(() => window.__recoveryEventSources[1].emit('open'));
+        if (responseTiming === 'reconnected') releaseFirst();
+        await expect.poll(() => page.evaluate(() => window.statusPageInteraction.getView().jobLogs.worker.rawText)).toBe('before outage\ncompleted during outage\n');
+        expect(cursors).toEqual([0, 1]);
+        await page.locator('#servers-table button[data-action="open-drawer"][data-name="worker"][data-tab="logs"]').click();
+        await expect(page.locator('#drawer-logs')).toContainText('completed during outage');
+      } finally {
+        releaseFirst();
+      }
+    });
+  }
+
   test('bulk actions execute immediately, skip ineligible hosts, and report partial failures', async ({ page }) => {
     const servers = [
       makeServer('idle-host', 'idle', [], { has_key: true }),

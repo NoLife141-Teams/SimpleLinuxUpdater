@@ -15,6 +15,7 @@ This index separates current guidance from historical implementation records. Pr
 
 - [Architecture](architecture.md): current runtime, service boundaries, persistence, and maintenance lifecycle.
 - [Contributing](contributing.md): contributor workflow, domain ownership, and validation commands.
+- [Dashboard scaling measurements](dashboard-scaling.md): deterministic fixtures, authenticated API/browser/SSE benchmarks, budgets, and recorded evidence.
 - [`CONTEXT.md`](../CONTEXT.md): canonical domain vocabulary.
 - [`AGENTS.md`](../AGENTS.md) and [`docs/agents/`](agents/): repository instructions for coding agents, issue tracking, and triage.
 

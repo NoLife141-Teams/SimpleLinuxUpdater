@@ -5,6 +5,26 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("bulk preview budgets evaluate package facts only for selected hosts", () => {
+    // Empty filters exercise toolbar planning. A global package/risk filter may
+    // legitimately inspect facts for every Server before selecting the page.
+    const facts = require("../../static/js/dashboard-projection-consumption.js").presentationFacts;
+    for (const count of [10, 100, 1000]) {
+        const evaluated = new Set();
+        const store = createStore({ presentationFacts: { ...facts, approvalCounts(server) { evaluated.add(server?.name); return facts.approvalCounts(server); } } });
+        store.dispatch({ type: "serversSnapshotReceived", servers: Array.from({ length: count }, (_, index) => ({ name: `host-${String(index).padStart(4, "0")}`, status: "idle" })) });
+        store.dispatch({ type: "selectionChanged", name: "host-0000", selected: true });
+        evaluated.clear();
+        const preview = store.planBulkAction("update", { preview: true });
+        assert.deepEqual(preview.eligibleNames, ["host-0000"]);
+        assert.deepEqual([...evaluated], ["host-0000"], "unselected fleet package/log projections are unnecessary for command planning");
+        preview.selectedNames.push("outside");
+        assert.deepEqual(store.planBulkAction("update", { preview: true }).selectedNames, ["host-0000"], "public command plans stay defensive");
+        store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "host-0000", status: "updating" }] });
+        assert.deepEqual(store.planBulkAction("update", { preview: true }).eligibleNames, [], "new status immediately changes eligibility");
+    }
+});
+
 test("approval identities freeze the effective deferral revision across refresh",()=>{
     const store=createStore();const revision='a'.repeat(64);
     const server={name:"alpha",status:"pending_approval",job_id:"job",approval_generation:1,pending_updates:[{package:"curl",security:true}],upgrade_plan:{full_upgrade_plan_available:true,package_deferrals:{revision,rules:[{selector:"openssl"}]}}};
@@ -357,6 +377,105 @@ test("reconnect recovers active and open drawer logs from the last accepted sequ
         jobId: effect.jobId,
         afterSequence: effect.afterSequence
     })), [{ jobId: "job-1", afterSequence: 1 }]);
+});
+
+test("reconnect log requests scale with active jobs and inspected detail", () => {
+    for (const count of [10, 100, 1000]) {
+        const store = createStore();
+        const servers = Array.from({ length: count }, (_, index) => ({ name: `host-${String(index).padStart(4, "0")}`, status: index % 10 < 3 ? "updating" : "done", job_id: `job-${index}`, logs: "bounded preview" }));
+        store.dispatch({ type: "serversSnapshotReceived", servers });
+        const effects = store.dispatch({ type: "jobLogReconnect" });
+        assert.equal(effects.filter(effect => effect.type === "fetchJobLogs").length, count * .3);
+        assert.equal(effects.some(effect => effect.jobId === "job-9"), false, "unopened terminal detail stays on demand");
+        const detail = store.dispatch({ type: "drawerOpened", name: "host-0009", tab: "logs" });
+        assert.equal(detail.some(effect => effect.type === "fetchJobLogs" && effect.jobId === "job-9" && effect.afterSequence === 0), true);
+    }
+});
+
+test("reconnect preserves jobs completed during an outage and rejects superseded recovery", () => {
+    const store = createStore();
+    const initial = [{ name: "active", status: "updating", job_id: "active-1", logs: "" }, { name: "inspected", status: "done", job_id: "inspected-1", logs: "preview" }, { name: "unopened", status: "done", job_id: "unopened-1", logs: "preview" }];
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    store.dispatch({ type: "serversSnapshotReceived", servers: initial });
+    store.dispatch({ type: "jobLogRecoveryReceived", serverName: "active", jobId: "active-1", page: { fragments: [{ sequence: 1, data: "running\n" }], has_more: false } });
+    store.dispatch({ type: "drawerOpened", name: "inspected", tab: "logs" });
+    store.dispatch({ type: "jobLogRecoveryReceived", serverName: "inspected", jobId: "inspected-1", page: { fragments: [{ sequence: 1, data: "inspected\n" }], has_more: false } });
+    store.dispatch({ type: "jobLogTransportChanged", live: false });
+    // The poll wins the race with SSE recovery and reports the formerly active
+    // job terminal. Its final output still needs an authenticated detail read.
+    store.dispatch({ type: "serversSnapshotReceived", servers: initial.map(s => ({ ...s, status: "done", logs: "terminal preview" })) });
+    const effects = store.dispatch({ type: "jobLogReconnect" });
+    assert.equal(effects.some(effect => effect.type === "fetchJobLogs" && effect.jobId === "active-1"), true);
+    assert.equal(effects.some(effect => effect.jobId === "unopened-1"), false);
+    store.dispatch({ type: "jobLogRecoveryReceived", serverName: "active", jobId: "active-1", page: { fragments: [{ sequence: 1, data: "running\n" }, { sequence: 2, data: "finished during outage\n" }], has_more: false } });
+    assert.match(store.getView().jobLogs.active.rawText, /finished during outage/);
+    store.dispatch({ type: "jobLogTransportChanged", live: true });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "active", status: "updating", job_id: "active-2", logs: "new" }] });
+    assert.deepEqual(store.dispatch({ type: "jobLogRecoveryReceived", serverName: "active", jobId: "active-1", page: { fragments: [{ sequence: 3, data: "obsolete" }], has_more: false } }), []);
+    assert.doesNotMatch(store.getView().jobLogs.active.rawText, /obsolete|finished during outage/);
+});
+
+test("reconnect keeps an offline completion pending until a new connection reads its tail", () => {
+    for (const responseTiming of ["offline", "reconnected", "paginated", "offline-pagination"]) {
+        const store = createStore();
+        const initial = [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-1" }];
+        const fetches = effects => effects.filter(effect => effect.type === "fetchJobLogs" && effect.serverName === "worker");
+        const receive = (sequence, hasMore = false) => store.dispatch({ type: "jobLogRecoveryReceived", serverName: "worker", jobId: "worker-1", page: { fragments: [{ sequence, data: `line-${sequence}\n` }], has_more: hasMore } });
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        assert.equal(fetches(store.dispatch({ type: "serversSnapshotReceived", servers: initial })).length, 1);
+        store.dispatch({ type: "jobLogTransportChanged", live: false });
+        if (responseTiming === "offline") receive(1);
+        if (responseTiming === "offline-pagination") assert.equal(fetches(receive(1, true))[0].afterSequence, 1);
+        store.dispatch({ type: "serversSnapshotReceived", servers: initial.map(server => ({ ...server, status: "done", logs: "bounded terminal preview" })) });
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        const reopened = fetches(store.dispatch({ type: "jobLogReconnect" }));
+        if (responseTiming === "offline") {
+            assert.deepEqual(reopened.map(effect => effect.afterSequence), [1], "retain the accepted cursor while polling offline");
+        } else {
+            assert.deepEqual(reopened, [], "wait for the outstanding request without overlapping it");
+            const sequence = responseTiming === "offline-pagination" ? 2 : 1;
+            const next = fetches(receive(sequence, responseTiming === "paginated"));
+            assert.deepEqual(next.map(effect => effect.afterSequence), [sequence], "read a fresh tail after reconnection, including a late final page");
+        }
+        assert.deepEqual(fetches(store.dispatch({ type: "jobLogReconnect" })), [], "coalesce repeated reconnect recovery");
+        const finalSequence = responseTiming === "offline-pagination" ? 3 : 2;
+        assert.deepEqual(fetches(receive(finalSequence)), [], "a page fetched on this live connection completes recovery");
+        assert.equal(store.getView().jobLogs.worker.rawText, Array.from({ length: finalSequence }, (_, i) => `line-${i + 1}\n`).join(""));
+        assert.deepEqual(fetches(store.dispatch({ type: "jobLogReconnect" })), [], "completed uninspected detail stays on demand again");
+    }
+});
+
+test("failed pre-outage recovery retries after reconnection without retrying current failures forever", () => {
+    for (const failAfterReconnect of [false, true]) {
+        const store = createStore();
+        const servers = [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-1" }];
+        const fetches = effects => effects.filter(effect => effect.type === "fetchJobLogs" && effect.serverName === "worker");
+        const failure = { type: "jobLogRecoveryFailed", serverName: "worker", jobId: "worker-1" };
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        store.dispatch({ type: "serversSnapshotReceived", servers });
+        store.dispatch({ type: "jobLogTransportChanged", live: false });
+        store.dispatch({ type: "serversSnapshotReceived", servers: servers.map(server => ({ ...server, status: "done" })) });
+        if (!failAfterReconnect) assert.deepEqual(store.dispatch(failure), []);
+        store.dispatch({ type: "jobLogTransportChanged", live: true });
+        const reopened = fetches(store.dispatch({ type: "jobLogReconnect" }));
+        const retried = failAfterReconnect ? fetches(store.dispatch(failure)) : reopened;
+        assert.equal(retried.length, 1, "late failures still get a request on the new connection");
+        assert.deepEqual(store.dispatch(failure), [], "a current connection failure must not create a retry loop");
+        assert.equal(fetches(store.dispatch({ type: "jobLogReconnect" })).length, 1, "failure retains recovery eligibility");
+        store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "anchor", status: "done", job_id: "anchor-1" }, { name: "worker", status: "updating", job_id: "worker-2" }] });
+        assert.deepEqual(store.dispatch({ ...failure, type: "jobLogRecoveryReceived", page: { fragments: [{ sequence: 1, data: "obsolete" }], has_more: false } }), []);
+        assert.deepEqual(store.dispatch(failure), [], "a failed superseded request cannot affect the replacement job");
+        assert.equal(store.getView().jobLogs.worker.recovering, true);
+        assert.doesNotMatch(store.getView().jobLogs.worker.rawText, /obsolete/);
+    }
+});
+
+test("reconnect keeps selected terminal detail while leaving other terminal jobs on demand", () => {
+    const store = createStore();
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "a", status: "done", job_id: "job-a" }, { name: "b", status: "done", job_id: "job-b" }, { name: "c", status: "done", job_id: "job-c" }] });
+    store.dispatch({ type: "primaryServerSelected", name: "b" });
+    const effects = store.dispatch({ type: "jobLogReconnect" });
+    assert.deepEqual(effects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.jobId), ["job-b"]);
 });
 
 test("polling fallback refreshes the compatible bounded preview", () => {

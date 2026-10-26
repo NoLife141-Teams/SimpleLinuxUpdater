@@ -158,14 +158,19 @@ def main():
             if "no such" not in str(error).lower(): cleanup_errors.append(str(error))
         except Exception as error: cleanup_errors.append(str(error))
         for handle in (app_log, vm_log):
-            if handle: handle.close()
-        if report["status"] != "passed" and (work / "vm.log").exists():
-            text = (work / "vm.log").read_text(errors="replace")[-200000:]
-            for sensitive in (password, (work / "client").read_text() if (work / "client").exists() else ""):
-                if sensitive: text = text.replace(sensitive, "[REDACTED]")
-            (args.output / "vm.log").write_text(text)
+            try:
+                if handle: handle.close()
+            except Exception as error: cleanup_errors.append(str(error))
+        try:
+            if report["status"] != "passed" and (work / "vm.log").exists():
+                text = (work / "vm.log").read_text(errors="replace")[-200000:]
+                for sensitive in (password, (work / "client").read_text() if (work / "client").exists() else ""):
+                    if sensitive: text = text.replace(sensitive, "[REDACTED]")
+                (args.output / "vm.log").write_text(text)
+        except Exception as error: cleanup_errors.append(str(error))
+        try: shutil.rmtree(work)
+        except OSError as error: cleanup_errors.append(str(error))
         report["cleanup"] = {"status": "failed" if cleanup_errors else "passed", "errors": cleanup_errors}
-        shutil.rmtree(work)
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     return 0 if report["status"] == "passed" and not cleanup_errors else 1
 

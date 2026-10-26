@@ -1,5 +1,6 @@
-import json
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -199,6 +200,83 @@ class HarnessSafetyTests(unittest.TestCase):
                 self.assertEqual(vm.main(), 1)
                 self.assertEqual(json.loads(Path(output, "report.json").read_text())["status"], "failed")
                 launch.assert_not_called()
+
+    def test_vm_cleanup_removes_private_files_when_evidence_fails(self):
+        spec = importlib.util.spec_from_file_location("vm_reboot_cleanup", run.HERE / "vm-reboot.py")
+        vm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vm)
+        for failure in (None, "output-log", "vm-log-read"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                root = Path(root)
+                image = root / "cloud.qcow2"
+                image.write_bytes(b"owned cloud image fixture")
+                work = root / "private"
+                work.mkdir()
+                output = root / "evidence"
+                output.mkdir()
+                if failure == "output-log": (output / "vm.log").mkdir()
+                owner = "a" * 32
+                app_name = "slu-reboot-app-" + owner
+                resources = set()
+                process = mock.Mock()
+                process.poll.return_value = None
+
+                def execute(args, **kwargs):
+                    if args[0] == "ssh-keygen":
+                        (work / "client").write_text("generated fixture private key")
+                        (work / "client.pub").write_text("ssh-ed25519 fixture")
+                    elif args[0] == "cloud-localds":
+                        (work / "seed.img").write_text("private cloud-init seed")
+                    elif args[0] == "qemu-img":
+                        (work / "overlay.qcow2").write_text("private VM overlay")
+                    elif args[0] == "ssh":
+                        return {"cat /var/lib/slu-fixture-owner": owner,
+                                "systemctl is-active ssh.service": "active",
+                                "cut -d' ' -f1 /proc/uptime": "120"}[args[-1]]
+                    elif args[0] == "docker":
+                        self.assertEqual(args[:2], run.DOCKER)
+                        if args[2] == "version": return "amd64"
+                        if args[2] == "run": resources.add(app_name)
+                        elif args[2:4] == ["container", "inspect"]:
+                            self.assertIn(args[-1], resources)
+                            return owner
+                        elif args[2] == "rm": resources.remove(args[-1])
+                    return ""
+
+                def request(method, path, data=None):
+                    if path == "/api/auth/setup": raise RuntimeError("injected setup failure")
+                    return {}
+
+                read_text = Path.read_text
+
+                def read(path, *args, **kwargs):
+                    if failure == "vm-log-read" and path == work / "vm.log":
+                        raise PermissionError("injected VM log read failure")
+                    return read_text(path, *args, **kwargs)
+
+                with mock.patch("sys.argv", ["vm-reboot.py", "--image", str(image), "--sha256", hashlib.sha256(image.read_bytes()).hexdigest(), "--output", str(output)]), \
+                        mock.patch.object(vm.shutil, "which", return_value="available"), \
+                        mock.patch.object(vm.tempfile, "mkdtemp", return_value=str(work)), \
+                        mock.patch.object(vm.uuid, "uuid4", return_value=mock.Mock(hex=owner)), \
+                        mock.patch.object(vm, "command", side_effect=execute), \
+                        mock.patch.object(vm, "loopback_port", return_value=30000), \
+                        mock.patch.object(vm, "copy_assets"), \
+                        mock.patch.object(vm, "API") as api, \
+                        mock.patch.object(vm.subprocess, "Popen", return_value=process), \
+                        mock.patch.object(vm.signal, "signal"), \
+                        mock.patch.object(Path, "read_text", new=read):
+                    api.return_value.request.side_effect = request
+                    self.assertEqual(vm.main(), 1)
+                process.terminate.assert_called_once()
+                process.wait.assert_called_once_with(timeout=10)
+                self.assertFalse(resources)
+                self.assertFalse(work.exists())
+                self.assertEqual(image.read_bytes(), b"owned cloud image fixture")
+                report = json.loads((output / "report.json").read_text())
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["error"], "injected setup failure")
+                self.assertEqual(report["cleanup"]["status"], "failed" if failure else "passed")
+                self.assertEqual(len(report["cleanup"]["errors"]), 1 if failure else 0)
 
 
 if __name__ == "__main__": unittest.main()

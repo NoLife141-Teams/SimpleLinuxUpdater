@@ -93,6 +93,23 @@ func strictObject(raw []byte, allowed map[string]bool) (map[string]json.RawMessa
 
 var importFields = map[string]bool{"name": true, "host": true, "port": true, "user": true, "tags": true}
 
+func parseImportTags(raw []byte) ([]string, error) {
+	// encoding/json accepts null into a string as its zero value. Preserve the
+	// closed string-array schema instead of silently dropping those tags.
+	var values []*string
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return nil, errImportFormat
+	}
+	tags := make([]string, len(values))
+	for index, value := range values {
+		if value == nil {
+			return nil, errImportFormat
+		}
+		tags[index] = *value
+	}
+	return tags, nil
+}
+
 func parseImportObject(raw []byte, row int, withRow bool) (ImportRow, error) {
 	allowed := importFields
 	if withRow {
@@ -106,10 +123,16 @@ func parseImportObject(raw []byte, row int, withRow bool) (ImportRow, error) {
 	for _, field := range []struct {
 		name string
 		to   any
-	}{{"name", &result.Name}, {"host", &result.Host}, {"port", &result.Port}, {"user", &result.User}, {"tags", &result.Tags}} {
+	}{{"name", &result.Name}, {"host", &result.Host}, {"port", &result.Port}, {"user", &result.User}} {
 		value, exists := fields[field.name]
 		if exists && (bytes.Equal(value, []byte("null")) || json.Unmarshal(value, field.to) != nil) {
 			result.Errors = append(result.Errors, "Invalid "+field.name+" type")
+		}
+	}
+	if value, exists := fields["tags"]; exists {
+		result.Tags, err = parseImportTags(value)
+		if err != nil {
+			result.Errors = append(result.Errors, "Invalid tags type")
 		}
 	}
 	if withRow {
@@ -200,8 +223,12 @@ func ParseInventoryImport(reader io.Reader, format string) ([]ImportRow, error) 
 					fields[header] = port
 				case "tags":
 					tags := []string{}
-					if strings.TrimSpace(value) != "" && (json.Unmarshal([]byte(value), &tags) != nil || tags == nil) {
-						rowErrors = append(rowErrors, "Tags must be a JSON array of strings")
+					if strings.TrimSpace(value) != "" {
+						var err error
+						tags, err = parseImportTags([]byte(value))
+						if err != nil {
+							rowErrors = append(rowErrors, "Tags must be a JSON array of strings")
+						}
 					}
 					fields[header] = tags
 				default:

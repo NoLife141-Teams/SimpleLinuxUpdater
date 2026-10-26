@@ -7,6 +7,7 @@ let manageSectionNavigationLockUntil = 0;
 let manageSectionSyncTimer = null;
 let manageSectionScrollFrame = null;
 let manageSectionResizeObserver = null;
+let manageInventoryRefreshPromise = Promise.resolve();
 
 function renderManageWorkspace() {
     const view = managePageInteraction.getView();
@@ -373,8 +374,8 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         async function fetchManageServers() {
             const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'inventory' })
                 .find((effect) => effect.type === 'fetchSnapshot');
-            if (!request) return;
-            await performInventoryRequest(request, saveWindowScroll());
+            if (request) manageInventoryRefreshPromise = performInventoryRequest(request, saveWindowScroll());
+            await manageInventoryRefreshPromise;
         }
 
         function renderTable() {
@@ -927,8 +928,12 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             workspaceChanged: renderManageWorkspace,
             refresh: executeManageEffects,
             editServer: async (name) => {
+                const before = managePageInteraction.getView();
                 await fetchManageServers();
-                if (!managePageInteraction.getView().inventory.allItems.some(server => server.name === name)) {
+                const current = managePageInteraction.getView();
+                if (current.editor.open || current.editor.sessionID !== before.editor.sessionID
+                    || current.inventoryImport.generation !== before.inventoryImport.generation) return;
+                if (!current.inventory.allItems.some(server => server.name === name)) {
                     window.notifyApp('This server is no longer in inventory. Refresh the directory.');
                     return;
                 }

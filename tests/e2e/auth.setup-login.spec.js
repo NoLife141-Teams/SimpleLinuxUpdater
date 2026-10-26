@@ -5209,4 +5209,59 @@ test.describe.serial('setup and login flows', () => {
     }
   });
 
+  async function prepareImportConfigureResult(page) {
+    await ensureAuthenticatedSession(page);
+    const state = { servers: [makeServer('other-editor')] };
+    await stubManageApi(page, state);
+    const entry = { row: 1, name: 'review-import', host: '192.0.2.222', port: 22, user: 'root', tags: [], errors: [] };
+    await page.route('**/api/servers/import/preview?format=json', route => fulfillJson(route, { batch_id: 'a'.repeat(32), rows: [entry] }));
+    await page.route('**/api/servers/import', route => {
+      state.servers.push(makeServer(entry.name, 'idle', [], { ...entry, disabled: true }));
+      return fulfillJson(route, { outcome: 'success', preview: { batch_id: 'a'.repeat(32), rows: [entry] }, created: [entry.name] }, 201);
+    });
+    await page.goto('/manage#manage-section-import');
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('other-editor');
+    await page.locator('#inventory-import-file').setInputFiles({ name: 'review.json', mimeType: 'application/json', buffer: Buffer.from('[]') });
+    await page.locator('#import-preview-button').click();
+    await expect(page.locator('#import-preview')).toBeVisible();
+    await page.locator('#import-review-button').click();
+    return state;
+  }
+
+  test('inventory import Configure waits for the automatic inventory refresh', async ({ page }) => {
+    const state = await prepareImportConfigureResult(page);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/servers', async route => { await gate; await fulfillJson(route, state.servers); });
+    const refreshing = page.waitForRequest('**/api/servers');
+    await page.locator('#import-confirm-button').click();
+    await refreshing;
+    await expect(page.locator('#import-result')).toBeVisible();
+    await page.getByRole('button', { name: 'Configure review-import' }).click();
+    release();
+    await expect(page.locator('#edit-modal')).toHaveClass(/active/);
+    await expect(page.locator('#edit-name')).toHaveValue('review-import');
+  });
+
+  test('inventory import delayed Configure preserves a newer editor draft', async ({ page }) => {
+    const state = await prepareImportConfigureResult(page);
+    await page.locator('#import-confirm-button').click();
+    await expect(page.locator('#manage-servers-table tbody')).toContainText('review-import');
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/servers', async route => { await gate; await fulfillJson(route, state.servers); });
+    const refreshing = page.waitForRequest('**/api/servers');
+    await page.getByRole('button', { name: 'Configure review-import' }).click();
+    await refreshing;
+    await page.locator('[data-manage-section-link="directory"]').click();
+    await page.locator('[data-action="edit-server"][data-name="other-editor"]').click();
+    await page.locator('#edit-host').fill('unsaved-editor.example');
+    const finished = page.waitForResponse('**/api/servers');
+    release();
+    await finished;
+    await page.waitForFunction(() => managePageInteraction.getView().streams.inventory.inFlight === null);
+    await expect(page.locator('#edit-name')).toHaveValue('other-editor');
+    await expect(page.locator('#edit-host')).toHaveValue('unsaved-editor.example');
+  });
+
 });

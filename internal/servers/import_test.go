@@ -144,6 +144,28 @@ func TestInventoryImportRowTypesAndLimits(t *testing.T) {
 	}
 }
 
+func TestInventoryImportTagsRequireStringElements(t *testing.T) {
+	for _, format := range []string{"json", "csv"} {
+		for _, tags := range []string{`[null]`, `["prod",null]`, `[null,"prod"]`, `["null","prod"]`} {
+			t.Run(format+"/"+tags, func(t *testing.T) {
+				input := fmt.Sprintf(`[{"name":"alpha","host":"a.example","user":"root","tags":%s}]`, tags)
+				if format == "csv" {
+					input = fmt.Sprintf("name,host,port,user,tags\nalpha,a.example,22,root,\"%s\"\n", strings.ReplaceAll(tags, `"`, `""`))
+				}
+				rows, err := ParseInventoryImport(strings.NewReader(input), format)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rows = validateImportRows(rows, nil)
+				wantError := tags != `["null","prod"]`
+				if (len(rows[0].Errors) != 0) != wantError {
+					t.Fatalf("tags %s validation = %+v; want row error=%v", tags, rows[0], wantError)
+				}
+			})
+		}
+	}
+}
+
 func TestInventoryImportCommitRevalidatesAndPublishesOnlyAfterSave(t *testing.T) {
 	repo := &fakeRepo{}
 	svc, state, current, statuses := newTestService(repo, nil)
@@ -228,6 +250,7 @@ func TestInventoryImportSelectionRejectsBypassFieldsAndDuplicateRows(t *testing.
 	for _, input := range []string{
 		strings.Replace(good, `"port":22`, `"disabled":false,"port":22`, 1),
 		strings.Replace(good, `"port":22`, `"key":"TOP_SECRET","port":22`, 1),
+		strings.Replace(good, `"tags":[]`, `"tags":["prod",null]`, 1),
 		strings.Replace(good, `"row":1`, `"row":0`, 1),
 		strings.Replace(good, `"row":1`, `"row":1,"row":2`, 1),
 		strings.Replace(good, `"batch_id":`, `"unknown":"TOP_SECRET","batch_id":`, 1),

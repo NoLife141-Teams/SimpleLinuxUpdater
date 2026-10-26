@@ -82,7 +82,7 @@ func TestInventoryImportAPIAuthValidationCommitAuditAndExistingSetupFlow(t *test
 		t.Fatalf("replay was not atomically rejected: %d", rec.Code)
 	}
 	var actor, targetName, meta string
-	if err := app.Deps.DB().QueryRow("SELECT actor, target_name, meta_json FROM audit_events WHERE action = 'server.import' AND status = 'success'").Scan(&actor, &targetName, &meta); err != nil || actor != "admin" || targetName != preview.BatchID || !strings.Contains(meta, `"created_names":["imported"]`) || strings.Contains(meta, "192.0.2.71") {
+	if err := app.Deps.DB().QueryRow("SELECT actor, target_name, meta_json FROM audit_events WHERE action = 'server.import' AND status = 'success'").Scan(&actor, &targetName, &meta); err != nil || actor != "account:1" || targetName != preview.BatchID || !strings.Contains(meta, `"created_names":["imported"]`) || strings.Contains(meta, "192.0.2.71") {
 		t.Fatalf("audit actor=%s target=%s meta=%s err=%v", actor, targetName, meta, err)
 	}
 	rec = importAPIRequest(app, cookie, http.MethodGet, "/api/audit-events?category=admin_activity&action=server.import", nil)
@@ -244,7 +244,7 @@ func TestInventoryImportLargeBatchRetainsAllAuditFacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		records++
-		if actor != "admin" || batchID != selection.BatchID || meta.BatchID != selection.BatchID || meta.SelectedCount != len(selection.Rows) || meta.CreatedCount != len(selection.Rows) || meta.Truncated || len(raw) > auditpkg.MetaMaxLen || meta.Part != records {
+		if actor != "account:1" || batchID != selection.BatchID || meta.BatchID != selection.BatchID || meta.SelectedCount != len(selection.Rows) || meta.CreatedCount != len(selection.Rows) || meta.Truncated || len(raw) > auditpkg.MetaMaxLen || meta.Part != records {
 			t.Fatalf("audit facts lost: actor=%s target=%s meta=%s", actor, batchID, raw)
 		}
 		if parts != 0 && meta.Parts != parts {

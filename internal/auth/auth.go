@@ -250,11 +250,12 @@ type Repository interface {
 }
 
 type SQLiteRepository struct {
-	db DBProvider
+	db        DBProvider
+	accountID int64
 }
 
 func NewSQLiteRepository(db DBProvider) *SQLiteRepository {
-	return &SQLiteRepository{db: db}
+	return &SQLiteRepository{db: db, accountID: 1}
 }
 
 func (r *SQLiteRepository) SetupRequired() (bool, error) {
@@ -268,7 +269,7 @@ func (r *SQLiteRepository) SetupRequired() (bool, error) {
 
 func (r *SQLiteRepository) GetSingleUser() (User, bool, error) {
 	var user User
-	err := r.db().QueryRow("SELECT username, password_hash FROM auth_users WHERE id = ?", UserID).Scan(&user.Username, &user.PasswordHash)
+	err := r.db().QueryRow("SELECT username, password_hash FROM auth_users WHERE id = ?", r.accountID).Scan(&user.Username, &user.PasswordHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -306,14 +307,14 @@ func (r *SQLiteRepository) UpdatePasswordHash(passwordHash, now string) error {
 		"UPDATE auth_users SET password_hash = ?, updated_at = ? WHERE id = ?",
 		passwordHash,
 		now,
-		UserID,
+		r.accountID,
 	)
 	return err
 }
 
 func (r *SQLiteRepository) CountSessions() (int, error) {
 	var count int
-	err := r.db().QueryRow("SELECT COUNT(1) FROM sessions").Scan(&count)
+	err := r.db().QueryRow("SELECT COUNT(1) FROM sessions WHERE account_id=?", r.accountID).Scan(&count)
 	return count, err
 }
 
@@ -326,11 +327,14 @@ func (r *SQLiteRepository) ClearSessions() (int64, error) {
 	if _, err := tx.Exec("UPDATE auth_login_generation SET generation = generation + 1 WHERE id = 1"); err != nil {
 		return 0, err
 	}
-	result, err := tx.Exec("DELETE FROM sessions")
+	if _, err := tx.Exec("UPDATE auth_users SET login_generation=login_generation+1 WHERE id=?", r.accountID); err != nil {
+		return 0, err
+	}
+	result, err := tx.Exec("DELETE FROM sessions WHERE account_id=?", r.accountID)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec("DELETE FROM auth_session_metadata"); err != nil {
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata WHERE token NOT IN (SELECT token FROM sessions)"); err != nil {
 		return 0, err
 	}
 	rows, err := result.RowsAffected()
@@ -375,8 +379,9 @@ func (r *SQLiteRepository) ListSessions(currentToken string) ([]SessionInfo, err
 			COALESCE(m.client_label, '')
 		FROM sessions s
 		LEFT JOIN auth_session_metadata m ON m.token = s.token
+		WHERE s.account_id=?
 		ORDER BY CASE WHEN s.token = ? THEN 0 ELSE 1 END, m.last_seen_at DESC, s.expiry DESC
-	`, currentToken)
+	`, r.accountID, currentToken)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +409,7 @@ func (r *SQLiteRepository) RevokeSession(id string) (bool, error) {
 	if len(id) != 32 {
 		return false, nil
 	}
-	rows, err := r.db().Query("SELECT token FROM sessions")
+	rows, err := r.db().Query("SELECT token FROM sessions WHERE account_id=?", r.accountID)
 	if err != nil {
 		return false, err
 	}
@@ -434,7 +439,7 @@ func (r *SQLiteRepository) RevokeSession(id string) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec("DELETE FROM sessions WHERE token = ?", target)
+	result, err := tx.Exec("DELETE FROM sessions WHERE token = ? AND account_id=?", target, r.accountID)
 	if err != nil {
 		return false, err
 	}
@@ -457,7 +462,8 @@ func (r *SQLiteRepository) SessionEncryptedIP(id string) (string, bool, error) {
 		SELECT s.token, COALESCE(m.client_ip_encrypted, '')
 		FROM sessions s
 		LEFT JOIN auth_session_metadata m ON m.token = s.token
-	`)
+		WHERE s.account_id=?
+	`, r.accountID)
 	if err != nil {
 		return "", false, err
 	}
@@ -490,11 +496,14 @@ func (r *SQLiteRepository) ClearOtherSessions(currentToken string) (int64, error
 	if _, err := tx.Exec("UPDATE auth_login_generation SET generation = generation + 1 WHERE id = 1"); err != nil {
 		return 0, err
 	}
-	result, err := tx.Exec("DELETE FROM sessions WHERE token <> ?", currentToken)
+	if _, err := tx.Exec("UPDATE auth_users SET login_generation=login_generation+1 WHERE id=?", r.accountID); err != nil {
+		return 0, err
+	}
+	result, err := tx.Exec("DELETE FROM sessions WHERE token <> ? AND account_id=?", currentToken, r.accountID)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec("DELETE FROM auth_session_metadata WHERE token <> ?", currentToken); err != nil {
+	if _, err := tx.Exec("DELETE FROM auth_session_metadata WHERE token NOT IN (SELECT token FROM sessions)"); err != nil {
 		return 0, err
 	}
 	affected, err := result.RowsAffected()
@@ -513,10 +522,12 @@ type ServiceOptions struct {
 }
 
 type Service struct {
-	repo    Repository
-	now     func() time.Time
-	encrypt func(string) (string, error)
-	decrypt func(string) (string, error)
+	db        DBProvider
+	accountID int64
+	repo      Repository
+	now       func() time.Time
+	encrypt   func(string) (string, error)
+	decrypt   func(string) (string, error)
 }
 
 func NewService(opts ServiceOptions) *Service {
@@ -529,7 +540,7 @@ func NewService(opts ServiceOptions) *Service {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Service{repo: opts.Repo, now: opts.Now, encrypt: opts.Encrypt, decrypt: opts.Decrypt}
+	return &Service{db: opts.DB, repo: opts.Repo, now: opts.Now, encrypt: opts.Encrypt, decrypt: opts.Decrypt}
 }
 
 func (s *Service) SetupRequired() (bool, error) {
@@ -576,6 +587,21 @@ func (s *Service) Authenticate(username, password string) (bool, error) {
 		return false, nil
 	}
 	storedUsername, storedHash, exists, err := s.GetSingleUser()
+	if _, sqlite := s.repo.(*SQLiteRepository); sqlite {
+		account, lookupErr := s.AccountByName(username)
+		err = lookupErr
+		if account.ID != 0 {
+			exists = true
+			storedUsername, storedHash = account.Username, account.PasswordHash
+		}
+		if account.ID == 0 && exists {
+			_, hashErr := argon2id.ComparePasswordAndHash(password, storedHash)
+			return false, hashErr
+		}
+		if account.Disabled || (s.accountID != 0 && account.ID != s.accountID) {
+			return false, nil
+		}
+	}
 	if err != nil {
 		return false, err
 	}

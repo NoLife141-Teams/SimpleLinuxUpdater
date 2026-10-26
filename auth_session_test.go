@@ -728,6 +728,10 @@ func TestMetricsBearerTokenLifecycle(t *testing.T) {
 }
 
 func TestAuthSetupLoginLogoutAndGate(t *testing.T) {
+	for _, key := range []string{"GET /api/ping", "GET /page"} {
+		routePermissions[key] = routePermission{Scope: "operational:read"}
+	}
+	t.Cleanup(func() { delete(routePermissions, "GET /api/ping"); delete(routePermissions, "GET /page") })
 	preserveDBState(t)
 	preserveSessionState(t)
 	preserveRateLimiterState(t)
@@ -824,7 +828,7 @@ func TestAuthSetupLoginLogoutAndGate(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("authenticated API status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), `"actor":"admin"`) {
+		if !strings.Contains(rec.Body.String(), `"actor":"account:1"`) {
 			t.Fatalf("authenticated API body missing actor admin: %s", rec.Body.String())
 		}
 	})

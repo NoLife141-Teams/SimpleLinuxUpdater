@@ -12,6 +12,7 @@ func TestOperatorApplicationShellExposesExactPageFacts(t *testing.T) {
 	want := map[string]reflect.Type{
 		"ActiveSection": reflect.TypeOf(""),
 		"PageLabel":     reflect.TypeOf(""),
+		"Role":          reflect.TypeOf(""),
 	}
 	if typeInfo.NumField() != len(want) {
 		t.Fatalf("operatorApplicationShellView has %d fields, want %d", typeInfo.NumField(), len(want))

@@ -20,21 +20,34 @@ type LocalRecoveryResult struct{ RevokedSessions int64 }
 // ResetLocalPassword requires the caller to hold the installation process lock.
 // It intentionally performs no schema creation, setup, or business-data migration.
 func ResetLocalPassword(ctx context.Context, db *sql.DB, username, password, confirmation string) (LocalRecoveryResult, error) {
+	return ResetLocalFactors(ctx, db, username, password, confirmation, true, false)
+}
+
+// ResetLocalFactors resets only the explicitly selected account and factors.
+// The caller holds the existing exclusive installation lock throughout.
+func ResetLocalFactors(ctx context.Context, db *sql.DB, username, password, confirmation string, resetPassword, resetMFA bool) (LocalRecoveryResult, error) {
 	var result LocalRecoveryResult
+	if !resetPassword && !resetMFA {
+		return result, NewValidationError("select at least one recovery factor")
+	}
 	username = strings.TrimSpace(username)
 	if err := ValidateUsername(username); err != nil {
 		return result, err
 	}
-	if password != confirmation {
+	if resetPassword && password != confirmation {
 		return result, ErrPasswordMismatch
 	}
-	if err := ValidatePasswordPolicy(password); err != nil {
+	if err := ValidatePasswordPolicy(password); resetPassword && err != nil {
 		return result, err
 	}
 	if db == nil {
 		return result, ErrRecoveryFailed
 	}
-	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	var hash string
+	var err error
+	if resetPassword {
+		hash, err = argon2id.CreateHash(password, argon2id.DefaultParams)
+	}
 	if err != nil {
 		return result, ErrRecoveryFailed
 	}
@@ -54,30 +67,62 @@ func ResetLocalPassword(ctx context.Context, db *sql.DB, username, password, con
 		return result, ErrRecoveryFailed
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	updated, err := tx.ExecContext(ctx, "UPDATE auth_users SET password_hash=?,updated_at=? WHERE id=? AND username=?", hash, now, id, username)
-	if err != nil {
+	if resetPassword {
+		updated, err := tx.ExecContext(ctx, "UPDATE auth_users SET password_hash=?,updated_at=? WHERE id=? AND username=?", hash, now, id, username)
+		if err != nil {
+			return result, ErrRecoveryFailed
+		}
+		if n, e := updated.RowsAffected(); e != nil || n != 1 {
+			return result, ErrRecoveryFailed
+		}
+		if err = tx.QueryRowContext(ctx, "SELECT generation FROM auth_login_generation WHERE id=1").Scan(&after); err != nil || after <= before {
+			return result, ErrRecoveryFailed
+		}
+	}
+	var modern int
+	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('auth_users') WHERE name='role'").Scan(&modern); err != nil {
 		return result, ErrRecoveryFailed
 	}
-	if n, countErr := updated.RowsAffected(); countErr != nil || n != 1 {
-		return result, ErrRecoveryFailed
+	if resetMFA {
+		if modern == 0 {
+			return result, ErrRecoveryFailed
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE auth_users SET totp_secret_enc='',totp_pending_enc='',totp_pending_until=0,totp_last_step=-1,generation=generation+1 WHERE id=?", id); err != nil {
+			return result, ErrRecoveryFailed
+		}
+		if _, err = tx.ExecContext(ctx, "DELETE FROM auth_recovery_codes WHERE account_id=?", id); err != nil {
+			return result, ErrRecoveryFailed
+		}
 	}
-	// The established password trigger advances generation atomically. Fail closed
-	// if that schema invariant is missing rather than accepting stale login data.
-	if err = tx.QueryRowContext(ctx, "SELECT generation FROM auth_login_generation WHERE id=1").Scan(&after); err != nil || after <= before {
-		return result, ErrRecoveryFailed
+	deleteQuery := "DELETE FROM sessions"
+	var deleteArgs []any
+	if modern != 0 {
+		deleteQuery += " WHERE account_id=?"
+		deleteArgs = []any{id}
 	}
-	deleted, err := tx.ExecContext(ctx, "DELETE FROM sessions")
+	deleted, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...)
 	if err != nil {
 		return result, ErrRecoveryFailed
 	}
 	if result.RevokedSessions, err = deleted.RowsAffected(); err != nil {
 		return LocalRecoveryResult{}, ErrRecoveryFailed
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM auth_session_metadata"); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM auth_session_metadata WHERE token NOT IN (SELECT token FROM sessions)"); err != nil {
 		return LocalRecoveryResult{}, ErrRecoveryFailed
 	}
-	meta := audit.SanitizeMeta(map[string]any{"recovery_method": "local_cli", "account_id": id, "sessions_revoked": result.RevokedSessions})
-	if err = audit.WriteTx(tx, audit.Event{CreatedAt: now, Actor: "local-recovery", Action: "auth.password.recover", TargetType: "user", TargetName: username, Status: "success", Message: "Administrator password recovered locally; sessions revoked", MetaJSON: meta}); err != nil {
+	if modern != 0 {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM auth_challenges WHERE account_id=?", id); err != nil {
+			return result, ErrRecoveryFailed
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE auth_personal_tokens SET revoked=1 WHERE account_id=?", id); err != nil {
+			return result, ErrRecoveryFailed
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE auth_login_generation SET generation=generation+1 WHERE id=1 AND ?=0", resetPassword); err != nil {
+			return result, ErrRecoveryFailed
+		}
+	}
+	meta := audit.SanitizeMeta(map[string]any{"recovery_method": "local_cli", "account_id": id, "sessions_revoked": result.RevokedSessions, "primary_factor_reset": resetPassword, "factor_mfa_reset": resetMFA})
+	if err = audit.WriteTx(tx, audit.Event{CreatedAt: now, Actor: "local-recovery", Action: "auth.password.recover", TargetType: "user", TargetName: username, Status: "success", Message: "Selected local account factors recovered; account sessions and personal tokens revoked", MetaJSON: meta}); err != nil {
 		return LocalRecoveryResult{}, ErrRecoveryFailed
 	}
 	if err = tx.Commit(); err != nil {

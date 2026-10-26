@@ -56,7 +56,7 @@ func (s scsAuthSessionLifecycle) Stage(ctx context.Context, username string) err
 		return err
 	}
 	sm.Put(ctx, authSessionUserKey, username)
-	return nil
+	return authpkg.StageIdentity(ctx, sm, username)
 }
 
 func (s scsAuthSessionLifecycle) PrepareAuthentication(ctx context.Context) (context.Context, error) {
@@ -160,6 +160,7 @@ type authPasswordOutcome struct {
 type authLoginOutcomeKind string
 
 const (
+	authLoginMFARequired          authLoginOutcomeKind = "mfa_required"
 	authLoginSucceeded            authLoginOutcomeKind = "succeeded"
 	authLoginSetupRequired        authLoginOutcomeKind = "setup_required"
 	authLoginSetupStateFailed     authLoginOutcomeKind = "setup_state_failed"
@@ -175,9 +176,10 @@ type authLoginCommand struct {
 }
 
 type authLoginOutcome struct {
-	Kind     authLoginOutcomeKind
-	Username string
-	Err      error
+	Challenge string
+	Kind      authLoginOutcomeKind
+	Username  string
+	Err       error
 }
 
 type authLogoutOutcomeKind string
@@ -504,6 +506,12 @@ func (m *authSessionCommands) Login(ctx context.Context, cmd authLoginCommand) a
 	if required {
 		return authLoginOutcome{Kind: authLoginSetupRequired}
 	}
+	if service, ok := deps.Account.(*AuthService); ok {
+		ctx, err = service.PrepareAccountAuthentication(ctx, cmd.Username)
+		if err != nil {
+			return authLoginOutcome{Kind: authLoginAuthenticationFailed, Err: err}
+		}
+	}
 	if preparer, ok := deps.Session.(interface {
 		PrepareAuthentication(context.Context) (context.Context, error)
 	}); ok {
@@ -530,6 +538,19 @@ func (m *authSessionCommands) Login(ctx context.Context, cmd authLoginCommand) a
 			Message:    "Invalid credentials",
 		})
 		return authLoginOutcome{Kind: authLoginInvalidCredentials, Username: cmd.Username}
+	}
+	if service, ok := deps.Account.(*AuthService); ok {
+		account, err := service.AccountByName(cmd.Username)
+		if err != nil {
+			return authLoginOutcome{Kind: authLoginAuthenticationFailed, Err: err}
+		}
+		if account.MFAEnabled {
+			challenge, err := service.NewLoginChallenge(ctx, cmd.Username)
+			if err != nil {
+				return authLoginOutcome{Kind: authLoginAuthenticationFailed, Err: err}
+			}
+			return authLoginOutcome{Kind: authLoginMFARequired, Username: cmd.Username, Challenge: challenge}
+		}
 	}
 	if err := deps.Session.Stage(ctx, cmd.Username); err != nil {
 		m.recordAudit(authSessionCommandAuditRecord{
@@ -738,6 +759,19 @@ func authPasswordChangeRateKey(clientIP, actor string) string {
 }
 
 func (m *authSessionCommands) recordAudit(record authSessionCommandAuditRecord) {
+	// A named account may legitimately be called "unknown". An unverified
+	// credential rejection must keep its anonymous actor instead of resolving
+	// that sentinel to an unrelated named identity.
+	unverifiedLogin := record.Action == "auth.login" && record.Status == "failure" && record.Actor == "unknown" && record.Meta == nil
+	if service, ok := m.deps.Account.(*AuthService); ok && !unverifiedLogin {
+		if a, err := service.AccountByName(record.Actor); err == nil && a.ID != 0 {
+			if record.Meta == nil {
+				record.Meta = map[string]any{}
+			}
+			record.Meta["account_id"] = a.ID
+			record.Actor = stableActor(authenticatedPrincipal{Account: a})
+		}
+	}
 	if err := m.deps.RecordAudit(record); err != nil {
 		m.deps.Logf("audit write failed: action=%s target=%s err=%v", record.Action, record.TargetName, err)
 	}

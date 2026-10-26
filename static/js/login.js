@@ -1,3 +1,4 @@
+let loginChallenge = '';
 const form = document.getElementById('login-form');
         const errorBanner = document.getElementById('error-banner');
 
@@ -51,6 +52,15 @@ const form = document.getElementById('login-form');
                     showError(payload.error || 'Login failed.');
                     return;
                 }
+                const payload = await response.json();
+                if (payload.mfa_required) {
+                    loginChallenge = payload.challenge;
+                    document.getElementById('password').value = '';
+                    form.hidden = true;
+                    document.getElementById('mfa-login-form').hidden = false;
+                    document.getElementById('mfa-login-code').focus();
+                    return;
+                }
                 window.location.href = '/';
             } catch (error) {
                 showError(error?.message || 'Login failed.');
@@ -58,3 +68,16 @@ const form = document.getElementById('login-form');
         });
 
         checkSetupState();
+ document.getElementById('mfa-login-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+        const response = await fetch('/api/auth/mfa/challenge', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({challenge:loginChallenge,code:document.getElementById('mfa-login-code').value})});
+        document.getElementById('mfa-login-code').value='';
+        if (!response.ok) {
+            const payload=await response.json().catch(()=>({}));
+            loginChallenge='';form.hidden=false;document.getElementById('mfa-login-form').hidden=true;
+            showError(payload.error||'Verification failed. Sign in again.');return;
+        }
+        loginChallenge='';window.location.href='/';
+    } catch(error) { showError(error.message || 'Verification failed.'); }
+ });

@@ -79,3 +79,4 @@ body {
         min-height: 340px;
     }
 }
+.auth-card form[hidden] { display: none; }

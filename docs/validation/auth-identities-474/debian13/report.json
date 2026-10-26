@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "distribution": "debian13",
+  "base_image": "debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad",
+  "bootstrap_packages": [
+    "apt=3.0.3",
+    "curl=8.14.1-2+deb13u7",
+    "dpkg=1.22.22",
+    "openssh-server=1:10.0p1-7+deb13u4",
+    "sudo=1.9.16p2-3+deb13u2"
+  ],
+  "duration_seconds": 18.518,
+  "scenarios": [
+    {
+      "scenario": "root-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "a6263662b0edb34f79fff19feafe3b1a",
+      "approval": {
+        "job_id": "a6263662b0edb34f79fff19feafe3b1a",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 11,
+      "duration_seconds": 1.607
+    },
+    {
+      "scenario": "operator-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "71130d50687f7a8f260c2d9ed9492b1a",
+      "approval": {
+        "job_id": "71130d50687f7a8f260c2d9ed9492b1a",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 20,
+      "duration_seconds": 2.046
+    },
+    {
+      "scenario": "misconfigured-helper",
+      "status": "passed",
+      "job_id": "7074fa57db1093300ceed61d34d97d5f",
+      "error_class": "permanent",
+      "final_version": "1.0",
+      "duration_seconds": 0.891
+    },
+    {
+      "scenario": "apt-lock",
+      "status": "passed",
+      "job_id": "0f39651ac14e04fb826b4ca8bc7e1d3d",
+      "failed_check": "apt_locks",
+      "final_version": "1.0",
+      "duration_seconds": 0.95
+    },
+    {
+      "scenario": "plan-drift-and-obsolete-approval",
+      "status": "passed",
+      "previous_generation": 1,
+      "accepted_generation": 2,
+      "final_version": "3.0",
+      "duration_seconds": 2.172
+    },
+    {
+      "scenario": "ssh-disconnect-during-mutation-and-repair",
+      "status": "passed",
+      "error_class": "reconciliation_required",
+      "mutation_attempts": 1,
+      "repair_job_id": "b2ee92ce9f40677feed749097221f5eb",
+      "final_version": "2.0",
+      "duration_seconds": 2.914
+    },
+    {
+      "scenario": "changed-host-key",
+      "status": "passed",
+      "previous_fingerprint": "SHA256:iOqRdcK2td1txbObFjiUDC7zpfnO8irQweXDp8w8jAA",
+      "rejected_fingerprint": "SHA256:2nF2Hr71eoxyj8HYb270R3d3joiYdWG4sV/RptRJ9Hw",
+      "final_version": "1.0",
+      "error_class": "permanent",
+      "duration_seconds": 1.281
+    },
+    {
+      "scenario": "systemd-active",
+      "status": "not_executed",
+      "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."
+    },
+    {
+      "scenario": "controlled-reboot",
+      "status": "not_executed",
+      "reason": "Docker shares host uptime; container restart is not a reboot proof. Use vm-reboot.py."
+    },
+    {
+      "scenario": "official-provenance",
+      "status": "not_executed",
+      "reason": "Local fixture repository is deliberately not official; this suite does not qualify distribution provenance."
+    }
+  ],
+  "cleanup": {
+    "status": "passed",
+    "errors": []
+  }
+}

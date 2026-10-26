@@ -8,6 +8,11 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Added
 
+- Stable named local accounts with reader/operator/administrator permissions,
+  optional confirmed TOTP MFA and single-use recovery codes, scoped expiring
+  personal API tokens, and a versioned cookie-free operational API contract.
+- Account UI for identities, role/disable commands, MFA, personal tokens and
+  isolated sessions; targeted password/MFA recovery through the existing locked CLI.
 - Persistent Server and policy package deferrals with mandatory reasons and
   expiration, authenticated audit attribution, cumulative policy inheritance,
   Manage/Admin controls, and security exposure that remains visible.
@@ -23,13 +28,21 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Upgrade notes
 
+- The initial account keeps its ID, username, password hash and data and becomes
+  administrator. Old sessions are signed out once; setup stays closed. New
+  sessions survive restarts. No additional environment variables are needed.
+- Restores invalidate browser sessions and personal API tokens, discard archived
+  recovery codes/enrollment and advance the installation epoch so old in-flight
+  authentication cannot recreate a session. Enabled authenticators remain usable
+  after the current/adjacent TOTP steps expire; the separate metrics credential
+  retains its existing restore contract. See [account/API guidance](docs/personal-api.md).
 - Servers using package deferrals require the current protocol 3 managed root
   helper, including root SSH connections. An absent or older helper blocks the
   protected operation; no unprotected APT fallback is used. Review the
   [helper requirements](docs/usage.md#package-deferrals) before enabling rules.
 - The additive migration creates `package_deferrals` and
   `package_deferral_snapshots`. Existing installations start without rules.
-  No new environment variables or authentication roles are introduced.
+  The package-deferral migration adds no environment variables.
 - Policy schema migration is additive. Existing daily/weekly policies retain
   automatic canaries. A consumed one-time policy cannot be rearmed by editing it;
   create a new policy for another operation. See the [schedule and recovery

@@ -1,0 +1,11 @@
+.account-main { max-width: 1040px; margin: 0 auto; }
+.account-main .card { padding: 24px; margin: 18px 0; }
+.account-main form { display: grid; gap: 10px; max-width: 680px; }
+.account-main input, .account-main select, .account-main button { min-height: 40px; max-width: 100%; }
+.account-main li { padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.account-main li button, .account-main li select { margin: 6px; }
+.account-main fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.account-main fieldset label { display: flex; align-items: center; gap: 10px; }
+.account-main fieldset input { width: auto; }
+.one-time-secret { background: var(--card-alt); border: 1px solid var(--border); padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
+@media (max-width: 600px) { .account-main .card { padding: 16px; } .account-main { width: 100%; min-width: 0; } }

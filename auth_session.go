@@ -86,6 +86,7 @@ var (
 	passwordChangeRateLimiter = NewAuthRateLimiter(authRateLimitWindow, authPasswordChangeMaxAttempts)
 	setupRateLimiter          = NewAuthRateLimiter(authRateLimitWindow, authSetupRateLimitMaxAttempts)
 	metricsRateLimiter        = NewAuthRateLimiter(metricsRateLimitWindow, metricsRateLimitMaxAttempts)
+	personalAPIRateLimiter    = NewAuthRateLimiter(time.Minute, 120)
 )
 
 const authRuntimeDepsContextKey = "auth_runtime_deps"
@@ -115,12 +116,27 @@ func authRuntimeMiddleware(deps AppDeps) gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		c.Set(authRuntimeDepsContextKey, runtime)
+		if strings.TrimSpace(c.GetHeader("Authorization")) != "" && c.FullPath() != "/metrics" {
+			permission, declared := routePermissions[c.Request.Method+" "+c.FullPath()]
+			if !declared || !permission.Bearer {
+				c.AbortWithStatusJSON(401, gin.H{"error": "bearer authentication is not accepted on this route"})
+				return
+			}
+		}
 		c.Next()
 	}
 }
 
 func authCommandsForContext(c *gin.Context) *authSessionCommands {
 	if runtime, ok := authRuntimeFromContext(c); ok && runtime.commands != nil {
+		if p, found := principalForContext(c); found {
+			if _, concrete := runtime.commands.deps.Account.(*AuthService); !concrete {
+				return runtime.commands
+			}
+			clone := *runtime.commands
+			clone.deps.Account = runtime.service.ForAccount(p.Account.ID)
+			return &clone
+		}
 		return runtime.commands
 	}
 	return newAuthSessionCommandsWithDeps(authSessionCommandDeps{
@@ -153,6 +169,9 @@ func authRuntimeFromContext(c *gin.Context) (authRuntimeDeps, bool) {
 
 func authServiceForContext(c *gin.Context) *AuthService {
 	if runtime, ok := authRuntimeFromContext(c); ok && runtime.service != nil {
+		if p, found := principalForContext(c); found {
+			return runtime.service.ForAccount(p.Account.ID)
+		}
 		return runtime.service
 	}
 	return defaultAuthService()
@@ -203,6 +222,7 @@ func setupRateLimiterForContext(c *gin.Context) *AuthRateLimiter {
 }
 
 func StopAuthRateLimiters() {
+	personalAPIRateLimiter.Stop()
 	if loginRateLimiter != nil {
 		loginRateLimiter.Stop()
 	}
@@ -379,7 +399,11 @@ func sessionUsernameWithManager(c *gin.Context, sm *scs.SessionManager) (usernam
 			ok = false
 		}
 	}()
-	return authpkg.SessionUsername(c, sm), true
+	a, err := authpkg.SessionAccount(c.Request.Context(), sm)
+	if err != nil {
+		return "", false
+	}
+	return a.Username, true
 }
 
 func currentSessionManager() *scs.SessionManager {
@@ -406,7 +430,14 @@ func sameOriginAuthRequest(c *gin.Context) bool {
 }
 
 func sameOriginWriteMiddleware() gin.HandlerFunc {
-	return authpkg.SameOriginWriteMiddleware()
+	guard := authpkg.SameOriginWriteMiddleware()
+	return func(c *gin.Context) {
+		if p, ok := principalForContext(c); ok && p.Bearer {
+			c.Next()
+			return
+		}
+		guard(c)
+	}
 }
 
 const maintenanceExclusiveLeaseContextKey = "maintenance_exclusive_lease"
@@ -539,15 +570,16 @@ func authGateMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		username := sessionUsername(c)
-		if username != "" {
-			c.Set("actor", username)
+		if authorizeRequest(c) {
 			if token := currentSessionToken(c); token != "" {
 				if err := authServiceForContext(c).TouchSession(token, rateLimitClientIP(c), maskedSessionClientIP(c), sessionClientLabel(c.GetHeader("User-Agent"))); err != nil {
 					log.Printf("authGateMiddleware: failed to update session activity: %v", err)
 				}
 			}
 			c.Next()
+			return
+		}
+		if c.IsAborted() {
 			return
 		}
 		required, err := setupRequiredForContext(c)
@@ -614,7 +646,9 @@ func handleAuthStatus(c *gin.Context) {
 		return
 	}
 	username := sessionUsername(c)
+	p, _ := resolveCookiePrincipal(c)
 	c.JSON(http.StatusOK, gin.H{
+		"account_id": p.Account.ID, "role": p.Account.Role, "mfa_enabled": p.Account.MFAEnabled,
 		"authenticated":  username != "",
 		"username":       username,
 		"setup_required": required,
@@ -666,6 +700,12 @@ func handleAuthPasswordChange(c *gin.Context) {
 		recordPasswordChangeFailure()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "current_password and new_password are required"})
 		return
+	}
+	if p, ok := principalForContext(c); ok && p.Account.MFAEnabled {
+		requireRecentAuthentication()(c)
+		if c.IsAborted() {
+			return
+		}
 	}
 	outcome := authCommandsForContext(c).ChangePassword(c.Request.Context(), authPasswordCommand{
 		Actor:                   actor,
@@ -788,6 +828,12 @@ func handleAuthSessionIPReveal(c *gin.Context) {
 		return
 	}
 	actor := sessionUsername(c)
+	if p, ok := principalForContext(c); ok && p.Account.MFAEnabled {
+		requireRecentAuthentication()(c)
+		if c.IsAborted() {
+			return
+		}
+	}
 	outcome := authCommandsForContext(c).RevealSessionIP(c.Request.Context(), authRevealSessionIPCommand{
 		Actor:           actor,
 		ClientIP:        clientIPFromContext(c),
@@ -915,12 +961,21 @@ func handleAuthLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request payload"})
 		return
 	}
-	outcome := authCommandsForContext(c).Login(c.Request.Context(), authLoginCommand{
+	loginContext, err := authServiceForContext(c).PrepareAccountAuthentication(c.Request.Context(), req.Username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "authentication unavailable"})
+		return
+	}
+	outcome := authCommandsForContext(c).Login(loginContext, authLoginCommand{
 		Username: req.Username,
 		Password: req.Password,
 		ClientIP: clientIPFromContext(c),
 	})
 	switch outcome.Kind {
+	case authLoginMFARequired:
+		setNoStoreHeaders(c)
+		c.JSON(http.StatusAccepted, gin.H{"mfa_required": true, "challenge": outcome.Challenge})
+		return
 	case authLoginSucceeded:
 		if limiter != nil {
 			limiter.Reset(key)
@@ -983,7 +1038,11 @@ func dashboardSessionValidator(c *gin.Context) func() bool {
 			return false
 		}
 		loaded, err := sm.Load(freshSessionContext{c.Request.Context()}, token)
-		return err == nil && strings.TrimSpace(sm.GetString(loaded, authpkg.SessionUserKey)) == username
+		if err != nil {
+			return false
+		}
+		a, err := authpkg.SessionAccount(loaded, sm)
+		return err == nil && a.Username == username && a.ID != 0
 	}
 }
 

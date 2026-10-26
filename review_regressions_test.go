@@ -83,6 +83,8 @@ func TestReviewRevokedSessionCannotBeResurrectedByInflightRequest(t *testing.T) 
 			cookie := app.authenticate(t)
 			entered := make(chan struct{})
 			release := make(chan struct{})
+			routePermissions["GET /api/review-block"] = routePermission{Scope: "operational:read"}
+			t.Cleanup(func() { delete(routePermissions, "GET /api/review-block") })
 			app.Router.GET("/api/review-block", func(c *gin.Context) { close(entered); <-release; c.Status(http.StatusOK) })
 			request := httptest.NewRequest(http.MethodGet, "/api/review-block", nil)
 			request.AddCookie(cookie)

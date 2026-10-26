@@ -4852,6 +4852,7 @@ test.describe.serial('setup and login flows', () => {
       ['Manage Servers', '/manage'],
       ['Observability', '/observability'],
       ['Admin', '/admin'],
+      ['Account', '/account'],
     ];
 
     for (const viewport of [{ width: 1920, height: 1080 }, { width: 390, height: 844 }]) {

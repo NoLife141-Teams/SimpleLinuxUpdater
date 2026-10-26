@@ -127,5 +127,5 @@ func EnsureSchema(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	return ensureIdentitySchema(db)
 }

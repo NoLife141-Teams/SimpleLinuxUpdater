@@ -106,7 +106,7 @@ func TestLocalRecoveryFailuresRollbackAccountSessionsGenerationAndAudit(t *testi
 	for _, failure := range []string{"audit", "session deletion", "missing generation trigger"} {
 		t.Run(failure, func(t *testing.T) {
 			db, s := recoveryDB(t)
-			if _, err := db.Exec("INSERT INTO sessions VALUES('retained',X'00',9999999)"); err != nil {
+			if _, err := db.Exec("INSERT INTO sessions(token,data,expiry) VALUES('retained',X'00',9999999)"); err != nil {
 				t.Fatal(err)
 			}
 			var hash string

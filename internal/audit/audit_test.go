@@ -41,6 +41,37 @@ func TestSanitizeMetaRedactsNestedSecrets(t *testing.T) {
 	}
 }
 
+func TestStableActorIdentitySurvivesBoundedMetadataWithoutMutatingCaller(t *testing.T) {
+	for _, actor := range []string{"account:7", "account:7/token:0123456789abcdef0123456789abcdef"} {
+		t.Run(actor, func(t *testing.T) {
+			meta := map[string]any{"large": strings.Repeat("x", 8192), "account_id": 99, "secret": "never-retain"}
+			prepared := withStableActorIdentity(actor, meta)
+			if meta["account_id"] != 99 {
+				t.Fatal("caller audit metadata mutated")
+			}
+			raw := SanitizeMeta(prepared)
+			if len(raw) > MetaMaxLen || strings.Contains(raw, "never-retain") {
+				t.Fatal("bounded audit leaked secret or exceeded limit")
+			}
+			var got map[string]any
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["account_id"] != float64(7) {
+				t.Fatalf("stable account lost in truncated metadata: %s", raw)
+			}
+			if strings.Contains(actor, "/token:") && got["personal_token_id"] != "0123456789abcdef0123456789abcdef" {
+				t.Fatal("stable token ID lost")
+			}
+		})
+	}
+	for _, actor := range []string{"tester", "unknown", "account:0", "account:nope", "account:1/token:secret"} {
+		if got := withStableActorIdentity(actor, nil); got != nil {
+			t.Fatalf("invalid/system actor manufactured an identity: %s", actor)
+		}
+	}
+}
+
 func TestSanitizeMetaPreservesLargeIntegers(t *testing.T) {
 	const aboveJavaScriptSafeInteger int64 = 9007199254740993
 	raw := SanitizeMeta(map[string]any{

@@ -106,7 +106,7 @@ The app-wide interpretation of a configured or system-local timezone into effect
 _Avoid_: App timezone helpers, local time callbacks, timezone formatting
 
 **Auth Session Command**:
-An operator-facing authentication mutation that coordinates account state, credential validation, session staging or destruction, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome for setup, login, logout, password change, or session clearing. Local account recovery uses an exclusive installation process lock and commits the existing account's new password, authentication generation, session revocation and audit together before any runtime workers start.
+An operator-facing authentication mutation that coordinates stable named account state, centralized role permissions, credential and optional TOTP/recovery validation, session staging or destruction, scoped personal API credentials, rate-limit policy, audit facts, partial completion, and a transport-neutral outcome. SQLite protects the last enabled administrator and durable session generations; current account permissions are revalidated for requests and long-lived streams. Human identity/factor/session commands require cookies and sensitive changes require recent reauthentication; only declared operational API routes accept personal Bearer credentials. Local account recovery uses an exclusive installation process lock and atomically commits explicitly selected account/factor recovery, authentication generation, targeted session/token revocation and audit before runtime workers start. Metrics Access Credential remains a separate domain.
 _Avoid_: Auth route flow, session handler logic
 
 **Runtime Composition**:

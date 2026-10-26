@@ -98,6 +98,7 @@ func TestOperatorPagesRenderOneSharedApplicationShellContract(t *testing.T) {
 		{label: "Manage Servers", href: "/manage"},
 		{label: "Observability", href: "/observability"},
 		{label: "Admin", href: "/admin"},
+		{label: "Account", href: "/account"},
 	}
 
 	for _, page := range pages {

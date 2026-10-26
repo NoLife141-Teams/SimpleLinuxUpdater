@@ -1070,6 +1070,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
         async function executeRecentActivityFetch(effect) {
+            if (!window.canUseScope('audit:read')) {
+                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'audit', requestId: effect.requestId, snapshot: [], receivedAt: new Date().toISOString() });
+            }
             try {
                 const response = await fetch('/api/audit-events?page=1&page_size=8');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1103,6 +1106,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         async function executePolicySummaryFetch(effect) {
+            if (!window.canUseScope('policies:write')) {
+                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'policies', requestId: effect.requestId, snapshot: [], receivedAt: new Date().toISOString() });
+            }
             try {
                 const response = await fetch('/api/update-policies');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1160,6 +1166,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	        }
 
         async function executeCommandHistoryFetch(effect) {
+            if (!window.canUseScope('audit:read')) return dispatchStatusInteraction({type:'commandHistoryReceived',requestId:effect.requestId,serverName:effect.serverName,history:[],receivedAt:new Date().toISOString()});
             const serverName = String(effect.serverName || "");
             try {
                 const query = new URLSearchParams({
@@ -1192,6 +1199,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         async function executeJobLogFetch(effect) {
+            if (!window.canUseScope('logs:read')) return;
             const jobId = String(effect.jobId || "");
             const serverName = String(effect.serverName || "");
             const afterSequence = Math.max(0, Number(effect.afterSequence || 0));
@@ -1218,6 +1226,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         async function executeGlobalKeyStatusFetch(effect) {
+            if (!window.canUseScope('inventory:write')) {
+                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'globalKey', requestId: effect.requestId, snapshot: false, receivedAt: new Date().toISOString() });
+            }
             try {
                 const response = await fetch('/api/keys/global');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1647,6 +1658,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
 
         function openDrawer(name, tab = "logs") {
+            if (!window.canUseScope('logs:read')) tab = 'pending';
             const previousDrawer = getStatusView().drawer;
             if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	authpkg "debian-updater/internal/auth"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,6 +239,9 @@ func (s *Service) reencryptDatabaseFileInPlace(ctx context.Context, path string,
 		func(webhookURL string) (string, error) { return s.deps.EncryptSecretWithKey(webhookURL, toKey) },
 	); err != nil {
 		return fmt.Errorf("rewrap restored notification webhook: %w", err)
+	}
+	if err := authpkg.RewrapFactors(tx, func(v string) (string, error) { return s.deps.DecryptSecretWithKey(v, fromKey) }, func(v string) (string, error) { return s.deps.EncryptSecretWithKey(v, toKey) }); err != nil {
+		return fmt.Errorf("rewrap authentication factors: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit restored database rewrap: %w", err)

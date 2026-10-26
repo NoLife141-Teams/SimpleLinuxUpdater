@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
 </head>
-<body>
+<body data-account-role="{{.Role}}">
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -349,6 +349,7 @@
             <div class="admin-grid">
                 <div class="admin-block">
                     <h3>Change Password</h3>
+ <p><a href="/account">Manage named accounts, MFA and personal API tokens</a></p>
                     <label class="form-label" for="auth-current-password">Current password</label>
                     <div class="password-field">
                         <input type="password" id="auth-current-password" autocomplete="current-password" aria-describedby="auth-password-caps-warning auth-password-error">

@@ -23,19 +23,24 @@
             <p class="muted">Manage servers, approvals, scheduled updates, and observability from one dense operations desk.</p>
             <div class="auth-meta">
                 <span class="meta-pill live">Protected</span>
-                <span class="meta-pill">Local admin</span>
+                <span class="meta-pill">Local account</span>
             </div>
         </section>
         <section class="card auth-card fade-in">
             <div class="panel-kicker">Login</div>
             <h2>Welcome back</h2>
-            <p class="muted">Use the local admin account created during setup.</p>
+            <p class="muted">Use your named local account. The original setup account remains an administrator.</p>
             <form id="login-form" method="post" action="/api/auth/login" autocomplete="on">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required maxlength="64" autocomplete="username">
                 <label for="password">Password</label>
                 <input id="password" name="password" type="password" required maxlength="64" autocomplete="current-password">
                 <button class="primary-action" type="submit">Sign in</button>
+            </form>
+            <form id="mfa-login-form" hidden>
+                <label for="mfa-login-code">Authenticator or single-use recovery code</label>
+                <input id="mfa-login-code" autocomplete="one-time-code" maxlength="32" required>
+                <button class="primary-action" type="submit">Verify and sign in</button>
             </form>
             <div id="error-banner" class="error" role="alert" aria-live="assertive"></div>
         </section>

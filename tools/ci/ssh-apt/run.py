@@ -235,6 +235,10 @@ class Harness:
                 break
             except OSError: time.sleep(.1)
         self.api.request("POST", "/api/auth/setup", {"username": "fixture-admin", "password": self.password})
+        self.identity = self.api.request("GET", "/api/auth/identity")["account"]
+        require(self.identity["id"] == 1 and self.identity["username"] == "fixture-admin"
+                and self.identity["role"] == "admin" and not self.identity["disabled"],
+                "fixture setup did not establish the expected stable administrator")
         require(self.api.request("GET", "/api/servers") == [], "fresh application unexpectedly contains inventory")
         self.bootstrap_versions = self.target("dpkg-query", "-W", "-f=${binary:Package}=${Version}\n", "apt", "dpkg", "openssh-server", "sudo", "curl").splitlines()
         self.original_fingerprint = self.trust()
@@ -339,7 +343,11 @@ class Harness:
                 require(meta["application_postcheck_profile"]["id"] == "fixture", "job lost profile snapshot")
                 require(meta["application_postcheck_results"][0]["passed"], "real HTTP postcheck failed")
                 event, facts = self.audit(name)
-                require(event["actor"] == "fixture-admin" and event["status"] == "success", "audit actor/outcome missing")
+                expected_actor = "account:" + str(self.identity["id"])
+                require(job["actor"] == expected_actor and event["actor"] == expected_actor
+                        and event["status"] == "success" and facts.get("account_id") == self.identity["id"]
+                        and "personal_token_id" not in facts,
+                        "job/audit lost the authenticated fixture cookie account identity or outcome")
                 require(facts["upgrade_completed"] and facts["postchecks_passed"] and facts["approved_packages"] == [PACKAGE], "completion audit lacks operation facts")
                 published, published_meta = self.audit(name, "approval.published")
                 require(published_meta["job_id"] == identity["job_id"] and published_meta["approval_generation"] == identity["approval_generation"], "approval identity not audited")

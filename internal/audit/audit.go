@@ -425,6 +425,7 @@ func (s *Service) Write(evt Event) error {
 }
 
 func (s *Service) Record(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) error {
+	meta = withStableActorIdentity(actor, meta)
 	evt := Event{
 		CreatedAt:  s.now().UTC().Format(time.RFC3339),
 		Actor:      truncateString(actor, 128),
@@ -453,6 +454,38 @@ func (s *Service) Record(actor, clientIP, action, targetType, targetName, status
 		s.onRecord(evt)
 	}
 	return nil
+}
+
+// Async runners carry the stable actor string after the HTTP context is gone.
+// Preserve the same identity facts as request audits without retaining secrets.
+func withStableActorIdentity(actor string, meta map[string]any) map[string]any {
+	if !strings.HasPrefix(actor, "account:") {
+		return meta
+	}
+	account, token, hasToken := strings.Cut(strings.TrimPrefix(actor, "account:"), "/token:")
+	id, err := strconv.ParseInt(account, 10, 64)
+	if err != nil || id < 1 {
+		return meta
+	}
+	if hasToken {
+		if len(token) != 32 {
+			return meta
+		}
+		for _, c := range token {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return meta
+			}
+		}
+	}
+	out := make(map[string]any, len(meta)+2)
+	for k, v := range meta {
+		out[k] = v
+	}
+	out["account_id"] = id
+	if hasToken {
+		out["personal_token_id"] = token
+	}
+	return out
 }
 
 func (s *Service) List(filter ListFilter) (ListResult, error) {
@@ -656,7 +689,7 @@ func sensitiveMetaKey(rawKey string) bool {
 	return isPassField ||
 		strings.Contains(key, "password") ||
 		strings.Contains(key, "secret") ||
-		strings.Contains(key, "token") ||
+		(strings.Contains(key, "token") && key != "personal_token_id") ||
 		key == "api_key" ||
 		key == "access_key" ||
 		key == "secret_key" ||

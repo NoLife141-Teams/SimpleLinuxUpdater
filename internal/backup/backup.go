@@ -1017,5 +1017,30 @@ func clearDatabaseSessions(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM auth_session_metadata"); err != nil {
 		return fmt.Errorf("clear session metadata: %w", err)
 	}
+	for _, table := range []string{"auth_personal_tokens", "auth_challenges", "auth_recovery_codes"} {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&exists); err != nil {
+			return err
+		}
+		if exists > 0 {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table); err != nil {
+				return err
+			}
+		}
+	}
+	var hasFactors int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('auth_users') WHERE name='totp_secret_enc'").Scan(&hasFactors); err != nil {
+		return err
+	}
+	if hasFactors > 0 {
+		// An older archive must not resurrect consumed recovery codes or OTPs.
+		if _, err := tx.ExecContext(ctx, `UPDATE auth_users SET totp_pending_enc='',totp_pending_until=0,
+		 totp_last_step=max(totp_last_step,?),generation=generation+1`, time.Now().Unix()/30+1); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE auth_installation_epoch SET epoch=lower(hex(randomblob(32))) WHERE id=1"); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }

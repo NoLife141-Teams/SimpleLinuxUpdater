@@ -49,13 +49,11 @@ func TestSchemaMigratesLegacySessionExpiry(t *testing.T) {
 		t.Fatalf("EnsureSchema() error = %v", err)
 	}
 	assertAuthColumnsExist(t, db, "sessions", "expiry")
-	var expiry float64
-	if err := db.QueryRow("SELECT expiry FROM sessions WHERE token = 'tok'").Scan(&expiry); err != nil {
-		t.Fatalf("load migrated expiry: %v", err)
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM sessions").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy sessions must be discarded on identity migration: %d, %v", count, err)
 	}
-	if expiry != 123 {
-		t.Fatalf("expiry = %v, want 123", expiry)
-	}
+
 }
 
 func assertAuthColumnsExist(t *testing.T, db *sql.DB, table string, names ...string) {

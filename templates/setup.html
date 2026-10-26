@@ -24,14 +24,14 @@
             <p class="muted">Initialize the local operator account that secures this updater instance.</p>
             <div class="auth-meta">
                 <span class="meta-pill">Local Docker</span>
-                <span class="meta-pill">Single admin</span>
+                <span class="meta-pill">Local administrator</span>
                 <span class="meta-pill">Private control plane</span>
             </div>
         </section>
         <section class="card auth-card fade-in">
             <div class="panel-kicker">Setup</div>
             <h2>Provision local access</h2>
-            <p class="muted">This creates the single local admin user used to sign in and operate the updater.</p>
+            <p class="muted">Create your local administrator. Additional named accounts and optional MFA can be configured later from Account.</p>
             <form id="setup-form" method="post" action="/api/auth/setup" autocomplete="on">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required maxlength="64" autocomplete="username">

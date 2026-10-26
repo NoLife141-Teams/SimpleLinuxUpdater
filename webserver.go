@@ -953,6 +953,11 @@ func handleDashboardEventsWithConfig(c *gin.Context, broker *events.Broker, conf
 			if !ok {
 				return
 			}
+			if !contextAllows(c, "logs:read") {
+				event.Data = ""
+				event.Stream = ""
+				event.Sequence = 0
+			}
 			payload, err := json.Marshal(event)
 			if err != nil {
 				continue
@@ -1179,14 +1184,14 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 	if c.Request != nil {
 		ctx = c.Request.Context()
 	}
-	includeCommandHistory := true
+	includeCommandHistory := contextAllows(c, "logs:read")
 	if raw := strings.TrimSpace(c.Query("include_command_history")); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid include_command_history value; expected true or false"})
 			return
 		}
-		includeCommandHistory = parsed
+		includeCommandHistory = parsed && contextAllows(c, "logs:read")
 	}
 	summary, err := service.BuildDashboardSummaryContextWithOptions(ctx, c.Query("window"), now(), observabilitypkg.DashboardSummaryOptions{
 		OmitCommandHistory: !includeCommandHistory,
@@ -1363,6 +1368,7 @@ func clientIPFromContext(c *gin.Context) string {
 }
 
 func audit(c *gin.Context, action, targetType, targetName, status, message string, meta map[string]any) {
+	meta = identityAuditMeta(c, meta)
 	if service := auditServiceForContext(c); service != nil {
 		if err := service.Record(actorFromContext(c), clientIPFromContext(c), action, targetType, targetName, status, message, meta); err != nil {
 			log.Printf("audit write failed: action=%s target=%s err=%v", action, targetName, err)
@@ -1373,6 +1379,7 @@ func audit(c *gin.Context, action, targetType, targetName, status, message strin
 }
 
 func auditWithService(service *AuditService, c *gin.Context, action, targetType, targetName, status, message string, meta map[string]any) {
+	meta = identityAuditMeta(c, meta)
 	if service == nil {
 		audit(c, action, targetType, targetName, status, message, meta)
 		return
@@ -1856,6 +1863,7 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	r.Use(packageDeferralPolicyGate(deps))
 	registerProtectedPageRoutes(r)
 	registerProtectedAuthAndSettingsRoutes(r, deps)
+	registerIdentityRoutes(r)
 	registerPolicyAuditObservabilityRoutes(r, deps)
 	registerServerAndActionRoutes(r, deps)
 	return nil
@@ -1867,6 +1875,7 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/auth/setup", sameOriginWriteMiddleware(), handleAuthSetup)
 	r.POST("/api/auth/login", sameOriginWriteMiddleware(), handleAuthLogin)
 	r.GET("/api/auth/status", handleAuthStatus)
+	r.POST("/api/auth/mfa/challenge", sameOriginWriteMiddleware(), handleMFAChallenge)
 	r.GET("/api/maintenance", func(c *gin.Context) {
 		c.JSON(http.StatusOK, publicMaintenanceSnapshotPayload(deps.MaintenanceCoordinator.Snapshot()))
 	})
@@ -1879,22 +1888,22 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 func registerProtectedPageRoutes(r *gin.Engine) {
 	r.GET("/", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "index.html", newOperatorApplicationShellView("status", "Status"))
+		c.HTML(http.StatusOK, "index.html", operatorShellForContext(c, "status", "Status"))
 	})
 
 	r.GET("/manage", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "manage.html", newOperatorApplicationShellView("manage", "Manage Servers"))
+		c.HTML(http.StatusOK, "manage.html", operatorShellForContext(c, "manage", "Manage Servers"))
 	})
 
 	r.GET("/observability", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "observability.html", newOperatorApplicationShellView("observability", "Observability"))
+		c.HTML(http.StatusOK, "observability.html", operatorShellForContext(c, "observability", "Observability"))
 	})
 
 	r.GET("/admin", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "admin.html", newOperatorApplicationShellView("admin", "Admin"))
+		c.HTML(http.StatusOK, "admin.html", operatorShellForContext(c, "admin", "Admin"))
 	})
 
 }
@@ -1947,7 +1956,7 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/backup/export", func(c *gin.Context) {
 		handleBackupExportWithDeps(c, deps)
 	})
-	r.POST("/api/backup/restore", func(c *gin.Context) {
+	r.POST("/api/backup/restore", requireRecentAuthentication(), func(c *gin.Context) {
 		handleBackupRestoreWithDeps(c, deps)
 	})
 	r.POST("/api/backup/verify", func(c *gin.Context) {
@@ -2132,6 +2141,10 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		statuses := inventoryService.ListStatuses()
 		for i := range statuses {
 			statuses[i].Logs = jobsPkg.BoundedLogPreview(statuses[i].Logs)
+			if !contextAllows(c, "logs:read") {
+				statuses[i].Logs = ""
+				statuses[i].ApplicationPostcheckProfile = nil
+			}
 		}
 		c.JSON(http.StatusOK, statuses)
 	})

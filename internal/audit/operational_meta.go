@@ -6,6 +6,7 @@ import "encoding/json"
 // Values come from the already-redacted map and share the same total byte cap.
 func retainOperationalMeta(dst, src map[string]any) {
 	keys := []string{
+		"account_id", "personal_token_id",
 		"pending_package_count", "approved_package_count", "security_package_count", "approval_scope",
 		"execution_duration_ms", "duration_ms", "total_elapsed_ms", "status", "last_error_class",
 		"prechecks_passed", "precheck_failed", "postchecks_enabled", "postchecks_passed", "postcheck_failed",

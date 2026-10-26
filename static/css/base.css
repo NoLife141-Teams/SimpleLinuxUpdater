@@ -1111,3 +1111,22 @@ pre {
         gap: 4px;
     }
 }
+
+/* Identity permissions also guide presentation; the server enforces every route. */
+body[data-account-role="reader"] [data-action]:not([data-action="open-drawer"]),
+body[data-account-role="reader"] .bulk-action-controls,
+body[data-account-role="reader"] .rail-bulk,
+body[data-account-role="reader"] [data-action="open-drawer"][data-tab="logs"],
+body[data-account-role="reader"] #status-drawer-approval-actions,
+body[data-account-role="reader"] #drawer-tab-logs,
+body[data-account-role="reader"] #drawer-panel-logs,
+body[data-account-role="reader"] #command-history-panel,
+body[data-account-role="reader"] #recent-activity,
+body[data-account-role="operator"] [data-action="enable-apt"],
+body[data-account-role="operator"] [data-action="disable-apt"],
+body[data-account-role="operator"] #command-history-panel,
+body[data-account-role="operator"] #recent-activity { display: none !important; }
+body[data-account-role="reader"] [id^="bulk-approve"],
+body[data-account-role="reader"] #bulk-update,
+body[data-account-role="reader"] #bulk-cancel,
+body[data-account-role="reader"] #bulk-autoremove { display: none !important; }

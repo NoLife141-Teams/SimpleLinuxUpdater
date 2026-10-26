@@ -18,15 +18,16 @@ import (
 	"golang.org/x/term"
 )
 
-const recoveryUsage = "Usage: webserver admin reset-password [--username ACCOUNT] [--password-stdin]\nStop the server first. Password and confirmation are read without echo from the terminal.\n--password-stdin requires --username and reads exactly two newline-terminated password lines.\n"
+const recoveryUsage = "Usage: webserver admin reset-password [--username ACCOUNT] [--password-stdin] [--factors password|mfa|password,mfa]\nStop the server first. Password and confirmation are read without echo from the terminal.\n--password-stdin requires --username and reads exactly two newline-terminated password lines.\n"
 
 type recoveryOptions struct {
 	username string
 	stdin    bool
+	factors  string
 }
 
 func parseRecoveryOptions(args []string) (recoveryOptions, error) {
-	var options recoveryOptions
+	options := recoveryOptions{factors: "password"}
 	if len(args) < 2 || args[0] != "admin" || args[1] != "reset-password" {
 		return options, errors.New("unknown command; use webserver admin reset-password --help")
 	}
@@ -38,6 +39,15 @@ func parseRecoveryOptions(args []string) (recoveryOptions, error) {
 			}
 			i++
 			options.username = args[i]
+		case "--factors":
+			if i+1 >= len(args) {
+				return options, errors.New("--factors requires password, mfa, or password,mfa")
+			}
+			i++
+			options.factors = args[i]
+			if options.factors != "password" && options.factors != "mfa" && options.factors != "password,mfa" {
+				return options, errors.New("invalid recovery factors")
+			}
 		case "--password-stdin":
 			if options.stdin {
 				return options, errors.New("duplicate --password-stdin")
@@ -137,7 +147,9 @@ func runAdminCommand(args []string, input *os.File, output io.Writer) (bool, err
 		}
 	}
 	var password, confirmation string
-	if options.stdin {
+	if options.factors == "mfa" {
+		// MFA-only recovery never reads or changes the password.
+	} else if options.stdin {
 		password, err = readRecoveryLine(input, 256)
 		if err == nil {
 			confirmation, err = readRecoveryLine(input, 256)
@@ -171,11 +183,11 @@ func runAdminCommand(args []string, input *os.File, output io.Writer) (bool, err
 		restoreTerminal()
 		restoreTerminal = nil
 	}
-	result, err := auth.ResetLocalPassword(context.Background(), database, options.username, password, confirmation)
+	result, err := auth.ResetLocalFactors(context.Background(), database, options.username, password, confirmation, strings.Contains(options.factors, "password"), strings.Contains(options.factors, "mfa"))
 	if err != nil {
 		return true, err
 	}
-	_, err = fmt.Fprintf(output, "Local password recovery committed. %d session(s) revoked. Restart the server and sign in.\n", result.RevokedSessions)
+	_, err = fmt.Fprintf(output, "Local account recovery committed. %d session(s) revoked. Restart the server and sign in.\n", result.RevokedSessions)
 	if err != nil {
 		return true, errors.New("local recovery committed, but confirmation could not be written; restart and verify access")
 	}

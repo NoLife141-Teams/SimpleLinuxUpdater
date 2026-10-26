@@ -3,6 +3,9 @@
         return;
     }
     window.__authHelpersReady = true;
+    const role = document.body.dataset.accountRole || 'admin';
+    window.canUseScope = scope => role === 'admin' || scope === 'operational:read'
+        || (role === 'operator' && ['maintenance:write', 'approvals:write', 'logs:read'].includes(scope));
 
     if (!window.__nativeFetch) {
         window.__nativeFetch = window.fetch.bind(window);
@@ -11,7 +14,7 @@
     if (!window.__fetchWrapped) {
         window.fetch = async (...args) => {
             const response = await window.__nativeFetch(...args);
-            if (response.status === 401) {
+            if (response.status === 401 && !(await response.clone().json().catch(() => ({}))).reauthentication_required) {
                 window.location.href = '/login';
                 // Prevent unhandled rejections while navigation is in progress.
                 return new Promise(() => {});

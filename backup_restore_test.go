@@ -758,6 +758,28 @@ func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 		Tags: []string{"prod"},
 	}
 	backupDB := buildBackupDatabaseDataWithKey(t, backupKey, restoredServer, "restored-global-key")
+	factorDBPath := filepath.Join(t.TempDir(), "source-with-factor.db")
+	if err := os.WriteFile(factorDBPath, backupDB, 0600); err != nil {
+		t.Fatal(err)
+	}
+	factorDB, err := sql.Open("sqlite", factorDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	factorCipher, err := encryptSecretWithKey("SYNTHETICBACKUPFACTOR", backupKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = factorDB.Exec("INSERT INTO auth_users(id,username,password_hash,created_at,updated_at,totp_secret_enc) VALUES(1,'restored-admin','synthetic-hash','created','updated',?)", factorCipher); err != nil {
+		t.Fatal(err)
+	}
+	if err = factorDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backupDB, err = os.ReadFile(factorDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	backupConfig, err := json.Marshal(map[string]string{
 		"encryption_key": base64.StdEncoding.EncodeToString(backupKey),
 	})
@@ -799,6 +821,17 @@ func TestApplyBackupFilesReencryptsRestoredDatabaseWithLocalKey(t *testing.T) {
 	if got, err := decryptSecretWithKey(passEnc, backupKey); err == nil && got == restoredServer.Pass {
 		t.Fatalf("restored password still decrypts with backup key")
 	}
+	var restoredFactor string
+	if err := getDB().QueryRow("SELECT totp_secret_enc FROM auth_users WHERE id=1").Scan(&restoredFactor); err != nil {
+		t.Fatal(err)
+	}
+	if plain, err := decryptSecretWithKey(restoredFactor, currentKey); err != nil || plain != "SYNTHETICBACKUPFACTOR" {
+		t.Fatal("MFA factor not rewrapped with destination key", err)
+	}
+	if _, err := decryptSecretWithKey(restoredFactor, backupKey); err == nil {
+		t.Fatal("factor still decrypts with archived key")
+	}
+
 }
 
 func TestBackupAPIExportRestoreLifecycle(t *testing.T) {

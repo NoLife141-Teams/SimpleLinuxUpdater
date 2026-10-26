@@ -2,6 +2,15 @@
 
 # Security
 
+Named account roles, optional TOTP, targeted recovery, personal Bearer scopes and
+the migration/restore rules are documented in [Named accounts and personal API
+v1](personal-api.md). The versioned [OpenAPI contract](openapi-v1.json) defines
+the limited cookie-free automation surface. Each protected route is denied
+unless it declares a permission. Raw logs/job reports require operator access;
+audit exports and credential/installation administration require administrator
+access. Cookie same-origin checks and the separate Metrics Access Credential
+remain in force.
+
 ## Table of contents
 
 - [Summary](#summary)
@@ -30,7 +39,7 @@ Treat it as privileged infrastructure.
 
 - Intended for trusted LAN/VPN environments only.
 - No TLS termination by default; use a reverse proxy for HTTPS.
-- Single-user local authentication is intended for small trusted teams/homelabs.
+- Named local accounts retain the simple single-administrator default for trusted teams/homelabs.
 - Direct binary runs bind to `127.0.0.1:8080` by default. The Docker image binds
   `:8080` explicitly so published container ports continue to work.
 - A non-loopback listener exposes first-run `/setup` account creation. Restrict
@@ -41,7 +50,7 @@ Treat it as privileged infrastructure.
 
 SimpleLinuxUpdater uses:
 
-- First-run setup at `/setup` to create one local admin user
+- First-run setup at `/setup` to create the initial local administrator; additional named accounts use reader, operator or administrator roles
 - Argon2id password hashing (`auth_users` table in SQLite)
 - Server-side sessions stored in SQLite (`sessions` table)
 - Session cookies with `HttpOnly` and `SameSite=Lax`

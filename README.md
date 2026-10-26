@@ -26,6 +26,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 
 ## Features
 
+- Named local accounts with reader/operator/administrator permissions, optional TOTP MFA and scoped personal API tokens ([permissions, migration, recovery and automation](docs/personal-api.md), [OpenAPI v1](docs/openapi-v1.json)). Existing installations keep their administrator password and sign in again once after migration.
 - Multi-server management (custom SSH ports supported)
 - CSV/JSON inventory import with normalized previews, row selection, atomic creation and disabled-by-default servers ([format and workflow](docs/usage.md#import-an-inventory))
 - Enable or disable servers from Manage Servers. Disabling preserves credentials and history while blocking manual maintenance, scheduled runs, and automatic host-facts refreshes. Finish or cancel any active operation before disabling a server; re-enable it to resume normal scheduling.
@@ -43,7 +44,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - On-demand `apt autoremove` and independent scheduled cleanup policies
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
-- Built-in single-user login with first-run setup, Argon2id password hashing, and SQLite-backed sessions
+- Built-in named local accounts with first-run administrator setup, Argon2id password hashing, optional TOTP MFA, and isolated SQLite-backed sessions
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 

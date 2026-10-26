@@ -9,6 +9,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
             presentationFacts: dashboardConsumption.presentationFacts
         });
         window.statusPageInteraction = statusInteraction;
+        const statusViewScope = window.StatusRendering.createSnapshotScope(() => statusInteraction.getView());
         let allServers = [];
         let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
         let hoveredName = null;
@@ -50,7 +51,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         ]);
 
         function getStatusView() {
-            return statusInteraction.getView();
+            return statusViewScope.read();
         }
 
         function refreshDashboardPresentation() {
@@ -85,9 +86,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 } else if (effect.type === "renderSyncState") {
                     renderSyncState();
                 } else if (effect.type === "renderSecondarySnapshot") {
-                    refreshDashboardPresentation();
-                    if (effect.stream === "audit") renderRecentActivity();
-                    if (["observability", "policies"].includes(effect.stream)) renderSummaryBadges();
+                    statusViewScope.run(() => {
+                        refreshDashboardPresentation();
+                        if (effect.stream === "audit") renderRecentActivity();
+                        if (["observability", "policies"].includes(effect.stream)) renderSummaryBadges();
+                    });
                 } else if (effect.type === "cancelInteractionRelease") {
                     if (actionInteractionReleaseTimer !== null) {
                         clearTimeout(actionInteractionReleaseTimer);
@@ -690,7 +693,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                const factsState = String(triage.facts_state || "unknown").toLowerCase();
 	                const canUpdate = canRunUpdateAction(server);
 	                const canRefreshFacts = canRefreshFactsAction(server);
-	                const rowSelected = getStatusView().primaryServerName === server.name;
+	                const rowSelected = primaryServerName === server.name;
 	                const driftReason = pendingApprovalDriftReason(server);
 	                const driftNotice = driftReason
 	                    ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
@@ -1308,6 +1311,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
 	        function renderServerState() {
+	            return statusViewScope.run(renderServerStateSnapshot);
+	        }
+	        function renderServerStateSnapshot() {
 	            const view = getStatusView();
 	            allServers = view.servers;
 	            refreshDashboardPresentation();
@@ -1851,6 +1857,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderTable(options = {}) {
+            return statusViewScope.run(() => renderTableSnapshot(options));
+        }
+        function renderTableSnapshot(options) {
             hidePhaseTooltip();
             refreshDashboardPresentation();
             const tbody = document.querySelector('#servers-table tbody');

@@ -5,6 +5,28 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function statusRenderingFactory() {
     "use strict";
 
+    // Reuse a defensive domain snapshot only within one synchronous DOM render.
+    // Other callers retain fresh reads; nested renders share the accepted facts.
+    function createSnapshotScope(readSnapshot) {
+        let active = false;
+        let snapshot;
+        function read() {
+            return active ? snapshot : readSnapshot();
+        }
+        function run(render) {
+            if (active) return render();
+            snapshot = readSnapshot();
+            active = true;
+            try {
+                return render();
+            } finally {
+                active = false;
+                snapshot = undefined;
+            }
+        }
+        return Object.freeze({ read, run });
+    }
+
     const syncStreamLabels = Object.freeze({
         servers: "Fleet inventory",
         dashboard: "Dashboard",
@@ -126,5 +148,5 @@
         return Object.freeze({ text, html, visible, metrics, metricFilterLabel, metricFilterState, syncNotice, syncState });
     }
 
-    return Object.freeze({ create, syncNotice });
+    return Object.freeze({ create, syncNotice, createSnapshotScope });
 }));

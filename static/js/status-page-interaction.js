@@ -244,6 +244,7 @@
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
         let jobLogTransportLive = false;
+        const disconnectedJobLogs = new Map();
 
         function createTerminalState() {
             return { lines: [], current: "", currentStream: "", pendingCR: false };
@@ -380,7 +381,10 @@
                 if (!statusSortValues.has(server.name)) statusSortValues.set(server.name, server.status);
             });
             Array.from(jobLogsByServer.keys()).forEach(name => {
-                if (!retainedNames.has(name)) jobLogsByServer.delete(name);
+                if (!retainedNames.has(name)) {
+                    jobLogsByServer.delete(name);
+                    disconnectedJobLogs.delete(name);
+                }
             });
             servers.forEach(server => {
                 const serverName = server.name;
@@ -421,6 +425,7 @@
                     }
                 }
                 const accepted = jobLogsByServer.get(serverName);
+                if (disconnectedJobLogs.get(serverName) !== accepted?.jobId) disconnectedJobLogs.delete(serverName);
                 if (accepted) updateServerLogProjection(serverName, accepted);
             });
             return effects;
@@ -747,6 +752,7 @@
                     acceptLogFragment(state, fragment);
                 });
             updateServerLogProjection(serverName, state);
+            if (disconnectedJobLogs.get(serverName) === state.jobId) disconnectedJobLogs.delete(serverName);
             return drawerLogEffects(serverName);
         }
 
@@ -763,7 +769,11 @@
         function recoverKnownJobLogs() {
             const effects = [];
             jobLogsByServer.forEach((state, serverName) => {
-                effects.push(...logRecoveryEffect(serverName, state));
+                if (shouldRecoverServer(serverName, serversByName.get(serverName))
+                    || serverName === primaryServerName
+                    || disconnectedJobLogs.get(serverName) === state.jobId) {
+                    effects.push(...logRecoveryEffect(serverName, state));
+                }
             });
             return effects;
         }
@@ -845,6 +855,13 @@
                 }
                 return [];
             } else if (event.type === "jobLogTransportChanged") {
+                if (jobLogTransportLive && !event.live) {
+                    jobLogsByServer.forEach((state, serverName) => {
+                        if (shouldRecoverServer(serverName, serversByName.get(serverName)) || serverName === primaryServerName) {
+                            disconnectedJobLogs.set(serverName, state.jobId);
+                        }
+                    });
+                }
                 jobLogTransportLive = !!event.live;
                 return jobLogTransportLive ? recoverVisibleJobLogs() : [];
             } else if (event.type === "jobLogReconnect") {
@@ -1127,10 +1144,9 @@
         }
 
         function planBulkAction(actionKey, options = {}) {
-            const projection = projectView();
-            const selectedNames = interaction.actionContext ? interaction.actionContext.selectedNames : projection.selectedNames;
-            const visibleSelectedNames = interaction.actionContext ? interaction.actionContext.visibleSelectedNames : projection.visibleSelectedNames;
-            const hiddenSelectedNames = interaction.actionContext ? interaction.actionContext.hiddenSelectedNames : projection.hiddenSelectedNames;
+            // Command planning needs selection and current eligibility, not the
+            // fleet's log/history/presentation snapshots for every toolbar button.
+            const { selectedNames, visibleSelectedNames, hiddenSelectedNames } = interaction.actionContext || projectNavigation();
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
@@ -1175,7 +1191,7 @@
             return effects;
         }
 
-        function projectView() {
+        function projectNavigation() {
             const visibleServers = sortedVisibleServers();
             const totalPages = Math.max(1, Math.ceil(visibleServers.length / pageSize));
             const safePage = Math.max(1, Math.min(page, totalPages));
@@ -1185,6 +1201,11 @@
             const selectedNames = Array.from(selectedServerNames);
             const visibleSelectedNames = selectedNames.filter(name => pageNames.has(name));
             const hiddenSelectedNames = selectedNames.filter(name => !pageNames.has(name));
+            return { visibleServers, totalPages, safePage, pageServers, selectedNames, visibleSelectedNames, hiddenSelectedNames };
+        }
+
+        function projectView() {
+            const { visibleServers, totalPages, safePage, pageServers, selectedNames, visibleSelectedNames, hiddenSelectedNames } = projectNavigation();
             const grouped = new Map();
             if (filters.groupBy === "status") {
                 pageServers.forEach(server => {

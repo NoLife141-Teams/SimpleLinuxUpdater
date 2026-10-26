@@ -50,6 +50,7 @@ _Avoid_: Button state logic, frontend action rules
 
 **Status Page Interaction**:
 The application-level state and decision boundary for status-page snapshots, navigation, synchronization, selection, drawer state, and single or bulk action planning; browser adapters retain transport, persistence, DOM, focus, scrolling, and confirmation effects.
+Browser rendering shares a defensive read snapshot only for one synchronous render. Reconnection recovers active and inspected jobs plus jobs followed before a stream loss, even when they finish during the outage; unopened terminal log detail remains on demand.
 _Avoid_: Status page globals, dashboard UI state
 
 **Manage Page Interaction**:

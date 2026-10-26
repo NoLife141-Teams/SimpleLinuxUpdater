@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: debian-updater/internal/observability
+cpu: AMD Ryzen 9 9950X 16-Core Processor
+BenchmarkDashboardScalingPhases/10/Collect-2 	     478	    764472 ns/op	  381547 B/op	    2520 allocs/op
+BenchmarkDashboardScalingPhases/10/Collect-2 	     530	    672477 ns/op	  381546 B/op	    2520 allocs/op
+BenchmarkDashboardScalingPhases/10/Collect-2 	     508	    680492 ns/op	  381549 B/op	    2520 allocs/op
+BenchmarkDashboardScalingPhases/10/Collect-2 	     446	    692492 ns/op	  381549 B/op	    2520 allocs/op
+BenchmarkDashboardScalingPhases/10/Collect-2 	     464	    721036 ns/op	  381547 B/op	    2520 allocs/op
+BenchmarkDashboardScalingPhases/10/Project-2 	   10000	     38183 ns/op	   77736 B/op	     345 allocs/op
+BenchmarkDashboardScalingPhases/10/Project-2 	    8968	     45573 ns/op	   77736 B/op	     345 allocs/op
+BenchmarkDashboardScalingPhases/10/Project-2 	    7975	     40329 ns/op	   77736 B/op	     345 allocs/op
+BenchmarkDashboardScalingPhases/10/Project-2 	   10000	     41761 ns/op	   77736 B/op	     345 allocs/op
+BenchmarkDashboardScalingPhases/10/Project-2 	    9800	     43831 ns/op	   77736 B/op	     345 allocs/op
+BenchmarkDashboardScalingPhases/100/Collect-2         	      92	   3402778 ns/op	 1672608 B/op	   19676 allocs/op
+BenchmarkDashboardScalingPhases/100/Collect-2         	     100	   3437820 ns/op	 1672603 B/op	   19676 allocs/op
+BenchmarkDashboardScalingPhases/100/Collect-2         	     100	   3346032 ns/op	 1672609 B/op	   19676 allocs/op
+BenchmarkDashboardScalingPhases/100/Collect-2         	     106	   3240619 ns/op	 1672603 B/op	   19676 allocs/op
+BenchmarkDashboardScalingPhases/100/Collect-2         	     100	   3450378 ns/op	 1672605 B/op	   19676 allocs/op
+BenchmarkDashboardScalingPhases/100/Project-2         	     760	    485628 ns/op	  704284 B/op	    3312 allocs/op
+BenchmarkDashboardScalingPhases/100/Project-2         	     694	    548880 ns/op	  704285 B/op	    3312 allocs/op
+BenchmarkDashboardScalingPhases/100/Project-2         	     703	    554781 ns/op	  704285 B/op	    3312 allocs/op
+BenchmarkDashboardScalingPhases/100/Project-2         	     549	    559159 ns/op	  704287 B/op	    3312 allocs/op
+BenchmarkDashboardScalingPhases/100/Project-2         	     765	    523067 ns/op	  704285 B/op	    3312 allocs/op
+BenchmarkDashboardScalingPhases/1000/Collect-2        	      12	  30061346 ns/op	14774986 B/op	  190972 allocs/op
+BenchmarkDashboardScalingPhases/1000/Collect-2        	      10	  30628941 ns/op	14774951 B/op	  190971 allocs/op
+BenchmarkDashboardScalingPhases/1000/Collect-2        	      12	  28997788 ns/op	14774983 B/op	  190972 allocs/op
+BenchmarkDashboardScalingPhases/1000/Collect-2        	      12	  29794550 ns/op	14774946 B/op	  190971 allocs/op
+BenchmarkDashboardScalingPhases/1000/Collect-2        	      12	  28335652 ns/op	14774964 B/op	  190971 allocs/op
+BenchmarkDashboardScalingPhases/1000/Project-2        	     100	   4780754 ns/op	 7599295 B/op	   32927 allocs/op
+BenchmarkDashboardScalingPhases/1000/Project-2        	     100	   5593919 ns/op	 7599308 B/op	   32927 allocs/op
+BenchmarkDashboardScalingPhases/1000/Project-2        	      62	   5202086 ns/op	 7599293 B/op	   32927 allocs/op
+BenchmarkDashboardScalingPhases/1000/Project-2        	      74	   5530164 ns/op	 7599316 B/op	   32927 allocs/op
+BenchmarkDashboardScalingPhases/1000/Project-2        	      79	   5182308 ns/op	 7599315 B/op	   32927 allocs/op
+PASS
+ok  	debian-updater/internal/observability	14.265s

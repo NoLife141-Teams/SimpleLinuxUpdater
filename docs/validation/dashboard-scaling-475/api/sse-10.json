@@ -1,0 +1,58 @@
+{
+  "manifest": {
+    "version": 2,
+    "seed": 475,
+    "clock": "2026-10-25T12:00:00Z",
+    "servers": 10,
+    "active": 1,
+    "approvals": 2,
+    "terminal": 7,
+    "package_hosts": 6,
+    "packages_per_host": 20,
+    "preview_bytes_per_host": 4096,
+    "commands_per_host": 10,
+    "updates_per_host": 4,
+    "detailed_log_bytes_per_host": 32768,
+    "policies": 3,
+    "trusted_hosts": 8,
+    "sha256": "83a0a075c1d957f02724f6ebae2b4850154a942c3e7c03e340ea26a4b745be4e"
+  },
+  "measurements": [
+    {
+      "allocated_bytes": 668120,
+      "clients": 1,
+      "cycles": 3,
+      "data_bytes_per_event": 256,
+      "errors": 0,
+      "events_per_second": 5,
+      "fanout_p50_ms": 0.604234,
+      "fanout_p95_ms": 0.920076,
+      "goroutines_after": 23,
+      "goroutines_before": 23,
+      "n": 30,
+      "published": 30,
+      "received": 30,
+      "retained_heap_delta": 24784,
+      "sql_statements": 117,
+      "timeouts": 0
+    },
+    {
+      "allocated_bytes": 3292064,
+      "clients": 5,
+      "cycles": 3,
+      "data_bytes_per_event": 256,
+      "errors": 0,
+      "events_per_second": 5,
+      "fanout_p50_ms": 1.515455,
+      "fanout_p95_ms": 1.867635,
+      "goroutines_after": 23,
+      "goroutines_before": 23,
+      "n": 30,
+      "published": 30,
+      "received": 150,
+      "retained_heap_delta": 87456,
+      "sql_statements": 585,
+      "timeouts": 0
+    }
+  ]
+}

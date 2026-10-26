@@ -1,0 +1,139 @@
+File: debian-updater.test
+Build ID: 92de0dadeaa52b4ddb262bb8798f2858c44a90f1
+Type: alloc_space
+Time: 2026-10-26 18:42:22 UTC
+Showing nodes accounting for 2552.20MB, 95.38% of 2675.93MB total
+Dropped 153 nodes (cum <= 13.38MB)
+      flat  flat%   sum%        cum   cum%
+  787.35MB 29.42% 29.42%   787.35MB 29.42%  bytes.growSlice
+  331.94MB 12.40% 41.83%   331.94MB 12.40%  debian-updater/internal/servers.ClonePendingUpdates (inline)
+  216.54MB  8.09% 49.92%   878.17MB 32.82%  encoding/json.Marshal
+     192MB  7.18% 57.10%      192MB  7.18%  golang.org/x/crypto/argon2.initBlocks
+  162.29MB  6.06% 63.16%   321.39MB 12.01%  debian-updater/internal/observability.dashboardProjection.Project
+   92.59MB  3.46% 66.62%   119.60MB  4.47%  debian-updater/internal/observability.buildDashboardActions
+   79.05MB  2.95% 69.57%   410.98MB 15.36%  debian-updater/internal/servers.CloneServerStatus
+   64.65MB  2.42% 71.99%   193.67MB  7.24%  debian-updater/internal/observability.dashboardProjectionCollector.collectUpdateHistoryContext
+   58.50MB  2.19% 74.18%    58.50MB  2.19%  reflect.unsafe_New
+   48.01MB  1.79% 75.97%    48.01MB  1.79%  reflect.mapassign_faststr0
+   48.01MB  1.79% 77.76%   978.27MB 36.56%  debian-updater/internal/observability.dashboardProjectionCollector.CollectContextWithOptions
+   40.59MB  1.52% 79.28%    52.59MB  1.97%  debian-updater/internal/observability.appendLatestUpdateJobRows
+      38MB  1.42% 80.70%       38MB  1.42%  time.newParseError (inline)
+   36.06MB  1.35% 82.05%    69.90MB  2.61%  debian-updater/internal/testutil/dashboardfixture.Dataset.SeedDB
+   32.86MB  1.23% 83.28%    32.86MB  1.23%  internal/bytealg.MakeNoZero
+   32.52MB  1.22% 84.49%   163.37MB  6.11%  encoding/json.mapEncoder.encode
+   29.09MB  1.09% 85.58%   240.59MB  8.99%  debian-updater/internal/servers.(*State).ListStatuses
+   28.50MB  1.07% 86.64%       53MB  1.98%  modernc.org/sqlite.(*rows).Next
+      28MB  1.05% 87.69%       28MB  1.05%  debian-updater/internal/policies.NewService (inline)
+   25.50MB  0.95% 88.64%    88.02MB  3.29%  encoding/json.Unmarshal
+   24.51MB  0.92% 89.56%    39.02MB  1.46%  debian-updater/internal/observability.buildDashboardTimeline
+   24.50MB  0.92% 90.48%    24.50MB  0.92%  modernc.org/sqlite.(*conn).columnText
+   23.13MB  0.86% 91.34%    28.63MB  1.07%  debian-updater/internal/health.SQLiteObservation.Latest
+   15.65MB  0.58% 91.93%   334.30MB 12.49%  debian-updater.maintenanceReadinessForServers
+   15.04MB  0.56% 92.49%    25.54MB  0.95%  debian-updater/internal/policies.(*Service).mergeProjectedScheduleRuns
+      15MB  0.56% 93.05%       15MB  0.56%  time.Time.Format
+   14.15MB  0.53% 93.58%    62.19MB  2.32%  debian-updater/internal/testutil/dashboardfixture.Generate
+   12.78MB  0.48% 94.05%    49.06MB  1.83%  debian-updater/internal/policies.(*Service).ProjectSchedule
+      10MB  0.37% 94.43%    19.50MB  0.73%  golang.org/x/crypto/ssh.Marshal (inline)
+    7.29MB  0.27% 94.70%    25.79MB  0.96%  golang.org/x/crypto/ssh/knownhosts.(*hostKeyDB).parseLine
+       4MB  0.15% 94.85%    23.50MB  0.88%  golang.org/x/crypto/ssh.ed25519PublicKey.Marshal
+    3.08MB  0.12% 94.96%   202.56MB  7.57%  debian-updater/internal/servers.CloneStatusMap
+    2.50MB 0.093% 95.06%    62.51MB  2.34%  encoding/json.(*decodeState).object
+       2MB 0.075% 95.13%    16.50MB  0.62%  golang.org/x/crypto/ssh/knownhosts.(*hostKeyDB).checkAddr
+       2MB 0.075% 95.21%    14.50MB  0.54%  golang.org/x/crypto/ssh.ParsePublicKey
+    1.50MB 0.056% 95.26%    39.50MB  1.48%  debian-updater/internal/observability.vulnerabilityFindingsForProjection
+    1.50MB 0.056% 95.32%       14MB  0.52%  golang.org/x/crypto/ssh.ParseKnownHosts
+       1MB 0.037% 95.36%       32MB  1.20%  debian-updater/internal/servers.newKnownHostEntryChecker.func2
+    0.50MB 0.019% 95.38%    58.71MB  2.19%  debian-updater/internal/observability.dashboardProjectionCollector.collectLatestUpdateJobsContext
+         0     0% 95.38%   407.80MB 15.24%  bytes.(*Buffer).Write
+         0     0% 95.38%   377.82MB 14.12%  bytes.(*Buffer).WriteString
+         0     0% 95.38%   787.35MB 29.42%  bytes.(*Buffer).grow
+         0     0% 95.38%       53MB  1.98%  database/sql.(*Rows).Next
+         0     0% 95.38%       53MB  1.98%  database/sql.(*Rows).Next.func1
+         0     0% 95.38%       53MB  1.98%  database/sql.(*Rows).nextLocked
+         0     0% 95.38%    61.05MB  2.28%  database/sql.withLock
+         0     0% 95.38%       64MB  2.39%  debian-updater.(*authSessionCommands).Login
+         0     0% 95.38%       64MB  2.39%  debian-updater.(*authSessionCommands).Setup
+         0     0% 95.38%   206.87MB  7.73%  debian-updater.(*runtimeComposition).Compose.func28
+         0     0% 95.38%   334.30MB 12.49%  debian-updater.(*runtimeComposition).Compose.func5
+         0     0% 95.38%  2343.55MB 87.58%  debian-updater.(*scalingApp).get
+         0     0% 95.38%   327.14MB 12.23%  debian-updater.BenchmarkDashboardScaling.func1
+         0     0% 95.38%  2343.55MB 87.58%  debian-updater.BenchmarkDashboardScaling.func1.1
+         0     0% 95.38%  2470.55MB 92.32%  debian-updater.authRuntimeMiddleware.func1
+         0     0% 95.38%       64MB  2.39%  debian-updater.handleAuthLogin
+         0     0% 95.38%       64MB  2.39%  debian-updater.handleAuthSetup
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.handleDashboardSummaryWithService
+         0     0% 95.38%   327.14MB 12.23%  debian-updater.newScalingAppMode (inline)
+         0     0% 95.38%   327.14MB 12.23%  debian-updater.newScalingRuntime
+         0     0% 95.38%  2471.55MB 92.36%  debian-updater.newScalingRuntime.(*SessionManager).LoadAndSave.func17
+         0     0% 95.38%      128MB  4.78%  debian-updater.newScalingRuntime.func15
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.registerPolicyAuditObservabilityRoutes.func19
+         0     0% 95.38%       64MB  2.39%  debian-updater.registerPublicRoutes.sameOriginWriteMiddleware.SameOriginWriteMiddleware.func7
+         0     0% 95.38%       64MB  2.39%  debian-updater.registerPublicRoutes.sameOriginWriteMiddleware.SameOriginWriteMiddleware.func8
+         0     0% 95.38%       64MB  2.39%  debian-updater.registerPublicRoutes.sameOriginWriteMiddleware.func3
+         0     0% 95.38%       64MB  2.39%  debian-updater.registerPublicRoutes.sameOriginWriteMiddleware.func4
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.registerRoutes.authGateMiddleware.func1
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.registerRoutes.packageDeferralPolicyGate.func3
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.registerRoutes.sameOriginWriteMiddleware.SameOriginWriteMiddleware.func4
+         0     0% 95.38%  2342.55MB 87.54%  debian-updater.registerRoutes.sameOriginWriteMiddleware.func2
+         0     0% 95.38%  2470.55MB 92.32%  debian-updater.securityHeadersMiddleware.func1
+         0     0% 95.38%  2470.55MB 92.32%  debian-updater.setupRouterWithDeps.maintenanceCoordinationMiddleware.func3
+         0     0% 95.38%  1042.89MB 38.97%  debian-updater.writeDashboardSummaryResponse
+         0     0% 95.38%  2470.55MB 92.32%  debian-updater/internal/app.NewRouter.func1
+         0     0% 95.38%       64MB  2.39%  debian-updater/internal/auth.(*Service).Authenticate
+         0     0% 95.38%       64MB  2.39%  debian-updater/internal/auth.(*Service).CreateAccount
+         0     0% 95.38%       64MB  2.39%  debian-updater/internal/auth.(*Service).CreateInitialUser
+         0     0% 95.38%  1299.65MB 48.57%  debian-updater/internal/observability.(*Service).BuildDashboardSummaryContextWithOptions
+         0     0% 95.38%       28MB  1.05%  debian-updater/internal/observability.ServiceDeps.withDefaults
+         0     0% 95.38%       15MB  0.56%  debian-updater/internal/observability.UpdateHealthFromResults
+         0     0% 95.38%   159.10MB  5.95%  debian-updater/internal/observability.dashboardProjection.projectServer
+         0     0% 95.38%       15MB  0.56%  debian-updater/internal/observability.dashboardProjectionCollector.collectHealth
+         0     0% 95.38%    39.50MB  1.48%  debian-updater/internal/observability.projectVulnerabilityRisk
+         0     0% 95.38%   318.65MB 11.91%  debian-updater/internal/servers.(*Service).ListStatuses
+         0     0% 95.38%    19.27MB  0.72%  debian-updater/internal/servers.loadKnownHostsCanonicalIPKeys
+         0     0% 95.38%    46.06MB  1.72%  debian-updater/internal/servers.newKnownHostEntryChecker
+         0     0% 95.38%    62.51MB  2.34%  encoding/json.(*decodeState).unmarshal
+         0     0% 95.38%    62.51MB  2.34%  encoding/json.(*decodeState).value
+         0     0% 95.38%   661.62MB 24.73%  encoding/json.(*encodeState).marshal
+         0     0% 95.38%   661.62MB 24.73%  encoding/json.(*encodeState).reflectValue
+         0     0% 95.38%   634.80MB 23.72%  encoding/json.arrayEncoder.encode
+         0     0% 95.38%    31.99MB  1.20%  encoding/json.ptrEncoder.encode
+         0     0% 95.38%   634.80MB 23.72%  encoding/json.sliceEncoder.encode
+         0     0% 95.38%   194.41MB  7.26%  encoding/json.stringEncoder
+         0     0% 95.38%   661.62MB 24.73%  encoding/json.structEncoder.encode
+         0     0% 95.38%       64MB  2.39%  github.com/alexedwards/argon2id.CheckHash
+         0     0% 95.38%       64MB  2.39%  github.com/alexedwards/argon2id.ComparePasswordAndHash (inline)
+         0     0% 95.38%      128MB  4.78%  github.com/alexedwards/argon2id.CreateHash
+         0     0% 95.38%   207.74MB  7.76%  github.com/alexedwards/scs/v2.(*sessionResponseWriter).Write
+         0     0% 95.38%  1042.89MB 38.97%  github.com/gin-gonic/gin.(*Context).JSON (inline)
+         0     0% 95.38%  2470.55MB 92.32%  github.com/gin-gonic/gin.(*Context).Next
+         0     0% 95.38%  1042.89MB 38.97%  github.com/gin-gonic/gin.(*Context).Render
+         0     0% 95.38%  2470.55MB 92.32%  github.com/gin-gonic/gin.(*Engine).ServeHTTP
+         0     0% 95.38%  2470.55MB 92.32%  github.com/gin-gonic/gin.(*Engine).handleHTTPRequest
+         0     0% 95.38%   207.74MB  7.76%  github.com/gin-gonic/gin.(*responseWriter).Write
+         0     0% 95.38%  2470.55MB 92.32%  github.com/gin-gonic/gin.CustomRecoveryWithWriter.func1
+         0     0% 95.38%  2470.55MB 92.32%  github.com/gin-gonic/gin.LoggerWithConfig.func1
+         0     0% 95.38%   835.15MB 31.21%  github.com/gin-gonic/gin/codec/json.jsonApi.Marshal
+         0     0% 95.38%  1042.89MB 38.97%  github.com/gin-gonic/gin/render.JSON.Render
+         0     0% 95.38%  1042.89MB 38.97%  github.com/gin-gonic/gin/render.WriteJSON
+         0     0% 95.38%      192MB  7.18%  golang.org/x/crypto/argon2.IDKey (inline)
+         0     0% 95.38%      192MB  7.18%  golang.org/x/crypto/argon2.deriveKey
+         0     0% 95.38%       28MB  1.05%  golang.org/x/crypto/ssh.(*CertChecker).CheckHostKey
+         0     0% 95.38%    13.50MB   0.5%  golang.org/x/crypto/ssh.typeTags
+         0     0% 95.38%    26.29MB  0.98%  golang.org/x/crypto/ssh/knownhosts.(*hostKeyDB).Read
+         0     0% 95.38%       28MB  1.05%  golang.org/x/crypto/ssh/knownhosts.(*hostKeyDB).check
+         0     0% 95.38%    26.79MB  1.00%  golang.org/x/crypto/ssh/knownhosts.New
+         0     0% 95.38%    14.50MB  0.54%  golang.org/x/crypto/ssh/knownhosts.keyEq
+         0     0% 95.38%  2471.55MB 92.36%  net/http.HandlerFunc.ServeHTTP
+         0     0% 95.38%   207.74MB  7.76%  net/http/httptest.(*ResponseRecorder).Write
+         0     0% 95.38%    37.50MB  1.40%  reflect.(*MapIter).Value
+         0     0% 95.38%    48.01MB  1.79%  reflect.Value.SetMapIndex
+         0     0% 95.38%       49MB  1.83%  reflect.copyVal
+         0     0% 95.38%    48.01MB  1.79%  reflect.mapassign_faststr
+         0     0% 95.38%    32.86MB  1.23%  strings.(*Builder).Grow
+         0     0% 95.38%    32.86MB  1.23%  strings.(*Builder).grow
+         0     0% 95.38%    32.36MB  1.21%  strings.Repeat
+         0     0% 95.38%  2293.45MB 85.71%  testing.(*B).launch
+         0     0% 95.38%   377.24MB 14.10%  testing.(*B).run1.func1
+         0     0% 95.38%  2670.68MB 99.80%  testing.(*B).runN
+         0     0% 95.38%       38MB  1.42%  time.Parse
+         0     0% 95.38%       38MB  1.42%  time.parse

@@ -1,0 +1,258 @@
+{
+  "interval_us": 1000,
+  "duration_ms": 7599.772,
+  "self": [
+    {
+      "frame": "cloneValue /static/js/status-page-interaction.js:51",
+      "self_ms": 829.9229999999998,
+      "inclusive_ms": 1426.7820000000002
+    },
+    {
+      "frame": "terminalText /static/js/status-page-interaction.js:284",
+      "self_ms": 597.1220000000001,
+      "inclusive_ms": 611.148
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:59",
+      "self_ms": 596.8590000000006,
+      "inclusive_ms": 1354.9800000000007
+    },
+    {
+      "frame": "clone /static/js/dashboard-projection-consumption.js:12",
+      "self_ms": 180.36999999999998,
+      "inclusive_ms": 194.58499999999998
+    },
+    {
+      "frame": "deepFreeze /static/js/dashboard-projection-consumption.js:18",
+      "self_ms": 147.64699999999996,
+      "inclusive_ms": 156.39199999999997
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:1214",
+      "self_ms": 49.415,
+      "inclusive_ms": 233.8589999999998
+    },
+    {
+      "frame": "normalizeCanonicalAction /static/js/status-page-interaction.js:72",
+      "self_ms": 33.787000000000006,
+      "inclusive_ms": 34.864000000000004
+    },
+    {
+      "frame": "projectView /static/js/status-page-interaction.js:1178",
+      "self_ms": 26.098000000000003,
+      "inclusive_ms": 2242.7849999999976
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:1216",
+      "self_ms": 22.669,
+      "inclusive_ms": 184.44399999999987
+    },
+    {
+      "frame": "getAction /static/js/status-page-interaction.js:1066",
+      "self_ms": 21.357,
+      "inclusive_ms": 161.77499999999995
+    },
+    {
+      "frame": "matchesFilters /static/js/status-page-interaction.js:472",
+      "self_ms": 21.052,
+      "inclusive_ms": 26.389999999999997
+    },
+    {
+      "frame": "projectServer /static/js/dashboard-projection-consumption.js:168",
+      "self_ms": 20.516,
+      "inclusive_ms": 240.86899999999997
+    },
+    {
+      "frame": "formatCompactSchedule /static/js/index.js:172",
+      "self_ms": 17.223,
+      "inclusive_ms": 18.291
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:1232",
+      "self_ms": 17.119,
+      "inclusive_ms": 667.3269999999999
+    },
+    {
+      "frame": "actionServer /static/js/status-page-interaction.js:1050",
+      "self_ms": 15.212,
+      "inclusive_ms": 15.212
+    },
+    {
+      "frame": "appendTerminalData /static/js/status-page-interaction.js:252",
+      "self_ms": 14.588999999999999,
+      "inclusive_ms": 14.588999999999999
+    },
+    {
+      "frame": "(anonymous) /static/js/dashboard-projection-consumption.js:15",
+      "self_ms": 14.215,
+      "inclusive_ms": 141.74599999999992
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:285",
+      "self_ms": 14.026000000000002,
+      "inclusive_ms": 14.026000000000002
+    },
+    {
+      "frame": "text /static/js/status-rendering.js:45",
+      "self_ms": 13.911,
+      "inclusive_ms": 16.069
+    },
+    {
+      "frame": "saveWindowScroll /static/js/index.js:1301",
+      "self_ms": 12.934000000000001,
+      "inclusive_ms": 12.934000000000001
+    },
+    {
+      "frame": "(anonymous) /static/js/index.js:1878",
+      "self_ms": 11.877,
+      "inclusive_ms": 15.101
+    },
+    {
+      "frame": "renderSelectedHostPanel /static/js/index.js:923",
+      "self_ms": 11.781,
+      "inclusive_ms": 13.947000000000001
+    },
+    {
+      "frame": "renderTable /static/js/index.js:1853",
+      "self_ms": 10.839,
+      "inclusive_ms": 1790.0189999999966
+    },
+    {
+      "frame": "pendingApprovalCounts /static/js/dashboard-projection-consumption.js:55",
+      "self_ms": 9.196000000000002,
+      "inclusive_ms": 11.497
+    },
+    {
+      "frame": "(anonymous) /static/js/dashboard-projection-consumption.js:21",
+      "self_ms": 8.745000000000001,
+      "inclusive_ms": 156.39199999999997
+    }
+  ],
+  "inclusive": [
+    {
+      "frame": "dispatchStatusInteraction /static/js/index.js:71",
+      "self_ms": 1.082,
+      "inclusive_ms": 2705.730000000005
+    },
+    {
+      "frame": "(anonymous) /static/js/index.js:74",
+      "self_ms": 3.2060000000000004,
+      "inclusive_ms": 2649.4820000000036
+    },
+    {
+      "frame": "projectView /static/js/status-page-interaction.js:1178",
+      "self_ms": 26.098000000000003,
+      "inclusive_ms": 2242.7849999999976
+    },
+    {
+      "frame": "renderServerState /static/js/index.js:1310",
+      "self_ms": 0,
+      "inclusive_ms": 2208.3109999999965
+    },
+    {
+      "frame": "renderTable /static/js/index.js:1853",
+      "self_ms": 10.839,
+      "inclusive_ms": 1790.0189999999966
+    },
+    {
+      "frame": "getView /static/js/status-page-interaction.js:1259",
+      "self_ms": 4.411,
+      "inclusive_ms": 1702.402999999996
+    },
+    {
+      "frame": "getStatusView /static/js/index.js:52",
+      "self_ms": 0,
+      "inclusive_ms": 1701.248999999996
+    },
+    {
+      "frame": "cloneValue /static/js/status-page-interaction.js:51",
+      "self_ms": 829.9229999999998,
+      "inclusive_ms": 1426.7820000000002
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:59",
+      "self_ms": 596.8590000000006,
+      "inclusive_ms": 1354.9800000000007
+    },
+    {
+      "frame": "renderDashboardPanels /static/js/index.js:1050",
+      "self_ms": 2.146,
+      "inclusive_ms": 717.1470000000004
+    },
+    {
+      "frame": "executeServersSnapshotFetch /static/js/index.js:1511",
+      "self_ms": 0,
+      "inclusive_ms": 703.655
+    },
+    {
+      "frame": "(anonymous) /static/js/status-page-interaction.js:1232",
+      "self_ms": 17.119,
+      "inclusive_ms": 667.3269999999999
+    },
+    {
+      "frame": "updateBulkActionState /static/js/index-bulk-actions.js:22",
+      "self_ms": 2.193,
+      "inclusive_ms": 661.3729999999999
+    },
+    {
+      "frame": "refreshDashboardPresentation /static/js/index.js:56",
+      "self_ms": 0,
+      "inclusive_ms": 629.7130000000002
+    },
+    {
+      "frame": "executeDashboardSnapshotFetch /static/js/index.js:1147",
+      "self_ms": 0,
+      "inclusive_ms": 618.6359999999999
+    },
+    {
+      "frame": "terminalText /static/js/status-page-interaction.js:284",
+      "self_ms": 597.1220000000001,
+      "inclusive_ms": 611.148
+    },
+    {
+      "frame": "executeCommandHistoryFetch /static/js/index.js:1168",
+      "self_ms": 0,
+      "inclusive_ms": 591.2300000000005
+    },
+    {
+      "frame": "planBulkAction /static/js/status-page-interaction.js:1129",
+      "self_ms": 2.1799999999999997,
+      "inclusive_ms": 567.2940000000007
+    },
+    {
+      "frame": "previewPlan /static/js/index-bulk-actions.js:25",
+      "self_ms": 3.225,
+      "inclusive_ms": 439.5920000000003
+    },
+    {
+      "frame": "renderApprovalTriage /static/js/index.js:666",
+      "self_ms": 8.618,
+      "inclusive_ms": 426.04200000000003
+    },
+    {
+      "frame": "project /static/js/dashboard-projection-consumption.js:391",
+      "self_ms": 3.287,
+      "inclusive_ms": 424.5889999999998
+    },
+    {
+      "frame": "(anonymous) /static/js/index.js:679",
+      "self_ms": 2.1900000000000004,
+      "inclusive_ms": 352.73100000000005
+    },
+    {
+      "frame": "executeGlobalKeyStatusFetch /static/js/index.js:1228",
+      "self_ms": 1.083,
+      "inclusive_ms": 341.6469999999998
+    },
+    {
+      "frame": "renderSyncState /static/js/index.js:518",
+      "self_ms": 2.148,
+      "inclusive_ms": 297.466
+    },
+    {
+      "frame": "updateRefreshAllFactsState /static/js/index.js:1272",
+      "self_ms": 2.1820000000000004,
+      "inclusive_ms": 268.1840000000001
+    }
+  ]
+}

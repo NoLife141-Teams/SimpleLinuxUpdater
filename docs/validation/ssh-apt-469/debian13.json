@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "distribution": "debian13",
+  "base_image": "debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad",
+  "bootstrap_packages": [
+    "apt=3.0.3",
+    "curl=8.14.1-2+deb13u7",
+    "dpkg=1.22.22",
+    "openssh-server=1:10.0p1-7+deb13u4",
+    "sudo=1.9.16p2-3+deb13u2"
+  ],
+  "duration_seconds": 48.918,
+  "scenarios": [
+    {
+      "scenario": "root-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "7abc9fbcd91c3d51d2983c73ca51fedd",
+      "approval": {
+        "job_id": "7abc9fbcd91c3d51d2983c73ca51fedd",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "prechecks"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 11,
+      "duration_seconds": 4.438
+    },
+    {
+      "scenario": "operator-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "62784cc97f53aaae1077c370aec3353a",
+      "approval": {
+        "job_id": "62784cc97f53aaae1077c370aec3353a",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 20,
+      "duration_seconds": 4.664
+    },
+    {
+      "scenario": "misconfigured-helper",
+      "status": "passed",
+      "job_id": "e88f3398a1012b08d989ed70d17f6242",
+      "error_class": "permanent",
+      "final_version": "1.0",
+      "duration_seconds": 3.172
+    },
+    {
+      "scenario": "apt-lock",
+      "status": "passed",
+      "job_id": "b4f2437a7ea055571dbe8d02be55c88b",
+      "failed_check": "apt_locks",
+      "final_version": "1.0",
+      "duration_seconds": 2.788
+    },
+    {
+      "scenario": "plan-drift-and-obsolete-approval",
+      "status": "passed",
+      "previous_generation": 1,
+      "accepted_generation": 2,
+      "final_version": "3.0",
+      "duration_seconds": 5.925
+    },
+    {
+      "scenario": "ssh-disconnect-during-mutation-and-repair",
+      "status": "passed",
+      "error_class": "reconciliation_required",
+      "mutation_attempts": 1,
+      "repair_job_id": "a1e306289ca26727ac3e18e6d19e587f",
+      "final_version": "2.0",
+      "duration_seconds": 8.269
+    },
+    {
+      "scenario": "changed-host-key",
+      "status": "passed",
+      "previous_fingerprint": "SHA256:X9Nwou9cPSaIGyRcMlTbgyQ6fl5lmykT063kHVhjjK0",
+      "rejected_fingerprint": "SHA256:4+B8deXDD2vz9fpY+v3v9LGCxM03rffZqGqkI76Ru7A",
+      "final_version": "1.0",
+      "error_class": "permanent",
+      "duration_seconds": 2.984
+    },
+    {
+      "scenario": "systemd-active",
+      "status": "not_executed",
+      "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."
+    },
+    {
+      "scenario": "controlled-reboot",
+      "status": "not_executed",
+      "reason": "Docker shares host uptime; container restart is not a reboot proof. Use vm-reboot.py."
+    },
+    {
+      "scenario": "official-provenance",
+      "status": "not_executed",
+      "reason": "Local fixture repository is deliberately not official; this suite does not qualify distribution provenance."
+    }
+  ],
+  "cleanup": {
+    "status": "passed",
+    "errors": []
+  }
+}

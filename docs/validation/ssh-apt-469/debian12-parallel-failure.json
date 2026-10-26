@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "distribution": "debian12",
+  "base_image": "debian:12-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8",
+  "bootstrap_packages": [
+    "apt=2.6.1",
+    "curl=7.88.1-10+deb12u15",
+    "dpkg=1.21.23",
+    "openssh-server=1:9.2p1-2+deb12u10",
+    "sudo=1.9.13p3-1+deb12u4"
+  ],
+  "duration_seconds": 61.082,
+  "scenarios": [
+    {
+      "scenario": "root-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "9073f23f37539eb2534eb98a627367a4",
+      "approval": {
+        "job_id": "9073f23f37539eb2534eb98a627367a4",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          ""
+        ],
+        [
+          "running",
+          "prechecks"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 11,
+      "duration_seconds": 3.741
+    },
+    {
+      "scenario": "operator-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "73d2ae7279dcf4de27b565f9c83f7434",
+      "approval": {
+        "job_id": "73d2ae7279dcf4de27b565f9c83f7434",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "prechecks"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 20,
+      "duration_seconds": 5.226
+    },
+    {
+      "scenario": "misconfigured-helper",
+      "status": "passed",
+      "job_id": "87b21e41fd53eb3eb9d3054aae880773",
+      "error_class": "permanent",
+      "final_version": "1.0",
+      "duration_seconds": 2.956
+    },
+    {
+      "scenario": "apt-lock",
+      "status": "passed",
+      "job_id": "2fa2fb451e5dbe15aaf331b4aba2c88f",
+      "failed_check": "apt_locks",
+      "final_version": "1.0",
+      "duration_seconds": 3.199
+    },
+    {
+      "scenario": "plan-drift-and-obsolete-approval",
+      "status": "passed",
+      "previous_generation": 1,
+      "accepted_generation": 2,
+      "final_version": "3.0",
+      "duration_seconds": 5.821
+    },
+    {
+      "scenario": "ssh-disconnect-during-mutation-and-repair",
+      "status": "failed",
+      "error": "fixture marker timed out: /run/slu-mutation-started",
+      "duration_seconds": 22.245
+    },
+    {
+      "scenario": "harness",
+      "status": "failed",
+      "error": "fixture marker timed out: /run/slu-mutation-started"
+    },
+    {
+      "scenario": "changed-host-key",
+      "status": "not_executed",
+      "reason": "Earlier harness/scenario failure prevented execution"
+    },
+    {
+      "scenario": "systemd-active",
+      "status": "not_executed",
+      "reason": "Earlier harness/scenario failure prevented execution"
+    },
+    {
+      "scenario": "controlled-reboot",
+      "status": "not_executed",
+      "reason": "Earlier harness/scenario failure prevented execution"
+    },
+    {
+      "scenario": "official-provenance",
+      "status": "not_executed",
+      "reason": "Earlier harness/scenario failure prevented execution"
+    }
+  ],
+  "cleanup": {
+    "status": "passed",
+    "errors": []
+  }
+}

@@ -22,6 +22,7 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       e2e: ${{ steps.filter.outputs.e2e }}
       docker: ${{ steps.filter.outputs.docker }}
+      ssh_apt: ${{ steps.filter.outputs.ssh_apt }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,6 +71,14 @@ jobs:
               - 'templates/**'
               - 'static/**'
               - 'tools/ci/**'
+              - '.github/workflows/**'
+            ssh_apt:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'templates/**'
+              - 'static/**'
+              - 'tools/ci/ssh-apt/**'
               - '.github/workflows/**'
 
       - name: Verify canonical Go toolchain alignment
@@ -272,6 +281,39 @@ jobs:
           path: .tmp-smoke/diagnostics/
           retention-days: 1
 
+  ssh-apt:
+    needs: preflight
+    if: github.event_name == 'push' || needs.preflight.outputs.ssh_apt == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian13, ubuntu2404]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Test harness safety and cleanup
+        run: python3 -m unittest discover -s tools/ci/ssh-apt -p 'test_*.py' -v
+      - name: Qualify real SSH and APT on disposable targets
+        run: python3 tools/ci/ssh-apt/run.py --distro '${{ matrix.distro }}' --output .tmp-ssh-apt
+      - name: Retain redacted qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ssh-apt-${{ matrix.distro }}-${{ github.run_attempt }}
+          path: .tmp-ssh-apt/
+          retention-days: 1
+
   ci-required:
     if: always()
     needs:
@@ -281,6 +323,7 @@ jobs:
       - frontend-quality
       - ui-e2e
       - docker-smoke
+      - ssh-apt
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -295,6 +338,8 @@ jobs:
           DOCKER_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.docker == 'true' }}
           DOCKER_RESULT: ${{ needs.docker-smoke.result }}
           UI_E2E_RESULT: ${{ needs.ui-e2e.result }}
+          SSH_APT_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.ssh_apt == 'true' }}
+          SSH_APT_RESULT: ${{ needs.ssh-apt.result }}
         run: |
           printf '%s\n' \
             "preflight=$CHANGES_RESULT" \
@@ -326,4 +371,10 @@ jobs:
             test "$DOCKER_RESULT" = success
           else
             test "$DOCKER_RESULT" = skipped
+          fi
+
+          if [ "$SSH_APT_REQUIRED" = true ]; then
+            test "$SSH_APT_RESULT" = success
+          else
+            test "$SSH_APT_RESULT" = skipped
           fi

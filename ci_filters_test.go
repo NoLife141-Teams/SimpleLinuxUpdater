@@ -11,7 +11,7 @@ func TestCIPathFiltersCoverValidationInputs(t *testing.T) {
 	filters := map[string][]string{}
 	current := ""
 	for _, line := range strings.Split(source, "\n") {
-		if match := regexp.MustCompile(`^            (go|e2e|docker):$`).FindStringSubmatch(line); match != nil {
+		if match := regexp.MustCompile(`^            (go|e2e|docker|ssh_apt):$`).FindStringSubmatch(line); match != nil {
 			current = match[1]
 			continue
 		}
@@ -62,5 +62,19 @@ func TestCIPathFiltersCoverValidationInputs(t *testing.T) {
 				}
 			}
 		})
+	}
+	for path, want := range map[string]bool{
+		"ssh_transport.go": true, "internal/updates/privileged_helper.go": true,
+		"tools/ci/ssh-apt/target.Dockerfile": true, "tools/ci/ssh-apt/images.json": true,
+		".github/workflows/ssh-apt-extended.yml": true, "templates/index.html": true,
+		"docs/installation.md": false, "CHANGELOG.md": false,
+	} {
+		got := false
+		for _, pattern := range filters["ssh_apt"] {
+			got = got || matches(pattern, path)
+		}
+		if got != want {
+			t.Errorf("ssh_apt selects %s=%v want %v", path, got, want)
+		}
 	}
 }

@@ -10,6 +10,7 @@
 - [Run updates with approval](#run-updates-with-approval)
 - [CVE-aware pending approval](#cve-aware-pending-approval)
 - [Logs and status](#logs-and-status)
+- [Policy schedule cadences and recovery](#policy-schedule-cadences-and-recovery)
 - [Scheduled canary and wave rollouts](#scheduled-canary-and-wave-rollouts)
 - [Notification hooks](#notification-hooks)
 - [Audit trail](#audit-trail)
@@ -297,7 +298,7 @@ After upgrading from a release that used `/etc/sudoers.d/apt-nopasswd`, run **En
 
 In **Admin → Policy control → Policy Editor**, choose **Autoremove (automatic
 cleanup)** as the execution mode. Select the target servers or tags, then choose
-a daily or weekly cadence, weekdays and local time. The schedule uses the
+a daily, weekly, monthly or one-time cadence and local time. The schedule uses the
 application timezone. Preview the matches and occurrences, then save the policy.
 For example, a weekly Sunday cleanup at 04:30 can run independently of a nightly
 update policy.
@@ -321,17 +322,116 @@ Follow the execution in **Scheduled Runs**, job logs and reports. Success and
 failure appear in the audit trail; failed scheduled cleanup uses the existing
 failed-scheduled-run notification setting.
 
+## Policy schedule cadences and recovery
+
+In **Admin → Policy control → Schedule**, choose:
+
+| Cadence | Fields | Behavior |
+| --- | --- | --- |
+| Daily | Local time | Every civil day. |
+| Weekly | Weekdays and local time | Only the selected weekdays. |
+| Monthly | Day 1–31 or **Last day of month**, local time | A month without the chosen numeric day is skipped. Day 31 never shifts to February 28/29. Last day follows leap years. |
+| One time | Local date and local time | One accepted operation for the lifetime of that policy. |
+
+The existing policy API accepts the same fields as the editor. For example,
+these schedule/rollout fields select monthly day 31 with one named canary:
+
+```json
+{
+  "cadence_kind": "monthly",
+  "time_local": "03:45",
+  "month_day": 31,
+  "month_last_day": false,
+  "rollout_mode": "canary_waves",
+  "canary_mode": "explicit",
+  "canary_servers": ["srv-canary-01"],
+  "wave_size": 10,
+  "wave_delay_minutes": 15
+}
+```
+
+Set `month_last_day: true` instead to select the last day (`month_day` normalizes
+to zero). A one-time schedule uses `cadence_kind: "once"`,
+`date_local: "2028-02-29"` and `time_local: "03:45"`. Ordinary name, target,
+execution and scope fields are still required. Omitted `canary_mode` defaults to
+`automatic`; its `canary_count` remains supported. Explicit names do not expand
+the target scope. Policy `revision`, `once_consumed_at`,
+`once_scheduled_for_utc` and `once_admission_reason` are server-owned response
+facts. Scheduled Run responses add `policy_revision`, `rollout_stage` and `wave`;
+calendar `accepted_rollouts` exposes accepted revisions and immutable batches.
+
+The Go **Application Time Interpretation** and **Policy Schedule Projection**
+resolve all UTC instants in the application's configured timezone. Preview,
+conflicts, scheduler and calendar use that interpretation; the browser displays
+these facts without calculating another calendar. Spring-forward times that do
+not exist are skipped. Fall-back times that repeat use the earlier UTC instant.
+Preview labels these choices and lists skipped short months. Before admission,
+a timezone change reinterprets local dates/times; review the refreshed preview.
+Already accepted occurrences retain their original UTC identity.
+
+A one-time occurrence is **consumed before any server job is dispatched**, even
+when it is skipped by a no-run window, superseded, has no matching servers,
+encounters an unavailable canary, or later fails. `waiting_approval` and restart
+recovery do not rearm it. The policy list, editor preview and calendar show
+consumption; Scheduled Runs retains per-server results and investigation links.
+Editing its cadence, date/time, targets or timezone cannot reset consumption.
+Create a new policy for another operation. There is no implicit retry button.
+
+The existing missed-tick policy remains conservative: only the current minute
+can start a new occurrence. With an unchanged persisted scheduling state, the
+scheduler records at most the latest missed occurrence per enabled policy in
+the previous seven days, as `scheduler_missed` (or the applicable maintenance,
+no-run or priority skip). It never launches historical work. Changes of policy,
+inventory, overrides, blackouts or timezone rebase the durable watermark rather
+than reconstructing uncertain historical membership. A missed one-time
+occurrence recorded by recovery is consumed too. If a crash interrupts the
+admission of several canaries, unrecorded canaries are skipped on a later tick;
+no downstream wave is released by that partial admission.
+
+The calendar shows up to 31 local days per request; monthly and one-time next-run
+projection looks beyond that visible range. Preview shows up to five upcoming
+occurrences within one year for recurring schedules, or the configured future
+date for a one-time schedule. Blackouts skip an occurrence rather than moving it.
+No cron expression, external calendar, or automatic fleet reboot is involved.
+
 ## Scheduled canary and wave rollouts
 
 In **Admin → Policy control → Execution**, choose **Canary, then waves** to avoid releasing one scheduled policy to the whole matched fleet at once. Configure:
 
-- the number of canary servers (`1–50`);
+- **Automatic (by server name)** with a canary count (`1–50`), or **Explicit servers** with a list of `1–50` inventory server names;
 - the maximum servers in each following wave (`1–200`);
 - the minimum delay between wave release times (`1–1440` minutes).
 
-Matched servers are sorted deterministically by name, so the preview and scheduler use the same canary and wave membership. Wave 1 cannot start until every canary run reaches `succeeded`; each later wave similarly waits for every earlier run. `queued`, `running`, and `waiting_approval` hold the gate. A failed, skipped, cancelled, or interrupted earlier run stops downstream waves and records them with reason `rollout_gate` rather than silently applying the rest of the fleet.
+Automatic canaries retain the existing deterministic name order. Explicit canaries must each belong to the effective target set, including tag exclusions, disabled servers and per-server overrides. A missing, disabled or excluded named canary blocks the occurrence with an explicit reason; another server is never substituted. A normal inventory rename follows the named canary for future occurrences. Remaining servers are sorted by name into waves. Wave 1 cannot start until every canary run reaches `succeeded`; each later wave similarly waits for every earlier run. `queued`, `running`, and `waiting_approval` hold the gate. A failed, skipped, cancelled, or interrupted earlier run stops downstream waves and records them with reason `rollout_gate` rather than silently applying the rest of the fleet.
 
-The policy preview labels each matched server as canary or wave N. The policy list and calendar expose the stored rollout settings. Use **All matched servers** when no staged rollout is desired.
+Blocking application postchecks also fail the canary run and hold every downstream wave. Warning-only checks retain their existing behavior.
+
+Before a rollout starts, its policy revision, complete member names and batch
+positions are committed as one immutable occurrence manifest. Editing or deleting
+the policy, changing tags, adding inventory servers, or changing timezone does not
+rewrite an accepted rollout. Those edits govern subsequent occurrences. Live
+Maintenance Coordination, server removal/disablement, per-server overrides and
+no-run windows still apply before each member starts. Accepted policy blackout
+rules remain attached to the accepted revision; global no-run windows stay live.
+A removed/renamed member gets an investigable skip under its accepted name.
+Changes to credentials or connection details are read from current inventory.
+
+The manifest contains policy configuration and names, never SSH credentials.
+Existing daily/weekly policies migrate additively to revision 1 and automatic
+canaries without changing their cadence or ordering. For a rollout already active
+before upgrade, unrecorded original targets cannot be recovered: its first
+observation freezes the then-eligible members, and every persisted predecessor
+is retained as a success gate. Later edits cannot recompose it. Historical runs
+without a known original revision continue to show their existing metadata.
+Encrypted backups include policy revisions, consumption and manifests inside
+`servers.db`; restoring a backup preserves the state recorded at export, including
+consumed one-time occurrences. Restoring an older backup cannot recover operations
+performed after that backup and should be treated as a point-in-time rollback.
+
+The policy preview labels each matched server as canary or wave N. The policy
+list and calendar expose chosen canaries and waves; accepted rollouts show their
+frozen revision and batches. Scheduled Runs shows revision and stage for newly
+recorded members. Use **All matched servers** when no staged rollout is desired.
 
 ## Notification hooks
 

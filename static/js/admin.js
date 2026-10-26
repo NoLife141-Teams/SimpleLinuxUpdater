@@ -2259,6 +2259,7 @@ function setPolicyFieldInvalid(fieldId, isInvalid) {
 function clearPolicyFieldErrors() {
     setPolicyFieldInvalid("policy-name", false);
     setPolicyFieldInvalid("policy-target-tag", false);
+    ["policy-date-local", "policy-month-day", "policy-canary-servers", "policy-canary-count", "policy-wave-size", "policy-wave-delay"].forEach(id => setPolicyFieldInvalid(id, false));
 }
 
 function setPolicyWeekdays(weekdays) {
@@ -2294,6 +2295,13 @@ function setPolicyEditorModeLabel(text) {
 
 function refreshPolicyFormVisibility() {
     const cadence = document.getElementById("policy-cadence-kind").value;
+    const visibility = scheduledPolicyView().editor.visibility;
+    document.getElementById("policy-date-section")?.classList.toggle("is-hidden", !visibility.once);
+    document.getElementById("policy-once-help")?.classList.toggle("is-hidden", !visibility.once);
+    document.getElementById("policy-month-section")?.classList.toggle("is-hidden", !visibility.monthly);
+    document.getElementById("policy-month-day").disabled = !visibility.monthDay;
+    document.getElementById("policy-canary-count-wrap")?.classList.toggle("is-hidden", visibility.explicitCanaries);
+    document.getElementById("policy-canary-servers-wrap")?.classList.toggle("is-hidden", !visibility.explicitCanaries);
     const executionMode = document.getElementById("policy-execution-mode").value;
     const cleanup = executionMode === "autoremove";
     ["policy-package-scope", "policy-upgrade-mode"].forEach((id) => {
@@ -2408,6 +2416,7 @@ function policyPreviewAdmissionLabel(outcome) {
     switch (String(outcome || "")) {
         case "admitted":
             return "Expected: admitted";
+        case "canary_unavailable": return "Blocked: explicit canary unavailable";
         case "blocked_no_run":
             return "Expected: blocked by no-run window";
         case "no_matching_servers":
@@ -2588,6 +2597,8 @@ function formatCadence(policy) {
     if (policy.cadence_kind === "weekly") {
         return `Every ${formatWeekdayList(policy.weekdays)} at ${timeLocal}`;
     }
+    if (policy.cadence_kind === "once") return `Once on ${policy.date_local || "a local date"} at ${timeLocal}`;
+    if (policy.cadence_kind === "monthly") return `Monthly on ${policy.month_last_day ? "the last day" : `day ${policy.month_day}`} at ${timeLocal}`;
     return `Daily at ${timeLocal}`;
 }
 
@@ -2599,7 +2610,7 @@ function renderPolicyExecution(policy) {
 		? ` · ${policy.approval_timeout_minutes || 720} minute approval window`
 		: "";
 	const rollout = policy.rollout_mode === "canary_waves"
-		? ` · canary ${policy.canary_count || 1}, waves of ${policy.wave_size || 10} / ${policy.wave_delay_minutes || 15} min`
+		? ` · canary ${policy.canary_mode === "explicit" ? (policy.canary_servers || []).join(", ") : policy.canary_count || 1}, waves of ${policy.wave_size || 10} / ${policy.wave_delay_minutes || 15} min`
 		: " · immediate rollout";
 	return `
 		<div>${escapeHtml(mode)}</div>
@@ -2615,7 +2626,7 @@ function renderPolicySchedule(policy) {
     const timezoneText = scheduledPolicyView().timezone
         ? `App timezone: ${scheduledPolicyView().timezone}`
         : "";
-    const detailText = [noRunText, timezoneText].filter(Boolean).join(" · ");
+    const detailText = [noRunText, timezoneText, policy.once_consumed_at ? `One-time occurrence consumed ${policy.once_consumed_at}` : ""].filter(Boolean).join(" · ");
     return `
         <div>${escapeHtml(formatCadence(policy))}</div>
         <div class="table-secondary">${escapeHtml(detailText)}</div>
@@ -2805,6 +2816,11 @@ function resetPolicyForm(options = {}) {
     document.getElementById("policy-exclude-tags").value = "";
     document.getElementById("policy-target-servers").value = "";
     document.getElementById("policy-time-local").value = "02:00";
+    document.getElementById("policy-date-local").value = "";
+    document.getElementById("policy-month-day").value = "1";
+    document.getElementById("policy-month-last-day").checked = false;
+    document.getElementById("policy-canary-mode").value = "automatic";
+    document.getElementById("policy-canary-servers").value = "";
 	document.getElementById("policy-execution-mode").value = "scan_only";
 	document.getElementById("policy-package-scope").value = "security";
 	document.getElementById("policy-upgrade-mode").value = "standard";
@@ -2837,6 +2853,11 @@ function applyPolicyToForm(policy, options = {}) {
     document.getElementById("policy-exclude-tags").value = (policy.exclude_tags || []).join(", ");
     document.getElementById("policy-target-servers").value = (policy.target_servers || []).join(", ");
     document.getElementById("policy-time-local").value = policy.time_local || "02:00";
+    document.getElementById("policy-date-local").value = policy.date_local || "";
+    document.getElementById("policy-month-day").value = policy.month_day || 1;
+    document.getElementById("policy-month-last-day").checked = !!policy.month_last_day;
+    document.getElementById("policy-canary-mode").value = policy.canary_mode || "automatic";
+    document.getElementById("policy-canary-servers").value = (policy.canary_servers || []).join(", ");
 	document.getElementById("policy-execution-mode").value = policy.execution_mode || "scan_only";
 	document.getElementById("policy-package-scope").value = policy.package_scope || "security";
 	document.getElementById("policy-upgrade-mode").value = policy.upgrade_mode || "standard";
@@ -2969,17 +2990,23 @@ function formatCalendarDate(day) {
     return [weekday, date].filter(Boolean).join(" ");
 }
 
+function formatRolloutBatches(batches) {
+    return (batches || []).map(batch => `${batch.stage === "canary" ? "Canary" : batch.stage === "wave" ? `Wave ${batch.index}` : "All servers"}: ${(batch.servers || []).join(", ")}${batch.release_delay_minutes ? ` (+${batch.release_delay_minutes} min)` : ""}`).join(" · ");
+}
+
 function renderCalendarSlot(slot) {
     const serverCount = Array.isArray(slot?.matched_servers) ? slot.matched_servers.length : 0;
     const details = [
         slot?.timezone_offset || "",
         humanizeExecutionMode(slot?.execution_mode),
         slot?.execution_mode === "autoremove" ? "Remove unused packages" : humanizePackageScope(slot?.package_scope),
-        pluralize(serverCount, "server", "servers")
+        pluralize(serverCount, "server", "servers"),
+        formatRolloutBatches(slot?.rollout_batches)
     ].filter(Boolean).join(" · ");
     return `
         <span class="calendar-chip calendar-chip-allowed" title="${escapeHtml(details)}">
             ${escapeHtml(`Allowed ${slot?.time_local || "--:--"} ${slot?.timezone_offset || ""}`)}
+            ${slot?.rollout_batches?.length ? `<span class="table-secondary">${escapeHtml(formatRolloutBatches(slot.rollout_batches))}</span>` : ""}
         </span>
     `;
 }
@@ -2997,6 +3024,10 @@ function renderCalendarBlockedWindow(window) {
     `;
 }
 
+function calendarBlockedReason(reason) {
+    return ({ month_day_missing: "This month has no selected day; occurrence skipped", once_consumed: "One-time occurrence consumed", nonexistent_local_time: "Local time does not exist; occurrence skipped" })[reason] || reason;
+}
+
 function renderMaintenanceCalendar(calendar) {
     const container = document.getElementById("maintenance-calendar-list");
     const status = document.getElementById("maintenance-calendar-status");
@@ -3011,7 +3042,8 @@ function renderMaintenanceCalendar(calendar) {
         container.innerHTML = '<div class="empty-editor-state subtle">No scheduled policies to show.</div>';
         return;
     }
-    container.innerHTML = policies.map((policy) => {
+    const accepted = (calendar?.accepted_rollouts || []).map(occurrence => `<div class="calendar-policy"><strong>${escapeHtml(occurrence.policy?.name || "Accepted rollout")} · accepted revision ${escapeHtml(String(occurrence.policy?.revision || 1))}</strong><div class="table-secondary">UTC ${escapeHtml(occurrence.scheduled_for_utc || "")} · ${escapeHtml(formatRolloutBatches(occurrence.batches))}</div>${occurrence.block_reason ? `<div class="run-skip-reason">${escapeHtml(occurrence.block_reason)}</div>` : ""}</div>`).join("");
+    container.innerHTML = accepted + policies.map((policy) => {
         const days = Array.isArray(policy.days) ? policy.days : [];
         const matchedCount = Array.isArray(policy.matched_servers) ? policy.matched_servers.length : 0;
         return `
@@ -3019,6 +3051,8 @@ function renderMaintenanceCalendar(calendar) {
                 <div class="calendar-policy-head">
                     <div>
                         <strong>${escapeHtml(policy.name || "")}</strong>
+                        ${policy.once_consumed_at ? `<div class="run-skip-reason">One-time occurrence consumed ${escapeHtml(policy.once_consumed_at)}</div>` : ""}
+                        ${policy.admission_reason ? `<div class="run-skip-reason">${escapeHtml(policy.admission_reason)}</div>` : ""}
                         <div class="table-secondary">${escapeHtml(`${formatCadence(policy)} · ${pluralize(matchedCount, "matched server", "matched servers")}`)}</div>
                     </div>
                     <span class="pill ${policy.enabled ? "" : "pill-muted"}">${policy.enabled ? "Enabled" : "Disabled"}</span>
@@ -3039,7 +3073,7 @@ function renderMaintenanceCalendar(calendar) {
                                     ${windows.length ? windows.map(renderCalendarBlockedWindow).join("") : ""}
                                     ${!slots.length && !windows.length ? '<span class="subtle">No scheduled slot or no-run window</span>' : ""}
                                 </div>
-                                ${reasons.length ? `<div class="table-secondary">${escapeHtml(`Blocked: ${reasons.join(", ")}`)}</div>` : ""}
+                                ${reasons.length ? `<div class="table-secondary">${escapeHtml(`Blocked: ${reasons.map(calendarBlockedReason).join(", ")}`)}</div>` : ""}
                             </div>
                         `;
                     }).join("")}
@@ -3118,6 +3152,7 @@ function renderScheduledRuns() {
             <td data-label="Policy &amp; server">
                 <strong>${escapeHtml(run.policy_name || "-")}</strong>
                 <div class="table-secondary">${escapeHtml(run.server_name || "-")}</div>
+                ${run.policy_revision ? `<div class="table-secondary">Revision ${escapeHtml(String(run.policy_revision))} · ${escapeHtml(run.rollout_stage === "wave" ? `wave ${run.wave}` : run.rollout_stage || "immediate")}</div>` : ""}
             </td>
             <td data-label="Lifecycle">
                 <div class="run-lifecycle">
@@ -3295,6 +3330,11 @@ function collectPolicyPayload(options = {}) {
             exclude_tags: document.getElementById("policy-exclude-tags").value,
             target_servers: document.getElementById("policy-target-servers").value,
             cadence_kind: document.getElementById("policy-cadence-kind").value,
+            date_local: document.getElementById("policy-date-local").value,
+            month_day: document.getElementById("policy-month-day").value,
+            month_last_day: document.getElementById("policy-month-last-day").checked,
+            canary_mode: document.getElementById("policy-canary-mode").value,
+            canary_servers: document.getElementById("policy-canary-servers").value,
             execution_mode: document.getElementById("policy-execution-mode").value,
             package_scope: document.getElementById("policy-package-scope").value,
             upgrade_mode: document.getElementById("policy-upgrade-mode").value,
@@ -3316,6 +3356,9 @@ function collectPolicyPayload(options = {}) {
     if (errors.target_tag) {
         if (!silent) setPolicyFieldInvalid("policy-target-tag", true);
         firstInvalidId = firstInvalidId || "policy-target-tag";
+    }
+    for (const [field, id] of Object.entries({ date_local: "policy-date-local", month_day: "policy-month-day", canary_servers: "policy-canary-servers", canary_count: "policy-canary-count", wave_size: "policy-wave-size", wave_delay_minutes: "policy-wave-delay" })) {
+        if (errors[field]) { if (!silent) setPolicyFieldInvalid(id, true); firstInvalidId = firstInvalidId || id; }
     }
     if (firstInvalidId) {
         if (!silent) document.getElementById(firstInvalidId)?.focus();
@@ -3532,6 +3575,7 @@ function bindPolicyFormInteractions() {
         "policy-approval-timeout",
         "policy-rollout-mode",
         "policy-canary-count",
+        "policy-date-local", "policy-month-day", "policy-month-last-day", "policy-canary-mode", "policy-canary-servers",
         "policy-wave-size",
         "policy-wave-delay"
     ];

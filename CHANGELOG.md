@@ -6,6 +6,21 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- One-time local-date and monthly numeric/last-day policy schedules, short-month
+  diagnostics, explicit canary selection, and revision/stage details in Admin.
+- Durable one-time consumption and accepted rollout manifests that preserve
+  members and policy revision across edits, restarts, timezone changes and backups.
+
+### Upgrade notes
+
+- Policy schema migration is additive. Existing daily/weekly policies retain
+  automatic canaries. A consumed one-time policy cannot be rearmed by editing it;
+  create a new policy for another operation. See the [schedule and recovery
+  rules](docs/usage.md#policy-schedule-cadences-and-recovery), including the
+  conservative first observation of rollouts active before upgrade.
+
 ## [v0.4.16] - 2026-10-23
 
 ### Upgrade notes

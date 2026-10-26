@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	"debian-updater/internal/servers"
 )
 
@@ -279,15 +280,9 @@ func CanonicalScheduledForUTC(slotLocal time.Time, layout string, fallbackLocati
 	if strings.TrimSpace(layout) == "" {
 		layout = DefaultTimestampLayout
 	}
-	canonicalLocal := time.Date(
-		slotLocal.Year(),
-		slotLocal.Month(),
-		slotLocal.Day(),
-		slotLocal.Hour(),
-		slotLocal.Minute(),
-		0,
-		0,
-		loc,
-	)
-	return canonicalLocal.UTC().Format(layout)
+	occurrence := (apptimepkg.Interpretation{Location: loc}).ResolveLocal(slotLocal, slotLocal.Hour(), slotLocal.Minute())
+	if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
+		return ""
+	}
+	return occurrence.Instant.UTC().Format(layout)
 }

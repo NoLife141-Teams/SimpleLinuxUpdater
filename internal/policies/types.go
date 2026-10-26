@@ -20,8 +20,15 @@ const (
 	RolloutImmediate    = "immediate"
 	RolloutCanaryWaves  = "canary_waves"
 
-	CadenceDaily  = "daily"
-	CadenceWeekly = "weekly"
+	CadenceDaily               = "daily"
+	CadenceWeekly              = "weekly"
+	CadenceOnce                = "once"
+	CadenceMonthly             = "monthly"
+	CanaryAutomatic            = "automatic"
+	CanaryExplicit             = "explicit"
+	RunReasonCanaryUnavailable = "canary_unavailable"
+	RunReasonOverride          = "disabled_by_override"
+	RunReasonDisabled          = "server_disabled"
 
 	RunQueued          = "queued"
 	RunRunning         = "running"
@@ -79,6 +86,7 @@ type BlackoutWindow struct {
 }
 
 type Policy struct {
+	AcceptedBatches        []RolloutBatch   `json:"-"`
 	ID                     int64            `json:"id"`
 	Name                   string           `json:"name"`
 	Enabled                bool             `json:"enabled"`
@@ -90,10 +98,19 @@ type Policy struct {
 	UpgradeMode            string           `json:"upgrade_mode"`
 	ExecutionMode          string           `json:"execution_mode"`
 	CadenceKind            string           `json:"cadence_kind"`
+	DateLocal              string           `json:"date_local"`
+	MonthDay               int              `json:"month_day"`
+	MonthLastDay           bool             `json:"month_last_day"`
+	Revision               int64            `json:"revision"`
+	OnceAdmissionReason    string           `json:"once_admission_reason,omitempty"`
+	OnceConsumedAt         string           `json:"once_consumed_at,omitempty"`
+	OnceScheduledForUTC    string           `json:"once_scheduled_for_utc,omitempty"`
 	TimeLocal              string           `json:"time_local"`
 	Weekdays               []string         `json:"weekdays"`
 	ApprovalTimeoutMinutes int              `json:"approval_timeout_minutes"`
 	RolloutMode            string           `json:"rollout_mode"`
+	CanaryMode             string           `json:"canary_mode"`
+	CanaryServers          []string         `json:"canary_servers"`
 	CanaryCount            int              `json:"canary_count"`
 	WaveSize               int              `json:"wave_size"`
 	WaveDelayMinutes       int              `json:"wave_delay_minutes"`
@@ -178,6 +195,9 @@ type Override struct {
 }
 
 type Run struct {
+	PolicyRevision       int64  `json:"policy_revision,omitempty"`
+	RolloutStage         string `json:"rollout_stage,omitempty"`
+	Wave                 int    `json:"wave,omitempty"`
 	ID                   int64  `json:"id"`
 	PolicyID             int64  `json:"policy_id"`
 	PolicyName           string `json:"policy_name"`
@@ -275,22 +295,29 @@ type CalendarOptions struct {
 }
 
 type CalendarResponse struct {
-	Days        int              `json:"days"`
-	StartDate   string           `json:"start_date"`
-	EndDate     string           `json:"end_date"`
-	GeneratedAt string           `json:"generated_at"`
-	Policies    []CalendarPolicy `json:"policies"`
+	AcceptedRollouts []Occurrence     `json:"accepted_rollouts"`
+	Days             int              `json:"days"`
+	StartDate        string           `json:"start_date"`
+	EndDate          string           `json:"end_date"`
+	GeneratedAt      string           `json:"generated_at"`
+	Policies         []CalendarPolicy `json:"policies"`
 }
 
 type CalendarPolicy struct {
-	ID             int64         `json:"id"`
-	Name           string        `json:"name"`
-	Enabled        bool          `json:"enabled"`
-	CadenceKind    string        `json:"cadence_kind"`
-	TimeLocal      string        `json:"time_local"`
-	Weekdays       []string      `json:"weekdays"`
-	MatchedServers []string      `json:"matched_servers"`
-	Days           []CalendarDay `json:"days"`
+	DateLocal       string         `json:"date_local,omitempty"`
+	MonthDay        int            `json:"month_day,omitempty"`
+	MonthLastDay    bool           `json:"month_last_day,omitempty"`
+	OnceConsumedAt  string         `json:"once_consumed_at,omitempty"`
+	RolloutBatches  []RolloutBatch `json:"rollout_batches"`
+	AdmissionReason string         `json:"admission_reason,omitempty"`
+	ID              int64          `json:"id"`
+	Name            string         `json:"name"`
+	Enabled         bool           `json:"enabled"`
+	CadenceKind     string         `json:"cadence_kind"`
+	TimeLocal       string         `json:"time_local"`
+	Weekdays        []string       `json:"weekdays"`
+	MatchedServers  []string       `json:"matched_servers"`
+	Days            []CalendarDay  `json:"days"`
 }
 
 type CalendarDay struct {
@@ -303,17 +330,18 @@ type CalendarDay struct {
 }
 
 type CalendarSlot struct {
-	TimeLocal        string   `json:"time_local"`
-	ScheduledForUTC  string   `json:"scheduled_for_utc"`
-	TimezoneOffset   string   `json:"timezone_offset"`
-	ExecutionMode    string   `json:"execution_mode"`
-	PackageScope     string   `json:"package_scope"`
-	UpgradeMode      string   `json:"upgrade_mode"`
-	MatchedServers   []string `json:"matched_servers"`
-	RolloutMode      string   `json:"rollout_mode"`
-	CanaryCount      int      `json:"canary_count,omitempty"`
-	WaveSize         int      `json:"wave_size,omitempty"`
-	WaveDelayMinutes int      `json:"wave_delay_minutes,omitempty"`
+	RolloutBatches   []RolloutBatch `json:"rollout_batches"`
+	TimeLocal        string         `json:"time_local"`
+	ScheduledForUTC  string         `json:"scheduled_for_utc"`
+	TimezoneOffset   string         `json:"timezone_offset"`
+	ExecutionMode    string         `json:"execution_mode"`
+	PackageScope     string         `json:"package_scope"`
+	UpgradeMode      string         `json:"upgrade_mode"`
+	MatchedServers   []string       `json:"matched_servers"`
+	RolloutMode      string         `json:"rollout_mode"`
+	CanaryCount      int            `json:"canary_count,omitempty"`
+	WaveSize         int            `json:"wave_size,omitempty"`
+	WaveDelayMinutes int            `json:"wave_delay_minutes,omitempty"`
 }
 
 type CalendarBlockedWindow struct {

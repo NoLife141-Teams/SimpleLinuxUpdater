@@ -608,6 +608,7 @@ func handleUpdatePolicyCalendarWithDeps(c *gin.Context, deps AppDeps) {
 		"end_date":          calendar.EndDate,
 		"generated_at":      calendar.GeneratedAt,
 		"policies":          calendar.Policies,
+		"accepted_rollouts": calendar.AcceptedRollouts,
 		"timezone":          interpretation.DisplayName,
 		"resolved_timezone": interpretation.ResolvedName,
 	})

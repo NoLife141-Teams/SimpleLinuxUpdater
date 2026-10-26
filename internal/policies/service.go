@@ -18,6 +18,7 @@ import (
 var ErrPolicyNotFound = errors.New("policy not found")
 
 type ServiceDeps struct {
+	Occurrences         OccurrenceStore
 	ListPolicies        func() ([]Policy, error)
 	LoadOverrides       func() (map[int64]map[string]bool, error)
 	LoadGlobalBlackouts func() ([]BlackoutWindow, error)
@@ -220,8 +221,12 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 		policy.CadenceKind = CadenceDaily
 	case CadenceWeekly:
 		policy.CadenceKind = CadenceWeekly
+	case CadenceOnce:
+		policy.CadenceKind = CadenceOnce
+	case CadenceMonthly:
+		policy.CadenceKind = CadenceMonthly
 	default:
-		return errors.New("cadence_kind must be 'daily' or 'weekly'")
+		return errors.New("cadence_kind must be 'daily', 'weekly', 'once', or 'monthly'")
 	}
 	timeLocal, err := NormalizeTimeLocal(policy.TimeLocal)
 	if err != nil {
@@ -235,8 +240,26 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 	if policy.CadenceKind == CadenceWeekly && len(weekdays) == 0 {
 		return errors.New("weekly policies require at least one weekday")
 	}
-	if policy.CadenceKind == CadenceDaily {
+	if policy.CadenceKind != CadenceWeekly {
 		weekdays = []string{}
+	}
+	policy.DateLocal = strings.TrimSpace(policy.DateLocal)
+	if policy.CadenceKind == CadenceOnce {
+		if _, err := time.Parse("2006-01-02", policy.DateLocal); err != nil {
+			return errors.New("date_local must be a valid YYYY-MM-DD date for a one-time policy")
+		}
+	} else {
+		policy.DateLocal = ""
+	}
+	if policy.CadenceKind == CadenceMonthly {
+		if policy.MonthLastDay {
+			policy.MonthDay = 0
+		} else if policy.MonthDay < 1 || policy.MonthDay > 31 {
+			return errors.New("month_day must be between 1 and 31, or select month_last_day")
+		}
+	} else {
+		policy.MonthDay = 0
+		policy.MonthLastDay = false
 	}
 	policy.Weekdays = weekdays
 	policyBlackouts, err := NormalizeBlackouts(policy.PolicyBlackouts)
@@ -280,6 +303,23 @@ func (s *Service) NormalizePolicy(policy *Policy) error {
 	default:
 		return errors.New("rollout_mode must be 'immediate' or 'canary_waves'")
 	}
+	policy.CanaryServers = NormalizeStringList(policy.CanaryServers)
+	switch strings.ToLower(strings.TrimSpace(policy.CanaryMode)) {
+	case "", CanaryAutomatic:
+		policy.CanaryMode = CanaryAutomatic
+		policy.CanaryServers = []string{}
+	case CanaryExplicit:
+		policy.CanaryMode = CanaryExplicit
+		if policy.RolloutMode != RolloutCanaryWaves {
+			return errors.New("explicit canaries require canary_waves rollout")
+		}
+		if len(policy.CanaryServers) < 1 || len(policy.CanaryServers) > 50 {
+			return errors.New("explicit canaries require between 1 and 50 servers")
+		}
+		policy.CanaryCount = len(policy.CanaryServers)
+	default:
+		return errors.New("canary_mode must be 'automatic' or 'explicit'")
+	}
 	return nil
 }
 
@@ -291,6 +331,21 @@ func BuildRolloutBatches(policy Policy, serverNames []string) []RolloutBatch {
 	}
 	if policy.RolloutMode != RolloutCanaryWaves {
 		return []RolloutBatch{{Index: 0, Stage: RolloutImmediate, Servers: names}}
+	}
+	if policy.CanaryMode == CanaryExplicit {
+		canaries, remaining := []string{}, []string{}
+		for _, name := range names {
+			if StringListContainsFold(policy.CanaryServers, name) {
+				canaries = append(canaries, name)
+			} else {
+				remaining = append(remaining, name)
+			}
+		}
+		if len(canaries) != len(policy.CanaryServers) {
+			return []RolloutBatch{}
+		}
+		names = append(canaries, remaining...)
+		policy.CanaryCount = len(canaries)
 	}
 	canaryCount := policy.CanaryCount
 	if canaryCount <= 0 {
@@ -396,6 +451,20 @@ func (s *Service) PreviewPolicy(policy Policy) (PreviewResponse, error) {
 		}
 		globalBlackouts = loaded
 	}
+	if policy.ID > 0 && deps.ListPolicies != nil {
+		persisted, err := deps.ListPolicies()
+		if err != nil {
+			return PreviewResponse{}, err
+		}
+		for _, saved := range persisted {
+			if saved.ID == policy.ID {
+				policy.OnceConsumedAt, policy.OnceScheduledForUTC, policy.OnceAdmissionReason = saved.OnceConsumedAt, saved.OnceScheduledForUTC, saved.OnceAdmissionReason
+			}
+		}
+	}
+	if reason := canaryUnavailable(policy, serversSnapshot, overrides); reason != "" {
+		addPreviewOperationalWarning(&response, RunReasonCanaryUnavailable, reason)
+	}
 	if !policy.Enabled {
 		addPreviewOperationalWarning(&response, "policy_disabled", "Policy is disabled; matched servers will not run until it is enabled.")
 	}
@@ -499,6 +568,18 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 		GeneratedAt: now.UTC().Format(deps.TimestampLayout),
 		Policies:    []CalendarPolicy{},
 	}
+	response.AcceptedRollouts = []Occurrence{}
+	if deps.Occurrences != nil {
+		open, err := deps.Occurrences.ListOpenOccurrences()
+		if err != nil {
+			return CalendarResponse{}, err
+		}
+		for _, o := range open {
+			if options.PolicyID <= 0 || o.Policy.ID == options.PolicyID {
+				response.AcceptedRollouts = append(response.AcceptedRollouts, o)
+			}
+		}
+	}
 	foundPolicy := options.PolicyID <= 0
 	for _, policy := range policies {
 		if options.PolicyID > 0 && policy.ID != options.PolicyID {
@@ -507,6 +588,8 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 		foundPolicy = true
 		matchedServers := matchedServerNamesForPolicy(s, policy, serversSnapshot, overrides)
 		calendarPolicy := CalendarPolicy{
+			DateLocal: policy.DateLocal, MonthDay: policy.MonthDay, MonthLastDay: policy.MonthLastDay,
+			OnceConsumedAt: policy.OnceConsumedAt, RolloutBatches: BuildRolloutBatches(policy, matchedServers), AdmissionReason: canaryUnavailable(policy, serversSnapshot, overrides),
 			ID:             policy.ID,
 			Name:           policy.Name,
 			Enabled:        policy.Enabled,
@@ -526,14 +609,24 @@ func (s *Service) Calendar(options CalendarOptions) (CalendarResponse, error) {
 				AllowedSlots:   []CalendarSlot{},
 				BlockedWindows: []CalendarBlockedWindow{},
 			}
-			if !occurrenceOK {
+			if !occurrenceOK && policyCadenceMatchesDay(policy, dayStart) {
 				day.BlockedReasons = append(day.BlockedReasons, "nonexistent_local_time")
 			}
-			if occurrenceOK && policy.Enabled && s.PolicyDueAt(policy, slotLocal) {
+			if monthlyDayMissing(policy, dayStart) {
+				day.BlockedReasons = append(day.BlockedReasons, "month_day_missing")
+			}
+			if policy.OnceConsumedAt != "" && policyCadenceMatchesDay(policy, dayStart) {
+				day.BlockedReasons = append(day.BlockedReasons, "once_consumed")
+			}
+			if occurrenceOK && policy.Enabled && s.PolicyDueAt(policy, slotLocal) && policy.OnceConsumedAt == "" {
+				if calendarPolicy.AdmissionReason != "" {
+					day.BlockedReasons = append(day.BlockedReasons, calendarPolicy.AdmissionReason)
+				}
 				blockedByGlobal := s.BlackoutApplies(slotLocal, globalBlackouts)
 				blockedByPolicy := s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)
-				if !blockedByGlobal && !blockedByPolicy {
+				if !blockedByGlobal && !blockedByPolicy && calendarPolicy.AdmissionReason == "" {
 					day.AllowedSlots = append(day.AllowedSlots, CalendarSlot{
+						RolloutBatches:   BuildRolloutBatches(policy, matchedServers),
 						TimeLocal:        policy.TimeLocal,
 						ScheduledForUTC:  CanonicalScheduledForUTC(slotLocal, deps.TimestampLayout, deps.CurrentLocation),
 						TimezoneOffset:   timezoneOffset(slotLocal),
@@ -575,14 +668,7 @@ func (s *Service) PolicyDueAt(policy Policy, slotLocal time.Time) bool {
 	if slotLocal.Hour()*60+slotLocal.Minute() != minutes {
 		return false
 	}
-	switch policy.CadenceKind {
-	case CadenceDaily:
-		return true
-	case CadenceWeekly:
-		return weekdayMatchesLocal(policy.Weekdays, slotLocal)
-	default:
-		return false
-	}
+	return policyCadenceMatchesDay(policy, slotLocal)
 }
 
 func matchedServerNamesForPolicy(s *Service, policy Policy, serversSnapshot []servers.Server, overrides map[int64]map[string]bool) []string {
@@ -615,7 +701,11 @@ func (s *Service) resolvePolicySlotForDay(policy Policy, dayStart time.Time) (ti
 		}
 		return occurrence.Instant.In(interpretation.Location), occurrence.Kind, true
 	}
-	return time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), minutes/60, minutes%60, 0, 0, dayStart.Location()), apptimepkg.OccurrenceValid, true
+	occurrence := (apptimepkg.Interpretation{Location: dayStart.Location()}).ResolveLocal(dayStart, minutes/60, minutes%60)
+	if occurrence.Kind == apptimepkg.OccurrenceNonexistent {
+		return time.Time{}, occurrence.Kind, false
+	}
+	return occurrence.Instant.In(dayStart.Location()), occurrence.Kind, true
 }
 
 func weekdayToken(t time.Time) string {
@@ -862,7 +952,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	if err != nil {
 		return err
 	}
-	if len(policies) == 0 {
+	if len(policies) == 0 && deps.Occurrences == nil {
 		return nil
 	}
 	overrides, err := deps.LoadOverrides()
@@ -904,84 +994,84 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 
 	candidatesByServer := make(map[string][]ScheduledCandidate)
-	for _, policy := range policies {
-		if !policy.Enabled {
-			continue
+	plans, err := s.schedulePlans(policies, serversSnapshot, overrides, slotLocal, runsByScope)
+	if err != nil {
+		return err
+	}
+	// Manifests may survive policy edits/deletion and a timezone change. Load
+	// complete history using their accepted UTC identity, never the new draft.
+	if deps.Occurrences != nil && len(plans) > 0 {
+		scopes := []RolloutRunScope{}
+		for _, plan := range plans {
+			scopes = append(scopes, RolloutRunScope{PolicyID: plan.policy.ID, ScheduledForUTC: plan.origin.UTC().Format(deps.TimestampLayout)})
 		}
-		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
-		if !rolloutDue {
-			continue
+		if deps.ListRolloutRuns == nil {
+			return errors.New("policy occurrence history dependency is incomplete")
 		}
-		slots := []time.Time{rolloutSlot}
-		if policy.RolloutMode == RolloutCanaryWaves {
-			slots = s.unfinishedRolloutSlots(policy, rolloutSlot, slotLocal, serversSnapshot, overrides, runsByScope)
+		history, err := deps.ListRolloutRuns(scopes)
+		if err != nil {
+			return err
 		}
-		for _, rolloutSlot := range slots {
-			policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
-			if policy.RolloutMode == RolloutCanaryWaves && rolloutSlot.Before(slotLocal) {
-				// An older slot may only continue an existing rollout under the
-				// configuration that was effective at its origin. Unstarted slots
-				// belong to missed-occurrence recovery, never to current dispatch.
-				if !rolloutOriginMatchesPolicy(policy, rolloutSlot, runsByScope[RolloutRunScope{PolicyID: policy.ID, ScheduledForUTC: policyScheduledForUTC}], deps.TimestampLayout) {
-					continue
-				}
+		for _, run := range history {
+			runByKey[rolloutRunKey(run.PolicyID, run.ScheduledForUTC, run.ServerName)] = run
+		}
+	}
+	for _, plan := range plans {
+		policy, rolloutSlot, batches := plan.policy, plan.origin, plan.batches
+		policyScheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+		if plan.occurrence != nil {
+			policyScheduledForUTC = plan.occurrence.ScheduledForUTC
+		}
+		matchedNames := []string{}
+		for name := range plan.servers {
+			matchedNames = append(matchedNames, name)
+		}
+		policy.MatchedServers = matchedNames
+		policy.AcceptedBatches = batches
+		historyGate := s.rolloutHistoryGate(policy.ID, policyScheduledForUTC, matchedNames, runByKey, true)
+		elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
+		complete := true
+		for batchIndex, batch := range batches {
+			gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
+			if historyGate == "failed" || (gate == "ready" && historyGate == "waiting") {
+				gate = historyGate
 			}
-			matchedServers := make([]servers.Server, 0)
-			for _, server := range serversSnapshot {
-				if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
+			for _, serverName := range batch.Servers {
+				server := plan.servers[serverName]
+				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
+				if run, exists := runByKey[key]; exists {
+					if !isTerminalRunStatus(run.Status) {
+						complete = false
+					}
 					continue
 				}
-				matchedServers = append(matchedServers, server)
+				complete = false
+				if elapsedMinutes < batch.ReleaseDelayMinutes || gate == "waiting" {
+					continue
+				}
+				reason := plan.reasons[serverName]
+				if gate == "failed" {
+					reason = RunReasonRolloutGate
+				}
+				if reason == "" && plan.occurrence != nil && batchIndex == 0 && rolloutSlot.Before(slotLocal) {
+					reason = RunReasonSchedulerMissed
+				}
+				if req.MaintenanceActive {
+					reason = RunReasonMaintenance
+				}
+				if reason == "" && (s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)) {
+					reason = RunReasonBlackout
+				}
+				if reason != "" {
+					recordSkipped(policy, server, policyScheduledForUTC, reason)
+					continue
+				}
+				candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{Policy: policy, Server: server, ScheduledForUTC: policyScheduledForUTC})
 			}
-			sort.Slice(matchedServers, func(i, j int) bool {
-				return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
-			})
-			serverByName := make(map[string]servers.Server, len(matchedServers))
-			matchedNames := make([]string, 0, len(matchedServers))
-			for _, server := range matchedServers {
-				serverByName[server.Name] = server
-				matchedNames = append(matchedNames, server.Name)
-			}
-			batches := BuildRolloutBatches(policy, matchedNames)
-			// Persisted failures belong to the occurrence, even when an
-			// inventory edit removes or reorders their server names.
-			historyGate := s.rolloutHistoryGate(policy.ID, policyScheduledForUTC, matchedNames, runByKey, true)
-			elapsedMinutes := int(slotLocal.Sub(rolloutSlot) / time.Minute)
-			for batchIndex, batch := range batches {
-				if elapsedMinutes < batch.ReleaseDelayMinutes {
-					continue
-				}
-				gate := s.reconciledRolloutGateState(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey)
-				if historyGate == "failed" || (gate == "ready" && historyGate == "waiting") {
-					gate = historyGate
-				}
-				if gate == "waiting" {
-					continue
-				}
-				for _, serverName := range batch.Servers {
-					server := serverByName[serverName]
-					key := rolloutRunKey(policy.ID, policyScheduledForUTC, server.Name)
-					if _, exists := runByKey[key]; exists {
-						continue
-					}
-					if gate == "failed" {
-						recordSkipped(policy, server, policyScheduledForUTC, RunReasonRolloutGate)
-						continue
-					}
-					if req.MaintenanceActive {
-						recordSkipped(policy, server, policyScheduledForUTC, RunReasonMaintenance)
-						continue
-					}
-					if s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts) {
-						recordSkipped(policy, server, policyScheduledForUTC, RunReasonBlackout)
-						continue
-					}
-					candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{
-						Policy:          policy,
-						Server:          server,
-						ScheduledForUTC: policyScheduledForUTC,
-					})
-				}
+		}
+		if complete && plan.occurrence != nil {
+			if err := deps.Occurrences.CloseOccurrence(policy.ID, plan.occurrence.Key); err != nil {
+				return err
 			}
 		}
 	}
@@ -1095,8 +1185,11 @@ func (s *Service) rolloutScheduledSlot(policy Policy, nowLocal time.Time) (time.
 		return nowLocal, s.PolicyDueAt(policy, nowLocal)
 	}
 	dayStart := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, nowLocal.Location())
-	for daysBack := 0; daysBack <= 7; daysBack++ {
+	for daysBack := 0; daysBack <= 370; daysBack++ {
 		candidateDay := dayStart.AddDate(0, 0, -daysBack)
+		if !policyCadenceMatchesDay(policy, candidateDay) {
+			continue
+		}
 		candidate, ok := s.policySlotForDay(policy, candidateDay)
 		if !ok || !s.PolicyDueAt(policy, candidate) || candidate.After(nowLocal) {
 			continue

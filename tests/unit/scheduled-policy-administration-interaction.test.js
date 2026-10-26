@@ -392,3 +392,39 @@ test("Admin no longer declares the legacy policy editor state globals", () => {
     assert.doesNotMatch(admin, /const\\s+policyFormState\\s*=/);
     assert.doesNotMatch(admin, /policyPreviewRequestSeq/);
 });
+
+test("one-time and monthly drafts preserve server-projected dates without a browser calendar", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft({ cadence_kind: "once", date_local: "2028-02-29", time_local: "03:45" }) });
+    assert.equal(store.validatePolicyDraft().payload.date_local, "2028-02-29");
+    assert.match(store.getView().editor.summary.body, /Once on 2028-02-29 at 03:45/);
+    assert.equal(store.getView().editor.visibility.once, true);
+    store.dispatch({ type: "editorChanged", patch: { cadence_kind: "monthly", month_day: "31" } });
+    assert.equal(store.validatePolicyDraft().payload.month_day, 31);
+    assert.match(store.getView().editor.summary.body, /Monthly on day 31/);
+    store.dispatch({ type: "editorChanged", patch: { month_last_day: true } });
+    assert.match(store.getView().editor.summary.body, /Monthly on the last day/);
+    assert.equal(store.getView().editor.visibility.monthDay, false);
+    store.dispatch({ type: "editorChanged", patch: { month_last_day: false, month_day: "32" } });
+    assert.equal(store.validatePolicyDraft().ok, false);
+});
+
+test("explicit canaries retain names and server diagnostics across navigation and timezone invalidation", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorChanged", patch: readyDraft({ rollout_mode: "canary_waves", canary_mode: "explicit", canary_servers: "srv-b, srv-a, SRV-A" }) });
+    assert.deepEqual(store.validatePolicyDraft().payload.canary_servers, ["srv-b", "srv-a"]);
+    assert.equal(store.validatePolicyDraft().payload.canary_count, 2);
+    assert.match(store.getView().editor.summary.body, /Canary srv-b, srv-a/);
+    store.dispatch({ type: "timezoneChanged", timezone: "Europe/Paris" });
+    assert.deepEqual(store.getView().editor.draft.canary_servers, ["srv-b", "srv-a"]);
+    store.dispatch({ type: "editorChanged", patch: { canary_servers: "" } });
+    assert.equal(store.validatePolicyDraft().ok, false);
+});
+
+test("consumed one-time status survives edits and explains the lifetime latch", () => {
+    const store = createStore();
+    store.dispatch({ type: "editorLoaded", policy: { ...readyDraft(), id: 42, cadence_kind: "once", date_local: "2026-10-25", once_consumed_at: "2026-10-25T03:00:00Z" } });
+    store.dispatch({ type: "editorChanged", patch: { cadence_kind: "monthly", month_day: 31 } });
+    assert.match(store.getView().editor.summary.body, /One-time occurrence consumed/);
+    assert.match(store.getView().editor.summary.body, /create a new policy/);
+});

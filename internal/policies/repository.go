@@ -168,19 +168,27 @@ func EnsureSchema(db *sql.DB) error {
 		return err
 	}
 	for name, definition := range map[string]string{
-		"rollout_mode":       "TEXT NOT NULL DEFAULT 'immediate'",
-		"canary_count":       "INTEGER NOT NULL DEFAULT 0",
-		"wave_size":          "INTEGER NOT NULL DEFAULT 0",
-		"wave_delay_minutes": "INTEGER NOT NULL DEFAULT 0",
+		"rollout_mode":        "TEXT NOT NULL DEFAULT 'immediate'",
+		"canary_count":        "INTEGER NOT NULL DEFAULT 0",
+		"wave_size":           "INTEGER NOT NULL DEFAULT 0",
+		"wave_delay_minutes":  "INTEGER NOT NULL DEFAULT 0",
+		"date_local":          "TEXT NOT NULL DEFAULT ''",
+		"month_day":           "INTEGER NOT NULL DEFAULT 0",
+		"month_last_day":      "INTEGER NOT NULL DEFAULT 0",
+		"canary_mode":         "TEXT NOT NULL DEFAULT 'automatic'",
+		"canary_servers_json": "TEXT NOT NULL DEFAULT '[]'",
+		"revision":            "INTEGER NOT NULL DEFAULT 1",
 	} {
 		if err := ensureColumn(db, name, definition); err != nil {
 			return err
 		}
 	}
-	if err := ensureTableColumn(db, "update_policy_runs", "upgrade_mode", "TEXT NOT NULL DEFAULT 'standard'"); err != nil {
-		return err
+	for name, definition := range map[string]string{"upgrade_mode": "TEXT NOT NULL DEFAULT 'standard'", "policy_revision": "INTEGER NOT NULL DEFAULT 0", "rollout_stage": "TEXT NOT NULL DEFAULT ''", "wave": "INTEGER NOT NULL DEFAULT 0"} {
+		if err := ensureTableColumn(db, "update_policy_runs", name, definition); err != nil {
+			return err
+		}
 	}
-	return nil
+	return ensureOccurrenceSchema(db)
 }
 
 func ensureColumn(db *sql.DB, name, definition string) error {
@@ -254,7 +262,7 @@ func (r *SQLiteRepository) ListPolicies() ([]Policy, error) {
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 		       weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
-		       policy_blackouts_json, created_at, updated_at
+		       policy_blackouts_json, created_at, updated_at, date_local, month_day, month_last_day, canary_mode, canary_servers_json, revision
 		  FROM update_policies
 		 ORDER BY created_at ASC, id ASC
 	`)
@@ -273,6 +281,14 @@ func (r *SQLiteRepository) ListPolicies() ([]Policy, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range policies {
+		if err := r.enrichOnceConsumption(&policies[i]); err != nil {
+			return nil, err
+		}
+	}
 	return policies, nil
 }
 
@@ -281,11 +297,18 @@ func (r *SQLiteRepository) GetPolicy(id int64) (Policy, error) {
 		SELECT id, name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 		       package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 		       weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
-		       policy_blackouts_json, created_at, updated_at
+		       policy_blackouts_json, created_at, updated_at, date_local, month_day, month_last_day, canary_mode, canary_servers_json, revision
 		  FROM update_policies
 		 WHERE id = ?
 	`, id)
-	return scanPolicyRow(row)
+	policy, err := scanPolicyRow(row)
+	if err != nil {
+		return Policy{}, err
+	}
+	if err := r.enrichOnceConsumption(&policy); err != nil {
+		return Policy{}, err
+	}
+	return policy, nil
 }
 
 func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
@@ -295,8 +318,8 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 			name, enabled, target_tag, include_tags_json, exclude_tags_json, target_servers_json,
 			package_scope, upgrade_mode, execution_mode, cadence_kind, time_local,
 			weekdays_json, approval_timeout_minutes, rollout_mode, canary_count, wave_size, wave_delay_minutes,
-			policy_blackouts_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			policy_blackouts_json, created_at, updated_at, date_local, month_day, month_last_day, canary_mode, canary_servers_json, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		policy.Name,
 		BoolToInt(policy.Enabled),
@@ -318,6 +341,7 @@ func (r *SQLiteRepository) CreatePolicy(policy Policy) (Policy, error) {
 		r.json(policy.PolicyBlackouts),
 		now,
 		now,
+		policy.DateLocal, policy.MonthDay, BoolToInt(policy.MonthLastDay), normalizedCanaryMode(policy.CanaryMode), r.json(policy.CanaryServers), int64(1),
 	)
 	if err != nil {
 		return Policy{}, err
@@ -340,7 +364,7 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 		       target_servers_json = ?, package_scope = ?, upgrade_mode = ?, execution_mode = ?,
 		       cadence_kind = ?, time_local = ?, weekdays_json = ?, approval_timeout_minutes = ?,
 		       rollout_mode = ?, canary_count = ?, wave_size = ?, wave_delay_minutes = ?,
-		       policy_blackouts_json = ?, updated_at = ?
+		       policy_blackouts_json = ?, updated_at = ?, date_local = ?, month_day = ?, month_last_day = ?, canary_mode = ?, canary_servers_json = ?, revision = revision + 1
 		 WHERE id = ?
 	`,
 		policy.Name,
@@ -362,6 +386,7 @@ func (r *SQLiteRepository) UpdatePolicy(id int64, policy Policy) (Policy, error)
 		policy.WaveDelayMinutes,
 		r.json(policy.PolicyBlackouts),
 		now,
+		policy.DateLocal, policy.MonthDay, BoolToInt(policy.MonthLastDay), normalizedCanaryMode(policy.CanaryMode), r.json(policy.CanaryServers),
 		id,
 	)
 	if err != nil {
@@ -410,7 +435,8 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 	var policyBlackoutsJSON string
 	var includeTagsJSON string
 	var excludeTagsJSON string
-	var targetServersJSON string
+	var targetServersJSON, canaryServersJSON string
+	var monthLastDay int
 	err := scanner.Scan(
 		&policy.ID,
 		&policy.Name,
@@ -433,10 +459,14 @@ func scanPolicyRow(scanner interface{ Scan(dest ...any) error }) (Policy, error)
 		&policyBlackoutsJSON,
 		&policy.CreatedAt,
 		&policy.UpdatedAt,
+		&policy.DateLocal, &policy.MonthDay, &monthLastDay, &policy.CanaryMode, &canaryServersJSON, &policy.Revision,
 	)
 	if err != nil {
 		return Policy{}, err
 	}
+	policy.MonthLastDay = monthLastDay != 0
+	policy.CanaryMode = normalizedCanaryMode(policy.CanaryMode)
+	policy.CanaryServers = ParseStringListJSON(canaryServersJSON)
 	policy.Enabled = enabledInt != 0
 	policy.UpgradeMode = normalizedUpgradeMode(policy.UpgradeMode)
 	if strings.TrimSpace(policy.RolloutMode) == "" {
@@ -593,23 +623,25 @@ func (r *SQLiteRepository) RenameTargetServersTx(tx *sql.Tx, oldServerName, newS
 	if oldServerName == "" || newServerName == "" {
 		return nil
 	}
-	rows, err := tx.Query(`SELECT id, target_servers_json FROM update_policies`)
+	rows, err := tx.Query(`SELECT id, target_servers_json, canary_servers_json FROM update_policies`)
 	if err != nil {
 		return err
 	}
 	type policyTargetUpdate struct {
-		id      int64
-		targets []string
+		id       int64
+		targets  []string
+		canaries []string
 	}
 	updates := make([]policyTargetUpdate, 0)
 	for rows.Next() {
 		var id int64
-		var rawTargets string
-		if err := rows.Scan(&id, &rawTargets); err != nil {
+		var rawTargets, rawCanaries string
+		if err := rows.Scan(&id, &rawTargets, &rawCanaries); err != nil {
 			_ = rows.Close()
 			return err
 		}
 		targets := ParseStringListJSON(rawTargets)
+		canaries := ParseStringListJSON(rawCanaries)
 		changed := false
 		for i, target := range targets {
 			if strings.EqualFold(strings.TrimSpace(target), oldServerName) {
@@ -617,10 +649,16 @@ func (r *SQLiteRepository) RenameTargetServersTx(tx *sql.Tx, oldServerName, newS
 				changed = true
 			}
 		}
+		for i, name := range canaries {
+			if strings.EqualFold(name, oldServerName) {
+				canaries[i] = newServerName
+				changed = true
+			}
+		}
 		if changed {
 			updates = append(updates, policyTargetUpdate{
 				id:      id,
-				targets: NormalizeStringList(targets),
+				targets: NormalizeStringList(targets), canaries: NormalizeStringList(canaries),
 			})
 		}
 	}
@@ -635,9 +673,9 @@ func (r *SQLiteRepository) RenameTargetServersTx(tx *sql.Tx, oldServerName, newS
 	for _, update := range updates {
 		if _, err := tx.Exec(`
 			UPDATE update_policies
-			   SET target_servers_json = ?, updated_at = ?
+			   SET target_servers_json = ?, canary_servers_json = ?, updated_at = ?, revision = revision + 1
 			 WHERE id = ?
-		`, r.json(update.targets), now, update.id); err != nil {
+		`, r.json(update.targets), r.json(update.canaries), now, update.id); err != nil {
 			return err
 		}
 	}
@@ -691,8 +729,8 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 	result, err := r.database().Exec(`
 		INSERT INTO update_policy_runs (
 			policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-			status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		run.PolicyID,
 		run.PolicyName,
@@ -710,6 +748,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 		now,
 		run.StartedAt,
 		run.FinishedAt,
+		run.PolicyRevision, run.RolloutStage, run.Wave,
 	)
 	if err != nil {
 		if IsSQLiteUniqueConstraint(err) {
@@ -735,7 +774,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC string) (Run, error) {
 	row := r.database().QueryRow(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
 		  FROM update_policy_runs
 		 WHERE policy_id = ? AND server_name = ? AND scheduled_for_utc = ?
 	`, policyID, serverName, scheduledForUTC)
@@ -745,7 +784,7 @@ func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC s
 func (r *SQLiteRepository) GetRun(id int64) (Run, error) {
 	row := r.database().QueryRow(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
 		  FROM update_policy_runs
 		 WHERE id = ?
 	`, id)
@@ -772,6 +811,7 @@ func scanRunRow(scanner interface{ Scan(dest ...any) error }) (Run, error) {
 		&run.UpdatedAt,
 		&run.StartedAt,
 		&run.FinishedAt,
+		&run.PolicyRevision, &run.RolloutStage, &run.Wave,
 	)
 	run.UpgradeMode = normalizedUpgradeMode(run.UpgradeMode)
 	return run, err
@@ -867,7 +907,7 @@ func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {
 	}
 	rows, err := r.database().Query(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
 		  FROM update_policy_runs
 		 ORDER BY scheduled_for_utc DESC, id DESC
 		 LIMIT ?
@@ -934,7 +974,7 @@ func (r *SQLiteRepository) ListRolloutRuns(scopes []RolloutRunScope) ([]Run, err
 		}
 		rows, err := r.database().Query(`
 			SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-			       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+			       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
 			  FROM update_policy_runs
 			 WHERE `+strings.Join(where, " OR ")+`
 			 ORDER BY policy_id ASC, scheduled_for_utc ASC, server_name ASC, id DESC
@@ -1011,7 +1051,7 @@ func (r *SQLiteRepository) QueryRuns(query RunQuery) (RunPage, error) {
 	pageArgs := append(append([]any{}, args...), query.PageSize, (query.Page-1)*query.PageSize)
 	rows, err := r.database().Query(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave
 		  FROM update_policy_runs`+whereSQL+`
 		 ORDER BY scheduled_for_utc DESC, id DESC
 		 LIMIT ? OFFSET ?

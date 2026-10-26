@@ -74,6 +74,8 @@ func policyServiceDepsWithDefaults(deps PolicyServiceDeps) PolicyServiceDeps {
 	}
 	if deps.ListRolloutRuns == nil && useDefaultPolicyRepository {
 		deps.ListRolloutRuns = defaultPolicyRepository().ListRolloutRuns
+		deps.ListRolloutOrigins = defaultPolicyRepository().ListRolloutOrigins
+		deps.Occurrences = defaultPolicyRepository()
 	}
 	if deps.ReconcileRun == nil {
 		deps.ReconcileRun = func(run policypkg.Run) (policypkg.Run, error) {

@@ -1038,9 +1038,6 @@ func PreparePendingUpdatesForCVE(updates []servers.PendingUpdate) []servers.Pend
 func PendingCVEPackages(updates []servers.PendingUpdate) []string {
 	pkgs := make([]string, 0)
 	for _, update := range updates {
-		if update.Deferred {
-			continue
-		}
 		if update.CVEState != "pending" {
 			continue
 		}

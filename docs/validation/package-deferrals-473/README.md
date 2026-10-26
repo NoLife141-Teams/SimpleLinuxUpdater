@@ -28,14 +28,14 @@ python3 tools/ci/ssh-apt/deferrals.py --distro ubuntu2404 \
 ```
 
 Both reports record helper SHA256
-`9919ee2f34f1cd12b6368e6d3dbe4173e7bdcbb1dbfe6543e032daf34f805ce5`,
+`dabedd3dff5ec86cdc237998f432d831e10c0950ca010828137d311dc117f77a`,
 the fixture source hash, pinned image, before/after installed package versions,
 actual APT output and successful owned-container removal.
 
 | Target | APT | dpkg | Result |
 | --- | --- | --- | --- |
-| Debian 13 | 3.0.3 | 1.22.22 | 11/11 passed |
-| Ubuntu 24.04 | 2.8.3 | 1.22.6ubuntu6.6 | 11/11 passed |
+| Debian 13 | 3.0.3 | 1.22.22 | 12/12 passed |
+| Ubuntu 24.04 | 2.8.3 | 1.22.6ubuntu6.6 | 12/12 passed |
 
 The local dataset includes:
 
@@ -56,11 +56,43 @@ The local dataset includes:
   package changes. An administrator-held package cannot be explicitly upgraded.
   Administrator hold selections and the preference-file hash remain identical,
   and the helper leaves no temporary guard directories behind.
+- A pin that removes one approved upgrade from APT's actual transaction blocks
+  the whole transaction before dpkg, including the remaining independent upgrade.
+  The helper requires every approved action to appear, as well as refusing
+  unexpected actions. A reduced transaction cannot reuse the original approval.
 
 The final successful runs supersede early fixture-bootstrap failures caused by
 an empty line in generated `Packages` metadata. A subsequent protocol check
 distinguished `**REMOVE**` actions from downgrade directions; both final reports
 were regenerated with the corrected, final helper hash above.
+
+### Independent review corrections
+
+Review of PR #485 found that a reduced transaction was accepted by the original
+helper. A real Debian 13 reproduction approved upgrades of `slu-independent`
+and `slu-admin-pinned` to version 2 while the administrator's pin retained the
+second package at version 1. The old helper applied only the independent
+upgrade. The new `approved-action-missing-after-pin-drift` scenario fails against
+that helper and now blocks without changing any installed package on both
+distributions. Both committed reports were regenerated with the current helper;
+the earlier 11-scenario helper hash was
+`9919ee2f34f1cd12b6368e6d3dbe4173e7bdcbb1dbfe6543e032daf34f805ce5`.
+
+The review also found that pending CVE enrichment excluded deferred packages
+from its admission/failure list. When every pending package was deferred, no
+scan started; on a mixed failed scan, deferred packages remained pending. Those
+packages now participate in enrichment and failure handling. Regressions cover
+both cases and an update runner that displays a deferred package's CVE during
+approval, performs no package mutation and records the deferral revision and
+no-mutation decision in completion audit metadata.
+
+Validation after these corrections passed: `go test ./...`,
+`go test -race -count=1 ./...`, `go vet ./...`, `go build ./...`, all 197
+JavaScript unit tests, all 19 SSH/APT harness safety tests, the two package
+deferral Playwright scenarios, and 12 real APT scenarios per distribution above.
+The initial sandboxed Go attempt could not open temporary loopback listeners;
+the complete suites passed with those local test listeners enabled. Product UI
+code was unchanged, so the other 92 Playwright scenarios were not repeated.
 
 ## Application and browser validation
 

@@ -271,9 +271,15 @@ actions {
     selector=name ":" arch
     if (name in deferred || selector in deferred || (name ":" $3) in deferred) deny("APT would change deferred package " selector "; resolve dependencies or wait for expiry")
     if (arch=="all") {for (rule in deferred) {split(rule, parts, ":");if (parts[1]==name) deny("APT would change deferred architecture-independent package " name)}}
-    if (!((selector "=" $6) in approved)) deny("APT transaction changed since approval for " selector "; rescan and approve again")
+    change=selector "=" $6
+    if (!(change in approved)) deny("APT transaction changed since approval for " selector "; rescan and approve again")
+    seen[change]=1
 }
-END { if (failed || !header || !actions) exit 65; if (systime()>=deadline) {print "SimpleLinuxUpdater package deferral expired; rescan and approve again" > "/dev/stderr"; exit 65} }
+END {
+    if (failed || !header || !actions) exit 65
+    for (change in approved) if (!(change in seen)) deny("APT transaction changed since approval; missing " change "; rescan and approve again")
+    if (systime()>=deadline) {print "SimpleLinuxUpdater package deferral expired; rescan and approve again" > "/dev/stderr"; exit 65}
+}
 ' "$base/rules" "$base/expected" -
 SLU_GUARD
         printf '%s\n' "$deadline" > "$guard_dir/deadline"

@@ -336,3 +336,97 @@ func TestPackageDeferralsBlockUnplannedRepairAndAutoremove(t *testing.T) {
 		})
 	}
 }
+
+func TestPendingCVEEnrichmentIncludesDeferredPackages(t *testing.T) {
+	for _, mode := range []string{"all deferred", "mixed scan failure"} {
+		t.Run(mode, func(t *testing.T) {
+			state, _ := testState()
+			pending := []servers.PendingUpdate{{Package: "deferred:amd64", Deferred: true, Security: true, CVEState: "pending"}}
+			if mode == "mixed scan failure" {
+				pending = append(pending, servers.PendingUpdate{Package: "independent:amd64", CVEState: "pending"})
+			}
+			state.Lock()
+			state.StatusMap()["srv"].PendingUpdates = servers.ClonePendingUpdates(pending)
+			state.Unlock()
+			scans := 0
+			service := NewService(ServiceDeps{
+				ServerState:             state,
+				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{}),
+				CurrentJobManager:       func() *jobs.Manager { return nil },
+				StartJobRunner:          func(_ string, run func()) { run() },
+				VulnerabilityScanner: VulnerabilityScannerFunc(func(_ context.Context, _ HostMaintenanceSession, updates []servers.PendingUpdate) ([]servers.PendingUpdate, error) {
+					scans++
+					if mode == "mixed scan failure" {
+						return nil, errors.New("fixture vulnerability feed unavailable")
+					}
+					updates = servers.ClonePendingUpdates(updates)
+					updates[0].CVEState = "ready"
+					updates[0].CVEs = []string{"CVE-2026-1000"}
+					return updates, nil
+				}),
+			})
+			service.StartPendingCVEEnrichment(servers.Server{Name: "srv"}, pending, "", "operator", "")
+			got := state.CurrentStatusSnapshot("srv").PendingUpdates[0]
+			if scans != 1 || !got.Deferred || got.CVEState == "pending" {
+				t.Fatalf("scans=%d, deferred update=%+v", scans, got)
+			}
+			if mode == "all deferred" && (got.CVEState != "ready" || len(got.CVEs) != 1) || mode == "mixed scan failure" && got.CVEState != "unavailable" {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestRunUpdateAllDeferredRetainsCVEExposureAndAudit(t *testing.T) {
+	now := time.Now().UTC()
+	state, _ := testState()
+	server := servers.Server{Name: "srv", User: "root"}
+	var service *Service
+	var meta map[string]any
+	scans, mutations := 0, 0
+	service = NewService(ServiceDeps{
+		ServerState: state,
+		HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+			RunUpdatePrechecksFunc: func(context.Context) PrecheckSummary { return PrecheckSummary{AllPassed: true} },
+			DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
+				return HostPackageDiscoveryResult{Outcome: newPackageDiscoveryOutcome([]servers.PendingUpdate{{Package: "deferred:amd64", Security: true}}, []string{"deferred"}, servers.UpgradePlan{StandardPackageCount: 1, StandardSecurityCount: 1, TotalSecurityCount: 1})}, nil
+			},
+			RunCommandFunc: func(_ context.Context, req HostCommandRequest) (HostCommandResult, error) {
+				if req.Effect == HostCommandEffectPackageStateMutation {
+					mutations++
+				}
+				return HostCommandResult{}, nil
+			},
+		}),
+		CurrentJobManager:    func() *jobs.Manager { return nil },
+		StartJobRunner:       func(_ string, run func()) { run() },
+		LoadPackageDeferrals: func(servers.Server, string) (deferrals.Snapshot, error) { return testDeferralSnapshot(now), nil },
+		VulnerabilityScanner: VulnerabilityScannerFunc(func(_ context.Context, _ HostMaintenanceSession, updates []servers.PendingUpdate) ([]servers.PendingUpdate, error) {
+			scans++
+			updates = servers.ClonePendingUpdates(updates)
+			updates[0].CVEState = "ready"
+			updates[0].CVEs = []string{"CVE-2026-1000"}
+			return updates, nil
+		}),
+		WaitForApprovalPoll: func() {
+			pending := state.CurrentStatusSnapshot("srv").PendingUpdates
+			if len(pending) != 1 || !pending[0].Deferred || pending[0].CVEState != "ready" || len(pending[0].CVEs) != 1 {
+				t.Fatalf("deferred exposure unavailable during approval: %+v", pending)
+			}
+			service.ApprovePendingUpdate("srv", ApprovalScopeAll)
+		},
+		Now:                          func() time.Time { return now },
+		LoadPostUpdateCheckConfig:    func() PostUpdateCheckConfig { return PostUpdateCheckConfig{} },
+		SaveServerFacts:              func(ServerFactsRecord) error { return nil },
+		UpdateScheduledDiscoveryMeta: func(string, PackageDiscoveryOutcome) {},
+		AuditWithActor: func(_, _, action, _, _, _, _ string, facts map[string]any) {
+			if action == UpdateCompleteAction {
+				meta = facts
+			}
+		},
+	})
+	service.RunUpdateJob(UpdateRunRequest{Server: server, Actor: "operator", Policy: RetryPolicy{MaxAttempts: 1}})
+	if scans != 1 || mutations != 0 || state.CurrentStatusSnapshot("srv").Status != "done" || meta["deferral_revision"] != testDeferralSnapshot(now).Revision || meta["deferred_package_count"] != 1 || meta["deferral_decision"] != "no_package_mutation" {
+		t.Fatalf("scans=%d mutations=%d audit=%+v status=%+v", scans, mutations, meta, state.CurrentStatusSnapshot("srv"))
+	}
+}

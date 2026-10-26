@@ -159,7 +159,9 @@ the complete action stream before dpkg starts, rejects unsupported protocols,
 deferred packages (including dependencies, architecture-independent packages
 and removals), administrator-held packages, downgrades and changes outside the
 approved package/architecture/version transaction. The expiry is checked both
-before APT and by the hook. Existing administrator hooks remain configured;
+before APT and by the hook. Missing approved actions also invalidate the whole
+transaction, so a changed pin cannot silently reduce an approved operation.
+Existing administrator hooks remain configured;
 hold selections and preference files are never edited. Fixed APT options keep
 hold and downgrade override settings disabled. Temporary hook files are cleaned
 on exit. No arbitrary hooks, preferences, shell commands or paths are accepted

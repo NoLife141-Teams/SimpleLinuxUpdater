@@ -19,6 +19,7 @@ def qualify(helper, output, distro):
     run.require(distro in ("debian13", "ubuntu2404"), "unsupported deferral fixture distribution")
     image = run.IMAGES[distro]
     records = []
+    administrator_state_verified = False
 
     def docker(*args, data=None):
         return run.command([*run.DOCKER, *args], data=data, timeout=120)
@@ -96,7 +97,17 @@ def qualify(helper, output, distro):
         drift["scenario"] = "unapproved-dependency-drift"
         run.require(drift["status"] == "blocked" and drift["before"] == drift["after"] and "changed since approval" in drift["output"], str(drift))
         records.append(drift)
+        # Model a pin/candidate change after approval: the approved pinned
+        # upgrade disappears, but APT can still apply the independent upgrade.
+        target("dpkg", "--force-downgrade", "-i", f"/tmp/slu-debs/slu-independent-1-{native}.deb")
+        subset = guarded("full_upgrade", ["slu-deferred"],
+                         [f"slu-independent:{native}=2", f"slu-admin-pinned:{native}=2"],
+                         ["slu-independent", "slu-admin-pinned"])
+        subset["scenario"] = "approved-action-missing-after-pin-drift"
+        records.append(subset)
+        run.require(subset["status"] == "blocked" and subset["before"] == subset["after"] and "changed since approval" in subset["output"], str(subset))
         target("sh", "-c", "sha256sum -c /run/slu-pin-before && apt-mark showhold > /run/slu-holds-after && cmp /run/slu-holds-before /run/slu-holds-after")
+        administrator_state_verified = True
         packages = target("dpkg-query", "-W", "-f=${Package}=${Version}\n", "apt", "dpkg").splitlines()
         transient = target("sh", "-c", "find /tmp -maxdepth 1 -name 'simplelinuxupdater-guard.*' -print")
         run.require(not transient.strip(), "helper temporary resources leaked")
@@ -115,7 +126,7 @@ def qualify(helper, output, distro):
             "helper_sha256": hashlib.sha256(helper).hexdigest(), "fixture_sha256": hashlib.sha256((run.HERE / "deferrals-fixture.sh").read_bytes()).hexdigest(), "container": name,
             "network": "none", "mounts": [], "cleanup": cleanup,
             "packages": locals().get("packages", []), "baseline": locals().get("baseline", []),
-            "administrator_holds_and_pins": "preserved" if len(records) == 11 else "not-verified",
+            "administrator_holds_and_pins": "preserved" if administrator_state_verified else "not-verified",
             "scenarios": records}, indent=2) + "\n")
     print(f"{len(records)} real APT scenarios passed; {cleanup}; {output}")
 

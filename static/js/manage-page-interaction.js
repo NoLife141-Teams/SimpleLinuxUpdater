@@ -28,6 +28,7 @@
     const sectionDefinitions = [
         { id: "global-key", label: "Global SSH Credential", collapsed: true },
         { id: "add-server", label: "Add Server", collapsed: true },
+        { id: "import", label: "Import inventory", collapsed: true },
         { id: "directory", label: "Server directory", collapsed: false },
         { id: "audit", label: "Audit trail", collapsed: true }
     ];
@@ -84,6 +85,7 @@
         };
         let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
         let audit = { query: { targetName: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
+        let inventoryImport = { generation: 0, phase: "file", fileName: "", format: "", fileValid: false, preview: null, selected: [], created: [], error: "", busy: false };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -355,6 +357,7 @@
                         else sectionSummary = globalKeyAvailable ? "Configured" : "Not configured";
                     }
                     if (section.id === "add-server") sectionSummary = "Create an SSH target";
+                    if (section.id === "import") sectionSummary = inventoryImport.phase === "result" ? `${inventoryImport.created.length} imported` : inventoryImport.preview ? `${inventoryImport.selected.length} selected · draft` : "CSV or JSON · disabled by default";
                     if (section.id === "directory") sectionSummary = `${summary.total} ${summary.total === 1 ? "server" : "servers"}`;
                     if (section.id === "audit") sectionSummary = `${audit.total} recent ${audit.total === 1 ? "event" : "events"}`;
                     return { id: section.id, label: section.label, collapsed: !!workspace.collapsed[section.id], summary: sectionSummary };
@@ -402,6 +405,79 @@
         function dispatch(event) {
             const input = event || {};
             switch (input.type) {
+                case "importFileSelected": {
+                    if (inventoryImport.phase === "committing") return [];
+                    const fileName = String(input.name || "");
+                    const format = fileName.toLowerCase().endsWith(".csv") ? "csv" : fileName.toLowerCase().endsWith(".json") ? "json" : "";
+                    inventoryImport = { generation: inventoryImport.generation + 1, phase: "file", fileName, format, fileValid: !!format && Number(input.size) <= 2 * 1024 * 1024, preview: null, selected: [], created: [], error: !format ? "Choose a .csv or .json file." : Number(input.size) > 2 * 1024 * 1024 ? "Inventory files must be at most 2 MiB." : "", busy: false };
+                    return [effect("render", { area: "import" })];
+                }
+                case "importPreviewRequested": {
+                    if (!inventoryImport.fileValid || inventoryImport.busy || inventoryImport.phase !== "file") return [];
+                    inventoryImport.busy = true;
+                    return [effect("render", { area: "import" }), effect("previewImport", { generation: inventoryImport.generation, format: inventoryImport.format })];
+                }
+                case "importPreviewReceived": {
+                    if (input.generation !== inventoryImport.generation || !inventoryImport.busy || inventoryImport.phase === "committing") return [];
+                    inventoryImport.preview = clone(input.preview);
+                    inventoryImport.selected = (input.preview?.rows || []).filter(row => !row.errors?.length).map(row => row.row);
+                    inventoryImport.phase = "preview";
+                    inventoryImport.error = "";
+                    inventoryImport.busy = false;
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "import-preview-heading" })];
+                }
+                case "importRowSelectionChanged": {
+                    if (inventoryImport.phase !== "preview" || inventoryImport.busy) return [];
+                    const row = inventoryImport.preview?.rows.find(row => row.row === Number(input.row));
+                    if (!row || row.errors?.length) return [];
+                    inventoryImport.selected = inventoryImport.selected.filter(id => id !== row.row);
+                    if (input.selected) inventoryImport.selected.push(row.row);
+                    return [effect("render", { area: "import" })];
+                }
+                case "importConfirmationRequested":
+                    if (inventoryImport.phase !== "preview" || !inventoryImport.selected.length || inventoryImport.busy) return [];
+                    inventoryImport.phase = "confirmation";
+                    inventoryImport.error = "";
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "import-confirm-heading" })];
+                case "importSelectionRequested":
+                    if (inventoryImport.phase !== "confirmation") return [];
+                    inventoryImport.phase = "preview";
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "import-preview-heading" })];
+                case "importCommitRequested": {
+                    if (inventoryImport.phase !== "confirmation" || inventoryImport.busy || !inventoryImport.selected.length) return [];
+                    inventoryImport.phase = "committing";
+                    inventoryImport.busy = true;
+                    const rows = inventoryImport.preview.rows.filter(row => inventoryImport.selected.includes(row.row)).map(({ row, name, host, port, user, tags }) => ({ row, name, host, port, user, tags }));
+                    return [effect("render", { area: "import" }), effect("commitImport", { generation: inventoryImport.generation, selection: { batch_id: inventoryImport.preview.batch_id, rows } })];
+                }
+                case "importCommitReceived": {
+                    if (input.generation !== inventoryImport.generation || inventoryImport.phase !== "committing") return [];
+                    inventoryImport.busy = false;
+                    if (input.result?.outcome === "success") {
+                        inventoryImport.phase = "result";
+                        inventoryImport.created = clone(input.result.created || []);
+                        inventoryImport.preview = null;
+                        inventoryImport.selected = [];
+                        return [effect("render", { area: "import" }), effect("focusImport", { id: "import-result-heading" }), effect("refresh", { streams: ["inventory", "audit"] })];
+                    }
+                    if (input.result?.preview) {
+                        inventoryImport.preview = clone(input.result.preview);
+                        inventoryImport.selected = inventoryImport.preview.rows.filter(row => !row.errors?.length).map(row => row.row);
+                    }
+                    inventoryImport.phase = "preview";
+                    inventoryImport.error = String(input.result?.error || "Import failed. Review the preview and retry.");
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "import-preview-heading" })];
+                }
+                case "importRequestFailed":
+                    if (input.generation !== inventoryImport.generation || !inventoryImport.busy) return [];
+                    inventoryImport.busy = false;
+                    inventoryImport.phase = inventoryImport.preview ? "preview" : "file";
+                    inventoryImport.error = String(input.error || "Import request failed. Retry shortly.");
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "import-feedback" })];
+                case "importReset":
+                    if (inventoryImport.phase === "committing") return [];
+                    inventoryImport = { generation: inventoryImport.generation + 1, phase: "file", fileName: "", format: "", fileValid: false, preview: null, selected: [], created: [], error: "", busy: false };
+                    return [effect("render", { area: "import" }), effect("focusImport", { id: "inventory-import-file" })];
                 case "inventorySnapshotReceived":
                     if (input.requestID && streams.inventory.inFlight !== input.requestID) return [];
                     inventory = (Array.isArray(input.items) ? input.items : []).map(normalizeServer).filter(Boolean);
@@ -439,7 +515,7 @@
                 default: return [];
             }
         }
-        function getView() { return clone({ workspace: projectedWorkspace(), inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ workspace: projectedWorkspace(), inventoryImport, inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

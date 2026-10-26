@@ -73,6 +73,61 @@ API clients can set the same state with `PUT /api/servers/:name/availability` an
 setting. Availability changes appear in the audit trail as `server.disable` and
 `server.enable`.
 
+## Import an inventory
+
+Open **Manage → Import inventory** and download the CSV or JSON example. Choose
+your file, select **Validate file**, review normalized values and per-row errors,
+then uncheck any unwanted rows. **Review selected rows** opens a separate
+confirmation before **Import disabled servers** creates the batch. Switching
+Manage sections preserves the import and add-server drafts; **Clear import
+draft** discards only the import.
+
+Files must be UTF-8 (an optional UTF-8 BOM is accepted), at most 2 MiB and 1,000
+server rows. CSV uses a comma delimiter and the exact, unique headers
+`name,host,port,user,tags` in any order. JSON is one array of objects with required
+`name`, `host`, `user` strings and optional integer `port` and string-array `tags`.
+Unknown fields, duplicate JSON keys, duplicate CSV headers, credentials and host
+keys reject the whole file without displaying their contents. Invalid values in
+supported fields appear as row errors. Empty CSV ports and omitted/zero JSON
+ports default to 22; other ports must be between 1 and 65535.
+
+Tags are a JSON string array in both formats. In CSV, quote the entire cell and
+double embedded quotes: `"[""production"",""web""]"`. An empty CSV tags cell is
+equivalent to `[]`. Inventory normalization trims tags, removes exact duplicates
+and splits commas within each tag: `["prod,web"]` becomes `["prod","web"]`.
+Use separate array elements for separate tags; commas cannot be preserved inside
+a tag. Names are trimmed, SSH users validated, and IP literals canonicalized.
+Duplicate names ignore case; equivalent IP addresses and implicit port 22 are
+the same endpoint. The first valid occurrence in the file is selectable; later
+duplicates and conflicts with the current inventory are rejected.
+
+Import creates new servers only. Every new server starts **disabled**, with no
+per-server credentials or newly trusted SSH identity. Preview and import make no
+SSH connections or maintenance requests. After import, use **Configure** to open
+the existing editor, set credentials (or use the Global SSH Credential), verify
+and trust the fingerprint against a trusted source, then save and explicitly
+**Enable** the server in the directory when ready. Existing credentials, host
+trust, policy assignments and history are preserved.
+
+The selected rows are checked against current inventory again during
+confirmation. The entire batch is saved in one transaction before runtime
+publication. A conflict or persistence failure creates no partial batch. Review
+the returned preview and confirm a new selection to retry. If a network response
+is lost, refresh the directory before retrying; already-created names/endpoints
+will be rejected. The `server.import` audit event records the authenticated
+actor, batch ID, selected/created counts and created server names, without the
+raw file or credentials. It is available in Manage audit presets and Admin
+activity.
+
+Authenticated API clients can upload raw file bytes to
+`POST /api/servers/import/preview?format=csv` (or `json`), then submit
+`{"batch_id":"<preview batch_id>","rows":[<selected normalized rows>]}` to
+`POST /api/servers/import`. Each selected row contains only `row`, `name`, `host`,
+`port`, `user`, `tags`; omit preview `errors`. Success returns HTTP 201 and
+`created`; a current-inventory conflict returns HTTP 409 and a refreshed
+`preview`. Download fixed documentation examples from
+`GET /api/servers/import/example/csv` and `/json`.
+
 ## Authentication flow
 
 UI/API access uses the built-in local login:

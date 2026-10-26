@@ -922,6 +922,20 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             }
         });
 
+        window.InventoryImport.mount({
+            store: managePageInteraction,
+            workspaceChanged: renderManageWorkspace,
+            refresh: executeManageEffects,
+            editServer: async (name) => {
+                await fetchManageServers();
+                if (!managePageInteraction.getView().inventory.allItems.some(server => server.name === name)) {
+                    window.notifyApp('This server is no longer in inventory. Refresh the directory.');
+                    return;
+                }
+                await editServer(name);
+            }
+        });
+
         document.addEventListener('change', (e) => {
             if (e.target && e.target.classList.contains('file-input')) {
                 resetFileInputLabel(e.target);

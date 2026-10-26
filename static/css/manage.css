@@ -709,3 +709,22 @@
     font-size: 0.75rem;
     margin-top: 0.25rem;
 }
+
+.inventory-import-panel { margin-bottom: 1.25rem; }
+#import-file-name { overflow-wrap: anywhere; }
+#import-feedback:empty { display: none; }
+#import-feedback { padding: .75rem; border: 1px solid var(--border); border-radius: 8px; }
+.import-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; margin: 1rem 0; }
+.import-actions input[type="file"] { max-width: 100%; min-width: 0; }
+.import-table-scroll { overflow-x: auto; max-height: 34rem; margin: 1rem 0; border: 1px solid var(--border); border-radius: 10px; }
+.import-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: .875rem; }
+.import-table th, .import-table td { padding: .75rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; max-width: 25rem; }
+.import-table th { background: var(--card-alt); position: sticky; top: 0; z-index: 1; white-space: nowrap; overflow-wrap: normal; }
+.import-table tr:hover { background: var(--card-alt); }
+.import-created { padding: 0; list-style: none; }
+.import-created li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; padding: .75rem 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+    .import-actions { align-items: stretch; }
+    .import-actions > * { max-width: 100%; }
+    .inventory-import-panel code { overflow-wrap: anywhere; }
+}

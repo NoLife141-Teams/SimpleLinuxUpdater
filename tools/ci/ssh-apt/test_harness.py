@@ -2,6 +2,8 @@ import json
 import importlib.util
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -34,6 +36,7 @@ class HarnessSafetyTests(unittest.TestCase):
         output = tempfile.TemporaryDirectory()
         self.addCleanup(output.cleanup)
         harness = run.Harness("debian13", Path(output.name))
+        self.addCleanup(shutil.rmtree, harness.work, ignore_errors=True)
         resources = {}
         calls = []
 
@@ -83,6 +86,39 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertIn(("container", harness.name), resources)
         self.assertTrue(harness.cleanup_errors)
         self.assertFalse(any(args[1] == "rm" for args in calls))
+
+    def test_cleanup_removes_resources_when_evidence_collection_fails(self):
+        for failure in ("output-directory", "output-log", "docker-logs-timeout"):
+            with self.subTest(failure=failure):
+                harness, resources, calls = self.fake_harness()
+                for kind, name in (("container", harness.app_name), ("container", harness.name),
+                                   ("network", harness.network), ("image", harness.image)):
+                    resources[(kind, name)] = harness.owner
+                if failure == "output-directory":
+                    harness.output = harness.output / "existing-file"
+                    harness.output.touch()
+                elif failure == "output-log":
+                    (harness.output / "app.log").mkdir()
+                docker = harness.docker
+
+                def execute(*args, **kwargs):
+                    if args[0] == "logs":
+                        if failure == "docker-logs-timeout":
+                            raise subprocess.TimeoutExpired("docker logs", 60)
+                        return "safe application log"
+                    return docker(*args, **kwargs)
+
+                harness.docker = execute
+                harness.cleanup()
+                self.assertFalse(resources)
+                self.assertFalse(harness.work.exists())
+                self.assertEqual(sum(args[1] == "rm" for args in calls), 4)
+                self.assertEqual(len(harness.cleanup_errors), 1)
+                if failure != "output-directory":
+                    harness.report()
+                    report = json.loads((harness.output / "report.json").read_text())
+                    self.assertEqual(report["cleanup"]["status"], "failed")
+                    self.assertEqual(report["cleanup"]["errors"], harness.cleanup_errors)
 
     def test_mutations_check_owned_target_and_runtime_marker(self):
         harness, resources, calls = self.fake_harness()

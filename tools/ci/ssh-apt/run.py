@@ -437,17 +437,19 @@ class Harness:
         ])
 
     def cleanup(self):
-        if self.output:
-            self.output.mkdir(parents=True, exist_ok=True)
-            try:
+        try:
+            if self.output:
+                self.output.mkdir(parents=True, exist_ok=True)
                 if self.owned("container", self.app_name):
                     (self.work / "app.log").write_text(self.docker("logs", self.app_name))
-            except RuntimeError as error:
-                if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
-            if (self.work / "app.log").exists():
-                text = (self.work / "app.log").read_text(errors="replace")[-200000:]
-                for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
-                (self.output / "app.log").write_text(text)
+                if (self.work / "app.log").exists():
+                    text = (self.work / "app.log").read_text(errors="replace")[-200000:]
+                    for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
+                    (self.output / "app.log").write_text(text)
+        except RuntimeError as error:
+            if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
+        except Exception as error:
+            self.cleanup_errors.append(str(error))
         # Inspect names even if a create command failed after the daemon created the
         # resource, or SIGTERM arrived before its return value was assigned.
         for kind, name in (("container", self.app_name), ("container", self.name), ("network", self.network), ("image", self.image)):

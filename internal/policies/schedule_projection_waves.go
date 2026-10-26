@@ -28,12 +28,25 @@ func (s *Service) nextWaveScheduleProjection(policy Policy, serverName string, i
 	}
 
 	origins := make([]time.Time, 0)
-	if latest, due := s.rolloutScheduledSlot(policy, now); due {
+	if latest, due := s.rolloutScheduledSlot(policy, now); due && deps.Occurrences == nil {
 		origins = s.unfinishedRolloutSlots(policy, latest, now, inventory, overrides, scopes)
 	}
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	for offset := 0; offset <= 14; offset++ {
-		origin, ok := s.policySlotForDay(policy, day.AddDate(0, 0, offset))
+	if policy.CadenceKind == CadenceOnce {
+		if scheduledDay, err := time.ParseInLocation("2006-01-02", policy.DateLocal, now.Location()); err == nil && scheduledDay.After(day) {
+			day = scheduledDay
+		}
+	}
+	horizonDays := 14
+	if policy.CadenceKind == CadenceMonthly || policy.CadenceKind == CadenceOnce {
+		horizonDays = 370
+	}
+	for offset := 0; offset <= horizonDays; offset++ {
+		candidateDay := day.AddDate(0, 0, offset)
+		if !policyCadenceMatchesDay(policy, candidateDay) {
+			continue
+		}
+		origin, ok := s.policySlotForDay(policy, candidateDay)
 		if ok && !origin.Before(now) && s.PolicyDueAt(policy, origin) {
 			origins = append(origins, origin)
 		}
@@ -77,7 +90,9 @@ func (s *Service) nextWaveScheduleProjection(policy Policy, serverName string, i
 		}
 		candidate := projectedScheduleCandidate{
 			policy: policy, scheduledLocal: release,
-			scheduledUTC: CanonicalScheduledForUTC(release, deps.TimestampLayout, deps.CurrentLocation),
+			// The origin is already canonical. A delay is elapsed time, so a
+			// release in the second fallback hour must keep its actual instant.
+			scheduledUTC: release.UTC().Format(deps.TimestampLayout),
 		}
 		if gate == "waiting" || historyGate == "waiting" {
 			candidate.summary = "Wave release subject to preceding batch success"

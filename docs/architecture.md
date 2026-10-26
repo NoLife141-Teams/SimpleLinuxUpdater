@@ -61,7 +61,7 @@ SQLite table ownership:
 - `internal/audit`: `audit_events` and audit indexes.
 - `internal/health`: `server_facts`, `server_health_snapshots`, and their indexes.
 - `internal/jobs`: `jobs`, `job_log_chunks`, and job/log indexes.
-- `internal/policies`: `update_policies`, `update_policy_overrides`, `update_policy_runs`, and policy-run indexes.
+- `internal/policies`: `update_policies`, `update_policy_overrides`, `update_policy_runs`, immutable `update_policy_occurrences` manifests, and policy-run indexes.
 - Shared main/app schema: `settings`, used by maintenance state, global SSH key storage, policy settings, app timezone/blackout settings, metrics token state, encrypted notification destination settings, and notification diagnostics.
 
 SQLite stores server inventory, encrypted credentials, audit events, auth/session state, persisted jobs, scheduled policy state, current Server facts, time-ordered health snapshots, metrics token state, backup/restore metadata, and related operational state.
@@ -114,9 +114,11 @@ storage compatibility and are not used by cleanup. Coincident update/scan
 candidates retain priority over cleanup. Scheduled cleanup records policy, run,
 job and occurrence identifiers in command and scheduled-run audit events.
 
-Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, per-policy blackout windows, and optional canary/wave rollout settings. `PolicyService` sorts matched server names, releases the canary batch at the canonical occurrence, and releases each delayed wave only after every previous run succeeded. Terminal failure stops later waves with a persisted `rollout_gate` skip. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
+Scheduled update policies support legacy `target_tag`, `include_tags`, `exclude_tags`, explicit `target_servers`, per-server overrides, global blackouts, per-policy blackout windows, and optional canary/wave rollout settings. `PolicyService` supports daily/weekly, monthly numeric/last-day and one-time local cadences. It preserves automatic name ordering or validates explicit canaries against effective matching, releases the canary batch at the canonical occurrence, and releases each delayed wave only after every previous run succeeded. Terminal failure stops later waves with a persisted `rollout_gate` skip. Nonexistent spring-forward occurrences are unavailable; ambiguous fall-back occurrences canonicalize once to the earlier UTC instant.
 
 The failed-run gate uses the complete persisted occurrence history even when inventory edits remove or rename a predecessor. Policy Schedule Projection shares that history with dispatch, shows each server's wave release time, and labels pending predecessor conditions. It includes unfinished and overlapping origins without treating unstarted past occurrences as upcoming waves.
+
+Accepted one-time operations and canary/wave rollouts commit an occurrence manifest before dispatch. The policy revision, configuration, canonical UTC origin and complete batch member names are immutable; credentials are resolved from current inventory. One-time consumption uses the policy-local key `once`, independent of timezone and later schedule edits. Open manifests share dispatch and full-history gate evaluation with Policy Schedule Projection; per-server revision/stage facts flow into Scheduled Run and audit/job metadata. Live maintenance, inventory availability, overrides and global blackouts still guard admission. Short-month diagnostics, DST choices and cadence rules stay in the Go projection, while Scheduled Policy Administration Interaction owns draft normalization and consumes those facts. Upgrade and recovery limits are documented in [usage](usage.md#policy-schedule-cadences-and-recovery).
 
 Policy route adapters still live in `package main` and keep the existing wire format. Matching, validation, persistence, skipped-run recording, scheduler ticks, and missed-tick replay live in `internal/policies`.
 

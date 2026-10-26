@@ -88,7 +88,9 @@ func (l *Lifecycle) HandleScheduledRun(req policies.ScheduledRunRequest) policie
 	if strings.TrimSpace(req.Outcome) != "" {
 		return l.recordSkippedCandidate(req.Policy, req.Server, req.ScheduledForUTC, req.Outcome)
 	}
+	stage, wave := policies.RunRolloutPosition(req.Policy, req.Server.Name)
 	run, inserted, err := l.deps.PolicyRepository.CreateRun(policies.Run{
+		PolicyRevision: req.Policy.Revision, RolloutStage: stage, Wave: wave,
 		PolicyID:        req.Policy.ID,
 		PolicyName:      req.Policy.Name,
 		ServerName:      req.Server.Name,
@@ -194,6 +196,7 @@ func (l *Lifecycle) markReadinessSkipped(run policies.Run, policy policies.Polic
 		FinishedAt: &finishedAt,
 	})
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "ignored", summary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -209,7 +212,9 @@ func (l *Lifecycle) buildScheduledJobMeta(policy policies.Policy, scheduledForUT
 func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server servers.Server, scheduledForUTC, reason string) policies.ScheduledRunResult {
 	summary := scheduledRunSkippedSummary(reason)
 	finishedAt := l.deps.JobTimestampNow()
+	stage, wave := policies.RunRolloutPosition(policy, server.Name)
 	run, inserted, err := l.deps.PolicyRepository.CreateRun(policies.Run{
+		PolicyRevision: policy.Revision, RolloutStage: stage, Wave: wave,
 		PolicyID:        policy.ID,
 		PolicyName:      policy.Name,
 		ServerName:      server.Name,
@@ -236,6 +241,7 @@ func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server server
 		return result
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "ignored", summary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"reason":            reason,
@@ -246,7 +252,18 @@ func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server server
 }
 
 func scheduledRunSkippedSummary(reason string) string {
+	if strings.HasPrefix(reason, policies.RunReasonCanaryUnavailable) {
+		return "Scheduled run blocked: " + reason
+	}
 	switch reason {
+	case policies.RunReasonMissing:
+		return "Scheduled member is no longer in inventory"
+	case policies.RunReasonDisabled:
+		return "Scheduled member is disabled"
+	case policies.RunReasonOverride:
+		return "Scheduled member is disabled by policy override"
+	case policies.RunReasonSchedulerMissed:
+		return "Scheduler missed the occurrence; historical work is not launched"
 	case policies.RunReasonMaintenance:
 		return "Maintenance mode active; scheduled run skipped"
 	case policies.RunReasonBlackout:
@@ -271,6 +288,7 @@ func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Pol
 		FinishedAt: &finishedAt,
 	})
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "skipped", summary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -304,6 +322,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 			FinishedAt: &finishedAt,
 		})
 		_ = l.deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
+			"policy_revision":   policy.Revision,
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"execution_mode":    policy.ExecutionMode,
@@ -332,6 +351,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 			FinishedAt: &finishedAt,
 		})
 		_ = l.deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
+			"policy_revision":   policy.Revision,
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"execution_mode":    policy.ExecutionMode,
@@ -355,6 +375,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled %s running state: %w", operation, err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -411,6 +432,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			FinishedAt: &finishedAt,
 		})
 		_ = l.deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
+			"policy_revision":   policy.Revision,
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -433,6 +455,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			FinishedAt: &finishedAt,
 		})
 		_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", summary, map[string]any{
+			"policy_revision":   policy.Revision,
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -464,6 +487,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			FinishedAt: &finishedAt,
 		})
 		_ = l.deps.AuditService.Record("system", "", auditAction, "server", server.Name, auditStatus, summary, map[string]any{
+			"policy_revision":   policy.Revision,
 			"policy_id":         policy.ID,
 			"policy_name":       policy.Name,
 			"scheduled_for_utc": run.ScheduledForUTC,
@@ -486,6 +510,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		return policies.RunFailed, job.ID, fmt.Errorf("persist scheduled scan running state: %w", err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.started", "server", server.Name, "started", summary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
@@ -679,6 +704,7 @@ func (l *Lifecycle) handleRunStartPersistenceFailure(run policies.Run, policy po
 		log.Printf("failed to mark scheduled run %d failed after start persistence error: %v", run.ID, err)
 	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.failed", "server", server.Name, "failure", jobSummary, map[string]any{
+		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"execution_mode":    policy.ExecutionMode,
@@ -698,7 +724,8 @@ func (l *Lifecycle) recordScheduledTerminalAudit(runID int64, job jobs.Record, m
 		operation = "autoremove"
 	}
 	auditMeta := map[string]any{
-		"policy_id": meta.PolicyID, "policy_name": meta.PolicyName,
+		"policy_revision": meta.PolicyRevision,
+		"policy_id":       meta.PolicyID, "policy_name": meta.PolicyName,
 		"run_id": runID, "job_id": job.ID, "job_kind": job.Kind,
 		"scheduled_for_utc": meta.ScheduledFor, "execution_mode": meta.ExecutionMode,
 	}

@@ -110,21 +110,22 @@
         return {
             id: "", name: "", enabled: true, target_tag: "", include_tags: [], exclude_tags: [], target_servers: [],
             package_scope: "security", upgrade_mode: "standard", execution_mode: "scan_only", cadence_kind: "daily",
-            time_local: "02:00", weekdays: [], approval_timeout_minutes: 720,
-            rollout_mode: "immediate", canary_count: 0, wave_size: 0, wave_delay_minutes: 0
+            time_local: "02:00", date_local: "", month_day: 1, month_last_day: false, weekdays: [], approval_timeout_minutes: 720,
+            rollout_mode: "immediate", canary_mode: "automatic", canary_servers: [], canary_count: 0, wave_size: 0, wave_delay_minutes: 0
         };
     }
 
     function normalizeDraft(draft) {
         const base = defaultDraft();
         const source = draft && typeof draft === "object" ? draft : {};
-        const cadence = source.cadence_kind === "weekly" ? "weekly" : "daily";
+        const cadence = ["daily", "weekly", "once", "monthly"].includes(source.cadence_kind) ? source.cadence_kind : "daily";
         const execution = ["scan_only", "approval_required", "auto_apply", "autoremove"].includes(source.execution_mode)
             ? source.execution_mode : base.execution_mode;
         return {
             ...base,
             id: String(source.id || "").trim(),
             name: String(source.name || "").trim(),
+            once_consumed_at: String(source.once_consumed_at || ""),
             enabled: source.enabled !== false,
             target_tag: String(source.target_tag || "").trim(),
             include_tags: normalizeList(source.include_tags),
@@ -134,10 +135,15 @@
             upgrade_mode: execution !== "autoremove" && source.upgrade_mode === "full" ? "full" : "standard",
             execution_mode: execution,
             cadence_kind: cadence,
+            date_local: String(source.date_local || "").trim(),
+            month_day: source.month_day === undefined || source.month_day === "" ? 1 : Number(source.month_day),
+            month_last_day: source.month_last_day === true,
             time_local: normalizeTime(source.time_local, base.time_local),
             weekdays: cadence === "weekly" ? normalizeWeekdays(source.weekdays) : [],
             approval_timeout_minutes: execution === "approval_required" ? (Number(source.approval_timeout_minutes) || 720) : 0,
             rollout_mode: source.rollout_mode === "canary_waves" ? "canary_waves" : "immediate",
+            canary_mode: source.rollout_mode === "canary_waves" && source.canary_mode === "explicit" ? "explicit" : "automatic",
+            canary_servers: normalizeList(source.canary_servers),
             canary_count: source.rollout_mode === "canary_waves" ? (Number(source.canary_count) || 1) : 0,
             wave_size: source.rollout_mode === "canary_waves" ? (Number(source.wave_size) || 10) : 0,
             wave_delay_minutes: source.rollout_mode === "canary_waves" ? (Number(source.wave_delay_minutes) || 15) : 0
@@ -154,12 +160,18 @@
         if (normalized.cadence_kind === "weekly" && !normalized.weekdays.length) {
             errors.weekdays = "Weekly policies require at least one weekday.";
         }
+        if (normalized.cadence_kind === "once" && !/^\d{4}-\d{2}-\d{2}$/.test(normalized.date_local)) errors.date_local = "A local date is required for a one-time policy.";
+        if (normalized.cadence_kind === "monthly" && !normalized.month_last_day && (!Number.isInteger(normalized.month_day) || normalized.month_day < 1 || normalized.month_day > 31)) errors.month_day = "Monthly day must be between 1 and 31.";
         if (normalized.rollout_mode === "canary_waves") {
+            if (normalized.canary_mode === "explicit") {
+                if (!normalized.canary_servers.length || normalized.canary_servers.length > 50) errors.canary_servers = "Choose between 1 and 50 explicit canary servers.";
+                normalized.canary_count = normalized.canary_servers.length;
+            }
             if (normalized.canary_count < 1 || normalized.canary_count > 50) errors.canary_count = "Canary count must be between 1 and 50.";
             if (normalized.wave_size < 1 || normalized.wave_size > 200) errors.wave_size = "Wave size must be between 1 and 200.";
             if (normalized.wave_delay_minutes < 1 || normalized.wave_delay_minutes > 1440) errors.wave_delay_minutes = "Wave delay must be between 1 and 1440 minutes.";
         }
-        if (Object.keys(errors).length) return { ok: false, errors, message: "Policy name and at least one target tag, included tag, or explicit server are required." };
+        if (Object.keys(errors).length) return { ok: false, errors, message: Object.values(errors)[0] };
         try {
             const payload = { ...normalized, policy_blackouts: validateBlackoutRows(blackouts, "Policy no-run window") };
             if (normalized.id) payload.id = Number(normalized.id);
@@ -183,6 +195,8 @@
     function summaryFor(draft, blackouts, timezone) {
         const schedule = draft.cadence_kind === "weekly"
             ? `Every ${formatWeekdays(draft.weekdays)} at ${draft.time_local}`
+            : draft.cadence_kind === "once" ? `Once on ${draft.date_local || "a local date"} at ${draft.time_local}`
+            : draft.cadence_kind === "monthly" ? `Monthly on ${draft.month_last_day ? "the last day" : `day ${draft.month_day}`} at ${draft.time_local}`
             : `Daily at ${draft.time_local}`;
         const targets = [];
         if (draft.target_tag) targets.push(`tag=${draft.target_tag}`);
@@ -197,12 +211,12 @@
             : `${execution.charAt(0).toUpperCase()}${execution.slice(1)}, ${scope}, ${upgrade}`;
         const timeout = draft.execution_mode === "approval_required" ? `, ${draft.approval_timeout_minutes || 720} minute approval window` : "";
         const rollout = draft.rollout_mode === "canary_waves"
-            ? `Canary ${draft.canary_count}, then waves of ${draft.wave_size} every ${draft.wave_delay_minutes} minutes`
+            ? `Canary ${draft.canary_mode === "explicit" ? draft.canary_servers.join(", ") || "none selected" : draft.canary_count}, then waves of ${draft.wave_size} every ${draft.wave_delay_minutes} minutes`
             : "All matched servers at once";
         const windows = blackouts.length ? `${blackouts.length} no-run window${blackouts.length === 1 ? "" : "s"} configured` : "No policy no-run windows";
         return {
             title: draft.name || "Unnamed policy",
-            body: `${schedule} (${timezone || "UTC"}), ${action}${timeout}, ${rollout}, ${targets.join("; ") || "no target"}. ${windows}.`
+            body: `${schedule} (${timezone || "UTC"}), ${action}${timeout}, ${rollout}, ${targets.join("; ") || "no target"}. ${windows}.${draft.once_consumed_at ? ` One-time occurrence consumed at ${draft.once_consumed_at}; create a new policy for another operation.` : ""}`
         };
     }
 
@@ -553,6 +567,7 @@
             return cloneValue({
                 editor: {
                     draft,
+                    visibility: { once: draft.cadence_kind === "once", monthly: draft.cadence_kind === "monthly", monthDay: !draft.month_last_day, explicitCanaries: draft.canary_mode === "explicit" },
                     policyBlackouts,
                     globalBlackouts,
                     validation,

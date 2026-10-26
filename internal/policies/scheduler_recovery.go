@@ -312,7 +312,7 @@ func (s *Service) schedulerRecoveryStateFingerprint() (string, error) {
 		locationName = loc.String()
 	}
 	payload := schedulerStateFingerprintPayload{
-		Policies:        policies,
+		Policies:        scheduleFingerprintPolicies(policies),
 		Overrides:       overrideState,
 		GlobalBlackouts: globalBlackouts,
 		Servers:         serverState,
@@ -371,7 +371,7 @@ func (s *Service) latestMissedScheduledSlots(watermarkUTC, currentUTC time.Time)
 
 	byKey := make(map[string]*missedScheduledSlot)
 	for _, policy := range policies {
-		if !policy.Enabled {
+		if !policy.Enabled || policy.OnceConsumedAt != "" {
 			continue
 		}
 		effectiveAt, timestampsValid := policyRecoveryBoundary(policy, deps.TimestampLayout)
@@ -523,7 +523,7 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 
 	candidatesByServer := make(map[string][]missedPolicyCandidate)
 	for _, policy := range policies {
-		if !policy.Enabled {
+		if !policy.Enabled || policy.OnceConsumedAt != "" {
 			continue
 		}
 		rolloutSlot, rolloutDue := s.rolloutScheduledSlot(policy, slotLocal)
@@ -534,6 +534,20 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 		slotUTC := slotLocal.UTC().Truncate(time.Minute)
 		_, selectedByRecovery := policyIDs[policy.ID]
 		scheduledForUTC := CanonicalScheduledForUTC(rolloutSlot, deps.TimestampLayout, deps.CurrentLocation)
+		if deps.Occurrences != nil && selectedByRecovery && (policy.CadenceKind == CadenceOnce || policy.RolloutMode == RolloutCanaryWaves) {
+			o := newOccurrence(s, policy, rolloutSlot, serversSnapshot, overrides)
+			if o.BlockReason == "" {
+				o.BlockReason = missedReason
+			}
+			accepted, err := deps.Occurrences.AcceptOccurrence(o)
+			if err != nil {
+				return err
+			}
+			// A consumed one-time occurrence keeps its original UTC identity.
+			if accepted.ScheduledForUTC != scheduledForUTC || accepted.Closed {
+				continue
+			}
+		}
 		existingByServer := map[string]struct{}{}
 		rolloutRuns := []Run{}
 		if policy.RolloutMode == RolloutCanaryWaves {
@@ -594,6 +608,11 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 		sort.Slice(matchedServers, func(i, j int) bool {
 			return strings.ToLower(matchedServers[i].Name) < strings.ToLower(matchedServers[j].Name)
 		})
+
+		policy.MatchedServers = make([]string, 0, len(matchedServers))
+		for _, server := range matchedServers {
+			policy.MatchedServers = append(policy.MatchedServers, server.Name)
+		}
 
 		materializeSelected := selectedByRecovery
 		if policy.RolloutMode == RolloutCanaryWaves {

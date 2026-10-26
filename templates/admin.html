@@ -579,7 +579,20 @@
                                     <select id="policy-cadence-kind">
                                         <option value="daily">Daily</option>
                                         <option value="weekly">Weekly</option>
+                                        <option value="once">One time</option>
+                                        <option value="monthly">Monthly</option>
                                     </select>
+                                </div>
+                                <div id="policy-date-section" class="is-hidden">
+                                    <label for="policy-date-local" class="form-label">Local date</label>
+                                    <input type="date" id="policy-date-local" aria-describedby="policy-once-help">
+                                </div>
+                                <p id="policy-once-help" class="field-span muted is-hidden">One-time policies are consumed when the occurrence is accepted, including skipped or failed attempts. Editing the date, time or timezone never rearms a consumed policy. Create a new policy for another operation.</p>
+                                <div id="policy-month-section" class="is-hidden">
+                                    <label for="policy-month-day" class="form-label">Day of month</label>
+                                    <input type="number" id="policy-month-day" min="1" max="31" value="1" aria-describedby="policy-month-help">
+                                    <label class="checkbox-label"><input type="checkbox" id="policy-month-last-day"> Last day of month</label>
+                                    <p id="policy-month-help" class="muted">Months without this day are skipped. Preview shows skipped months; dates are never shifted.</p>
                                 </div>
                                 <div class="field-span" id="policy-weekday-section">
                                     <div class="weekday-head">
@@ -642,8 +655,17 @@
                                 </div>
                                 <div id="policy-rollout-fields" class="field-span section-grid">
                                     <div>
-                                        <label for="policy-canary-count" class="form-label">Canary servers</label>
+                                        <label for="policy-canary-mode" class="form-label">Canary selection</label>
+                                        <select id="policy-canary-mode"><option value="automatic">Automatic (by server name)</option><option value="explicit">Explicit servers</option></select>
+                                    </div>
+                                    <div id="policy-canary-count-wrap">
+                                        <label for="policy-canary-count" class="form-label">Canary count</label>
                                         <input type="number" id="policy-canary-count" min="1" max="50" value="1">
+                                    </div>
+                                    <div id="policy-canary-servers-wrap">
+                                        <label for="policy-canary-servers" class="form-label">Explicit canary servers</label>
+                                        <input type="text" id="policy-canary-servers" placeholder="srv-canary-01, srv-canary-02" aria-describedby="policy-canary-help">
+                                        <p id="policy-canary-help" class="muted">Each named server must be in the effective target set. A missing, disabled or excluded canary blocks the occurrence without substitution.</p>
                                     </div>
                                     <div>
                                         <label for="policy-wave-size" class="form-label">Servers per wave</label>
@@ -653,7 +675,7 @@
                                         <label for="policy-wave-delay" class="form-label">Wave delay (minutes)</label>
                                         <input type="number" id="policy-wave-delay" min="1" max="1440" value="15">
                                     </div>
-                                    <p class="field-span muted">Servers are ordered deterministically by name. Each wave waits for every earlier server to succeed; failure stops downstream waves.</p>
+                                    <p class="field-span muted">Automatic canaries and wave members are ordered by name. Accepted members and policy revision are frozen. Each wave waits for every earlier server to succeed; failure stops downstream waves.</p>
                                 </div>
                             </div>
                         </div>

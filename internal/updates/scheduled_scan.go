@@ -16,6 +16,7 @@ const scheduledScanFactsRefreshSource = "scheduled_scan"
 
 func BuildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) ScheduledJobMeta {
 	meta := ScheduledJobMeta{
+		PolicyRevision:         policy.Revision,
 		Trigger:                "scheduled",
 		PolicyID:               policy.ID,
 		PolicyName:             policy.Name,

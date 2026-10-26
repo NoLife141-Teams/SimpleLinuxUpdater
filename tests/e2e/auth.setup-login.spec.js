@@ -2245,6 +2245,124 @@ test.describe.serial('setup and login flows', () => {
     await page.mouse.up();
   });
 
+  async function capturePolicy472Panel(page, locator, name, mobile = false) {
+    const dir = path.join(process.cwd(), '.github/assets/policy-schedules-472');
+    fs.mkdirSync(dir, { recursive: true });
+    await page.setViewportSize({ width: mobile ? 390 : 1440, height: 1800 });
+    await locator.evaluate(element => window.scrollTo(0, Math.max(0, window.scrollY + element.getBoundingClientRect().top - 420)));
+    await locator.screenshot({ path: path.join(dir, name) });
+  }
+
+  test('policy schedules 472 monthly explicit canaries preserve drafts and server projections', async ({ page }) => {
+    const state = { policyPreviewResponse: {
+      matched_servers: [{ name: 'srv-web-01', rollout_stage: 'wave', wave: 1 }, { name: 'srv-web-02', rollout_stage: 'canary', wave: 0 }],
+      excluded_servers: [], disabled_by_override: [], validation_errors: [], operational_warnings: [],
+      informational_facts: [{ code: 'month_day_missing', message: '2028-02 has no day 31; this month is skipped without moving the occurrence.' }],
+      upcoming_occurrences: [{ local_civil_time: '2028-03-31 03:45', timezone: 'America/Toronto', offset: '-04:00', abbreviation: 'EDT', scheduled_for_utc: '2028-03-31T07:45:00.000000000Z', dst_status: 'unambiguous', canonical_choice: 'exact', matched_server_count: 2, applicable_no_run_windows: [], admission_outcome: 'admitted' }],
+      schedule_conflicts: []
+    } };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.route('**/api/update-policies/calendar?*', route => fulfillJson(route, {
+      days: 1, start_date: '2028-02-29', end_date: '2028-02-29', timezone: 'America/Toronto',
+      accepted_rollouts: [{ policy: { id: 42, name: 'Accepted security rollout', revision: 3 }, scheduled_for_utc: '2028-01-31T08:45:00Z', batches: [{ index: 0, stage: 'canary', servers: ['srv-web-02'] }, { index: 1, stage: 'wave', servers: ['srv-web-01'], release_delay_minutes: 15 }] }],
+      policies: [{ id: 42, name: 'Month-end security waves', enabled: true, cadence_kind: 'monthly', time_local: '03:45', month_day: 31, matched_servers: ['srv-web-01', 'srv-web-02'], days: [{ date: '2028-02-29', weekday: 'tue', timezone_offset: '-05:00', allowed_slots: [], blocked_windows: [], blocked_reasons: ['month_day_missing'] }] }]
+    }));
+    await page.route('**/api/update-policies/runs?*', route => fulfillJson(route, { items: [{ id: 472, policy_name: 'Accepted security rollout', policy_revision: 3, rollout_stage: 'wave', wave: 1, server_name: 'srv-web-01', scheduled_for_utc: '2028-01-31T08:45:00Z', status: 'skipped', exact_skip_reason: 'rollout_gate' }], total: 1, page: 1, total_pages: 1, page_size: 25 }));
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('This month has no selected day; occurrence skipped');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('accepted revision 3');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Canary: srv-web-02');
+    await page.locator('#policy-name').fill('Month-end security waves');
+    await page.locator('#policy-target-tag').fill('prod');
+    await page.locator('#policy-cadence-kind').selectOption('monthly');
+    await page.locator('#policy-month-day').fill('31');
+    await page.locator('#policy-time-local').fill('03:45');
+    await page.locator('#policy-rollout-mode').selectOption('canary_waves');
+    await page.locator('#policy-canary-mode').selectOption('explicit');
+    await page.locator('#policy-canary-servers').fill('srv-web-02');
+    await page.locator('#policy-wave-size').fill('1');
+    await expect(page.locator('#policy-preview-matched')).toContainText('srv-web-02 · canary');
+    await expect(page.locator('#policy-preview-facts')).toContainText('2028-02 has no day 31');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('UTC 2028-03-31T07:45:00.000000000Z');
+    await expect(page.locator('#policy-canary-count')).toBeHidden();
+    await expect(page.locator('#policy-date-local')).toBeHidden();
+    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
+    await expect(page.locator('#scheduled-runs-table')).toContainText('Revision 3 · wave 1');
+    await expect(page.locator('#scheduled-runs-table')).toContainText('Reason: rollout_gate');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await expect(page.locator('#policy-month-day')).toHaveValue('31');
+    await expect(page.locator('#policy-canary-servers')).toHaveValue('srv-web-02');
+    await page.locator('#policy-month-last-day').check();
+    await expect(page.locator('#policy-month-day')).toBeDisabled();
+    await expect(page.locator('#policy-summary')).toContainText('Monthly on the last day');
+    await page.locator('#policy-month-last-day').uncheck();
+    if (process.env.CAPTURE_POLICY_SCHEDULES_472) {
+      await capturePolicy472Panel(page, page.locator('#policy-preview'), 'desktop-monthly-preview.png');
+      await capturePolicy472Panel(page, page.locator('#update-policy-form .form-section').nth(1), 'desktop-monthly-schedule.png');
+      await capturePolicy472Panel(page, page.locator('#update-policy-form .form-section').nth(2), 'desktop-explicit-canary-controls.png');
+      await capturePolicy472Panel(page, page.locator('#update-policy-form .form-section').nth(1), 'mobile-monthly-schedule.png', true);
+      const layout = await page.evaluate(() => ({ viewport: innerWidth, width: document.body.scrollWidth }));
+      expect(layout.width).toBeLessThanOrEqual(layout.viewport);
+    }
+    await page.locator('#policy-save-btn').click();
+    await expect.poll(() => state.policyPayload).toMatchObject({ cadence_kind: 'monthly', month_day: 31, month_last_day: false, canary_mode: 'explicit', canary_servers: ['srv-web-02'], canary_count: 1 });
+  });
+
+  test('policy schedules 472 one-time draft submits civil date and shows canary blocking', async ({ page }) => {
+    const state = { policyPreviewResponse: {
+      matched_servers: [{ name: 'srv-web-01', rollout_stage: 'wave', wave: 1 }], excluded_servers: [], disabled_by_override: [], validation_errors: [],
+      operational_warnings: [{ code: 'canary_unavailable', message: 'canary_unavailable: srv-missing (missing)' }], informational_facts: [], schedule_conflicts: [],
+      upcoming_occurrences: [{ local_civil_time: '2028-11-05 01:30', timezone: 'America/Toronto', offset: '-04:00', abbreviation: 'EDT', scheduled_for_utc: '2028-11-05T05:30:00.000000000Z', dst_status: 'ambiguous', canonical_choice: 'earlier_fallback_occurrence', matched_server_count: 1, applicable_no_run_windows: [], admission_outcome: 'canary_unavailable' }]
+    } };
+    await ensureAuthenticatedSession(page); await stubAdminApi(page, state); await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await page.locator('#policy-name').fill('One-time fallback maintenance'); await page.locator('#policy-target-tag').fill('prod');
+    await page.locator('#policy-cadence-kind').selectOption('once'); await page.locator('#policy-date-local').fill('2028-11-05'); await page.locator('#policy-time-local').fill('01:30');
+    await page.locator('#policy-rollout-mode').selectOption('canary_waves'); await page.locator('#policy-canary-mode').selectOption('explicit'); await page.locator('#policy-canary-servers').fill('srv-missing');
+    await expect(page.locator('#policy-once-help')).toContainText('never rearms');
+    await expect(page.locator('#policy-preview-warnings')).toContainText('srv-missing (missing)');
+    await expect(page.locator('#policy-preview-occurrences')).toContainText('Blocked: explicit canary unavailable');
+    await expect(page.locator('#policy-summary')).toContainText('Once on 2028-11-05 at 01:30');
+    if (process.env.CAPTURE_POLICY_SCHEDULES_472) {
+      await capturePolicy472Panel(page, page.locator('#policy-preview'), 'desktop-once-blocked-preview.png');
+      await capturePolicy472Panel(page, page.locator('#update-policy-form .form-section').nth(1), 'mobile-once-schedule.png', true);
+    }
+    await page.locator('#policy-save-btn').click();
+    await expect.poll(() => state.policyPayload).toMatchObject({ cadence_kind: 'once', date_local: '2028-11-05', time_local: '01:30', canary_servers: ['srv-missing'] });
+  });
+
+  test('policy schedules 472 consumed one-time status stays visible through cadence edits', async ({ page }) => {
+    const state = { policies: [{ id: 12, name: 'Consumed one-time maintenance', enabled: true, target_tag: 'prod', cadence_kind: 'once', date_local: '2026-10-25', time_local: '03:00', execution_mode: 'scan_only', package_scope: 'security', once_consumed_at: '2026-10-25T07:00:00Z', matched_servers: ['srv-web-01'] }],
+      policyPreviewResponse: { matched_servers: [{ name: 'srv-web-01' }], excluded_servers: [], disabled_by_override: [], validation_errors: [], operational_warnings: [], informational_facts: [{ code: 'once_consumed', message: 'One-time occurrence consumed at 2026-10-25T07:00:00Z. Editing date/time or timezone does not rearm this policy; create a new policy for another operation.' }], upcoming_occurrences: [], schedule_conflicts: [] }
+    };
+    await ensureAuthenticatedSession(page); await stubAdminApi(page, state); await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await expect(page.locator('#scheduled-policy-table')).toContainText('One-time occurrence consumed');
+    await page.locator('[data-action="edit-policy"][data-id="12"]').click();
+    await expect(page.locator('#policy-date-local')).toHaveValue('2026-10-25');
+    await expect(page.locator('#policy-summary')).toContainText('One-time occurrence consumed');
+    await page.locator('#policy-cadence-kind').selectOption('daily');
+    await expect(page.locator('#policy-summary')).toContainText('create a new policy');
+    await expect(page.locator('#policy-preview-facts')).toContainText('does not rearm');
+  });
+
+  test('policy schedules 472 calendar retains accepted rollouts after the last policy is deleted', async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, { policies: [] });
+    await page.route('**/api/update-policies/calendar?*', route => fulfillJson(route, {
+      days: 14, start_date: '2026-10-25', end_date: '2026-11-07', timezone: 'UTC', policies: [],
+      accepted_rollouts: [{ policy: { id: 42, name: 'Deleted policy with pending wave', revision: 3 }, scheduled_for_utc: '2026-10-25T03:00:00Z', batches: [{ index: 0, stage: 'canary', servers: ['srv-web-02'] }, { index: 1, stage: 'wave', servers: ['srv-web-01'], release_delay_minutes: 15 }] }]
+    }));
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="scheduled-policies"]').click();
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Deleted policy with pending wave');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('accepted revision 3');
+    await expect(page.locator('#maintenance-calendar-list')).toContainText('Wave 1: srv-web-01 (+15 min)');
+    await expect(page.locator('#maintenance-calendar-list')).not.toContainText('No scheduled policies to show.');
+  });
+
   test('admin scheduled policy editor submits rich targeting fields and renders report links', async ({ page }) => {
     const state = {};
     await ensureAuthenticatedSession(page);

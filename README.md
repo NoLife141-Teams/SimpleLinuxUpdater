@@ -37,9 +37,9 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Durable APT reconciliation and guided repair after uncertain package-manager outcomes
 - Controlled reboot with SSH recovery, uptime reset, and reboot-required verification
 - Per-server Recommended action guidance on Status and immediate eligibility-aware bulk actions
-- Scheduled policies with dry-run previews, maintenance windows, and success-gated canary/wave rollouts
+- Daily, weekly, monthly and one-time policies with canonical timezone previews, maintenance windows, explicit or automatic canaries, and durable success-gated rollouts ([scheduling and recovery](docs/usage.md#policy-schedule-cadences-and-recovery))
 - Generic webhook, Discord, and Telegram notifications with delivery diagnostics, opt-in approval/reboot/backup alerts, and optional grouped reminders ([configuration and lifecycle](docs/usage.md#notification-hooks))
-- On-demand `apt autoremove` and independent daily or weekly cleanup policies
+- On-demand `apt autoremove` and independent scheduled cleanup policies
 - Activity history (audit trail) stored in SQLite
 - Observability: `/observability` dashboard and Prometheus `GET /metrics`
 - Built-in single-user login with first-run setup, Argon2id password hashing, and SQLite-backed sessions

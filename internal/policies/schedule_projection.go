@@ -88,6 +88,9 @@ func (s *Service) ProjectSchedule(req ScheduleProjectionRequest) (ScheduleProjec
 	if err := s.mergeProjectedScheduleRuns(projection.Servers, serverList, policyList, overrides, globalBlackouts, now.In(loc)); err != nil {
 		return ScheduleProjection{}, err
 	}
+	if err := s.projectAcceptedOccurrences(projection.Servers, serverList, overrides, globalBlackouts, now.In(loc).Truncate(time.Minute)); err != nil {
+		return ScheduleProjection{}, err
+	}
 	for _, server := range serverList {
 		if server.Disabled {
 			projection.Servers[server.Name] = ServerScheduleProjection{}
@@ -148,7 +151,7 @@ func (s *Service) mergeProjectedScheduleRuns(result map[string]ServerSchedulePro
 	projectedByServer := map[string]projectedScheduleCandidate{}
 	for _, server := range serverList {
 		for _, policy := range policyList {
-			if !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
+			if policy.OnceConsumedAt != "" || canaryUnavailable(policy, serverList, overrides) != "" || !s.PolicyMatchesServer(policy, server, MatchContext{Overrides: overrides}) {
 				continue
 			}
 			if policy.RolloutMode == RolloutCanaryWaves {
@@ -212,8 +215,20 @@ func (s *Service) nextScheduleProjectionOccurrenceLocal(policy Policy, fromLocal
 		loc = time.UTC
 	}
 	startDay := time.Date(fromLocal.Year(), fromLocal.Month(), fromLocal.Day(), 0, 0, 0, 0, loc)
-	for offset := 0; offset <= 14; offset++ {
+	if policy.CadenceKind == CadenceOnce {
+		if day, err := time.ParseInLocation("2006-01-02", policy.DateLocal, loc); err == nil && day.After(startDay) {
+			startDay = day
+		}
+	}
+	horizonDays := 14
+	if policy.CadenceKind == CadenceMonthly || policy.CadenceKind == CadenceOnce {
+		horizonDays = 370
+	}
+	for offset := 0; offset <= horizonDays; offset++ {
 		day := startDay.AddDate(0, 0, offset)
+		if !policyCadenceMatchesDay(policy, day) {
+			continue
+		}
 		slot, occurrenceOK := s.policySlotForDay(policy, day)
 		if !occurrenceOK {
 			continue

@@ -325,7 +325,12 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	factsRepo := deps.HostHealthObservation
 	if deps.PolicyService == nil {
+		var occurrenceStore policypkg.OccurrenceStore
+		if store, ok := deps.PolicyRepository.(policypkg.OccurrenceStore); ok {
+			occurrenceStore = store
+		}
 		deps.PolicyService = NewPolicyService(PolicyServiceDeps{
+			Occurrences:         occurrenceStore,
 			ListPolicies:        deps.PolicyRepository.ListPolicies,
 			LoadOverrides:       deps.PolicyRepository.LoadAllOverrides,
 			LoadGlobalBlackouts: deps.PolicyRepository.LoadGlobalBlackouts,

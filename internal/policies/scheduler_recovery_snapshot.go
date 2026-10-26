@@ -146,7 +146,7 @@ func (snapshot schedulerRecoverySnapshot) fingerprint() (string, error) {
 		locationName = snapshot.Location.String()
 	}
 	payload := schedulerStateFingerprintPayload{
-		Policies:        cloneRecoveryPolicies(snapshot.Policies),
+		Policies:        scheduleFingerprintPolicies(snapshot.Policies),
 		Overrides:       overrideState,
 		GlobalBlackouts: cloneRecoveryBlackouts(snapshot.GlobalBlackouts),
 		Servers:         serverState,
@@ -165,6 +165,7 @@ func cloneRecoveryPolicies(in []Policy) []Policy {
 	for i := range out {
 		out[i].IncludeTags = append([]string(nil), in[i].IncludeTags...)
 		out[i].ExcludeTags = append([]string(nil), in[i].ExcludeTags...)
+		out[i].CanaryServers = append([]string(nil), in[i].CanaryServers...)
 		out[i].TargetServers = append([]string(nil), in[i].TargetServers...)
 		out[i].Weekdays = append([]string(nil), in[i].Weekdays...)
 		out[i].PolicyBlackouts = cloneRecoveryBlackouts(in[i].PolicyBlackouts)
@@ -197,6 +198,17 @@ func cloneRecoveryServers(in []servers.Server) []servers.Server {
 	out := append([]servers.Server(nil), in...)
 	for i := range out {
 		out[i].Tags = append([]string(nil), in[i].Tags...)
+	}
+	return out
+}
+
+func scheduleFingerprintPolicies(in []Policy) []Policy {
+	out := cloneRecoveryPolicies(in)
+	for i := range out {
+		out[i].MatchedServers = nil
+		out[i].OnceAdmissionReason = ""
+		out[i].OnceConsumedAt = ""
+		out[i].OnceScheduledForUTC = ""
 	}
 	return out
 }

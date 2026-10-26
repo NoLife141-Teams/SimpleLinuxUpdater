@@ -150,8 +150,9 @@ func TestApplicationPostcheckTestReservesServerUntilCompletion(t *testing.T) {
 }
 
 func TestApplicationPostcheckFailureControlsCanaryWave(t *testing.T) {
-	for _, mode := range []string{"blocking", "warning"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, scenario := range []struct{ mode, cadence string }{{"blocking", "daily"}, {"warning", "daily"}, {"blocking", "once"}, {"warning", "once"}, {"blocking", "monthly"}, {"warning", "monthly"}} {
+		t.Run(scenario.cadence+"/"+scenario.mode, func(t *testing.T) {
+			mode := scenario.mode
 			canary := Server{Name: "a-canary", Host: "canary.invalid", Port: 22, User: "root", Pass: "test", Tags: []string{"prod"}}
 			deps, policy, _, jm := newScheduledRunLifecycleTestDeps(t, "postcheck-canary.db", canary, "idle")
 			wave := Server{Name: "z-wave", Host: "wave.invalid", Port: 22, User: "root", Pass: "test", Tags: []string{"prod"}}
@@ -164,10 +165,17 @@ func TestApplicationPostcheckFailureControlsCanaryWave(t *testing.T) {
 			policy.TargetTag = "prod"
 			policy.ExecutionMode = policypkg.ExecutionAutoApply
 			policy.PackageScope = policypkg.PackageScopeSecurity
-			policy.CadenceKind = policypkg.CadenceDaily
+			policy.CadenceKind = scenario.cadence
+			policy.DateLocal = "2026-10-25"
+			policy.MonthDay = 25
 			policy.TimeLocal = "03:00"
 			policy.RolloutMode = policypkg.RolloutCanaryWaves
 			policy.CanaryCount = 1
+			policy.Revision = 3
+			if scenario.cadence != policypkg.CadenceDaily {
+				policy.CanaryMode = policypkg.CanaryExplicit
+				policy.CanaryServers = []string{canary.Name}
+			}
 			policy.WaveSize = 1
 			policy.WaveDelayMinutes = 1
 			policy.CreatedAt = origin.Add(-time.Minute).Format(jobTimestampLayout)
@@ -204,7 +212,11 @@ func TestApplicationPostcheckFailureControlsCanaryWave(t *testing.T) {
 			})
 			repo := defaultPolicyRepository()
 			lifecycle := scheduledrunspkg.New(deps)
-			scheduler := NewPolicyService(PolicyServiceDeps{ListPolicies: func() ([]UpdatePolicy, error) { return []UpdatePolicy{policy}, nil }, LoadOverrides: repo.LoadAllOverrides, LoadGlobalBlackouts: repo.LoadGlobalBlackouts, ListRolloutRuns: repo.ListRolloutRuns, ListRolloutOrigins: repo.ListRolloutOrigins, SnapshotServers: func() []Server { return []Server{canary, wave} }, CurrentLocation: func() *time.Location { return time.UTC }, HandleScheduledRun: lifecycle.HandleScheduledRun})
+			var occurrenceStore policypkg.OccurrenceStore
+			if scenario.cadence != policypkg.CadenceDaily {
+				occurrenceStore = repo
+			}
+			scheduler := NewPolicyService(PolicyServiceDeps{Occurrences: occurrenceStore, ListPolicies: func() ([]UpdatePolicy, error) { return []UpdatePolicy{policy}, nil }, LoadOverrides: repo.LoadAllOverrides, LoadGlobalBlackouts: repo.LoadGlobalBlackouts, ListRolloutRuns: repo.ListRolloutRuns, ListRolloutOrigins: repo.ListRolloutOrigins, SnapshotServers: func() []Server { return []Server{canary, wave} }, CurrentLocation: func() *time.Location { return time.UTC }, HandleScheduledRun: lifecycle.HandleScheduledRun})
 			if err := scheduler.ProcessDue(origin.Add(-time.Minute)); err != nil {
 				t.Fatal(err)
 			}
@@ -218,6 +230,14 @@ func TestApplicationPostcheckFailureControlsCanaryWave(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if run.PolicyRevision != 3 {
+				t.Fatalf("accepted revision lost: %+v", run)
+			}
+			startedAudit, err := deps.AuditService.List(AuditListFilter{Action: "schedule.run.started", TargetName: canary.Name})
+			if err != nil || startedAudit.Total != 1 || !strings.Contains(startedAudit.Items[0].MetaJSON, `"policy_revision":3`) {
+				t.Fatalf("revision audit=%+v %v", startedAudit, err)
+			}
+
 			expected := policypkg.RunFailed
 			if mode == "warning" {
 				expected = policypkg.RunSucceeded

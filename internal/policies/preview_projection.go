@@ -59,10 +59,25 @@ func (s *Service) projectPolicyPreviewOccurrences(policy Policy, matched []Previ
 	now := deps.Now().In(loc).Truncate(time.Minute)
 	startDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	addPreviewFact(response, "application_timezone", fmt.Sprintf("Occurrences use the canonical application timezone %s.", timezoneName))
+	if policy.OnceConsumedAt != "" {
+		addPreviewFact(response, "once_consumed", fmt.Sprintf("One-time occurrence consumed at %s (accepted UTC %s). Editing its cadence, date/time or timezone does not rearm this policy; create a new policy for another operation.", policy.OnceConsumedAt, policy.OnceScheduledForUTC))
+		if policy.OnceAdmissionReason != "" {
+			addPreviewFact(response, "once_admission_reason", "Accepted one-time outcome: "+policy.OnceAdmissionReason)
+		}
+		return
+	}
+	if policy.CadenceKind == CadenceOnce {
+		if day, err := time.ParseInLocation("2006-01-02", policy.DateLocal, loc); err == nil && day.After(startDay) {
+			startDay = day
+		}
+	}
 	previousOffset := ""
 
 	for dayOffset := 0; dayOffset < 370 && len(response.UpcomingOccurrences) < PreviewOccurrenceLimit; dayOffset++ {
 		day := startDay.AddDate(0, 0, dayOffset)
+		if monthlyDayMissing(policy, day) {
+			addPreviewFact(response, "month_day_missing", fmt.Sprintf("%s has no day %d; this month is skipped without moving the occurrence.", day.Format("2006-01"), policy.MonthDay))
+		}
 		if !policyCadenceMatchesDay(policy, day) {
 			continue
 		}
@@ -84,6 +99,8 @@ func (s *Service) projectPolicyPreviewOccurrences(policy Policy, matched []Previ
 		windows := applicablePreviewWindows(s, slot, globalBlackouts, policy.PolicyBlackouts)
 		outcome := PreviewAdmissionAdmitted
 		switch {
+		case hasDiagnosticCode(response.OperationalWarnings, RunReasonCanaryUnavailable):
+			outcome = RunReasonCanaryUnavailable
 		case !policy.Enabled:
 			outcome = PreviewAdmissionPolicyDisabled
 		case len(matched) == 0:
@@ -149,7 +166,7 @@ func (s *Service) projectPolicyPreviewConflicts(
 	loc, timezoneName := previewTimezone(deps)
 
 	for _, competing := range policyList {
-		if !competing.Enabled || (policy.ID != 0 && competing.ID == policy.ID) {
+		if competing.OnceConsumedAt != "" || canaryUnavailable(competing, serversSnapshot, overrides) != "" || !competing.Enabled || (policy.ID != 0 && competing.ID == policy.ID) {
 			continue
 		}
 		if err := s.NormalizePolicy(&competing); err != nil {
@@ -311,6 +328,11 @@ func policyCadenceMatchesDay(policy Policy, day time.Time) bool {
 		return true
 	case CadenceWeekly:
 		return weekdayMatchesLocal(policy.Weekdays, day)
+	case CadenceOnce:
+		return policy.DateLocal == day.Format("2006-01-02")
+	case CadenceMonthly:
+		last := time.Date(day.Year(), day.Month()+1, 0, 12, 0, 0, 0, day.Location()).Day()
+		return (policy.MonthLastDay && day.Day() == last) || (!policy.MonthLastDay && day.Day() == policy.MonthDay)
 	default:
 		return false
 	}
@@ -344,4 +366,10 @@ func applicablePreviewWindows(s *Service, slot time.Time, global, policy []Black
 	appendApplicable(NoRunScopeGlobal, global)
 	appendApplicable(NoRunScopePolicy, policy)
 	return windows
+}
+
+// Report an absent monthly day on the last civil day of the month.
+func monthlyDayMissing(policy Policy, day time.Time) bool {
+	last := time.Date(day.Year(), day.Month()+1, 0, 12, 0, 0, 0, day.Location()).Day()
+	return policy.CadenceKind == CadenceMonthly && !policy.MonthLastDay && policy.MonthDay > last && day.Day() == last
 }

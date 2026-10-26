@@ -36,7 +36,7 @@ func (s *Service) loadRolloutHistory(policies []Policy, serversSnapshot []server
 				if !due || horizon <= 0 {
 					continue
 				}
-				ranges = append(ranges, RolloutOriginRange{PolicyID: policy.ID, FromUTC: CanonicalScheduledForUTC(latest.Add(-horizon), deps.TimestampLayout, deps.CurrentLocation), BeforeUTC: CanonicalScheduledForUTC(latest, deps.TimestampLayout, deps.CurrentLocation)})
+				ranges = append(ranges, RolloutOriginRange{PolicyID: policy.ID, FromUTC: latest.Add(-horizon).UTC().Format(deps.TimestampLayout), BeforeUTC: latest.UTC().Format(deps.TimestampLayout)})
 			}
 		}
 		origins, originErr := deps.ListRolloutOrigins(ranges)

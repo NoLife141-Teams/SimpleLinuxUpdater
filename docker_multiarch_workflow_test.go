@@ -92,6 +92,7 @@ func TestCIDockerSmokeChecksBothArchitecturesOfOneImmutableImage(t *testing.T) {
 		t.Fatal("CI must test a local image without a registry push")
 	}
 	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const localSocket = "unix:///home/runner/setup-docker-action/run-fixture/docker.sock"
 	for _, tc := range []struct{ name, failArm64, failRecovery string }{
 		{"success", "false", "false"}, {"standard arm64 failure", "true", "false"}, {"recovery arm64 failure", "false", "true"},
 	} {
@@ -101,9 +102,9 @@ func TestCIDockerSmokeChecksBothArchitecturesOfOneImmutableImage(t *testing.T) {
 				t.Fatal(err)
 			}
 			adapters := map[string]string{
-				"docker":                   "#!/bin/sh\n[ \"$1 $2\" = 'image inspect' ] || exit 99\nprintf '%s\\n' '" + digest + "'\n",
+				"docker":                   "#!/bin/sh\ncase \"$1 $2\" in\n'image inspect') printf '%s\\n' '" + digest + "';;\n'context inspect') printf '%s\\n' '" + localSocket + "';;\n*) exit 99;;\nesac\n",
 				"tools/ci/docker-smoke.sh": "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> calls\n[ \"$FAIL_ARM64\" != true ] || [ \"$2\" != linux/arm64 ]\n",
-				"python3":                  "#!/bin/sh\n[ \"$1\" = tools/ci/admin-recovery-smoke.py ] || exit 99\nprintf '%s %s\\n' \"$2\" \"$3\" >> recovery-calls\n[ \"$FAIL_RECOVERY_ARM64\" != true ] || [ \"$3\" != linux/arm64 ]\n",
+				"python3":                  "#!/bin/sh\n[ \"$1\" = tools/ci/admin-recovery-smoke.py ] && [ \"$4\" = --docker-host ] && [ \"$5\" = '" + localSocket + "' ] || exit 99\nprintf '%s %s\\n' \"$2\" \"$3\" >> recovery-calls\n[ \"$FAIL_RECOVERY_ARM64\" != true ] || [ \"$3\" != linux/arm64 ]\n",
 			}
 			for path, source := range adapters {
 				if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0755); err != nil {

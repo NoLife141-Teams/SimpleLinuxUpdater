@@ -3,6 +3,7 @@
 import argparse
 import http.cookiejar
 import json
+import os
 import secrets
 import signal
 import subprocess
@@ -10,16 +11,43 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import uuid
 
 LABEL = "io.simplelinuxupdater.recovery-smoke-owner"
+
+
+def local_docker_command(endpoint):
+    """Validate before connecting; pin a local UNIX daemon for the whole run."""
+    parsed = urllib.parse.urlsplit(endpoint)
+    if (not endpoint.startswith("unix:///") or parsed.scheme != "unix" or parsed.netloc
+            or not parsed.path.startswith("/") or parsed.query or parsed.fragment
+            or any(char in endpoint for char in "\x00\r\n")):
+        raise ValueError("recovery smoke requires an absolute local Docker UNIX socket")
+    return ["docker", "--host=" + endpoint]
+
+
+def selected_local_docker(endpoint=None):
+    if endpoint is None:
+        # Match Docker's context precedence without opening a daemon connection.
+        # Context inspect only reads client metadata; remote endpoints are then
+        # rejected before any resource operation or network connection.
+        if os.environ.get("DOCKER_HOST") and not os.environ.get("DOCKER_CONTEXT"):
+            endpoint = os.environ["DOCKER_HOST"]
+        else:
+            selected = subprocess.run(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                                      check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            endpoint = selected.stdout.decode().strip()
+    return local_docker_command(endpoint)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image")
     parser.add_argument("platform", choices=("linux/amd64", "linux/arm64"))
+    parser.add_argument("--docker-host", help="explicit local UNIX endpoint selected by the image build")
     args = parser.parse_args()
+    docker_command = selected_local_docker(args.docker_host)
     owner = uuid.uuid4().hex
     volume = "slu-recovery-" + owner
     container = volume + "-app"
@@ -33,7 +61,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
     def docker(*words, data=None, success=True):
-        result = subprocess.run(["docker", "--host=unix:///var/run/docker.sock", *words], input=data,
+        result = subprocess.run([*docker_command, *words], input=data,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
         text = result.stdout.decode(errors="replace")
         assert password not in text and recovered not in text, "smoke output disclosed password"

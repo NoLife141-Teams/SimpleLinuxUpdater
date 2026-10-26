@@ -33,6 +33,51 @@ class HarnessSafetyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             run.Harness("production.example", Path("unused"))
 
+    def test_workflows_collect_only_visible_redacted_evidence_files(self):
+        for filename in ("ci.yml", "ssh-apt-extended.yml"):
+            with self.subTest(filename=filename):
+                workflow = (run.REPO / ".github" / "workflows" / filename).read_text()
+                job = workflow.split("  ssh-apt:\n", 1)[1].split("  ci-required:\n", 1)[0] if filename == "ci.yml" else workflow
+                self.assertIn("--output ssh-apt-evidence", job)
+                self.assertNotIn("include-hidden-files: true", job)
+                lines = job.splitlines()
+                index = next(i for i, line in enumerate(lines) if line.strip() == "path: |")
+                indent = len(lines[index]) - len(lines[index].lstrip())
+                files = []
+                for line in lines[index + 1:]:
+                    if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                        break
+                    if line.strip():
+                        files.append(line.strip())
+                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log"])
+
+    def test_collected_evidence_never_copies_private_runtime_files(self):
+        harness, resources, _ = self.fake_harness()
+        resources[("container", harness.app_name)] = harness.owner
+        key = "disposable-private-key-fixture"
+        harness.redactions.append(key)
+        for filename in ("servers.db", "config.json", "known_hosts", "client"):
+            (harness.work / filename).write_text(harness.password + key)
+        execute = harness.docker
+
+        def docker(*args, **kwargs):
+            if args[0] == "logs":
+                return "safe diagnostic " + harness.password + " " + key
+            return execute(*args, **kwargs)
+
+        harness.docker = docker
+        harness.records = [{"scenario": "failure", "status": "failed", "error": harness.password + " " + key}]
+        harness.cleanup()
+        harness.report()
+        self.assertFalse(harness.cleanup_errors)
+        self.assertFalse(harness.work.exists())
+        self.assertEqual({p.name for p in harness.output.iterdir()}, {"app.log", "report.json"})
+        for filename in ("app.log", "report.json"):
+            text = (harness.output / filename).read_text()
+            self.assertIn("[REDACTED]", text)
+            self.assertNotIn(harness.password, text)
+            self.assertNotIn(key, text)
+
     def fake_harness(self):
         output = tempfile.TemporaryDirectory()
         self.addCleanup(output.cleanup)

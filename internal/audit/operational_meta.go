@@ -40,6 +40,25 @@ func retainOperationalMeta(dst, src map[string]any) {
 		}
 	}
 
+	// Small approved sets are machine-consumed completion facts, including for
+	// ordinary updates without deferrals. Retain the complete set when it fits;
+	// larger sets remain available through the persisted job referenced above.
+	if packages, ok := src["approved_packages"].([]any); ok {
+		valid := true
+		for _, value := range packages {
+			if _, ok := value.(string); !ok {
+				valid = false
+				break
+			}
+		}
+		if raw, err := json.Marshal(packages); valid && err == nil && len(raw) <= 1024 {
+			dst["approved_packages"] = packages
+			if encoded, err := json.Marshal(dst); err != nil || len(encoded) > MetaMaxLen-1024 {
+				delete(dst, "approved_packages")
+			}
+		}
+	}
+
 	// Reserve compact status records for every supported dimension before adding
 	// optional text, so a long precheck output cannot crowd out a failed postcheck.
 	type retainedCheck struct{ compact, original map[string]any }

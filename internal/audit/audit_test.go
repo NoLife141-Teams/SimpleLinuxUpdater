@@ -55,6 +55,51 @@ func TestSanitizeMetaPreservesLargeIntegers(t *testing.T) {
 	}
 }
 
+func TestSanitizeMetaRetainsCompleteSmallApprovedSetAfterTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		packages     []any
+		wantPackages bool
+	}{
+		{name: "ordinary upgrade", packages: []any{"slu-ci-fixture"}, wantPackages: true},
+		{name: "multiarch upgrade", packages: []any{"libssl3:amd64", "libssl3:i386"}, wantPackages: true},
+		{name: "large set stays in referenced job", packages: []any{strings.Repeat("package", 180), "second-package"}},
+		{name: "invalid package facts", packages: []any{"package", 42}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := SanitizeMeta(map[string]any{
+				"job_id":                 "job-with-complete-plan",
+				"upgrade_completed":      true,
+				"postchecks_passed":      true,
+				"approved_package_count": len(tc.packages),
+				"approved_packages":      tc.packages,
+				"precheck_results":       []map[string]any{{"name": "disk_space", "passed": true, "output": strings.Repeat("precheck detail ", 500)}},
+			})
+			var facts map[string]any
+			if err := json.Unmarshal([]byte(raw), &facts); err != nil {
+				t.Fatal(err)
+			}
+			if len(raw) > MetaMaxLen || facts["_truncated"] != true || facts["job_id"] != "job-with-complete-plan" || facts["upgrade_completed"] != true || facts["postchecks_passed"] != true || facts["approved_package_count"] != float64(len(tc.packages)) {
+				t.Fatal(raw)
+			}
+			packages, ok := facts["approved_packages"].([]any)
+			if ok != tc.wantPackages {
+				t.Fatal(facts)
+			}
+			if ok {
+				if len(packages) != len(tc.packages) {
+					t.Fatal(packages)
+				}
+				for i, value := range packages {
+					if value != tc.packages[i] {
+						t.Fatal(packages)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestServiceRecordSanitizesTruncatesAndNotifies(t *testing.T) {
 	db := newTestDB(t)
 

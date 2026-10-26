@@ -31,11 +31,13 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
       - name: Qualify disposable targets
-        run: python3 tools/ci/ssh-apt/run.py --distro '${{ matrix.distro }}' --output .tmp-ssh-apt
+        run: python3 tools/ci/ssh-apt/run.py --distro '${{ matrix.distro }}' --output ssh-apt-evidence
       - name: Retain redacted evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: extended-ssh-apt-${{ matrix.distro }}-${{ github.run_attempt }}
-          path: .tmp-ssh-apt/
+          path: |
+            ssh-apt-evidence/report.json
+            ssh-apt-evidence/app.log
           retention-days: 1

@@ -2,6 +2,10 @@
 
 Validated on 2026-10-26 with Go 1.26.10. No release version was changed.
 
+The [PR #485 CI follow-up](ci-regression-fix.md) records the subsequent bounded
+audit regression fix, restored SSH/APT evidence collection and CodeQL test
+correction, with full real-SSH harness results for Debian 13 and Ubuntu 24.04.
+
 ## Real APT mutation evidence
 
 The fixture reuses #469's pinned image allowlist, Docker command adapter and

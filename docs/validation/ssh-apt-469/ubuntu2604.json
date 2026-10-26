@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "distribution": "ubuntu2604",
+  "base_image": "ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944",
+  "bootstrap_packages": [
+    "apt=3.2.0",
+    "curl=8.18.0-1ubuntu2.8",
+    "dpkg=1.23.7ubuntu1",
+    "openssh-server=1:10.2p1-2ubuntu3.8",
+    "sudo=1.9.17p2-1ubuntu3.2"
+  ],
+  "duration_seconds": 47.281,
+  "scenarios": [
+    {
+      "scenario": "root-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "15cd7ef5457ee7328e1b64362d9f58fa",
+      "approval": {
+        "job_id": "15cd7ef5457ee7328e1b64362d9f58fa",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "prechecks"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 11,
+      "duration_seconds": 4.68
+    },
+    {
+      "scenario": "operator-upgrade",
+      "status": "passed",
+      "final_version": "2.0",
+      "job_id": "1c334bfab241ed50e72946f17dc605e3",
+      "approval": {
+        "job_id": "1c334bfab241ed50e72946f17dc605e3",
+        "approval_generation": 1
+      },
+      "job_states": [
+        [
+          "running",
+          "dial"
+        ],
+        [
+          "running",
+          "prechecks"
+        ],
+        [
+          "running",
+          "apt_update"
+        ],
+        [
+          "waiting_approval",
+          "approval_wait"
+        ],
+        [
+          "running",
+          "apt_upgrade"
+        ],
+        [
+          "running",
+          "postchecks"
+        ],
+        [
+          "succeeded",
+          "complete"
+        ]
+      ],
+      "profile_revision": 1,
+      "audit_id": 20,
+      "duration_seconds": 5.008
+    },
+    {
+      "scenario": "misconfigured-helper",
+      "status": "passed",
+      "job_id": "db534df8d949e3f2e311578b34c509d7",
+      "error_class": "permanent",
+      "final_version": "1.0",
+      "duration_seconds": 3.007
+    },
+    {
+      "scenario": "apt-lock",
+      "status": "passed",
+      "job_id": "ede15de05a8e5e1e2b98458e63045ffc",
+      "failed_check": "apt_locks",
+      "final_version": "1.0",
+      "duration_seconds": 3.096
+    },
+    {
+      "scenario": "plan-drift-and-obsolete-approval",
+      "status": "passed",
+      "previous_generation": 1,
+      "accepted_generation": 2,
+      "final_version": "3.0",
+      "duration_seconds": 5.74
+    },
+    {
+      "scenario": "ssh-disconnect-during-mutation-and-repair",
+      "status": "passed",
+      "error_class": "reconciliation_required",
+      "mutation_attempts": 1,
+      "repair_job_id": "944d62a638c71e4de5cb6b8306e22c02",
+      "final_version": "2.0",
+      "duration_seconds": 6.963
+    },
+    {
+      "scenario": "changed-host-key",
+      "status": "passed",
+      "previous_fingerprint": "SHA256:K9rOhcyaPtW3c4OAjtBxuZc7xlV8ZlbsU/qM4EYXVRQ",
+      "rejected_fingerprint": "SHA256:txYZy9AQjfR+4K4VphAUlWHEXRZ1xdugIneCvuRAYPU",
+      "final_version": "1.0",
+      "error_class": "permanent",
+      "duration_seconds": 2.883
+    },
+    {
+      "scenario": "systemd-active",
+      "status": "not_executed",
+      "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."
+    },
+    {
+      "scenario": "controlled-reboot",
+      "status": "not_executed",
+      "reason": "Docker shares host uptime; container restart is not a reboot proof. Use vm-reboot.py."
+    },
+    {
+      "scenario": "official-provenance",
+      "status": "not_executed",
+      "reason": "Local fixture repository is deliberately not official; this suite does not qualify distribution provenance."
+    }
+  ],
+  "cleanup": {
+    "status": "passed",
+    "errors": []
+  }
+}

@@ -92,6 +92,28 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertFalse(any(args[0] == "exec" for args in calls))
         harness.cleanup()
 
+    def test_target_process_inspection_keeps_private_pid_namespace(self):
+        harness, _, _ = self.fake_harness()
+
+        class TargetLaunch(Exception):
+            pass
+
+        def docker(*args, **kwargs):
+            if args[0] == "run":
+                raise TargetLaunch()
+            return ""
+
+        try:
+            with mock.patch.object(harness, "docker", side_effect=docker) as execute:
+                with self.assertRaises(TargetLaunch):
+                    harness.start(harness.work / "webserver")
+                target = execute.call_args.args
+            self.assertEqual(target[target.index("--name") + 1], harness.name)
+            self.assertIn("--cap-add=SYS_PTRACE", target)
+            self.assertFalse(any(arg in ("--privileged", "--pid") or arg.startswith("--pid=") for arg in target))
+        finally:
+            harness.cleanup()
+
     def test_reports_distinguish_unexecuted_from_passed_and_redact(self):
         harness, resources, calls = self.fake_harness()
         harness.records = [{"scenario": "root-upgrade", "status": "failed", "error": harness.password}]

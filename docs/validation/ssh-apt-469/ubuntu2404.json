@@ -9,21 +9,21 @@
     "openssh-server=1:9.6p1-3ubuntu13.20",
     "sudo=1.9.15p5-3ubuntu5.24.04.4"
   ],
-  "duration_seconds": 22.135,
+  "duration_seconds": 47.041,
   "scenarios": [
     {
       "scenario": "root-upgrade",
       "status": "passed",
       "final_version": "2.0",
-      "job_id": "5a8bb38d54df7b974958a0abd3ed42e1",
+      "job_id": "1cc83678cd022bbc51e0d0f9fe46ab2f",
       "approval": {
-        "job_id": "5a8bb38d54df7b974958a0abd3ed42e1",
+        "job_id": "1cc83678cd022bbc51e0d0f9fe46ab2f",
         "approval_generation": 1
       },
       "job_states": [
         [
           "running",
-          ""
+          "dial"
         ],
         [
           "running",
@@ -48,21 +48,25 @@
       ],
       "profile_revision": 1,
       "audit_id": 11,
-      "duration_seconds": 2.473
+      "duration_seconds": 4.528
     },
     {
       "scenario": "operator-upgrade",
       "status": "passed",
       "final_version": "2.0",
-      "job_id": "d687772c58739b887b0d1e2af254b2ac",
+      "job_id": "471f48c54eb00c62cf7ba482ebb9cd4d",
       "approval": {
-        "job_id": "d687772c58739b887b0d1e2af254b2ac",
+        "job_id": "471f48c54eb00c62cf7ba482ebb9cd4d",
         "approval_generation": 1
       },
       "job_states": [
         [
           "running",
           "dial"
+        ],
+        [
+          "running",
+          "prechecks"
         ],
         [
           "running",
@@ -77,29 +81,33 @@
           "apt_upgrade"
         ],
         [
+          "running",
+          "postchecks"
+        ],
+        [
           "succeeded",
           "complete"
         ]
       ],
       "profile_revision": 1,
       "audit_id": 20,
-      "duration_seconds": 2.752
+      "duration_seconds": 4.532
     },
     {
       "scenario": "misconfigured-helper",
       "status": "passed",
-      "job_id": "8acd2c2cba4026aab4ef7ab175613274",
+      "job_id": "da6dd70b9823cad69fae9c73a0086e46",
       "error_class": "permanent",
       "final_version": "1.0",
-      "duration_seconds": 1.294
+      "duration_seconds": 2.787
     },
     {
       "scenario": "apt-lock",
       "status": "passed",
-      "job_id": "7b1793fbcb534b5c6b8c9d2a2614ce7f",
+      "job_id": "c3b53e8937ab4677ccfede353c373606",
       "failed_check": "apt_locks",
       "final_version": "1.0",
-      "duration_seconds": 1.648
+      "duration_seconds": 3.032
     },
     {
       "scenario": "plan-drift-and-obsolete-approval",
@@ -107,25 +115,25 @@
       "previous_generation": 1,
       "accepted_generation": 2,
       "final_version": "3.0",
-      "duration_seconds": 3.083
+      "duration_seconds": 5.968
     },
     {
       "scenario": "ssh-disconnect-during-mutation-and-repair",
       "status": "passed",
       "error_class": "reconciliation_required",
       "mutation_attempts": 1,
-      "repair_job_id": "6a2930788d582050af16d9217f663d94",
+      "repair_job_id": "320e61cf70d155e7ef440fdbeed64c5c",
       "final_version": "2.0",
-      "duration_seconds": 3.148
+      "duration_seconds": 5.912
     },
     {
       "scenario": "changed-host-key",
       "status": "passed",
-      "previous_fingerprint": "SHA256:G6gVyFbKy2lufgWqFvyO7om5+MwbQnfJ2opktYfX3QQ",
-      "rejected_fingerprint": "SHA256:dnO4CI9QV5Dpk6NLwW7XibRv6itGuDubrsRRS46+2uc",
+      "previous_fingerprint": "SHA256:0zfey06JfE6ybyCLZmTsGX6ZKcJfLEpljCX7ANk7EmA",
+      "rejected_fingerprint": "SHA256:pdkl5QIp7KoH/1Be59n24obp55leR4PckFbIGJxq/Mg",
       "final_version": "1.0",
       "error_class": "permanent",
-      "duration_seconds": 1.323
+      "duration_seconds": 3.391
     },
     {
       "scenario": "systemd-active",

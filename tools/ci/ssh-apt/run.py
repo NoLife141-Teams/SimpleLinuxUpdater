@@ -189,6 +189,9 @@ class Harness:
         self.docker("network", "create", "--opt", "com.docker.network.bridge.enable_ip_masquerade=false", "--label", LABEL + "=" + self.owner, self.network)
         self.container = self.docker("run", "-d", "--name", self.name, "--network", self.network,
             "--label", LABEL + "=" + self.owner, "--env", "SLU_FIXTURE_OWNER=" + self.owner,
+            # Older fuser versions report unreadable operator process descriptors
+            # unless root can inspect them. Keep this inside the target's PID namespace.
+            "--cap-add=SYS_PTRACE",
             "--pids-limit", "256", "--memory", "768m", self.image).strip()
         self.ssh_host, self.ssh_port = self.name, 22
         end = time.monotonic() + 30

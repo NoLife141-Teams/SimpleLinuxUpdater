@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"debian-updater/internal/installationlock"
 )
 
 const serverShutdownTimeout = 10 * time.Second
@@ -167,6 +169,18 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMai
 }
 
 func main() {
+	if handled, err := runAdminCommand(os.Args[1:], os.Stdin, os.Stdout); handled {
+		if err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
+	installation, err := installationlock.Acquire(dbPath(), true)
+	if err != nil {
+		log.Fatalf("Cannot acquire installation lock: %v", err)
+	}
+	defer installation.Close()
 	if _, err := loadBackupAutomationDeployment(); err != nil {
 		log.Fatalf("Invalid automated backup configuration: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"debian-updater/internal/installationlock"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -669,6 +670,15 @@ func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T)
 	if _, err := setupRouterWithDeps(deps); err != nil {
 		t.Fatalf("setupRouterWithDeps() unexpected error: %v", err)
 	}
+	installation, err := installationlock.Acquire(dbFile, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installation.Close()
+	lockBefore, err := os.Stat(dbFile + ".lock")
+	if err != nil {
+		t.Fatal(err)
+	}
 	initialSessionManager := deps.CurrentSessionManager()
 	if initialSessionManager == nil {
 		t.Fatalf("app-scoped session manager was not initialized")
@@ -697,6 +707,16 @@ func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T)
 		"config.json": backupConfig,
 	}); err != nil {
 		t.Fatalf("ApplyFiles() unexpected error: %v", err)
+	}
+	lockAfter, err := os.Stat(dbFile + ".lock")
+	if err != nil || !os.SameFile(lockBefore, lockAfter) {
+		t.Fatal("controlled restore replaced installation lock", err)
+	}
+	if other, err := installationlock.Acquire(dbFile, false); !errors.Is(err, installationlock.ErrBusy) {
+		if other != nil {
+			_ = other.Close()
+		}
+		t.Fatal("controlled restore lost installation exclusivity", err)
 	}
 	loaded := deps.ServerState.CloneServers()
 	if len(loaded) != 1 || loaded[0].Name != restoredServer.Name || loaded[0].Pass != restoredServer.Pass || loaded[0].Key != restoredServer.Key {

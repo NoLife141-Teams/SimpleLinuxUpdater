@@ -92,15 +92,19 @@ func TestCIDockerSmokeChecksBothArchitecturesOfOneImmutableImage(t *testing.T) {
 		t.Fatal("CI must test a local image without a registry push")
 	}
 	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	for _, failArm64 := range []string{"false", "true"} {
-		t.Run("arm64_failure="+failArm64, func(t *testing.T) {
+	const localSocket = "unix:///home/runner/setup-docker-action/run-fixture/docker.sock"
+	for _, tc := range []struct{ name, failArm64, failRecovery string }{
+		{"success", "false", "false"}, {"standard arm64 failure", "true", "false"}, {"recovery arm64 failure", "false", "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(root, "tools/ci"), 0755); err != nil {
 				t.Fatal(err)
 			}
 			adapters := map[string]string{
-				"docker":                   "#!/bin/sh\n[ \"$1 $2\" = 'image inspect' ] || exit 99\nprintf '%s\\n' '" + digest + "'\n",
+				"docker":                   "#!/bin/sh\ncase \"$1 $2\" in\n'image inspect') printf '%s\\n' '" + digest + "';;\n'context inspect') printf '%s\\n' '" + localSocket + "';;\n*) exit 99;;\nesac\n",
 				"tools/ci/docker-smoke.sh": "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> calls\n[ \"$FAIL_ARM64\" != true ] || [ \"$2\" != linux/arm64 ]\n",
+				"python3":                  "#!/bin/sh\n[ \"$1\" = tools/ci/admin-recovery-smoke.py ] && [ \"$4\" = --docker-host ] && [ \"$5\" = '" + localSocket + "' ] || exit 99\nprintf '%s %s\\n' \"$2\" \"$3\" >> recovery-calls\n[ \"$FAIL_RECOVERY_ARM64\" != true ] || [ \"$3\" != linux/arm64 ]\n",
 			}
 			for path, source := range adapters {
 				if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0755); err != nil {
@@ -109,9 +113,9 @@ func TestCIDockerSmokeChecksBothArchitecturesOfOneImmutableImage(t *testing.T) {
 			}
 			cmd := exec.Command("bash", "-e", "-o", "pipefail", "-c", smoke)
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FAIL_ARM64="+failArm64)
+			cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FAIL_ARM64="+tc.failArm64, "FAIL_RECOVERY_ARM64="+tc.failRecovery)
 			output, err := cmd.CombinedOutput()
-			if (err != nil) != (failArm64 == "true") {
+			if (err != nil) != (tc.failArm64 == "true" || tc.failRecovery == "true") {
 				t.Errorf("arm64 failure must fail the CI step: err=%v output=%s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(root, "calls"))
@@ -121,6 +125,17 @@ func TestCIDockerSmokeChecksBothArchitecturesOfOneImmutableImage(t *testing.T) {
 			want := digest + " linux/amd64\n" + digest + " linux/arm64\n"
 			if string(calls) != want {
 				t.Errorf("smokes must use one immutable image for both platforms: got %q want %q", calls, want)
+			}
+			recoveryCalls, err := os.ReadFile(filepath.Join(root, "recovery-calls"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRecovery := want
+			if tc.failArm64 == "true" {
+				wantRecovery = digest + " linux/amd64\n"
+			}
+			if string(recoveryCalls) != wantRecovery {
+				t.Errorf("recovery smokes must use the same immutable image: got %q want %q", recoveryCalls, wantRecovery)
 			}
 		})
 	}

@@ -27,8 +27,8 @@ type repairer struct {
 
 func newRepairer(uid, gid int) *repairer {
 	return &repairer{
-		uid:     uid,
-		gid:     gid,
+		uid:    uid,
+		gid:    gid,
 		fchown: syscall.Fchown,
 	}
 }
@@ -89,6 +89,7 @@ func repairWith(cfg Config, r *repairer) error {
 		dbPath + "-wal",
 		dbPath + "-shm",
 		dbPath + "-journal",
+		dbPath + ".lock",
 		filepath.Join(dbDir, "config.json"),
 	} {
 		if err := r.repairFile(path, false, dbPlan); err != nil {

@@ -269,8 +269,10 @@ jobs:
       - name: Verify startup, privileges and persistence
         run: |
           image="$(docker image inspect slu-smoke:ci --format '{{.Id}}')"
+          docker_host="$(docker context inspect --format '{{.Endpoints.docker.Host}}')"
           for platform in linux/amd64 linux/arm64; do
             tools/ci/docker-smoke.sh "$image" "$platform"
+            python3 tools/ci/admin-recovery-smoke.py "$image" "$platform" --docker-host "$docker_host"
           done
 
       - name: Retain Docker diagnostics

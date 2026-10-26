@@ -76,3 +76,35 @@ the two existing 11-scenario protected-APT reports remain applicable. Browser
 product code was unchanged, so the previously passing 94-scenario Playwright
 suite was not repeated for this correction. Remote CodeQL and artifact upload
 remain to be confirmed by the next CI run.
+
+## Evidence redaction follow-up
+
+The next CodeQL run identified an actual raw intermediate write in the
+collector: Docker application logs were first written to `work/app.log`, then
+read back and redacted for the public output. The collector now redacts in
+memory and writes only the public `output/app.log`; there is no intermediate
+log file. Redaction precedes the 200,000-character tail limit, so a credential
+crossing that boundary cannot survive as a fragment. Report values are redacted
+recursively before JSON serialization, including multiline keys and nested or
+already JSON-encoded diagnostics.
+
+The existing exclusion test now intercepts every `Path.write_text` call during
+evidence collection and verifies both its destination and the absence of raw
+or JSON-escaped credential canaries at the time of each write. It still seeds
+private database/configuration/key/known-host fixture files and verifies they
+are excluded. The multiline JSON and tail-boundary tests failed against the
+previous collector and pass after the correction. All 18 Python harness tests
+pass. A real Debian 13 run with the corrected collector passed the seven
+executed SSH/APT scenarios, kept the three expected non-executed cases, emitted
+exactly `app.log` and `report.json`, and completed ownership-checked cleanup:
+
+```sh
+python3 -m unittest discover -s tools/ci/ssh-apt -p 'test_*.py' -v
+python3 tools/ci/ssh-apt/run.py --distro debian13 \
+  --output /tmp/slu-473-redaction-debian13
+```
+
+This correction changes only the Python collector and its tests. No CodeQL
+suppression or analysis-model change is used. The business helper remains
+unchanged; Go and Playwright were not repeated. The next remote CodeQL run must
+confirm the sensitive-storage annotation is resolved before delivery.

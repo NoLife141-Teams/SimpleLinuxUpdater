@@ -436,15 +436,27 @@ class Harness:
             {"scenario": "official-provenance", "status": "not_executed", "reason": "Local fixture repository is deliberately not official; this suite does not qualify distribution provenance."},
         ])
 
+    def redact_evidence(self, value):
+        """Remove fixture credentials in memory, before encoding or truncation."""
+        if isinstance(value, str):
+            for secret in sorted(set(self.redactions), key=len, reverse=True):
+                if secret:
+                    # Errors can contain an already JSON-encoded diagnostic.
+                    for text in (secret, json.dumps(secret)[1:-1]):
+                        value = value.replace(text, "[REDACTED]")
+            return value
+        if isinstance(value, dict):
+            return {key: self.redact_evidence(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self.redact_evidence(item) for item in value]
+        return value
+
     def cleanup(self):
         try:
             if self.output:
                 self.output.mkdir(parents=True, exist_ok=True)
                 if self.owned("container", self.app_name):
-                    (self.work / "app.log").write_text(self.docker("logs", self.app_name))
-                if (self.work / "app.log").exists():
-                    text = (self.work / "app.log").read_text(errors="replace")[-200000:]
-                    for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
+                    text = self.redact_evidence(self.docker("logs", self.app_name))[-200000:]
                     (self.output / "app.log").write_text(text)
         except RuntimeError as error:
             if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
@@ -471,8 +483,7 @@ class Harness:
             "bootstrap_packages": getattr(self, "bootstrap_versions", []),
             "duration_seconds": round(time.monotonic() - self.started, 3),
             "scenarios": self.records, "cleanup": {"status": "failed" if self.cleanup_errors else "passed", "errors": self.cleanup_errors}}
-        text = json.dumps(report, indent=2)
-        for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
+        text = json.dumps(self.redact_evidence(report), indent=2)
         self.output.mkdir(parents=True, exist_ok=True)
         (self.output / "report.json").write_text(text + "\n")
 

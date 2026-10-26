@@ -33,6 +33,7 @@ test-results/
 .tmp-e2e/
 .tmp-smoke/
 .tmp-ssh-apt/
+ssh-apt-evidence/
 .tmp-cu-release/
 
 # Python policy regression bytecode

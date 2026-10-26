@@ -25,6 +25,7 @@ This index separates current guidance from historical implementation records. Pr
 - [Computer Use release checklist](computer-use-release-checklist.md): detailed deterministic UI and live-host execution procedure.
 - [Production manual QA](production-manual-qa-checklist.md): non-destructive exploration of an existing deployment.
 - [UI manual QA](ui-manual-qa-checklist.md): disposable local UI checks without requiring a real SSH target.
+- [Package deferral qualification](validation/package-deferrals-473/README.md): protected APT 2/3 mutation evidence, runner/API coverage and browser fixtures.
 
 ## Historical records
 

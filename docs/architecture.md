@@ -93,6 +93,19 @@ Typical update:
 7. Status becomes `pending_approval` when approval is required; the discovery session closes while the Server Action remains reserved.
 8. Approval reconnects when necessary and revalidates discovery, health and disk capacity. Changed selected packages, package versions, sources or removals require renewed approval; cancellation or timeout finishes without reconnecting.
 9. The approved command runs through the active session. Targeted installations and full upgrades enforce `--no-remove` unless the current removal set was explicitly approved.
+
+`internal/deferrals` owns immutable, expiring package rules, cumulative resolution,
+their persistence and historical snapshots. Application composition supplies
+policy membership through the existing policy matcher and the originating
+Scheduled Run manifest. `internal/updates` interprets those effective rules in
+Package Discovery and Upgrade Plan, including executable scope transactions,
+dependency conflicts, approval drift and final mutation gates. Browser adapters
+render accepted rules/plans and send typed create/delete intents; they do not
+calculate inheritance or APT safety. The protocol 3 helper enforces the approved
+transaction against APT's actual package-action stream before dpkg. Rule/policy
+edits share a gate with the immediate pre-mutation check and execution. Deferral
+history is additive SQLite state and follows existing inventory rename/delete,
+backup restoration and audit ownership boundaries.
 10. A mutating APT timeout remains attached while a second session proves the lock holder is active. Missing SSH exit status and transport loss after possible dispatch also require reconciliation and disable automatic replay. Failures known to precede command execution retain their retry policy.
 11. Post-update health checks run when enabled.
 12. Job state, status map, audit metadata, server facts, and dashboard events are updated.

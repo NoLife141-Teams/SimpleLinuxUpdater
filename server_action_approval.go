@@ -11,8 +11,9 @@ import (
 
 // Every browser decision identifies the exact pending plan the operator saw.
 type serverActionApprovalIdentity struct {
-	JobID      string `json:"job_id"`
-	Generation uint64 `json:"approval_generation"`
+	JobID            string `json:"job_id"`
+	DeferralRevision string `json:"deferral_revision,omitempty"`
+	Generation       uint64 `json:"approval_generation"`
 }
 
 type serverActionApprovalRequest struct {
@@ -48,7 +49,7 @@ func (l *serverActionLifecycle) withPendingApproval(name string, identity server
 	if status.Status != "pending_approval" {
 		return jsonResult(http.StatusConflict, "Server not pending approval")
 	}
-	if identity.JobID == "" || identity.Generation == 0 || status.JobID != identity.JobID || status.ApprovalGeneration != identity.Generation {
+	if identity.JobID == "" || identity.Generation == 0 || status.JobID != identity.JobID || status.ApprovalGeneration != identity.Generation || status.UpgradePlan.PackageDeferrals.Revision != identity.DeferralRevision {
 		return jsonResult(http.StatusConflict, staleApprovalMessage)
 	}
 	return apply(status)
@@ -75,9 +76,29 @@ func (l *serverActionLifecycle) persistPendingDecision(status *ServerStatus, can
 }
 
 func (l *serverActionLifecycle) approve(name string, identity serverActionApprovalIdentity, scope string, confirmRemovals bool) serverActionLifecycleResult {
+	if l.updateService != nil {
+		if gate := l.updateService.EnsureDeps().PackageDeferralGate; gate != nil {
+			gate.RLock()
+			defer gate.RUnlock()
+		}
+	}
 	var approval updatespkg.ApprovalScopeInterpretation
 	var persistErr error
+	server, found := l.serverState.FindByName(name)
+	previous := l.serverState.CurrentStatusSnapshot(name)
+	var freshRevision string
+	if l.updateService != nil && found && previous != nil && previous.Status == "pending_approval" && previous.JobID == identity.JobID && previous.ApprovalGeneration == identity.Generation && previous.UpgradePlan.PackageDeferrals.Revision == identity.DeferralRevision {
+		snapshot, err := l.updateService.EnsureDeps().LoadPackageDeferrals(server, identity.JobID)
+		if err != nil {
+			l.recordAuditWithMeta("update.approve", name, "blocked", "Package deferrals unavailable; rescan before approving", map[string]any{"scope": scope, "job_id": identity.JobID, "deferral_revision": identity.DeferralRevision})
+			return jsonResult(http.StatusInternalServerError, "Package deferrals unavailable; rescan before approving")
+		}
+		freshRevision = snapshot.Revision
+	}
 	result := l.withPendingApproval(name, identity, func(status *ServerStatus) serverActionLifecycleResult {
+		if status.UpgradePlan.PackageDeferrals.Revision != freshRevision {
+			return jsonResult(http.StatusConflict, staleApprovalMessage)
+		}
 		approval = updatespkg.EvaluateManualApproval(status, scope, updatespkg.ApprovalScopeOptions{ConfirmRemovals: confirmRemovals})
 		if !approval.Allowed {
 			body := map[string]any{"error": approval.BodyMessage}
@@ -103,6 +124,8 @@ func (l *serverActionLifecycle) approve(name string, identity serverActionApprov
 	}
 	meta["job_id"] = identity.JobID
 	meta["approval_generation"] = identity.Generation
+	meta["deferral_revision"] = identity.DeferralRevision
+	meta["reason_code"] = approval.ReasonCode
 	auditStatus, message := approval.AuditStatus, approval.AuditMessage
 	if persistErr != nil {
 		meta["error"] = persistErr.Error()

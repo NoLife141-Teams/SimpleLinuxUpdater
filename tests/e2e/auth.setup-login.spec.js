@@ -5382,4 +5382,72 @@ test.describe.serial('setup and login flows', () => {
     await expect(page.locator('#edit-host')).toHaveValue('unsaved-editor.example');
   });
 
+  async function captureDeferral473(page, locator, name, mobile = false) {
+    if (!process.env.CAPTURE_PACKAGE_DEFERRALS_473) return;
+    const dir=path.join(process.cwd(),'.github/assets/package-deferrals-473');fs.mkdirSync(dir,{recursive:true});
+    await page.setViewportSize({width:mobile?390:1440,height:mobile?2400:1800});
+    if(mobile && await locator.getAttribute('id')==='server-package-deferrals') {
+      await page.setViewportSize({width:390,height:1100});
+      const scrollTo=async selector=>page.locator('#edit-modal .modal-grid').evaluate((scroller,selector)=>{const target=document.querySelector(selector);scroller.scrollTop+=target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-12;},selector);
+      await scrollTo('#server-package-deferrals [data-deferral-list]');
+      await page.locator('#edit-modal .modal').screenshot({path:path.join(dir,'mobile-manage-rules.png')});
+      await scrollTo('#server-package-deferrals .deferral-fields');
+      await page.locator('#edit-modal .modal').screenshot({path:path.join(dir,name)});
+      return;
+    }
+    await locator.evaluate(element=>element.scrollIntoView({block:'center',behavior:'instant'}));
+    await locator.screenshot({path:path.join(dir,name)});
+  }
+
+  test('package deferrals 473 Manage and policy editor preserve origin and independent drafts', async ({page}) => {
+    await ensureAuthenticatedSession(page);
+    const direct={id:'server-rule',server_name:'deferral-host',selector:'openssl:amd64',reason:'Compatibility investigation — ticket OPS-104',author:'fixture-admin',created_at:'2026-10-26T12:00:00Z',expires_at:'2030-11-10T17:00:00Z',expires_at_display:'2030-11-10 12:00:00 EST',origin:'Server: deferral-host'};
+    const inherited={...direct,id:'policy-rule',server_name:'',policy_id:12,selector:'libssl3:amd64',origin:'Policy: Production (revision 3)',reason:'Validate application compatibility'};
+    let rules=[direct,inherited],created;
+    await stubManageApi(page,{servers:[makeServer('deferral-host')]});
+    await page.route('**/api/servers/deferral-host/package-deferrals',route=>fulfillJson(route,{revision:'fixture-revision',rules}));
+    await page.route('**/api/servers/deferral-host/postchecks',route=>fulfillJson(route,{profile:null}));
+    await page.route('**/api/package-deferrals',route=>{
+      if(route.request().method()==='POST'){created=route.request().postDataJSON();rules.push({...direct,...created,id:'new-rule'});return fulfillJson(route,rules.at(-1),201);}
+      return fulfillJson(route,{rules});
+    });
+    await page.route('**/api/package-deferrals/*',route=>{rules=rules.filter(r=>r.id!==route.request().url().split('/').pop());return fulfillJson(route,{message:'ended'});});
+    await page.goto('/manage');await page.locator('[data-action="edit-server"][data-name="deferral-host"]').click();
+    const editor=page.locator('#server-package-deferrals');
+    await expect(editor).toContainText('Production (revision 3)');await expect(editor).toContainText('fixture-admin');await expect(editor).toContainText('12:00:00 EST');
+    await editor.locator('[data-deferral-field="selector"]').fill('linux-image-amd64');await editor.locator('[data-deferral-field="reason"]').fill('Testing reboot compatibility');await editor.locator('[data-deferral-field="expires_at"]').fill('2030-11-10T17:00:00Z');
+    await captureDeferral473(page,editor,'desktop-manage-rule-editing.png');await captureDeferral473(page,editor,'mobile-manage-rule-editing.png',true);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+    await editor.locator('[data-add-deferral]').click();await expect(editor.locator('[data-deferral-feedback]')).toContainText('Saved.');
+    expect(created).toEqual({server_name:'deferral-host',selector:'linux-image-amd64',reason:'Testing reboot compatibility',expires_at:'2030-11-10T17:00:00Z'});
+    await editor.locator('[data-end-deferral="new-rule"]').click();await expect(editor).not.toContainText('Testing reboot compatibility');
+    await page.setViewportSize({width:1440,height:1000});
+    await stubAdminApi(page,{policies:[{id:12,name:'Production',enabled:true,target_tag:'prod',time_local:'02:00',cadence_kind:'daily',execution_mode:'approval_required',package_scope:'security',revision:3}]});
+    await page.goto('/admin');await page.locator('[data-admin-section-link="scheduled-policies"]').click();await page.locator('[data-action="edit-policy"][data-id="12"]').click();
+    const policyEditor=page.locator('#policy-package-deferrals');await expect(policyEditor).toContainText('libssl3:amd64');await expect(policyEditor).not.toContainText('openssl:amd64');
+    await policyEditor.locator('[data-deferral-field="selector"]').fill('postgresql-17');await policyEditor.locator('[data-deferral-field="reason"]').fill('Staging validation');await policyEditor.locator('[data-deferral-field="expires_at"]').fill('2030-11-10T17:00:00Z');
+    await page.locator('[data-admin-section-link="scheduled-runs"]').click();await page.locator('[data-admin-section-link="scheduled-policies"]').click();await expect(policyEditor.locator('[data-deferral-field="reason"]')).toHaveValue('Staging validation');
+    await captureDeferral473(page,policyEditor,'desktop-policy-rule-editing.png');await captureDeferral473(page,policyEditor,'mobile-policy-rule-editing.png',true);
+    await policyEditor.locator('[data-add-deferral]').click();await expect(policyEditor.locator('[data-deferral-feedback]')).toContainText('Saved.');expect(created.policy_id).toBe(12);
+  });
+
+  test('package deferrals 473 approval shows executable transactions CVE exposure and frozen rule identity',async ({page})=>{
+    const revision='a'.repeat(64),rules=[{id:'rule',selector:'openssl:amd64',reason:'Compatibility investigation',origin:'Policy: Production (revision 3)',author:'fixture-admin',expires_at:'2030-11-10T17:00:00Z',expires_at_display:'2030-11-10 12:00:00 EST'}];
+    const safe={available:true,selected_packages:['curl:amd64'],transaction:['curl:amd64=2'],new_packages:[],removed_packages:[],dependency_impacts:[]};
+    const plan={standard_package_count:1,standard_security_count:1,total_security_count:2,full_upgrade_package_count:1,full_upgrade_plan_available:true,full_upgrade_removed_packages:['obsolete-runtime'],package_deferrals:{revision,rules},deferred_packages:['openssl:amd64'],deferred_security_packages:['openssl:amd64'],deferral_scopes:{all:safe,security:{...safe,available:false,block_reason:'Dependency conflict: APT would change deferred package openssl:amd64'},security_kept_back:{...safe,selected_packages:[],transaction:[]},full_upgrade:{...safe,removed_packages:['obsolete-runtime'],transaction:['curl:amd64=2','obsolete-runtime:amd64=-']}}};
+    let servers=[makeServer('deferral-host','pending_approval',[{package:'openssl:amd64',current_version:'1.0',candidate_version:'2.0',security:true,deferred:true,cve_state:'ready',cve_findings:[{id:'CVE-2026-1000',disposition:'fixed_by_candidate',fixed_by_version:'2.0',source:'Debian Security Tracker'}],cves:['CVE-2026-1000']},{package:'curl:amd64',current_version:'1.0',candidate_version:'2.0',security:true,cve_state:'ready',cves:[]}],{has_password:true,job_id:'deferral-job',approval_generation:1,upgrade_plan:plan})];
+    await stubDashboardApi(page,()=>servers);const requests=[];
+    await page.route('**/api/approve-full/deferral-host',route=>{requests.push(route.request().postDataJSON());return fulfillJson(route,{error:'The pending update changed. Refresh the package plan and confirm again.'},409);});
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table [data-action="open-drawer"][data-tab="pending"][data-name="deferral-host"]').click();
+    const panel=page.locator('#drawer-panel-pending');await expect(panel).toContainText('Deferred — security exposure remains');await expect(panel).toContainText('Dependency conflict');await expect(panel).toContainText('CVE');await expect(panel).toContainText('Install curl:amd64 version 2');await panel.locator('details.cve-findings summary').click();await expect(panel).toContainText('CVE-2026-1000');
+    await captureDeferral473(page,panel.locator('.pending-updates'),'desktop-approval-affected.png');await captureDeferral473(page,panel.locator('.pending-updates'),'mobile-approval-affected.png',true);
+    await page.locator('#status-drawer-close').click();await page.setViewportSize({width:1440,height:1000});
+    await page.locator('#servers-table [data-action="approve-full"][data-name="deferral-host"]').click();
+    servers=[{...servers[0],approval_generation:2,upgrade_plan:{...plan,package_deferrals:{revision:'b'.repeat(64),rules:[]}}}];
+    await page.evaluate(()=>fetchServers(true,'deferral-drift'));await page.locator('#action-confirm-submit').click();
+    await expect.poll(()=>requests.length).toBe(1);expect(requests[0]).toEqual({job_id:'deferral-job',approval_generation:1,deferral_revision:revision,confirm_removals:true});
+    await expect(page.locator('.app-feedback')).toContainText('pending update changed');
+  });
+
 });

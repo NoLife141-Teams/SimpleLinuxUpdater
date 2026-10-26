@@ -2807,7 +2807,10 @@ async function copyJobDetailText(kind) {
     }
 }
 
+let packageDeferralEditor;
+function deferralEditor(){return packageDeferralEditor ||= window.PackageDeferrals.mount(document.getElementById("policy-package-deferrals"));}
 function resetPolicyForm(options = {}) {
+ void deferralEditor()?.clear();
     if (options.updateStore !== false) scheduledPolicyAdministration.dispatch({ type: "editorReset" });
     document.getElementById("policy-id").value = "";
     document.getElementById("policy-name").value = "";
@@ -2845,6 +2848,7 @@ function resetPolicyForm(options = {}) {
 }
 
 function applyPolicyToForm(policy, options = {}) {
+ void deferralEditor()?.select(policy.id?{policy_id:Number(policy.id)}:null);
     if (options.updateStore !== false) scheduledPolicyAdministration.dispatch({ type: "editorLoaded", policy });
     document.getElementById("policy-id").value = String(policy.id || "");
     document.getElementById("policy-name").value = policy.name || "";

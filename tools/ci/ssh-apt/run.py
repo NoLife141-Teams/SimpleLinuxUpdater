@@ -146,7 +146,8 @@ class Harness:
         self.container = None
         self.work = Path(tempfile.mkdtemp(prefix=self.name + "-"))
         self.password = secrets.token_urlsafe(24) + "!Aa7"
-        self.redactions = [self.password]
+        # The primary credential is always masked; this list holds extra secrets.
+        self.redactions = []
         self.records = []
         self.transitions = {}
         self.cleanup_errors = []
@@ -436,15 +437,36 @@ class Harness:
             {"scenario": "official-provenance", "status": "not_executed", "reason": "Local fixture repository is deliberately not official; this suite does not qualify distribution provenance."},
         ])
 
+    def redact_text(self, text):
+        """Mask the primary credential before processing optional extra secrets."""
+        redacted = text.replace(self.password, "[REDACTED]")
+        redacted = redacted.replace(json.dumps(self.password)[1:-1], "[REDACTED]")
+        for secret in sorted(set(self.redactions), key=len, reverse=True):
+            if secret:
+                # Apply the same primary masking to overlapping extra secrets.
+                masked_secret = secret.replace(self.password, "[REDACTED]")
+                masked_secret = masked_secret.replace(json.dumps(self.password)[1:-1], "[REDACTED]")
+                # Errors can contain an already JSON-encoded diagnostic.
+                for text_form in (masked_secret, json.dumps(masked_secret)[1:-1]):
+                    redacted = redacted.replace(text_form, "[REDACTED]")
+        return redacted
+
+    def redact_evidence(self, value):
+        """Redact structured report values before JSON encoding."""
+        if isinstance(value, str):
+            return self.redact_text(value)
+        if isinstance(value, dict):
+            return {key: self.redact_evidence(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self.redact_evidence(item) for item in value]
+        return value
+
     def cleanup(self):
         try:
             if self.output:
                 self.output.mkdir(parents=True, exist_ok=True)
                 if self.owned("container", self.app_name):
-                    (self.work / "app.log").write_text(self.docker("logs", self.app_name))
-                if (self.work / "app.log").exists():
-                    text = (self.work / "app.log").read_text(errors="replace")[-200000:]
-                    for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
+                    text = self.redact_text(self.docker("logs", self.app_name))[-200000:]
                     (self.output / "app.log").write_text(text)
         except RuntimeError as error:
             if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
@@ -471,8 +493,7 @@ class Harness:
             "bootstrap_packages": getattr(self, "bootstrap_versions", []),
             "duration_seconds": round(time.monotonic() - self.started, 3),
             "scenarios": self.records, "cleanup": {"status": "failed" if self.cleanup_errors else "passed", "errors": self.cleanup_errors}}
-        text = json.dumps(report, indent=2)
-        for secret in self.redactions: text = text.replace(secret, "[REDACTED]")
+        text = json.dumps(self.redact_evidence(report), indent=2)
         self.output.mkdir(parents=True, exist_ok=True)
         (self.output / "report.json").write_text(text + "\n")
 

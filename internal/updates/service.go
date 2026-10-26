@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"debian-updater/internal/deferrals"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/postchecks"
 	runtimepkg "debian-updater/internal/runtime"
@@ -62,6 +63,9 @@ func (s *Service) RefreshServerFacts(ctx context.Context, server servers.Server,
 }
 
 func (d ServiceDeps) withDefaults() ServiceDeps {
+	if d.LoadPackageDeferrals == nil {
+		d.LoadPackageDeferrals = func(servers.Server, string) (deferrals.Snapshot, error) { return deferrals.Snapshot{}, nil }
+	}
 	if d.Now == nil {
 		d.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -192,12 +196,14 @@ type withActorRunner struct {
 	startedAt  time.Time
 	approvedAt time.Time
 
-	automaticApproval       bool
-	approvalGeneration      uint64
-	approvalScope           string
-	approvalConfirmRemovals bool
-	approvedPackages        []string
-	upgradePlan             servers.UpgradePlan
+	automaticApproval        bool
+	approvalGeneration       uint64
+	approvalScope            string
+	approvalConfirmRemovals  bool
+	approvedPackages         []string
+	upgradePlan              servers.UpgradePlan
+	deferralBlockReason      string
+	deferralObservedRevision string
 
 	session        HostMaintenanceSession
 	maintenanceCtx context.Context
@@ -783,6 +789,7 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 	}
 	meta := map[string]any{
 		"status":                        finalStatus,
+		"job_id":                        r.jobID,
 		"ssh_dial_attempts_used":        r.sshDialAttempts,
 		"apt_update_attempts_used":      r.aptUpdateAttempts,
 		"list_upgradable_attempts_used": r.listUpgradableAttempts,
@@ -806,6 +813,16 @@ func updateRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]an
 		"approved_package_count":        len(r.approvedPackages),
 		"approved_packages":             append([]string(nil), r.approvedPackages...),
 		"upgrade_plan":                  servers.CloneUpgradePlan(r.upgradePlan),
+		"package_deferrals":             r.upgradePlan.PackageDeferrals,
+		"deferral_revision":             r.upgradePlan.PackageDeferrals.Revision,
+		"deferral_rule_count":           len(r.upgradePlan.PackageDeferrals.Rules),
+		"deferred_package_count":        len(r.upgradePlan.DeferredPackages),
+		"deferred_packages":             r.upgradePlan.DeferredPackages,
+		"deferred_security_packages":    r.upgradePlan.DeferredSecurityPackages,
+		"deferral_scopes":               r.upgradePlan.DeferralScopes,
+		"deferral_decision":             r.deferralDecision(),
+		"deferral_block_reason":         r.deferralBlockReason,
+		"deferral_observed_revision":    r.deferralObservedRevision,
 		"interrupted":                   r.auditOutcomeOverride == "interrupted",
 	}
 	if !r.startedAt.IsZero() {
@@ -828,6 +845,10 @@ func commandRunnerAuditMeta(r *withActorRunner, finalStatus string) map[string]a
 		"last_error_class":       r.lastErrClass,
 		"retry_exhausted":        r.retryExhausted,
 	}
+	meta["deferral_revision"] = r.upgradePlan.PackageDeferrals.Revision
+	meta["package_deferrals"] = r.upgradePlan.PackageDeferrals
+	meta["deferral_decision"] = r.deferralDecision()
+	meta["deferral_block_reason"] = r.deferralBlockReason
 	r.addScheduledCommandAuditMeta(meta)
 	return meta
 }
@@ -998,6 +1019,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			discoveryResult, err := r.session.DiscoverPackages(maintenanceCtx, HostOperationRequest{Operation: "update.list_upgradable"})
 			r.listUpgradableAttempts += discoveryResult.Attempts
 			discovery := discoveryResult.Outcome
+			if err == nil {
+				discovery, err = r.applyDeferrals(discovery)
+			}
 			if err != nil {
 				if r.handleShutdownCancellation(err, "Update interrupted while discovering upgradable packages.") {
 					return
@@ -1010,6 +1034,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
+			r.upgradePlan = discovery.UpgradePlan
 			if discovery.Empty() {
 				if !r.refreshFactsAfterSuccessfulUpdate() {
 					return
@@ -1025,7 +1050,6 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
-			r.upgradePlan = discovery.UpgradePlan
 			planDiskResult := r.session.RunPlanDiskPrecheck(maintenanceCtx, discovery.UpgradePlan)
 			if r.handleShutdownCancellation(maintenanceCtx.Err(), "Update interrupted during the plan-aware disk pre-check.") {
 				return
@@ -1120,6 +1144,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 								return
 							}
 						}
+						currentRules, rulesErr := deps.LoadPackageDeferrals(r.server, r.jobID)
+						rulesChanged := currentRules.Revision != discovery.UpgradePlan.PackageDeferrals.Revision
+
 						approved := false
 						cancelledByUser := false
 						approvalTimedOut := false
@@ -1157,7 +1184,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 							}
 							deps.ServerState.Unlock()
 						}
-						if approved {
+						if approved && rulesErr == nil && !rulesChanged {
 							r.approvedAt = deps.Now()
 							break
 						}
@@ -1177,6 +1204,14 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 								}
 							}
 							return
+						}
+						if rulesErr != nil {
+							r.setErrorLogs(r.currentLogs() + "\nPackage deferral revalidation failed: " + rulesErr.Error())
+							return
+						}
+						if rulesChanged {
+							r.approvalScope = ApprovalScopeAll
+							break
 						}
 					}
 				}
@@ -1208,7 +1243,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					})
 					return
 				}
-				if (r.approvalScope == ApprovalScopeSecurity || r.approvalScope == ApprovalScopeSecurityKeptBack) && len(PackagesForApprovalScope(r.approvalScope, discovery.PendingUpdates)) == 0 {
+				if discovery.UpgradePlan.PackageDeferrals.Revision == "" && (r.approvalScope == ApprovalScopeSecurity || r.approvalScope == ApprovalScopeSecurityKeptBack) && len(PackagesForApprovalScope(r.approvalScope, discovery.PendingUpdates)) == 0 {
 					changed = false
 				}
 
@@ -1276,6 +1311,14 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			if r.session == nil && !r.setupSSH("update.ssh_dial") {
 				return
 			}
+			releaseDeferrals, guardErr := r.guardPackageDeferrals()
+			if guardErr != nil {
+				r.lastErrClass = "package_deferral_drift"
+				r.deferralBlockReason = guardErr.Error()
+				r.setErrorLogs(r.currentLogs() + "\n" + guardErr.Error())
+				return
+			}
+			defer releaseDeferrals()
 			upgradeCmd := approvalRun.Command
 			r.appendStatusLog(approvalRun.RunnerCommandLog)
 			r.retryLogFormats["update.apt_upgrade"] = "\napt upgrade attempt %d/%d failed: %v; retrying in %s"
@@ -1289,6 +1332,13 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				OnAttemptComplete: liveOutput.Flush,
 			})
 			liveOutput.Flush()
+			releaseDeferrals()
+			if err != nil && len(r.upgradePlan.PackageDeferrals.Rules) > 0 {
+				r.deferralBlockReason = strings.TrimSpace(commandResult.Stdout + " " + commandResult.Stderr + " " + err.Error())
+				if len(r.deferralBlockReason) > 120 {
+					r.deferralBlockReason = r.deferralBlockReason[:120]
+				}
+			}
 			r.aptUpgradeAttempts += commandResult.Attempts
 			stdout, stderr = commandResult.Stdout, commandResult.Stderr
 			logs = r.currentLogs()
@@ -1475,6 +1525,11 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 
 func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
+		release, allowed := r.guardUnplannedPackageMutation()
+		defer release()
+		if !allowed {
+			return
+		}
 		if !r.requireMutationPhase(jobs.PhaseAutoremove) {
 			return
 		}
@@ -1484,6 +1539,11 @@ func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 
 func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
 	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
+		release, allowed := r.guardUnplannedPackageMutation()
+		defer release()
+		if !allowed {
+			return
+		}
 		if !r.requireMutationPhase(jobs.PhaseReconcile) {
 			return
 		}

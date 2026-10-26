@@ -84,13 +84,47 @@ func TestRootHelperClearsInheritedEnvironmentBeforeAptAndDpkg(t *testing.T) {
 	if strings.Contains(script, "/usr/bin/env DEBIAN_FRONTEND=") {
 		t.Fatal("root helper invokes package tools with an inherited environment")
 	}
-	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 17 {
-		t.Fatalf("root helper clean-environment package invocations = %d, want 17", got)
+	if got := strings.Count(script, "/usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"); got != 19 {
+		t.Fatalf("root helper clean-environment package invocations = %d, want 19", got)
 	}
 	for _, forbidden := range []string{"exec /usr/bin/dpkg --audit", "exec /usr/bin/apt-get check", "audit_output=$(/usr/bin/dpkg --audit"} {
 		if strings.Contains(script, forbidden) {
 			t.Errorf("root helper contains inherited-environment health check %q", forbidden)
 		}
+	}
+}
+
+func TestDeferralHookRequiresCompleteApprovedTransaction(t *testing.T) {
+	_, script, ok := strings.Cut(RootHelperScript(), "cat > \"$hook\" <<'SLU_GUARD'\n")
+	if !ok {
+		t.Fatal("deferral hook missing")
+	}
+	script, _, ok = strings.Cut(script, "\nSLU_GUARD")
+	if !ok {
+		t.Fatal("deferral hook terminator missing")
+	}
+	for _, tc := range []struct {
+		name, actions string
+		allowed       bool
+	}{
+		{"complete", "independent 1 amd64 none < 2 amd64 none /tmp/independent.deb\nsecond 1 amd64 none < 2 amd64 none /tmp/second.deb\n", true},
+		{"missing approved action", "independent 1 amd64 none < 2 amd64 none /tmp/independent.deb\n", false},
+		{"unexpected action", "independent 1 amd64 none < 2 amd64 none /tmp/independent.deb\nother 1 amd64 none < 2 amd64 none /tmp/other.deb\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range map[string]string{"check": script, "rules": "deferred:amd64\n", "expected": "independent:amd64=2\nsecond:amd64=2\n", "deadline": "9999999999\n"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.Command("/bin/sh", filepath.Join(dir, "check"))
+			command.Stdin = strings.NewReader("VERSION 3\n\n" + tc.actions)
+			output, err := command.CombinedOutput()
+			if (err == nil) != tc.allowed {
+				t.Fatalf("hook allowed=%v, want %v: %v %s", err == nil, tc.allowed, err, output)
+			}
+		})
 	}
 }
 

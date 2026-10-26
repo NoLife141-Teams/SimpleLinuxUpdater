@@ -2,8 +2,10 @@ package updates
 
 import (
 	"context"
+	"debian-updater/internal/deferrals"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"debian-updater/internal/health"
@@ -221,6 +223,8 @@ type ScheduledJobMeta struct {
 }
 
 type ServiceDeps struct {
+	LoadPackageDeferrals         func(servers.Server, string) (deferrals.Snapshot, error)
+	PackageDeferralGate          *sync.RWMutex
 	ServerState                  *servers.State
 	HostMaintenanceSessions      HostMaintenanceSessionFactory
 	VulnerabilityScanner         VulnerabilityScanner

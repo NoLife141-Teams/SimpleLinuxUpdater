@@ -33,6 +33,104 @@ class HarnessSafetyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             run.Harness("production.example", Path("unused"))
 
+    def test_workflows_collect_only_visible_redacted_evidence_files(self):
+        for filename in ("ci.yml", "ssh-apt-extended.yml"):
+            with self.subTest(filename=filename):
+                workflow = (run.REPO / ".github" / "workflows" / filename).read_text()
+                job = workflow.split("  ssh-apt:\n", 1)[1].split("  ci-required:\n", 1)[0] if filename == "ci.yml" else workflow
+                self.assertIn("--output ssh-apt-evidence", job)
+                self.assertNotIn("include-hidden-files: true", job)
+                lines = job.splitlines()
+                index = next(i for i, line in enumerate(lines) if line.strip() == "path: |")
+                indent = len(lines[index]) - len(lines[index].lstrip())
+                files = []
+                for line in lines[index + 1:]:
+                    if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                        break
+                    if line.strip():
+                        files.append(line.strip())
+                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log"])
+
+    def test_collected_evidence_never_copies_private_runtime_files(self):
+        harness, resources, _ = self.fake_harness()
+        resources[("container", harness.app_name)] = harness.owner
+        key = "-----BEGIN PRIVATE KEY-----\nfixture-only-canary\n-----END PRIVATE KEY-----\n"
+        harness.redactions.append(key)
+        for filename in ("servers.db", "config.json", "known_hosts", "client"):
+            (harness.work / filename).write_text(harness.password + key)
+        execute = harness.docker
+
+        def docker(*args, **kwargs):
+            if args[0] == "logs":
+                return "safe diagnostic " + harness.password + " " + key
+            return execute(*args, **kwargs)
+
+        harness.docker = docker
+        harness.records = [{"scenario": "failure", "status": "failed", "error": harness.password + " " + key}]
+        writes = []
+        write_text = Path.write_text
+
+        def observe_write(path, text, *args, **kwargs):
+            writes.append((path, text))
+            return write_text(path, text, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", new=observe_write):
+            harness.cleanup()
+            harness.report()
+        self.assertFalse(harness.cleanup_errors)
+        self.assertFalse(harness.work.exists())
+        self.assertEqual({path for path, _ in writes}, {harness.output / "app.log", harness.output / "report.json"})
+        for path, text in writes:
+            with self.subTest(path=path):
+                self.assertNotIn(harness.password, text)
+                self.assertNotIn(key, text)
+                self.assertNotIn(json.dumps(key)[1:-1], text)
+        self.assertEqual({p.name for p in harness.output.iterdir()}, {"app.log", "report.json"})
+        for filename in ("app.log", "report.json"):
+            text = (harness.output / filename).read_text()
+            self.assertIn("[REDACTED]", text)
+            self.assertNotIn(harness.password, text)
+            self.assertNotIn(key, text)
+
+    def test_log_redaction_precedes_tail_limit(self):
+        harness, resources, _ = self.fake_harness()
+        resources[("container", harness.app_name)] = harness.owner
+        padding = "x" * (200000 - len(harness.password) // 2)
+        execute = harness.docker
+
+        def docker(*args, **kwargs):
+            if args[0] == "logs":
+                return harness.password + padding
+            return execute(*args, **kwargs)
+
+        harness.docker = docker
+        harness.cleanup()
+        self.assertFalse(harness.cleanup_errors)
+        text = (harness.output / "app.log").read_text()
+        self.assertEqual(text, "[REDACTED]" + padding)
+        self.assertLessEqual(len(text), 200000)
+
+    def test_primary_credential_is_masked_without_optional_redactions(self):
+        harness, _, _ = self.fake_harness()
+        self.assertEqual(harness.redactions, [])
+        harness.password = 'fixture-only-primary"\\\ncanary'
+        text = "plain=" + harness.password + "; encoded=" + json.dumps(harness.password)[1:-1]
+        self.assertEqual(harness.redact_text(text), "plain=[REDACTED]; encoded=[REDACTED]")
+
+    def test_report_redacts_nested_multiline_values_before_json_encoding(self):
+        harness, _, _ = self.fake_harness()
+        key = "-----BEGIN PRIVATE KEY-----\nfixture-only-quote\"-slash\\-canary-" + harness.password + "\n-----END PRIVATE KEY-----\n"
+        harness.redactions.append(key)
+        harness.records = [{"scenario": "failure", "status": "failed", "error": key,
+                            "nested": {"detail": [harness.password, (key,)]},
+                            "encoded": json.dumps({"detail": key})}]
+        harness.cleanup()
+        harness.report()
+        report = json.loads((harness.output / "report.json").read_text())
+        self.assertEqual(report["scenarios"][0]["error"], "[REDACTED]")
+        self.assertEqual(report["scenarios"][0]["nested"], {"detail": ["[REDACTED]", ["[REDACTED]"]]})
+        self.assertEqual(json.loads(report["scenarios"][0]["encoded"]), {"detail": "[REDACTED]"})
+
     def fake_harness(self):
         output = tempfile.TemporaryDirectory()
         self.addCleanup(output.cleanup)

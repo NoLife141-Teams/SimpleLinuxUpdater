@@ -1081,6 +1081,9 @@ func buildApprovalTriage(status *servers.ServerStatus, health DashboardHealthInf
 			keptBackPackages = plan.KeptBackPackageCount
 			standardSecurityUpdates = plan.StandardSecurityCount
 			keptBackSecurityUpdates = plan.TotalSecurityCount - plan.StandardSecurityCount
+			if len(plan.PackageDeferrals.Rules) > 0 {
+				keptBackSecurityUpdates = plan.KeptBackSecurityPackageCount
+			}
 			if keptBackSecurityUpdates < 0 {
 				keptBackSecurityUpdates = 0
 			}

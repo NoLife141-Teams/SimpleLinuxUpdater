@@ -31,6 +31,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Enable or disable servers from Manage Servers. Disabling preserves credentials and history while blocking manual maintenance, scheduled runs, and automatic host-facts refreshes. Finish or cancel any active operation before disabling a server; re-enable it to resume normal scheduling.
 - `apt update` + pending package listing, gated behind approval
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
+- Expiring package deferrals per Server and policy, with reasons, audit authors, cumulative inheritance, dependency-safe plans and enforcement before dpkg ([workflow](docs/usage.md#package-deferrals))
 - Approval bound to the displayed job and plan generation, revalidation before execution, and APT enforcement when removals are not approved
 - Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
 - Baseline and plan-aware disk/APT pre-checks before approval, including exact simulated size facts with a conservative fallback, plus post-update health checks

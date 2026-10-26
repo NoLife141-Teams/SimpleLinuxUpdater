@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
@@ -18,10 +19,11 @@ import (
 )
 
 type AppDeps struct {
-	BackupAutomation   *backupAutomation
-	VulnerabilityScans *vulnerabilityScanLifecycle
-	DB                 func() *sql.DB
-	DBPath             func() string
+	PackageDeferralGate *sync.RWMutex
+	BackupAutomation    *backupAutomation
+	VulnerabilityScans  *vulnerabilityScanLifecycle
+	DB                  func() *sql.DB
+	DBPath              func() string
 
 	AuditService              *AuditService
 	AuthService               *AuthService

@@ -100,6 +100,12 @@ func EvaluateManualApproval(status *servers.ServerStatus, scope string, opts App
 	if status == nil {
 		return result
 	}
+	if len(status.UpgradePlan.PackageDeferrals.Rules) > 0 {
+		p, ok := status.UpgradePlan.DeferralScopes[normalized]
+		if !ok || !p.Available {
+			return blockedApproval(normalized, "package_deferral_conflict", "blocked", p.BlockReason, p.BlockReason, nil)
+		}
+	}
 	switch normalized {
 	case ApprovalScopeSecurityKeptBack:
 		packages := KeptBackSecurityPackagesFromPendingUpdates(status.PendingUpdates)
@@ -136,6 +142,8 @@ func EvaluateManualApproval(status *servers.ServerStatus, scope string, opts App
 	default:
 		result.SelectedPackages = PackageNamesFromPendingUpdates(status.PendingUpdates)
 	}
+	result.AuditMeta["package_deferrals"] = status.UpgradePlan.PackageDeferrals
+	result.AuditMeta["deferred_packages"] = status.UpgradePlan.DeferredPackages
 	return result
 }
 
@@ -151,6 +159,21 @@ func InterpretApprovedScope(scope string, pending []servers.PendingUpdate, plan 
 			ClearPending:    true,
 			ConfirmRemovals: opts.ConfirmRemovals,
 		},
+	}
+	if len(plan.PackageDeferrals.Rules) > 0 {
+		p, ok := plan.DeferralScopes[normalized]
+		if !ok || !p.Available {
+			return blockedRunner(result, "package_deferral_conflict", p.BlockReason)
+		}
+		if len(selected) == 0 {
+			result.Allowed = false
+			result.Skipped = true
+			result.SkipUpgrade = true
+			result.CommandMode = ApprovalCommandModeNoUpgradeSkipped
+			result.ReasonCode = "all_packages_deferred"
+			result.RunnerApprovalLog = "\nAll packages in this scope are deferred; no package mutation performed."
+			return result
+		}
 	}
 	if normalized == ApprovalScopeSecurity && len(selected) == 0 {
 		result.Allowed = false
@@ -213,6 +236,12 @@ func InterpretApprovedScope(scope string, pending []servers.PendingUpdate, plan 
 		result.CommandMode = ApprovalCommandModeAptUpgrade
 		result.RunnerCommandLog = "\nRunning apt upgrade..."
 	}
+	if len(plan.PackageDeferrals.Rules) > 0 {
+		result.Command = BuildDeferredUpgradeCommand(normalized, plan, opts.ConfirmRemovals)
+		if result.Command == "" {
+			return blockedRunner(result, "package_deferral_guard_unavailable", "Protected APT command unavailable; update the managed helper and rescan")
+		}
+	}
 	return result
 }
 
@@ -225,6 +254,12 @@ func EvaluateAutoApproval(scope string, pending []servers.PendingUpdate, plan se
 		}
 	}
 	normalized := NormalizeApprovalScope(scope)
+	if len(plan.PackageDeferrals.Rules) > 0 {
+		p, ok := plan.DeferralScopes[normalized]
+		if !ok || !p.Available {
+			return manualAutoApproval(normalized, "package_deferral_conflict", "\n"+p.BlockReason)
+		}
+	}
 	if normalized == ApprovalScopeSecurityKeptBack {
 		return manualAutoApproval(normalized, ApprovalReasonManualApprovalRequired, "\nKept-back security updates require manual approval after targeted simulation.")
 	}
@@ -267,6 +302,13 @@ func ApprovalAvailability(status *servers.ServerStatus) ApprovalScopeAvailabilit
 	standardSecurity := 0
 	keptBackSecurity := 0
 	plan := status.UpgradePlan
+	if len(plan.PackageDeferrals.Rules) > 0 {
+		ready := func(scope string) bool {
+			p, ok := plan.DeferralScopes[scope]
+			return ok && p.Available && len(p.SelectedPackages) > 0
+		}
+		return ApprovalScopeAvailability{CanApproveAll: ready(ApprovalScopeAll), CanApproveSecurity: ready(ApprovalScopeSecurity), CanApproveKeptBackSecurity: ready(ApprovalScopeSecurityKeptBack), CanApproveFull: ready(ApprovalScopeFullUpgrade)}
+	}
 	if plan.StandardPackageCount > 0 || plan.KeptBackPackageCount > 0 || plan.FullUpgradePackageCount > 0 {
 		standardPackages = plan.StandardPackageCount
 		standardSecurity = plan.StandardSecurityCount
@@ -320,6 +362,8 @@ func allowedManualApproval(status *servers.ServerStatus, scope string, opts Appr
 	if status == nil {
 		return result
 	}
+	result.AuditMeta["package_deferrals"] = status.UpgradePlan.PackageDeferrals
+	result.AuditMeta["deferred_packages"] = status.UpgradePlan.DeferredPackages
 	return result
 }
 

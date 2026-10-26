@@ -205,11 +205,87 @@ A pending plan becomes available only after its waiting job state is committed. 
 
 Approval and cancellation requests identify the exact pending plan displayed in the browser. If another tab or a fresh scan changes it, the server rejects the old decision with HTTP 409 and the page refreshes the plan for another review. An old removal confirmation cannot authorize the new plan. Existing tabs should be reloaded after updating the app.
 
-API clients must include `job_id` and `approval_generation` from `GET /api/servers` in the JSON body of every `/api/approve*` and `/api/cancel/:name` request. Capture those values when presenting the plan, not immediately before sending a previously confirmed decision. Full-upgrade and kept-back security approval additionally accept `confirm_removals: true` when the displayed removals have been confirmed. Missing identities are rejected; job IDs and generations from another plan cannot be reused.
+API clients must include `job_id` and `approval_generation` from `GET /api/servers` in the JSON body of every `/api/approve*` and `/api/cancel/:name` request. When `upgrade_plan.package_deferrals.revision` is nonempty, include that exact value as `deferral_revision` too. Capture those values when presenting the plan, not immediately before sending a previously confirmed decision. Full-upgrade and kept-back security approval additionally accept `confirm_removals: true` when the displayed removals have been confirmed. Missing identities are rejected; job IDs, generations and rule revisions from another plan cannot be reused.
 
 If an approved security scope contains no eligible packages, the upgrade is skipped and the update completes without applying changes. Approval actions are enabled only when the corresponding fresh simulation is available.
 
 After approval, the runner reconnects as needed and repeats discovery, health checks and the plan-aware disk check. A changed selected package set or removal set returns the update to approval with the refreshed plan. Without approved removals, full upgrades and targeted installations use APT's `--no-remove` guard. Existing non-root targets need **Enable apt** once to install the updated typed helper operations; an outdated helper fails closed and directs you to that action.
+
+### Package deferrals
+
+Open a saved Server in **Manage**, or a saved policy in **Admin → Scheduled
+policies**, to add an exact Debian package selector, a reason and a future
+expiration timestamp with its timezone offset. For example, `openssl:amd64` and
+`2030-11-10T18:00:00+01:00`. The application records the authenticated operator
+and creation time; client-supplied authors and creation dates are ignored.
+Expiry is shown in the configured Application Time Interpretation, with the
+actual UTC instant retained in the API. A rule can be ended early. Ending a
+policy rule affects all Servers inheriting it, including admitted runs.
+
+Server rules and rules from **all matching enabled policies** accumulate using
+the normal policy matcher (explicit Servers/tags, exclusion tags, disabled
+Servers and per-Server overrides). Scan-only policies can contribute rules too;
+their execution mode does not cancel their deferral intent. The origin includes
+the contributing policy identity and revision. A plain package name protects
+all architectures; `name:architecture` protects that architecture. Each reason,
+author and expiry remains visible when rules overlap. One expired rule does
+not cancel another matching rule.
+
+With active rules, Package Discovery and Upgrade Plan keeps all pending
+packages and CVE findings visible, and marks deferred packages and deferred
+security fixes. It separately simulates an explicit installation transaction
+for each scope using eligible packages. Standard and standard-security scopes
+use `--only-upgrade --no-remove`; kept-back-security and full scopes can include
+new dependencies and, after explicit confirmation, removals. With deferrals,
+**Full upgrade** means this displayed targeted transaction for all eligible
+pending upgrades. It never silently substitutes the unrestricted full-upgrade
+plan. Dependency changes and removals are included in the approved transaction.
+The UI lists the resulting actions and any blocking dependency conflict. A
+transaction that touches a deferred package is blocked as a whole; an
+independent safe transaction can proceed. Disk checks conservatively estimate
+the constrained transaction instead of reusing unrestricted exact size facts.
+
+Every Server with active deferrals requires the **protocol 3 managed root
+helper**, even with root SSH. For accounts with the normal sudo/visudo setup,
+run **Enable apt** to install the current helper. A root administrator can also
+install the root-owned generated helper at
+`/usr/local/sbin/simplelinuxupdater-root-helper`; its exact source is
+`internal/updates/privileged_helper.go` (export with
+`go run ./tools/ci/package-deferral-helper`). Missing or older helpers block
+protected mutations. The helper checks APT protocol 3 transaction data before
+dpkg and refuses deferred packages, unexpected package versions/architectures,
+unapproved changes or expired rules. Administrator holds/pins are preserved.
+Repair and autoremove have no approved package transaction and are blocked
+while deferrals are active; review/end applicable rules before retrying them.
+
+While an update waits for approval, edits and expiry trigger discovery again
+and publish a new generation. Approval cannot carry over to a larger scope.
+Rules are checked again immediately before mutation; concurrent rule/policy
+edits wait until the protected mutation finishes. The helper checks the earliest
+expiry again before dpkg. If the boundary cannot prove safety, it fails with a
+reason and requires review/rescan. No old helper or raw APT fallback is used.
+
+Scheduled Run `auto_apply` uses the same rules, plans, revalidation and helper.
+An admitted rollout manifest retains its originating policy identity; that
+policy's **live** rules remain applicable after matching edits or policy
+deletion, until their own expiry or early deletion. Other currently matching
+policies also contribute. Manifest membership and configuration stay frozen;
+deferrals never freeze past their actual expiration.
+
+API: `GET/POST /api/package-deferrals`,
+`DELETE /api/package-deferrals/:id`, and
+`GET /api/servers/:name/package-deferrals` (including the originating manifest
+while that Server has active maintenance). Create with exactly one
+`server_name` or `policy_id`, plus `selector`, `reason`, and `expires_at`.
+Rules are immutable; replace a rule by ending it and adding a new rule.
+Discovery/job results retain the complete effective rules and scope plans.
+Audit records retain their revision, decision and deferred-package facts;
+`GET /api/package-deferral-snapshots/:revision` retrieves the immutable complete
+rule snapshot even if a large audit preview was truncated or the rule ended.
+Snapshots and rules are part of normal backup/restore. Inventory renames keep
+Server rules; deletion removes direct rules, so reusing a name cannot revive
+them. Restoring an older backup re-evaluates expiration against the current
+application clock. There are no additional environment settings.
 
 Changing a server's host or port invalidates its current health facts and makes it eligible for the next automatic refresh sweep. Historical observations retain their old endpoint identity; renaming the same endpoint preserves health continuity.
 

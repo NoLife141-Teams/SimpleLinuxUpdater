@@ -5,6 +5,16 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("approval identities freeze the effective deferral revision across refresh",()=>{
+    const store=createStore();const revision='a'.repeat(64);
+    const server={name:"alpha",status:"pending_approval",job_id:"job",approval_generation:1,pending_updates:[{package:"curl",security:true}],upgrade_plan:{full_upgrade_plan_available:true,package_deferrals:{revision,rules:[{selector:"openssl"}]}}};
+    store.dispatch({type:"serversSnapshotReceived",servers:[server]});
+    const planned=store.planAction("alpha","approve_full");
+    store.dispatch({type:"serversSnapshotReceived",servers:[{...server,approval_generation:2,upgrade_plan:{...server.upgrade_plan,package_deferrals:{revision:"b".repeat(64),rules:[]}}}]});
+    assert.equal(planned.payloadFacts.approvalIdentity.deferral_revision,revision);
+    assert.equal(store.planAction("alpha","approve_full").payloadFacts.approvalIdentity.deferral_revision,"b".repeat(64));
+});
+
 test("read-only application tests block competing status actions", () => {
     const store = createStore();
     store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "web", status: "postchecks_test", has_password: true, host_key_status: "trusted" }] });

@@ -20,6 +20,13 @@ function statusView(overrides = {}) {
     };
 }
 
+test("deferred security exposure never becomes a kept-back approval count",()=>{
+    const server={pending_updates:[{security:true,deferred:true}],upgrade_plan:{standard_package_count:0,kept_back_package_count:0,standard_security_count:0,total_security_count:1,full_upgrade_package_count:0,kept_back_security_package_count:0,package_deferrals:{rules:[{selector:"openssl"}]}}};
+    const counts=presentationFacts.approvalCounts(server);
+    assert.equal(counts.total,1);assert.equal(counts.totalSecurity,1);
+    assert.equal(counts.standard,0);assert.equal(counts.security,0);assert.equal(counts.keptBackSecurity,0);assert.equal(counts.full,0);
+});
+
 test("read-only application tests remain active without failure presentation", () => {
     const view = project({ statusView: statusView({ servers: [{ name: "web", status: "postchecks_test", has_password: true }] }) });
     assert.equal(view.selectedHost.busy, true);

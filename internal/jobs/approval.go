@@ -44,6 +44,15 @@ func (m *Manager) ResolvePendingApproval(id string, expectedRevision int64, canc
 // the caller exposes the pending plan. The caller owns runtime publication and
 // holds its state lock; this operation must not invoke SyncRuntime.
 func (m *Manager) CommitPendingApproval(id, appendLog string, replacementLogs *string, generation ...uint64) (Record, error) {
+	return m.commitPendingApproval(id, appendLog, replacementLogs, generation, nil)
+}
+
+// CommitPendingApprovalPlan binds immutable plan facts to the same waiting
+// transition and approval generation without re-entering runtime publication.
+func (m *Manager) CommitPendingApprovalPlan(id, appendLog string, replacementLogs *string, generation uint64, facts map[string]any) (Record, error) {
+	return m.commitPendingApproval(id, appendLog, replacementLogs, []uint64{generation}, facts)
+}
+func (m *Manager) commitPendingApproval(id, appendLog string, replacementLogs *string, generation []uint64, facts map[string]any) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
 	}
@@ -63,6 +72,9 @@ func (m *Manager) CommitPendingApproval(id, appendLog string, replacementLogs *s
 			meta = map[string]any{}
 		}
 		meta["approval_generation"] = generation[0]
+		for key, value := range facts {
+			meta[key] = value
+		}
 		raw := MarshalJSON(meta)
 		intent.MetaJSON = &raw
 	}

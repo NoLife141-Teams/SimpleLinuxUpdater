@@ -10,6 +10,7 @@ func retainOperationalMeta(dst, src map[string]any) {
 		"execution_duration_ms", "duration_ms", "total_elapsed_ms", "status", "last_error_class",
 		"prechecks_passed", "precheck_failed", "postchecks_enabled", "postchecks_passed", "postcheck_failed",
 		"upgrade_completed", "interrupted", "retry_exhausted",
+		"job_id", "deferral_revision", "deferral_rule_count", "deferred_package_count", "deferral_decision", "deferral_block_reason", "deferral_observed_revision",
 	}
 	for _, key := range keys {
 		value, ok := src[key]
@@ -36,6 +37,25 @@ func retainOperationalMeta(dst, src map[string]any) {
 		}
 		if len(counts) > 0 {
 			dst["discovery"] = counts
+		}
+	}
+
+	// Small approved sets are machine-consumed completion facts, including for
+	// ordinary updates without deferrals. Retain the complete set when it fits;
+	// larger sets remain available through the persisted job referenced above.
+	if packages, ok := src["approved_packages"].([]any); ok {
+		valid := true
+		for _, value := range packages {
+			if _, ok := value.(string); !ok {
+				valid = false
+				break
+			}
+		}
+		if raw, err := json.Marshal(packages); valid && err == nil && len(raw) <= 1024 {
+			dst["approved_packages"] = packages
+			if encoded, err := json.Marshal(dst); err != nil || len(encoded) > MetaMaxLen-1024 {
+				delete(dst, "approved_packages")
+			}
 		}
 	}
 

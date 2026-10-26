@@ -146,6 +146,36 @@ The generated sudoers rule does not grant `/usr/bin/apt`, `/usr/bin/apt-get`, a 
 
 Selected-package operations accept only Debian package selectors matching a lowercase package name, optionally followed by one validated architecture suffix such as `openssl:amd64`. Before invoking APT, the helper requires every name to match one exact `apt-cache` package and every architecture suffix to be available for that exact name. It inserts `--` itself and rejects options, hooks, metacharacters, extra colons, version expressions, removal suffixes, pattern expressions, and arbitrary paths.
 
+Package deferrals use a separate typed `guarded-install` operation. Its bounded
+arguments are a known Approval Scope, an expiration instant, exact deferral
+selectors, an exact approved transaction and the removal gate. Versions in that
+transaction are APT-discovered facts; they are never operator-supplied APT
+options. Root and sudo execution require the current helper at the same fixed
+path. A missing/old helper has no unprotected fallback.
+
+The helper creates a root-only temporary directory and a fixed
+`DPkg::Pre-Install-Pkgs` hook, requesting APT transaction protocol 3. It consumes
+the complete action stream before dpkg starts, rejects unsupported protocols,
+deferred packages (including dependencies, architecture-independent packages
+and removals), administrator-held packages, downgrades and changes outside the
+approved package/architecture/version transaction. The expiry is checked both
+before APT and by the hook. Missing approved actions also invalidate the whole
+transaction, so a changed pin cannot silently reduce an approved operation.
+Existing administrator hooks remain configured;
+hold selections and preference files are never edited. Fixed APT options keep
+hold and downgrade override settings disabled. Temporary hook files are cleaned
+on exit. No arbitrary hooks, preferences, shell commands or paths are accepted
+from the user. Deferral creation/deletion uses the existing authentication,
+same-origin and maintenance gates and records the context's audit actor.
+
+The immutable snapshot revision is included in approval identity and persisted
+with the pending job. Full rule evidence remains retrievable from the snapshot
+table when the audit preview reaches its 4 KiB limit. Snapshot history follows
+the same encrypted backup/restore boundary as the rest of the SQLite database.
+The [real APT qualification](validation/package-deferrals-473/README.md)
+documents both a successful independent upgrade and blocked dependency/removal
+transactions without any host package mutations.
+
 **Enable apt** stages both files, validates the sudoers rule with `visudo`, and replaces an existing destination only when it is a root-owned regular file with the SimpleLinuxUpdater owner marker. **Disable apt** applies the same checks before removal. Symlinks and unmarked files are refused.
 
 Versions before this boundary used `/etc/sudoers.d/apt-nopasswd`. On the next **Enable apt** or **Disable apt**, SimpleLinuxUpdater removes that legacy file only when its complete content exactly matches the previous rule generated for the same SSH user. Any customized, unrecognized, non-root-owned, or symlinked legacy file is left untouched and the action fails with manual migration guidance. Inspect an ambiguous legacy file yourself; do not copy its generic `apt`/`apt-get` grants into the new rule.

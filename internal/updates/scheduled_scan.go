@@ -163,6 +163,16 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		return
 	}
 
+	rules, ruleErr := deps.LoadPackageDeferrals(req.Server, req.JobID)
+	if ruleErr != nil {
+		setFailure("Scheduled scan package deferral resolution failed", ruleErr, jobs.PhaseAptUpdate, logs)
+		return
+	}
+	discovery, ruleErr = PlanPackageDeferrals(maintenanceCtx, session, discovery, rules)
+	if ruleErr != nil {
+		setFailure("Scheduled scan package deferral planning failed", ruleErr, jobs.PhaseAptUpdate, logs)
+		return
+	}
 	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(maintenanceCtx, session, discovery.PendingUpdates)
 	if scanErr != nil {
 		if errors.Is(scanErr, context.Canceled) {

@@ -84,6 +84,15 @@ _Avoid_: Status helper logic, dashboard status mapping
 The read-only discovery of pending Debian/Ubuntu package updates after package metadata refresh, including standard upgrade simulation, full-upgrade simulation, apt metadata enrichment, kept-back security simulation, and the derived package/update plan consumed by Approval Scope, Scheduled Run, and Dashboard Projection.
 _Avoid_: Apt helper parsing, upgradable list helper
 
+**Package Deferral**:
+An immutable, expiring exception for an exact Debian package selector on one
+Server or policy, with mandatory reason, authenticated author and creation
+instant. Applicable rules accumulate, retain their origins and remain part of
+the approved package transaction identity. Deferred packages and security
+exposure stay visible; the privileged helper prevents direct, dependency and
+removal changes before dpkg.
+_Avoid_: Visual package filter, permanent hold
+
 **Backup Operation Lifecycle**:
 The lifecycle of an operator-initiated or scheduled backup export or restore from accepted request through active-action gating, job persistence, maintenance mode, archive execution, verified automated publication and retention, audit recording, restored-runtime handoff, session invalidation, and final operation outcome. Scheduled occurrences are durable, use Application Time Interpretation, and remain suspended after restoration until local destination and secret revalidation.
 _Avoid_: Backup route flow, restore handler logic

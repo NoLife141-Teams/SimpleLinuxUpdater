@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"debian-updater/internal/deferrals"
 	"debian-updater/internal/postchecks"
 	runtimepkg "debian-updater/internal/runtime"
 	"debian-updater/internal/vulnerabilities"
@@ -133,6 +134,7 @@ type ServerStatus struct {
 }
 
 type PendingUpdate struct {
+	Deferred               bool                   `json:"deferred,omitempty"`
 	Package                string                 `json:"package"`
 	InstallPackage         string                 `json:"install_package,omitempty"`
 	CurrentVersion         string                 `json:"current_version,omitempty"`
@@ -155,34 +157,48 @@ type PendingUpdate struct {
 
 type VulnerabilityFinding = vulnerabilities.Finding
 
+type DeferralScopePlan struct {
+	Available         bool     `json:"available"`
+	BlockReason       string   `json:"block_reason,omitempty"`
+	SelectedPackages  []string `json:"selected_packages"`
+	Transaction       []string `json:"transaction"`
+	NewPackages       []string `json:"new_packages"`
+	RemovedPackages   []string `json:"removed_packages"`
+	DependencyImpacts []string `json:"dependency_impacts"`
+}
+
 type UpgradePlan struct {
-	StandardPackageCount             int      `json:"standard_package_count"`
-	KeptBackPackageCount             int      `json:"kept_back_package_count"`
-	StandardSecurityCount            int      `json:"standard_security_count"`
-	TotalSecurityCount               int      `json:"total_security_count"`
-	FullUpgradePlanAvailable         bool     `json:"full_upgrade_plan_available"`
-	FullUpgradePackageCount          int      `json:"full_upgrade_package_count"`
-	FullUpgradeNewPackages           []string `json:"full_upgrade_new_packages"`
-	FullUpgradeRemovedPackages       []string `json:"full_upgrade_removed_packages"`
-	KeptBackSecurityPlanAvailable    bool     `json:"kept_back_security_plan_available"`
-	KeptBackSecurityPackageCount     int      `json:"kept_back_security_package_count"`
-	KeptBackSecurityNewPackages      []string `json:"kept_back_security_new_packages"`
-	KeptBackSecurityRemovedPackages  []string `json:"kept_back_security_removed_packages"`
-	FullUpgradeDiskFactsAvailable    bool     `json:"full_upgrade_disk_facts_available,omitempty"`
-	FullUpgradeArchiveBytes          int64    `json:"full_upgrade_archive_bytes,omitempty"`
-	FullUpgradeInstalledDeltaBytes   int64    `json:"full_upgrade_installed_delta_bytes,omitempty"`
-	KeptBackDiskFactsAvailable       bool     `json:"kept_back_disk_facts_available,omitempty"`
-	KeptBackArchiveBytes             int64    `json:"kept_back_archive_bytes,omitempty"`
-	KeptBackInstalledDeltaBytes      int64    `json:"kept_back_installed_delta_bytes,omitempty"`
-	DiskSpaceSource                  string   `json:"disk_space_source,omitempty"`
-	DiskSpaceArchiveBytes            int64    `json:"disk_space_archive_bytes,omitempty"`
-	DiskSpaceInstalledDeltaBytes     int64    `json:"disk_space_installed_delta_bytes,omitempty"`
-	DiskSpaceInstalledGrowthBytes    int64    `json:"disk_space_installed_growth_bytes,omitempty"`
-	DiskSpaceSafetyMarginBytes       int64    `json:"disk_space_safety_margin_bytes,omitempty"`
-	DiskSpaceOperationalReserveBytes int64    `json:"disk_space_operational_reserve_bytes,omitempty"`
-	DiskSpaceRequiredKB              int64    `json:"disk_space_required_kb"`
-	DiskSpacePackageCount            int      `json:"disk_space_package_count"`
-	DiskSpaceNewPackageCount         int      `json:"disk_space_new_package_count"`
+	PackageDeferrals                 deferrals.Snapshot           `json:"package_deferrals"`
+	DeferredPackages                 []string                     `json:"deferred_packages"`
+	DeferredSecurityPackages         []string                     `json:"deferred_security_packages"`
+	DeferralScopes                   map[string]DeferralScopePlan `json:"deferral_scopes,omitempty"`
+	StandardPackageCount             int                          `json:"standard_package_count"`
+	KeptBackPackageCount             int                          `json:"kept_back_package_count"`
+	StandardSecurityCount            int                          `json:"standard_security_count"`
+	TotalSecurityCount               int                          `json:"total_security_count"`
+	FullUpgradePlanAvailable         bool                         `json:"full_upgrade_plan_available"`
+	FullUpgradePackageCount          int                          `json:"full_upgrade_package_count"`
+	FullUpgradeNewPackages           []string                     `json:"full_upgrade_new_packages"`
+	FullUpgradeRemovedPackages       []string                     `json:"full_upgrade_removed_packages"`
+	KeptBackSecurityPlanAvailable    bool                         `json:"kept_back_security_plan_available"`
+	KeptBackSecurityPackageCount     int                          `json:"kept_back_security_package_count"`
+	KeptBackSecurityNewPackages      []string                     `json:"kept_back_security_new_packages"`
+	KeptBackSecurityRemovedPackages  []string                     `json:"kept_back_security_removed_packages"`
+	FullUpgradeDiskFactsAvailable    bool                         `json:"full_upgrade_disk_facts_available,omitempty"`
+	FullUpgradeArchiveBytes          int64                        `json:"full_upgrade_archive_bytes,omitempty"`
+	FullUpgradeInstalledDeltaBytes   int64                        `json:"full_upgrade_installed_delta_bytes,omitempty"`
+	KeptBackDiskFactsAvailable       bool                         `json:"kept_back_disk_facts_available,omitempty"`
+	KeptBackArchiveBytes             int64                        `json:"kept_back_archive_bytes,omitempty"`
+	KeptBackInstalledDeltaBytes      int64                        `json:"kept_back_installed_delta_bytes,omitempty"`
+	DiskSpaceSource                  string                       `json:"disk_space_source,omitempty"`
+	DiskSpaceArchiveBytes            int64                        `json:"disk_space_archive_bytes,omitempty"`
+	DiskSpaceInstalledDeltaBytes     int64                        `json:"disk_space_installed_delta_bytes,omitempty"`
+	DiskSpaceInstalledGrowthBytes    int64                        `json:"disk_space_installed_growth_bytes,omitempty"`
+	DiskSpaceSafetyMarginBytes       int64                        `json:"disk_space_safety_margin_bytes,omitempty"`
+	DiskSpaceOperationalReserveBytes int64                        `json:"disk_space_operational_reserve_bytes,omitempty"`
+	DiskSpaceRequiredKB              int64                        `json:"disk_space_required_kb"`
+	DiskSpacePackageCount            int                          `json:"disk_space_package_count"`
+	DiskSpaceNewPackageCount         int                          `json:"disk_space_new_package_count"`
 }
 
 type HostKeyScanResult struct {
@@ -536,6 +552,20 @@ func ClonePendingUpdates(src []PendingUpdate) []PendingUpdate {
 
 func CloneUpgradePlan(src UpgradePlan) UpgradePlan {
 	dst := src
+	dst.PackageDeferrals.Rules = append([]deferrals.Rule(nil), src.PackageDeferrals.Rules...)
+	dst.DeferredPackages = append([]string(nil), src.DeferredPackages...)
+	dst.DeferredSecurityPackages = append([]string(nil), src.DeferredSecurityPackages...)
+	if src.DeferralScopes != nil {
+		dst.DeferralScopes = make(map[string]DeferralScopePlan, len(src.DeferralScopes))
+		for scope, p := range src.DeferralScopes {
+			p.SelectedPackages = append([]string(nil), p.SelectedPackages...)
+			p.Transaction = append([]string(nil), p.Transaction...)
+			p.NewPackages = append([]string(nil), p.NewPackages...)
+			p.RemovedPackages = append([]string(nil), p.RemovedPackages...)
+			p.DependencyImpacts = append([]string(nil), p.DependencyImpacts...)
+			dst.DeferralScopes[scope] = p
+		}
+	}
 	dst.FullUpgradeNewPackages = append([]string(nil), src.FullUpgradeNewPackages...)
 	dst.FullUpgradeRemovedPackages = append([]string(nil), src.FullUpgradeRemovedPackages...)
 	dst.KeptBackSecurityNewPackages = append([]string(nil), src.KeptBackSecurityNewPackages...)

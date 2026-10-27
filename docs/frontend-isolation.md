@@ -42,8 +42,11 @@ timezone components had listeners without a complete page-remount contract.
 The shells are explicit compositions, exposed as `AdminPage`, `StatusPage` and
 `ManagePage`, each with `mount()` and `destroy()`. Mount destroys the previous
 instance and builds fresh adapters around one page interaction owner. `pagehide`
-destroys it; a persisted `pageshow` remounts it. Outstanding confirmations settle
-as cancellation, modal state and focus locks close, and old commands cannot run.
+destroys a document that is being unloaded. A persisted back/forward-cache
+transition keeps its single mounted instance, preserving accepted selection and
+drafts without registering listeners or streams again. On destruction, outstanding
+confirmations settle as cancellation, modal state and focus locks close, and old
+commands cannot run.
 Existing refresh entry points remain compatible. Read-only Manage/Status page
 inspection is through `ManagePage.getView()` / `StatusPage.getServerByName()`.
 
@@ -57,7 +60,9 @@ adapters. These are responsibility boundaries, not file-length targets.
 
 `BrowserEffects` only owns listeners, timers, animation frames, observers and
 fetch cancellation. Async adapters capture a lifetime and check it after waits
-and in legacy catch/finally paths. Response bodies also reject a superseded
+and in legacy catch/finally paths. Conditional confirmation, reauthentication,
+file-read and refresh waits also recheck their captured lifetime before command
+admission or subsequent effects. Response bodies also reject a superseded
 lifetime; an old failure cannot render after destroy/init. External cancellation
 listeners detach when a body completes, a request fails or the adapter is
 destroyed. Timer namespaces remain independent. Status row selection and import
@@ -165,7 +170,11 @@ paths. `PLAYWRIGHT_WEBSERVER_COMMAND` is retired and rejected with migration
 instructions; `SLU_IDENTITY_TEST_BINARY` is no longer used. The #475
 `dashboard-e2e.cjs binary output [Playwright arguments...]` entry point remains
 functional and reports the Playwright global exit in `lifecycle.json`; per-test
-fixture teardown now owns server exits instead of an unused global server.
+fixture teardown now owns server exits instead of an unused global server. The
+existing `server.code` field remains zero when the complete successful suite
+proves every fixture teardown succeeded; it is unknown (`null`) after a failed
+suite. This keeps successful legacy lifecycle checks compatible without claiming
+a global server still exists.
 
 The capture tool uses the same fixed browser clock (`2026-05-28T12:00:00Z`),
 UTC/en-US context, synthetic facts and desktop/mobile sizes. It rejects page

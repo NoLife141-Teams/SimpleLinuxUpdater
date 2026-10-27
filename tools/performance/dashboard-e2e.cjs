@@ -36,6 +36,13 @@ if (!binaryArg || !outputArg)
         JSON.stringify(
             {
                 playwright: result,
+                // A successful suite proves every fixture joined its server
+                // with exit zero. Retain the existing lifecycle consumer field.
+                server: {
+                    code: result.code === 0 ? 0 : null,
+                    signal: null,
+                    scope: "per-scenario fixture teardown",
+                },
                 installation:
                     "fresh test-only router per scenario, joined by fixture teardown",
             },

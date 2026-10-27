@@ -548,6 +548,7 @@
                 ))
             )
                 return;
+            if (!lifecycle.isCurrent(lifetime)) return;
             const plan = beginAdminCommand("clearOtherSessions");
             if (!plan) return;
             try {
@@ -621,6 +622,7 @@
                 ))
             )
                 return;
+            if (!lifecycle.isCurrent(lifetime)) return;
             const plan = beginAdminCommand("revokeSession", { id });
             if (!plan) return;
             try {
@@ -767,6 +769,7 @@
                     partial ? "warning" : "success",
                 );
                 if (data.invalidation_requested) await fetchAuthSessionStatus();
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||
@@ -813,6 +816,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             const plan = beginAdminCommand("clearSessions");
             if (!plan) return;
             try {
@@ -1014,6 +1018,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             const plan = beginAdminCommand("rotateMetricsToken");
             if (!plan) return;
             try {
@@ -1091,6 +1096,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             const plan = beginAdminCommand("disableMetricsToken");
             if (!plan) return;
             try {

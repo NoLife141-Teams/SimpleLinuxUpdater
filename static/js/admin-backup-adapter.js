@@ -575,6 +575,7 @@
                 ) {
                     return;
                 }
+                if (!lifecycle.isCurrent(lifetime)) return;
                 plan = beginAdminCommand("restoreBackup", {
                     passphraseValid: pass.length >= 12,
                 });

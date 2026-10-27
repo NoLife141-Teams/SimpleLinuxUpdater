@@ -1987,12 +1987,16 @@
                 try {
                     if (effect.stream === "policies")
                         await fetchScheduledPolicies(effect);
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     if (effect.stream === "settings")
                         await fetchScheduledSettings(effect);
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     if (effect.stream === "runs")
                         await fetchScheduledRuns(effect);
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     if (effect.stream === "calendar")
                         await fetchMaintenanceCalendar(effect);
+                    if (!lifecycle.isCurrent(lifetime)) return;
                 } catch (err) {
                     if (
                         !lifecycle.isCurrent(lifetime) ||
@@ -2365,6 +2369,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             let activePlan;
             try {
                 const command = scheduledPolicyAdministration.dispatch({

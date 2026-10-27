@@ -136,6 +136,7 @@ window.InventoryImport = Object.freeze({
                     document.getElementById(effect.id)?.focus();
                 }
                 if (effect.type === "refresh") await refresh(effects);
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (!["previewImport", "commitImport"].includes(effect.type))
                     continue;
                 try {

@@ -204,6 +204,7 @@ window.ServerOnboarding = Object.freeze({
                 draft = values.draft;
                 if (draft.auth_method === "per-server-key")
                     draft.key = await values.keyFile.text();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 const scanned = await request("/api/hostkeys/scan", {
                     host: draft.host,
                     port: draft.port,

@@ -311,3 +311,127 @@ test("Admin notification adapter cannot render a previous request failure after 
     assert.equal(writes, 0);
     adapter.destroy();
 });
+
+test("an old account confirmation cannot admit a command after adapter destruction and reinitialization", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs"),
+        gate = deferred();
+    let commands = 0;
+    const context = {
+        BrowserEffects: { create },
+        window: { confirmAction: () => gate.promise },
+        console,
+    };
+    vm.runInNewContext(
+        fs.readFileSync(
+            require.resolve("../../static/js/admin-account-adapter.js"),
+            "utf8",
+        ),
+        context,
+    );
+    const adapter = context.AdminAccountAdapter.create({
+        adminPageView: () => ({ account: { otherSessions: [{}] } }),
+        beginAdminCommand: () => {
+            commands++;
+            return null;
+        },
+    });
+    adapter.init();
+    const pending = adapter.clearOtherAuthSessions();
+    adapter.destroy();
+    adapter.init();
+    gate.resolve(true);
+    await pending;
+    assert.equal(commands, 0);
+    adapter.destroy();
+});
+test("an old typed backup confirmation cannot admit restore or alter feedback in a new adapter lifetime", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs"),
+        gate = deferred();
+    let commands = 0,
+        feedback = 0;
+    const controls = {
+        "backup-restore-file": { files: [{ name: "synthetic.slubkp" }] },
+        "backup-restore-passphrase": { value: "SyntheticOnly123!" },
+    };
+    const context = {
+        BrowserEffects: { create },
+        window: {
+            confirmTypedAction: () => gate.promise,
+            notifyApp: () => feedback++,
+        },
+        document: { getElementById: (id) => controls[id] },
+        console,
+    };
+    vm.runInNewContext(
+        fs.readFileSync(
+            require.resolve("../../static/js/admin-backup-adapter.js"),
+            "utf8",
+        ),
+        context,
+    );
+    const adapter = context.AdminBackupAdapter.create({
+        adminPageView: () => ({ backup: { review: { safeCounts: {} } } }),
+        adminPageInteraction: { planCommand: () => ({ enabled: true }) },
+        beginAdminCommand: () => {
+            commands++;
+            return null;
+        },
+    });
+    adapter.init();
+    const pending = adapter.restoreBackup();
+    adapter.destroy();
+    adapter.init();
+    gate.resolve(true);
+    await pending;
+    assert.equal(commands, 0);
+    assert.equal(feedback, 0);
+    adapter.destroy();
+});
+test("a policy deletion confirmation from a prior lifetime cannot reach Scheduled Policy Administration Interaction command admission", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs"),
+        gate = deferred();
+    let commands = 0;
+    const context = {
+        BrowserEffects: { create },
+        window: { confirmTypedAction: () => gate.promise },
+        console,
+    };
+    vm.runInNewContext(
+        fs.readFileSync(
+            require.resolve("../../static/js/admin-policies-adapter.js"),
+            "utf8",
+        ),
+        context,
+    );
+    const adapter = context.AdminPoliciesAdapter.create({
+        scheduledPolicyView: () => ({
+            policies: [{ id: 1, name: "Synthetic policy" }],
+        }),
+        scheduledPolicyAdministration: {
+            planCommand: () => ({
+                enabled: true,
+                policy: { name: "Synthetic policy" },
+            }),
+            dispatch: () => {
+                commands++;
+                return [];
+            },
+        },
+    });
+    adapter.init();
+    adapter.handleScheduledPolicyTableClick({
+        target: {
+            closest: () => ({ dataset: { action: "delete-policy", id: "1" } }),
+        },
+    });
+    adapter.destroy();
+    adapter.init();
+    gate.resolve(true);
+    await gate.promise;
+    await new Promise(setImmediate);
+    assert.equal(commands, 0);
+    adapter.destroy();
+});

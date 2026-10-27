@@ -174,6 +174,26 @@ test("Status remount closes superseded streams and leaves one selection and acti
             window.fetchServers(true, "lifecycle-render"),
         );
     expect(await page.evaluate(() => window.__rowListeners)).toBe(0);
+    await page.locator("#servers-table .row-select").check();
+    const sourcesBeforeCache = await page.evaluate(
+        () => window.__lifecycleSources.length,
+    );
+    await page.evaluate(() => {
+        window.dispatchEvent(
+            new PageTransitionEvent("pagehide", { persisted: true }),
+        );
+        window.dispatchEvent(
+            new PageTransitionEvent("pageshow", { persisted: true }),
+        );
+    });
+    expect(
+        await page.evaluate(
+            () => window.statusPageInteraction.getView().selectedNames,
+        ),
+    ).toEqual(["demo-host"]);
+    expect(await page.evaluate(() => window.__lifecycleSources.length)).toBe(
+        sourcesBeforeCache,
+    );
     await page.locator('#servers-table [data-action="cancel-upgrade"]').click();
     await expect.poll(() => cancels).toBe(1);
     await page.evaluate(() => window.StatusPage.destroy());

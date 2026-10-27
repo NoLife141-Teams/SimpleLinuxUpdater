@@ -3031,6 +3031,7 @@
                     if (!lifecycle.isCurrent(lifetime)) return;
                     if (response.status === 409)
                         await fetchServers(true, "action-conflict");
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     return false;
                 }
                 return true;
@@ -3670,6 +3671,8 @@
                 "approve_security_kept_back",
                 "approve kept-back security",
                 async (plan) => {
+                    const lifetime = lifecycle.capture();
+
                     const server = getServerByName(name);
                     const counts = plan.payloadFacts.counts;
                     const triage = getServerApprovalTriage(server, {
@@ -3728,6 +3731,7 @@
                         .join("\n\n");
                     if (!(await statusActionAdapter.confirm(confirmText)))
                         return false;
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     const options = pendingApprovalRequestOptions(
                         plan.payloadFacts.approvalIdentity,
                         removed.length > 0,
@@ -3750,6 +3754,8 @@
                 "approve_full",
                 "approve full upgrade",
                 async (plan) => {
+                    const lifetime = lifecycle.capture();
+
                     const server = getServerByName(name);
                     const counts = plan.payloadFacts.counts;
                     const triage = getServerApprovalTriage(server, {
@@ -3788,6 +3794,7 @@
                         .join("\n\n");
                     if (!(await statusActionAdapter.confirm(confirmText)))
                         return false;
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     const options = pendingApprovalRequestOptions(
                         plan.payloadFacts.approvalIdentity,
                         removed.length > 0,
@@ -4043,7 +4050,10 @@
             }
         });
         const destroy = () => lifecycle.destroy();
-        lifecycle.listen(root, "pagehide", destroy, { once: true });
+        lifecycle.listen(root, "pagehide", (event) => {
+            // A cached document keeps its one mounted interaction owner.
+            if (!event.persisted) destroy();
+        });
         current = Object.freeze({ destroy, getServerByName });
         return current;
     }
@@ -4051,9 +4061,6 @@
         mount,
         destroy: () => current?.destroy(),
         getServerByName: (name) => current?.getServerByName(name),
-    });
-    root.addEventListener("pageshow", (event) => {
-        if (event.persisted) mount();
     });
     mount();
 })(globalThis);

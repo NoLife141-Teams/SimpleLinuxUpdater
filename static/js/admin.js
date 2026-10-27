@@ -398,19 +398,26 @@
             try {
                 if (sectionID === "application-checks")
                     await applicationPostcheckAdapter.load();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "app-time")
                     await fetchAppTimezoneSettings(true);
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "notifications")
                     await Promise.all([
                         fetchNotificationSettings(),
                         fetchNotificationDeliveryDiagnostics(),
                     ]);
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "account-security")
                     await fetchAuthSessionStatus();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "recent-activity")
                     await fetchRecentAdminActivity();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "backup") await fetchBackupStatus();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "metrics") await fetchMetricsTokenStatus();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "scheduled-runs") {
                     const effects = scheduledPolicyAdministration.dispatch({
                         type: "snapshotRequested",
@@ -1498,16 +1505,16 @@
             }
         });
         const destroy = () => lifecycle.destroy();
-        lifecycle.listen(root, "pagehide", destroy, { once: true });
+        lifecycle.listen(root, "pagehide", (event) => {
+            // A cached document keeps its one mounted interaction owner.
+            if (!event.persisted) destroy();
+        });
         current = Object.freeze({ destroy });
         return current;
     }
     root.AdminPage = Object.freeze({
         mount,
         destroy: () => current?.destroy(),
-    });
-    root.addEventListener("pageshow", (event) => {
-        if (event.persisted) mount();
     });
     mount();
 })(globalThis);

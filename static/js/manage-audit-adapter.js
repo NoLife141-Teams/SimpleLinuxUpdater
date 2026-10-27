@@ -269,6 +269,7 @@
                         effect.stream === "audit",
                 );
                 if (followup) await performAuditRequest(followup, silent);
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||

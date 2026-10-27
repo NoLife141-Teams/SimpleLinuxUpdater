@@ -368,6 +368,7 @@
                 );
                 if (followup)
                     await performInventoryRequest(followup, saveWindowScroll());
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (error) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||
@@ -388,6 +389,7 @@
                 );
                 if (followup)
                     await performInventoryRequest(followup, saveWindowScroll());
+                if (!lifecycle.isCurrent(lifetime)) return;
             }
         }
 
@@ -811,6 +813,7 @@
                 ) {
                     return;
                 }
+                if (!lifecycle.isCurrent(lifetime)) return;
                 const command = managePageInteraction.dispatch({
                     type: "commandRequested",
                     command: "auditPrune",
@@ -1212,6 +1215,7 @@
                     );
                 }
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
         }
 
         const packageDeferralEditor = window.PackageDeferrals.mount(
@@ -1617,6 +1621,7 @@
                 return;
             }
             if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
+            if (!lifecycle.isCurrent(lifetime)) return;
             let currentKey = managePageInteraction.getView().editor.hostKey;
             if (
                 !currentKey?.fingerprint ||
@@ -1644,6 +1649,7 @@
                 host_entry_exists: !!currentKey.hostEntryExists,
             };
             if (!(await confirmHostKeyWithModal(scanned))) return;
+            if (!lifecycle.isCurrent(lifetime)) return;
 
             const execution = commandExecution("trustHostKey", {
                 serverName: activeEditorName(),
@@ -1735,6 +1741,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             const execution = commandExecution("clearHostKey", {
                 serverName: activeEditorName(),
                 host,
@@ -2066,6 +2073,7 @@
                 ))
             )
                 return;
+            if (!lifecycle.isCurrent(lifetime)) return;
             const execution = commandExecution("clearServerKey", {
                 serverName: name,
             });
@@ -2122,6 +2130,7 @@
                 ))
             )
                 return;
+            if (!lifecycle.isCurrent(lifetime)) return;
             const execution = commandExecution("clearServerPassword", {
                 serverName: name,
             });
@@ -2509,6 +2518,7 @@
             ) {
                 return;
             }
+            if (!lifecycle.isCurrent(lifetime)) return;
             const command = managePageInteraction.dispatch({
                 type: "commandRequested",
                 command: "globalKeyClear",
@@ -2616,6 +2626,7 @@
                         effect.stream === "globalKey",
                 );
                 if (followup) await performGlobalKeyRequest(followup);
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||
@@ -2639,6 +2650,7 @@
                         effect.stream === "globalKey",
                 );
                 if (followup) await performGlobalKeyRequest(followup);
+                if (!lifecycle.isCurrent(lifetime)) return;
             }
         }
 
@@ -2720,7 +2732,10 @@
             }
         });
         const destroy = () => lifecycle.destroy();
-        lifecycle.listen(root, "pagehide", destroy, { once: true });
+        lifecycle.listen(root, "pagehide", (event) => {
+            // A cached document keeps its one mounted interaction owner.
+            if (!event.persisted) destroy();
+        });
         current = Object.freeze({
             destroy,
             getView: () => managePageInteraction.getView(),
@@ -2731,9 +2746,6 @@
         mount,
         destroy: () => current?.destroy(),
         getView: () => current?.getView(),
-    });
-    root.addEventListener("pageshow", (event) => {
-        if (event.persisted) mount();
     });
     mount();
 })(globalThis);

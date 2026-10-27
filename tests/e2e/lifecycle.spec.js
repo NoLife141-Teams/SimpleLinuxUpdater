@@ -50,6 +50,57 @@ test("Admin remount cancels old reads and preserves one account and timezone lis
     await expect(page.locator("#app-timezone-popover")).toBeVisible();
     await page.locator("#app-timezone-search").press("Escape");
     await expect(page.locator("#app-timezone-input")).toBeFocused();
+    state.backupStatusResponse = {
+        automation: {
+            config: {
+                enabled: true,
+                cadence: "daily",
+                time: "02:00",
+                weekday: 0,
+                retain: 7,
+                include_known_hosts: true,
+            },
+            configured: true,
+            state: "configured",
+            message: "Local destination validated.",
+        },
+    };
+    await page.locator('[data-admin-section-link="backup"]').click();
+    await expect(page.locator("#backup-automation-status")).toContainText(
+        "configured: Local destination validated.",
+    );
+    for (const command of ["save", "run"]) {
+        let releaseAutomation;
+        const automationGate = new Promise(
+            (resolve) => (releaseAutomation = resolve),
+        );
+        let automationRequests = 0;
+        const endpoint =
+            command === "save"
+                ? "**/api/backup/automation"
+                : "**/api/backup/automation/run";
+        await page.route(endpoint, async (route) => {
+            automationRequests++;
+            if (automationRequests === 1) await automationGate;
+            return fulfillJson(route, state.backupStatusResponse.automation);
+        });
+        const button = page.locator(`#backup-automation-${command}`);
+        const requested = page.waitForRequest(endpoint);
+        await button.click();
+        await requested;
+        await expect(page.locator("#backup-automation-save")).toBeDisabled();
+        await expect(page.locator("#backup-automation-run")).toBeDisabled();
+        await page.evaluate(async () => {
+            window.AdminPage.mount();
+            await window.fetchBackupStatus();
+        });
+        releaseAutomation();
+        await expect(page.locator("#backup-automation-save")).toBeEnabled();
+        await expect(page.locator("#backup-automation-run")).toBeEnabled();
+        await button.click();
+        await expect.poll(() => automationRequests).toBe(2);
+        await expect(button).toBeEnabled();
+    }
     // An old fetch that ignores cancellation must not render failure or old facts.
     let release;
     const gate = new Promise((resolve) => (release = resolve));

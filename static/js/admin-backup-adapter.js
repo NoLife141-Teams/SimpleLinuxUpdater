@@ -269,6 +269,27 @@
             renderAdminDestructiveControls();
         }
 
+        function renderBackupAutomationControls() {
+            const inFlight = adminPageView().commands?.inFlight || [];
+            const busy = ["saveBackupSchedule", "runBackupSchedule"].some(
+                (command) => inFlight.includes(command),
+            );
+            const save = document.getElementById("backup-automation-save");
+            const run = document.getElementById("backup-automation-run");
+            if (save) save.disabled = busy;
+            if (run)
+                run.disabled =
+                    busy ||
+                    !adminPageInteraction.planCommand("runBackupSchedule")
+                        .enabled;
+        }
+
+        function init() {
+            if (lifecycle.active) return;
+            lifecycle.init();
+            renderBackupAutomationControls();
+        }
+
         function renderBackupAutomation(updateForm = false) {
             const view = adminPageView().backup.automation;
             const status = document.getElementById("backup-automation-status");
@@ -284,8 +305,7 @@
                 view.lastSuccessAt
                     ? formatSessionTime(view.lastSuccessAt)
                     : "Never";
-            document.getElementById("backup-automation-run").disabled =
-                !adminPageInteraction.planCommand("runBackupSchedule").enabled;
+            renderBackupAutomationControls();
             if (updateForm) {
                 const config = view.config;
                 for (const name of ["cadence", "time", "weekday", "retain"])
@@ -327,10 +347,7 @@
                 );
                 return;
             }
-            const save = document.getElementById("backup-automation-save");
-            const run = document.getElementById("backup-automation-run");
-            save.disabled = true;
-            run.disabled = true;
+            renderBackupAutomationControls();
             try {
                 const res = await fetch(
                     runNow
@@ -366,7 +383,7 @@
                 window.notifyApp(err.message);
             } finally {
                 if (!lifecycle.isCurrent(lifetime)) return;
-                save.disabled = false;
+                renderBackupAutomationControls();
                 await fetchBackupStatus();
                 if (!lifecycle.isCurrent(lifetime)) return;
             }
@@ -726,7 +743,7 @@
             }
         }
         return Object.freeze({
-            init: lifecycle.init,
+            init,
             destroy: lifecycle.destroy,
             renderBackupRestoreReview: (...args) =>
                 lifecycle.active

@@ -1,0 +1,841 @@
+{
+  "discovered": 104,
+  "invocations": 104,
+  "executed": 104,
+  "passed": 104,
+  "failed": 0,
+  "results": [
+    {
+      "file": "admin.spec.js",
+      "title": "policy schedules 472 one-time draft submits civil date and shows canary blocking",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "policy schedules 472 monthly explicit canaries preserve drafts and server projections",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "policy schedules 472 consumed one-time status stays visible through cadence edits",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "policy schedules 472 calendar retains accepted rollouts after the last policy is deleted",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin schedules independent autoremove without upgrade controls",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin scheduled policy editor submits rich targeting fields and renders report links",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin scheduled run history filters, paginates, and exposes existing investigation details",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin policy preview explains canonical DST, no-run, and empty-target outcomes",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin timezone picker searches by city and saves the canonical timezone",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin maintenance calendar fits mobile widths with a saved policy",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin maintenance calendar fits mobile widths with a long policy name",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin workspace navigation restores disclosure and focuses deep links",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin policy fields align and adjacent action groups keep visible spacing",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin sections load heavy data lazily and recover failed sections with Retry",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "metrics credential lifecycle covers generate, use, stale, rotate, disable, restore, and safe copy feedback",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "recent Admin activity loads on demand with safe ordered facts and retains stale results",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "notification conditions stay opt-in and grouped reminders validate and save",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "application post-check profiles edit, persist and test with bounded expectations",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "notification webhook settings preserve, replace, clear, and mask secret-bearing URLs",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "notification delivery health exposes safe retry diagnostics and independent test outcomes",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "automated backups validate configuration and display suspended, deferred and failed results",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin section drafts support save eligibility, discard, replacement confirmation, and safe navigation warnings",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "backup recovery health distinguishes healthy, stale, never, failed, and unavailable evidence",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "restore readiness distinguishes blockers and expires when the archive or passphrase changes",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin typed confirmations gate restore and policy deletion",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin danger dialogs explain impact, trap keyboard focus, isolate the page, and restore focus",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin password change sends payload and session clear requires typed confirmation",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin password controls expose requirements, entry aids, and both session outcomes",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "admin password change reports partial session invalidation without retaining secrets",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "active session inventory keeps a temporary IP reveal controllable and undisclosed",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "temporary session IP remasks on expiry, refresh, and document hiding",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "session IP reveal keeps authentication failures inside the secure dialog",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "auth.spec.js",
+      "title": "setup form shows mismatch error",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "admin.spec.js",
+      "title": "cancelling session IP reauthentication discards a late response",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "auth.spec.js",
+      "title": "setup creates account and redirects to status page",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "auth.spec.js",
+      "title": "invalid login shows error, valid login succeeds",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "identity.spec.js",
+      "title": "accounts, scoped personal tokens, single-display secrets and responsive views",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "identity.spec.js",
+      "title": "status controls and background reads follow reader and operator roles",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "identity.spec.js",
+      "title": "confirmed MFA challenge, recovery replay rejection and sensitive reauthentication",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "lifecycle.spec.js",
+      "title": "Admin remount cancels old reads and preserves one account and timezone listener",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "lifecycle.spec.js",
+      "title": "Manage remount leaves one inventory action onboarding wizard and import listener",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "lifecycle.spec.js",
+      "title": "Status remount closes superseded streams and leaves one selection and action handler",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "lifecycle.spec.js",
+      "title": "simultaneous installations isolate database config host trust passwords and revocation",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "manage server availability persists and blocks real maintenance requests",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "manage server editor locks background scrolling while its content remains scrollable",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "manage typed confirmations gate destructive host and audit actions",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "successful immediate server-key upload accepts the editor credential intent",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "successful per-server-key creation clears the displayed filename",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "add-server validation failures render inline and focus the first invalid field",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "failed replacement-key upload retains the accepted server edit and refreshes inventory",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "onboarding failed checks block saving and allow correction and retry",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers confines responsive overflow to data tables",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "manage known host controls expose trust, replace, and remove states",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers section navigation focuses the destination heading without an outline",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers keeps its initial section on a non-scrollable tall viewport",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers section navigation follows the visible workspace while scrolling",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers summary distinguishes missing authentication from host trust issues",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "Manage Servers dedicated Add Server action opens the creation workspace",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import rejects secrets and retries validation and persistence without losing the preview",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import previews real CSV, selects rows, configures credentials and enables explicitly",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import revalidates a stale preview and creates only the refreshed selection",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import preserves drafts and ignores a preview arriving after replacement or reset",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import preserves navigation and editor focus when validation finishes in the background",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import Configure waits for the automatic inventory refresh",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import delayed Configure preserves a newer editor draft",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "package deferrals 473 Manage and policy editor preserve origin and independent drafts",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "manage policy override list follows live tag edits",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "failed policy override save keeps the accepted server editor open and dirty",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "manage.spec.js",
+      "title": "inventory import keeps accepted result focus when viewport tracking changes the section",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability keeps a successful summary when health trends fail",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability keeps successful health trends when the summary is unavailable",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability projects source lifecycle, fleet severity, confidence, and missing health facts",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability leaves unavailable disk intervals unconnected",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability CSV exports neutralize spreadsheet formulas",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability renders an unchanged disk delta without an increase label",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "scheduled wave shows its release time and predecessor caveat",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "observability.spec.js",
+      "title": "observability charts, filters, shareable URL, pagination, and CSV scale an investigation",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "stale facts recommendation renders its refresh action in the table and inspector",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "pending updates drawer keeps scroll position after server refresh",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "status availability defaults to enabled and remembers disabled or all server views",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "attention metrics and filters use the same facts and CVE semantics",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "installed vulnerability scans show trust states and residual exposure without pending updates",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "maintenance queue starts by name and lets the operator reverse the order",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "degraded Status synchronization stays visible beside the timeline until recovery succeeds",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "cancelled approval refreshes to idle after the short cancellation state",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "APT upgrade log drawer renders carriage-return progress during refresh",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "structured SSE job logs preserve drawer scroll and avoid server refetches",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "SSE reconnect recovers a completed unselected job after an offline log response",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "SSE reconnect recovers a completed unselected job after an reconnected log response",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "auto refresh defers table replacement while an update action is being clicked",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "auto refresh resumes when an action press loses page focus",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "status metrics stay compact without secondary descriptions",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "status renders accepted secondary snapshots through the page interaction state",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "status command history keeps quiet hosts visible and noisy hosts bounded to eight items",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "status rows reduce repetition and bulk controls follow selection",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "desktop bulk actions share one width and keep labels fully visible",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "selected host inspector stays accessible at common desktop widths and follows the timeline on mobile",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "maintenance timeline uses one compact progress ring per server",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "maintenance row borders align across every column",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "bulk actions execute immediately, skip ineligible hosts, and report partial failures",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "pending approval actions keep cancel and complete labels visible",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "an old full-upgrade dialog keeps its approval identity after another tab refreshes the plan",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "operator pages share one responsive and accessible application shell",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    },
+    {
+      "file": "status.spec.js",
+      "title": "package deferrals 473 approval shows executable transactions CVE exposure and frozen rule identity",
+      "exit": 0,
+      "executed": 1,
+      "passed": true,
+      "skipped": 0
+    }
+  ]
+}

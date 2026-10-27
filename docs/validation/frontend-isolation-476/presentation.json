@@ -1,0 +1,44 @@
+[
+  {
+    "domain": "status",
+    "size": "desktop",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  },
+  {
+    "domain": "admin",
+    "size": "desktop",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  },
+  {
+    "domain": "manage",
+    "size": "desktop",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  },
+  {
+    "domain": "status",
+    "size": "mobile",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  },
+  {
+    "domain": "admin",
+    "size": "mobile",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  },
+  {
+    "domain": "manage",
+    "size": "mobile",
+    "errors": [],
+    "consoleErrors": [],
+    "overflow": false
+  }
+]

@@ -1,0 +1,266 @@
+{
+  "baseline_commit": "1de9e99173a341719fc28cf764557d4f6f1cc50e",
+  "production_commit": "18881ee209d45554583871337c44376c36aa26e2",
+  "readiness_fixture_commit": "b5bc2bd72065d02f0370a3d02b2826310f1a192c",
+  "source_fingerprint": "86f7e49cf9c703a45585db4fb61cf349dcb3ac991a2e66c9dd34c30ea4b2ce37",
+  "environment": {
+    "go": "go1.26.10",
+    "node": "v22.23.3",
+    "npm": "10.9.9",
+    "staticcheck": "2026.1 (v0.7.0)",
+    "os": "Linux 6.8.0-147-generic x86_64",
+    "playwright": "1.64.1",
+    "chromium": "156.0.8078.4",
+    "executable": "/home/jeremie/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome"
+  },
+  "node": {
+    "baseline": 207,
+    "current": 225,
+    "passed": 225,
+    "failed": 0,
+    "skipped": 0,
+    "global_exit": 0
+  },
+  "browser": {
+    "baseline": 99,
+    "distinct_current": 104,
+    "full_one_worker": 104,
+    "full_four_workers": 104,
+    "independent_invocations": 104,
+    "independent_passed": 104,
+    "retries": 0,
+    "skipped": 0,
+    "readiness_startup_executions": 15,
+    "readiness_lifecycle_executions": 4
+  },
+  "go": {
+    "packages": [
+      {
+        "package": "debian-updater",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/cmd/persistence-owner",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/app",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/apptime",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/audit",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/auth",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/backup",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/deferrals",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/events",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/health",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/installationlock",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/jobs",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/maintenance",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/notifications",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/observability",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/persistenceowner",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/policies",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/postchecks",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/runtime",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/scheduledruns",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/servers",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/testutil/dashboardfixture",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/updates",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/internal/vulnerabilities",
+        "status": "passed"
+      },
+      {
+        "package": "debian-updater/tools/ci/package-deferral-helper",
+        "status": "no test files"
+      }
+    ],
+    "coverage_percent": 76.3,
+    "coverage_floor_percent": 73.0,
+    "go_source_unchanged_between_production_and_readiness_commits": true
+  },
+  "private_log_root": "/tmp/slu-476-validation",
+  "commands": [
+    {
+      "command": "npm ci --cache=/tmp/slu-476-npm-cache",
+      "global_exit": 0,
+      "log_or_result": "locked Playwright 1.64.1 installed"
+    },
+    {
+      "command": "npm run test:unit",
+      "global_exit": 0,
+      "log_or_result": "readiness-unit.log"
+    },
+    {
+      "command": "env GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test ./...",
+      "global_exit": 0,
+      "log_or_result": "accepted-go-test.log"
+    },
+    {
+      "command": "go vet ./...",
+      "global_exit": 0,
+      "log_or_result": "vet-readiness.log"
+    },
+    {
+      "command": "go build ./...",
+      "global_exit": 0,
+      "log_or_result": "go-build.log"
+    },
+    {
+      "command": "go test -race -count=1 ./...",
+      "global_exit": 0,
+      "log_or_result": "go-race.log"
+    },
+    {
+      "command": "staticcheck ./...",
+      "global_exit": 0,
+      "log_or_result": "staticcheck.log"
+    },
+    {
+      "command": "env GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache GOMAXPROCS=2 go test -covermode=atomic -coverprofile=/tmp/slu-476-validation/coverage-qualified.out ./...",
+      "global_exit": 0,
+      "log_or_result": "coverage-qualified.log"
+    },
+    {
+      "command": "actionlint .github/workflows/ci.yml .github/workflows/release.yml",
+      "global_exit": 0,
+      "log_or_result": "actionlint-qualified.log"
+    },
+    {
+      "command": "env SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/accepted-one-results node node_modules/@playwright/test/cli.js test --workers=1 --retries=0",
+      "global_exit": 0,
+      "log_or_result": "accepted-one.log"
+    },
+    {
+      "command": "env SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/accepted-four-results node node_modules/@playwright/test/cli.js test --workers=4 --retries=0",
+      "global_exit": 0,
+      "log_or_result": "accepted-four.log"
+    },
+    {
+      "command": "node tools/frontend/independent-scenarios.cjs /tmp/slu-476-validation/qualified.test /tmp/slu-476-validation/accepted-individual",
+      "global_exit": 0,
+      "log_or_result": "accepted-individual.log"
+    },
+    {
+      "command": "env SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/readiness-startup-results node node_modules/@playwright/test/cli.js test tests/e2e/auth.spec.js --repeat-each=5 --workers=4 --retries=0",
+      "global_exit": 0,
+      "log_or_result": "readiness-startup.log"
+    },
+    {
+      "command": "env SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/readiness-lifecycle-results node node_modules/@playwright/test/cli.js test tests/e2e/lifecycle.spec.js --workers=2 --retries=0",
+      "global_exit": 0,
+      "log_or_result": "readiness-lifecycle.log"
+    },
+    {
+      "command": "node tools/performance/dashboard-e2e.cjs /tmp/slu-476-validation/qualified.test /tmp/slu-476-validation/compatibility-preserved --grep 'invalid login'",
+      "global_exit": 0,
+      "log_or_result": "compatibility-preserved.log"
+    },
+    {
+      "command": "default global setup, auth domain, no SLU_E2E_TEST_BINARY",
+      "global_exit": 0,
+      "log_or_result": "default-build.log"
+    },
+    {
+      "command": "retired PLAYWRIGHT_WEBSERVER_COMMAND guard",
+      "global_exit": 1,
+      "log_or_result": "retired-override.log; intentional rejection, execution marker absent"
+    },
+    {
+      "command": "node tools/frontend/capture.cjs qualified.test accepted-after",
+      "global_exit": 0,
+      "log_or_result": "accepted-capture.log"
+    }
+  ],
+  "rejected_exploratory_runs": [
+    {
+      "log": "e2e-one-first.log",
+      "passed": 91,
+      "failed": 8,
+      "reason": "initial migration gaps; rejected"
+    },
+    {
+      "log": "e2e-one-second.log",
+      "passed": 99,
+      "failed": 4,
+      "reason": "modal timer scope and import-focus defects; rejected"
+    },
+    {
+      "log": "final-individual.log",
+      "passed": 102,
+      "failed": 1,
+      "reason": "import result focus failure; rejected"
+    },
+    {
+      "logs": [
+        "go-coverage.log",
+        "e2e-one-final.log",
+        "individual.log"
+      ],
+      "global_exit": 143,
+      "reason": "outer sessions were not accepted despite success output; replaced by explicit foreground child/supervisor exits"
+    }
+  ],
+  "owned_fixture_processes_remaining": 0
+}

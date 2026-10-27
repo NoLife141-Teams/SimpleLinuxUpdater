@@ -1,0 +1,22 @@
+{
+  "baseline_scenarios": 99,
+  "current_scenarios": 104,
+  "preserved_baseline_titles": 99,
+  "missing": [],
+  "added": [
+    "Admin remount cancels old reads and preserves one account and timezone listener",
+    "Manage remount leaves one inventory action onboarding wizard and import listener",
+    "Status remount closes superseded streams and leaves one selection and action handler",
+    "inventory import keeps accepted result focus when viewport tracking changes the section",
+    "simultaneous installations isolate database config host trust passwords and revocation"
+  ],
+  "per_domain": {
+    "admin.spec.js": 33,
+    "auth.spec.js": 3,
+    "identity.spec.js": 3,
+    "lifecycle.spec.js": 4,
+    "manage.spec.js": 26,
+    "observability.spec.js": 7,
+    "status.spec.js": 28
+  }
+}

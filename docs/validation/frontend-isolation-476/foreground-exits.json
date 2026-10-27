@@ -1,0 +1,146 @@
+{
+  "accepted-one": {
+    "command": [
+      "env",
+      "SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test",
+      "SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/accepted-one-results",
+      "node",
+      "node_modules/@playwright/test/cli.js",
+      "test",
+      "--workers=1",
+      "--retries=0"
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 270217
+  },
+  "accepted-four": {
+    "command": [
+      "env",
+      "SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test",
+      "SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/accepted-four-results",
+      "node",
+      "node_modules/@playwright/test/cli.js",
+      "test",
+      "--workers=4",
+      "--retries=0"
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 125839
+  },
+  "accepted-individual": {
+    "command": [
+      "node",
+      "tools/frontend/independent-scenarios.cjs",
+      "/tmp/slu-476-validation/qualified.test",
+      "/tmp/slu-476-validation/accepted-individual"
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 252375
+  },
+  "accepted-go-test": {
+    "command": [
+      "env",
+      "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache",
+      "GOMAXPROCS=2",
+      "go",
+      "test",
+      "./..."
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 158816
+  },
+  "coverage-qualified": {
+    "command": [
+      "env",
+      "GOCACHE=/tmp/simplelinuxupdater-analysis-go-cache",
+      "GOMAXPROCS=2",
+      "go",
+      "test",
+      "-covermode=atomic",
+      "-coverprofile=/tmp/slu-476-validation/coverage-qualified.out",
+      "./..."
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 73852
+  },
+  "readiness-startup": {
+    "command": [
+      "env",
+      "SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test",
+      "SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/readiness-startup-results",
+      "node",
+      "node_modules/@playwright/test/cli.js",
+      "test",
+      "tests/e2e/auth.spec.js",
+      "--repeat-each=5",
+      "--workers=4",
+      "--retries=0"
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 9748
+  },
+  "readiness-lifecycle": {
+    "command": [
+      "env",
+      "SLU_E2E_TEST_BINARY=/tmp/slu-476-validation/qualified.test",
+      "SLU_E2E_OUTPUT_DIR=/tmp/slu-476-validation/readiness-lifecycle-results",
+      "node",
+      "node_modules/@playwright/test/cli.js",
+      "test",
+      "tests/e2e/lifecycle.spec.js",
+      "--workers=2",
+      "--retries=0"
+    ],
+    "child": {
+      "code": 0,
+      "signal": null
+    },
+    "supervisor": {
+      "code": 0,
+      "signals": []
+    },
+    "elapsed_ms": 6478
+  }
+}

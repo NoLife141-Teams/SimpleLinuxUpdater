@@ -1,0 +1,56 @@
+{
+  "baseline": "1de9e99173a341719fc28cf764557d4f6f1cc50e",
+  "clock": "2026-05-28T12:00:00Z",
+  "views": [
+    {
+      "view": "admin-desktop.png",
+      "before_sha256": "98a0bed4c75392824bd5f7f4437d8d20587e57eda77411d07644d0044f1582d5",
+      "after_sha256": "98a0bed4c75392824bd5f7f4437d8d20587e57eda77411d07644d0044f1582d5",
+      "identical": true,
+      "width": 1440,
+      "height": 7931
+    },
+    {
+      "view": "admin-mobile.png",
+      "before_sha256": "295d7c2d7161478b31137faccd153b7b1ec48e2ab65a02cf3707100d05742bb3",
+      "after_sha256": "295d7c2d7161478b31137faccd153b7b1ec48e2ab65a02cf3707100d05742bb3",
+      "identical": true,
+      "width": 390,
+      "height": 14968
+    },
+    {
+      "view": "manage-desktop.png",
+      "before_sha256": "70c118200fe9b87c5317a6f2bdfee911ae5e925bb2a1099b1ae6c0383aad12c3",
+      "after_sha256": "70c118200fe9b87c5317a6f2bdfee911ae5e925bb2a1099b1ae6c0383aad12c3",
+      "identical": true,
+      "width": 1440,
+      "height": 1496
+    },
+    {
+      "view": "manage-mobile.png",
+      "before_sha256": "99a34946d70f68cfccb576c2c3b0c7d5c6df1adc13c494f91b2ea0a78f9098bc",
+      "after_sha256": "99a34946d70f68cfccb576c2c3b0c7d5c6df1adc13c494f91b2ea0a78f9098bc",
+      "identical": true,
+      "width": 390,
+      "height": 2779
+    },
+    {
+      "view": "status-desktop.png",
+      "before_sha256": "880253c8a6105a371599f0d1ad0da47d685e23eae156084850212c43f2785e44",
+      "after_sha256": "880253c8a6105a371599f0d1ad0da47d685e23eae156084850212c43f2785e44",
+      "identical": true,
+      "width": 1440,
+      "height": 1145
+    },
+    {
+      "view": "status-mobile.png",
+      "before_sha256": "f29ffe1444b84bdad471cc961d31283e3cf86bbbf68fd7eaf61a3dcf3ad9afd3",
+      "after_sha256": "f29ffe1444b84bdad471cc961d31283e3cf86bbbf68fd7eaf61a3dcf3ad9afd3",
+      "identical": true,
+      "width": 390,
+      "height": 2885
+    }
+  ],
+  "after_source_commit": "18881ee209d45554583871337c44376c36aa26e2",
+  "fixture_build_commit": "8bdfae6ea935fd7d0ce17ebf5b5c1a9434f6f90f"
+}

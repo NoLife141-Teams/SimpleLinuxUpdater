@@ -18,6 +18,17 @@ import (
 
 func TestInstallationProbesCurrentProviderLifecycleAndBudget(t *testing.T) {
 	app := newIsolatedTestApp(t)
+	// Embedded Gin compositions run probes from their no-route middleware too;
+	// explicit success status must replace Gin's provisional 404, including HEAD.
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, path := range []string{"/healthz", "/readyz"} {
+			rec := httptest.NewRecorder()
+			app.Router.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("embedded %s %s = %d %s", method, path, rec.Code, rec.Body.String())
+			}
+		}
+	}
 	current := app.Deps.DB()
 	calls := 0
 	deps := app.Deps

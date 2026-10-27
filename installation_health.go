@@ -101,6 +101,8 @@ func installationProbeHandler(deps AppDeps, next http.Handler) http.Handler {
 		}
 		if state != "alive" && state != "ready" {
 			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusOK)
 		}
 		if r.Method != http.MethodHead {
 			_, _ = fmt.Fprintf(w, "{\"status\":%q}\n", state)

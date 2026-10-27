@@ -132,15 +132,20 @@ Authenticated API clients can upload raw file bytes to
 
 ## Authentication flow
 
-UI/API access uses the built-in local login:
+Browser access uses named local accounts:
 
 1. First run: create the admin account at `/setup`.
 2. Sign in at `/login`.
-3. Use the logout action to end the current session.
+3. Administrators manage reader/operator/admin accounts; each user can configure optional MFA, personal API credentials and their own sessions. See [Accounts and API](personal-api.md).
+4. Use the logout action to end the current session.
+
+When upgrading from v0.4.16, sign in again once with the original password. Setup
+stays closed. Interrupted approvals need a rescan and fresh approval; follow the
+[upgrade, helper update, restore and rollback guide](upgrading.md) before maintenance.
 
 Notes:
 
-- Sessions are server-side and stored in SQLite.
+- Sessions are server-side and stored in SQLite. Cookie-free operational automation uses scoped expiring personal Bearer credentials on declared routes; identity and installation administration require sessions.
 - `/metrics` is not tied to UI sessions; it uses a dedicated bearer token managed from `/admin`.
 - UI pages are CSP-hardened and load JavaScript/CSS from external `/static` assets only (no inline scripts/styles/handlers).
 - Programmatic setup/login/logout requests must satisfy same-origin host checks:

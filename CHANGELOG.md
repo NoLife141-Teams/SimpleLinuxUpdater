@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Added
 
+- Isolated, provenance-pinned v0.4.16 upgrade qualification with real legacy
+  backup export, candidate restore, restart continuity, diagnostic failure
+  control and redacted CI/release reports.
+
 - Reproducible synthetic Dashboard Projection measurements for 10, 100 and 1,000
   Servers, authenticated API and browser benchmarks, SSE reconnection evidence,
   and CI budgets for payloads, SQL statements and allocations.
@@ -46,6 +50,11 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Upgrade notes
 
+- Export and verify a pre-upgrade backup before replacing the application. Follow
+  the [Docker/binary upgrade and rollback procedure](docs/upgrading.md); rollback
+  restores that archive into a separate old-version installation and does not
+  start an old executable on the migrated database. Interrupted queued/running
+  approvals require a fresh scan and approval before maintenance.
 - The initial account keeps its ID, username, password hash and data and becomes
   administrator. Old sessions are signed out once; setup stays closed. New
   sessions survive restarts. No additional environment variables are needed.

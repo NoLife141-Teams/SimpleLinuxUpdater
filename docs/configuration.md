@@ -22,11 +22,13 @@
 
 ## Authentication and sessions
 
-SimpleLinuxUpdater now uses a built-in single-user login flow:
+SimpleLinuxUpdater uses named local accounts with centralized permissions:
 
-- First run requires setup at `/setup` to create the initial local user.
+- First run requires setup at `/setup` to create the initial administrator.
 - Passwords are stored as Argon2id hashes in SQLite (`auth_users` table).
-- Authenticated UI/API access uses server-side sessions stored in SQLite.
+- Browser access uses isolated server-side sessions stored in SQLite. Administrators manage named reader/operator/admin accounts; optional TOTP MFA and recovery codes protect human sign-in.
+- Scoped expiring personal API tokens are accepted only on declared operational routes; account, factor, session and backup commands require a browser session, with recent reauthentication for sensitive identity changes. See [Accounts and API](personal-api.md).
+- When migrating from v0.4.16, the initial account and password hash are preserved, setup stays closed and old browser sessions are revoked once. See [upgrade, restore and rollback](upgrading.md).
 
 Session defaults:
 

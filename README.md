@@ -142,6 +142,8 @@ For binary releases, export environment variables in your shell before starting 
 - [Configuration](docs/configuration.md), including [HTTP request budgets](docs/configuration.md#http-request-budgets)
 - [Usage](docs/usage.md)
 - [Deployment](docs/deployment.md)
+- [Upgrade, restore and rollback](docs/upgrading.md)
+- [Accounts and API](docs/personal-api.md)
 - [Security](docs/security.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Release smoke checklist](docs/release-smoke.md)

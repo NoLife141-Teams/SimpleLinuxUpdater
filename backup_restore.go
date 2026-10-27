@@ -270,6 +270,11 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 		return
 	}
 
+	finish, ok := beginHTTPTransferBudget(c, false, false)
+	if !ok {
+		return
+	}
+	defer finish()
 	exportCtx := context.Background()
 	if c.Request != nil {
 		exportCtx = c.Request.Context()
@@ -318,7 +323,19 @@ func handleBackupExportWithLifecycle(c *gin.Context, lifecycle *backupOperationL
 }
 
 func readUploadedBackupFileToTemp(file *multipart.FileHeader) (internalbackup.TemporaryFile, error) {
+	if file != nil && file.Size > backupMaxUploadBytes {
+		return internalbackup.TemporaryFile{}, &http.MaxBytesError{Limit: backupMaxUploadBytes}
+	}
 	return internalbackup.ReadUploadedFileToTemp(file, "")
+}
+
+func writeBackupUploadError(c *gin.Context, err error, publicError string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request payload too large"})
+		return
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": publicError})
 }
 
 func handleBackupRestoreWithDeps(c *gin.Context, deps AppDeps) {
@@ -335,11 +352,14 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 	if service == nil {
 		service = defaultBackupService()
 	}
-	if c.Request != nil && c.Writer != nil {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
+	finish, ok := beginHTTPTransferBudget(c, true, false)
+	if !ok {
+		return
 	}
-	if c.Request == nil || c.Request.ParseMultipartForm(backupMultipartMemoryBytes) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup upload"})
+	defer finish()
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
+	if err := c.Request.ParseMultipartForm(backupMultipartMemoryBytes); err != nil {
+		writeBackupUploadError(c, err, "invalid backup upload")
 		return
 	}
 	if c.Request.MultipartForm != nil {
@@ -359,7 +379,7 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 	upload, err := readUploadedBackupFileToTemp(file)
 	if err != nil {
 		audit(c, "backup.verify", "backup", "state", "failure", "Invalid backup file", nil)
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeBackupUploadError(c, err, err.Error())
 		return
 	}
 	defer upload.Remove()
@@ -436,11 +456,14 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	if currentSession == nil {
 		currentSession = currentSessionManager
 	}
-	if c.Request != nil && c.Writer != nil {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
+	finish, ok := beginHTTPTransferBudget(c, true, false)
+	if !ok {
+		return
 	}
-	if c.Request == nil || c.Request.ParseMultipartForm(backupMultipartMemoryBytes) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup upload"})
+	defer finish()
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backupMaxUploadBytes+1024)
+	if err := c.Request.ParseMultipartForm(backupMultipartMemoryBytes); err != nil {
+		writeBackupUploadError(c, err, "invalid backup upload")
 		return
 	}
 	if c.Request.MultipartForm != nil {
@@ -460,7 +483,7 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	upload, err := readUploadedBackupFileToTemp(file)
 	if err != nil {
 		audit(c, "backup.restore", "backup", "state", "failure", "Invalid backup file", nil)
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeBackupUploadError(c, err, err.Error())
 		return
 	}
 	defer upload.Remove()

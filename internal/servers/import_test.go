@@ -308,7 +308,7 @@ func TestInventoryImportSelectionAcceptsExpandedCSVPreview(t *testing.T) {
 			}
 		})
 	}
-	if _, err := DecodeImportSelection(strings.NewReader(strings.Repeat(" ", maxImportSelectionBytes+1))); err == nil {
+	if _, err := DecodeImportSelection(strings.NewReader(strings.Repeat(" ", MaxImportSelectionBytes+1))); err == nil {
 		t.Fatal("oversized selection accepted")
 	}
 }

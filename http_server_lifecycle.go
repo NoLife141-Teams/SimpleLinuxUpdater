@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -82,52 +81,12 @@ func waitForUpdateRunnersContext(ctx context.Context) error { return updateRunne
 func newApplicationHTTPServer(listenAddr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              listenAddr,
-		Handler:           backupTransferDeadlineHandler(handler),
+		Handler:           applicationHTTPBudgetHandler(handler, defaultHTTPResourceBudgets),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		ReadTimeout:       serverReadHeaderTimeout,
 		WriteTimeout:      serverWriteTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
-}
-
-func backupTransferDeadlineHandler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		controller := http.NewResponseController(w)
-		if isApplicationPostcheckTestRequest(r) {
-			// Recovery probes can outlast the ordinary one-minute response budget.
-			// Keep a bounded deadline with time to serialize the final results.
-			if err := controller.SetWriteDeadline(time.Now().Add(applicationPostcheckTestTimeout + time.Minute)); err != nil {
-				log.Printf("Failed to extend application post-check response deadline: %v", err)
-				http.Error(w, "application post-check test unavailable", http.StatusInternalServerError)
-				return
-			}
-		}
-		switch r.URL.Path {
-		case "/api/backup/restore", "/api/backup/verify":
-			if err := controller.SetReadDeadline(time.Time{}); err != nil {
-				log.Printf("Failed to relax backup upload deadline: %v", err)
-				http.Error(w, "backup transfer unavailable", http.StatusInternalServerError)
-				return
-			}
-			fallthrough
-		case "/api/backup/export", "/api/backup/automation/run":
-			if err := controller.SetWriteDeadline(time.Time{}); err != nil {
-				log.Printf("Failed to relax backup response deadline: %v", err)
-				http.Error(w, "backup transfer unavailable", http.StatusInternalServerError)
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func isApplicationPostcheckTestRequest(r *http.Request) bool {
-	name, ok := strings.CutPrefix(r.URL.Path, "/api/servers/")
-	if !ok || r.Method != http.MethodPost {
-		return false
-	}
-	name, ok = strings.CutSuffix(name, "/postchecks/test")
-	return ok && name != "" && !strings.ContainsRune(name, '/')
 }
 
 func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMaintenance func(), closeNotifications func(context.Context) error) {

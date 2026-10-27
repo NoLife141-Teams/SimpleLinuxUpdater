@@ -9,6 +9,7 @@
 - [Codex browser annotations](#codex-browser-annotations)
 - [Metrics API token](#metrics-api-token)
 - [Notification destinations](#notification-destinations)
+- [HTTP request budgets](#http-request-budgets)
 - [Backup and restore](#backup-and-restore)
   - [Automated backups](#automated-backups)
 - [Storage paths](#storage-paths)
@@ -109,6 +110,36 @@ Selectable events include completed updates, failed/skipped scheduled runs, back
 Grouped reminders are disabled by default. Enable them in Admin and set an interval of 5–43200 minutes (default 1440); each destination receives at most one grouped summary of selected unresolved conditions per interval. These settings are stored in the existing encrypted-destination configuration, with no new environment variables. See [notification lifecycle and recovery behavior](usage.md#notification-hooks) for persistent episodes, destination changes, disablement, Server rename/deletion, and database restoration.
 
 Destination secrets are encrypted before they are stored. Settings responses return only masked configuration state. Delivery is best-effort with bounded retries; Admin exposes per-destination test actions and safe diagnostics such as outcome, attempt count, HTTP status, duration, consecutive failures, and next retry time.
+
+## HTTP request budgets
+
+Ordinary requests retain a 15-second header/body read timeout and a 60-second
+response write timeout. Route, permission and same-origin refusals retain these
+limits, including backup paths and unexpected methods.
+
+JSON commands default to **1 MiB (1,048,576 bytes)**, including bodies sent without
+Content-Length or with chunked transfer encoding. Bodies contain exactly one JSON
+document; additional root values or trailing non-whitespace return `400`. Unknown
+fields remain compatible with existing handlers; commands that accept an empty
+body still do so. Oversize bodies return `413` with one JSON error object
+(`{"error":"request payload too large"}`) before any command mutation.
+
+Specialized budgets remain: authentication **8 KiB**, onboarding **128 KiB**,
+post-check profiles **256 KiB**, package deferrals **16 KiB**,
+backup automation configuration **4 KiB**, and
+backup export requests **1 MiB**. Inventory upload previews retain **2 MiB**;
+normalized import selections allow **13,094,912 bytes** for JSON escaping and row
+metadata. SSH key files retain **64 KiB** plus their multipart request overhead.
+Backup multipart uploads retain the archive-format size budget plus framing;
+they stream through temporary files instead of the JSON buffer.
+
+Admitted backup export, restore and verification operations have a **30-minute
+total processing/transfer budget**, including cancellation of blocked transport
+I/O. The same bound applies to admitted HTTP control backups. Authenticated
+read-only application check tests receive a **12-minute response budget** after
+host/profile admission; their probes retain the **11-minute** execution limit.
+Client cancellation and expiry stop context-aware work and clean up temporary
+uploads/exports. Reverse proxies may impose shorter limits independently.
 
 ## Backup and restore
 

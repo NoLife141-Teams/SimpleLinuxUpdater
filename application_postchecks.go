@@ -118,6 +118,11 @@ func registerApplicationPostcheckRoutes(r *gin.Engine, deps AppDeps) {
 			c.JSON(409, gin.H{"error": "No post-check profile is assigned"})
 			return
 		}
+		finish, ok := beginHTTPTransferBudget(c, false, true)
+		if !ok {
+			return
+		}
+		defer finish()
 		ctx, cancel := context.WithTimeout(c.Request.Context(), applicationPostcheckTestTimeout)
 		defer cancel()
 		results, err := deps.UpdateService.TestApplicationChecks(ctx, server, profile)

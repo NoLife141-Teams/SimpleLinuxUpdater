@@ -3,7 +3,7 @@
   "info": {
     "title": "SimpleLinuxUpdater Personal API",
     "version": "1.0.0",
-    "description": "Cookie-free business API. Required scope is intersected with the current enabled account role on every request. Credential issuance, sessions, MFA, account changes, backup/restore and metrics-token administration are cookie-only. /metrics uses the separate Metrics Access Credential, never this API bearer."
+    "description": "Cookie-free business API. Required scope is intersected with the current enabled account role on every request. Credential issuance, sessions, MFA, account changes, backup/restore and metrics-token administration are cookie-only. /metrics uses the separate Metrics Access Credential, never this API bearer. JSON command bodies default to 1048576 bytes (1 MiB), including chunked requests, and must contain exactly one JSON document. Unknown fields remain compatible unless a route explicitly defines a closed schema. Empty bodies remain accepted by commands that support them. Authentication is limited to 8192 bytes, onboarding to 131072 bytes, and post-check profile configuration to 262144 bytes; inventory imports retain their specialized limits. Oversize requests return 413 with a JSON error before mutation."
   },
   "servers": [
     {
@@ -38,7 +38,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -88,7 +88,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -162,7 +162,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -212,7 +212,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -277,7 +277,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -327,7 +327,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -392,7 +392,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -442,7 +442,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -507,7 +507,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -557,7 +557,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -622,7 +622,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -672,7 +672,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -746,7 +746,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -796,7 +796,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -870,7 +870,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -920,7 +920,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -994,7 +994,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1044,7 +1044,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1137,7 +1137,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1187,7 +1187,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1261,7 +1261,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1311,7 +1311,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1396,7 +1396,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1446,7 +1446,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1520,7 +1520,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1570,7 +1570,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1644,7 +1644,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1694,7 +1694,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1733,7 +1733,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/autoremove/{name}": {
@@ -1768,7 +1769,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1818,7 +1819,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1857,7 +1858,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/repair/{name}": {
@@ -1892,7 +1894,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1942,7 +1944,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1991,7 +1993,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/reboot/{name}": {
@@ -2026,7 +2029,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2076,7 +2079,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2125,7 +2128,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/servers/{name}/facts/refresh": {
@@ -2160,7 +2164,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2210,7 +2214,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2270,7 +2274,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/servers/{name}/vulnerabilities/scan": {
@@ -2305,7 +2310,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2355,7 +2360,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2405,7 +2410,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/servers/{name}/postchecks/test": {
@@ -2440,7 +2446,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2490,7 +2496,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2550,7 +2556,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/approve/{name}": {
@@ -2585,7 +2592,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2635,7 +2642,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2684,7 +2691,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/approve-security/{name}": {
@@ -2719,7 +2727,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2769,7 +2777,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2818,7 +2826,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/approve-security-kept-back/{name}": {
@@ -2853,7 +2862,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2903,7 +2912,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2952,7 +2961,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/approve-full/{name}": {
@@ -2987,7 +2997,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3037,7 +3047,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3086,7 +3096,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     },
     "/api/cancel/{name}": {
@@ -3121,7 +3132,7 @@
             }
           },
           "400": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3171,7 +3182,7 @@
             }
           },
           "413": {
-            "description": "Request rejected. No secrets are included.",
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3220,7 +3231,8 @@
               }
             }
           }
-        }
+        },
+        "x-slu-request-body-limit-bytes": 1048576
       }
     }
   },

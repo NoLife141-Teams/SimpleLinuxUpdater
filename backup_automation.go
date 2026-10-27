@@ -492,6 +492,13 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
 		return a.deferLocked(ctx, &s, now, manual)
 	}
 	defer lease.Close()
+	// HTTP control runs acquire a bounded response/processing budget only after
+	// exclusive admission. Scheduled runs have no HTTP transport in their context.
+	ctx, finish, err := beginHTTPTransferBudgetContext(ctx, false, false)
+	if err != nil {
+		return err
+	}
+	defer finish()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s, err := a.load(ctx)

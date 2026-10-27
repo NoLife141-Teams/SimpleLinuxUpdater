@@ -14,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const packageDeferralMaxRequestBytes = 16 * 1024
+
 // Policy edits can change inherited rules. Serialize their commits with the
 // final local check and protected remote mutation, just like rule edits.
 func packageDeferralPolicyGate(deps AppDeps) gin.HandlerFunc {
@@ -133,7 +135,7 @@ func registerPackageDeferralRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(200, snapshot)
 	})
 	r.POST("/api/package-deferrals", func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16*1024)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, packageDeferralMaxRequestBytes)
 		var rule deferrals.Rule
 		if c.ShouldBindJSON(&rule) != nil {
 			c.JSON(400, gin.H{"error": "Invalid package deferral"})

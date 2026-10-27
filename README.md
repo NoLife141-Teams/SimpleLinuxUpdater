@@ -138,7 +138,7 @@ For binary releases, export environment variables in your shell before starting 
 
 - [Documentation map](docs/README.md)
 - [Installation](docs/installation.md)
-- [Configuration](docs/configuration.md)
+- [Configuration](docs/configuration.md), including [HTTP request budgets](docs/configuration.md#http-request-budgets)
 - [Usage](docs/usage.md)
 - [Deployment](docs/deployment.md)
 - [Security](docs/security.md)

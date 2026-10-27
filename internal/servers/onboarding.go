@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"debian-updater/internal/helperprotocol"
+
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -147,7 +149,7 @@ func validOnboardingHost(host string) bool {
 // reboot, or sudoers provisioning occurs during onboarding.
 const OnboardingOSCommand = "cat /etc/os-release"
 const OnboardingAPTCommand = "test -x /usr/bin/apt-get && test -x /usr/bin/apt-cache && test -x /usr/bin/dpkg"
-const OnboardingSudoCommand = `if [ "$(id -u)" -eq 0 ]; then printf root; else test -x /usr/local/sbin/simplelinuxupdater-root-helper && sudo -n -l -- /usr/local/sbin/simplelinuxupdater-root-helper update >/dev/null 2>&1 && sudo -n -l -- /usr/local/sbin/simplelinuxupdater-root-helper upgrade >/dev/null 2>&1 && sudo -n /usr/local/sbin/simplelinuxupdater-root-helper dpkg-audit; fi`
+const OnboardingSudoCommand = helperprotocol.OnboardingCommand
 const OnboardingDiskCommand = "LC_ALL=C df -Pk / /var /boot"
 const OnboardingPackageCommand = "/usr/bin/dpkg --audit"
 
@@ -186,7 +188,7 @@ func (s *OnboardingService) verify(ctx context.Context, draft OnboardingDraft, c
 	checks := []struct{ id, command, success, failure, remediation string }{
 		{"distribution", OnboardingOSCommand, "Supported Linux distribution.", "Cannot verify a supported distribution.", "Use a Debian or Ubuntu server and ensure /etc/os-release is readable."},
 		{"apt", OnboardingAPTCommand, "APT and dpkg are available.", "APT or dpkg is unavailable.", "Install APT and dpkg on a supported Debian or Ubuntu server."},
-		{"sudo", OnboardingSudoCommand, "Root access or restricted maintenance policy detected.", "Restricted maintenance permissions could not be verified.", "Install the SimpleLinuxUpdater managed root helper and sudoers policy, or use root. Generic passwordless apt rules do not replace the managed helper."},
+		{"sudo", OnboardingSudoCommand, "Root access or restricted maintenance policy detected.", "Restricted maintenance permissions could not be verified.", "Install or upgrade the managed root helper and restricted policy. " + helperprotocol.InstallationHelp},
 		{"disk", OnboardingDiskCommand, "Disk space verified.", "Cannot verify free disk space.", "Check that df can read /, /var and /boot."},
 		{"packages", OnboardingPackageCommand, "No unfinished dpkg configuration detected.", "The package state could not be verified.", "Inspect dpkg --audit on the server and resolve unfinished package configuration."},
 	}
@@ -196,6 +198,9 @@ func (s *OnboardingService) verify(ctx context.Context, draft OnboardingDraft, c
 		result := OnboardingCheck{ID: check.id, Status: "passed", Message: check.success}
 		if runErr != nil {
 			result.Status, result.Message, result.Remediation = "failed", check.failure, check.remediation
+			if check.id == "sudo" {
+				result.Message = helperprotocol.Diagnostic(output)
+			}
 		} else {
 			switch check.id {
 			case "distribution":

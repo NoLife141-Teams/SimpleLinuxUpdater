@@ -128,6 +128,9 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMai
 }
 
 func main() {
+	if handled, code := runHelperCommand(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	if handled, err := runAdminCommand(os.Args[1:], os.Stdin, os.Stdout); handled {
 		if err != nil {
 			log.Print(err)

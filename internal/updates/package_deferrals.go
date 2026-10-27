@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"debian-updater/internal/deferrals"
+	"debian-updater/internal/helperprotocol"
 	"debian-updater/internal/servers"
 )
 
@@ -189,7 +190,7 @@ func BuildDeferredUpgradeCommand(scope string, plan servers.UpgradePlan, confirm
 	for _, a := range args {
 		command += " " + shellQuote(a)
 	}
-	return `if [ "$(id -u)" -eq 0 ]; then ` + command + `; else sudo -n ` + command + `; fi`
+	return helperprotocol.RequiredCommand + ` && if [ "$(id -u)" -eq 0 ]; then ` + command + `; else sudo -n ` + command + `; fi`
 }
 
 func (r *withActorRunner) applyDeferrals(outcome PackageDiscoveryOutcome) (PackageDiscoveryOutcome, error) {

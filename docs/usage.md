@@ -246,13 +246,11 @@ independent safe transaction can proceed. Disk checks conservatively estimate
 the constrained transaction instead of reusing unrestricted exact size facts.
 
 Every Server with active deferrals requires the **protocol 3 managed root
-helper**, even with root SSH. For accounts with the normal sudo/visudo setup,
-run **Enable apt** to install the current helper. A root administrator can also
-install the root-owned generated helper at
-`/usr/local/sbin/simplelinuxupdater-root-helper`; its exact source is
-`internal/updates/privileged_helper.go` (export with
-`go run ./tools/ci/package-deferral-helper`). Missing or older helpers block
-protected mutations. The helper checks APT protocol 3 transaction data before
+helper**, even with root SSH. For an already saved Server, **Enable apt** can install the current helper
+using the existing administrator-authorized sudo flow. Before onboarding a new
+non-root Server, use the supported [offline helper installation](#managed-helper-installation)
+from the binary or Docker image. Missing or older helpers block protected
+mutations, including with root SSH; no raw APT fallback is used. The helper checks APT protocol 3 transaction data before
 dpkg and refuses deferred packages, unexpected package versions/architectures,
 unapproved changes or expired rules. Administrator holds/pins are preserved.
 Repair and autoremove have no approved package transaction and are blocked
@@ -696,3 +694,55 @@ OSV and distribution trackers can be incomplete or delayed, and version-based as
 In **Admin → Application Checks**, create a profile, add HTTP status or systemd-active checks, and assign exact Server names or tags. Choose **Blocking** when failure must stop the maintenance rollout, or **Warning** for advisory results. Set a bounded recovery timeout to allow applications to restart before declaring failure. Save the profile, enter a Server name, and run its read-only test before relying on it. The test uses the saved assignments, not unsaved drafts, and never installs missing tools or starts services.
 
 A direct assignment overrides tag-based assignments. Conflicting tag profiles require an explicit direct assignment or corrected tags. The Manage editor shows each Server's saved effective profile. Pending approvals show the profile name, revision and checks; changed expectations require a fresh approval. Completed jobs and audit entries retain the exact profile and safe per-check results. No-profile installations keep their existing post-update behavior. See [Application post-check profiles](configuration.md#application-post-check-profiles) for limits and precedence.
+
+### Managed helper installation
+
+Check in **Manage → Add Server** is read-only. A fresh non-root target needs
+the managed root helper and its restricted sudo policy before Check can pass.
+No Go toolchain or repository checkout is needed on the operator machine.
+From the downloaded binary archive, run:
+
+```sh
+./webserver helper export --help
+./webserver helper export --user deployer > install-helper.sh
+```
+
+Or use the same application image/version as your deployment, without mounting
+its data or configuration (replace IMAGE with that image reference):
+
+```sh
+docker run --rm --entrypoint /app/webserver IMAGE helper export --user deployer > install-helper.sh
+```
+
+Replace `deployer` with the target SSH account. The explicit Docker entrypoint
+bypasses deployment ownership repair. Export writes a script only: it needs no
+DB, configuration, credentials or network, and starts no HTTP listener, workers,
+SSH or APT. Exit codes are 0 for export/help, 2 for invalid arguments, and 1 for
+an output error. Invalid usernames produce no executable stdout.
+
+Examine `install-helper.sh`, transfer it using your trusted channel, then run
+it **on the target** as an administrator:
+
+```sh
+sudo /bin/sh install-helper.sh
+```
+
+Sudo prompts on the terminal if needed; never put a password in command-line
+arguments. SSH root access is unnecessary: use an existing administrator account
+or the target's console. The script uses the production helper and sudoers
+generators, checks ownership/regular files/markers before mutation, validates
+sudoers with `visudo`, and removes temporary files. It refuses symlinks,
+unmarked files and a customized legacy `/etc/sudoers.d/apt-nopasswd`; have an
+administrator inspect and migrate those manually. Only the exact app-generated
+legacy rule for the specified user is migrated. It installs
+`/usr/local/sbin/simplelinuxupdater-root-helper` and
+`/etc/sudoers.d/simplelinuxupdater`, without generic shell or APT sudo grants.
+
+Return to Manage and select **Retry checks**, then confirm onboarding. Check
+reports missing helper, old protocol/capabilities, denied restricted sudo policy,
+and unrecognized helper files separately. It never provisions the target.
+The helper's non-mutating `capabilities` operation reports the helper protocol
+and guarded-install capability without sudo or APT. This is a separate contract
+from APT's transaction hook protocol. With active package deferrals the current
+helper is mandatory for both root and non-root SSH; after installation or upgrade,
+rescan and approve the new plan. Old helpers fail closed before package mutation.

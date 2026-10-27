@@ -3,6 +3,22 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 
+async function readOwnedReadiness(file, pid) {
+    let fact;
+    try {
+        fact = JSON.parse(await fs.readFile(file, "utf8"));
+    } catch (error) {
+        // The Go writer creates/truncates the file before writing its JSON.
+        // The caller's bounded startup loop retries these transient states.
+        if (error.code === "ENOENT" || error instanceof SyntaxError)
+            return null;
+        throw error;
+    }
+    if (!fact || fact.pid !== pid || !/^127\.0\.0\.1:\d+$/.test(fact.listen))
+        throw new Error("Unowned listener");
+    return fact;
+}
+
 // Each scenario gets its own process and all process-local state, a fresh
 // temporary installation, and a port allocated atomically by the kernel.
 async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY) {
@@ -61,21 +77,14 @@ async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY) {
     }
     try {
         for (let attempt = 0; attempt < 300; attempt++) {
-            try {
-                const fact = JSON.parse(await fs.readFile(ready, "utf8"));
-                if (
-                    fact.pid !== child.pid ||
-                    !/^127\.0\.0\.1:\d+$/.test(fact.listen)
-                )
-                    throw new Error("Unowned listener");
+            const fact = await readOwnedReadiness(ready, child.pid);
+            if (fact) {
                 return {
                     url: `http://${fact.listen}`,
                     directory,
                     pid: child.pid,
                     stop,
                 };
-            } catch (error) {
-                if (error.code !== "ENOENT") throw error;
             }
             if (child.exitCode !== null)
                 throw new Error(`Server exited ${child.exitCode}`);
@@ -87,4 +96,4 @@ async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY) {
         throw error;
     }
 }
-module.exports = { startInstallation };
+module.exports = { startInstallation, readOwnedReadiness };

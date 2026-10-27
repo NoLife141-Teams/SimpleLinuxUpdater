@@ -91,7 +91,9 @@ host-facts workers, or dispatches maintenance runners. SSH connection and host-k
 scanning are forbidden by the test composition.
 
 The process binds `127.0.0.1:0` directly; there is no port-probing/rebinding gap.
-The fixture accepts readiness only from the spawned PID. Each process has an
+The fixture accepts readiness only from the spawned PID. Missing, empty or
+partially written readiness files are retried within the bounded startup loop;
+a foreign PID or listener remains an immediate ownership failure. Each process has an
 owned temporary root and a new Go `t.TempDir` DB, adjacent config, known_hosts,
 session store, rate limiters and runtime services. Inherited
 `DEBIAN_UPDATER_*` / scaling fixture environment is removed. No installed database,

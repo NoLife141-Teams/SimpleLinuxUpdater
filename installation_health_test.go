@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -347,5 +348,55 @@ func TestInstallationProbeCommandUsesHTTPWithoutRedirectOrInstallation(t *testin
 	}
 	if _, code := runInstallationProbeCommand([]string{"healthcheck"}, func(string) string { return "invalid" }); code != 1 {
 		t.Fatal("accepted malformed address")
+	}
+}
+
+func TestInstallationReadinessBoundsSQLiteBusyWaitAndPreservesConnection(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	path := filepath.Join(t.TempDir(), "locked.db")
+	owner, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	// Exclusive WAL locking can also occur while another local SQLite tool is
+	// inspecting/recovering persistence. Context cancellation alone does not
+	// interrupt modernc SQLite's busy handler.
+	for _, statement := range []string{"PRAGMA journal_mode=WAL", "PRAGMA locking_mode=EXCLUSIVE", "CREATE TABLE fixture(value)"} {
+		if _, err := owner.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probeDB, err := sql.Open("sqlite", path+"?_pragma=busy_timeout%285000%29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probeDB.Close()
+	probeDB.SetMaxOpenConns(1)
+	deps := app.Deps
+	deps.DB = func() *sql.DB { return probeDB }
+	started := time.Now()
+	if got := deps.InstallationHealth.probe(context.Background(), deps); got != "unavailable" {
+		t.Fatalf("locked readiness = %q", got)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SQLite busy wait exceeded probe budget: %s", elapsed)
+	}
+	lease, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatal("probe retained maintenance admission")
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var timeout int
+	if err := probeDB.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil || timeout != 5000 {
+		t.Fatalf("busy timeout after probe = %d, %v", timeout, err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := deps.InstallationHealth.probe(context.Background(), deps); got != "ready" {
+		t.Fatalf("unlocked readiness = %q", got)
 	}
 }

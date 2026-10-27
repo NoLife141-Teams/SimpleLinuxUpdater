@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"net/http"
 	"os"
@@ -71,14 +73,42 @@ func (h *installationHealth) probe(ctx context.Context, deps AppDeps) string {
 	}
 	// SELECT checks actual read access; Ping alone can succeed on a closed file or
 	// an idle SQLite connection. No arbitrary SQL/error text reaches the caller.
-	var one int
-	if err := db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&one); err != nil {
+	if !installationDatabaseReadable(ctx, db) {
 		return "unavailable"
 	}
 	if h.Phase() != "ready" {
 		return h.Phase()
 	}
 	return "ready"
+}
+
+// SQLite's busy handler can outlive a cancelled query context. Borrow one
+// connection and disable its busy wait for this read, then restore its setting
+// before returning it to the pool. These PRAGMAs only change connection-local
+// configuration; they do not write persistence or affect concurrent borrowers.
+func installationDatabaseReadable(ctx context.Context, db *sql.DB) bool {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	var busyTimeout int
+	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		return false
+	}
+	defer func() {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installationProbeBudget)
+		defer cancel()
+		if _, err := conn.ExecContext(restoreCtx, fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeout)); err != nil {
+			// Never return a connection with changed lock-wait behavior to work.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=0"); err != nil {
+		return false
+	}
+	var one int
+	return conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&one) == nil
 }
 
 func installationProbeHandler(deps AppDeps, next http.Handler) http.Handler {

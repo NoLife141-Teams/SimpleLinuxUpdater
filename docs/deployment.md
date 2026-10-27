@@ -145,6 +145,9 @@ and HEAD, require no credential, and return only `{"status":"..."}`. Liveness is
 Runtime Composition initialization (including a fresh installation before account
 setup) and a read-only `sqlite_schema` query against the **current** DB provider.
 The SQLite query has a 250 ms context deadline, including connection pool waits.
+The probe temporarily disables the borrowed connection's SQLite busy wait so a
+file lock fails immediately, then restores that connection setting before returning
+it to the pool. These connection-local settings do not write the database.
 No probe opens a session, writes a record, migrates, repairs SQLite, retries a
 maintenance release, contacts a Server, or starts a notification or backup.
 

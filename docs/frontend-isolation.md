@@ -195,7 +195,10 @@ for source provenance, actual counts/exits, screenshots and material limits.
 `account-command-state.js` owns credential-free Account command admission and
 one-time-result acknowledgement. Account serializes pending mutations, rejects
 superseded list snapshots, and protects a token or enrollment result until it is
-acknowledged. Recovery display freezes all mutations because MFA confirmation
+acknowledged. Identity initialization completes before command admission so a
+delayed identity read cannot outlive a session-revoking command. Interrupted
+lists resume when the command settles, or after a protected result is cleared.
+Recovery display freezes all mutations because MFA confirmation
 has deliberately revoked the cookie. No list refresh follows that confirmation.
 `account.js` owns DOM inputs/results; `BrowserEffects` owns its listeners and
 cancellable transport. Departure clears passwords and displayed secrets. A

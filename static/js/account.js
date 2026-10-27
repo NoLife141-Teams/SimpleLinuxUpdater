@@ -15,10 +15,14 @@
     let ownAccountID;
     const snapshots = { tokens: 0, accounts: 0, sessions: 0 };
     const snapshotRequests = {};
+    const interruptedSnapshots = new Set();
     function invalidateSnapshots() {
         for (const name of Object.keys(snapshots)) {
             snapshots[name]++;
-            snapshotRequests[name]?.abort();
+            if (snapshotRequests[name]) {
+                interruptedSnapshots.add(name);
+                snapshotRequests[name].abort();
+            }
         }
     }
     lifecycle.own(invalidateSnapshots);
@@ -27,7 +31,7 @@
         document.querySelectorAll('main button, main form input, main form select').forEach(el => {
             const operation = el.closest('[data-account-command]')?.dataset.accountCommand;
             const ack = ['token-dismiss', 'mfa-cancel', 'recovery-dismiss'].includes(el.id);
-            el.disabled = ack ? Boolean(view.busy) : !commands.allowed(operation);
+            el.disabled = !ownAccountID || (ack ? Boolean(view.busy) : !commands.allowed(operation));
         });
         document.querySelectorAll('[data-account-command]').forEach(el => el.setAttribute('aria-busy', String(view.busy === el.dataset.accountCommand)));
     }
@@ -41,6 +45,9 @@
         document.querySelectorAll('main input[type=password], #reauth-code, #mfa-confirm-code').forEach(el => { el.value = ''; });
     }
     async function run(operation, fn) {
+        // Identity initializes scopes and self-account handling before admission.
+        // It must finish before a mutation can deliberately revoke the cookie.
+        if (!ownAccountID) return;
         const ticket = commands.begin(operation);
         if (!ticket) return;
         const previousFocus = document.activeElement;
@@ -64,6 +71,7 @@
                 else if (view.secret === 'recovery') byID('recovery-dismiss').focus();
                 else if (view.secret === 'enrollment') byID('mfa-confirm-code').focus();
                 else if (!failed && previousFocus?.isConnected) previousFocus.focus();
+                resumeSnapshots();
             }
         }
     }
@@ -83,6 +91,7 @@
     async function snapshot(name, path) {
         const version = ++snapshots[name];
         snapshotRequests[name]?.abort();
+        interruptedSnapshots.delete(name);
         const controller = new AbortController();
         snapshotRequests[name] = controller;
         try {
@@ -93,6 +102,16 @@
             throw error;
         } finally {
             if (snapshotRequests[name] === controller) delete snapshotRequests[name];
+        }
+    }
+    function resumeSnapshots() {
+        const view = commands.view();
+        if (!lifecycle.active || view.busy || view.secret || view.frozen) return;
+        const loaders = { tokens: loadTokens, accounts: loadAccounts, sessions: loadSessions };
+        for (const name of [...interruptedSnapshots]) {
+            void loaders[name]().then(() => { if (lifecycle.active) render(); }).catch(error => {
+                if (lifecycle.active && error.name !== 'AbortError') status(error.message);
+            });
         }
     }
     async function loadTokens() {
@@ -133,17 +152,17 @@
         const data = await request('/api/auth/tokens', 'POST', { name: byID('token-name').value, scopes, expires_at: new Date(byID('token-expiry').value).toISOString() });
         commands.protect('token'); byID('token-secret').textContent = data.secret; byID('token-result').hidden = false; status('Personal token created. Save its secret now.'); byID('token-dismiss').focus();
     });
-    lifecycle.listen(byID('token-dismiss'), 'click', async () => {
+    lifecycle.listen(byID('token-dismiss'), 'click', () => {
         if (commands.view().busy) return;
         byID('token-secret').textContent = ''; byID('token-result').hidden = true;
         commands.acknowledge(); render(); status('Token secret cleared from this page.');
         byID('token-name').focus();
-        try { await loadTokens(); render(); } catch (error) { if (lifecycle.active && error.name !== 'AbortError') status(error.message); }
+        interruptedSnapshots.add('tokens'); resumeSnapshots();
     });
     lifecycle.listen(byID('mfa-cancel'), 'click', () => {
         if (commands.view().busy) return;
         byID('mfa-secret').textContent = ''; byID('mfa-enrollment').hidden = true;
-        byID('mfa-confirm-form').reset(); commands.acknowledge(); render(); byID('mfa-enroll').focus();
+        byID('mfa-confirm-form').reset(); commands.acknowledge(); render(); byID('mfa-enroll').focus(); resumeSnapshots();
     });
     lifecycle.listen(byID('recovery-dismiss'), 'click', () => {
         byID('recovery-codes').textContent = ''; byID('recovery-result').hidden = true;
@@ -159,12 +178,14 @@
         for (const id of ['token-result', 'mfa-enrollment', 'recovery-result']) byID(id).hidden = true;
     });
     window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
+    render();
     (async () => {
         const { account, scopes } = await request('/api/auth/identity'); ownAccountID = account.id; byID('identity-summary').textContent = `${account.username} · ${account.role} · account ${account.id}`;
         byID('mfa-status').textContent = account.mfa_enabled ? 'Authenticator enabled.' : 'Authenticator is optional and currently disabled.'; byID('mfa-enroll').hidden = account.mfa_enabled; byID('mfa-disable').hidden = !account.mfa_enabled;
         for (const scope of scopes) { const label = document.createElement('label'); const input = document.createElement('input'); input.type = 'checkbox'; input.value = scope; input.checked = scope === 'operational:read'; label.append(input, document.createTextNode(scope)); byID('token-scopes').append(label); }
         const expiry = new Date(Date.now() + 30 * 86400000); expiry.setMinutes(expiry.getMinutes() - expiry.getTimezoneOffset()); byID('token-expiry').value = expiry.toISOString().slice(0, 16);
         if (account.role === 'admin') byID('accounts-section').hidden = false;
+        render();
         await Promise.all([loadTokens(), loadSessions(), ...(account.role === 'admin' ? [loadAccounts()] : [])]); render();
     })().catch(error => { if (lifecycle.active && error.name !== 'AbortError') status(error.message); });
 })();

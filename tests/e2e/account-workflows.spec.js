@@ -351,6 +351,74 @@ test('obsolete initial session reads cannot dismiss unacknowledged MFA recovery 
     await page.locator('#recovery-dismiss').click();
     await expect(page).toHaveURL(/\/login$/);
 });
+test('Account waits for identity initialization before admitting a session-revoking MFA command', async ({ page }) => {
+    let release, reads = 0, mutations = 0;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/auth/identity', async route => {
+        reads++;
+        await gate;
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        await route.fulfill({ response });
+    });
+    page.on('request', request => { if (request.url().endsWith('/api/auth/mfa/enroll')) mutations++; });
+    await page.reload();
+    await expect.poll(() => reads).toBe(1);
+    await expect(page.locator('#mfa-enroll')).toBeDisabled();
+    await page.locator('#mfa-enroll').evaluate(el => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(mutations).toBe(0);
+    release();
+    await expect(page.locator('#identity-summary')).toContainText('admin · admin');
+    await page.locator('#mfa-enroll').click();
+    await expect(page.locator('#mfa-enrollment')).toBeVisible();
+    const secret = await page.locator('#mfa-secret').textContent();
+    await page.locator('#mfa-confirm-code').fill(totp(secret));
+    await page.locator('#mfa-confirm-code').press('Enter');
+    await expect(page.locator('#recovery-result')).toBeVisible();
+    expect((await page.request.get('/api/auth/identity')).status()).toBe(401);
+    await expect(page).toHaveURL(/\/account$/);
+    expect(reads).toBe(1);
+    await page.locator('#recovery-dismiss').click();
+    await expect(page).toHaveURL(/\/login$/);
+});
+for (const outcome of ['confirmed', 'rejected', 'enrollment-cancelled', 'token-acknowledged']) {
+    test(`interrupted initial lists resume after ${outcome} without reading over protected secrets`, async ({ page }) => {
+        let release, reads = 0;
+        const gate = new Promise(resolve => { release = resolve; });
+        await page.route(/\/api\/auth\/(tokens|sessions|accounts)$/, async route => {
+            if (route.request().method() !== 'GET') return route.continue();
+            reads++;
+            const response = await route.fetch();
+            await gate;
+            await route.fulfill({ response }).catch(() => {});
+        });
+        await page.reload();
+        await expect(page.locator('#identity-summary')).toContainText('admin · admin');
+        await expect.poll(() => reads).toBe(3);
+        if (outcome === 'enrollment-cancelled') {
+            await page.locator('#mfa-enroll').click();
+            await expect(page.locator('#mfa-enrollment')).toBeVisible();
+            expect(reads).toBe(3);
+            await page.locator('#mfa-cancel').click();
+        } else if (outcome === 'token-acknowledged') {
+            await page.locator('#token-name').fill('interrupted-token');
+            await page.locator('#token-name').press('Enter');
+            await expect(page.locator('#token-result')).toBeVisible();
+            expect(reads).toBe(3);
+            await page.locator('#token-dismiss').click();
+        } else {
+            await page.locator('#reauth-password').fill(outcome === 'confirmed' ? password : 'WrongSynthetic123');
+            await page.locator('#reauth-password').press('Enter');
+            await expect(page.locator('#account-status')).toContainText(outcome === 'confirmed' ? 'Identity confirmed' : 'invalid credentials');
+        }
+        release();
+        await expect(page.locator('#account-list li')).toHaveCount(1);
+        await expect(page.locator('#session-list li')).toHaveCount(1);
+        await expect(page.locator('#account-list').getByRole('button', { name: 'Save role' })).toBeEnabled();
+        await expect.poll(() => reads).toBe(6);
+        if (outcome === 'token-acknowledged') await expect(page.locator('#token-list')).toContainText('interrupted-token');
+    });
+}
 test('cached Admin navigation cancels the explicit restore resumption and unlocks the page', async ({ page }) => {
     const passphrase = 'DisposableBackupPassphrase123';
     const exported = await page.request.post('/api/backup/export', { headers: { Origin: new URL(page.url()).origin }, data: { passphrase, include_known_hosts: true } });

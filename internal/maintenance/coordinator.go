@@ -378,3 +378,20 @@ func (s *MemoryStore) Save(_ context.Context, state State) error {
 	s.state = state
 	return nil
 }
+
+// TryProbe grants a read-only view without retrying pending releases or touching
+// persistence. Holding the lease prevents DB replacement during the short probe.
+func (c *Coordinator) TryProbe() (*SharedLease, Snapshot, bool) {
+	if c == nil {
+		return nil, Snapshot{}, false
+	}
+	if !c.gate.TryRLock() {
+		return nil, c.Snapshot(), false
+	}
+	state := c.Snapshot()
+	if state.Active {
+		c.gate.RUnlock()
+		return nil, state, false
+	}
+	return &SharedLease{coordinator: c}, state, true
+}

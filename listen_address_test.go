@@ -45,7 +45,7 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 			"resolveListenAddr(os.Getenv)",
 			"net.Listen(\"tcp\", listenAddr)",
 			"Addr:              listenAddr",
-			"newApplicationHTTPServer(listenAddr, sessionHandler(r))",
+			"newApplicationHTTPServer(listenAddr, installationProbeHandler(deps, sessionHandler(r)))",
 			"server.Serve(listener)",
 		},
 		"Dockerfile": {

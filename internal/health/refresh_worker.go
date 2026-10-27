@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	installationhealthpkg "debian-updater/internal/installationhealth"
 	"debian-updater/internal/servers"
 )
 
@@ -84,6 +85,7 @@ type refreshRetryState struct {
 }
 
 type RefreshWorker struct {
+	health  installationhealthpkg.Worker
 	deps    RefreshWorkerDeps
 	options RefreshWorkerOptions
 
@@ -171,8 +173,12 @@ func (w *RefreshWorker) RunOnce(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	w.health.Tick(w.deps.Now())
+	var sweepErr error
+	defer func() { w.health.Finish(w.deps.Now(), sweepErr) }()
 	facts, err := w.deps.LatestFacts()
 	if err != nil {
+		sweepErr = err
 		w.deps.Logf("automatic host facts refresh could not load current facts: %v", err)
 		return
 	}
@@ -294,4 +300,8 @@ func stableRefreshJitter(name string, window time.Duration) time.Duration {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(name))
 	return time.Duration(hash.Sum64() % uint64(window))
+}
+
+func (w *RefreshWorker) WorkerHealth(enabled bool) installationhealthpkg.WorkerSnapshot {
+	return w.health.Snapshot(enabled)
 }

@@ -39,6 +39,7 @@
                 <a href="#admin-section-scheduled-policies" data-admin-section-link="scheduled-policies"><span>Policies</span><small data-admin-section-nav-summary="scheduled-policies">Loading</small></a>
                 <a href="#admin-section-scheduled-runs" data-admin-section-link="scheduled-runs"><span>Scheduled Runs</span><small data-admin-section-nav-summary="scheduled-runs">Loading</small></a>
                 <a href="#admin-section-backup" data-admin-section-link="backup"><span>Backup</span><small data-admin-section-nav-summary="backup">Loading</small></a>
+                <a href="#admin-section-installation" data-admin-section-link="installation"><span>Installation Health</span><small data-admin-section-nav-summary="installation">Unavailable</small></a>
                 <a href="#admin-section-metrics" data-admin-section-link="metrics"><span>Metrics</span><small data-admin-section-nav-summary="metrics">Loading</small></a>
             </div>
         </nav>
@@ -1000,6 +1001,30 @@
             </div>
         </section>
 
+        <section class="workspace fade-in section-spaced admin-workspace-section" id="admin-section-installation" data-admin-section="installation" aria-labelledby="admin-section-installation-heading">
+            <div class="workspace-head">
+                <div><div class="eyebrow">Local operations</div><h2 id="admin-section-installation-heading" tabindex="-1">Installation Health</h2>
+                    <p class="muted workspace-note">Observed local runtime facts. Disabled workers are expected. Server health is shown in Observability. Refresh to collect a new snapshot.</p></div>
+                <div class="admin-section-controls">
+                    <span class="admin-section-summary" data-admin-section-summary="installation" hidden>Installation facts unavailable</span>
+                    <span class="admin-section-lifecycle" data-admin-section-lifecycle="installation" role="status"><span data-admin-section-status>Unavailable</span><span data-admin-section-refreshed hidden></span><button class="btn-ghost inline-btn admin-section-retry" type="button" data-admin-section-retry="installation" hidden>Retry</button></span>
+                    <button class="btn-ghost inline-btn" type="button" data-admin-section-retry="installation">Refresh</button>
+                    <button class="btn-ghost inline-btn admin-section-toggle" type="button" data-admin-section-toggle="installation" aria-expanded="true" aria-controls="admin-section-installation-content"><span data-admin-section-toggle-label>Collapse</span><span class="admin-section-toggle-icon" aria-hidden="true"></span></button>
+                </div>
+            </div>
+            <div class="admin-section-content" id="admin-section-installation-content" data-admin-section-content="installation">
+                <dl class="metrics-credential-facts" id="installation-health-facts">
+                    <div><dt>Readiness</dt><dd id="installation-state">Unavailable</dd></div>
+                    <div><dt>Observed</dt><dd id="installation-checked">Unavailable</dd></div>
+                    <div><dt>Verified backup evidence</dt><dd id="installation-backup">Unavailable</dd></div>
+                    <div><dt>Notifications</dt><dd id="installation-notifications">Unavailable</dd></div>
+                    <div><dt>Local storage</dt><dd id="installation-storage">Unavailable</dd></div>
+                </dl>
+                <div class="table-wrap"><table><thead><tr><th>Worker</th><th>State</th><th>Last tick</th><th>Last progress</th><th>Last error</th><th>Observed errors</th></tr></thead><tbody id="installation-workers"></tbody></table></div>
+                <p class="muted">Never observed and unavailable are unknown, not a zero age or proof of health. Worker errors reset on process restart. Backup evidence does not revalidate archives on disk.</p>
+            </div>
+        </section>
+
         <section class="workspace fade-in section-spaced admin-workspace-section" id="admin-section-metrics" data-admin-section="metrics" aria-labelledby="admin-section-metrics-heading">
             <div class="workspace-head">
                 <div>
@@ -1146,7 +1171,7 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
-    <script src="/static/js/admin-page-interaction.js?v=metrics-credential-lifecycle-20260728a"></script>
+    <script src="/static/js/admin-page-interaction.js?v=installation-health-494"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
@@ -1154,6 +1179,6 @@
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-backup-adapter.js?v=account-commands-20261027"></script>
 <script src="/static/js/admin-policies-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/admin.js?v=installation-health-494-frontend-isolation-20261027"></script>
 </body>
 </html>

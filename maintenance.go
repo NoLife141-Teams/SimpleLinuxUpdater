@@ -26,6 +26,15 @@ func writeMaintenanceBlockedSnapshotResponseWithTime(c *gin.Context, state maint
 	if c == nil {
 		return
 	}
+	if c.Request != nil && (c.Request.URL.Path == "/metrics" || c.Request.URL.Path == "/api/installation/health") {
+		setNoStoreHeaders(c)
+		status := "maintenance"
+		if state.RecoveryRequired {
+			status = "recovery_required"
+		}
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"status": status})
+		return
+	}
 	payload := publicMaintenanceSnapshotPayload(state)
 	payload["error"] = "maintenance mode active"
 	payload["maintenance"] = true

@@ -19,6 +19,7 @@ import (
 )
 
 type AppDeps struct {
+	InstallationHealth  *installationHealth
 	PackageDeferralGate *sync.RWMutex
 	BackupAutomation    *backupAutomation
 	VulnerabilityScans  *vulnerabilityScanLifecycle

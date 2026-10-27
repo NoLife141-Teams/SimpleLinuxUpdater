@@ -1210,6 +1210,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
             "app-time",
             "application-checks",
             "backup",
+            "installation",
             "metrics",
             "notifications",
             "recent-activity",

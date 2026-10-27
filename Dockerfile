@@ -21,9 +21,11 @@ COPY --from=builder --chown=app:app /app/webserver .
 COPY --from=builder --chown=root:root /app/persistence-owner /usr/local/bin/persistence-owner
 COPY --from=builder --chown=app:app /app/templates ./templates
 COPY --from=builder --chown=app:app /app/static ./static
+COPY --chown=root:root docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh
 COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/persistence-owner
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/persistence-owner /usr/local/bin/docker-healthcheck.sh
 VOLUME ["/data"]
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 CMD ["docker-healthcheck.sh"]
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["./webserver"]

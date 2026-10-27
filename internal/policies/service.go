@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	installationhealthpkg "debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
@@ -75,6 +76,7 @@ type ScheduledRunResult struct {
 }
 
 type Service struct {
+	health        installationhealthpkg.Worker
 	deps          ServiceDeps
 	schedulerOnce sync.Once
 	schedulerMu   sync.Mutex
@@ -1199,7 +1201,9 @@ func (s *Service) rolloutScheduledSlot(policy Policy, nowLocal time.Time) (time.
 	return time.Time{}, false
 }
 
-func (s *Service) ProcessDue(now time.Time) error {
+func (s *Service) ProcessDue(now time.Time) (resultErr error) {
+	s.health.Tick(s.EnsureDeps().Now())
+	defer func() { s.health.Finish(s.EnsureDeps().Now(), resultErr) }()
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -1240,3 +1244,5 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen]
 }
+
+func (s *Service) WorkerHealth() installationhealthpkg.WorkerSnapshot { return s.health.Snapshot(true) }

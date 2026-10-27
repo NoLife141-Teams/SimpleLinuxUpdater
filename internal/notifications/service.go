@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	installationhealthpkg "debian-updater/internal/installationhealth"
 )
 
 const (
@@ -282,7 +284,8 @@ type ServiceDeps struct {
 }
 
 type Service struct {
-	deps ServiceDeps
+	health installationhealthpkg.Worker
+	deps   ServiceDeps
 
 	settingsMu            sync.Mutex
 	lifecycleMu           sync.Mutex
@@ -374,6 +377,7 @@ func NewService(deps ServiceDeps) *Service {
 }
 
 func (s *Service) run(ctx context.Context) {
+	defer s.health.Stop()
 	defer close(s.done)
 	pruneTicker := time.NewTicker(s.deps.PruneInterval)
 	defer pruneTicker.Stop()
@@ -410,21 +414,25 @@ func (s *Service) run(ctx context.Context) {
 		if !s.beginPersistence(ctx) {
 			return
 		}
+		s.health.Tick(s.deps.Now())
 		if s.conditionMonitoringStarted() {
 			if conditionTicker == nil {
 				conditionTicker = time.NewTicker(s.deps.ConditionPollInterval)
 				conditionC = conditionTicker.C
 			}
 			if err := s.reconcileConditions(ctx); err != nil {
+				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification condition reconciliation failed: %v", err)
 			}
 		}
 		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
+				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification outbox pruning failed: %v", err)
 			}
 		}
 		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
+			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox claim recovery failed: %v", err)
 		}
 		claimFailed := false
@@ -435,6 +443,7 @@ func (s *Service) run(ctx context.Context) {
 			}
 			row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now())
 			if err != nil {
+				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification outbox claim failed: %v", err)
 				claimFailed = true
 				break
@@ -457,6 +466,7 @@ func (s *Service) run(ctx context.Context) {
 			return
 		}
 		if claimFailed {
+			s.health.Stop()
 			s.endPersistence()
 			delay := s.deps.PollInterval
 			if delay <= 0 {
@@ -473,6 +483,8 @@ func (s *Service) run(ctx context.Context) {
 		nextAt, scheduled, err := s.deps.NextOutboxWake(ctx, s.database(), s.deps.ClaimTTL)
 		s.endPersistence()
 		if err != nil {
+			s.health.Error(s.deps.Now())
+			s.health.Stop()
 			s.deps.Logf("notification outbox wake scheduling failed: %v", err)
 			delay := s.deps.PollInterval
 			if delay <= 0 {
@@ -482,6 +494,7 @@ func (s *Service) run(ctx context.Context) {
 			retryC = retryTimer.C
 			continue
 		}
+		s.health.Finish(s.deps.Now(), nil)
 		if !scheduled {
 			continue
 		}
@@ -768,6 +781,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 			}, now)
 		})
 		if err != nil {
+			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
 		}
 		return
@@ -783,6 +797,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 			}, now)
 		})
 		if err != nil {
+			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox destination-change persistence failed for %q: %v", row.ID, err)
 		}
 		return
@@ -790,6 +805,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
 	status, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
+	if deliveryErr != nil {
+		s.health.Error(s.deps.Now())
+	}
 	cancelAttempt()
 	outcome := outboxOutcome{
 		Attempts:    status.Attempts,
@@ -821,10 +839,12 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 	})
 	cancelPersist()
 	if err != nil {
+		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
 		return
 	}
 	if err := s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) }); err != nil {
+		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	if outcome.State == outboxStateRetrying {
@@ -1903,4 +1923,33 @@ func (s *Service) conditionMonitoringStarted() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.monitoringStarted && !s.closing
+}
+
+// InstallationHealth exposes aggregate facts only. It does not decrypt settings,
+// attempt delivery, recover claims, or enumerate destinations or accepted work.
+func (s *Service) InstallationHealth(ctx context.Context) (installationhealthpkg.WorkerSnapshot, bool, int, int, int, error) {
+	worker := s.health.Snapshot(false)
+	db := s.database()
+	if db == nil {
+		return worker, false, 0, 0, 0, errors.New("notification persistence unavailable")
+	}
+	var raw string
+	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return worker, false, 0, 0, 0, err
+	}
+	var settings persistedSettings
+	if raw != "" {
+		if err = json.Unmarshal([]byte(raw), &settings); err != nil {
+			return worker, false, 0, 0, 0, err
+		}
+	}
+	enabled := settings.Enabled || settings.DiscordEnabled || settings.TelegramEnabled
+	worker.Enabled = enabled
+	var pending, retrying, failed int
+	err = db.QueryRowContext(ctx, `SELECT
+ COALESCE(SUM(CASE WHEN state IN (?,?) THEN 1 ELSE 0 END),0),
+ COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0),
+ COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0) FROM notification_outbox`, outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed).Scan(&pending, &retrying, &failed)
+	return worker, enabled, pending, retrying, failed, err
 }

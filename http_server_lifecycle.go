@@ -128,6 +128,9 @@ func shutdownApplication(server *http.Server, waitForScheduler func(), cancelMai
 }
 
 func main() {
+	if handled, code := runInstallationProbeCommand(os.Args[1:], os.Getenv); handled {
+		os.Exit(code)
+	}
 	if handled, code := runHelperCommand(os.Args[1:], os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
@@ -173,8 +176,8 @@ func main() {
 	if monitor, ok := deps.NotificationService.(interface{ StartConditionMonitoring() }); ok {
 		monitor.StartConditionMonitoring()
 	}
-	startAuditPruner(shutdownCtx)
-	startJobLogPruner(shutdownCtx, deps.CurrentJobManager)
+	startAuditPruner(shutdownCtx, installationWorkerObservation{&deps.InstallationHealth.auditPruner, deps.Now})
+	startJobLogPruner(shutdownCtx, deps.CurrentJobManager, installationWorkerObservation{&deps.InstallationHealth.jobLogPruner, deps.Now})
 	startPolicyScheduler(deps.PolicyService, deps.PolicyRepository, shutdownCtx, PolicySchedulerOptions{})
 	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
@@ -186,10 +189,11 @@ func main() {
 		deps.BackupAutomation.Start(shutdownCtx)
 	}
 	defer StopAuthRateLimiters()
-	server := newApplicationHTTPServer(listenAddr, sessionHandler(r))
+	server := newApplicationHTTPServer(listenAddr, installationProbeHandler(deps, sessionHandler(r)))
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-shutdownCtx.Done()
+		deps.InstallationHealth.setPhase("stopping")
 		shutdownApplication(server, func() {
 			deps.PolicyService.WaitScheduler()
 			if deps.BackupAutomation != nil {

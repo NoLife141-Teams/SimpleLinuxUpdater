@@ -389,3 +389,61 @@ func TestBulkInventoryPreservesAuxiliaryFactsAndTrust(t *testing.T) {
 		t.Fatalf("audit actor %q %v", actor, err)
 	}
 }
+
+func TestBulkInventoryActualCommitFailureRollsBackDatabaseRuntimeAndRevision(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	cookie := app.authenticate(t)
+	for _, name := range []string{"a", "b"} {
+		if _, err := app.Deps.ServerInventoryService.Create(Server{Name: name, Host: name + ".invalid", User: "root", Disabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disabled := false
+	draft := serverpkg.BulkDraft{Names: []string{"a", "b"}, Disabled: &disabled}
+	preview := bulkPreviewAPI(t, app, cookie, draft)
+	// A deferred FK violation permits every INSERT and the revision hook to
+	// finish, then fails SQLite COMMIT itself. The test database is disposable.
+	for _, statement := range []string{
+		"PRAGMA foreign_keys=ON",
+		"CREATE TABLE bulk_commit_guard (target TEXT REFERENCES servers(name) DEFERRABLE INITIALLY DEFERRED)",
+		"CREATE TRIGGER bulk_commit_failure AFTER INSERT ON servers BEGIN INSERT INTO bulk_commit_guard(target) VALUES ('missing'); END",
+	} {
+		if _, err := app.Deps.DB().Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository := policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{DB: app.Deps.DB})
+	revision, err := repository.LoadSchedulerStateRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := app.Deps.ServerState.CloneServers()
+	statuses := app.Deps.ServerState.CloneStatusMap()
+	body, _ := json.Marshal(map[string]string{"batch_id": preview.BatchID})
+	if rec := importAPIRequest(app, cookie, "POST", "/api/servers/bulk", body); rec.Code != 500 {
+		t.Fatalf("COMMIT failure %d %s", rec.Code, rec.Body.String())
+	}
+	if !reflect.DeepEqual(before, app.Deps.ServerState.CloneServers()) || !reflect.DeepEqual(statuses, app.Deps.ServerState.CloneStatusMap()) {
+		t.Fatal("COMMIT failure changed runtime")
+	}
+	stored, err := (serverpkg.SQLiteRepository{DB: app.Deps.DB, Decrypt: decryptSecret}).Load()
+	if err != nil || !reflect.DeepEqual(before, stored) {
+		t.Fatalf("COMMIT failure changed database: %v", err)
+	}
+	afterRevision, err := repository.LoadSchedulerStateRevision()
+	if err != nil || afterRevision != revision {
+		t.Fatalf("COMMIT failure retained generation increment: %d -> %d, %v", revision, afterRevision, err)
+	}
+	var guards int
+	if err := app.Deps.DB().QueryRow("SELECT count(*) FROM bulk_commit_guard").Scan(&guards); err != nil || guards != 0 {
+		t.Fatal("COMMIT failure retained writes")
+	}
+	if _, err := app.Deps.DB().Exec("DROP TRIGGER bulk_commit_failure"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := bulkPreviewAPI(t, app, cookie, draft)
+	body, _ = json.Marshal(map[string]string{"batch_id": fresh.BatchID})
+	if rec := importAPIRequest(app, cookie, "POST", "/api/servers/bulk", body); rec.Code != 200 {
+		t.Fatalf("connection not reusable after failed COMMIT: %d %s", rec.Code, rec.Body.String())
+	}
+}

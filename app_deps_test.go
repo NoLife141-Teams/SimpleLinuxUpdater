@@ -17,6 +17,7 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
@@ -747,6 +748,9 @@ func TestAppDepsDefaultsCreateFreshRuntimeState(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = routeDB.Close() })
 	dbProvider := func() *sql.DB { return routeDB }
+	if err := vulnerabilities.EnsureSchema(routeDB); err != nil {
+		t.Fatal(err)
+	}
 	if err := ensureJobSchema(routeDB); err != nil {
 		t.Fatalf("ensure job schema: %v", err)
 	}

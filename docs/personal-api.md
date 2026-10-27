@@ -217,3 +217,43 @@ Controlled reboot (`POST /api/reboot/{name}`) and APT repair
 (`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
 and `Content-Type: application/json`. Both use `maintenance:write`; omitted or
 false confirmation returns `400` before any host operation is admitted.
+
+## Installed vulnerability scan lifecycle
+
+`POST /api/servers/{name}/vulnerabilities/scan` requires `maintenance:write`
+and accepts cookie sessions or operational personal Bearer credentials. Its
+`202` response includes `scan_id`, `job_id` (the same durable execution identity),
+`status: running` and `scope: installed_packages`. Two scans maximum run globally;
+one operation maximum runs on each Server. Busy Server, capacity, disabled scan
+or application maintenance returns `409`; an unknown Server returns `404`.
+
+`POST /api/servers/{name}/vulnerabilities/scans/{scan_id}/cancel` uses the same
+permission and transports. It returns `202` with `status: cancelling` and the
+exact `scan_id` while execution drains. The Server reservation, global capacity
+and Maintenance Coordination shared lease stay held until SSH, source HTTP and
+persistence have returned. Repeating the command during drainage is idempotent.
+An old identity, finished scan, or identity for a different Server returns `409`
+without stopping any other scan. Missing authentication returns `401`; readers
+and tokens without `maintenance:write` receive `403`.
+
+`GET /api/servers/{name}/vulnerabilities` (`operational:read`) exposes
+`last_attempt.scan_id`, `progress`, start/finish timestamps and state
+(`running`, `complete`, `partial`, `unavailable`, `cancelled`, `interrupted`).
+`progress` contains the observed phase (`inventory`, `metadata`, `evaluation`,
+`persistence`) and counts for `inventoried`, `metadata`, `evaluated`, `unknown`,
+`unsupported` and `findings`. Metadata counts packages with collected provenance,
+not packages proven supported. First entry into each phase publishes promptly;
+subsequent updates are bounded to one per second. No percentage or ETA is claimed.
+Dashboard/SSE includes the same sanitary `scan_id` and `progress` facts. Readers
+can inspect these facts; job detail and raw logs still require `logs:read`, and
+Status exposes cancellation only to maintenance operators/administrators.
+
+Startup and backup restoration canonically persist orphaned running attempts as
+`interrupted`, retaining their durable identity and recording the terminal audit
+once. Periodic interruption retry waits between five minutes and one hour (the
+configured scan interval clamped to that range), measured from interruption
+reconciliation; there is no immediate restart loop. Cancelling an operation does
+not schedule an immediate retry. The previous accepted observation, last complete
+success and finding ledger survive cancellation/interruption; freshness becomes
+stale and incomplete coverage never falsely resolves findings. Scans remain
+read-only and never change packages or refresh APT indexes.

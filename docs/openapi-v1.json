@@ -156,7 +156,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BusinessObject"
+                  "$ref": "#/components/schemas/VulnerabilityObservation"
                 }
               }
             }
@@ -3234,6 +3234,140 @@
         },
         "x-slu-request-body-limit-bytes": 1048576
       }
+    },
+    "/api/servers/{name}/vulnerabilities/scans/{scan_id}/cancel": {
+      "post": {
+        "operationId": "cancelInstalledVulnerabilityScan",
+        "summary": "Cancel the exact active scan on this Server",
+        "x-slu-scope": "maintenance:write",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Cancellation requested; wait for terminal observation/dashboard progress. Repeating while draining is idempotent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VulnerabilityScanCancellation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Scan is no longer active for this Server (including stale or different-Server identity); no effect.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-slu-request-body-limit-bytes": 1048576,
+        "description": "Cookie sessions or operational personal Bearer token with maintenance:write. Returns 202 while cancellation drains SSH, source HTTP and persistence; resources remain reserved until drainage. A stale identity or identity belonging to another Server returns 409 without affecting the active scan."
+      }
     }
   },
   "components": {
@@ -3499,7 +3633,9 @@
         "type": "object",
         "required": [
           "status",
-          "scope"
+          "scope",
+          "scan_id",
+          "job_id"
         ],
         "properties": {
           "status": {
@@ -3513,8 +3649,161 @@
             "enum": [
               "installed_packages"
             ]
+          },
+          "scan_id": {
+            "type": "string",
+            "description": "Durable identity of this admitted scan; use this exact identity for cancellation."
+          },
+          "job_id": {
+            "type": "string",
+            "description": "Job State Transition identity, equal to scan_id. Job/log endpoints retain logs:read."
           }
         }
+      },
+      "VulnerabilityScanCancellation": {
+        "type": "object",
+        "required": [
+          "scan_id",
+          "status"
+        ],
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "cancelling"
+            ]
+          }
+        }
+      },
+      "VulnerabilityScanProgress": {
+        "type": "object",
+        "description": "Sanitary observed facts shared by direct observation and dashboard/SSE. No raw logs, percentages or ETA. Each first phase publishes immediately, then counters are bounded to one publication per second.",
+        "required": [
+          "phase",
+          "inventoried",
+          "metadata",
+          "evaluated",
+          "unknown",
+          "unsupported",
+          "findings"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "",
+              "inventory",
+              "metadata",
+              "evaluation",
+              "persistence"
+            ]
+          },
+          "inventoried": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evaluated": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unknown": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unsupported": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "findings": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VulnerabilityScanAttempt": {
+        "type": "object",
+        "required": [
+          "state",
+          "scope",
+          "started_at",
+          "finished_at",
+          "progress"
+        ],
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "",
+              "running",
+              "complete",
+              "partial",
+              "unavailable",
+              "cancelled",
+              "interrupted"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "",
+              "installed_packages"
+            ]
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "finished_at": {
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/VulnerabilityScanProgress"
+          },
+          "errors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": true
+      },
+      "VulnerabilityObservation": {
+        "type": "object",
+        "properties": {
+          "last_attempt": {
+            "$ref": "#/components/schemas/VulnerabilityScanAttempt"
+          },
+          "accepted": {
+            "$ref": "#/components/schemas/VulnerabilityScanAttempt"
+          },
+          "last_success": {
+            "type": "string"
+          },
+          "findings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "description": "Accepted scan and durable finding ledger survive cancelled, interrupted, unavailable and partial attempts. Partial coverage never resolves absent findings."
       }
     }
   }

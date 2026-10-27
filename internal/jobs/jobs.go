@@ -12,16 +12,17 @@ import (
 )
 
 const (
-	KindUpdate         = "update"
-	KindAutoremove     = "autoremove"
-	KindAptRepair      = "apt_repair"
-	KindReboot         = "reboot"
-	KindSudoersEnable  = "sudoers_enable"
-	KindSudoersDisable = "sudoers_disable"
-	KindCVEEnrichment  = "cve_enrichment"
-	KindBackupExport   = "backup_export"
-	KindBackupRestore  = "backup_restore"
-	KindScheduledScan  = "scheduled_scan"
+	KindUpdate            = "update"
+	KindAutoremove        = "autoremove"
+	KindAptRepair         = "apt_repair"
+	KindReboot            = "reboot"
+	KindSudoersEnable     = "sudoers_enable"
+	KindSudoersDisable    = "sudoers_disable"
+	KindCVEEnrichment     = "cve_enrichment"
+	KindBackupExport      = "backup_export"
+	KindBackupRestore     = "backup_restore"
+	KindScheduledScan     = "scheduled_scan"
+	KindVulnerabilityScan = "vulnerability_scan"
 
 	StatusQueued          = "queued"
 	StatusRunning         = "running"

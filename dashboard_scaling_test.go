@@ -29,6 +29,7 @@ import (
 	observabilitypkg "debian-updater/internal/observability"
 	serverpkg "debian-updater/internal/servers"
 	"debian-updater/internal/testutil/dashboardfixture"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
@@ -583,8 +584,26 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		t.Fatal("E2E helper requires explicit IPv4 loopback")
 	}
 	a := newScalingRuntime(t, 0, false, false)
+	if phase := os.Getenv("SLU_E2E_VULNERABILITY_PHASE"); phase != "" {
+		switch phase {
+		case "inventory", "metadata", "evaluation", "persistence":
+		default:
+			t.Fatal("invalid isolated scan transport phase")
+		}
+		a.deps.VulnerabilityScans.deps.UpdateService = controlledInstalledScanService(phase, nil, nil, nil)
+		if phase == "persistence" {
+			repository := vulnerabilities.Repository{DB: a.deps.DB}
+			a.deps.VulnerabilityScans.saveResult = func(ctx context.Context, name string, scan vulnerabilities.Scan, guard func(func() error) error) (vulnerabilities.Observation, error) {
+				<-ctx.Done()
+				return repository.SaveGuarded(ctx, name, scan, guard)
+			}
+		}
+	}
 	originalScan := scanHostKeyFunc
 	scanHostKeyFunc = func(string, int) (ssh.PublicKey, error) {
+		if os.Getenv("SLU_E2E_VULNERABILITY_PHASE") != "" {
+			return ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+		}
 		return nil, fmt.Errorf("SSH host key scanning is unavailable in the isolated browser fixture")
 	}
 	t.Cleanup(func() { scanHostKeyFunc = originalScan })
@@ -631,6 +650,15 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(listener) }()
 	<-ctx.Done()
+	if os.Getenv("SLU_E2E_VULNERABILITY_PHASE") != "" {
+		scans := a.deps.VulnerabilityScans
+		scans.mu.Lock()
+		for _, op := range scans.active {
+			op.cancel()
+		}
+		scans.mu.Unlock()
+		waitForUpdateRunners()
+	}
 	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	if err := srv.Shutdown(shutdown); err != nil {

@@ -13,6 +13,7 @@
             ? lifecycle.observer(root.ResizeObserver)
             : undefined;
         const LOG_BOTTOM_THRESHOLD = 20;
+        const canManageMaintenance = ["admin", "operator"].includes(document.body.dataset.accountRole);
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
         const statusRendering = window.StatusRendering.create(document);
@@ -1312,10 +1313,12 @@
                 <h3>Installed package vulnerabilities</h3>
                 <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
                 <p>${escapeHtml(info.coverageLabel)}</p>
+                ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}
                 <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
                 <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
                 ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
                 <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
+                ${info.state === "running" && info.scan_id && canManageMaintenance ? `<button type="button" class="inline-btn" data-action="cancel-vulnerability-scan" data-name="${safeDataName}" data-scan-id="${escapeHtml(info.scan_id)}">Cancel vulnerability scan</button>` : ""}
                 ${findings ? `<details class="installed-vulnerability-findings" data-name="${safeDataName}" ${findingsOpen ? "open" : ""}><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
                 <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
             </section>`;
@@ -2674,7 +2677,7 @@
             }
         }
 
-        function handleServerAction(action, name, tab = "logs") {
+        function handleServerAction(action, name, tab = "logs", scanID = "") {
             if (!name) return;
             if (action === "open-drawer") {
                 openDrawer(name, tab || "logs");
@@ -2724,6 +2727,10 @@
                 disablePasswordlessApt(name);
                 return;
             }
+            if (action === "cancel-vulnerability-scan") {
+                cancelVulnerabilityScan(name, scanID);
+                return;
+            }
             if (action === "scan-vulnerabilities") {
                 scanVulnerabilities(name);
                 return;
@@ -2751,6 +2758,7 @@
                     button.dataset.action || "",
                     button.dataset.name || "",
                     button.dataset.tab || "logs",
+                        button.dataset.scanId || "",
                 );
                 return;
             }
@@ -2817,6 +2825,7 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
+                        button.dataset.scanId || "",
                     );
                     return;
                 }
@@ -3838,6 +3847,21 @@
             }
         }
 
+        async function cancelVulnerabilityScan(name, scanID) {
+            const lifetime = lifecycle.capture();
+            if (!scanID) return;
+            try {
+                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/vulnerabilities/scans/${encodeURIComponent(scanID)}/cancel`, {method: "POST"});
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const payload = await response.json().catch(() => ({}));
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!response.ok) { statusActionAdapter.notify(payload.error || "Failed to cancel vulnerability scan"); return; }
+                await fetchServers(true, "vulnerability-scan-cancelling");
+            } catch (error) {
+                if (lifecycle.isCurrent(lifetime) && error?.name !== "AbortError") statusActionAdapter.notify("Failed to cancel vulnerability scan");
+            }
+        }
+
         async function scanVulnerabilities(name) {
             const lifetime = lifecycle.capture();
 
@@ -3940,6 +3964,7 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
+                        button.dataset.scanId || "",
                     );
                 }
             },

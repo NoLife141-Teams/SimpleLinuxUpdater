@@ -21,7 +21,7 @@ async function readOwnedReadiness(file, pid) {
 
 // Each scenario gets its own process and all process-local state, a fresh
 // temporary installation, and a port allocated atomically by the kernel.
-async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY) {
+async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY, transportEnvironment = {}) {
     if (!binary)
         throw new Error(
             "SLU_E2E_TEST_BINARY must name the disposable Go test composition",
@@ -44,6 +44,7 @@ async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY) {
                             !key.startsWith("SLU_SCALING_"),
                     ),
                 ),
+                ...transportEnvironment,
                 TMPDIR: directory,
                 GOMAXPROCS: "2",
                 SLU_SCALING_E2E_LISTEN: "127.0.0.1:0",

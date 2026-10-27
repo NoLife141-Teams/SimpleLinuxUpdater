@@ -89,6 +89,12 @@ func (deps AppDeps) initializeJobManager() error {
 	if jm == nil {
 		return fmt.Errorf("job manager unavailable")
 	}
+	deps.SetCurrentJobManager(jm)
+	if deps.VulnerabilityScans != nil {
+		if err := deps.VulnerabilityScans.Reconcile(context.Background()); err != nil {
+			return err
+		}
+	}
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return err
 	}
@@ -98,7 +104,6 @@ func (deps AppDeps) initializeJobManager() error {
 	if _, err := jm.PurgeExpiredLogs(); err != nil {
 		return err
 	}
-	deps.SetCurrentJobManager(jm)
 	return nil
 }
 

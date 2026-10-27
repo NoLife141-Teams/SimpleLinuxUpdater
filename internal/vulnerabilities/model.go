@@ -2,6 +2,7 @@
 package vulnerabilities
 
 import (
+	"context"
 	"sort"
 	"time"
 )
@@ -36,8 +37,33 @@ type Package struct {
 	Reason        string `json:"reason,omitempty"`
 }
 
+// Progress contains observed facts only; no estimated percentage or ETA.
+type Progress struct {
+	Phase       string `json:"phase"`
+	Inventoried int    `json:"inventoried"`
+	Metadata    int    `json:"metadata"`
+	Evaluated   int    `json:"evaluated"`
+	Unknown     int    `json:"unknown"`
+	Unsupported int    `json:"unsupported"`
+	Findings    int    `json:"findings"`
+}
+
+type progressContextKey struct{}
+
+func WithProgress(ctx context.Context, publish func(Progress)) context.Context {
+	return context.WithValue(ctx, progressContextKey{}, publish)
+}
+func PublishProgress(ctx context.Context, progress Progress) {
+	if publish, ok := ctx.Value(progressContextKey{}).(func(Progress)); ok {
+		publish(progress)
+	}
+}
+
 type Scan struct {
-	State       string    `json:"state"` // complete, partial, unavailable
+	ID       string   `json:"scan_id,omitempty"`
+	Progress Progress `json:"progress"`
+
+	State       string    `json:"state"` // running, complete, partial, unavailable, cancelled, interrupted
 	Scope       string    `json:"scope"`
 	Distro      string    `json:"distro,omitempty"`
 	StartedAt   string    `json:"started_at"`
@@ -54,10 +80,11 @@ type Scan struct {
 // Observation preserves the last accepted inventory independently of the last
 // attempt. Findings are a durable ledger: partial scans can add, never resolve.
 type Observation struct {
-	LastAttempt Scan      `json:"last_attempt"`
-	Accepted    *Scan     `json:"accepted,omitempty"`
-	LastSuccess string    `json:"last_success,omitempty"`
-	Findings    []Finding `json:"findings"`
+	AuditedScanID string    `json:"audited_scan_id,omitempty"`
+	LastAttempt   Scan      `json:"last_attempt"`
+	Accepted      *Scan     `json:"accepted,omitempty"`
+	LastSuccess   string    `json:"last_success,omitempty"`
+	Findings      []Finding `json:"findings"`
 }
 
 func Accept(previous Observation, scan Scan) Observation {
@@ -138,7 +165,7 @@ func Freshness(o Observation, now time.Time, maxAge time.Duration) string {
 		return "unknown"
 	}
 	at, err := time.Parse(time.RFC3339, o.Accepted.FinishedAt)
-	if err != nil || o.LastAttempt.State == "unavailable" || now.Sub(at) > maxAge || at.After(now) {
+	if err != nil || (o.LastAttempt.State == "unavailable" || o.LastAttempt.State == "cancelled" || o.LastAttempt.State == "interrupted") || now.Sub(at) > maxAge || at.After(now) {
 		return "stale"
 	}
 	return "fresh"

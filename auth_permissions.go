@@ -35,7 +35,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("inventory:write", false, "POST", "/api/servers", "/api/servers/:name/key", "/api/keys/global", "/api/hostkeys/scan", "/api/hostkeys/trust", "/api/hostkeys/clear", "/api/sudoers/:name", "/api/sudoers/disable/:name")
 	add("inventory:write", false, "PUT", "/api/servers/:name")
 	add("inventory:write", false, "PUT", "/api/servers/:name/availability")
-	add("inventory:write", false, "POST", "/api/servers/onboarding", "/api/servers/onboarding/check", "/api/servers/import", "/api/servers/import/preview")
+	add("inventory:write", false, "POST", "/api/servers/onboarding", "/api/servers/onboarding/check", "/api/servers/import", "/api/servers/import/preview", "/api/servers/bulk", "/api/servers/bulk/preview")
 	add("inventory:write", false, "GET", "/api/servers/import/example/:format")
 	add("inventory:write", false, "DELETE", "/api/servers/:name", "/api/servers/:name/password", "/api/servers/:name/key", "/api/keys/global")
 	add("inventory:write", false, "GET", "/api/keys/global", "/api/postcheck-profiles", "/api/servers/:name/postchecks")

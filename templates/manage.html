@@ -247,6 +247,27 @@
                     <span class="muted filter-result" id="server-filter-result" role="status">Loading inventory…</span>
                 </div>
 
+                <div id="inventory-bulk" class="card" aria-label="Bulk inventory administration">
+                    <h3>Bulk inventory administration</h3>
+                    <p class="muted">Select individual checkboxes on each page, up to 1,000 hosts. Changing filters or page size clears selection. Pagination keeps explicitly selected hosts; hidden hosts are never selected automatically.</p>
+                    <p id="bulk-selection-count" role="status" aria-live="polite">0 selected</p>
+                    <details><summary>Selected hosts</summary><ul id="bulk-selected-names"></ul></details>
+                    <div class="import-actions">
+                        <label for="bulk-add-tags">Add tags<input id="bulk-add-tags" type="text" maxlength="4096" placeholder="production, web"></label>
+                        <label for="bulk-remove-tags">Remove tags<input id="bulk-remove-tags" type="text" maxlength="4096" placeholder="staging"></label>
+                        <label for="bulk-availability">Availability<select id="bulk-availability"><option value="">Keep current availability</option><option value="enable">Enable</option><option value="disable">Disable</option></select></label>
+                        <button class="btn-ghost" id="bulk-clear" type="button">Clear selection</button>
+                        <button class="primary-action" id="bulk-preview-button" type="button" disabled>Preview changes</button>
+                    </div>
+                    <p id="bulk-feedback" role="status" aria-live="polite" tabindex="-1"></p>
+                    <div id="bulk-preview" hidden>
+                        <h4 id="bulk-preview-heading" tabindex="-1">Review bulk changes</h4><p id="bulk-notice" class="muted"></p>
+                        <div class="import-table-scroll" tabindex="0" role="region" aria-label="Bulk inventory preview"><table class="import-table"><thead><tr><th>Server</th><th>Before</th><th>After</th><th>Policy schedule before</th><th>Policy schedule after</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div>
+                        <button class="primary-action" id="bulk-review-button" type="button">Review confirmation</button>
+                    </div>
+                    <div id="bulk-confirmation" hidden><h4 id="bulk-confirm-heading" tabindex="-1">Confirm reviewed bulk changes</h4><p id="bulk-confirm-count"></p><p>The confirmation applies exactly to the selection, normalized values and revisions in this preview. Enabling resumes normal scheduling and automatic refreshes.</p><div class="import-actions"><button class="btn-ghost" id="bulk-back" type="button">Back to preview</button><button class="primary-action" id="bulk-confirm" type="button">Apply reviewed changes</button></div></div>
+                </div>
+
                 <div class="table-shell">
                     <div class="table-shell-head">
                         <div class="table-shell-title">
@@ -508,7 +529,7 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/manage-page-interaction.js?v=inventory-import-20261026"></script>
+    <script src="/static/js/manage-page-interaction.js?v=bulk-inventory-20261027"></script>
     <script src="/static/js/server-onboarding-interaction.js?v=server-onboarding-20261009"></script>
     <script src="/static/js/server-onboarding.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/manage-modals.js?v=frontend-isolation-20261027"></script>
@@ -517,6 +538,7 @@
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/manage-workspace-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/manage-audit-adapter.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/inventory-bulk.js?v=bulk-inventory-20261027"></script>
 <script src="/static/js/manage.js?v=frontend-isolation-20261027"></script>
 </body>
 </html>

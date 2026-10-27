@@ -74,6 +74,9 @@ func registerServerInventoryImportRoutes(r *gin.Engine, deps AppDeps, commands *
 // Split only oversized records, preserving the batch identity and total counts
 // in each numbered part instead of relying on the audit truncation preview.
 func inventoryImportAuditRecords(event serverpkg.CommandAudit) []serverpkg.CommandAudit {
+	if _, ok := event.Meta["changes"]; ok {
+		return inventoryBulkAuditRecords(event)
+	}
 	raw, err := json.Marshal(event.Meta)
 	names, ok := event.Meta["created_names"].([]string)
 	if err != nil || len(raw) <= auditpkg.MetaMaxLen || !ok || len(names) == 0 {
@@ -104,6 +107,38 @@ func inventoryImportAuditRecords(event serverpkg.CommandAudit) []serverpkg.Comma
 		record := event
 		record.Message = fmt.Sprintf("%s (part %d of %d)", event.Message, index+1, len(chunks))
 		record.Meta = metaFor(chunk, index+1, len(chunks))
+		records = append(records, record)
+	}
+	return records
+}
+
+// Bulk before/after values may exceed one record even for one target. UTF-8
+// JSON fragments are bounded after JSON escaping, numbered, and losslessly
+// reconstructable. Use the import audit entry point for both inventory batches.
+func inventoryBulkAuditRecords(event serverpkg.CommandAudit) []serverpkg.CommandAudit {
+	raw, _ := json.Marshal(event.Meta["changes"])
+	fragments := []string{}
+	var fragment strings.Builder
+	encodedSize := 2 // JSON string quotes.
+	for _, char := range string(raw) {
+		encoded, _ := json.Marshal(string(char))
+		cost := len(encoded) - 2
+		if encodedSize+cost > auditpkg.MetaMaxLen/2 && fragment.Len() > 0 {
+			fragments = append(fragments, fragment.String())
+			fragment.Reset()
+			encodedSize = 2
+		}
+		fragment.WriteRune(char)
+		encodedSize += cost
+	}
+	if fragment.Len() > 0 {
+		fragments = append(fragments, fragment.String())
+	}
+	records := make([]serverpkg.CommandAudit, 0, len(fragments))
+	for i, fragment := range fragments {
+		record := event
+		record.Meta = map[string]any{"batch_id": event.Meta["batch_id"], "selected_count": event.Meta["selected_count"], "part": i + 1, "parts": len(fragments), "changes_json_fragment": fragment}
+		record.Message = fmt.Sprintf("%s (part %d of %d)", event.Message, i+1, len(fragments))
 		records = append(records, record)
 	}
 	return records

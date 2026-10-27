@@ -35,6 +35,7 @@ timezone components had listeners without a complete page-remount contract.
 | `index-bulk-actions.js` | Scoped bulk controls and command-plan execution; consumes the same Status Page Interaction and synchronous snapshot reader as the shell. |
 | `status-transport.js` | Idempotent `start`/`init`, SSE, polling and reconnect backoff. `destroy` closes the stream, clears timers and rejects callbacks from superseded connections. |
 | `manage-workspace-adapter.js` | Section DOM, navigation/focus, scroll/resize scheduling and ResizeObserver. Section decisions stay in Manage Page Interaction. |
+| `inventory-bulk.js` | Explicit inventory selection controls, accepted per-host preview/confirmation/result rendering and HTTP effects. The shared Manage Page Interaction owns selection, drafts, preview generations and single-command admission; lost responses refresh current facts and require a fresh preview. |
 | `manage-audit-adapter.js` | Audit query input/time conversion, accepted table/detail rendering, clipboard and HTTP effects. |
 | `manage-modals.js` | Per-page modal focus stack, scroll lock, focus timers and file-label effects. |
 | Existing timezone/onboarding/import/deferral components | Their mounts now return destruction hooks; requests, listeners and deferred focus/DOM effects cannot survive page replacement. The application post-check adapter also rejects a response after destruction. |

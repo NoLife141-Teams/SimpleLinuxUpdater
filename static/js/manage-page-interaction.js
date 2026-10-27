@@ -86,6 +86,7 @@
         let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
         let audit = { query: { targetName: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         let inventoryImport = { generation: 0, phase: "file", fileName: "", format: "", fileValid: false, preview: null, selected: [], created: [], error: "", busy: false };
+        let inventoryBulk = { generation: 0, selected: [], addTags: "", removeTags: "", availability: "", phase: "draft", preview: null, busy: false, message: "" };
         const inFlightCommands = new Set();
         const inFlightCommandScopes = new Set();
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -405,6 +406,58 @@
         function dispatch(event) {
             const input = event || {};
             switch (input.type) {
+                case "bulkSelectionChanged": {
+                    if (inventoryBulk.busy) return [];
+                    const visible = new Set(projectedInventory().items.map(item => item.name));
+                    if (!visible.has(input.name)) return [];
+                    inventoryBulk.selected = inventoryBulk.selected.filter(name => name !== input.name);
+                    if (input.selected && inventoryBulk.selected.length < 1000) inventoryBulk.selected.push(input.name);
+                    inventoryBulk.generation++; inventoryBulk.phase = "draft"; inventoryBulk.preview = null; inventoryBulk.message = "";
+                    return [effect("render", { area: "bulk" })];
+                }
+                case "bulkDraftChanged":
+                    if (inventoryBulk.busy) return [];
+                    inventoryBulk = { ...inventoryBulk, ...(input.patch || {}), generation: inventoryBulk.generation + 1, phase: "draft", preview: null, message: "" };
+                    return [effect("render", { area: "bulk" })];
+                case "bulkSelectionCleared":
+                    if (inventoryBulk.busy) return [];
+                    inventoryBulk.selected = []; inventoryBulk.generation++; inventoryBulk.phase = "draft"; inventoryBulk.preview = null;
+                    return [effect("render", { area: "bulk" })];
+                case "bulkPreviewRequested": {
+                    if (inventoryBulk.busy || !inventoryBulk.selected.length) return [];
+                    inventoryBulk.busy = true; inventoryBulk.message = "";
+                    const draft = { names: clone(inventoryBulk.selected), add_tags: String(inventoryBulk.addTags).split(","), remove_tags: String(inventoryBulk.removeTags).split(",") };
+                    if (inventoryBulk.availability) draft.disabled = inventoryBulk.availability === "disable";
+                    return [effect("bulkRequest", { generation: inventoryBulk.generation, kind: "preview", body: draft })];
+                }
+                case "bulkPreviewReceived":
+                    if (input.generation !== inventoryBulk.generation || !inventoryBulk.busy) return [];
+                    inventoryBulk.busy = false; inventoryBulk.preview = clone(input.result); inventoryBulk.phase = "preview";
+                    return [effect("focusBulk", { id: "bulk-preview-heading" })];
+                case "bulkConfirmationRequested":
+                    if (inventoryBulk.busy || inventoryBulk.phase !== "preview" || !inventoryBulk.preview?.can_confirm) return [];
+                    inventoryBulk.phase = "confirmation";
+                    return [effect("focusBulk", { id: "bulk-confirm-heading" })];
+                case "bulkBackRequested":
+                    if (!inventoryBulk.busy && inventoryBulk.phase === "confirmation") inventoryBulk.phase = "preview";
+                    return [];
+                case "bulkCommitRequested":
+                    if (inventoryBulk.busy || inventoryBulk.phase !== "confirmation") return [];
+                    inventoryBulk.busy = true; inventoryBulk.phase = "committing";
+                    return [effect("bulkRequest", { generation: inventoryBulk.generation, kind: "commit", body: { batch_id: inventoryBulk.preview.batch_id } })];
+                case "bulkCommitReceived":
+                    if (input.generation !== inventoryBulk.generation || inventoryBulk.phase !== "committing") return [];
+                    inventoryBulk.busy = false;
+                    inventoryBulk.phase = input.result?.outcome === "success" ? "result" : "conflict";
+                    inventoryBulk.message = input.result?.outcome === "success" ? `Updated ${inventoryBulk.selected.length} servers. Batch ${input.result.preview.batch_id}.` : String(input.result?.error || "No changes accepted. Request a new preview.");
+                    inventoryBulk.preview = input.result?.preview || null;
+                    if (input.result?.outcome === "success") inventoryBulk.selected = [];
+                    return [effect("refresh", { streams: ["inventory", "audit"] }), effect("focusBulk", { id: "bulk-feedback" })];
+                case "bulkRequestFailed":
+                    if (input.generation !== inventoryBulk.generation || !inventoryBulk.busy) return [];
+                    inventoryBulk.busy = false; inventoryBulk.phase = "draft"; inventoryBulk.preview = null;
+                    inventoryBulk.message = input.uncertain ? "Result uncertain. Inventory is being refreshed. Check current values and audit, then request a new preview; do not repeat the previous confirmation." : String(input.error || "Preview failed. Request a new preview.");
+                    return [effect("refresh", { streams: ["inventory", "audit"] }), effect("focusBulk", { id: "bulk-feedback" })];
                 case "importFileSelected": {
                     if (inventoryImport.phase === "committing") return [];
                     const fileName = String(input.name || "");
@@ -484,8 +537,8 @@
                     return received("inventory", input.requestID, { items: inventory });
                 case "globalKeySnapshotReceived": if (input.requestID && streams.globalKey.inFlight !== input.requestID) return []; globalKeyAvailable = !!input.hasKey; if (!globalKeyAvailable && creationAuthenticationMethod === authentication.globalKey) creationAuthenticationMethod = authentication.password; return received("globalKey", input.requestID, { hasKey: globalKeyAvailable });
                 case "creationAuthenticationChanged": { const method = String(input.authenticationMethod || ""); if (creationAuthenticationMethods.has(method) && (method !== authentication.globalKey || globalKeyAvailable)) creationAuthenticationMethod = method; return [effect("render", { area: "creation" })]; }
-                case "filtersChanged": filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
-                case "filtersReset": filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
+                case "filtersChanged": if (!inventoryBulk.busy) { inventoryBulk.selected = []; inventoryBulk.preview = null; inventoryBulk.phase = "draft"; inventoryBulk.generation++; } filters = { ...filters, ...(input.patch || {}) }; filters.pageSize = pageSizes.has(Number(filters.pageSize)) ? Number(filters.pageSize) : 20; page = 1; return [effect("render", { area: "inventory" })];
+                case "filtersReset": if (!inventoryBulk.busy) { inventoryBulk.selected = []; inventoryBulk.preview = null; inventoryBulk.phase = "draft"; inventoryBulk.generation++; } filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
                 case "sectionCollapseToggled": if (workspace.collapsed[input.sectionID] !== undefined) workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID]; return [effect("render", { area: "workspace" })];
@@ -515,7 +568,7 @@
                 default: return [];
             }
         }
-        function getView() { return clone({ workspace: projectedWorkspace(), inventoryImport, inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
+        function getView() { return clone({ workspace: projectedWorkspace(), inventoryImport, inventoryBulk, inventory: projectedInventory(), creation: projectedCreation(), globalKeyAvailable, filters, sort, editor: projectedEditor(), audit: projectedAudit(), streams, commands: { inFlight: Array.from(inFlightCommands), scopes: Array.from(inFlightCommandScopes) } }); }
         return Object.freeze({ dispatch, getView });
     }
     return Object.freeze({ createStore, normalizePort, normalizeTags });

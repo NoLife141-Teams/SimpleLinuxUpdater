@@ -1860,6 +1860,7 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	registerPublicRoutes(r, deps)
 	r.Use(authGateMiddleware())
 	r.Use(sameOriginWriteMiddleware())
+	r.Use(requestBodyBudgetMiddleware())
 	r.Use(packageDeferralPolicyGate(deps))
 	registerProtectedPageRoutes(r)
 	registerProtectedAuthAndSettingsRoutes(r, deps)
@@ -1872,10 +1873,10 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/setup", handleSetupPage)
 	r.GET("/login", handleLoginPage)
-	r.POST("/api/auth/setup", sameOriginWriteMiddleware(), handleAuthSetup)
-	r.POST("/api/auth/login", sameOriginWriteMiddleware(), handleAuthLogin)
+	r.POST("/api/auth/setup", sameOriginWriteMiddleware(), requestBodyBudgetMiddleware(), handleAuthSetup)
+	r.POST("/api/auth/login", sameOriginWriteMiddleware(), requestBodyBudgetMiddleware(), handleAuthLogin)
 	r.GET("/api/auth/status", handleAuthStatus)
-	r.POST("/api/auth/mfa/challenge", sameOriginWriteMiddleware(), handleMFAChallenge)
+	r.POST("/api/auth/mfa/challenge", sameOriginWriteMiddleware(), requestBodyBudgetMiddleware(), handleMFAChallenge)
 	r.GET("/api/maintenance", func(c *gin.Context) {
 		c.JSON(http.StatusOK, publicMaintenanceSnapshotPayload(deps.MaintenanceCoordinator.Snapshot()))
 	})

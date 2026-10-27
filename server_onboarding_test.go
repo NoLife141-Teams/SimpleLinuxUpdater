@@ -145,7 +145,7 @@ func TestServerOnboardingAPIRequiresAuthAndPersistsOnlyAfterFreshChecks(t *testi
 	if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM jobs").Scan(&jobs); err != nil || jobs != 0 {
 		t.Fatalf("onboarding launched maintenance: jobs=%d, err=%v", jobs, err)
 	}
-	if rec := post("/api/servers/onboarding/check", cookie, []byte(strings.Repeat("x", 128*1024+1))); rec.Code != http.StatusBadRequest {
-		t.Fatal("oversized request accepted")
+	if rec := post("/api/servers/onboarding/check", cookie, []byte(strings.Repeat("x", 128*1024+1))); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized request status = %d, want 413", rec.Code)
 	}
 }

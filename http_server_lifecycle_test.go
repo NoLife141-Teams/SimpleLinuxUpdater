@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestApplicationHTTPServerProtectsOrdinaryRequests(t *testing.T) {
@@ -32,7 +34,7 @@ func TestApplicationHTTPServerProtectsOrdinaryRequests(t *testing.T) {
 	}
 }
 
-func TestBackupTransferDeadlinesAreRelaxedWithoutRelaxingOtherBodies(t *testing.T) {
+func TestAdmittedBackupTransferBudgetsPreserveOrdinaryBodyDeadlines(t *testing.T) {
 	const requestDeadline = 75 * time.Millisecond
 
 	t.Run("slow backup upload and response complete", func(t *testing.T) {
@@ -137,7 +139,22 @@ func TestBackupTransferDeadlinesAreRelaxedWithoutRelaxingOtherBodies(t *testing.
 
 func newDeadlineTestServer(t *testing.T, deadline time.Duration, handler http.Handler) *httptest.Server {
 	t.Helper()
-	server := httptest.NewUnstartedServer(backupTransferDeadlineHandler(handler))
+	admitted := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := gin.CreateTestContext(w)
+		c.Request = r
+		upload := r.Method == http.MethodPost && r.URL.Path == "/api/backup/restore"
+		probe := r.Method == http.MethodPost && r.URL.Path == "/api/servers/web/postchecks/test"
+		if upload || probe {
+			finish, ok := beginHTTPTransferBudget(c, upload, probe)
+			if !ok {
+				return
+			}
+			defer finish()
+		}
+		handler.ServeHTTP(w, c.Request)
+	})
+	application := newApplicationHTTPServer("", admitted)
+	server := httptest.NewUnstartedServer(application.Handler)
 	server.Config.ReadHeaderTimeout = deadline
 	server.Config.ReadTimeout = deadline
 	server.Config.WriteTimeout = deadline
@@ -193,12 +210,12 @@ func TestApplicationPostcheckResponseOutlivesOrdinaryWriteDeadline(t *testing.T)
 	}
 }
 
-func TestBackupTransferDeadlineHandlerLeavesOtherPathsWrapped(t *testing.T) {
+func TestHTTPBudgetCompositionLeavesOrdinaryRequestsWrapped(t *testing.T) {
 	called := false
-	handler := backupTransferDeadlineHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := applicationHTTPBudgetHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		_, _ = io.WriteString(w, "ok")
-	}))
+	}), defaultHTTPResourceBudgets)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)

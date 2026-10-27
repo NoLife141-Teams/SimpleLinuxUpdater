@@ -173,6 +173,11 @@ decision. A stale job ID, approval generation or deferral revision returns
 `confirm_removals: true` when removals are present. Read errors as JSON
 `{"error":"..."}`. `401` means missing/invalid/expired/revoked credential; `403`
 means a valid identity lacks the role or token scope; `429` means rate limited.
+`413` means the body exceeds its [HTTP request budget](configuration.md#http-request-budgets):
+JSON commands default to 1 MiB, including chunked requests; inventory imports
+retain their specialized limits. Additional JSON root values or trailing
+non-whitespace return `400` before mutation. Unknown fields remain compatible
+except on routes with an explicitly closed schema.
 Audit pagination uses `page` (default 1) and `page_size` (default 50, max 200).
 Log pagination uses `after_seq` (default 0) and `limit` (default 100, max 500),
 with `next_sequence` and `has_more` in the response. Server discovery returns a

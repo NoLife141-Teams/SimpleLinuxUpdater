@@ -6,7 +6,7 @@
         const current = () => lifecycle.isCurrent(lifetime);
         const transport = root.BrowserEffects.create({ fetch: (...args) => (root.__nativeFetch || root.fetch.bind(root))(...args) });
         transport.init();
-        let dialog = null, settle = null;
+        let dialog = null, settle = null, resumePending = false;
         function close(value = false) {
             if (!dialog) return;
             dialog.querySelector('form').reset();
@@ -15,10 +15,15 @@
             dialog = null;
             const resolve = settle; settle = null; resolve?.(value);
         }
-        lifecycle.own(() => { close(); transport.destroy(); });
+        lifecycle.own(() => {
+            close();
+            if (resumePending) document.getElementById('action-confirm-cancel')?.click();
+            transport.destroy();
+        });
         async function request(path, options = {}) {
             const response = await transport.fetch(path, { cache: 'no-store', ...options });
             const data = await response.json().catch(error => { if (error.name === 'AbortError') throw error; return {}; });
+            if (options.signal?.aborted) throw new DOMException('Request superseded', 'AbortError');
             if (!response.ok) {
                 if (response.status === 401 && !data.reauthentication_required) {
                     // Rejected credentials use 401 too; check the cookie separately.
@@ -81,7 +86,11 @@
                 if (!current()) throw new DOMException('Page ended', 'AbortError');
                 if (!error.reauthenticationRequired) throw error;
                 if (!(await confirmIdentity()) || !current()) throw new DOMException('Confirmation cancelled', 'AbortError');
-                const confirmed = await root.confirmAction('Identity confirmed. Review and explicitly resume this action once.', { title: 'Resume sensitive action', operation, confirmLabel: 'Resume action' });
+                let confirmed;
+                resumePending = true;
+                try {
+                    confirmed = await root.confirmAction('Identity confirmed. Review and explicitly resume this action once.', { title: 'Resume sensitive action', operation, confirmLabel: 'Resume action' });
+                } finally { resumePending = false; }
                 if (!confirmed || !current()) throw new DOMException('Action cancelled', 'AbortError');
                 // One explicit resubmission; a second expiry is returned, never looped.
                 return request(path, options);

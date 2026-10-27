@@ -49,3 +49,15 @@ test('an unavailable identity check is not treated as a confirmed session expiry
     await assert.rejects(api.request('/api/auth/reauthenticate'), /invalid factor/);
     assert.deepEqual(redirects, []); lifecycle.destroy();
 });
+test('an aborted snapshot cannot redirect when its late 401 body ignores cancellation', async () => {
+    let release, reading;
+    const started = new Promise(resolve => { reading = resolve; });
+    const body = new Promise(resolve => { release = resolve; });
+    const { api, lifecycle, redirects } = fixture(async () => ({ status: 401, ok: false, json: () => { reading(); return body; } }));
+    const controller = new AbortController();
+    const pending = api.request('/api/auth/sessions', { signal: controller.signal });
+    await started;
+    controller.abort(); release({ error: 'authentication required' });
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.deepEqual(redirects, []); lifecycle.destroy();
+});

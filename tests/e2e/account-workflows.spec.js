@@ -325,3 +325,61 @@ test('Admin remount and cached navigation cancel restore identity dialogs and er
     await page.locator('#backup-restore-passphrase').fill(passphrase);
     await expect(page.locator('#backup-verify-btn')).toBeEnabled();
 });
+test('obsolete initial session reads cannot dismiss unacknowledged MFA recovery codes', async ({ page }) => {
+    let release, completed;
+    const gate = new Promise(resolve => { release = resolve; });
+    const finished = new Promise(resolve => { completed = resolve; });
+    await page.route('**/api/auth/sessions', async route => {
+        await gate;
+        try {
+            const response = await route.fetch();
+            expect(response.status()).toBe(401);
+            await route.fulfill({ response }).catch(() => {});
+        } finally { completed(); }
+    });
+    await page.reload();
+    await page.locator('#mfa-enroll').click();
+    await expect(page.locator('#mfa-enrollment')).toBeVisible();
+    const secret = await page.locator('#mfa-secret').textContent();
+    await page.locator('#mfa-confirm-code').fill(totp(secret));
+    await page.locator('#mfa-confirm-code').press('Enter');
+    await expect(page.locator('#recovery-result')).toBeVisible();
+    release(); await finished;
+    expect((await page.request.get('/api/auth/identity')).status()).toBe(401);
+    await expect(page.locator('#recovery-result')).toBeVisible();
+    await expect(page).toHaveURL(/\/account$/);
+    await page.locator('#recovery-dismiss').click();
+    await expect(page).toHaveURL(/\/login$/);
+});
+test('cached Admin navigation cancels the explicit restore resumption and unlocks the page', async ({ page }) => {
+    const passphrase = 'DisposableBackupPassphrase123';
+    const exported = await page.request.post('/api/backup/export', { headers: { Origin: new URL(page.url()).origin }, data: { passphrase, include_known_hosts: true } });
+    expect(exported.status()).toBe(200);
+    const archive = await exported.body();
+    await page.goto('/admin');
+    await page.locator('[data-admin-section-link="backup"]').click();
+    await page.locator('#backup-restore-file').setInputFiles({ name: 'disposable.slubkp', mimeType: 'application/octet-stream', buffer: archive });
+    await page.locator('#backup-restore-passphrase').fill(passphrase);
+    await page.locator('#backup-verify-btn').click();
+    await expect(page.locator('#backup-review-readiness')).toHaveText('Ready for confirmation');
+    await page.request.post('/__test/expire-reauthentication');
+    let attempts = 0;
+    page.on('request', request => { if (request.url().endsWith('/api/backup/restore')) attempts++; });
+    await page.locator('#backup-restore-btn').click();
+    await page.locator('#typed-confirm-input').fill('RESTORE');
+    await page.locator('#typed-confirm-submit').click();
+    await page.locator('#reauthentication-password').fill(password);
+    await page.locator('#reauthentication-password').press('Enter');
+    await expect(page.locator('#action-confirm-title')).toHaveText('Resume sensitive action');
+    await page.evaluate(() => {
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+        window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    });
+    await expect(page.locator('#action-confirm-modal')).not.toHaveClass(/active/);
+    expect(await page.locator('.dashboard-shell').evaluate(el => el.inert)).toBe(false);
+    await expect(page.locator('#backup-restore-passphrase')).toHaveValue('');
+    await expect(page.locator('#backup-restore-btn')).toBeDisabled();
+    expect(attempts).toBe(1);
+    await page.locator('#backup-restore-passphrase').fill(passphrase);
+    await expect(page.locator('#backup-verify-btn')).toBeEnabled();
+});

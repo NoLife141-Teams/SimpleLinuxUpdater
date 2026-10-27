@@ -14,6 +14,14 @@
     };
     let ownAccountID;
     const snapshots = { tokens: 0, accounts: 0, sessions: 0 };
+    const snapshotRequests = {};
+    function invalidateSnapshots() {
+        for (const name of Object.keys(snapshots)) {
+            snapshots[name]++;
+            snapshotRequests[name]?.abort();
+        }
+    }
+    lifecycle.own(invalidateSnapshots);
     function render() {
         const view = commands.view();
         document.querySelectorAll('main button, main form input, main form select').forEach(el => {
@@ -23,8 +31,8 @@
         });
         document.querySelectorAll('[data-account-command]').forEach(el => el.setAttribute('aria-busy', String(view.busy === el.dataset.accountCommand)));
     }
-    async function request(path, method = 'GET', body) {
-        const options = { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) };
+    async function request(path, method = 'GET', body, signal) {
+        const options = { method, signal, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) };
         return method === 'GET' || path === '/api/auth/reauthenticate'
             ? auth.request(path, options)
             : auth.sensitive(path, options, operationLabels[commands.view().busy] || 'Account security action');
@@ -37,7 +45,7 @@
         if (!ticket) return;
         const previousFocus = document.activeElement;
         let failed = false;
-        for (const name of Object.keys(snapshots)) snapshots[name]++;
+        invalidateSnapshots();
         render();
         try { await fn(); }
         catch (error) {
@@ -72,19 +80,34 @@
         return window.confirmAction(consequences, { title: operation, operation, consequences, authentication: 'Recent password and factor confirmation required for sensitive account changes.', danger: true });
     }
     function row(text) { const el = document.createElement('li'); el.textContent = text; return el; }
+    async function snapshot(name, path) {
+        const version = ++snapshots[name];
+        snapshotRequests[name]?.abort();
+        const controller = new AbortController();
+        snapshotRequests[name] = controller;
+        try {
+            const data = await request(path, 'GET', undefined, controller.signal);
+            return lifecycle.active && snapshots[name] === version ? data : null;
+        } catch (error) {
+            if (error.name === 'AbortError') return null;
+            throw error;
+        } finally {
+            if (snapshotRequests[name] === controller) delete snapshotRequests[name];
+        }
+    }
     async function loadTokens() {
-        const version = ++snapshots.tokens;
-        const { tokens } = await request('/api/auth/tokens');
-        if (!lifecycle.active || snapshots.tokens !== version) return;
+        const data = await snapshot('tokens', '/api/auth/tokens');
+        if (!data) return;
+        const { tokens } = data;
         byID('token-list').replaceChildren(...tokens.map(t => {
             const el = row(`${t.name} · ${t.scopes.join(', ')} · expires ${t.expires_at} · ${t.revoked ? 'revoked' : `last used ${t.last_used_at || 'never'} ${t.last_used_origin || ''}`}`);
             if (!t.revoked) el.append(button('Revoke', async () => { if (!(await confirm('Revoke personal token', 'This token immediately stops authenticating. Existing admitted operations may finish.'))) return; await request(`/api/auth/tokens/${encodeURIComponent(t.id)}`, 'DELETE'); await loadTokens(); status('Token revoked.'); }, 'token-revoke')); return el;
         }));
     }
     async function loadAccounts() {
-        const version = ++snapshots.accounts;
-        const { accounts } = await request('/api/auth/accounts');
-        if (!lifecycle.active || snapshots.accounts !== version) return;
+        const data = await snapshot('accounts', '/api/auth/accounts');
+        if (!data) return;
+        const { accounts } = data;
         byID('account-list').replaceChildren(...accounts.map(a => {
             const el = row(`${a.username} · account ${a.id} · ${a.disabled ? 'disabled' : 'enabled'} · MFA ${a.mfa_enabled ? 'enabled' : 'disabled'}`);
             const select = document.createElement('select'); select.setAttribute('aria-label', `Role for ${a.username}`);
@@ -93,9 +116,9 @@
         }));
     }
     async function loadSessions() {
-        const version = ++snapshots.sessions;
-        const { sessions } = await request('/api/auth/sessions');
-        if (!lifecycle.active || snapshots.sessions !== version) return;
+        const data = await snapshot('sessions', '/api/auth/sessions');
+        if (!data) return;
+        const { sessions } = data;
         byID('session-list').replaceChildren(...sessions.map(s => {
             const el = row(`${s.current ? 'Current session' : s.client_label || 'Session'} · ${s.client_ip || ''} · expires ${s.expires_at}`);
             el.append(button('Revoke session', async () => { if (!(await confirm('Revoke session', s.current ? 'This signs you out of the current browser session.' : 'This browser session will be signed out. Personal tokens are unchanged.'))) return; await request(`/api/auth/sessions/${s.id}`, 'DELETE'); if (s.current) location.href = '/login'; else await loadSessions(); }, 'session-revoke')); return el;
@@ -141,6 +164,7 @@
         byID('mfa-status').textContent = account.mfa_enabled ? 'Authenticator enabled.' : 'Authenticator is optional and currently disabled.'; byID('mfa-enroll').hidden = account.mfa_enabled; byID('mfa-disable').hidden = !account.mfa_enabled;
         for (const scope of scopes) { const label = document.createElement('label'); const input = document.createElement('input'); input.type = 'checkbox'; input.value = scope; input.checked = scope === 'operational:read'; label.append(input, document.createTextNode(scope)); byID('token-scopes').append(label); }
         const expiry = new Date(Date.now() + 30 * 86400000); expiry.setMinutes(expiry.getMinutes() - expiry.getTimezoneOffset()); byID('token-expiry').value = expiry.toISOString().slice(0, 16);
-        await Promise.all([loadTokens(), loadSessions()]); if (account.role === 'admin') { byID('accounts-section').hidden = false; await loadAccounts(); } render();
+        if (account.role === 'admin') byID('accounts-section').hidden = false;
+        await Promise.all([loadTokens(), loadSessions(), ...(account.role === 'admin' ? [loadAccounts()] : [])]); render();
     })().catch(error => { if (lifecycle.active && error.name !== 'AbortError') status(error.message); });
 })();

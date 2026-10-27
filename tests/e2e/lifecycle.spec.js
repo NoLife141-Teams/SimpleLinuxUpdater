@@ -158,9 +158,36 @@ test("Status remount closes superseded streams and leaves one selection and acti
     const errors = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     await page.goto("/");
+    await expect(page.locator("#servers-table")).toContainText("demo-host");
+    async function resizeNameColumn() {
+        const column = page.locator('#servers-table col[data-col-key="name"]');
+        const handle = page.locator('.col-resize-handle[data-col-key="name"]');
+        await handle.scrollIntoViewIfNeeded();
+        const before = await column.evaluate(
+            (element) => element.getBoundingClientRect().width,
+        );
+        const bounds = await handle.boundingBox();
+        const x = bounds.x + bounds.width / 2;
+        const y = bounds.y + bounds.height / 2;
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        await page.mouse.move(x + (before < 200 ? 20 : -20), y, { steps: 2 });
+        await page.mouse.up();
+        const after = await column.evaluate(
+            (element) => element.getBoundingClientRect().width,
+        );
+        expect
+            .soft(
+                Math.abs(after - before),
+                "column resizing remains functional after a page remount",
+            )
+            .toBeGreaterThan(8);
+    }
+    await resizeNameColumn();
     for (let n = 0; n < 3; n++) {
         await page.evaluate(() => window.StatusPage.mount());
         await expect(page.locator("#servers-table")).toContainText("demo-host");
+        await resizeNameColumn();
     }
     expect(
         await page.evaluate(
@@ -206,6 +233,21 @@ test("Status remount closes superseded streams and leaves one selection and acti
     ).toBe(0);
     await page.evaluate(() => window.StatusPage.mount());
     await expect(page.locator("#servers-table")).toContainText("demo-host");
+    await page.evaluate(async () => {
+        document.getElementById("search").focus();
+        document
+            .querySelector('#servers-table [data-action="open-drawer"]')
+            .click();
+        window.StatusPage.mount();
+        document.getElementById("status-filter").focus();
+        // Drain focus callbacks already queued by the superseded drawer.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await expect.soft(page.locator("#status-filter")).toBeFocused();
+    await expect(page.locator("#status-drawer")).toHaveAttribute(
+        "aria-hidden",
+        "true",
+    );
     expect(errors).toEqual([]);
 });
 

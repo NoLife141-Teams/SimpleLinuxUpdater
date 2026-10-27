@@ -16,9 +16,10 @@
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
         const statusRendering = window.StatusRendering.create(document);
+        // Deferred drawer focus belongs to this page's lifetime too.
         const statusDrawerAdapter = window.StatusDrawerAdapter.create(
             document,
-            window,
+            lifecycle,
         );
         const statusTableAdapter = window.StatusTableAdapter.create(
             localStorage,
@@ -1775,9 +1776,6 @@
             document
                 .querySelectorAll("#servers-table .col-resize-handle")
                 .forEach((handle) => {
-                    if (handle.dataset.bound === "1") return;
-                    handle.dataset.bound = "1";
-
                     lifecycle.listen(handle, "pointerdown", (event) => {
                         event.preventDefault();
                         event.stopPropagation();

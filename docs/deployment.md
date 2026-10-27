@@ -72,7 +72,9 @@ After deployment:
 2. Sign in at `/login`.
 3. Use `/api/auth/logout` or the UI logout action to end sessions.
 
-Only one local user is supported by design.
+The first account is an administrator. Administrators can create named reader,
+operator and administrator accounts; optional TOTP MFA, isolated sessions and
+scoped personal API tokens follow the [Accounts and API contract](personal-api.md).
 
 Before that user exists, `/setup` is the account-creation boundary. If the
 listener is non-loopback, firewall or proxy it so only the intended LAN, VPN, or
@@ -117,14 +119,19 @@ If an attacker obtains both the SQLite DB and the encryption key file, stored se
 
 ## Upgrade procedure
 
-1. Export an encrypted backup from Admin and verify the downloaded `.slubkp` archive.
-2. Record the currently deployed image tag or binary version so rollback is explicit.
-3. Read the target release entry in [`CHANGELOG.md`](../CHANGELOG.md).
-4. Stop the existing process or container cleanly.
-5. Deploy the new version with the same `/data` volume or binary data directory.
-6. Confirm login, server inventory, Status health, scheduled policies, notification settings, and `/metrics` credential state before starting maintenance.
+Follow the [verified v0.4.16 upgrade, restore and rollback guide](upgrading.md)
+for concrete Docker and binary archive commands. Export and verify a backup
+before stopping the old process, retain its matching image/binary and assets,
+then deploy the candidate with the same data paths. The initial account becomes
+administrator, setup stays closed and old sessions are signed out once. New
+sessions survive subsequent restarts. Review recovered jobs, renew interrupted
+approvals and update the [managed helper](usage.md#managed-helper-installation)
+before resuming maintenance.
 
-Prefer immutable `vX.Y.Z` image tags for controlled deployments. The `latest` tag advances only for the highest eligible stable version under the [publication policy](ci-and-release.md#publication-sequence) and is less suitable when rollback reproducibility matters. A newer pending or draft version prevents older attempts from taking `latest`.
+Rollback uses the pre-upgrade backup in a separate old-version installation;
+starting the old binary on the migrated database is not a supported downgrade.
+Prefer a published immutable image digest or version tag. The `latest` tag
+advances according to the [publication policy](ci-and-release.md#publication-sequence).
 
 ## Single-instance operation
 

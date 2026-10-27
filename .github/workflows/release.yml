@@ -99,10 +99,31 @@ jobs:
           go test -race -count=1 ./...
           go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
           bash "$RUNNER_TEMP/trusted-tools/ci/check-coverage.sh"
-          go build -o webserver .
+          CGO_ENABLED=0 go build -o webserver .
           npm run test:unit
           npm audit --audit-level=moderate
           npm run test:e2e
+
+      - name: Test trusted upgrade qualification safety
+        run: python3 -m unittest discover -s "$RUNNER_TEMP/trusted-tools/ci/upgrade" -p 'test_*.py' -v
+
+      - name: Require detection of diagnostic inventory loss
+        timeout-minutes: 8
+        run: python3 "$RUNNER_TEMP/trusted-tools/ci/upgrade/negative_control.py" --candidate "$PWD/webserver" --candidate-sha "$RELEASE_SHA" --output upgrade-evidence/negative
+
+      - name: Qualify published v0.4.16 to release candidate
+        timeout-minutes: 8
+        run: python3 "$RUNNER_TEMP/trusted-tools/ci/upgrade/run.py" --candidate "$PWD/webserver" --candidate-sha "$RELEASE_SHA" --output upgrade-evidence/positive
+
+      - name: Retain only redacted upgrade qualification reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-upgrade-qualification-${{ github.run_attempt }}
+          path: |
+            upgrade-evidence/negative/report.json
+            upgrade-evidence/positive/report.json
+          retention-days: 1
 
       - name: Retain Playwright diagnostics
         if: always()

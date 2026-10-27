@@ -321,6 +321,43 @@ jobs:
             ssh-apt-evidence/app.log
           retention-days: 1
 
+  upgrade-qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Test qualification safety
+        run: python3 -m unittest discover -s tools/ci/upgrade -p 'test_*.py' -v
+      - name: Build exact candidate
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/upgrade-candidate" .
+      - name: Require detection of diagnostic inventory loss
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: python3 tools/ci/upgrade/negative_control.py --candidate "$RUNNER_TEMP/upgrade-candidate" --candidate-sha "$CANDIDATE_SHA" --output upgrade-evidence/negative
+      - name: Qualify published v0.4.16 to candidate and restored archive
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: python3 tools/ci/upgrade/run.py --candidate "$RUNNER_TEMP/upgrade-candidate" --candidate-sha "$CANDIDATE_SHA" --output upgrade-evidence/positive
+      - name: Retain only redacted qualification reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-qualification-${{ github.run_attempt }}
+          path: |
+            upgrade-evidence/negative/report.json
+            upgrade-evidence/positive/report.json
+          retention-days: 1
+
   ci-required:
     if: always()
     needs:
@@ -331,11 +368,13 @@ jobs:
       - ui-e2e
       - docker-smoke
       - ssh-apt
+      - upgrade-qualification
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Verify required CI results
         env:
+          UPGRADE_RESULT: ${{ needs.upgrade-qualification.result }}
           CHANGES_RESULT: ${{ needs.preflight.result }}
           GO_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.go == 'true' }}
           E2E_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.e2e == 'true' }}
@@ -359,6 +398,7 @@ jobs:
 
           test "$CHANGES_RESULT" = success
           test "$FRONTEND_QUALITY_RESULT" = success
+          test "$UPGRADE_RESULT" = success
 
           if [ "$GO_REQUIRED" = true ]; then
             test "$TEST_RESULT" = success

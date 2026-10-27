@@ -1,0 +1,11 @@
+{
+  "version": "v0.4.16",
+  "commit": "60432cac60d08722cdf0034a000d059a81ee967d",
+  "base_url": "https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v0.4.16/",
+  "files": {
+    "checksums.txt": "97700706163370b66e88321e6809573e0f76c582a7e60287c56545091bfc14ab",
+    "publication.json": "d91c9c07d0a890d35669de9e18ce36b0fea69cc2030c47403fdecf459a14cec1",
+    "SimpleLinuxUpdater_0.4.16_linux_amd64.tar.gz": "5ea8dcf2c53fe57b7f57d6b2fb375e4ddb633e20b3dc1eddc64a5d72c554f6b4"
+  },
+  "runtime": "python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
+}

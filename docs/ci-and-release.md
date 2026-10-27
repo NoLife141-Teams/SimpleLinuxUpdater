@@ -3,13 +3,15 @@
 `ci-required` remains the required merge check. Preflight combines toolchain
 alignment and path selection; frontend quality combines npm audit and Node unit
 tests. Go tests, Go quality, Playwright and Docker must succeed when selected,
-and must be skipped otherwise. Pushes to `main` run all checks. CodeQL remains
+and must be skipped otherwise. The bounded upgrade qualification must also
+succeed on every PR/push. Pushes to `main` run all checks. CodeQL remains
 a separate GitHub protection.
 The helper regression tests use Bash and Python 3 on Linux/macOS and skip on
 Windows, matching the existing release-lineage script tests.
 
 The Go filter includes scripts, templates, static resources and documentation
-inspected by architecture tests. Docker validation builds amd64 without registry
+inspected by architecture tests. Docker validation builds amd64 and arm64
+without registry
 credentials, checks PID 1 runs as `app`, creates a test account, and recreates the
 container explicitly as `app` before verifying account persistence. It removes
 only its own temporary container and volume.
@@ -18,7 +20,32 @@ Playwright and the cache action share an absolute directory under `RUNNER_TEMP`.
 OS dependencies are installed each time with shared APT retry settings. Coverage
 and Playwright reports/traces are retained for one day, including failed runs.
 Artifact names include the attempt number so retries preserve earlier diagnostics.
-Temporary application databases are excluded. Playwright keeps one CI worker.
+Temporary application databases are excluded. Playwright uses two CI workers,
+with an independent disposable installation per scenario.
+
+## Upgrade qualification
+
+`upgrade-qualification` builds the exact candidate with `CGO_ENABLED=0`, matching
+release archives, and uses the pinned published
+v0.4.16 Linux amd64 archive, its checksum list and publication provenance. Real
+legacy setup/login, encrypted synthetic credentials, SSH trust, daily/weekly
+policies and persisted crash fixtures are checked across migration, restart,
+old-version export and candidate restore. A real negative control must detect
+inventory loss in the disposable fixture before the independent positive run.
+No production behavior is patched for that control.
+
+The 15-minute CI job has only Contents read permission. The pinned Python runtime
+runs without external networking or target-host access. Only explicit redacted
+negative/positive `report.json` paths are uploaded for one day; application logs,
+DB/config files, cookies, keys and archives are never uploaded. Ownership labels,
+independent cleanup and deadlines protect failures and signals. Failed steps and
+unexecuted steps remain distinct, and report/global exit codes must agree.
+See [scope, fixture states and reproduction](upgrading.md#reproduce-qualification).
+
+The release gate runs the same qualification before any publication, using the
+helpers preserved from the trusted default branch and the checked-out release
+candidate's assets. It adds no publication permissions and cannot create a tag,
+release or registry image.
 
 ## Publication sequence
 
@@ -30,7 +57,8 @@ to the tag, so older tags cannot replace the current policy.
 
 1. `release-gate` validates the exact tagged sources, race tests, coverage (73%),
    Go quality/security, frontend unit tests, npm security, Playwright and version
-   metadata. The redundant uninstrumented Go test pass is removed.
+   metadata, plus the trusted old-distribution upgrade qualification. The redundant
+   uninstrumented Go test pass is removed.
 2. `publish-release` builds all five archives, checks checksums and archive
    integrity, starts the packaged Linux amd64 server, and creates or updates a
    **draft** GitHub Release. Already public releases cannot be replaced.

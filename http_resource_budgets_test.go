@@ -389,6 +389,7 @@ func TestSpecializedRequestBodyBudgetsAndInventoryBOM(t *testing.T) {
 		{"POST", "/api/auth/accounts", authMaxRequestBytes},
 		{"POST", "/api/servers/onboarding/check", 128 * 1024},
 		{"PUT", "/api/postcheck-profiles", 256 * 1024},
+		{"POST", "/api/package-deferrals", 16 * 1024},
 		{"PUT", "/api/backup/automation", 4096},
 		{"POST", "/api/backup/export", backupMaxExportRequestBytes},
 		{"POST", "/api/servers/import/preview?format=json", serverpkg.MaxImportBytes},
@@ -413,6 +414,82 @@ func TestSpecializedRequestBodyBudgetsAndInventoryBOM(t *testing.T) {
 			rec := performContractRequest(app.Handler, "POST", "/api/servers/import/preview?format="+tc.format, bytes.NewBufferString("\xef\xbb\xbf"+tc.body), cookie, true)
 			if rec.Code != tc.want {
 				t.Fatalf("BOM import status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestNativeAuthFormsPreserveCaseInsensitiveMediaTypes(t *testing.T) {
+	for _, contentType := range []string{"APPLICATION/X-WWW-FORM-URLENCODED", "Multipart/Form-Data"} {
+		t.Run(contentType, func(t *testing.T) {
+			app := newIsolatedTestApp(t)
+			for _, path := range []string{"/api/auth/setup", "/api/auth/login"} {
+				values := url.Values{"username": {"admin"}, "password": {testPasswordStrong}, "password-confirm": {testPasswordStrong}}
+				body := []byte(values.Encode())
+				requestType := contentType
+				if contentType == "Multipart/Form-Data" {
+					var form bytes.Buffer
+					writer := multipart.NewWriter(&form)
+					for key := range values {
+						if err := writer.WriteField(key, values.Get(key)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					body = form.Bytes()
+					requestType += "; boundary=" + writer.Boundary()
+				}
+				req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+				markSameOriginAuthRequest(req)
+				req.Header.Set("Content-Type", requestType)
+				rec := httptest.NewRecorder()
+				app.Handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusSeeOther {
+					t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestPackageDeferralBodyBudgetPreservesBoundaryAndStopsReading(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	cookie := app.authenticate(t)
+	if _, err := app.Deps.ServerInventoryService.Create(Server{Name: "budget-web", Host: "budget.example.test", User: "root"}); err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	for _, size := range []int{16*1024 - 1, 16 * 1024, 16*1024 + 1, 128 * 1024} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			raw := fmt.Sprintf(`{"server_name":"budget-web","selector":"package%d","reason":"Compatibility investigation","expires_at":%q,"ignored_padding":""}`, size, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			raw = strings.TrimSuffix(raw, `"}`) + strings.Repeat("x", size-len(raw)) + `"}`
+			body := bytes.NewBufferString(raw)
+			req := httptest.NewRequest(http.MethodPost, "/api/package-deferrals", io.NopCloser(body))
+			req.ContentLength = -1
+			req.AddCookie(cookie)
+			markSameOriginAuthRequest(req)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			app.Handler.ServeHTTP(rec, req)
+			want := http.StatusCreated
+			if size > 16*1024 {
+				want = http.StatusRequestEntityTooLarge
+			} else {
+				accepted++
+			}
+			if rec.Code != want || !json.Valid(rec.Body.Bytes()) {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, want, rec.Body.String())
+			}
+			if consumed := size - body.Len(); consumed > 16*1024+1 {
+				t.Fatalf("read %d bytes before rejecting a body limited to 16 KiB", consumed)
+			}
+			for _, query := range []string{"SELECT COUNT(*) FROM package_deferrals", "SELECT COUNT(*) FROM audit_events WHERE action='package_deferral.create' AND status='success'"} {
+				var count int
+				if err := app.Deps.DB().QueryRow(query).Scan(&count); err != nil || count != accepted {
+					t.Fatalf("persisted count=%d want=%d err=%v", count, accepted, err)
+				}
 			}
 		})
 	}

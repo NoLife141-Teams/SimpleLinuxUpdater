@@ -48,6 +48,8 @@ func requestBodyBudgetMiddleware() gin.HandlerFunc {
 			limit = 128 * 1024
 		case path == "/api/postcheck-profiles":
 			limit = 256 * 1024
+		case path == "/api/package-deferrals":
+			limit = packageDeferralMaxRequestBytes
 		case path == "/api/backup/automation":
 			limit = 4096
 		case path == "/api/backup/export":
@@ -69,7 +71,8 @@ func requestBodyBudgetMiddleware() gin.HandlerFunc {
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 		// Native auth forms and CSV imports retain their existing decoders.
-		form := (path == "/api/auth/setup" || path == "/api/auth/login") && (c.ContentType() == "application/x-www-form-urlencoded" || c.ContentType() == "multipart/form-data")
+		contentType := strings.ToLower(strings.TrimSpace(c.ContentType()))
+		form := (path == "/api/auth/setup" || path == "/api/auth/login") && (contentType == "application/x-www-form-urlencoded" || contentType == "multipart/form-data")
 		csv := path == "/api/servers/import/preview" && c.Query("format") == "csv"
 		jsonRaw := raw
 		if path == "/api/servers/import/preview" {

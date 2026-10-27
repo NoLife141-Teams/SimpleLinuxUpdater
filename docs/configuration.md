@@ -125,7 +125,8 @@ body still do so. Oversize bodies return `413` with one JSON error object
 (`{"error":"request payload too large"}`) before any command mutation.
 
 Specialized budgets remain: authentication **8 KiB**, onboarding **128 KiB**,
-post-check profiles **256 KiB**, backup automation configuration **4 KiB**, and
+post-check profiles **256 KiB**, package deferrals **16 KiB**,
+backup automation configuration **4 KiB**, and
 backup export requests **1 MiB**. Inventory upload previews retain **2 MiB**;
 normalized import selections allow **13,094,912 bytes** for JSON escaping and row
 metadata. SSH key files retain **64 KiB** plus their multipart request overhead.

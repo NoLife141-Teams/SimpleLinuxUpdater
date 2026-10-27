@@ -1,0 +1,5 @@
+/* Shared identity confirmation follows the application card and control theme. */
+.reauthentication-dialog { color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 24px; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.reauthentication-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.reauthentication-dialog form { display: grid; gap: 12px; }
+.reauthentication-dialog input { width: 100%; min-width: 0; }

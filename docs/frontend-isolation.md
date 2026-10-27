@@ -189,3 +189,36 @@ synthetic screenshots and sanitized summaries belong in git.
 
 See [the #476 validation record](validation/frontend-isolation-476/README.md)
 for source provenance, actual counts/exits, screenshots and material limits.
+
+## Account commands and reusable identity confirmation
+
+`account-command-state.js` owns credential-free Account command admission and
+one-time-result acknowledgement. Account serializes pending mutations, rejects
+superseded list snapshots, and protects a token or enrollment result until it is
+acknowledged. Identity initialization completes before command admission so a
+delayed identity read cannot outlive a session-revoking command. Interrupted
+lists resume when the command settles, or after a protected result is cleared.
+Recovery display freezes all mutations because MFA confirmation
+has deliberately revoked the cookie. No list refresh follows that confirmation.
+`account.js` owns DOM inputs/results; `BrowserEffects` owns its listeners and
+cancellable transport. Departure clears passwords and displayed secrets. A
+persisted back/forward-cache return reloads Account from the server, so a cached
+document cannot redisplay a one-time result.
+
+`reauthentication.js` shares an accessible identity dialog and cookie-only
+transport between Account and Admin backup restore. A recent-confirmation
+failure may open the dialog; success requires a separate explicit confirmation
+before one resubmission. It never loops or silently replays a mutation. Invalid
+password/factor responses revalidate the cookie to distinguish their 401 from a
+revoked session. Transport promises settle even while login navigation starts. Backup destruction
+also clears passphrases and settles pending command admission; cached Admin
+navigation remounts only this adapter, preserving other accepted non-secret drafts.
+Authentication policy, permissions, generation/revocation and crypto stay in
+the server's existing Auth Session Command owners.
+
+Account workflow tests use real disposable backend responses, including delayed
+network and JSON consumption. The test composition alone exposes
+`POST /__test/expire-reauthentication`, which ages the current SCS session's recent
+confirmation timestamp without changing cookie authentication. This route is
+absent from production builds and permits expiry scenarios without a five-minute
+wait. New secret-bearing scenarios disable traces, video and screenshots.

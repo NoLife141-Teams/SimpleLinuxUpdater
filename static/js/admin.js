@@ -1506,8 +1506,16 @@
         });
         const destroy = () => lifecycle.destroy();
         lifecycle.listen(root, "pagehide", (event) => {
-            // A cached document keeps its one mounted interaction owner.
+            // Backup credentials and identity dialogs never survive navigation,
+            // including a cached document whose other accepted drafts are kept.
+            adminBackup.destroy();
             if (!event.persisted) destroy();
+        });
+        lifecycle.listen(root, "pageshow", (event) => {
+            if (event.persisted) {
+                adminBackup.init();
+                renderBackupRestoreReview();
+            }
         });
         current = Object.freeze({ destroy });
         return current;

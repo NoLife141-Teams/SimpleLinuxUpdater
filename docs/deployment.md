@@ -136,3 +136,100 @@ advances according to the [publication policy](ci-and-release.md#publication-seq
 ## Single-instance operation
 
 Run one active SimpleLinuxUpdater process per database and data directory. SQLite persistence, in-memory action coordination, scheduler ownership, rate limiting, and dashboard event delivery are designed for a single application instance; multiple replicas sharing `/data` are not a supported high-availability topology.
+
+## Installation health and readiness
+
+Use `/healthz` for liveness and `/readyz` for traffic admission. Both accept GET
+and HEAD, require no credential, and return only `{"status":"..."}`. Liveness is
+200 `alive` while the HTTP process responds. Readiness is 200 `ready` after
+Runtime Composition initialization (including a fresh installation before account
+setup) and a read-only `sqlite_schema` query against the **current** DB provider.
+The SQLite query has a 250 ms context deadline, including connection pool waits.
+No probe opens a session, writes a record, migrates, repairs SQLite, retries a
+maintenance release, contacts a Server, or starts a notification or backup.
+
+Readiness returns 503 with one of these states:
+
+| State | Meaning | Operator action |
+| --- | --- | --- |
+| `initializing` | Runtime owners are not initialized | Allow startup grace; the listener may not yet accept HTTP during startup |
+| `reloading` | Persistence replacement/runtime rehydration is incomplete | Allow restore to finish; a failed reload remains unavailable |
+| `maintenance` | Exclusive Maintenance Coordination owns or is acquiring admission | Allow the controlled operation to finish |
+| `recovery_required` | Restore recovery was retained by Maintenance Coordination | Follow the documented manual recovery procedure |
+| `unavailable` | Current DB is absent, closed, cannot be read, or exceeds the query budget | Inspect disk availability and process logs |
+| `stopping` | Graceful shutdown has begun | Drain traffic; process liveness does not imply admission |
+
+The health endpoints bypass session and maintenance middleware. Restore cannot
+be blocked by a waiting probe: admission is attempted without waiting, and a
+successful read lease lasts only for the bounded SQLite read. Restore invalidates
+readiness before replacing persistence and only successful rehydration restores
+it. Shutdown makes readiness permanently unavailable before HTTP draining.
+During HTTP server closure a connection failure is expected for either endpoint.
+There is no automatic restart, retry of maintenance, or destructive watchdog.
+
+The image HEALTHCHECK runs `/app/webserver healthcheck` as the application user,
+including when the container uses `--user app`. This HTTP-only command runs before
+installation locking, SQLite opening and configuration initialization. It uses
+`DEBIAN_UPDATER_LISTEN_ADDR` (default for the image `:8080`; native default
+`127.0.0.1:8080`), replaces wildcard IPv4/IPv6 hosts with the corresponding loopback,
+disables proxies/redirects and has a two-second total request deadline. A configured
+specific bind is probed at that bind. Docker allows a 15-second start period,
+checks every 30 seconds, and reports unhealthy after three failures. An unhealthy
+container during a long controlled restore is expected; do not attach an automatic
+restart policy to this state. `healthcheck` exits 0 for readiness HTTP 200 and 1
+for invalid arguments/configuration, transport failure or any other status.
+
+Administrators using a cookie session can open **Admin → Installation Health**
+or `GET /api/installation/health`. Reader/operator cookies and all personal API
+credentials are rejected. The panel uses the existing Admin Page Interaction
+snapshot lifecycle, lazy loading, explicit refresh and stale/retry indication.
+It separates local installation facts from Server health. It shows observed
+scheduler, host facts, vulnerability, backup notification, audit-pruning and job-log-pruning worker tick,
+completion and error timestamps; running/enabled state; backup verification age;
+persisted pending/claimed, retrying and failed notification rows; and observed
+main DB/WAL and available filesystem bytes (capacity currently on Linux).
+A completed empty worker sweep is progress, not proof of a successful Server
+operation. Disabled configuration is expected. Never observed/unavailable is
+unknown and is never displayed as a zero age. Error counts reset on restart;
+failed outbox rows are subject to existing retention. Notification enabled means
+at least one destination is enabled. Backup enabled means its schedule is enabled;
+restored schedules stay suspended until their local destination and secret are
+revalidated through the existing Backup Operation Lifecycle. Reading diagnostics
+does not read destination secrets or validate a backup archive. Last verified
+backup time is accepted audit evidence and does not prove that an archive still
+exists or that it is stored off host. Unknown storage observations are nullable.
+
+The existing Metrics Access Credential also protects the added
+`slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are
+preserved during normal operation. During exclusive maintenance `/metrics` and the diagnostics API return a minimal
+503 maintenance status before authentication or database access; all metrics are
+temporarily absent. This preserves the existing Metrics Access Credential
+admission boundary and prevents credential reload/usage writes while persistence
+is being replaced. Use `/readyz` for monitoring these controlled windows.
+Worker labels are bounded to `scheduler`, `host_facts`, `vulnerabilities`, `backup`
+`notifications`, `audit_pruner` and `job_log_pruner`; no accounts, jobs, Servers, tokens, destinations or paths
+are added as labels. Timestamps and observed error counts come from service
+owners using their injected clocks. Missing timestamps, unavailable counts and
+unavailable storage are omitted; the `_available` gauges identify unknown backup
+and notification observations. The panel and metrics do not estimate queue depth
+from timer cadence or infer progress from goroutine existence.
+
+Example alert expressions (tune windows to deployment cadence):
+
+```promql
+slu_installation_ready == 0 and slu_installation_maintenance == 0
+slu_installation_storage_available_bytes < 1024 * 1024 * 1024
+slu_installation_notifications_retrying > 0
+slu_installation_notifications_failed > 0
+slu_installation_backup_verified_age_seconds > 7 * 24 * 3600
+(time() - slu_installation_worker_last_tick_timestamp_seconds{worker="scheduler"} > 180)
+  and on(worker) slu_installation_worker_enabled{worker="scheduler"} == 1
+```
+
+Use an external HTTP probe for availability when `/metrics` is unavailable or cannot authenticate;
+monitor absent backup evidence as well as old evidence. Do not alert on a disabled
+worker or a never-observed timestamp without a startup/cadence allowance. A live
+process can be unready, and a ready process can have delivery failures or stale
+backup evidence. This remains a single-instance SQLite installation: no HA,
+replica coordination or cross-process watchdog is provided. The installation
+lock, verified backups, operator monitoring and manual recovery remain required.

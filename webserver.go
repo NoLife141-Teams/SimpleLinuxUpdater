@@ -1404,9 +1404,11 @@ func auditWithService(service *AuditService, c *gin.Context, action, targetType,
 	}
 }
 
-func startAuditPruner(ctx context.Context) {
+func startAuditPruner(ctx context.Context, observations ...installationWorkerObservation) {
+	observation := installationPrunerObservation(observations)
+	prune := func() error { return observation.run(func() error { return pruneAuditEvents(auditRetentionDays) }) }
 	auditPruneTickerOnce.Do(func() {
-		if err := pruneAuditEvents(auditRetentionDays); err != nil {
+		if err := prune(); err != nil {
 			log.Printf("audit prune failed: %v", err)
 		}
 		go func() {
@@ -1414,7 +1416,7 @@ func startAuditPruner(ctx context.Context) {
 			for {
 				select {
 				case <-t.C:
-					if err := pruneAuditEvents(auditRetentionDays); err != nil {
+					if err := prune(); err != nil {
 						log.Printf("audit prune failed: %v", err)
 					}
 				case <-ctx.Done():
@@ -1849,9 +1851,9 @@ func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 		}
 		initializeServerStateStatuses(deps.ServerState)
 	}
-	return appshell.NewRouter(appshell.RouterConfig{
+	router, err := appshell.NewRouter(appshell.RouterConfig{
 		TrustedProxies:   deps.TrustedProxies,
-		GlobalMiddleware: []gin.HandlerFunc{securityHeadersMiddleware(), maintenanceCoordinationMiddleware(deps.MaintenanceCoordinator, deps.ApplicationTime)},
+		GlobalMiddleware: []gin.HandlerFunc{installationProbeMiddleware(deps), securityHeadersMiddleware(), maintenanceCoordinationMiddleware(deps.MaintenanceCoordinator, deps.ApplicationTime)},
 		InitializeMaintenance: func() error {
 			if err := deps.ApplicationTime.Initialize(context.Background()); err != nil {
 				return err
@@ -1867,6 +1869,10 @@ func setupRouterWithDeps(deps AppDeps) (*gin.Engine, error) {
 			return registerRoutes(r, deps)
 		},
 	})
+	if err == nil {
+		deps.InstallationHealth.setPhase("ready")
+	}
+	return router, err
 }
 
 func registerRoutes(r *gin.Engine, deps AppDeps) error {
@@ -1896,7 +1902,7 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(http.StatusOK, publicMaintenanceSnapshotPayload(deps.MaintenanceCoordinator.Snapshot()))
 	})
 	r.GET("/metrics", metricsBearerMiddlewareWithServiceAndLimiter(deps.MetricsAccessCredential, deps.MetricsRateLimiter), func(c *gin.Context) {
-		handleMetricsWithService(c, deps.ObservabilityService)
+		handleInstallationMetrics(c, deps)
 	})
 
 }
@@ -1925,6 +1931,7 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 }
 
 func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
+	r.GET("/api/installation/health", func(c *gin.Context) { handleInstallationDiagnostics(c, deps) })
 	deps = deps.withDefaults()
 	registerApplicationPostcheckRoutes(r, deps)
 	registerPackageDeferralRoutes(r, deps)

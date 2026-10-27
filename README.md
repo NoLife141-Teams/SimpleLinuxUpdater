@@ -202,3 +202,12 @@ Developers can run the [real SSH/APT qualification harness](docs/ssh-apt-qualifi
 The [dashboard scaling harness](docs/dashboard-scaling.md) measures synthetic fleets
 of 10, 100 and 1,000 Servers through authenticated APIs, Chromium and SSE, with
 isolated SQLite fixtures and no SSH connections.
+
+### Installation health
+
+`GET /healthz` reports process liveness. `GET /readyz` reports local runtime and
+SQLite readiness with a 250 ms query budget, before setup as well as afterward.
+Both are public, read-only, require no account/token, return minimal JSON, and
+send `Cache-Control: no-store`. Remote Server failures do not change readiness.
+See [deployment health checks](docs/deployment.md#installation-health-and-readiness)
+for maintenance states, Docker probes, metrics and alert examples.

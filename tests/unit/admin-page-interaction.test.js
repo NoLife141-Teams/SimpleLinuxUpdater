@@ -674,6 +674,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
         "scheduled-policies",
         "scheduled-runs",
         "backup",
+        "installation",
         "metrics"
     ]);
     assert.equal(store.getView().workspace.activeSection, "app-time");
@@ -696,6 +697,7 @@ test("Admin workspace projects stable sections and accepted-fact summaries", () 
         "scheduled-policies": "2 saved policies",
         "scheduled-runs": "1 recent run",
         "backup": "Backup operations ready",
+        "installation": "Installation facts unavailable",
         "metrics": "Token usage unknown"
     });
 

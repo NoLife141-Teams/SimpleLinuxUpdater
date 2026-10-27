@@ -43,7 +43,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("policies:write", false, "POST", "/api/update-policies", "/api/update-policies/preview", "/api/package-deferrals")
 	add("policies:write", false, "PUT", "/api/update-policies/settings", "/api/update-policies/:id/overrides/:server", "/api/update-policies/:id", "/api/postcheck-profiles")
 	add("policies:write", false, "DELETE", "/api/update-policies/:id", "/api/package-deferrals/:id")
-	add("settings:write", false, "GET", "/admin", "/api/metrics/token", "/api/notifications/settings", "/api/notifications/delivery-diagnostics", "/api/auth/accounts")
+	add("settings:write", false, "GET", "/admin", "/api/installation/health", "/api/metrics/token", "/api/notifications/settings", "/api/notifications/delivery-diagnostics", "/api/auth/accounts")
 	add("settings:write", false, "POST", "/api/metrics/token", "/api/notifications/test", "/api/audit-events/prune", "/api/auth/accounts")
 	add("settings:write", false, "PUT", "/api/notifications/settings", "/api/app-settings/timezone", "/api/auth/accounts/:id")
 	add("settings:write", false, "DELETE", "/api/metrics/token")

@@ -163,7 +163,8 @@ func loadJobLogConfigFromEnv() internaljobs.LogConfig {
 	return config
 }
 
-func startJobLogPruner(ctx context.Context, current func() *JobManager) {
+func startJobLogPruner(ctx context.Context, current func() *JobManager, observations ...installationWorkerObservation) {
+	observation := installationPrunerObservation(observations)
 	if current == nil {
 		return
 	}
@@ -177,7 +178,7 @@ func startJobLogPruner(ctx context.Context, current func() *JobManager) {
 				if manager == nil {
 					continue
 				}
-				if _, err := manager.PurgeExpiredLogs(); err != nil {
+				if err := observation.run(func() error { _, err := manager.PurgeExpiredLogs(); return err }); err != nil {
 					log.Printf("job log prune failed: %v", err)
 				}
 			case <-ctx.Done():

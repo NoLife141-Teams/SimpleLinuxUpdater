@@ -19,6 +19,7 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
+	installationhealthpkg "debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
 	"github.com/gin-gonic/gin"
 )
@@ -74,6 +75,7 @@ type backupAutomationStatus struct {
 type backupAutomationDeployment struct{ Directory, SecretFile string }
 
 type backupAutomation struct {
+	health      installationhealthpkg.Worker
 	copyArchive func(io.Writer, io.Reader) (int64, error)
 	mu          sync.Mutex
 	wg          sync.WaitGroup
@@ -453,7 +455,9 @@ func (a *backupAutomation) record(s backupAutomationState, action, status string
 
 // Tick claims a single occurrence durably before exporting. A crash consumes that
 // occurrence; the next tick reports interruption instead of exporting it twice.
-func (a *backupAutomation) Tick(ctx context.Context, manual bool) error {
+func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr error) {
+	a.health.Tick(a.now())
+	defer func() { a.health.Finish(a.now(), resultErr) }()
 	lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupExport)
 	if !decision.Allowed {
 		shared, allowed := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled)

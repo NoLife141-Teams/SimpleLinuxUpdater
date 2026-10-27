@@ -5,9 +5,9 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory() {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks"];
+    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks", "installation"];
     const sectionDefinitions = [
-        { id: "app-time", label: "App Time" },
+ { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
  { id: "application-checks", label: "Application Checks" },
         { id: "account-security", label: "Account Security" },
@@ -15,10 +15,11 @@
         { id: "scheduled-policies", label: "Policies" },
         { id: "scheduled-runs", label: "Scheduled Runs" },
         { id: "backup", label: "Backup" },
+ { id: "installation", label: "Installation Health" },
         { id: "metrics", label: "Metrics" }
     ];
     const sectionIDs = new Set(sectionDefinitions.map(section => section.id));
-    const lazySectionIDs = new Set(["application-checks", "notifications", "recent-activity", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
+    const lazySectionIDs = new Set(["installation", "application-checks", "notifications", "recent-activity", "scheduled-policies", "scheduled-runs", "backup", "metrics"]);
     const destructiveCommands = new Set([
         "clearSessions",
         "clearOtherSessions",
@@ -294,6 +295,20 @@
         };
     }
 
+    function normalizeInstallation(data = {}) {
+        const timestamp = value => typeof value === "string" ? value : "";
+        const count = value => Number.isFinite(value) && value >= 0 ? value : null;
+        const workers = ["scheduler", "host_facts", "vulnerabilities", "backup", "notifications", "audit_pruner", "job_log_pruner"].map(name => {
+            const value = data.workers?.[name];
+            return { name, available: Boolean(value), enabled: Boolean(value?.enabled), running: Boolean(value?.running),
+                lastTick: timestamp(value?.last_tick), lastProgress: timestamp(value?.last_progress), lastError: timestamp(value?.last_error), errors: count(value?.errors) };
+        });
+        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), workers,
+            backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
+            notifications: { available: Boolean(data.notifications?.available), enabled: Boolean(data.notifications?.enabled), pending: count(data.notifications?.pending), retrying: count(data.notifications?.retrying), failed: count(data.notifications?.failed) },
+            storage: { dbBytes: count(data.storage?.db_bytes), walBytes: count(data.storage?.wal_bytes), availableBytes: count(data.storage?.available_bytes) } };
+    }
+
     function createStore(options = {}) {
         const scheduled = options.scheduled || null;
         const streams = Object.fromEntries(streamNames.map(name => [name, emptyStream()]));
@@ -310,7 +325,8 @@
             passwordPolicy: normalizePasswordPolicy(),
             passwordChangeOutcome: null
         };
-        let activity = normalizeActivity();
+        let installation = null;
+ let activity = normalizeActivity();
         let metrics = normalizeMetrics();
         let backup = {
             blocked: false,
@@ -596,6 +612,7 @@
             const runItems = scheduledSnapshots.runs?.data?.items;
             const lifecycle = {
                 "app-time": streams.timezone,
+ installation: streams.installation,
                 notifications: streams.notifications,
  "application-checks": streams.postchecks,
                 "account-security": streams.account,
@@ -610,6 +627,7 @@
                 metrics: streams.metrics
             };
             const summaries = {
+ installation: streams.installation.accepted ? freshnessSummary(installation.state, streams.installation.freshness === "stale") : "Installation facts unavailable",
  "application-checks": countSummary(postchecks.accepted.profiles.length,"saved profile"),
                 "app-time": streams.timezone.accepted ? freshnessSummary(timezone.resolved, streams.timezone.freshness === "stale") : "Timezone unavailable",
                 notifications: streams.notifications.accepted ? freshnessSummary(notificationSummary(), streams.notifications.freshness === "stale") : "Notification settings unavailable",
@@ -799,7 +817,8 @@
             }
 
             switch (event.type) {
-                case "snapshotRequested": return request(event.stream);
+                case "installationSnapshotReceived": if (accept("installation", event.requestID, event.receivedAt)) { installation = normalizeInstallation(event.data); return [effect("render", {area:"workspace"})]; } return [];
+ case "snapshotRequested": return request(event.stream);
                 case "snapshotFailed": return fail(event.stream, event.requestID, event.error);
                 case "timezoneSnapshotReceived": {
                     const preserveDraft = streams.timezone.accepted
@@ -974,6 +993,7 @@
                 postchecks: {...postchecks,dirty:!sameValue(postchecks.accepted,postchecks.draft)},
  notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 notificationDiagnostics,
+ installation,
                 account: projectAccount(),
                 activity,
                 metrics,

@@ -254,6 +254,7 @@
         }
 
         function renderAdminWorkspace() {
+ renderInstallationHealth();
             const workspace = adminPageView().workspace;
             if (!workspace) return;
             const lifecycleLabels = {
@@ -396,7 +397,8 @@
             const lifetime = lifecycle.capture();
 
             try {
-                if (sectionID === "application-checks")
+                if (sectionID === "installation") await fetchInstallationHealth();
+ if (sectionID === "application-checks")
                     await applicationPostcheckAdapter.load();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (sectionID === "app-time")
@@ -604,6 +606,45 @@
             });
             renderAdminDestructiveControls();
             return effects;
+        }
+
+        async function fetchInstallationHealth() {
+            const requestID = beginAdminSnapshot("installation");
+            try {
+                const response = await fetch("/api/installation/health", {cache:"no-store"});
+                if (!response.ok) throw new Error("Installation facts could not be loaded.");
+                const data = await response.json();
+                if (!lifecycle.active) return;
+                adminPageInteraction.dispatch({type:"installationSnapshotReceived", requestID, receivedAt:new Date().toISOString(), data});
+            } catch (error) {
+                if (!lifecycle.active) return;
+                adminPageInteraction.dispatch({type:"snapshotFailed", stream:"installation", requestID, error:error.message});
+            }
+            renderAdminWorkspace();
+        }
+        function renderInstallationHealth() {
+            const view = adminPageView().installation;
+            const root = document.getElementById("installation-health-facts");
+            if (!root || !view) return;
+            const missing = "Unavailable";
+            const date = value => !value || value.startsWith("0001-") ? "Never observed" : new Date(value).toLocaleString();
+            const number = value => value === null ? missing : value.toLocaleString();
+            const fields = {
+                "installation-state": view.state,
+                "installation-checked": date(view.checkedAt),
+                "installation-backup": view.backupAvailable ? `${view.backupState}; last verified ${date(view.verifiedAt)}; age ${number(view.backupAgeSeconds)} seconds` : missing,
+                "installation-notifications": view.notifications.available ? `${view.notifications.enabled ? "Enabled" : "Disabled"}; ${number(view.notifications.pending)} pending, ${number(view.notifications.retrying)} retrying, ${number(view.notifications.failed)} failed (retained)` : missing,
+                "installation-storage": `DB ${number(view.storage.dbBytes)} bytes; WAL ${number(view.storage.walBytes)} bytes; available ${number(view.storage.availableBytes)} bytes`
+            };
+            for (const [id, text] of Object.entries(fields)) document.getElementById(id).textContent = text;
+            const body = document.getElementById("installation-workers");
+            body.replaceChildren(...view.workers.map(worker => {
+                const row = document.createElement("tr");
+                for (const text of [worker.name, !worker.available ? missing : !worker.enabled ? "Disabled" : worker.running ? "Running" : "Enabled", date(worker.lastTick), date(worker.lastProgress), date(worker.lastError), number(worker.errors)]) {
+                    const cell = document.createElement("td"); cell.textContent = text; row.append(cell);
+                }
+                return row;
+            }));
         }
 
         function beginAdminSnapshot(stream) {

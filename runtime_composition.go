@@ -39,8 +39,16 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("prepare persistence replacement: %w", err)
 	}
+	previousPhase := "initializing"
+	if c.deps.InstallationHealth != nil {
+		previousPhase = c.deps.InstallationHealth.Phase()
+		c.deps.InstallationHealth.setPhase("reloading")
+	}
 	if preparer, ok := c.deps.NotificationService.(notificationpkg.PersistenceReplacementPreparer); ok {
 		if err := preparer.PreparePersistenceReplacement(ctx); err != nil {
+			if c.deps.InstallationHealth != nil {
+				c.deps.InstallationHealth.setPhase(previousPhase)
+			}
 			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
 		}
 	}
@@ -59,7 +67,15 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	return nil
 }
 
-func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
+func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr error) {
+	if c != nil && c.deps.InstallationHealth != nil {
+		c.deps.InstallationHealth.setPhase("reloading")
+		defer func() {
+			if resultErr == nil {
+				c.deps.InstallationHealth.setPhase("ready")
+			}
+		}()
+	}
 	if c == nil {
 		return fmt.Errorf("reload restored runtime: runtime composition is unavailable")
 	}
@@ -500,12 +516,16 @@ func (c *runtimeComposition) Compose() AppDeps {
 		deps.BackupService = NewBackupServiceWithDeps(internalbackup.ServiceDeps{
 			DB:                  deps.DB,
 			DBPath:              deps.DBPath,
+			Now:                 deps.Now,
 			GlobalSSHCredential: deps.GlobalSSHCredential,
 			RestoredRuntime:     c,
 		})
 	}
 	if deps.BackupAutomation == nil {
 		deps.BackupAutomation = newBackupAutomation(deps)
+	}
+	if deps.InstallationHealth == nil {
+		deps.InstallationHealth = newInstallationHealth()
 	}
 	c.deps = deps
 	return deps

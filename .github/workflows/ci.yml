@@ -39,6 +39,7 @@ jobs:
               - '.github/workflows/**'
               - 'tools/**'
               - 'docker-entrypoint.sh'
+              - 'docker-healthcheck.sh'
               - 'Dockerfile'
               - 'templates/**'
               - 'static/**'
@@ -70,6 +71,7 @@ jobs:
               - 'Dockerfile'
               - '.dockerignore'
               - 'docker-entrypoint.sh'
+              - 'docker-healthcheck.sh'
               - 'templates/**'
               - 'static/**'
               - 'tools/ci/**'
@@ -276,6 +278,13 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             tools/ci/docker-smoke.sh "$image" "$platform"
             python3 tools/ci/admin-recovery-smoke.py "$image" "$platform" --docker-host "$docker_host"
+          done
+
+      - name: Verify installation health probes
+        run: |
+          image="$(docker image inspect slu-smoke:ci --format '{{.Id}}')"
+          for platform in linux/amd64 linux/arm64; do
+            python3 tools/ci/docker-health-smoke.py "$image" "$platform"
           done
 
       - name: Retain Docker diagnostics

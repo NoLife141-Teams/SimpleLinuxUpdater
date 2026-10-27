@@ -103,7 +103,9 @@ func (s *Service) StartSchedulerWithRecovery(ctx context.Context, options Schedu
 // occurrences were missed, at most the latest missed occurrence per enabled
 // policy is materialized, bounded by DefaultSchedulerRecoveryHorizon. Those
 // historical occurrences are always skipped rather than executed.
-func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermarkStore) error {
+func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermarkStore) (resultErr error) {
+	s.health.Tick(s.EnsureDeps().Now())
+	defer func() { s.health.Finish(s.EnsureDeps().Now(), resultErr) }()
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()

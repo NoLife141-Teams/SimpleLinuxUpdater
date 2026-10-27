@@ -1,23 +1,48 @@
-const LOG_BOTTOM_THRESHOLD = 20;
+// Composition of browser adapters; interaction owners retain state and decisions.
+(function (root) {
+    let current = null;
+    function mount() {
+        current?.destroy();
+        const lifecycle = root.BrowserEffects.create();
+        lifecycle.init();
+        const fetch = lifecycle.fetch;
+        const IntersectionObserver = root.IntersectionObserver
+            ? lifecycle.observer(root.IntersectionObserver)
+            : undefined;
+        const ResizeObserver = root.ResizeObserver
+            ? lifecycle.observer(root.ResizeObserver)
+            : undefined;
+        const LOG_BOTTOM_THRESHOLD = 20;
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
         const statusRendering = window.StatusRendering.create(document);
-        const statusDrawerAdapter = window.StatusDrawerAdapter.create(document, window);
-        const statusTableAdapter = window.StatusTableAdapter.create(localStorage, "simplelinuxupdater.statusTableColWidths.v15");
+        // Deferred drawer focus belongs to this page's lifetime too.
+        const statusDrawerAdapter = window.StatusDrawerAdapter.create(
+            document,
+            lifecycle,
+        );
+        const statusTableAdapter = window.StatusTableAdapter.create(
+            localStorage,
+            "simplelinuxupdater.statusTableColWidths.v15",
+        );
         const statusActionAdapter = window.StatusActionAdapter.create(window);
         const statusInteraction = window.StatusPageInteraction.createStore({
-            presentationFacts: dashboardConsumption.presentationFacts
+            presentationFacts: dashboardConsumption.presentationFacts,
         });
         window.statusPageInteraction = statusInteraction;
-        const statusViewScope = window.StatusRendering.createSnapshotScope(() => statusInteraction.getView());
+        const statusViewScope = window.StatusRendering.createSnapshotScope(() =>
+            statusInteraction.getView(),
+        );
         let allServers = [];
-        let dashboardPresentation = dashboardConsumption.project({ statusView: statusInteraction.getView() });
+        let dashboardPresentation = dashboardConsumption.project({
+            statusView: statusInteraction.getView(),
+        });
         let hoveredName = null;
-	        let expandedHostFactsServers = new Set();
-	        let expandedInstalledVulnerabilityServers = new Set();
-	        let expandedMiniLists = new Set();
-	        let expandedCVEFindings = new Set();
-	        let activePhaseTooltipTarget = null;
+        let expandedHostFactsServers = new Set();
+        let expandedInstalledVulnerabilityServers = new Set();
+        let expandedMiniLists = new Set();
+        let expandedCVEFindings = new Set();
+        let activePhaseTooltipTarget = null;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
         let passwordResolve = null;
@@ -27,28 +52,75 @@ const LOG_BOTTOM_THRESHOLD = 20;
         let actionInteractionReleaseTimer = null;
         const actionInteractionDeferMs = 350;
         const cancelledStatusRefreshDelayMs = 500;
-        const dashboardFilterStorageKey = "simplelinuxupdater.dashboard.filters.v1";
+        const dashboardFilterStorageKey =
+            "simplelinuxupdater.dashboard.filters.v1";
         const defaultColumnWidths = Object.freeze({
             name: 140,
             status: 116,
-            actions: 280
+            actions: 280,
         });
         const minColumnWidths = Object.freeze({
             name: 112,
             status: 96,
-            actions: 248
+            actions: 248,
         });
         const maxColumnWidths = Object.freeze({
             name: 240,
             status: 170,
-            actions: 360
+            actions: 360,
         });
         const allowedStatuses = new Set([
-            "idle", "updating", "pending_approval", "approved", "cancelled",
-            "upgrading", "autoremove", "repairing", "needs_reconciliation", "sudoers", "done", "error", "success",
-            "failure", "failed", "started", "ignored", "running", "queued", "skipped",
-            "facts_refresh", "vulnerability_scan", "postchecks_test", "rebooting"
+            "idle",
+            "updating",
+            "pending_approval",
+            "approved",
+            "cancelled",
+            "upgrading",
+            "autoremove",
+            "repairing",
+            "needs_reconciliation",
+            "sudoers",
+            "done",
+            "error",
+            "success",
+            "failure",
+            "failed",
+            "started",
+            "ignored",
+            "running",
+            "queued",
+            "skipped",
+            "facts_refresh",
+            "vulnerability_scan",
+            "postchecks_test",
+            "rebooting",
         ]);
+
+        const statusSnapshots = window.StatusSnapshotAdapter.create({
+            dispatchStatusInteraction: (...args) =>
+                dispatchStatusInteraction(...args),
+            encodeURIComponent: (...args) => encodeURIComponent(...args),
+        });
+        const { executeStatusSnapshotFetch, executeJobLogFetch } =
+            statusSnapshots;
+        statusSnapshots.init();
+        lifecycle.own(statusSnapshots.destroy);
+        const statusBulk = window.StatusBulkActions.create({
+            getStatusView: (...args) => getStatusView(...args),
+            statusInteraction: statusInteraction,
+            pluralize: (...args) => pluralize(...args),
+            updateRefreshAllFactsState: (...args) =>
+                updateRefreshAllFactsState(...args),
+            scheduleSelectPageStateUpdate: (...args) =>
+                scheduleSelectPageStateUpdate(...args),
+            pendingApprovalRequestOptions: (...args) =>
+                pendingApprovalRequestOptions(...args),
+            dispatchStatusInteraction: (...args) =>
+                dispatchStatusInteraction(...args),
+        });
+        const { updateBulkActionState } = statusBulk;
+        statusBulk.init();
+        lifecycle.own(statusBulk.destroy);
 
         function getStatusView() {
             return statusViewScope.read();
@@ -59,27 +131,33 @@ const LOG_BOTTOM_THRESHOLD = 20;
             dashboardPresentation = dashboardConsumption.project({
                 statusView,
                 globalKeyAvailable: statusView.globalKeyAvailable,
-                extras: statusView.extras
+                extras: statusView.extras,
             });
             return dashboardPresentation;
         }
 
         function serverPresentation(serverOrName) {
-            const name = typeof serverOrName === "string" ? serverOrName : serverOrName?.name;
+            const name =
+                typeof serverOrName === "string"
+                    ? serverOrName
+                    : serverOrName?.name;
             return dashboardPresentation.serversByName[name] || null;
         }
 
         function dispatchStatusInteraction(event) {
             const effects = statusInteraction.dispatch(event);
             const tasks = [];
-            effects.forEach(effect => {
+            effects.forEach((effect) => {
                 if (effect.type === "persistFilters") {
                     persistDashboardFilters(effect.value);
                 } else if (effect.type === "fetchSnapshot") {
                     tasks.push(executeStatusSnapshotFetch(effect));
                 } else if (effect.type === "fetchJobLogs") {
                     tasks.push(executeJobLogFetch(effect));
-                } else if (effect.type === "render" && effect.scope === "serverState") {
+                } else if (
+                    effect.type === "render" &&
+                    effect.scope === "serverState"
+                ) {
                     renderServerState();
                 } else if (effect.type === "renderDrawerLogs") {
                     renderDrawerLogs(effect.serverName);
@@ -89,21 +167,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     statusViewScope.run(() => {
                         refreshDashboardPresentation();
                         if (effect.stream === "audit") renderRecentActivity();
-                        if (["observability", "policies"].includes(effect.stream)) renderSummaryBadges();
+                        if (
+                            ["observability", "policies"].includes(
+                                effect.stream,
+                            )
+                        )
+                            renderSummaryBadges();
                     });
                 } else if (effect.type === "cancelInteractionRelease") {
                     if (actionInteractionReleaseTimer !== null) {
-                        clearTimeout(actionInteractionReleaseTimer);
+                        lifecycle.clearTimeout(actionInteractionReleaseTimer);
                         actionInteractionReleaseTimer = null;
                     }
                 } else if (effect.type === "scheduleInteractionRelease") {
-                    if (actionInteractionReleaseTimer !== null) clearTimeout(actionInteractionReleaseTimer);
-                    actionInteractionReleaseTimer = setTimeout(() => {
+                    if (actionInteractionReleaseTimer !== null)
+                        lifecycle.clearTimeout(actionInteractionReleaseTimer);
+                    actionInteractionReleaseTimer = lifecycle.setTimeout(() => {
                         actionInteractionReleaseTimer = null;
-                        dispatchStatusInteraction({ type: "interactionReleased" });
+                        dispatchStatusInteraction({
+                            type: "interactionReleased",
+                        });
                     }, effect.delayMs);
                 } else if (effect.type === "actionRejected") {
-                    statusActionAdapter.notify(effect.reason || "Action is no longer available");
+                    statusActionAdapter.notify(
+                        effect.reason || "Action is no longer available",
+                    );
                 } else if (effect.type === "announceResult" && effect.message) {
                     statusActionAdapter.notify(effect.message);
                 }
@@ -112,7 +200,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function isRunningTimelineState(state) {
-            return ["active", "queued"].includes(String(state || "").toLowerCase());
+            return ["active", "queued"].includes(
+                String(state || "").toLowerCase(),
+            );
         }
 
         function setText(id, value) {
@@ -125,7 +215,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function progressClass(value) {
             const numeric = Number(value || 0);
-            const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
+            const clamped = Number.isFinite(numeric)
+                ? Math.max(0, Math.min(100, numeric))
+                : 0;
             return `progress-${Math.round(clamped / 5) * 5}`;
         }
 
@@ -151,7 +243,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function formatRelativeTime(date) {
             if (!date) return "Waiting for sync";
-            const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+            const seconds = Math.max(
+                0,
+                Math.round((Date.now() - date.getTime()) / 1000),
+            );
             if (seconds < 5) return "Synced just now";
             if (seconds < 60) return `Synced ${seconds}s ago`;
             const minutes = Math.floor(seconds / 60);
@@ -163,7 +258,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (!raw) return empty;
             const parsed = new Date(raw);
             if (Number.isNaN(parsed.getTime())) return raw;
-            const seconds = Math.max(0, Math.round((Date.now() - parsed.getTime()) / 1000));
+            const seconds = Math.max(
+                0,
+                Math.round((Date.now() - parsed.getTime()) / 1000),
+            );
             if (seconds < 60) return "just now";
             const minutes = Math.floor(seconds / 60);
             if (minutes < 60) return `${minutes}m ago`;
@@ -178,7 +276,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (Number.isNaN(parsed.getTime())) return raw;
             const month = parsed.toLocaleString(undefined, { month: "short" });
             const day = parsed.getDate();
-            const time = parsed.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+            const time = parsed.toLocaleTimeString(undefined, {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+            });
             return `${month} ${day} ${time}`;
         }
 
@@ -188,22 +290,42 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function isNearBottom(el) {
-            return (el.scrollHeight - el.scrollTop - el.clientHeight) <= LOG_BOTTOM_THRESHOLD;
+            return (
+                el.scrollHeight - el.scrollTop - el.clientHeight <=
+                LOG_BOTTOM_THRESHOLD
+            );
         }
 
         function classifyLogLine(line) {
             const lower = line.toLowerCase();
-            const bracketState = String(line || "").match(/\[(PASS|WARN|FAIL)\]/i);
+            const bracketState = String(line || "").match(
+                /\[(PASS|WARN|FAIL)\]/i,
+            );
             if (bracketState) {
                 const state = bracketState[1].toUpperCase();
                 if (state === "FAIL") return "error";
                 if (state === "WARN") return "warning";
                 if (state === "PASS") return "success";
             }
-            if (/(error|failed|fatal|denied|refused|panic|timeout|timed out)/.test(lower)) return "error";
+            if (
+                /(error|failed|fatal|denied|refused|panic|timeout|timed out)/.test(
+                    lower,
+                )
+            )
+                return "error";
             if (/(warn|warning|retry|deprecated)/.test(lower)) return "warning";
-            if (/(done|completed|success|approved|enabled|disabled|cancelled)/.test(lower)) return "success";
-            if (/(starting|running|connecting|upgradable|upgrade|apt|ssh|info)/.test(lower)) return "info";
+            if (
+                /(done|completed|success|approved|enabled|disabled|cancelled)/.test(
+                    lower,
+                )
+            )
+                return "success";
+            if (
+                /(starting|running|connecting|upgradable|upgrade|apt|ssh|info)/.test(
+                    lower,
+                )
+            )
+                return "info";
             return "";
         }
 
@@ -213,35 +335,45 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 return `<div class="log-line log-line-info">No logs yet.</div>`;
             }
             const lines = statusFormatting.logLines(text);
-            return lines.map(line => {
-                const klass = classifyLogLine(line);
-                const classAttr = klass ? ` log-line-${klass}` : "";
-                const printable = line.length ? line : " ";
-                return `<div class="log-line${classAttr}">${escapeHtml(printable)}</div>`;
-            }).join("");
+            return lines
+                .map((line) => {
+                    const klass = classifyLogLine(line);
+                    const classAttr = klass ? ` log-line-${klass}` : "";
+                    const printable = line.length ? line : " ";
+                    return `<div class="log-line${classAttr}">${escapeHtml(printable)}</div>`;
+                })
+                .join("");
         }
 
         function pendingStateBadge(state) {
             const normalized = String(state || "").toLowerCase();
-            if (normalized === "pending") return `<span class="pending-badge">Scanning CVEs...</span>`;
-            if (normalized === "unavailable") return `<span class="pending-badge">CVE lookup unavailable</span>`;
-            if (normalized === "unsupported") return `<span class="pending-badge">Coverage unknown</span>`;
-            if (normalized === "skipped") return `<span class="pending-badge">CVE lookup skipped</span>`;
+            if (normalized === "pending")
+                return `<span class="pending-badge">Scanning CVEs...</span>`;
+            if (normalized === "unavailable")
+                return `<span class="pending-badge">CVE lookup unavailable</span>`;
+            if (normalized === "unsupported")
+                return `<span class="pending-badge">Coverage unknown</span>`;
+            if (normalized === "skipped")
+                return `<span class="pending-badge">CVE lookup skipped</span>`;
             if (normalized === "ready") return "";
             return `<span class="pending-badge">Unknown state</span>`;
         }
 
         function vulnerabilityFindingListHtml(findings, title, tone) {
             if (!findings.length) return "";
-            const items = findings.map(finding => {
-                const id = escapeHtml(finding.id || "Unknown CVE");
-                const url = String(finding.advisory_url || "").trim();
-                const idHtml = url
-                    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>`
-                    : id;
-                const fixedVersion = String(finding.fixed_by_version || "").trim();
-                return `<li>${idHtml}${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
-            }).join("");
+            const items = findings
+                .map((finding) => {
+                    const id = escapeHtml(finding.id || "Unknown CVE");
+                    const url = String(finding.advisory_url || "").trim();
+                    const idHtml = url
+                        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>`
+                        : id;
+                    const fixedVersion = String(
+                        finding.fixed_by_version || "",
+                    ).trim();
+                    return `<li>${idHtml}${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
+                })
+                .join("");
             return `
                 <section class="cve-finding-group cve-finding-${tone}">
                     <h5>${escapeHtml(title)}</h5>
@@ -254,16 +386,26 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return JSON.stringify([
                 String(server?.name || ""),
                 String(update?.install_package || update?.package || ""),
-                String(update?.candidate_version || "")
+                String(update?.candidate_version || ""),
             ]);
         }
 
         function vulnerabilityFindingsHtml(update, disclosureKey) {
-            const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
+            const findings = Array.isArray(update.cve_findings)
+                ? update.cve_findings
+                : [];
             if (!findings.length) return "";
-            const fixed = findings.filter(finding => finding.disposition === "fixed_by_candidate");
-            const remaining = findings.filter(finding => finding.disposition === "still_affected");
-            const source = escapeHtml(update.cve_source || findings[0]?.source || "Official distribution data");
+            const fixed = findings.filter(
+                (finding) => finding.disposition === "fixed_by_candidate",
+            );
+            const remaining = findings.filter(
+                (finding) => finding.disposition === "still_affected",
+            );
+            const source = escapeHtml(
+                update.cve_source ||
+                    findings[0]?.source ||
+                    "Official distribution data",
+            );
             const scannedAt = update.cve_scanned_at
                 ? ` · scanned ${escapeHtml(update.cve_scanned_at)}`
                 : "";
@@ -285,11 +427,23 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getPendingApprovalCounts(server) {
-            return serverPresentation(server)?.approvalCounts || {
-                total: 0, standard: 0, keptBack: 0, full: 0, security: null, totalSecurity: null,
-                keptBackSecurity: 0, fullPlanAvailable: false, keptBackSecurityPlanAvailable: false,
-                keptBackSecurityNewPackages: [], keptBackSecurityRemovedPackages: [], newPackages: [], removedPackages: []
-            };
+            return (
+                serverPresentation(server)?.approvalCounts || {
+                    total: 0,
+                    standard: 0,
+                    keptBack: 0,
+                    full: 0,
+                    security: null,
+                    totalSecurity: null,
+                    keptBackSecurity: 0,
+                    fullPlanAvailable: false,
+                    keptBackSecurityPlanAvailable: false,
+                    keptBackSecurityNewPackages: [],
+                    keptBackSecurityRemovedPackages: [],
+                    newPackages: [],
+                    removedPackages: [],
+                }
+            );
         }
 
         function getPendingPackageCount(server) {
@@ -301,7 +455,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getRiskLabel(server) {
-            return serverPresentation(server)?.risk.label || "Installed packages not scanned";
+            return (
+                serverPresentation(server)?.risk.label ||
+                "Installed packages not scanned"
+            );
         }
 
         function getRiskLevel(server) {
@@ -312,48 +469,89 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return serverPresentation(name)?.intelligence || null;
         }
 
-	        function getServerTimeline(server) {
-	            return serverPresentation(server)?.timeline || { current_phase: "", current_label: "Idle", state: "idle", progress_pct: 0, summary: "No maintenance activity", phases: [] };
-	        }
+        function getServerTimeline(server) {
+            return (
+                serverPresentation(server)?.timeline || {
+                    current_phase: "",
+                    current_label: "Idle",
+                    state: "idle",
+                    progress_pct: 0,
+                    summary: "No maintenance activity",
+                    phases: [],
+                }
+            );
+        }
 
-	        function isRuntimePendingApproval(server) {
-	            return !!serverPresentation(server)?.runtimePending;
-	        }
+        function isRuntimePendingApproval(server) {
+            return !!serverPresentation(server)?.runtimePending;
+        }
 
-	        function isTimelinePendingApproval(server) {
-	            return !!serverPresentation(server)?.timelinePending;
-	        }
+        function isTimelinePendingApproval(server) {
+            return !!serverPresentation(server)?.timelinePending;
+        }
 
-	        function isPendingApprovalHost(server) {
-	            return !!serverPresentation(server)?.pendingApproval;
-	        }
+        function isPendingApprovalHost(server) {
+            return !!serverPresentation(server)?.pendingApproval;
+        }
 
-	        function pendingApprovalDriftReason(server) {
-	            return serverPresentation(server)?.driftReason || "";
-	        }
+        function pendingApprovalDriftReason(server) {
+            return serverPresentation(server)?.driftReason || "";
+        }
 
-	        function getServerFailureReason(server) {
-	            return serverPresentation(server)?.failureReason || "";
-	        }
+        function getServerFailureReason(server) {
+            return serverPresentation(server)?.failureReason || "";
+        }
 
-	        function getServerApprovalTriage(server, options = {}) {
-	            const projected = serverPresentation(server)?.triage || { eligible: false, pending_packages: 0, security_updates: 0, cve_count: 0, risk_level: "normal", risk_label: "Normal", risk_order: 0, facts_state: "unknown" };
-	            if (!options.ignoreInFlight || !server) return projected;
-	            return {
-	                ...projected,
-	                can_approve_all: !!statusInteraction.getAction(server.name, "approve_all", options)?.enabled,
-	                can_approve_security: !!statusInteraction.getAction(server.name, "approve_security", options)?.enabled,
-	                can_approve_kept_back_security: !!statusInteraction.getAction(server.name, "approve_security_kept_back", options)?.enabled,
-	                can_approve_full: !!statusInteraction.getAction(server.name, "approve_full", options)?.enabled,
-	                can_cancel: !!statusInteraction.getAction(server.name, "cancel", options)?.enabled
-	            };
-	        }
+        function getServerApprovalTriage(server, options = {}) {
+            const projected = serverPresentation(server)?.triage || {
+                eligible: false,
+                pending_packages: 0,
+                security_updates: 0,
+                cve_count: 0,
+                risk_level: "normal",
+                risk_label: "Normal",
+                risk_order: 0,
+                facts_state: "unknown",
+            };
+            if (!options.ignoreInFlight || !server) return projected;
+            return {
+                ...projected,
+                can_approve_all: !!statusInteraction.getAction(
+                    server.name,
+                    "approve_all",
+                    options,
+                )?.enabled,
+                can_approve_security: !!statusInteraction.getAction(
+                    server.name,
+                    "approve_security",
+                    options,
+                )?.enabled,
+                can_approve_kept_back_security: !!statusInteraction.getAction(
+                    server.name,
+                    "approve_security_kept_back",
+                    options,
+                )?.enabled,
+                can_approve_full: !!statusInteraction.getAction(
+                    server.name,
+                    "approve_full",
+                    options,
+                )?.enabled,
+                can_cancel: !!statusInteraction.getAction(
+                    server.name,
+                    "cancel",
+                    options,
+                )?.enabled,
+            };
+        }
 
         function timelineDisplayLabel(timeline, options = {}) {
             const state = String(timeline?.state || "idle").toLowerCase();
-            const terminalLabel = state === "done" ? "Done" : (state === "error" ? "Error" : "");
+            const terminalLabel =
+                state === "done" ? "Done" : state === "error" ? "Error" : "";
             if (terminalLabel) {
-                return options.lastRunPrefix ? `Last run: ${terminalLabel}` : terminalLabel;
+                return options.lastRunPrefix
+                    ? `Last run: ${terminalLabel}`
+                    : terminalLabel;
             }
             return timeline?.current_label || "Idle";
         }
@@ -361,14 +559,27 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function timelineProgressRing(timeline) {
             const state = String(timeline?.state || "idle").toLowerCase();
             const numericProgress = Number(timeline?.progress_pct || 0);
-            const rawProgress = Number.isFinite(numericProgress) ? numericProgress : 0;
-            const pct = state === "done" ? 100 : Math.max(0, Math.min(100, rawProgress));
+            const rawProgress = Number.isFinite(numericProgress)
+                ? numericProgress
+                : 0;
+            const pct =
+                state === "done"
+                    ? 100
+                    : Math.max(0, Math.min(100, rawProgress));
             const roundedPct = Math.round(pct);
             const label = timelineDisplayLabel(timeline);
             const summary = timeline?.summary || "No maintenance activity";
-            const updatedAt = timeline?.updated_at_display || timeline?.updated_at || "";
-            const centerLabel = state === "done" ? "✓" : (state === "error" ? "!" : `${roundedPct}%`);
-            const aria = [label, state, `${roundedPct}%`, summary, updatedAt].filter(Boolean).join(" · ");
+            const updatedAt =
+                timeline?.updated_at_display || timeline?.updated_at || "";
+            const centerLabel =
+                state === "done"
+                    ? "✓"
+                    : state === "error"
+                      ? "!"
+                      : `${roundedPct}%`;
+            const aria = [label, state, `${roundedPct}%`, summary, updatedAt]
+                .filter(Boolean)
+                .join(" · ");
             return `
                 <span class="timeline-progress-ring phase-${escapeHtml(state)} ${progressClass(pct)}" role="img" tabindex="0" aria-label="${escapeHtml(aria)}" data-phase-label="${escapeHtml(label)}" data-phase-state="${escapeHtml(state)}" data-phase-summary="${escapeHtml(summary)}" data-phase-time="${escapeHtml(updatedAt)}" data-phase-progress="${escapeHtml(String(roundedPct))}">
                     <span class="timeline-progress-value" aria-hidden="true">${escapeHtml(centerLabel)}</span>
@@ -385,18 +596,24 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function getAuthLabel(server) {
-            return serverPresentation(server)?.auth.label || "No auth configured";
+            return (
+                serverPresentation(server)?.auth.label || "No auth configured"
+            );
         }
 
         function getLatestLogLines(server, limit = 5) {
-            const lines = statusFormatting.logLines(server?.logs)
-                .map(line => line.trim())
+            const lines = statusFormatting
+                .logLines(server?.logs)
+                .map((line) => line.trim())
                 .filter(Boolean);
             return lines.slice(-limit);
         }
 
         function renderDashboardMetrics() {
-            statusRendering.metrics(dashboardPresentation, getStatusView().filters.quick);
+            statusRendering.metrics(
+                dashboardPresentation,
+                getStatusView().filters.quick,
+            );
             updateRefreshAllFactsState();
         }
 
@@ -414,62 +631,109 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderPendingUpdatesHtml(server, includeHeading = true) {
-            const updates = Array.isArray(server?.pending_updates) ? server.pending_updates : [];
+            const updates = Array.isArray(server?.pending_updates)
+                ? server.pending_updates
+                : [];
             if (!hasPendingUpdates(server)) {
                 return `<p class="drawer-empty">No pending update details for this server.</p>`;
             }
             const driftReason = pendingApprovalDriftReason(server);
 
-            const hasPending = updates.some(update => String(update.cve_state || "").toLowerCase() === "pending");
-            const securityCount = updates.filter(update => !!update.security).length;
-            const keptBackCount = updates.filter(update => !!update.kept_back || !!update.requires_full_upgrade).length;
+            const hasPending = updates.some(
+                (update) =>
+                    String(update.cve_state || "").toLowerCase() === "pending",
+            );
+            const securityCount = updates.filter(
+                (update) => !!update.security,
+            ).length;
+            const keptBackCount = updates.filter(
+                (update) =>
+                    !!update.kept_back || !!update.requires_full_upgrade,
+            ).length;
             const stateCounts = updates.reduce((acc, update) => {
                 const state = String(update.cve_state || "").toLowerCase();
                 acc[state] = (acc[state] || 0) + 1;
                 return acc;
             }, {});
 
-            const rows = updates.map(update => {
-                const pkg = escapeHtml(update.package || "unknown");
-                const cveDisclosureKey = cveFindingsDisclosureKey(server, update);
-                const currentVersion = escapeHtml(update.current_version || "?");
-                const candidateVersion = escapeHtml(update.candidate_version || "?");
-                const source = escapeHtml(update.source || "");
-                const state = String(update.cve_state || "").toLowerCase();
-                const coverage = String(update.cve_coverage || "").toLowerCase();
-                const cves = Array.isArray(update.cves) ? update.cves : [];
-                const findings = Array.isArray(update.cve_findings) ? update.cve_findings : [];
-                const fixedFindings = findings.filter(finding => finding.disposition === "fixed_by_candidate");
-                const remainingFindings = findings.filter(finding => finding.disposition === "still_affected");
+            const rows = updates
+                .map((update) => {
+                    const pkg = escapeHtml(update.package || "unknown");
+                    const cveDisclosureKey = cveFindingsDisclosureKey(
+                        server,
+                        update,
+                    );
+                    const currentVersion = escapeHtml(
+                        update.current_version || "?",
+                    );
+                    const candidateVersion = escapeHtml(
+                        update.candidate_version || "?",
+                    );
+                    const source = escapeHtml(update.source || "");
+                    const state = String(update.cve_state || "").toLowerCase();
+                    const coverage = String(
+                        update.cve_coverage || "",
+                    ).toLowerCase();
+                    const cves = Array.isArray(update.cves) ? update.cves : [];
+                    const findings = Array.isArray(update.cve_findings)
+                        ? update.cve_findings
+                        : [];
+                    const fixedFindings = findings.filter(
+                        (finding) =>
+                            finding.disposition === "fixed_by_candidate",
+                    );
+                    const remainingFindings = findings.filter(
+                        (finding) => finding.disposition === "still_affected",
+                    );
 
-                const badges = [];
- if(update.deferred)badges.push(`<span class="pending-badge pending-badge-security">Deferred — security exposure remains</span>`);
-                if (update.security) badges.push(`<span class="pending-badge pending-badge-security">Security</span>`);
-                if (update.kept_back || update.requires_full_upgrade) {
-                    badges.push(`<span class="pending-badge">Kept back</span>`);
-                    badges.push(`<span class="pending-badge">Requires full-upgrade</span>`);
-                }
-                if (state === "ready") {
-                    if (findings.length > 0) {
-                        if (fixedFindings.length) {
-                            badges.push(`<span class="pending-badge pending-badge-cve">${fixedFindings.length} fixed by update</span>`);
+                    const badges = [];
+                    if (update.deferred)
+                        badges.push(
+                            `<span class="pending-badge pending-badge-security">Deferred — security exposure remains</span>`,
+                        );
+                    if (update.security)
+                        badges.push(
+                            `<span class="pending-badge pending-badge-security">Security</span>`,
+                        );
+                    if (update.kept_back || update.requires_full_upgrade) {
+                        badges.push(
+                            `<span class="pending-badge">Kept back</span>`,
+                        );
+                        badges.push(
+                            `<span class="pending-badge">Requires full-upgrade</span>`,
+                        );
+                    }
+                    if (state === "ready") {
+                        if (findings.length > 0) {
+                            if (fixedFindings.length) {
+                                badges.push(
+                                    `<span class="pending-badge pending-badge-cve">${fixedFindings.length} fixed by update</span>`,
+                                );
+                            }
+                            if (remainingFindings.length) {
+                                badges.push(
+                                    `<span class="pending-badge pending-badge-cve-remaining">${remainingFindings.length} still vulnerable</span>`,
+                                );
+                            }
+                        } else if (cves.length > 0) {
+                            badges.push(
+                                `<span class="pending-badge">Legacy CVE data — rescan required</span>`,
+                            );
+                        } else {
+                            badges.push(
+                                `<span class="pending-badge">No confirmed CVE</span>`,
+                            );
                         }
-                        if (remainingFindings.length) {
-                            badges.push(`<span class="pending-badge pending-badge-cve-remaining">${remainingFindings.length} still vulnerable</span>`);
+                        if (coverage === "official_installed_unverified") {
+                            badges.push(
+                                `<span class="pending-badge">Installed provenance unverified</span>`,
+                            );
                         }
-                    } else if (cves.length > 0) {
-                        badges.push(`<span class="pending-badge">Legacy CVE data — rescan required</span>`);
                     } else {
-                        badges.push(`<span class="pending-badge">No confirmed CVE</span>`);
+                        badges.push(pendingStateBadge(state));
                     }
-                    if (coverage === "official_installed_unverified") {
-                        badges.push(`<span class="pending-badge">Installed provenance unverified</span>`);
-                    }
-                } else {
-                    badges.push(pendingStateBadge(state));
-                }
 
-                return `
+                    return `
                     <tr>
                         <td>
                             <div>${pkg}</div>
@@ -484,7 +748,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         </td>
                     </tr>
                 `;
-            }).join("");
+                })
+                .join("");
 
             return `
                 <div class="pending-updates">
@@ -526,12 +791,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 audit: "audit",
                 observability: "observability",
                 policies: "policies",
-                globalKey: "global key"
+                globalKey: "global key",
             };
             const streams = getStatusView().sync.streams;
             const syncErrors = Object.entries(streams)
                 .filter(([, stream]) => stream.lastError)
-                .map(([name, stream]) => `${streamLabels[name] || name}: ${stream.lastError}`)
+                .map(
+                    ([name, stream]) =>
+                        `${streamLabels[name] || name}: ${stream.lastError}`,
+                )
                 .join("; ");
             const degraded = !!syncErrors;
             const serversLastSuccessfulAt = streams.servers?.lastSuccessfulAt
@@ -543,7 +811,10 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 lastSyncText: degraded
                     ? `Last sync error: ${syncErrors || "unknown"}`
                     : formatRelativeTime(serversLastSuccessfulAt),
-                notice: statusRendering.syncNotice(streams, formatRelativeTimestamp)
+                notice: statusRendering.syncNotice(
+                    streams,
+                    formatRelativeTimestamp,
+                ),
             });
         }
 
@@ -552,9 +823,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderServerTags(server) {
-            const tags = Array.isArray(server?.tags) ? server.tags.filter(Boolean) : [];
-            if (tags.length === 0) return `<span class="chip muted-chip">untagged</span>`;
-            return tags.map(tag => `<span class="chip">${escapeHtml(tag)}</span>`).join("");
+            const tags = Array.isArray(server?.tags)
+                ? server.tags.filter(Boolean)
+                : [];
+            if (tags.length === 0)
+                return `<span class="chip muted-chip">untagged</span>`;
+            return tags
+                .map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`)
+                .join("");
         }
 
         function renderMiniServerList(id, servers, emptyText, options = {}) {
@@ -568,21 +844,25 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const expandable = !!options.expandable;
             const expanded = expandable && expandedMiniLists.has(id);
             const visibleServers = expanded ? servers : servers.slice(0, limit);
-            const hiddenCount = Math.max(0, servers.length - visibleServers.length);
-            const rows = visibleServers.map(server => {
+            const hiddenCount = Math.max(
+                0,
+                servers.length - visibleServers.length,
+            );
+            const rows = visibleServers.map((server) => {
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
                 const status = statusLabel(server.status);
                 const risk = getRiskLabel(server);
-	                const action = options.action || "open-drawer";
-	                const actionLabel = options.actionLabel || "Logs";
-	                const actionTab = options.actionTab || "logs";
-	                const detail = typeof options.detail === "function"
-	                    ? options.detail(server)
-	                    : options.compactDetail
-	                    ? risk
-	                    : `${status} · ${risk}`;
-	                return `
+                const action = options.action || "open-drawer";
+                const actionLabel = options.actionLabel || "Logs";
+                const actionTab = options.actionTab || "logs";
+                const detail =
+                    typeof options.detail === "function"
+                        ? options.detail(server)
+                        : options.compactDetail
+                          ? risk
+                          : `${status} · ${risk}`;
+                return `
 	                    <div class="mini-row compact-row">
 	                        <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
 	                            <strong>${safeName || "Unnamed host"}</strong>
@@ -591,115 +871,176 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                        <button type="button" class="mini-action" data-action="${action}" data-name="${safeDataName}" data-tab="${actionTab}">${actionLabel}</button>
 	                    </div>
 	                `;
-	            });
-	            if (expandable && servers.length > limit) {
-	                const moreText = expanded
-	                    ? (options.lessLabel || "Show fewer")
-	                    : (typeof options.moreLabel === "function" ? options.moreLabel(hiddenCount, servers.length) : `Show all ${servers.length}`);
-                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${escapeHtml(id)}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
+            });
+            if (expandable && servers.length > limit) {
+                const moreText = expanded
+                    ? options.lessLabel || "Show fewer"
+                    : typeof options.moreLabel === "function"
+                      ? options.moreLabel(hiddenCount, servers.length)
+                      : `Show all ${servers.length}`;
+                rows.push(
+                    `<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${escapeHtml(id)}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`,
+                );
             } else if (hiddenCount > 0) {
-                const moreText = typeof options.moreLabel === "function"
-                    ? options.moreLabel(hiddenCount, servers.length)
-                    : `+${hiddenCount} more`;
-                rows.push(`<div class="mini-more-row">${escapeHtml(moreText)}</div>`);
+                const moreText =
+                    typeof options.moreLabel === "function"
+                        ? options.moreLabel(hiddenCount, servers.length)
+                        : `+${hiddenCount} more`;
+                rows.push(
+                    `<div class="mini-more-row">${escapeHtml(moreText)}</div>`,
+                );
             }
             el.innerHTML = rows.join("");
         }
 
-	        function failureMiniDetail(server) {
-	            const reason = getServerFailureReason(server);
-	            return reason ? `${statusLabel(server.status)} · ${reason}` : `${statusLabel(server.status)} · ${getRiskLabel(server)}`;
-	        }
+        function failureMiniDetail(server) {
+            const reason = getServerFailureReason(server);
+            return reason
+                ? `${statusLabel(server.status)} · ${reason}`
+                : `${statusLabel(server.status)} · ${getRiskLabel(server)}`;
+        }
 
         function renderTagSummary() {
-            const el = document.getElementById('tag-summary');
+            const el = document.getElementById("tag-summary");
             if (!el) return;
-            const entries = dashboardPresentation.panels.tags.map(item => [item.tag, item.total]);
+            const entries = dashboardPresentation.panels.tags.map((item) => [
+                item.tag,
+                item.total,
+            ]);
             if (entries.length === 0) {
                 el.innerHTML = miniEmpty("No tags yet.");
                 return;
             }
-            el.innerHTML = entries.slice(0, 10).map(([tag, count]) => (
-                `<span class="chip">${escapeHtml(tag)} <strong>${count}</strong></span>`
-            )).join("");
+            el.innerHTML = entries
+                .slice(0, 10)
+                .map(
+                    ([tag, count]) =>
+                        `<span class="chip">${escapeHtml(tag)} <strong>${count}</strong></span>`,
+                )
+                .join("");
         }
 
         function renderFleetFilters() {
             const view = getStatusView();
-            setText("fleet-filter-summary", `${pluralize(view.visibleServers.length, "host")} visible`);
-            const statusEl = document.getElementById('fleet-status-filters');
+            setText(
+                "fleet-filter-summary",
+                `${pluralize(view.visibleServers.length, "host")} visible`,
+            );
+            const statusEl = document.getElementById("fleet-status-filters");
             if (statusEl) {
                 const activeCount = dashboardPresentation.fleet.active;
                 const staleCount = dashboardPresentation.fleet.staleFacts;
                 const highRiskCount = dashboardPresentation.fleet.highRiskCVE;
                 const filters = [
-                    { key: "", label: "All", count: dashboardPresentation.fleet.total },
-                    { key: "pending_approval", label: "Pending", count: dashboardPresentation.fleet.pendingApproval },
+                    {
+                        key: "",
+                        label: "All",
+                        count: dashboardPresentation.fleet.total,
+                    },
+                    {
+                        key: "pending_approval",
+                        label: "Pending",
+                        count: dashboardPresentation.fleet.pendingApproval,
+                    },
                     { key: "active", label: "Active", count: activeCount },
-                    { key: "stale_facts", label: "Facts refresh", count: staleCount },
-                    { key: "high_risk", label: "CVE exposure", count: highRiskCount }
+                    {
+                        key: "stale_facts",
+                        label: "Facts refresh",
+                        count: staleCount,
+                    },
+                    {
+                        key: "high_risk",
+                        label: "CVE exposure",
+                        count: highRiskCount,
+                    },
                 ];
-                statusEl.innerHTML = filters.map(item => `
+                statusEl.innerHTML = filters
+                    .map(
+                        (item) => `
                     <button type="button" class="filter-pill${view.filters.quick === item.key ? " active" : ""}" data-fleet-filter="${escapeHtml(item.key)}" aria-label="${escapeHtml(quickFilterActionLabel(item.key))}" title="${escapeHtml(quickFilterActionLabel(item.key))}">
                         <span>${escapeHtml(item.label)}</span>
                         <strong>${item.count}</strong>
                     </button>
-                `).join("");
+                `,
+                    )
+                    .join("");
             }
             updateMetricFilterState();
 
-            const tagEl = document.getElementById('fleet-tag-list');
+            const tagEl = document.getElementById("fleet-tag-list");
             if (!tagEl) return;
-            const entries = dashboardPresentation.panels.tags.map(item => [item.tag, item.total]);
+            const entries = dashboardPresentation.panels.tags.map((item) => [
+                item.tag,
+                item.total,
+            ]);
             if (entries.length === 0) {
                 tagEl.innerHTML = `<span class="empty-state compact-empty">No tags</span>`;
                 return;
             }
-	            tagEl.innerHTML = [
-	                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${dashboardPresentation.fleet.total}</strong></button>`,
-	                ...entries.slice(0, 8).map(([tag, count]) => `
+            tagEl.innerHTML = [
+                `<button type="button" class="filter-pill${view.filters.tag === "" ? " active" : ""}" data-fleet-tag="" aria-label="Show hosts with any tag" title="Show hosts with any tag"><span>All tags</span><strong>${dashboardPresentation.fleet.total}</strong></button>`,
+                ...entries.slice(0, 8).map(
+                    ([tag, count]) => `
 	                    <button type="button" class="filter-pill${view.filters.tag === tag ? " active" : ""}" data-fleet-tag="${escapeHtml(tag)}" aria-label="${escapeHtml(`Show hosts tagged ${tag}`)}" title="${escapeHtml(`Show hosts tagged ${tag}`)}">
 	                        <span>${escapeHtml(tag)}</span>
 	                        <strong>${count}</strong>
 	                    </button>
-	                `)
-	            ].join("");
+	                `,
+                ),
+            ].join("");
         }
 
         function renderApprovalTriage() {
-            const body = document.getElementById('approval-triage-body');
+            const body = document.getElementById("approval-triage-body");
             if (!body) return;
             const listID = "approval-triage";
             const limit = 12;
             const expanded = expandedMiniLists.has(listID);
             const primaryServerName = getStatusView().primaryServerName;
-            const servers = dashboardPresentation.panels.approval.map(model => model.server);
+            const servers = dashboardPresentation.panels.approval.map(
+                (model) => model.server,
+            );
             setText("approval-queue-count", String(servers.length));
             if (servers.length === 0) {
                 body.innerHTML = `<tr><td colspan="9">${miniEmpty("No approvals require triage.")}</td></tr>`;
                 return;
             }
-            const rows = servers.slice(0, expanded ? servers.length : limit).map(server => {
-                const safeName = escapeHtml(server.name || "");
-                const safeDataName = escapeHtml(server.name || "");
-                const triage = getServerApprovalTriage(server);
-                const approvalCounts = getPendingApprovalCounts(server);
-                const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-                const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
-                const canApproveAll = !!triage.can_approve_all;
-                const canApproveSecurity = !!triage.can_approve_security;
-	                const riskLevel = String(triage.risk_level || getRiskLevel(server)).toLowerCase();
-	                const tags = Array.isArray(server.tags) && server.tags.length ? server.tags.join(", ") : "ungrouped";
-	                const factsState = String(triage.facts_state || "unknown").toLowerCase();
-	                const canUpdate = canRunUpdateAction(server);
-	                const canRefreshFacts = canRefreshFactsAction(server);
-	                const rowSelected = primaryServerName === server.name;
-	                const driftReason = pendingApprovalDriftReason(server);
-	                const driftNotice = driftReason
-	                    ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
-	                    : "";
-	                const actions = server.status === "pending_approval"
-	                    ? `
+            const rows = servers
+                .slice(0, expanded ? servers.length : limit)
+                .map((server) => {
+                    const safeName = escapeHtml(server.name || "");
+                    const safeDataName = escapeHtml(server.name || "");
+                    const triage = getServerApprovalTriage(server);
+                    const approvalCounts = getPendingApprovalCounts(server);
+                    const keptBackSecurityCount = Number(
+                        triage.kept_back_security_updates ??
+                            approvalCounts.keptBackSecurity ??
+                            0,
+                    );
+                    const canApproveKeptBackSecurity =
+                        !!triage.can_approve_kept_back_security;
+                    const canApproveAll = !!triage.can_approve_all;
+                    const canApproveSecurity = !!triage.can_approve_security;
+                    const riskLevel = String(
+                        triage.risk_level || getRiskLevel(server),
+                    ).toLowerCase();
+                    const tags =
+                        Array.isArray(server.tags) && server.tags.length
+                            ? server.tags.join(", ")
+                            : "ungrouped";
+                    const factsState = String(
+                        triage.facts_state || "unknown",
+                    ).toLowerCase();
+                    const canUpdate = canRunUpdateAction(server);
+                    const canRefreshFacts = canRefreshFactsAction(server);
+                    const rowSelected = primaryServerName === server.name;
+                    const driftReason = pendingApprovalDriftReason(server);
+                    const driftNotice = driftReason
+                        ? `<span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
+                        : "";
+                    const actions =
+                        server.status === "pending_approval"
+                            ? `
 		                        <div class="triage-actions">
 		                            <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${Number(triage.standard_packages ?? approvalCounts.standard)})</button>
 		                            <button type="button" class="btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${Number(triage.standard_security_updates ?? approvalCounts.security ?? 0)})</button>
@@ -709,8 +1050,8 @@ const LOG_BOTTOM_THRESHOLD = 20;
                             <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
 	                        </div>
                     `
-	                    : driftReason
-	                        ? `
+                            : driftReason
+                              ? `
 	                            <div class="triage-actions triage-actions-note">
 	                                ${driftNotice}
 	                                ${canUpdate ? `<button type="button" data-action="update-server" data-name="${safeDataName}" title="Run fresh update checks">Update</button>` : ""}
@@ -718,14 +1059,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
 	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 	                            </div>
 		                    `
-	                    : `
+                              : `
 	                        <div class="triage-actions">
 	                            <button type="button" data-action="update-server" data-name="${safeDataName}" ${canUpdate ? "" : "disabled"} title="${canUpdate ? "Run update checks" : "Host cannot run update checks right now"}">Update</button>
 	                            <button type="button" class="btn-ghost" data-action="refresh-facts" data-name="${safeDataName}" ${canRefreshFacts ? "" : "disabled"} title="${canRefreshFacts ? "Refresh host facts" : "Host facts cannot refresh while another action is active"}">Host facts</button>
 	                            <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 	                        </div>
 		                    `;
-                return `
+                    return `
                     <tr data-name="${safeDataName}" class="${rowSelected ? "row-selected" : ""}" aria-selected="${rowSelected ? "true" : "false"}">
                         <td><button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? "true" : "false"}">${safeName || "Unnamed host"}</button></td>
                         <td>${escapeHtml(tags)}</td>
@@ -738,18 +1079,24 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         <td>${actions}</td>
                     </tr>
                 `;
-            });
+                });
             if (servers.length > limit) {
-                const label = expanded ? "Show fewer triage hosts" : `Show all ${servers.length} triage hosts`;
-                rows.push(`<tr class="triage-more-row"><td colspan="9"><button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(label)}</button></td></tr>`);
+                const label = expanded
+                    ? "Show fewer triage hosts"
+                    : `Show all ${servers.length} triage hosts`;
+                rows.push(
+                    `<tr class="triage-more-row"><td colspan="9"><button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(label)}</button></td></tr>`,
+                );
             }
             body.innerHTML = rows.join("");
         }
 
         function renderScheduledRuns() {
-            const el = document.getElementById('scheduled-runs');
+            const el = document.getElementById("scheduled-runs");
             if (!el) return;
-            const scheduled = dashboardPresentation.panels.scheduled.map(model => ({ server: model.server, nextRun: model.nextRun }));
+            const scheduled = dashboardPresentation.panels.scheduled.map(
+                (model) => ({ server: model.server, nextRun: model.nextRun }),
+            );
             setText("scheduled-runs-count", String(scheduled.length));
             if (scheduled.length === 0) {
                 el.innerHTML = miniEmpty("No scheduled runs.");
@@ -758,12 +1105,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const listID = "scheduled-runs";
             const limit = 6;
             const expanded = expandedMiniLists.has(listID);
-            const visibleScheduled = expanded ? scheduled : scheduled.slice(0, limit);
+            const visibleScheduled = expanded
+                ? scheduled
+                : scheduled.slice(0, limit);
             const rows = visibleScheduled.map(({ server, nextRun }) => {
                 const safeName = escapeHtml(server.name || "");
                 const safeDataName = escapeHtml(server.name || "");
                 const label = nextRun.policy_name || "Policy";
-                const when = formatCompactSchedule(nextRun.scheduled_for_utc || nextRun.scheduled_for_display);
+                const when = formatCompactSchedule(
+                    nextRun.scheduled_for_utc || nextRun.scheduled_for_display,
+                );
                 return `
                     <div class="mini-row compact-row">
                         <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
@@ -776,33 +1127,44 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
             const hiddenCount = scheduled.length - visibleScheduled.length;
             if (scheduled.length > limit) {
-	                const moreText = expanded ? "Show fewer scheduled runs" : `Show all ${scheduled.length} scheduled runs`;
-                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
+                const moreText = expanded
+                    ? "Show fewer scheduled runs"
+                    : `Show all ${scheduled.length} scheduled runs`;
+                rows.push(
+                    `<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`,
+                );
             }
             el.innerHTML = rows.join("");
         }
 
         function formatActivityTime(evt) {
             if (window.formatAppTimestamp) {
-                const formatted = window.formatAppTimestamp(evt?.created_at, { titleUTC: true, preformattedPrimary: evt?.created_at_display });
+                const formatted = window.formatAppTimestamp(evt?.created_at, {
+                    titleUTC: true,
+                    preformattedPrimary: evt?.created_at_display,
+                });
                 return formatted.primary || evt?.created_at || "";
             }
             return evt?.created_at_display || evt?.created_at || "";
         }
 
         function renderRecentActivity() {
-            const el = document.getElementById('recent-activity');
+            const el = document.getElementById("recent-activity");
             if (!el) return;
             const activity = dashboardPresentation.panels.recentActivity;
             if (activity.length === 0) {
                 el.innerHTML = miniEmpty("No recent activity.");
                 return;
             }
-            el.innerHTML = activity.slice(0, 2).map(item => {
-                const evt = item.raw;
-                const status = item.status;
-                const statusClass = safeStatusClass(status === "failure" ? "error" : status);
-                return `
+            el.innerHTML = activity
+                .slice(0, 2)
+                .map((item) => {
+                    const evt = item.raw;
+                    const status = item.status;
+                    const statusClass = safeStatusClass(
+                        status === "failure" ? "error" : status,
+                    );
+                    return `
                     <div class="activity-row">
                         <span class="status-pill status-${statusClass}">${escapeHtml(status || "unknown")}</span>
                         <div>
@@ -811,13 +1173,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         </div>
                     </div>
                 `;
-            }).join("");
+                })
+                .join("");
         }
 
-	        function renderCommandHistoryPanel() {
-	            const el = document.getElementById('command-history-panel');
-	            if (!el) return;
-	            const primaryServerName = getStatusView().primaryServerName;
+        function renderCommandHistoryPanel() {
+            const el = document.getElementById("command-history-panel");
+            if (!el) return;
+            const primaryServerName = getStatusView().primaryServerName;
             const history = dashboardPresentation.panels.commandHistory;
             setText("command-history-count", String(history.length));
             if (history.length === 0) {
@@ -828,9 +1191,11 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const limit = 3;
             const expanded = expandedMiniLists.has(listID);
             const visibleHistory = expanded ? history : history.slice(0, limit);
-            const rows = visibleHistory.map(item => {
+            const rows = visibleHistory.map((item) => {
                 const status = String(item.status || "unknown").toLowerCase();
-                const statusClass = safeStatusClass(status === "failure" ? "error" : status);
+                const statusClass = safeStatusClass(
+                    status === "failure" ? "error" : status,
+                );
                 return `
                     <div class="activity-row">
                         <span class="status-pill status-${statusClass}">${escapeHtml(status || "unknown")}</span>
@@ -843,57 +1208,84 @@ const LOG_BOTTOM_THRESHOLD = 20;
             });
             const hiddenCount = history.length - visibleHistory.length;
             if (history.length > limit) {
-	                const moreText = expanded ? "Show fewer commands" : `Show all ${history.length} command${history.length === 1 ? "" : "s"}`;
-                rows.push(`<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`);
+                const moreText = expanded
+                    ? "Show fewer commands"
+                    : `Show all ${history.length} command${history.length === 1 ? "" : "s"}`;
+                rows.push(
+                    `<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`,
+                );
             }
-	            el.innerHTML = rows.join("");
-	        }
+            el.innerHTML = rows.join("");
+        }
 
-	        function renderPriorityAttention(failedServers, rebootHosts) {
-	            const strip = document.getElementById('priority-attention-strip');
-	            if (!strip) return;
-	            const hasPriority = failedServers.length > 0 || rebootHosts.length > 0;
-	            strip.classList.toggle('hidden', !hasPriority);
-	            setText("priority-failures-count", String(failedServers.length));
-	            setText("priority-reboot-count", String(rebootHosts.length));
-	            if (!hasPriority) {
-	                const failuresPanel = document.getElementById("priority-failures-panel");
-	                const rebootPanel = document.getElementById("priority-reboot-panel");
-	                if (failuresPanel) failuresPanel.innerHTML = "";
-	                if (rebootPanel) rebootPanel.innerHTML = "";
-	                return;
-	            }
-	            renderMiniServerList("priority-failures-panel", failedServers, "No failures.", {
-	                limit: 1,
-	                expandable: true,
-	                detail: failureMiniDetail,
-	                action: "open-drawer",
-	                actionLabel: "Logs",
-	                lessLabel: "Show fewer failures",
-	                moreLabel: (_hidden, total) => `Show all ${total} failure${total === 1 ? "" : "s"}`
-	            });
-	            renderMiniServerList("priority-reboot-panel", rebootHosts, "No reboot required.", {
-	                limit: 1,
-	                expandable: true,
-	                compactDetail: true,
-	                action: "open-drawer",
-	                actionLabel: "Logs",
-	                lessLabel: "Show fewer reboot hosts",
-	                moreLabel: (_hidden, total) => `Show all ${total} reboot host${total === 1 ? "" : "s"}`
-	            });
-	        }
+        function renderPriorityAttention(failedServers, rebootHosts) {
+            const strip = document.getElementById("priority-attention-strip");
+            if (!strip) return;
+            const hasPriority =
+                failedServers.length > 0 || rebootHosts.length > 0;
+            strip.classList.toggle("hidden", !hasPriority);
+            setText("priority-failures-count", String(failedServers.length));
+            setText("priority-reboot-count", String(rebootHosts.length));
+            if (!hasPriority) {
+                const failuresPanel = document.getElementById(
+                    "priority-failures-panel",
+                );
+                const rebootPanel = document.getElementById(
+                    "priority-reboot-panel",
+                );
+                if (failuresPanel) failuresPanel.innerHTML = "";
+                if (rebootPanel) rebootPanel.innerHTML = "";
+                return;
+            }
+            renderMiniServerList(
+                "priority-failures-panel",
+                failedServers,
+                "No failures.",
+                {
+                    limit: 1,
+                    expandable: true,
+                    detail: failureMiniDetail,
+                    action: "open-drawer",
+                    actionLabel: "Logs",
+                    lessLabel: "Show fewer failures",
+                    moreLabel: (_hidden, total) =>
+                        `Show all ${total} failure${total === 1 ? "" : "s"}`,
+                },
+            );
+            renderMiniServerList(
+                "priority-reboot-panel",
+                rebootHosts,
+                "No reboot required.",
+                {
+                    limit: 1,
+                    expandable: true,
+                    compactDetail: true,
+                    action: "open-drawer",
+                    actionLabel: "Logs",
+                    lessLabel: "Show fewer reboot hosts",
+                    moreLabel: (_hidden, total) =>
+                        `Show all ${total} reboot host${total === 1 ? "" : "s"}`,
+                },
+            );
+        }
 
-	        function renderSummaryBadges() {
-            const policyEl = document.getElementById('policy-summary-label');
+        function renderSummaryBadges() {
+            const policyEl = document.getElementById("policy-summary-label");
             if (policyEl) {
                 const count = dashboardPresentation.summaries.policyCount;
-                policyEl.textContent = count === null ? "Policies --" : `Policies ${count}`;
+                policyEl.textContent =
+                    count === null ? "Policies --" : `Policies ${count}`;
             }
-            const obsEl = document.getElementById('observability-summary-label');
+            const obsEl = document.getElementById(
+                "observability-summary-label",
+            );
             if (obsEl) {
-                const total = dashboardPresentation.summaries.observabilityUpdates;
-                const success = dashboardPresentation.summaries.observabilitySuccessRate;
-                obsEl.textContent = total > 0 ? `7d ${success.toFixed(0)}%` : "7d no runs";
+                const total =
+                    dashboardPresentation.summaries.observabilityUpdates;
+                const success =
+                    dashboardPresentation.summaries.observabilitySuccessRate;
+                obsEl.textContent =
+                    total > 0 ? `7d ${success.toFixed(0)}%` : "7d no runs";
             }
         }
 
@@ -901,15 +1293,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const info = selected.vulnerability;
             const action = selected.actions.scan_vulnerabilities || {};
             if (!info) return "";
-            const findingsOpen = expandedInstalledVulnerabilityServers.has(selected.server.name);
-            const findings = info.findings.map(finding => `<li>
+            const findingsOpen = expandedInstalledVulnerabilityServers.has(
+                selected.server.name,
+            );
+            const findings = info.findings
+                .map(
+                    (finding) => `<li>
                 <strong>${escapeHtml(finding.id)} · ${escapeHtml(finding.package)}</strong>
                 <p>Severity: ${escapeHtml(finding.severity || "unknown")} · ${escapeHtml(finding.dispositionLabel)}</p>
                 <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
                 <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
                 <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
                 <p>Source: ${escapeHtml(finding.source || "unknown")}${finding.severity_value ? ` · ${escapeHtml(finding.severity_type)}: ${escapeHtml(finding.severity_value)} · ${escapeHtml(finding.severity_source)} · severity observed ${escapeHtml(finding.severity_observed_at || "unknown")} (${escapeHtml(finding.severity_freshness || "unknown")})` : " · Severity unavailable"}</p>
-            </li>`).join("");
+            </li>`,
+                )
+                .join("");
             return `<section class="vulnerability-summary" aria-label="Installed package vulnerabilities">
                 <h3>Installed package vulnerabilities</h3>
                 <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
@@ -924,15 +1322,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function renderSelectedHostPanel() {
-            const panel = document.getElementById('selected-host-panel');
-            const title = document.getElementById('selected-host-title');
-            const subtitle = document.getElementById('selected-host-subtitle');
+            const panel = document.getElementById("selected-host-panel");
+            const title = document.getElementById("selected-host-title");
+            const subtitle = document.getElementById("selected-host-subtitle");
             if (!panel || !title || !subtitle) return;
             const selected = dashboardPresentation.selectedHost;
             const server = selected?.server;
             if (!server) {
                 title.textContent = "No host selected";
-                subtitle.textContent = "Select a table row to inspect host details.";
+                subtitle.textContent =
+                    "Select a table row to inspect host details.";
                 panel.innerHTML = miniEmpty("No host selected.");
                 return;
             }
@@ -943,11 +1342,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const securityCount = getSecurityUpdateCount(server);
             const approvalCounts = getPendingApprovalCounts(server);
             const intelligence = getServerIntelligence(server.name);
-            const recommendedAction = selected.recommendedAction || { key: "healthy", label: "Healthy", detail: "No immediate maintenance action is required.", action: "" };
+            const recommendedAction = selected.recommendedAction || {
+                key: "healthy",
+                label: "Healthy",
+                detail: "No immediate maintenance action is required.",
+                action: "",
+            };
             const timeline = getServerTimeline(server);
             const triage = getServerApprovalTriage(server);
-            const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-            const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
+            const keptBackSecurityCount = Number(
+                triage.kept_back_security_updates ??
+                    approvalCounts.keptBackSecurity ??
+                    0,
+            );
+            const canApproveKeptBackSecurity =
+                !!triage.can_approve_kept_back_security;
             const canApproveAll = !!triage.can_approve_all;
             const canApproveSecurity = !!triage.can_approve_security;
             const canCancel = !!triage.can_cancel;
@@ -956,16 +1365,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const noRun = intelligence?.no_run || {};
             const lastUpdate = intelligence?.last_update;
             const lastFailed = intelligence?.last_failed_update;
-            const rebootText = health.reboot_required === true ? "Required" : (health.reboot_required === false ? "Not required" : "Unknown");
-	            const kernelText = dashboardConsumption.presentationFacts.kernelVersions(health.running_kernel_version, health.latest_installed_kernel_version);
-	            const factsAge = health.collected_at ? formatRelativeTimestamp(health.collected_at, "Facts not collected") : "Facts not collected";
-		            const canRunUpdate = canRunUpdateAction(server);
-		            const canRunAutoremove = canRunAutoremoveAction(server);
-		            const canRepairApt = canRepairAptAction(server);
-		            const canReboot = canRebootAction(server);
-		            const canRefreshFacts = canRefreshFactsAction(server);
-		            const canRunSudoers = canRunSudoersAction(server);
-		            const driftReason = pendingApprovalDriftReason(server);
+            const rebootText =
+                health.reboot_required === true
+                    ? "Required"
+                    : health.reboot_required === false
+                      ? "Not required"
+                      : "Unknown";
+            const kernelText =
+                dashboardConsumption.presentationFacts.kernelVersions(
+                    health.running_kernel_version,
+                    health.latest_installed_kernel_version,
+                );
+            const factsAge = health.collected_at
+                ? formatRelativeTimestamp(
+                      health.collected_at,
+                      "Facts not collected",
+                  )
+                : "Facts not collected";
+            const canRunUpdate = canRunUpdateAction(server);
+            const canRunAutoremove = canRunAutoremoveAction(server);
+            const canRepairApt = canRepairAptAction(server);
+            const canReboot = canRebootAction(server);
+            const canRefreshFacts = canRefreshFactsAction(server);
+            const canRunSudoers = canRunSudoersAction(server);
+            const driftReason = pendingApprovalDriftReason(server);
             const factsMoreOpen = expandedHostFactsServers.has(server.name);
             const packageSummaryParts = [
                 `${Number(triage.pending_packages ?? pendingCount)} pending`,
@@ -974,12 +1397,19 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 `${Number(triage.security_updates ?? securityCount)} security`,
             ];
             if (keptBackSecurityCount > 0) {
-                packageSummaryParts.push(`${keptBackSecurityCount} kept-back security`);
+                packageSummaryParts.push(
+                    `${keptBackSecurityCount} kept-back security`,
+                );
             }
             packageSummaryParts.push(`${Number(triage.cve_count || 0)} CVE`);
             const packageSummary = packageSummaryParts.join(" · ");
-            const lastUpdateSummary = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No update history";
-            const nextRunSummary = nextRun.state === "scheduled" ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}${nextRun.reason === "rollout_waiting" ? ` · ${nextRun.summary}` : ""}` : "No scheduled run";
+            const lastUpdateSummary = lastUpdate
+                ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}`
+                : "No update history";
+            const nextRunSummary =
+                nextRun.state === "scheduled"
+                    ? `${nextRun.policy_name || "Policy"} · ${nextRun.scheduled_for_display || nextRun.scheduled_for_utc}${nextRun.reason === "rollout_waiting" ? ` · ${nextRun.summary}` : ""}`
+                    : "No scheduled run";
             title.textContent = server.name || "Selected host";
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
             panel.innerHTML = `
@@ -990,7 +1420,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 </div>
                 ${vulnerabilitySummaryHtml(selected, safeDataName)}
  ${applicationPostchecksHtml(server)}
-                ${recommendedAction.key !== "healthy" ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
+                ${
+                    recommendedAction.key !== "healthy"
+                        ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
                     <div class="recommended-action-copy">
                         <span class="mini-label">Recommended action</span>
                         <strong>${escapeHtml(recommendedAction.label || "Healthy")}</strong>
@@ -1000,12 +1432,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     ${recommendedAction.action === "enable_apt" ? `<button type="button" class="inline-btn btn-warning" data-action="enable-apt" data-name="${safeDataName}" ${buttonStateAttrs(canRunSudoers, "Re-enable passwordless APT access", "Host cannot change passwordless APT access while another action is active")}>Enable apt</button>` : ""}
                     ${recommendedAction.action === "reboot" ? `<button type="button" class="inline-btn btn-warning" data-action="reboot-server" data-name="${safeDataName}" ${buttonStateAttrs(canReboot, "Reboot and verify this host", "Controlled reboot is not available for the current state")}>Reboot and verify</button>` : ""}
                     ${recommendedAction.action === "refresh_facts" ? `<button type="button" class="inline-btn btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>` : ""}
-                </section>` : ""}
+                </section>`
+                        : ""
+                }
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
                 <div class="inspector-actions inspector-actions-primary">
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${approvalCounts.security ?? 0})</button>` : ""}
-                    ${server.status === 'pending_approval' ? `<button type="button" class="inline-btn btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>` : ""}
+                    ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
+                    ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${approvalCounts.security ?? 0})</button>` : ""}
+                    ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>` : ""}
                     ${canApproveKeptBackSecurity ? `<button type="button" class="inline-btn btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>` : ""}
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
@@ -1050,10 +1484,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
             `;
         }
 
-	        function renderDashboardPanels() {
-	            const failedServers = dashboardPresentation.panels.failed.map(model => model.server);
-	            const rebootHosts = dashboardPresentation.panels.reboot.map(model => model.server);
-	            renderPriorityAttention(failedServers, rebootHosts);
+        function renderDashboardPanels() {
+            const failedServers = dashboardPresentation.panels.failed.map(
+                (model) => model.server,
+            );
+            const rebootHosts = dashboardPresentation.panels.reboot.map(
+                (model) => model.server,
+            );
+            renderPriorityAttention(failedServers, rebootHosts);
             renderScheduledRuns();
             renderApprovalTriage();
             renderFleetFilters();
@@ -1062,244 +1500,120 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderCommandHistoryPanel();
             renderSummaryBadges();
             renderSelectedHostPanel();
-	            renderSyncState();
-	        }
-
-	        function renderTableDependentPanels() {
-	            renderFleetFilters();
-	            renderApprovalTriage();
-	            renderSelectedHostPanel();
-	            renderCommandHistoryPanel();
-	        }
-
-        async function executeRecentActivityFetch(effect) {
-            if (!window.canUseScope('audit:read')) {
-                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'audit', requestId: effect.requestId, snapshot: [], receivedAt: new Date().toISOString() });
-            }
-            try {
-                const response = await fetch('/api/audit-events?page=1&page_size=8');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                await dispatchStatusInteraction({
-                    type: "secondarySnapshotReceived",
-                    stream: "audit",
-                    requestId: effect.requestId,
-                    snapshot: Array.isArray(data?.items) ? data.items : [],
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "audit", requestId: effect.requestId, error: err?.message || String(err) });
-            }
+            renderSyncState();
         }
 
-        async function executeObservabilitySummaryFetch(effect) {
-            try {
-                const response = await fetch('/api/observability/summary?window=7d');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                await dispatchStatusInteraction({
-                    type: "secondarySnapshotReceived",
-                    stream: "observability",
-                    requestId: effect.requestId,
-                    snapshot: await response.json(),
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "observability", requestId: effect.requestId, error: err?.message || String(err) });
-            }
+        function renderTableDependentPanels() {
+            renderFleetFilters();
+            renderApprovalTriage();
+            renderSelectedHostPanel();
+            renderCommandHistoryPanel();
         }
 
-        async function executePolicySummaryFetch(effect) {
-            if (!window.canUseScope('policies:write')) {
-                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'policies', requestId: effect.requestId, snapshot: [], receivedAt: new Date().toISOString() });
-            }
-            try {
-                const response = await fetch('/api/update-policies');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                await dispatchStatusInteraction({
-                    type: "secondarySnapshotReceived",
-                    stream: "policies",
-                    requestId: effect.requestId,
-                    snapshot: Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []),
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "policies", requestId: effect.requestId, error: err?.message || String(err) });
-            }
+        function requestStatusRefresh(
+            streams,
+            priority = "deferable",
+            reason = "refresh",
+        ) {
+            return dispatchStatusInteraction({
+                type: "refreshRequested",
+                streams,
+                priority,
+                reason,
+            });
         }
 
-        function requestStatusRefresh(streams, priority = "deferable", reason = "refresh") {
-            return dispatchStatusInteraction({ type: "refreshRequested", streams, priority, reason });
+        function fetchDashboardSummary(
+            forceRender = false,
+            reason = "dashboard",
+        ) {
+            return requestStatusRefresh(
+                ["dashboard"],
+                forceRender ? "immediate" : "deferable",
+                reason,
+            );
         }
 
-        function fetchDashboardSummary(forceRender = false, reason = "dashboard") {
-            return requestStatusRefresh(["dashboard"], forceRender ? "immediate" : "deferable", reason);
-        }
-
-        function executeStatusSnapshotFetch(effect) {
-            if (effect.stream === "servers") return executeServersSnapshotFetch(effect);
-            if (effect.stream === "dashboard") return executeDashboardSnapshotFetch(effect);
-            if (effect.stream === "commandHistory") return executeCommandHistoryFetch(effect);
-            if (effect.stream === "audit") return executeRecentActivityFetch(effect);
-            if (effect.stream === "observability") return executeObservabilitySummaryFetch(effect);
-            if (effect.stream === "policies") return executePolicySummaryFetch(effect);
-            if (effect.stream === "globalKey") return executeGlobalKeyStatusFetch(effect);
-            return Promise.resolve();
-        }
-
-        async function executeDashboardSnapshotFetch(effect) {
-            try {
-                const response = await fetch('/api/dashboard/summary?window=7d&include_command_history=false');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const nextDashboardSummary = await response.json();
-                await dispatchStatusInteraction({
-                    type: "dashboardSnapshotReceived",
-                    requestId: effect.requestId,
-                    snapshot: nextDashboardSummary,
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({
-                    type: "snapshotFailed",
-                    stream: "dashboard",
-                    requestId: effect.requestId,
-                    error: err?.message || String(err)
-                });
-            }
-	        }
-
-        async function executeCommandHistoryFetch(effect) {
-            if (!window.canUseScope('audit:read')) return dispatchStatusInteraction({type:'commandHistoryReceived',requestId:effect.requestId,serverName:effect.serverName,history:[],receivedAt:new Date().toISOString()});
-            const serverName = String(effect.serverName || "");
-            try {
-                const query = new URLSearchParams({
-                    page: "1",
-                    page_size: "8",
-                    order: "created_at",
-                    target_type: "server",
-                    target_name: serverName
-                });
-                if (effect.from) query.set("from", String(effect.from));
-                if (effect.to) query.set("to", String(effect.to));
-                const response = await fetch(`/api/audit-events?${query.toString()}`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                await dispatchStatusInteraction({
-                    type: "commandHistoryReceived",
-                    requestId: effect.requestId,
-                    serverName,
-                    history: Array.isArray(data?.items) ? data.items : [],
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({
-                    type: "snapshotFailed",
-                    stream: "commandHistory",
-                    requestId: effect.requestId,
-                    error: err?.message || String(err)
-                });
-            }
-        }
-
-        async function executeJobLogFetch(effect) {
-            if (!window.canUseScope('logs:read')) return;
-            const jobId = String(effect.jobId || "");
-            const serverName = String(effect.serverName || "");
-            const afterSequence = Math.max(0, Number(effect.afterSequence || 0));
-            try {
-                const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/logs?after_seq=${encodeURIComponent(afterSequence)}&limit=200`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const page = await response.json();
-                await dispatchStatusInteraction({
-                    type: "jobLogRecoveryReceived",
-                    serverName,
-                    jobId,
-                    afterSequence,
-                    page
-                });
-            } catch (err) {
-                console.error(`Unable to recover job logs for ${serverName}:`, err);
-                await dispatchStatusInteraction({
-                    type: "jobLogRecoveryFailed",
-                    serverName,
-                    jobId,
-                    error: err?.message || String(err)
-                });
-            }
-        }
-
-        async function executeGlobalKeyStatusFetch(effect) {
-            if (!window.canUseScope('inventory:write')) {
-                return dispatchStatusInteraction({ type: 'secondarySnapshotReceived', stream: 'globalKey', requestId: effect.requestId, snapshot: false, receivedAt: new Date().toISOString() });
-            }
-            try {
-                const response = await fetch('/api/keys/global');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                await dispatchStatusInteraction({
-                    type: "secondarySnapshotReceived",
-                    stream: "globalKey",
-                    requestId: effect.requestId,
-                    snapshot: !!data?.has_key,
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                await dispatchStatusInteraction({ type: "snapshotFailed", stream: "globalKey", requestId: effect.requestId, error: err?.message || String(err) });
-            }
-        }
-
-        function fetchDashboardExtras(reason = "extras", includeDashboard = true) {
+        function fetchDashboardExtras(
+            reason = "extras",
+            includeDashboard = true,
+        ) {
             const streams = ["globalKey", "audit", "observability", "policies"];
             if (includeDashboard) streams.push("dashboard");
-            return requestStatusRefresh(streams, reason === "sse" ? "immediate" : "deferable", reason);
+            return requestStatusRefresh(
+                streams,
+                reason === "sse" ? "immediate" : "deferable",
+                reason,
+            );
         }
 
         const statusTransport = window.StatusTransport.createController({
             EventSourceType: window.EventSource,
             onServersPoll: () => fetchServers(false, "poll"),
             onExtrasPoll: () => fetchDashboardExtras("poll"),
-            onJobLogEvent: event => {
+            onJobLogEvent: (event) => {
                 dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
             onDashboardEvent: () => {
-                requestStatusRefresh(["servers", "dashboard"], "immediate", "sse");
+                requestStatusRefresh(
+                    ["servers", "dashboard"],
+                    "immediate",
+                    "sse",
+                );
                 fetchDashboardExtras("sse", false);
             },
-            onReconnect: () => dispatchStatusInteraction({ type: "jobLogReconnect" }),
-            onConnectionChanged: live => {
-                dispatchStatusInteraction({ type: "jobLogTransportChanged", live });
+            onReconnect: () =>
+                dispatchStatusInteraction({ type: "jobLogReconnect" }),
+            onConnectionChanged: (live) => {
+                dispatchStatusInteraction({
+                    type: "jobLogTransportChanged",
+                    live,
+                });
                 renderSyncState();
-            }
+            },
         });
 
-	        function updateRefreshAllFactsState() {
-	            const button = document.getElementById('refresh-all-facts');
-	            if (!button) return;
-	            const view = getStatusView();
-	            const plan = statusInteraction.planBulkAction("refresh_facts", { actionLabel: "refresh facts", preview: true });
-	            const visibleCount = plan.visibleNames.length;
-	            const selectedCount = plan.selectedNames.length;
-	            const bulk = view.actions.bulk;
-	            const refreshableCount = bulk?.actionKey === "refresh_facts" ? bulk.eligibleCount : plan.eligibleNames.length;
-	            const refreshing = bulk?.actionKey === "refresh_facts";
-	            const enabled = !bulk && refreshableCount > 0;
-	            button.disabled = !enabled;
-	            button.textContent = refreshing ? `Refreshing (${refreshableCount})…` : `Refresh facts (${refreshableCount})`;
-	            button.classList.toggle("refreshing", refreshing);
-	            button.setAttribute('aria-label', refreshing ? "Refreshing facts for visible selected hosts" : "Refresh facts for visible selected hosts");
-	            button.setAttribute('aria-describedby', 'bulk-action-hint');
-	            button.title = refreshing
-	                ? `Refreshing facts for ${pluralize(refreshableCount, "visible selected host")}`
-	                : bulk
-	                ? `Bulk ${bulk.actionLabel} is running`
-	                : enabled
-	                ? `Refresh facts for ${pluralize(refreshableCount, "visible selected host")}`
-	                : selectedCount === 0
-	                ? "Select visible hosts first"
-	                : visibleCount === 0
-	                ? "No selected host is visible in the current filter"
-	                : "No visible selected host can refresh facts right now";
-	        }
+        function updateRefreshAllFactsState() {
+            const button = document.getElementById("refresh-all-facts");
+            if (!button) return;
+            const view = getStatusView();
+            const plan = statusInteraction.planBulkAction("refresh_facts", {
+                actionLabel: "refresh facts",
+                preview: true,
+            });
+            const visibleCount = plan.visibleNames.length;
+            const selectedCount = plan.selectedNames.length;
+            const bulk = view.actions.bulk;
+            const refreshableCount =
+                bulk?.actionKey === "refresh_facts"
+                    ? bulk.eligibleCount
+                    : plan.eligibleNames.length;
+            const refreshing = bulk?.actionKey === "refresh_facts";
+            const enabled = !bulk && refreshableCount > 0;
+            button.disabled = !enabled;
+            button.textContent = refreshing
+                ? `Refreshing (${refreshableCount})…`
+                : `Refresh facts (${refreshableCount})`;
+            button.classList.toggle("refreshing", refreshing);
+            button.setAttribute(
+                "aria-label",
+                refreshing
+                    ? "Refreshing facts for visible selected hosts"
+                    : "Refresh facts for visible selected hosts",
+            );
+            button.setAttribute("aria-describedby", "bulk-action-hint");
+            button.title = refreshing
+                ? `Refreshing facts for ${pluralize(refreshableCount, "visible selected host")}`
+                : bulk
+                  ? `Bulk ${bulk.actionLabel} is running`
+                  : enabled
+                    ? `Refresh facts for ${pluralize(refreshableCount, "visible selected host")}`
+                    : selectedCount === 0
+                      ? "Select visible hosts first"
+                      : visibleCount === 0
+                        ? "No selected host is visible in the current filter"
+                        : "No visible selected host can refresh facts right now";
+        }
 
         function saveWindowScroll() {
             return { x: window.scrollX, y: window.scrollY };
@@ -1310,25 +1624,30 @@ const LOG_BOTTOM_THRESHOLD = 20;
             window.scrollTo(pos.x, pos.y);
         }
 
-	        function renderServerState() {
-	            return statusViewScope.run(renderServerStateSnapshot);
-	        }
-	        function renderServerStateSnapshot() {
-	            const view = getStatusView();
-	            allServers = view.servers;
-	            refreshDashboardPresentation();
-	            const pageScroll = saveWindowScroll();
-	            renderDashboardMetrics();
-	            renderTable();
-	            renderDrawer();
-	            requestAnimationFrame(() => restoreWindowScroll(pageScroll));
-	        }
+        function renderServerState() {
+            return statusViewScope.run(renderServerStateSnapshot);
+        }
+        function renderServerStateSnapshot() {
+            const view = getStatusView();
+            allServers = view.servers;
+            refreshDashboardPresentation();
+            const pageScroll = saveWindowScroll();
+            renderDashboardMetrics();
+            renderTable();
+            renderDrawer();
+            lifecycle.requestAnimationFrame(() =>
+                restoreWindowScroll(pageScroll),
+            );
+        }
         function beginActionInteraction() {
             dispatchStatusInteraction({ type: "interactionStarted" });
         }
 
         function endActionInteraction() {
-            dispatchStatusInteraction({ type: "interactionEnded", delayMs: actionInteractionDeferMs });
+            dispatchStatusInteraction({
+                type: "interactionEnded",
+                delayMs: actionInteractionDeferMs,
+            });
         }
 
         function resetActionInteraction() {
@@ -1336,44 +1655,53 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function isServerActionControl(target) {
-            return !!target?.closest?.([
-                'button[data-action]',
-                '#bulk-update',
-                '#bulk-approve',
-                '#bulk-approve-security',
-                '#bulk-approve-kept-security',
-                '#bulk-cancel',
-                '#bulk-autoremove',
-                '#refresh-all-facts',
-                '#drawer-approve-all',
-                '#drawer-approve-security',
-                '#drawer-approve-security-kept-back',
-                '#drawer-approve-full'
-            ].join(','));
+            return !!target?.closest?.(
+                [
+                    "button[data-action]",
+                    "#bulk-update",
+                    "#bulk-approve",
+                    "#bulk-approve-security",
+                    "#bulk-approve-kept-security",
+                    "#bulk-cancel",
+                    "#bulk-autoremove",
+                    "#refresh-all-facts",
+                    "#drawer-approve-all",
+                    "#drawer-approve-security",
+                    "#drawer-approve-security-kept-back",
+                    "#drawer-approve-full",
+                ].join(","),
+            );
         }
 
         function getTableColByKey(key) {
-            return document.querySelector(`#servers-table col[data-col-key="${key}"]`);
+            return document.querySelector(
+                `#servers-table col[data-col-key="${key}"]`,
+            );
         }
 
         function getTableColumnIndexByKey(key) {
-            const table = document.getElementById('servers-table');
+            const table = document.getElementById("servers-table");
             if (!table) return -1;
-            return Array.from(table.querySelectorAll('col')).findIndex(col => col.dataset.colKey === key);
+            return Array.from(table.querySelectorAll("col")).findIndex(
+                (col) => col.dataset.colKey === key,
+            );
         }
 
         function getRenderedTableColumnWidths(table) {
-            const headerCells = Array.from(table?.tHead?.rows?.[0]?.cells || []);
-            const cols = Array.from(table?.querySelectorAll('col') || []);
+            const headerCells = Array.from(
+                table?.tHead?.rows?.[0]?.cells || [],
+            );
+            const cols = Array.from(table?.querySelectorAll("col") || []);
             return cols.map((col, index) => {
-                const headerWidth = headerCells[index]?.getBoundingClientRect().width || 0;
+                const headerWidth =
+                    headerCells[index]?.getBoundingClientRect().width || 0;
                 const colWidth = col.getBoundingClientRect().width || 0;
                 return Math.max(1, Math.round(headerWidth || colWidth));
             });
         }
 
         function freezeRenderedTableWidths(table, widths) {
-            const cols = Array.from(table?.querySelectorAll('col') || []);
+            const cols = Array.from(table?.querySelectorAll("col") || []);
             const totalWidth = widths.reduce((sum, width) => sum + width, 0);
             cols.forEach((col, index) => {
                 if (widths[index]) {
@@ -1388,19 +1716,26 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function updateSortIndicators() {
             const sort = getStatusView().sort;
-            document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
-                if (th.dataset.sortKey === sort.key) {
-                    th.dataset.sortDir = sort.dir;
-                    th.setAttribute('aria-sort', sort.dir === "asc" ? "ascending" : "descending");
-                    const indicator = th.querySelector('.sort-indicator');
-                    if (indicator) indicator.textContent = sort.dir === "asc" ? "▲" : "▼";
-                } else {
-                    delete th.dataset.sortDir;
-                    th.setAttribute('aria-sort', 'none');
-                    const indicator = th.querySelector('.sort-indicator');
-                    if (indicator) indicator.textContent = "";
-                }
-            });
+            document
+                .querySelectorAll("#servers-table th.sortable")
+                .forEach((th) => {
+                    if (th.dataset.sortKey === sort.key) {
+                        th.dataset.sortDir = sort.dir;
+                        th.setAttribute(
+                            "aria-sort",
+                            sort.dir === "asc" ? "ascending" : "descending",
+                        );
+                        const indicator = th.querySelector(".sort-indicator");
+                        if (indicator)
+                            indicator.textContent =
+                                sort.dir === "asc" ? "▲" : "▼";
+                    } else {
+                        delete th.dataset.sortDir;
+                        th.setAttribute("aria-sort", "none");
+                        const indicator = th.querySelector(".sort-indicator");
+                        if (indicator) indicator.textContent = "";
+                    }
+                });
         }
 
         function loadColumnWidths() {
@@ -1420,8 +1755,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 const minWidth = minColumnWidths[key] || 100;
                 const maxWidth = maxColumnWidths[key] || 9999;
                 const fallback = defaultColumnWidths[key];
-                const boundedFallback = Math.min(maxWidth, Math.max(minWidth, fallback));
-                const nextWidth = statusTableAdapter.boundedWidth(configured, minWidth, maxWidth, boundedFallback);
+                const boundedFallback = Math.min(
+                    maxWidth,
+                    Math.max(minWidth, fallback),
+                );
+                const nextWidth = statusTableAdapter.boundedWidth(
+                    configured,
+                    minWidth,
+                    maxWidth,
+                    boundedFallback,
+                );
                 col.style.width = `${nextWidth}px`;
             });
         }
@@ -1430,115 +1773,154 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const savedWidths = loadColumnWidths();
             applyColumnWidths(savedWidths);
 
-            document.querySelectorAll('#servers-table .col-resize-handle').forEach((handle) => {
-                if (handle.dataset.bound === "1") return;
-                handle.dataset.bound = "1";
+            document
+                .querySelectorAll("#servers-table .col-resize-handle")
+                .forEach((handle) => {
+                    lifecycle.listen(handle, "pointerdown", (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
 
-                handle.addEventListener('pointerdown', (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
+                        const colKey = handle.dataset.colKey || "";
+                        const col = getTableColByKey(colKey);
+                        const th = handle.closest("th");
+                        const table = document.getElementById("servers-table");
+                        const colIndex = getTableColumnIndexByKey(colKey);
+                        if (!col || !th || !table || colIndex < 0) return;
 
-                    const colKey = handle.dataset.colKey || "";
-                    const col = getTableColByKey(colKey);
-                    const th = handle.closest('th');
-                    const table = document.getElementById('servers-table');
-                    const colIndex = getTableColumnIndexByKey(colKey);
-                    if (!col || !th || !table || colIndex < 0) return;
+                        const minWidth = minColumnWidths[colKey] || 100;
+                        const maxWidth = maxColumnWidths[colKey] || 9999;
+                        const startX = event.clientX;
+                        const startWidths = getRenderedTableColumnWidths(table);
+                        const startTableWidth = startWidths.reduce(
+                            (sum, width) => sum + width,
+                            0,
+                        );
+                        const startWidth = Math.max(
+                            minWidth,
+                            Math.round(
+                                startWidths[colIndex] ||
+                                    col.getBoundingClientRect().width,
+                            ),
+                        );
+                        const nextWidths = startWidths.slice();
+                        freezeRenderedTableWidths(table, startWidths);
 
-                    const minWidth = minColumnWidths[colKey] || 100;
-                    const maxWidth = maxColumnWidths[colKey] || 9999;
-                    const startX = event.clientX;
-                    const startWidths = getRenderedTableColumnWidths(table);
-                    const startTableWidth = startWidths.reduce((sum, width) => sum + width, 0);
-                    const startWidth = Math.max(minWidth, Math.round(startWidths[colIndex] || col.getBoundingClientRect().width));
-                    const nextWidths = startWidths.slice();
-                    freezeRenderedTableWidths(table, startWidths);
+                        const onPointerMove = (moveEvent) => {
+                            const delta = moveEvent.clientX - startX;
+                            const nextWidth = Math.min(
+                                maxWidth,
+                                Math.max(minWidth, startWidth + delta),
+                            );
+                            nextWidths[colIndex] = Math.round(nextWidth);
+                            col.style.width = `${Math.round(nextWidth)}px`;
+                            const nextTableWidth =
+                                startTableWidth - startWidth + nextWidth;
+                            table.style.width = `${Math.round(nextTableWidth)}px`;
+                            table.style.minWidth = `${Math.round(nextTableWidth)}px`;
+                        };
 
-                    const onPointerMove = (moveEvent) => {
-                        const delta = moveEvent.clientX - startX;
-                        const nextWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + delta));
-                        nextWidths[colIndex] = Math.round(nextWidth);
-                        col.style.width = `${Math.round(nextWidth)}px`;
-                        const nextTableWidth = startTableWidth - startWidth + nextWidth;
-                        table.style.width = `${Math.round(nextTableWidth)}px`;
-                        table.style.minWidth = `${Math.round(nextTableWidth)}px`;
-                    };
+                        const finishResize = (endEvent, canceled) => {
+                            unregisterResize();
+                            lifecycle.unlisten(
+                                window,
+                                "pointermove",
+                                onPointerMove,
+                            );
+                            lifecycle.unlisten(
+                                window,
+                                "pointerup",
+                                onPointerUp,
+                            );
+                            lifecycle.unlisten(
+                                window,
+                                "pointercancel",
+                                onPointerCancel,
+                            );
+                            document.body.classList.remove("col-resizing");
+                            th.classList.remove("resizing");
 
-                    const finishResize = (endEvent, canceled) => {
-                        window.removeEventListener('pointermove', onPointerMove);
-                        window.removeEventListener('pointerup', onPointerUp);
-                        window.removeEventListener('pointercancel', onPointerCancel);
-                        document.body.classList.remove('col-resizing');
-                        th.classList.remove('resizing');
+                            if (canceled) {
+                                freezeRenderedTableWidths(table, startWidths);
+                            } else {
+                                const finalWidth = Math.min(
+                                    maxWidth,
+                                    Math.max(
+                                        minWidth,
+                                        Math.round(
+                                            nextWidths[colIndex] ||
+                                                col.getBoundingClientRect()
+                                                    .width,
+                                        ),
+                                    ),
+                                );
+                                const savedWidths = loadColumnWidths();
+                                savedWidths[colKey] = finalWidth;
+                                saveColumnWidths(savedWidths);
+                                suppressSortClickUntil = Date.now() + 250;
+                            }
 
-                        if (canceled) {
-                            freezeRenderedTableWidths(table, startWidths);
-                        } else {
-                            const finalWidth = Math.min(maxWidth, Math.max(minWidth, Math.round(nextWidths[colIndex] || col.getBoundingClientRect().width)));
-                            const savedWidths = loadColumnWidths();
-                            savedWidths[colKey] = finalWidth;
-                            saveColumnWidths(savedWidths);
-                            suppressSortClickUntil = Date.now() + 250;
-                        }
+                            if (
+                                handle.releasePointerCapture &&
+                                endEvent.pointerId !== undefined
+                            ) {
+                                try {
+                                    handle.releasePointerCapture(
+                                        endEvent.pointerId,
+                                    );
+                                } catch (_) {
+                                    if (
+                                        !lifecycle.active ||
+                                        _?.name === "AbortError"
+                                    )
+                                        return;
+                                    // Ignore pointer release issues.
+                                }
+                            }
+                        };
 
-                        if (handle.releasePointerCapture && endEvent.pointerId !== undefined) {
+                        const onPointerUp = (endEvent) =>
+                            finishResize(endEvent, false);
+                        const onPointerCancel = (endEvent) =>
+                            finishResize(endEvent, true);
+                        const unregisterResize = lifecycle.own(() =>
+                            finishResize({}, true),
+                        );
+
+                        document.body.classList.add("col-resizing");
+                        th.classList.add("resizing");
+                        if (
+                            handle.setPointerCapture &&
+                            event.pointerId !== undefined
+                        ) {
                             try {
-                                handle.releasePointerCapture(endEvent.pointerId);
+                                handle.setPointerCapture(event.pointerId);
                             } catch (_) {
-                                // Ignore pointer release issues.
+                                if (
+                                    !lifecycle.active ||
+                                    _?.name === "AbortError"
+                                )
+                                    return;
+                                // Ignore pointer capture issues.
                             }
                         }
-                    };
 
-                    const onPointerUp = (endEvent) => finishResize(endEvent, false);
-                    const onPointerCancel = (endEvent) => finishResize(endEvent, true);
-
-                    document.body.classList.add('col-resizing');
-                    th.classList.add('resizing');
-                    if (handle.setPointerCapture && event.pointerId !== undefined) {
-                        try {
-                            handle.setPointerCapture(event.pointerId);
-                        } catch (_) {
-                            // Ignore pointer capture issues.
-                        }
-                    }
-
-                    window.addEventListener('pointermove', onPointerMove);
-                    window.addEventListener('pointerup', onPointerUp);
-                    window.addEventListener('pointercancel', onPointerCancel);
+                        lifecycle.listen(window, "pointermove", onPointerMove);
+                        lifecycle.listen(window, "pointerup", onPointerUp);
+                        lifecycle.listen(
+                            window,
+                            "pointercancel",
+                            onPointerCancel,
+                        );
+                    });
                 });
-            });
         }
 
         function fetchServers(forceRender = false, reason = "servers") {
-            return requestStatusRefresh(["servers"], forceRender ? "immediate" : "deferable", reason);
-        }
-
-        async function executeServersSnapshotFetch(effect) {
-            try {
-                const response = await fetch('/api/servers');
-                if (!response.ok) {
-                    throw new Error(`Failed to fetch servers: HTTP ${response.status}`);
-                }
-                const parsedServers = await response.json();
-                if (!Array.isArray(parsedServers)) {
-                    throw new Error('Invalid servers payload: expected an array');
-                }
-                await dispatchStatusInteraction({
-                    type: "serversSnapshotReceived",
-                    requestId: effect.requestId,
-                    servers: parsedServers,
-                    receivedAt: new Date().toISOString()
-                });
-            } catch (err) {
-                console.error('Unable to refresh servers list:', err);
-                await dispatchStatusInteraction({
-                    type: "snapshotFailed",
-                    stream: "servers",
-                    requestId: effect.requestId,
-                    error: err?.message || String(err)
-                });
-            }
+            return requestStatusRefresh(
+                ["servers"],
+                forceRender ? "immediate" : "deferable",
+                reason,
+            );
         }
 
         function loadDashboardFilters() {
@@ -1546,14 +1928,20 @@ const LOG_BOTTOM_THRESHOLD = 20;
             try {
                 const raw = localStorage.getItem(dashboardFilterStorageKey);
                 if (raw) saved = JSON.parse(raw);
-	            } catch (_) {
-	                // Ignore invalid saved dashboard state.
+            } catch (_) {
+                if (!lifecycle.active || _?.name === "AbortError") return;
+                // Ignore invalid saved dashboard state.
             }
-            dispatchStatusInteraction({ type: "navigationRestored", value: saved });
+            dispatchStatusInteraction({
+                type: "navigationRestored",
+                value: saved,
+            });
             const view = getStatusView();
             document.getElementById("search").value = view.filters.search;
-            document.getElementById("availability-filter").value = view.filters.availability;
-            document.getElementById("status-filter").value = view.filters.status;
+            document.getElementById("availability-filter").value =
+                view.filters.availability;
+            document.getElementById("status-filter").value =
+                view.filters.status;
             document.getElementById("auth-filter").value = view.filters.auth;
             document.getElementById("group-by").value = view.filters.groupBy;
             document.getElementById("page-size").value = String(view.pageSize);
@@ -1561,110 +1949,161 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function persistDashboardFilters(value) {
             try {
-                localStorage.setItem(dashboardFilterStorageKey, JSON.stringify(value));
-	            } catch (_) {
-	                // Ignore storage failures.
-	            }
-	        }
+                localStorage.setItem(
+                    dashboardFilterStorageKey,
+                    JSON.stringify(value),
+                );
+            } catch (_) {
+                if (!lifecycle.active || _?.name === "AbortError") return;
+                // Ignore storage failures.
+            }
+        }
 
-	        function applyFleetQuickFilter(key) {
-	            dispatchStatusInteraction({ type: "filtersChanged", patch: { quick: key || "" } });
-	            renderTable({ refreshPanels: false });
-	        }
+        function applyFleetQuickFilter(key) {
+            dispatchStatusInteraction({
+                type: "filtersChanged",
+                patch: { quick: key || "" },
+            });
+            renderTable({ refreshPanels: false });
+        }
 
-		        function isServerActionBusy(server) {
-		            return !!serverPresentation(server)?.busy;
-		        }
+        function isServerActionBusy(server) {
+            return !!serverPresentation(server)?.busy;
+        }
 
-		        function serverBusyActionLabel(server) {
-		            switch (String(server?.status || "").trim().toLowerCase()) {
-		            case "updating":
-		            case "upgrading":
-		                return "Updating…";
-		            case "autoremove":
-		                return "Autoremoving…";
-		            case "repairing":
-		                return "Repairing APT…";
-		            case "rebooting":
-		                return "Rebooting and verifying…";
-		            case "sudoers":
-		                return "Configuring…";
-		            case "facts_refresh":
-		                return "Refreshing…";
-		            case "vulnerability_scan":
-		                return "Scanning vulnerabilities…";
-		            case "postchecks_test":
-		                return "Testing application checks…";
-		            default:
-		                return "Working…";
-		            }
-		        }
+        function serverBusyActionLabel(server) {
+            switch (
+                String(server?.status || "")
+                    .trim()
+                    .toLowerCase()
+            ) {
+                case "updating":
+                case "upgrading":
+                    return "Updating…";
+                case "autoremove":
+                    return "Autoremoving…";
+                case "repairing":
+                    return "Repairing APT…";
+                case "rebooting":
+                    return "Rebooting and verifying…";
+                case "sudoers":
+                    return "Configuring…";
+                case "facts_refresh":
+                    return "Refreshing…";
+                case "vulnerability_scan":
+                    return "Scanning vulnerabilities…";
+                case "postchecks_test":
+                    return "Testing application checks…";
+                default:
+                    return "Working…";
+            }
+        }
 
-	        async function runSingleHostAction(name, actionKey, actionLabel, work, refreshStreams = ["servers"]) {
-	            const plan = statusInteraction.planAction(name, actionKey, { actionLabel });
-	            if (!plan.enabled) return false;
-	            await dispatchStatusInteraction({ type: "actionStarted", plan });
-	            const started = getStatusView().actions.inFlight.some(action => action.operationId === plan.id);
-	            if (!started) return false;
-	            try {
-	                const result = await work(plan);
-	                await dispatchStatusInteraction({
-	                    type: result === false ? "actionFailed" : "actionCompleted",
-	                    operationId: plan.id,
-	                    refreshStreams: result === false ? [] : refreshStreams
-	                });
-	                return result !== false;
-	            } catch (error) {
-	                await dispatchStatusInteraction({ type: "actionFailed", operationId: plan.id, refreshStreams: [] });
-	                throw error;
-	            }
-	        }
+        async function runSingleHostAction(
+            name,
+            actionKey,
+            actionLabel,
+            work,
+            refreshStreams = ["servers"],
+        ) {
+            const lifetime = lifecycle.capture();
 
-	        function canRunUpdateAction(server) {
-	            return !!serverPresentation(server)?.canRunUpdate;
-	        }
+            const plan = statusInteraction.planAction(name, actionKey, {
+                actionLabel,
+            });
+            if (!plan.enabled) return false;
+            await dispatchStatusInteraction({ type: "actionStarted", plan });
+            if (!lifecycle.isCurrent(lifetime)) return;
+            const started = getStatusView().actions.inFlight.some(
+                (action) => action.operationId === plan.id,
+            );
+            if (!started) return false;
+            try {
+                const result = await work(plan);
+                if (!lifecycle.isCurrent(lifetime)) return;
+                await dispatchStatusInteraction({
+                    type: result === false ? "actionFailed" : "actionCompleted",
+                    operationId: plan.id,
+                    refreshStreams: result === false ? [] : refreshStreams,
+                });
+                if (!lifecycle.isCurrent(lifetime)) return;
+                return result !== false;
+            } catch (error) {
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    error?.name === "AbortError"
+                )
+                    return;
+                await dispatchStatusInteraction({
+                    type: "actionFailed",
+                    operationId: plan.id,
+                    refreshStreams: [],
+                });
+                if (!lifecycle.isCurrent(lifetime)) return;
+                throw error;
+            }
+        }
 
-	        function canRunAutoremoveAction(server) {
-	            return !!serverPresentation(server)?.canRunAutoremove;
-	        }
+        function canRunUpdateAction(server) {
+            return !!serverPresentation(server)?.canRunUpdate;
+        }
 
-	        function canRepairAptAction(server) {
-	            return !!serverPresentation(server)?.canRepairApt;
-	        }
+        function canRunAutoremoveAction(server) {
+            return !!serverPresentation(server)?.canRunAutoremove;
+        }
 
-	        function canRebootAction(server) {
-	            return !!serverPresentation(server)?.canReboot;
-	        }
+        function canRepairAptAction(server) {
+            return !!serverPresentation(server)?.canRepairApt;
+        }
 
-	        function canRunSudoersAction(server) {
-	            return !!serverPresentation(server)?.canRunSudoers;
-	        }
+        function canRebootAction(server) {
+            return !!serverPresentation(server)?.canReboot;
+        }
 
-	        function canRefreshFactsAction(server) {
-	            return !!serverPresentation(server)?.canRefreshFacts;
-	        }
+        function canRunSudoersAction(server) {
+            return !!serverPresentation(server)?.canRunSudoers;
+        }
+
+        function canRefreshFactsAction(server) {
+            return !!serverPresentation(server)?.canRefreshFacts;
+        }
 
         function updateSelectPageState() {
-            const selectAll = document.getElementById('select-all');
+            const selectAll = document.getElementById("select-all");
             if (!selectAll) return;
-            const rowCheckboxes = Array.from(document.querySelectorAll('#servers-table tbody tr[data-name] .row-select'));
-            const selectedOnPage = rowCheckboxes.filter(cb => cb.checked).length;
-            const allSelected = rowCheckboxes.length > 0 && selectedOnPage === rowCheckboxes.length;
-            const partiallySelected = selectedOnPage > 0 && selectedOnPage < rowCheckboxes.length;
+            const rowCheckboxes = Array.from(
+                document.querySelectorAll(
+                    "#servers-table tbody tr[data-name] .row-select",
+                ),
+            );
+            const selectedOnPage = rowCheckboxes.filter(
+                (cb) => cb.checked,
+            ).length;
+            const allSelected =
+                rowCheckboxes.length > 0 &&
+                selectedOnPage === rowCheckboxes.length;
+            const partiallySelected =
+                selectedOnPage > 0 && selectedOnPage < rowCheckboxes.length;
             selectAll.checked = allSelected;
             selectAll.indeterminate = partiallySelected;
-            selectAll.setAttribute('aria-checked', partiallySelected ? "mixed" : allSelected ? "true" : "false");
-            selectAll.dataset.selectionState = partiallySelected ? "mixed" : allSelected ? "checked" : "unchecked";
+            selectAll.setAttribute(
+                "aria-checked",
+                partiallySelected ? "mixed" : allSelected ? "true" : "false",
+            );
+            selectAll.dataset.selectionState = partiallySelected
+                ? "mixed"
+                : allSelected
+                  ? "checked"
+                  : "unchecked";
         }
 
         function scheduleSelectPageStateUpdate() {
             updateSelectPageState();
-            window.setTimeout(updateSelectPageState, 0);
+            lifecycle.setTimeout(updateSelectPageState, 0);
         }
 
-
         function openDrawer(name, tab = "logs") {
-            if (!window.canUseScope('logs:read')) tab = 'pending';
+            if (!window.canUseScope("logs:read")) tab = "pending";
             const previousDrawer = getStatusView().drawer;
             if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;
@@ -1673,15 +2112,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
             dispatchStatusInteraction({ type: "drawerOpened", name, tab });
             renderDrawer();
             statusDrawerAdapter.open(
-                document.getElementById('status-drawer'),
-                document.getElementById('status-drawer-backdrop')
+                document.getElementById("status-drawer"),
+                document.getElementById("status-drawer-backdrop"),
             );
         }
 
         function closeDrawer() {
             dispatchStatusInteraction({ type: "drawerClosed" });
-            const drawer = document.getElementById('status-drawer');
-            const backdrop = document.getElementById('status-drawer-backdrop');
+            const drawer = document.getElementById("status-drawer");
+            const backdrop = document.getElementById("status-drawer-backdrop");
             statusDrawerAdapter.close(drawer, backdrop);
         }
 
@@ -1693,14 +2132,21 @@ const LOG_BOTTOM_THRESHOLD = 20;
 
         function renderDrawerLogs(serverName = "") {
             const drawerState = getStatusView().drawer;
-            if (!drawerState.open || drawerState.tab !== "logs" || (serverName && drawerState.serverName !== serverName)) return;
+            if (
+                !drawerState.open ||
+                drawerState.tab !== "logs" ||
+                (serverName && drawerState.serverName !== serverName)
+            )
+                return;
             const server = getServerByName(drawerState.serverName);
             if (!server) return;
-            const logsEl = document.getElementById('drawer-logs');
-            const logsHint = document.getElementById('drawer-logs-hint');
+            const logsEl = document.getElementById("drawer-logs");
+            const logsHint = document.getElementById("drawer-logs-hint");
             const previousScrollTop = logsEl.scrollTop;
-            const sameServer = logsEl.dataset.serverName === drawerState.serverName;
-            const follow = !sameServer || (drawerState.logFollow && isNearBottom(logsEl));
+            const sameServer =
+                logsEl.dataset.serverName === drawerState.serverName;
+            const follow =
+                !sameServer || (drawerState.logFollow && isNearBottom(logsEl));
             logsEl.innerHTML = formatLogsHtml(server.logs || "");
             logsEl.dataset.serverName = drawerState.serverName;
             if (follow) {
@@ -1710,33 +2156,51 @@ const LOG_BOTTOM_THRESHOLD = 20;
             }
             drawerLogScrollTop = logsEl.scrollTop;
             if (drawerState.logFollow !== follow) {
-                dispatchStatusInteraction({ type: "drawerLogFollowChanged", value: follow });
+                dispatchStatusInteraction({
+                    type: "drawerLogFollowChanged",
+                    value: follow,
+                });
             }
-            logsHint.textContent = follow ? "Live auto-scroll" : "Auto-scroll paused";
+            logsHint.textContent = follow
+                ? "Live auto-scroll"
+                : "Auto-scroll paused";
         }
 
-	        function renderDrawer() {
+        function renderDrawer() {
             const drawerState = getStatusView().drawer;
-            const drawer = document.getElementById('status-drawer');
-            const backdrop = document.getElementById('status-drawer-backdrop');
-            const title = document.getElementById('status-drawer-title');
-            const statusContainer = document.getElementById('status-drawer-status');
-            const logsTabBtn = document.getElementById('drawer-tab-logs');
-            const pendingTabBtn = document.getElementById('drawer-tab-pending');
-            const logsPanel = document.getElementById('drawer-panel-logs');
-            const pendingPanel = document.getElementById('drawer-panel-pending');
-            const logsHint = document.getElementById('drawer-logs-hint');
-            const logsEl = document.getElementById('drawer-logs');
-            const approvalActions = document.getElementById('status-drawer-approval-actions');
-            const drawerApproveAllBtn = document.getElementById('drawer-approve-all');
-            const drawerApproveSecurityBtn = document.getElementById('drawer-approve-security');
-            const drawerApproveKeptBackSecurityBtn = document.getElementById('drawer-approve-security-kept-back');
-            const drawerApproveFullBtn = document.getElementById('drawer-approve-full');
+            const drawer = document.getElementById("status-drawer");
+            const backdrop = document.getElementById("status-drawer-backdrop");
+            const title = document.getElementById("status-drawer-title");
+            const statusContainer = document.getElementById(
+                "status-drawer-status",
+            );
+            const logsTabBtn = document.getElementById("drawer-tab-logs");
+            const pendingTabBtn = document.getElementById("drawer-tab-pending");
+            const logsPanel = document.getElementById("drawer-panel-logs");
+            const pendingPanel = document.getElementById(
+                "drawer-panel-pending",
+            );
+            const logsHint = document.getElementById("drawer-logs-hint");
+            const logsEl = document.getElementById("drawer-logs");
+            const approvalActions = document.getElementById(
+                "status-drawer-approval-actions",
+            );
+            const drawerApproveAllBtn =
+                document.getElementById("drawer-approve-all");
+            const drawerApproveSecurityBtn = document.getElementById(
+                "drawer-approve-security",
+            );
+            const drawerApproveKeptBackSecurityBtn = document.getElementById(
+                "drawer-approve-security-kept-back",
+            );
+            const drawerApproveFullBtn = document.getElementById(
+                "drawer-approve-full",
+            );
 
             if (!drawerState.open) {
-                drawer.classList.remove('open');
-                backdrop.classList.remove('open');
-                drawer.setAttribute('aria-hidden', 'true');
+                drawer.classList.remove("open");
+                backdrop.classList.remove("open");
+                drawer.setAttribute("aria-hidden", "true");
                 return;
             }
 
@@ -1753,39 +2217,58 @@ const LOG_BOTTOM_THRESHOLD = 20;
             const driftReason = pendingApprovalDriftReason(server);
             const triage = getServerApprovalTriage(server);
             const approvalCounts = getPendingApprovalCounts(server);
-            const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-            const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
-            const securityApprovalLabel = approvalCounts.security === null
-                ? "Standard security (?)"
-                : `Standard security (${approvalCounts.security})`;
+            const keptBackSecurityCount = Number(
+                triage.kept_back_security_updates ??
+                    approvalCounts.keptBackSecurity ??
+                    0,
+            );
+            const canApproveKeptBackSecurity =
+                !!triage.can_approve_kept_back_security;
+            const securityApprovalLabel =
+                approvalCounts.security === null
+                    ? "Standard security (?)"
+                    : `Standard security (${approvalCounts.security})`;
             if (drawerState.tab === "pending" && !hasPending) {
                 drawerPendingScrollTop = 0;
             }
 
             title.textContent = server.name || "Server details";
-	            statusContainer.innerHTML = `
+            statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
 	                ${applicationPostchecksHtml(server)}
  ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
 	            `;
-	            approvalActions.classList.toggle('hidden', !isPendingApproval);
-	            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
-	            drawerApproveAllBtn.disabled = !triage.can_approve_all;
-	            drawerApproveSecurityBtn.textContent = securityApprovalLabel;
-	            drawerApproveSecurityBtn.disabled = !triage.can_approve_security;
+            approvalActions.classList.toggle("hidden", !isPendingApproval);
+            drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
+            drawerApproveAllBtn.disabled = !triage.can_approve_all;
+            drawerApproveSecurityBtn.textContent = securityApprovalLabel;
+            drawerApproveSecurityBtn.disabled = !triage.can_approve_security;
             drawerApproveKeptBackSecurityBtn.textContent = `Kept-back security (${keptBackSecurityCount})`;
-            drawerApproveKeptBackSecurityBtn.disabled = !canApproveKeptBackSecurity;
-            drawerApproveKeptBackSecurityBtn.classList.toggle('hidden', !canApproveKeptBackSecurity);
+            drawerApproveKeptBackSecurityBtn.disabled =
+                !canApproveKeptBackSecurity;
+            drawerApproveKeptBackSecurityBtn.classList.toggle(
+                "hidden",
+                !canApproveKeptBackSecurity,
+            );
             drawerApproveFullBtn.textContent = `Full upgrade (${approvalCounts.full})`;
             drawerApproveFullBtn.disabled = !triage.can_approve_full;
-            drawerApproveFullBtn.classList.toggle('hidden', !triage.can_approve_full);
+            drawerApproveFullBtn.classList.toggle(
+                "hidden",
+                !triage.can_approve_full,
+            );
 
             pendingTabBtn.disabled = !hasPending;
-            pendingTabBtn.classList.toggle('active', drawerState.tab === "pending");
-            logsTabBtn.classList.toggle('active', drawerState.tab === "logs");
+            pendingTabBtn.classList.toggle(
+                "active",
+                drawerState.tab === "pending",
+            );
+            logsTabBtn.classList.toggle("active", drawerState.tab === "logs");
 
-            logsPanel.classList.toggle('active', drawerState.tab === "logs");
-            pendingPanel.classList.toggle('active', drawerState.tab === "pending");
+            logsPanel.classList.toggle("active", drawerState.tab === "logs");
+            pendingPanel.classList.toggle(
+                "active",
+                drawerState.tab === "pending",
+            );
 
             if (drawerState.tab === "logs") {
                 if (!isNearBottom(logsEl) && !drawerState.logFollow) {
@@ -1797,39 +2280,48 @@ const LOG_BOTTOM_THRESHOLD = 20;
             if (drawerState.tab === "pending") {
                 const pendingScrollTop = drawerPendingScrollTop;
                 pendingPanel.innerHTML = renderPendingUpdatesHtml(server, true);
-                requestAnimationFrame(() => {
-                    const maxScrollTop = Math.max(0, pendingPanel.scrollHeight - pendingPanel.clientHeight);
-                    pendingPanel.scrollTop = Math.min(pendingScrollTop, maxScrollTop);
+                lifecycle.requestAnimationFrame(() => {
+                    const maxScrollTop = Math.max(
+                        0,
+                        pendingPanel.scrollHeight - pendingPanel.clientHeight,
+                    );
+                    pendingPanel.scrollTop = Math.min(
+                        pendingScrollTop,
+                        maxScrollTop,
+                    );
                 });
             } else {
                 pendingPanel.innerHTML = "";
             }
 
-            drawer.classList.add('open');
-            backdrop.classList.add('open');
-            drawer.setAttribute('aria-hidden', 'false');
+            drawer.classList.add("open");
+            backdrop.classList.add("open");
+            drawer.setAttribute("aria-hidden", "false");
         }
 
         function hidePhaseTooltip() {
-            const tooltip = document.getElementById('phase-tooltip');
+            const tooltip = document.getElementById("phase-tooltip");
             if (!tooltip) return;
             if (activePhaseTooltipTarget) {
-                activePhaseTooltipTarget.removeAttribute('aria-describedby');
+                activePhaseTooltipTarget.removeAttribute("aria-describedby");
             }
             activePhaseTooltipTarget = null;
-            tooltip.classList.add('hidden');
+            tooltip.classList.add("hidden");
             tooltip.innerHTML = "";
         }
 
         function positionPhaseTooltip(target) {
-            const tooltip = document.getElementById('phase-tooltip');
+            const tooltip = document.getElementById("phase-tooltip");
             if (!tooltip || !target) return;
             const rect = target.getBoundingClientRect();
             const tooltipRect = tooltip.getBoundingClientRect();
             const margin = 10;
             const left = Math.min(
                 window.innerWidth - tooltipRect.width - margin,
-                Math.max(margin, rect.left + rect.width / 2 - tooltipRect.width / 2)
+                Math.max(
+                    margin,
+                    rect.left + rect.width / 2 - tooltipRect.width / 2,
+                ),
             );
             const preferredTop = rect.top - tooltipRect.height - 8;
             const top = preferredTop > margin ? preferredTop : rect.bottom + 8;
@@ -1838,7 +2330,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function showPhaseTooltip(target) {
-            const tooltip = document.getElementById('phase-tooltip');
+            const tooltip = document.getElementById("phase-tooltip");
             if (!tooltip || !target) return;
             const label = target.dataset.phaseLabel || "Phase";
             const state = target.dataset.phaseState || "unknown";
@@ -1850,9 +2342,9 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 <span>${escapeHtml(summary)}</span>
                 <span>${escapeHtml([`${progress}%`, time].filter(Boolean).join(" · "))}</span>
             `;
-            tooltip.classList.remove('hidden');
+            tooltip.classList.remove("hidden");
             activePhaseTooltipTarget = target;
-            target.setAttribute('aria-describedby', 'phase-tooltip');
+            target.setAttribute("aria-describedby", "phase-tooltip");
             positionPhaseTooltip(target);
         }
 
@@ -1862,91 +2354,152 @@ const LOG_BOTTOM_THRESHOLD = 20;
         function renderTableSnapshot(options) {
             hidePhaseTooltip();
             refreshDashboardPresentation();
-            const tbody = document.querySelector('#servers-table tbody');
-            tbody.innerHTML = '';
+            const tbody = document.querySelector("#servers-table tbody");
+            tbody.innerHTML = "";
             const view = getStatusView();
             const totalFiltered = view.visibleServers.length;
             const selectedNames = new Set(view.selectedNames);
-            document.getElementById('page-info').textContent = `Page ${view.page} of ${view.totalPages} (${pluralize(totalFiltered, "host")})`;
-            document.querySelector('.pagination')?.classList.toggle('single-page', view.totalPages <= 1);
-            document.getElementById('prev-page').disabled = view.page <= 1;
-            document.getElementById('next-page').disabled = view.page >= view.totalPages;
+            document.getElementById("page-info").textContent =
+                `Page ${view.page} of ${view.totalPages} (${pluralize(totalFiltered, "host")})`;
+            document
+                .querySelector(".pagination")
+                ?.classList.toggle("single-page", view.totalPages <= 1);
+            document.getElementById("prev-page").disabled = view.page <= 1;
+            document.getElementById("next-page").disabled =
+                view.page >= view.totalPages;
             setText(
                 "table-summary",
                 allServers.length === 0
                     ? "Waiting for status data"
-                    : `${pluralize(totalFiltered, "host")} visible · ${pluralize(allServers.length, "host")} loaded`
+                    : `${pluralize(totalFiltered, "host")} visible · ${pluralize(allServers.length, "host")} loaded`,
             );
-            dashboardPresentation.groups.forEach(group => {
+            dashboardPresentation.groups.forEach((group) => {
                 if (group.key) {
-                    const groupRow = document.createElement('tr');
-                    groupRow.className = 'group-row';
+                    const groupRow = document.createElement("tr");
+                    groupRow.className = "group-row";
                     groupRow.innerHTML = `<td colspan="5">${escapeHtml(group.key)}</td>`;
                     tbody.appendChild(groupRow);
                 }
-                group.items.forEach(presentation => {
+                group.items.forEach((presentation) => {
                     const server = presentation.server;
-                    const row = document.createElement('tr');
+                    const row = document.createElement("tr");
                     row.dataset.name = server.name;
                     const rowSelected = view.primaryServerName === server.name;
-                    row.setAttribute("aria-selected", rowSelected ? "true" : "false");
+                    row.setAttribute(
+                        "aria-selected",
+                        rowSelected ? "true" : "false",
+                    );
                     if (rowSelected) {
-                        row.classList.add('row-selected');
+                        row.classList.add("row-selected");
                     }
                     if (hoveredName === server.name) {
-                        row.classList.add('row-hover');
+                        row.classList.add("row-hover");
                     }
-	                    const isBusy = isServerActionBusy(server);
-	                    const busyActionLabel = serverBusyActionLabel(server);
+                    const isBusy = isServerActionBusy(server);
+                    const busyActionLabel = serverBusyActionLabel(server);
                     const safeNameHtml = escapeHtml(server.name);
-                    const safeStatusText = escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status));
+                    const safeStatusText = escapeHtml(
+                        server.disabled
+                            ? "Disabled"
+                            : statusLabel(server.status),
+                    );
                     const safeStatus = safeStatusClass(server.status);
                     const safeDataName = escapeHtml(server.name);
-	                    const intelligence = presentation.intelligence;
-	                    const timeline = presentation.timeline;
-	                    const triage = presentation.triage;
-	                    const recommendedAction = presentation.recommendedAction || { label: "Healthy", detail: "No immediate maintenance action is required.", action: "" };
-	                    const lastUpdate = intelligence?.last_update;
-	                    const nextRun = intelligence?.next_run;
-	                    const lastUpdateLabel = lastUpdate ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}` : "No history";
-	                    const nextRunLabel = nextRun?.state === "scheduled"
-	                        ? (nextRun.scheduled_for_display || nextRun.scheduled_for_utc || "Scheduled")
-	                        : "None";
-	                    const timelineWindow = timeline?.updated_at_display || timeline?.updated_at || (nextRun?.state === "scheduled" ? nextRunLabel : lastUpdateLabel);
-	                    const timelineSummary = timeline.summary || timelineWindow || "No activity";
-	                    const timelineLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
-                        const repeatsStatus = timelineLabel.toLowerCase() === statusLabel(server.status).toLowerCase();
-                        const recommendationHtml = recommendedAction.key && recommendedAction.key !== "healthy"
-                            ? `<span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label)}</span>` : "";
-                        const packageSummary = [
-                            [triage.pending_packages, "pending package", "pending packages"],
-                            [triage.kept_back_packages, "kept-back package", "kept-back packages"],
-                            [triage.security_updates, "security update", "security updates"],
-                            [triage.cve_count, "CVE", "CVEs"],
-                        ].filter(([count]) => Number(count) > 0)
-                            .map(([count, singular, plural]) => `${Number(count)} ${Number(count) === 1 ? singular : plural}`).join(" · ");
-	                    const approvalCounts = presentation.approvalCounts;
-	                    const keptBackSecurityCount = Number(triage.kept_back_security_updates ?? approvalCounts.keptBackSecurity ?? 0);
-	                    const canApproveKeptBackSecurity = !!triage.can_approve_kept_back_security;
-	                    const canApproveAll = !!triage.can_approve_all;
-	                    const canApproveSecurity = !!triage.can_approve_security;
-	                    const canCancel = !!triage.can_cancel;
-	                    const canUpdate = presentation.canRunUpdate;
-	                    const canRepairApt = presentation.canRepairApt;
-	                    const canReboot = presentation.canReboot;
-	                    const canRefreshFacts = presentation.canRefreshFacts;
-	                    const failureReason = presentation.failureReason;
-	                    const driftReason = presentation.driftReason;
-	                    const failureReasonIsDuplicate = failureReason && String(failureReason).trim().toLowerCase() === String(timelineSummary).trim().toLowerCase();
-	                    const failureReasonHtml = failureReason && !failureReasonIsDuplicate
-	                        ? `<span class="failure-reason" title="${escapeHtml(failureReason)}">${escapeHtml(failureReason)}</span>`
-	                        : "";
-	                    const driftReasonHtml = driftReason
-	                        ? `<span class="pending-drift-row" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
-	                        : "";
-                    const securityApprovalLabel = approvalCounts.security === null
-                        ? "Standard security (?)"
-                        : `Standard security (${approvalCounts.security})`;
+                    const intelligence = presentation.intelligence;
+                    const timeline = presentation.timeline;
+                    const triage = presentation.triage;
+                    const recommendedAction =
+                        presentation.recommendedAction || {
+                            label: "Healthy",
+                            detail: "No immediate maintenance action is required.",
+                            action: "",
+                        };
+                    const lastUpdate = intelligence?.last_update;
+                    const nextRun = intelligence?.next_run;
+                    const lastUpdateLabel = lastUpdate
+                        ? `${formatRelativeTimestamp(lastUpdate.finished_at)} · ${formatDuration(lastUpdate.duration_ms)}`
+                        : "No history";
+                    const nextRunLabel =
+                        nextRun?.state === "scheduled"
+                            ? nextRun.scheduled_for_display ||
+                              nextRun.scheduled_for_utc ||
+                              "Scheduled"
+                            : "None";
+                    const timelineWindow =
+                        timeline?.updated_at_display ||
+                        timeline?.updated_at ||
+                        (nextRun?.state === "scheduled"
+                            ? nextRunLabel
+                            : lastUpdateLabel);
+                    const timelineSummary =
+                        timeline.summary || timelineWindow || "No activity";
+                    const timelineLabel = timelineDisplayLabel(timeline, {
+                        lastRunPrefix: true,
+                    });
+                    const repeatsStatus =
+                        timelineLabel.toLowerCase() ===
+                        statusLabel(server.status).toLowerCase();
+                    const recommendationHtml =
+                        recommendedAction.key &&
+                        recommendedAction.key !== "healthy"
+                            ? `<span class="recommended-row-action" title="${escapeHtml(recommendedAction.detail || "")}">Recommended: ${escapeHtml(recommendedAction.label)}</span>`
+                            : "";
+                    const packageSummary = [
+                        [
+                            triage.pending_packages,
+                            "pending package",
+                            "pending packages",
+                        ],
+                        [
+                            triage.kept_back_packages,
+                            "kept-back package",
+                            "kept-back packages",
+                        ],
+                        [
+                            triage.security_updates,
+                            "security update",
+                            "security updates",
+                        ],
+                        [triage.cve_count, "CVE", "CVEs"],
+                    ]
+                        .filter(([count]) => Number(count) > 0)
+                        .map(
+                            ([count, singular, plural]) =>
+                                `${Number(count)} ${Number(count) === 1 ? singular : plural}`,
+                        )
+                        .join(" · ");
+                    const approvalCounts = presentation.approvalCounts;
+                    const keptBackSecurityCount = Number(
+                        triage.kept_back_security_updates ??
+                            approvalCounts.keptBackSecurity ??
+                            0,
+                    );
+                    const canApproveKeptBackSecurity =
+                        !!triage.can_approve_kept_back_security;
+                    const canApproveAll = !!triage.can_approve_all;
+                    const canApproveSecurity = !!triage.can_approve_security;
+                    const canCancel = !!triage.can_cancel;
+                    const canUpdate = presentation.canRunUpdate;
+                    const canRepairApt = presentation.canRepairApt;
+                    const canReboot = presentation.canReboot;
+                    const canRefreshFacts = presentation.canRefreshFacts;
+                    const failureReason = presentation.failureReason;
+                    const driftReason = presentation.driftReason;
+                    const failureReasonIsDuplicate =
+                        failureReason &&
+                        String(failureReason).trim().toLowerCase() ===
+                            String(timelineSummary).trim().toLowerCase();
+                    const failureReasonHtml =
+                        failureReason && !failureReasonIsDuplicate
+                            ? `<span class="failure-reason" title="${escapeHtml(failureReason)}">${escapeHtml(failureReason)}</span>`
+                            : "";
+                    const driftReasonHtml = driftReason
+                        ? `<span class="pending-drift-row" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>`
+                        : "";
+                    const securityApprovalLabel =
+                        approvalCounts.security === null
+                            ? "Standard security (?)"
+                            : `Standard security (${approvalCounts.security})`;
                     const keptBackSecurityButton = canApproveKeptBackSecurity
                         ? `<button type="button" class="btn-security" data-action="approve-security-kept-back" data-name="${safeDataName}" title="Approve only kept-back security updates">Kept-back security (${keptBackSecurityCount})</button>`
                         : "";
@@ -1954,29 +2507,31 @@ const LOG_BOTTOM_THRESHOLD = 20;
                         ? `<button type="button" class="btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full upgrade (${approvalCounts.full})</button>`
                         : "";
                     const cancelButton = `<button type="button" class="btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>`;
-					const actionButtons = recommendedAction.action === "repair_apt" && canRepairApt
-						? `
+                    const actionButtons =
+                        recommendedAction.action === "repair_apt" &&
+                        canRepairApt
+                            ? `
 							<div class="actions-grid timeline-actions">
 								<button type="button" class="btn-warning" data-action="repair-apt" data-name="${safeDataName}">Repair APT</button>
 								<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 							</div>
 						  `
-						: recommendedAction.action === "reboot" && canReboot
-							? `
+                            : recommendedAction.action === "reboot" && canReboot
+                              ? `
 								<div class="actions-grid timeline-actions">
 									<button type="button" class="btn-warning" data-action="reboot-server" data-name="${safeDataName}">Reboot and verify</button>
 									<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 								</div>
 							  `
-						: recommendedAction.action === "refresh_facts"
-							? `
+                              : recommendedAction.action === "refresh_facts"
+                                ? `
 								<div class="actions-grid timeline-actions">
 									<button type="button" class="btn-warning" data-action="refresh-facts" data-name="${safeDataName}" ${buttonStateAttrs(canRefreshFacts, "Refresh host facts before choosing maintenance", "Host facts cannot refresh while another action is active")}>Refresh host facts</button>
 									<button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 								</div>
 							  `
-						: server.status === 'pending_approval'
-	                        ? `
+                                : server.status === "pending_approval"
+                                  ? `
 	                            ${applicationPostchecksHtml(server)}
  <div class="actions-grid timeline-actions">
 	                                <button type="button" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>
@@ -1987,15 +2542,15 @@ const LOG_BOTTOM_THRESHOLD = 20;
                                 <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
                             </div>
                           `
-                        : isBusy
-                            ? `
+                                  : isBusy
+                                    ? `
                                 <div class="actions-grid timeline-actions">
                                     <button type="button" disabled aria-disabled="true" title="${escapeHtml(busyActionLabel)}">${escapeHtml(busyActionLabel)}</button>
                                     <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                                 </div>
                               `
-		                        : driftReason
-		                            ? `
+                                    : driftReason
+                                      ? `
 		                                <div class="actions-grid timeline-actions timeline-actions-note">
 		                                    <span class="action-note pending-drift-note" title="${escapeHtml(driftReason)}">Runtime not pending</span>
 		                                    ${canUpdate ? `<button type="button" data-action="update-server" data-name="${safeDataName}" title="Run fresh update checks">Update</button>` : ""}
@@ -2003,7 +2558,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
 		                                    <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 		                                </div>
 	                              `
-	                        : `
+                                      : `
 	                            <div class="actions-grid timeline-actions">
 	                                <button type="button" data-action="update-server" data-name="${safeDataName}" ${canUpdate ? "" : "disabled"} title="${canUpdate ? "Run update checks" : "Host cannot run update checks right now"}">Update</button>
 	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
@@ -2012,7 +2567,7 @@ const LOG_BOTTOM_THRESHOLD = 20;
                     row.innerHTML = `
 	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedNames.has(server.name) ? "checked" : ""}></td>
                         <td class="name-cell" title="${safeNameHtml}">
-                            <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? 'true' : 'false'}">${safeNameHtml}</button>
+                            <button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? "true" : "false"}">${safeNameHtml}</button>
                             <span class="server-subline">${escapeHtml((server.tags || []).join(", ") || "ungrouped")}</span>
                         </td>
                         <td class="status-col">
@@ -2037,44 +2592,48 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 });
             });
             applyHoverClass();
-            tbody.querySelectorAll('.row-select').forEach(cb => {
-	                cb.addEventListener('change', (e) => {
-	                    const name = e.target.dataset.name;
-	                    dispatchStatusInteraction({ type: "selectionChanged", name, selected: e.target.checked });
-	                    updateBulkActionState();
-	                });
-	            });
-		            updateBulkActionState();
-		            updateSortIndicators();
-		            if (options.refreshPanels === false) {
-		                renderTableDependentPanels();
-		            } else {
-		                renderDashboardPanels();
-		            }
-	        }
+
+            updateBulkActionState();
+            updateSortIndicators();
+            if (options.refreshPanels === false) {
+                renderTableDependentPanels();
+            } else {
+                renderDashboardPanels();
+            }
+        }
 
         function getServerByName(name) {
             return statusInteraction.getServer(name);
         }
 
-	        function selectServer(name) {
-		            dispatchStatusInteraction({ type: "primaryServerSelected", name: name || "" });
-		            renderTable({ refreshPanels: false });
-		        }
+        function selectServer(name) {
+            dispatchStatusInteraction({
+                type: "primaryServerSelected",
+                name: name || "",
+            });
+            renderTable({ refreshPanels: false });
+        }
 
         async function copyLogs(name = "") {
+            const lifetime = lifecycle.capture();
+
             name = name || getStatusView().drawer.serverName;
             const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(view.jobLogs?.[name]?.rawText ?? server?.logs ?? "");
+            const logs = String(
+                view.jobLogs?.[name]?.rawText ?? server?.logs ?? "",
+            );
             try {
                 await navigator.clipboard.writeText(logs);
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (_) {
-                const tmp = document.createElement('textarea');
+                if (!lifecycle.isCurrent(lifetime) || _?.name === "AbortError")
+                    return;
+                const tmp = document.createElement("textarea");
                 tmp.value = logs;
                 document.body.appendChild(tmp);
                 tmp.select();
-                document.execCommand('copy');
+                document.execCommand("copy");
                 tmp.remove();
             }
         }
@@ -2083,11 +2642,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
             name = name || getStatusView().drawer.serverName;
             const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(view.jobLogs?.[name]?.rawText ?? server?.logs ?? "");
-            const blob = new Blob([logs], { type: 'text/plain;charset=utf-8' });
+            const logs = String(
+                view.jobLogs?.[name]?.rawText ?? server?.logs ?? "",
+            );
+            const blob = new Blob([logs], { type: "text/plain;charset=utf-8" });
             const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            const safeName = String(name || "server").replace(/[^a-zA-Z0-9._-]/g, '_');
+            const link = document.createElement("a");
+            const safeName = String(name || "server").replace(
+                /[^a-zA-Z0-9._-]/g,
+                "_",
+            );
             link.href = url;
             link.download = `${safeName}-logs.txt`;
             document.body.appendChild(link);
@@ -2097,14 +2661,16 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function applyHoverClass() {
-            const tbody = document.querySelector('#servers-table tbody');
-            tbody.querySelectorAll('tr').forEach((tr) => {
-                tr.classList.remove('row-hover');
+            const tbody = document.querySelector("#servers-table tbody");
+            tbody.querySelectorAll("tr").forEach((tr) => {
+                tr.classList.remove("row-hover");
             });
             if (!hoveredName) return;
-            const row = tbody.querySelector(`tr[data-name="${CSS.escape(hoveredName)}"]`);
+            const row = tbody.querySelector(
+                `tr[data-name="${CSS.escape(hoveredName)}"]`,
+            );
             if (row) {
-                row.classList.add('row-hover');
+                row.classList.add("row-hover");
             }
         }
 
@@ -2158,126 +2724,161 @@ const LOG_BOTTOM_THRESHOLD = 20;
                 disablePasswordlessApt(name);
                 return;
             }
-            if (action === "scan-vulnerabilities") { scanVulnerabilities(name); return; }
+            if (action === "scan-vulnerabilities") {
+                scanVulnerabilities(name);
+                return;
+            }
             if (action === "refresh-facts") {
                 refreshHostFacts(name);
             }
         }
 
-        const tbodyHover = document.querySelector('#servers-table tbody');
-        tbodyHover.addEventListener('click', (e) => {
-            const button = e.target.closest('button[data-action]');
+        const tbodyHover = document.querySelector("#servers-table tbody");
+        lifecycle.listen(tbodyHover, "change", (event) => {
+            const checkbox = event.target.closest(".row-select");
+            if (!checkbox) return;
+            dispatchStatusInteraction({
+                type: "selectionChanged",
+                name: checkbox.dataset.name,
+                selected: checkbox.checked,
+            });
+            updateBulkActionState();
+        });
+        lifecycle.listen(tbodyHover, "click", (e) => {
+            const button = e.target.closest("button[data-action]");
             if (button) {
-                handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
+                handleServerAction(
+                    button.dataset.action || "",
+                    button.dataset.name || "",
+                    button.dataset.tab || "logs",
+                );
                 return;
             }
-            const selectHostButton = e.target.closest('button[data-select-host]');
+            const selectHostButton = e.target.closest(
+                "button[data-select-host]",
+            );
             if (selectHostButton) {
                 selectServer(selectHostButton.dataset.selectHost || "");
                 return;
             }
-            if (e.target.closest('button, input, select, textarea, a, label')) return;
-            const row = e.target.closest('tr[data-name]');
+            if (e.target.closest("button, input, select, textarea, a, label"))
+                return;
+            const row = e.target.closest("tr[data-name]");
             if (row) {
                 selectServer(row.dataset.name || "");
             }
         });
-	        tbodyHover.addEventListener('mouseover', (e) => {
-	            const progressRing = e.target.closest('.timeline-progress-ring');
-	            if (progressRing) {
-	                showPhaseTooltip(progressRing);
-	            }
-	            const row = e.target.closest('tr[data-name]');
-	            if (!row) return;
-	            hoveredName = row.dataset.name || null;
-	            applyHoverClass();
-	        });
-	        tbodyHover.addEventListener('mouseout', (e) => {
-	            const progressRing = e.target.closest('.timeline-progress-ring');
-	            if (progressRing && !progressRing.contains(e.relatedTarget)) {
-	                hidePhaseTooltip();
-	            }
-	        });
-	        tbodyHover.addEventListener('focusin', (e) => {
-	            const progressRing = e.target.closest('.timeline-progress-ring');
-	            if (progressRing) {
-	                showPhaseTooltip(progressRing);
-	            }
-	        });
-	        tbodyHover.addEventListener('focusout', (e) => {
-	            const progressRing = e.target.closest('.timeline-progress-ring');
-	            if (progressRing && !progressRing.contains(e.relatedTarget)) {
-	                hidePhaseTooltip();
-	            }
-	        });
-	        tbodyHover.addEventListener('mouseleave', () => {
-	            hoveredName = null;
-	            applyHoverClass();
-	            hidePhaseTooltip();
-	        });
-	        window.addEventListener('scroll', hidePhaseTooltip, true);
-	        window.addEventListener('resize', () => {
-	            if (activePhaseTooltipTarget) {
-	                positionPhaseTooltip(activePhaseTooltipTarget);
-	            }
-	        });
+        lifecycle.listen(tbodyHover, "mouseover", (e) => {
+            const progressRing = e.target.closest(".timeline-progress-ring");
+            if (progressRing) {
+                showPhaseTooltip(progressRing);
+            }
+            const row = e.target.closest("tr[data-name]");
+            if (!row) return;
+            hoveredName = row.dataset.name || null;
+            applyHoverClass();
+        });
+        lifecycle.listen(tbodyHover, "mouseout", (e) => {
+            const progressRing = e.target.closest(".timeline-progress-ring");
+            if (progressRing && !progressRing.contains(e.relatedTarget)) {
+                hidePhaseTooltip();
+            }
+        });
+        lifecycle.listen(tbodyHover, "focusin", (e) => {
+            const progressRing = e.target.closest(".timeline-progress-ring");
+            if (progressRing) {
+                showPhaseTooltip(progressRing);
+            }
+        });
+        lifecycle.listen(tbodyHover, "focusout", (e) => {
+            const progressRing = e.target.closest(".timeline-progress-ring");
+            if (progressRing && !progressRing.contains(e.relatedTarget)) {
+                hidePhaseTooltip();
+            }
+        });
+        lifecycle.listen(tbodyHover, "mouseleave", () => {
+            hoveredName = null;
+            applyHoverClass();
+            hidePhaseTooltip();
+        });
+        lifecycle.listen(window, "scroll", hidePhaseTooltip, true);
+        lifecycle.listen(window, "resize", () => {
+            if (activePhaseTooltipTarget) {
+                positionPhaseTooltip(activePhaseTooltipTarget);
+            }
+        });
 
-        const triageTable = document.getElementById('approval-triage-table');
-	        if (triageTable) {
-	            triageTable.addEventListener('click', (e) => {
-	                const button = e.target.closest('button[data-action]');
-	                if (button) {
-	                    handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
-	                    return;
-	                }
-	                const miniListButton = e.target.closest('button[data-toggle-mini-list]');
-	                if (miniListButton) {
-	                    const listID = miniListButton.dataset.toggleMiniList || "";
-	                    if (!listID) return;
-	                    if (expandedMiniLists.has(listID)) {
-	                        expandedMiniLists.delete(listID);
-	                    } else {
-	                        expandedMiniLists.add(listID);
-	                    }
-	                    renderApprovalTriage();
-	                    return;
-	                }
-	                const selectHostButton = e.target.closest('button[data-select-host]');
-	                if (selectHostButton) {
-	                    selectServer(selectHostButton.dataset.selectHost || "");
+        const triageTable = document.getElementById("approval-triage-table");
+        if (triageTable) {
+            lifecycle.listen(triageTable, "click", (e) => {
+                const button = e.target.closest("button[data-action]");
+                if (button) {
+                    handleServerAction(
+                        button.dataset.action || "",
+                        button.dataset.name || "",
+                        button.dataset.tab || "logs",
+                    );
                     return;
                 }
-                const row = e.target.closest('tr[data-name]');
+                const miniListButton = e.target.closest(
+                    "button[data-toggle-mini-list]",
+                );
+                if (miniListButton) {
+                    const listID = miniListButton.dataset.toggleMiniList || "";
+                    if (!listID) return;
+                    if (expandedMiniLists.has(listID)) {
+                        expandedMiniLists.delete(listID);
+                    } else {
+                        expandedMiniLists.add(listID);
+                    }
+                    renderApprovalTriage();
+                    return;
+                }
+                const selectHostButton = e.target.closest(
+                    "button[data-select-host]",
+                );
+                if (selectHostButton) {
+                    selectServer(selectHostButton.dataset.selectHost || "");
+                    return;
+                }
+                const row = e.target.closest("tr[data-name]");
                 if (row) {
                     selectServer(row.dataset.name || "");
                 }
             });
         }
 
-        const fleetRail = document.querySelector('.fleet-rail');
+        const fleetRail = document.querySelector(".fleet-rail");
         if (fleetRail) {
-            fleetRail.addEventListener('click', (e) => {
-	                const filterButton = e.target.closest('button[data-fleet-filter]');
-	                if (filterButton) {
-	                    applyFleetQuickFilter(filterButton.dataset.fleetFilter || "");
-	                    return;
-	                }
-	                const tagButton = e.target.closest('button[data-fleet-tag]');
-	                if (tagButton) {
-	                    dispatchStatusInteraction({ type: "filtersChanged", patch: { tag: tagButton.dataset.fleetTag || "" } });
-	                    renderTable({ refreshPanels: false });
-	                }
-	            });
-	        }
+            lifecycle.listen(fleetRail, "click", (e) => {
+                const filterButton = e.target.closest(
+                    "button[data-fleet-filter]",
+                );
+                if (filterButton) {
+                    applyFleetQuickFilter(
+                        filterButton.dataset.fleetFilter || "",
+                    );
+                    return;
+                }
+                const tagButton = e.target.closest("button[data-fleet-tag]");
+                if (tagButton) {
+                    dispatchStatusInteraction({
+                        type: "filtersChanged",
+                        patch: { tag: tagButton.dataset.fleetTag || "" },
+                    });
+                    renderTable({ refreshPanels: false });
+                }
+            });
+        }
 
-	        const metricStrip = document.querySelector('.metric-strip');
-	        if (metricStrip) {
-	            metricStrip.addEventListener('click', (e) => {
-	                const button = e.target.closest('button[data-metric-filter]');
-	                if (!button) return;
-	                applyFleetQuickFilter(button.dataset.metricFilter || "");
-	            });
-	        }
+        const metricStrip = document.querySelector(".metric-strip");
+        if (metricStrip) {
+            lifecycle.listen(metricStrip, "click", (e) => {
+                const button = e.target.closest("button[data-metric-filter]");
+                if (!button) return;
+                applyFleetQuickFilter(button.dataset.metricFilter || "");
+            });
+        }
 
         const applySortFromHeader = (th) => {
             if (!th) return;
@@ -2290,190 +2891,346 @@ const LOG_BOTTOM_THRESHOLD = 20;
             renderTable({ refreshPanels: false });
         };
 
-        document.querySelectorAll('#servers-table th.sortable').forEach((th) => {
-            const trigger = th.querySelector('.sort-header-btn');
-            if (trigger) {
-                trigger.addEventListener('click', () => {
+        document
+            .querySelectorAll("#servers-table th.sortable")
+            .forEach((th) => {
+                const trigger = th.querySelector(".sort-header-btn");
+                if (trigger) {
+                    lifecycle.listen(trigger, "click", () => {
+                        applySortFromHeader(th);
+                    });
+                    return;
+                }
+                lifecycle.listen(th, "click", () => {
                     applySortFromHeader(th);
                 });
-                return;
-            }
-            th.addEventListener('click', () => {
-                applySortFromHeader(th);
             });
-        });
 
-        document.getElementById('search').addEventListener('input', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { search: event.target.value } });
-            renderTable({ refreshPanels: false });
-        });
-        document.getElementById('availability-filter').addEventListener('change', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { availability: event.target.value } });
-            renderServerState();
-        });
-        document.getElementById('status-filter').addEventListener('change', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { status: event.target.value } });
-            renderTable({ refreshPanels: false });
-        });
-        document.getElementById('auth-filter').addEventListener('change', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { auth: event.target.value } });
-            renderTable({ refreshPanels: false });
-        });
-        document.getElementById('group-by').addEventListener('change', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { groupBy: event.target.value } });
-            renderTable({ refreshPanels: false });
-        });
-        document.getElementById('page-size').addEventListener('change', (event) => {
-            dispatchStatusInteraction({ type: "filtersChanged", patch: { pageSize: event.target.value } });
-            renderTable({ refreshPanels: false });
-        });
+        lifecycle.listen(
+            document.getElementById("search"),
+            "input",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { search: event.target.value },
+                });
+                renderTable({ refreshPanels: false });
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("availability-filter"),
+            "change",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { availability: event.target.value },
+                });
+                renderServerState();
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("status-filter"),
+            "change",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { status: event.target.value },
+                });
+                renderTable({ refreshPanels: false });
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("auth-filter"),
+            "change",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { auth: event.target.value },
+                });
+                renderTable({ refreshPanels: false });
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("group-by"),
+            "change",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { groupBy: event.target.value },
+                });
+                renderTable({ refreshPanels: false });
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("page-size"),
+            "change",
+            (event) => {
+                dispatchStatusInteraction({
+                    type: "filtersChanged",
+                    patch: { pageSize: event.target.value },
+                });
+                renderTable({ refreshPanels: false });
+            },
+        );
 
-        document.getElementById('prev-page').addEventListener('click', () => {
+        lifecycle.listen(document.getElementById("prev-page"), "click", () => {
             dispatchStatusInteraction({ type: "pageChanged", delta: -1 });
             renderTable({ refreshPanels: false });
         });
-        document.getElementById('next-page').addEventListener('click', () => {
+        lifecycle.listen(document.getElementById("next-page"), "click", () => {
             dispatchStatusInteraction({ type: "pageChanged", delta: 1 });
             renderTable({ refreshPanels: false });
         });
 
-        document.getElementById('select-all').addEventListener('change', (e) => {
-	            dispatchStatusInteraction({ type: "pageSelectionChanged", selected: e.target.checked });
-	            renderTable({ refreshPanels: false });
-	            updateBulkActionState();
-	        });
-
+        lifecycle.listen(
+            document.getElementById("select-all"),
+            "change",
+            (e) => {
+                dispatchStatusInteraction({
+                    type: "pageSelectionChanged",
+                    selected: e.target.checked,
+                });
+                renderTable({ refreshPanels: false });
+                updateBulkActionState();
+            },
+        );
 
         function applicationPostchecksHtml(server) {
-            const profile=server.application_postcheck_profile;
-            if(server.status!=="pending_approval" || !profile)return "";
-            return `<section class="inspector-note"><strong>Application checks: ${escapeHtml(profile.name)} · revision ${Number(profile.revision)}</strong><ul>${(profile.checks || []).map(check=>`<li>${escapeHtml(check.name)}: ${escapeHtml(check.kind === "systemd_active" ? check.unit : `${check.url} → HTTP ${check.expected_status}`)} · ${escapeHtml(check.mode)}, up to ${Number(check.timeout_seconds)}s</li>`).join("")}</ul></section>`;
+            const profile = server.application_postcheck_profile;
+            if (server.status !== "pending_approval" || !profile) return "";
+            return `<section class="inspector-note"><strong>Application checks: ${escapeHtml(profile.name)} · revision ${Number(profile.revision)}</strong><ul>${(profile.checks || []).map((check) => `<li>${escapeHtml(check.name)}: ${escapeHtml(check.kind === "systemd_active" ? check.unit : `${check.url} → HTTP ${check.expected_status}`)} · ${escapeHtml(check.mode)}, up to ${Number(check.timeout_seconds)}s</li>`).join("")}</ul></section>`;
         }
 
-        function pendingApprovalRequestOptions(identity, confirmRemovals = false) {
+        function pendingApprovalRequestOptions(
+            identity,
+            confirmRemovals = false,
+        ) {
             const body = { ...identity };
             if (confirmRemovals) body.confirm_removals = true;
-            return { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+            return {
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            };
         }
 
         async function postServerAction(url, fallbackMessage, options = {}) {
+            const lifetime = lifecycle.capture();
+
             try {
-                const response = await fetch(url, { method: 'POST', ...options });
+                const response = await fetch(url, {
+                    method: "POST",
+                    ...options,
+                });
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
-                    statusActionAdapter.notify(await parseErrorResponse(response, fallbackMessage));
-                    if (response.status === 409) await fetchServers(true, "action-conflict");
+                    const message = await parseErrorResponse(
+                        response,
+                        fallbackMessage,
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    statusActionAdapter.notify(message);
+                    if (response.status === 409)
+                        await fetchServers(true, "action-conflict");
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     return false;
                 }
+                lifecycle.discardResponse(response);
                 return true;
             } catch (error) {
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    error?.name === "AbortError"
+                )
+                    return;
                 statusActionAdapter.notify(error?.message || fallbackMessage);
                 return false;
             }
         }
 
-	        async function updateServer(name) {
-	            await runSingleHostAction(name, "update", "update", () => (
-	                postServerAction(`/api/update/${encodeURIComponent(name)}`, 'Failed to start update.')
-	            ));
-	        }
+        async function updateServer(name) {
+            const lifetime = lifecycle.capture();
 
-	        async function runAutoremove(name) {
-	            await runSingleHostAction(name, "autoremove", "autoremove", () => (
-	                postServerAction(`/api/autoremove/${encodeURIComponent(name)}`, 'Failed to start apt autoremove.')
-	            ));
-	        }
+            await runSingleHostAction(name, "update", "update", () =>
+                postServerAction(
+                    `/api/update/${encodeURIComponent(name)}`,
+                    "Failed to start update.",
+                ),
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
 
-	        async function repairApt(name) {
-	            if (!canRepairAptAction(getServerByName(name))) {
-	                statusActionAdapter.notify("APT repair is not available for the current server state.");
-	                return;
-	            }
-	            const confirmed = await statusActionAdapter.confirm(
-	                `Repair APT/DPKG state on ${name}?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`
-	            );
-	            if (!confirmed) return;
-	            await runSingleHostAction(name, "repair_apt", "repair APT", () => (
-	                postServerAction(`/api/repair/${encodeURIComponent(name)}`, "Failed to start APT repair.", {
-	                    headers: { "Content-Type": "application/json" },
-	                    body: JSON.stringify({ confirm: true })
-	                })
-	            ));
-	        }
+        async function runAutoremove(name) {
+            const lifetime = lifecycle.capture();
 
-	        async function rebootServer(name) {
-	            if (!canRebootAction(getServerByName(name))) {
-	                statusActionAdapter.notify("Controlled reboot is not available for the current server state.");
-	                return;
-	            }
-	            const confirmed = await statusActionAdapter.confirm(
-	                `Reboot ${name} now?\n\nThe host will become temporarily unreachable. SimpleLinuxUpdater will wait for SSH to return, verify that uptime reset, and confirm that the reboot-required flag cleared.`
-	            );
-	            if (!confirmed) return;
-	            await runSingleHostAction(name, "reboot", "reboot and verify", () => (
-	                postServerAction(`/api/reboot/${encodeURIComponent(name)}`, "Failed to start controlled reboot.", {
-	                    headers: { "Content-Type": "application/json" },
-	                    body: JSON.stringify({ confirm: true })
-	                })
-	            ));
-	        }
+            await runSingleHostAction(name, "autoremove", "autoremove", () =>
+                postServerAction(
+                    `/api/autoremove/${encodeURIComponent(name)}`,
+                    "Failed to start apt autoremove.",
+                ),
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
 
-	        async function enablePasswordlessApt(name) {
-	            if (!canRunSudoersAction(getServerByName(name))) {
-	                statusActionAdapter.notify("Host cannot change passwordless apt while another action is active.");
-	                return;
-	            }
-	            await runSingleHostAction(name, "enable_apt", "enable apt", async () => {
-	                let password;
-	                try {
-	                    password = await promptPassword(`Enter sudo password for ${name}`);
-	                } catch {
-	                    return false;
-	                }
-	                if (!password) return false;
-	                return postServerAction(`/api/sudoers/${encodeURIComponent(name)}`, 'Failed to enable passwordless apt.', {
-	                    headers: { 'Content-Type': 'application/json' },
-	                    body: JSON.stringify({ password })
-	                });
-	            });
-	        }
+        async function repairApt(name) {
+            const lifetime = lifecycle.capture();
 
-	        async function disablePasswordlessApt(name) {
-	            if (!canRunSudoersAction(getServerByName(name))) {
-	                statusActionAdapter.notify("Host cannot change passwordless apt while another action is active.");
-	                return;
-	            }
-	            await runSingleHostAction(name, "disable_apt", "disable apt", async () => {
-	                let password;
-	                try {
-	                    password = await promptPassword(`Enter sudo password to disable for ${name}`);
-	                } catch {
-	                    return false;
-	                }
-	                if (!password) return false;
-	                return postServerAction(`/api/sudoers/disable/${encodeURIComponent(name)}`, 'Failed to disable passwordless apt.', {
-	                    headers: { 'Content-Type': 'application/json' },
-	                    body: JSON.stringify({ password })
-	                });
-	            });
-	        }
+            if (!canRepairAptAction(getServerByName(name))) {
+                statusActionAdapter.notify(
+                    "APT repair is not available for the current server state.",
+                );
+                return;
+            }
+            const confirmed = await statusActionAdapter.confirm(
+                `Repair APT/DPKG state on ${name}?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`,
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (!confirmed) return;
+            await runSingleHostAction(name, "repair_apt", "repair APT", () =>
+                postServerAction(
+                    `/api/repair/${encodeURIComponent(name)}`,
+                    "Failed to start APT repair.",
+                    {
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ confirm: true }),
+                    },
+                ),
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function rebootServer(name) {
+            const lifetime = lifecycle.capture();
+
+            if (!canRebootAction(getServerByName(name))) {
+                statusActionAdapter.notify(
+                    "Controlled reboot is not available for the current server state.",
+                );
+                return;
+            }
+            const confirmed = await statusActionAdapter.confirm(
+                `Reboot ${name} now?\n\nThe host will become temporarily unreachable. SimpleLinuxUpdater will wait for SSH to return, verify that uptime reset, and confirm that the reboot-required flag cleared.`,
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (!confirmed) return;
+            await runSingleHostAction(name, "reboot", "reboot and verify", () =>
+                postServerAction(
+                    `/api/reboot/${encodeURIComponent(name)}`,
+                    "Failed to start controlled reboot.",
+                    {
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ confirm: true }),
+                    },
+                ),
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function enablePasswordlessApt(name) {
+            const lifetime = lifecycle.capture();
+
+            if (!canRunSudoersAction(getServerByName(name))) {
+                statusActionAdapter.notify(
+                    "Host cannot change passwordless apt while another action is active.",
+                );
+                return;
+            }
+            await runSingleHostAction(
+                name,
+                "enable_apt",
+                "enable apt",
+                async () => {
+                    const lifetime = lifecycle.capture();
+
+                    let password;
+                    try {
+                        password = await promptPassword(
+                            `Enter sudo password for ${name}`,
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                    } catch {
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                        return false;
+                    }
+                    if (!password) return false;
+                    return postServerAction(
+                        `/api/sudoers/${encodeURIComponent(name)}`,
+                        "Failed to enable passwordless apt.",
+                        {
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ password }),
+                        },
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function disablePasswordlessApt(name) {
+            const lifetime = lifecycle.capture();
+
+            if (!canRunSudoersAction(getServerByName(name))) {
+                statusActionAdapter.notify(
+                    "Host cannot change passwordless apt while another action is active.",
+                );
+                return;
+            }
+            await runSingleHostAction(
+                name,
+                "disable_apt",
+                "disable apt",
+                async () => {
+                    const lifetime = lifecycle.capture();
+
+                    let password;
+                    try {
+                        password = await promptPassword(
+                            `Enter sudo password to disable for ${name}`,
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                    } catch {
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                        return false;
+                    }
+                    if (!password) return false;
+                    return postServerAction(
+                        `/api/sudoers/disable/${encodeURIComponent(name)}`,
+                        "Failed to disable passwordless apt.",
+                        {
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ password }),
+                        },
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
 
         function passwordModalFocusableElements(backdrop) {
             if (!backdrop) return [];
-            return Array.from(backdrop.querySelectorAll([
-                'button:not([disabled])',
-                'input:not([disabled]):not([type="hidden"])',
-                'select:not([disabled])',
-                'textarea:not([disabled])',
-                'a[href]',
-                '[tabindex]:not([tabindex="-1"])'
-            ].join(','))).filter((el) => {
-                return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            return Array.from(
+                backdrop.querySelectorAll(
+                    [
+                        "button:not([disabled])",
+                        'input:not([disabled]):not([type="hidden"])',
+                        "select:not([disabled])",
+                        "textarea:not([disabled])",
+                        "a[href]",
+                        '[tabindex]:not([tabindex="-1"])',
+                    ].join(","),
+                ),
+            ).filter((el) => {
+                return !!(
+                    el.offsetWidth ||
+                    el.offsetHeight ||
+                    el.getClientRects().length
+                );
             });
         }
 
         function trapPasswordModalFocus(event) {
-            const backdrop = document.getElementById('password-modal');
-            if (!backdrop || !backdrop.classList.contains('active')) return false;
+            const backdrop = document.getElementById("password-modal");
+            if (!backdrop || !backdrop.classList.contains("active"))
+                return false;
             const focusable = passwordModalFocusableElements(backdrop);
             if (!focusable.length) {
                 event.preventDefault();
@@ -2499,25 +3256,33 @@ const LOG_BOTTOM_THRESHOLD = 20;
             return false;
         }
 
-
         function drawerFocusableElements(drawer) {
             if (!drawer) return [];
-            return Array.from(drawer.querySelectorAll([
-                'button:not([disabled])',
-                'input:not([disabled]):not([type="hidden"])',
-                'select:not([disabled])',
-                'textarea:not([disabled])',
-                'a[href]',
-                '[tabindex]:not([tabindex="-1"])'
-            ].join(','))).filter((el) => {
-                return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            return Array.from(
+                drawer.querySelectorAll(
+                    [
+                        "button:not([disabled])",
+                        'input:not([disabled]):not([type="hidden"])',
+                        "select:not([disabled])",
+                        "textarea:not([disabled])",
+                        "a[href]",
+                        '[tabindex]:not([tabindex="-1"])',
+                    ].join(","),
+                ),
+            ).filter((el) => {
+                return !!(
+                    el.offsetWidth ||
+                    el.offsetHeight ||
+                    el.getClientRects().length
+                );
             });
         }
 
         function trapDrawerFocus(event) {
             if (!getStatusView().drawer.open) return false;
-            const drawer = document.getElementById('status-drawer');
-            if (!drawer || drawer.getAttribute('aria-hidden') === 'true') return false;
+            const drawer = document.getElementById("status-drawer");
+            if (!drawer || drawer.getAttribute("aria-hidden") === "true")
+                return false;
             const focusable = drawerFocusableElements(drawer);
             if (!focusable.length) {
                 event.preventDefault();
@@ -2545,14 +3310,14 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function promptPassword(message) {
-            const backdrop = document.getElementById('password-modal');
-            const input = document.getElementById('password-modal-input');
-            const msg = document.getElementById('password-modal-message');
+            const backdrop = document.getElementById("password-modal");
+            const input = document.getElementById("password-modal-input");
+            const msg = document.getElementById("password-modal-message");
             msg.textContent = message;
-            input.value = '';
+            input.value = "";
             passwordModalPreviousFocus = document.activeElement;
-            backdrop.classList.add('active');
-            window.setTimeout(() => input.focus({ preventScroll: true }), 0);
+            backdrop.classList.add("active");
+            lifecycle.setTimeout(() => input.focus({ preventScroll: true }), 0);
             return new Promise((resolve, reject) => {
                 passwordResolve = resolve;
                 passwordReject = reject;
@@ -2560,12 +3325,19 @@ const LOG_BOTTOM_THRESHOLD = 20;
         }
 
         function closePasswordModal() {
-            const backdrop = document.getElementById('password-modal');
-            backdrop.classList.remove('active');
+            const backdrop = document.getElementById("password-modal");
+            backdrop.classList.remove("active");
             const previous = passwordModalPreviousFocus;
             passwordModalPreviousFocus = null;
-            if (previous && document.contains(previous) && typeof previous.focus === 'function') {
-                window.setTimeout(() => previous.focus({ preventScroll: true }), 0);
+            if (
+                previous &&
+                document.contains(previous) &&
+                typeof previous.focus === "function"
+            ) {
+                lifecycle.setTimeout(
+                    () => previous.focus({ preventScroll: true }),
+                    0,
+                );
             }
         }
 
@@ -2574,354 +3346,724 @@ const LOG_BOTTOM_THRESHOLD = 20;
             passwordReject = null;
         }
 
-        document.getElementById('password-modal-cancel').addEventListener('click', () => {
-            if (passwordReject) {
-                const reject = passwordReject;
-                clearPasswordPromptHandlers();
+        lifecycle.listen(
+            document.getElementById("password-modal-cancel"),
+            "click",
+            () => {
+                if (passwordReject) {
+                    const reject = passwordReject;
+                    clearPasswordPromptHandlers();
+                    closePasswordModal();
+                    reject(new Error("password prompt cancelled"));
+                    return;
+                }
                 closePasswordModal();
-                reject(new Error('password prompt cancelled'));
-                return;
-            }
-            closePasswordModal();
-        });
+            },
+        );
 
-        document.getElementById('password-modal-submit').addEventListener('click', () => {
-            const input = document.getElementById('password-modal-input');
-            if (passwordResolve) {
-                const resolve = passwordResolve;
-                clearPasswordPromptHandlers();
+        lifecycle.listen(
+            document.getElementById("password-modal-submit"),
+            "click",
+            () => {
+                const input = document.getElementById("password-modal-input");
+                if (passwordResolve) {
+                    const resolve = passwordResolve;
+                    clearPasswordPromptHandlers();
+                    closePasswordModal();
+                    resolve(input.value);
+                    return;
+                }
                 closePasswordModal();
-                resolve(input.value);
-                return;
-            }
-            closePasswordModal();
-        });
+            },
+        );
 
-        document.getElementById('password-modal-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const input = document.getElementById('password-modal-input');
-            if (passwordResolve) {
-                const resolve = passwordResolve;
-                clearPasswordPromptHandlers();
-                closePasswordModal();
-                resolve(input.value);
-                return;
-            }
-            closePasswordModal();
-        });
-
-        document.getElementById('password-modal-input').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
+        lifecycle.listen(
+            document.getElementById("password-modal-form"),
+            "submit",
+            (e) => {
                 e.preventDefault();
-                document.getElementById('password-modal-submit').click();
-            }
-        });
+                const input = document.getElementById("password-modal-input");
+                if (passwordResolve) {
+                    const resolve = passwordResolve;
+                    clearPasswordPromptHandlers();
+                    closePasswordModal();
+                    resolve(input.value);
+                    return;
+                }
+                closePasswordModal();
+            },
+        );
 
-        window.addEventListener('keydown', (e) => {
-            const backdrop = document.getElementById('password-modal');
-            if (backdrop && backdrop.classList.contains('active')) {
-                if (e.key === 'Tab') {
+        lifecycle.listen(
+            document.getElementById("password-modal-input"),
+            "keydown",
+            (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    document.getElementById("password-modal-submit").click();
+                }
+            },
+        );
+
+        lifecycle.listen(window, "keydown", (e) => {
+            const backdrop = document.getElementById("password-modal");
+            if (backdrop && backdrop.classList.contains("active")) {
+                if (e.key === "Tab") {
                     if (trapPasswordModalFocus(e)) {
                         e.stopImmediatePropagation();
                     }
                     return;
                 }
-                if (e.key === 'Escape') {
+                if (e.key === "Escape") {
                     e.preventDefault();
                     e.stopImmediatePropagation();
-                    document.getElementById('password-modal-cancel').click();
+                    document.getElementById("password-modal-cancel").click();
                     return;
                 }
             }
-            if (e.key === 'Tab' && trapDrawerFocus(e)) {
+            if (e.key === "Tab" && trapDrawerFocus(e)) {
                 e.stopImmediatePropagation();
                 return;
             }
-            if (e.key === 'Escape' && getStatusView().drawer.open) {
+            if (e.key === "Escape" && getStatusView().drawer.open) {
                 e.preventDefault();
                 closeDrawer();
             }
         });
 
-        document.getElementById('status-drawer-close').addEventListener('click', closeDrawer);
-        document.getElementById('status-drawer-backdrop').addEventListener('click', closeDrawer);
-        document.getElementById('drawer-tab-logs').addEventListener('click', () => setDrawerTab('logs'));
-        document.getElementById('drawer-tab-pending').addEventListener('click', () => setDrawerTab('pending'));
-        document.getElementById('drawer-copy-logs').addEventListener('click', () => copyLogs());
-        document.getElementById('drawer-download-logs').addEventListener('click', () => downloadLogs());
-        document.getElementById('drawer-approve-all').addEventListener('click', () => {
-            const name = getStatusView().drawer.serverName;
-            if (!name) return;
-            approveAllUpdates(name);
-        });
-        document.getElementById('drawer-approve-security').addEventListener('click', () => {
-            const name = getStatusView().drawer.serverName;
-            if (!name) return;
-            approveSecurityUpdates(name);
-        });
-        document.getElementById('drawer-approve-security-kept-back').addEventListener('click', () => {
-            const name = getStatusView().drawer.serverName;
-            if (!name) return;
-            approveKeptBackSecurityUpdates(name);
-        });
-        document.getElementById('drawer-approve-full').addEventListener('click', () => {
-            const name = getStatusView().drawer.serverName;
-            if (!name) return;
-            approveFullUpgrade(name);
-        });
+        lifecycle.listen(
+            document.getElementById("status-drawer-close"),
+            "click",
+            closeDrawer,
+        );
+        lifecycle.listen(
+            document.getElementById("status-drawer-backdrop"),
+            "click",
+            closeDrawer,
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-tab-logs"),
+            "click",
+            () => setDrawerTab("logs"),
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-tab-pending"),
+            "click",
+            () => setDrawerTab("pending"),
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-copy-logs"),
+            "click",
+            () => copyLogs(),
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-download-logs"),
+            "click",
+            () => downloadLogs(),
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-approve-all"),
+            "click",
+            () => {
+                const name = getStatusView().drawer.serverName;
+                if (!name) return;
+                approveAllUpdates(name);
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-approve-security"),
+            "click",
+            () => {
+                const name = getStatusView().drawer.serverName;
+                if (!name) return;
+                approveSecurityUpdates(name);
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-approve-security-kept-back"),
+            "click",
+            () => {
+                const name = getStatusView().drawer.serverName;
+                if (!name) return;
+                approveKeptBackSecurityUpdates(name);
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("drawer-approve-full"),
+            "click",
+            () => {
+                const name = getStatusView().drawer.serverName;
+                if (!name) return;
+                approveFullUpgrade(name);
+            },
+        );
 
-        const drawerLogsElement = document.getElementById('drawer-logs');
-        drawerLogsElement.addEventListener('scroll', () => {
+        const drawerLogsElement = document.getElementById("drawer-logs");
+        lifecycle.listen(drawerLogsElement, "scroll", () => {
             drawerLogScrollTop = drawerLogsElement.scrollTop;
             const logFollow = isNearBottom(drawerLogsElement);
-            dispatchStatusInteraction({ type: "drawerLogFollowChanged", value: logFollow });
-            document.getElementById('drawer-logs-hint').textContent = logFollow ? "Live auto-scroll" : "Auto-scroll paused";
+            dispatchStatusInteraction({
+                type: "drawerLogFollowChanged",
+                value: logFollow,
+            });
+            document.getElementById("drawer-logs-hint").textContent = logFollow
+                ? "Live auto-scroll"
+                : "Auto-scroll paused";
         });
 
-        const drawerPendingElement = document.getElementById('drawer-panel-pending');
-        drawerPendingElement.addEventListener('scroll', () => {
+        const drawerPendingElement = document.getElementById(
+            "drawer-panel-pending",
+        );
+        lifecycle.listen(drawerPendingElement, "scroll", () => {
             if (getStatusView().drawer.tab === "pending") {
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
-        drawerPendingElement.addEventListener('toggle', (event) => {
-            const details = event.target;
-            if (!details?.matches?.('details.cve-findings')) return;
-            const disclosureKey = details.dataset.cveDisclosureKey;
-            if (!disclosureKey) return;
-            if (details.open) {
-                expandedCVEFindings.add(disclosureKey);
-            } else {
-                expandedCVEFindings.delete(disclosureKey);
-            }
-        }, true);
+        lifecycle.listen(
+            drawerPendingElement,
+            "toggle",
+            (event) => {
+                const details = event.target;
+                if (!details?.matches?.("details.cve-findings")) return;
+                const disclosureKey = details.dataset.cveDisclosureKey;
+                if (!disclosureKey) return;
+                if (details.open) {
+                    expandedCVEFindings.add(disclosureKey);
+                } else {
+                    expandedCVEFindings.delete(disclosureKey);
+                }
+            },
+            true,
+        );
 
-        document.addEventListener('pointerdown', (event) => {
-            if (isServerActionControl(event.target)) {
-                beginActionInteraction();
-            }
-        }, true);
-        document.addEventListener('pointerup', () => {
-            if (getStatusView().sync.interactionDepth > 0) {
-                endActionInteraction();
-            }
-        }, true);
-        document.addEventListener('pointercancel', () => {
-            if (getStatusView().sync.interactionDepth > 0) {
-                endActionInteraction();
-            }
-        }, true);
-	        document.addEventListener('keydown', (event) => {
-	            if (event.key === "Escape") {
-	                hidePhaseTooltip();
-	            }
-	            if (event.repeat || (event.key !== "Enter" && event.key !== " ")) return;
-	            if (isServerActionControl(event.target)) {
-	                beginActionInteraction();
-            }
-        }, true);
-        document.addEventListener('keyup', (event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            if (getStatusView().sync.interactionDepth > 0) {
-                endActionInteraction();
-            }
-        }, true);
-        window.addEventListener('blur', resetActionInteraction);
-        document.addEventListener('visibilitychange', () => {
+        lifecycle.listen(
+            document,
+            "pointerdown",
+            (event) => {
+                if (isServerActionControl(event.target)) {
+                    beginActionInteraction();
+                }
+            },
+            true,
+        );
+        lifecycle.listen(
+            document,
+            "pointerup",
+            () => {
+                if (getStatusView().sync.interactionDepth > 0) {
+                    endActionInteraction();
+                }
+            },
+            true,
+        );
+        lifecycle.listen(
+            document,
+            "pointercancel",
+            () => {
+                if (getStatusView().sync.interactionDepth > 0) {
+                    endActionInteraction();
+                }
+            },
+            true,
+        );
+        lifecycle.listen(
+            document,
+            "keydown",
+            (event) => {
+                if (event.key === "Escape") {
+                    hidePhaseTooltip();
+                }
+                if (
+                    event.repeat ||
+                    (event.key !== "Enter" && event.key !== " ")
+                )
+                    return;
+                if (isServerActionControl(event.target)) {
+                    beginActionInteraction();
+                }
+            },
+            true,
+        );
+        lifecycle.listen(
+            document,
+            "keyup",
+            (event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                if (getStatusView().sync.interactionDepth > 0) {
+                    endActionInteraction();
+                }
+            },
+            true,
+        );
+        lifecycle.listen(window, "blur", resetActionInteraction);
+        lifecycle.listen(document, "visibilitychange", () => {
             if (document.hidden) {
                 resetActionInteraction();
             }
         });
 
-	        async function approveAllUpdates(name) {
-	            await runSingleHostAction(name, "approve_all", "approve", async (plan) => {
-	                const server = getServerByName(name);
-	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_all) {
-	                    statusActionAdapter.notify("No standard updates are eligible for approval.");
-	                    return false;
-	                }
-	                return postServerAction(`/api/approve/${encodeURIComponent(name)}`, 'Failed to approve updates.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity));
-	            });
-	        }
+        async function approveAllUpdates(name) {
+            const lifetime = lifecycle.capture();
 
-	        async function approveSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve_security", "approve security", async (plan) => {
-	                const server = getServerByName(name);
-	                if (!getServerApprovalTriage(server, { ignoreInFlight: true }).can_approve_security) {
-	                    statusActionAdapter.notify("No standard security updates are eligible for approval.");
-	                    return false;
-	                }
-	                return postServerAction(`/api/approve-security/${encodeURIComponent(name)}`, 'Failed to approve security updates.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity));
-	            });
-	        }
-
-	        async function approveKeptBackSecurityUpdates(name) {
-	            await runSingleHostAction(name, "approve_security_kept_back", "approve kept-back security", async (plan) => {
-	                const server = getServerByName(name);
-	                const counts = plan.payloadFacts.counts;
-	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
-	                if (!triage.can_approve_kept_back_security) {
-	                    if (!counts.keptBackSecurityPlanAvailable) {
-	                        statusActionAdapter.notify("Run a fresh package scan before approving kept-back security updates.");
-	                        return false;
-	                    }
-	                    statusActionAdapter.notify("No kept-back security updates are eligible for approval.");
-	                    return false;
-	                }
-	                if (!counts.keptBackSecurityPlanAvailable) {
-	                    statusActionAdapter.notify("Run a fresh package scan before approving kept-back security updates.");
-	                    return false;
-	                }
-	                const pendingUpdates = plan.payloadFacts.pendingUpdates;
-	                const packages = pendingUpdates
-	                    .filter(update => !!update?.security && (!!update?.kept_back || !!update?.requires_full_upgrade))
-	                    .map(update => update?.install_package || update?.package)
-	                    .filter(Boolean);
-	                const removed = counts.keptBackSecurityRemovedPackages;
-	                const newPackages = counts.keptBackSecurityNewPackages;
-	                const impact = [];
-	                if (packages.length) impact.push(`Packages: ${packages.join(", ")}`);
-	                if (newPackages.length) impact.push(`May install dependencies: ${newPackages.join(", ")}`);
-	                if (removed.length) impact.push(`May remove packages: ${removed.join(", ")}`);
-	                const confirmText = [
-	                    `Run kept-back security update on ${name}?`,
-	                    "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
-	                    impact.join("\n")
-	                ].filter(Boolean).join("\n\n");
-	                if (!await statusActionAdapter.confirm(confirmText)) return false;
-	                const options = pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity, removed.length > 0);
-	                return postServerAction(`/api/approve-security-kept-back/${encodeURIComponent(name)}`, 'Failed to approve kept-back security updates.', options);
-	            });
-	        }
-
-	        async function approveFullUpgrade(name) {
-	            await runSingleHostAction(name, "approve_full", "approve full upgrade", async (plan) => {
-	                const server = getServerByName(name);
-	                const counts = plan.payloadFacts.counts;
-	                const triage = getServerApprovalTriage(server, { ignoreInFlight: true });
-	                if (!triage.can_approve_full) {
-	                    if (!counts.fullPlanAvailable) {
-	                        statusActionAdapter.notify("Run a fresh package scan before approving full-upgrade.");
-	                        return false;
-	                    }
-	                    statusActionAdapter.notify("No full-upgrade packages are eligible for approval.");
-	                    return false;
-	                }
-	                if (!counts.fullPlanAvailable) {
-	                    statusActionAdapter.notify("Run a fresh package scan before approving full-upgrade.");
-	                    return false;
-	                }
-	                const removed = counts.removedPackages;
-	                const newPackages = counts.newPackages;
-	                const impact = [];
-	                if (newPackages.length) impact.push(`New packages: ${newPackages.join(", ")}`);
-	                if (removed.length) impact.push(`Removed packages: ${removed.join(", ")}`);
-	                const confirmText = [
-	                    `Run full-upgrade on ${name}?`,
-	                    impact.join("\n")
-	                ].filter(Boolean).join("\n\n");
-	                if (!await statusActionAdapter.confirm(confirmText)) return false;
-	                const options = pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity, removed.length > 0);
-	                return postServerAction(`/api/approve-full/${encodeURIComponent(name)}`, 'Failed to approve full upgrade.', options);
-	            });
-	        }
-
-	        async function cancelUpgrade(name) {
-	            const cancelled = await runSingleHostAction(name, "cancel", "cancel", (plan) => (
-	                postServerAction(`/api/cancel/${encodeURIComponent(name)}`, 'Failed to cancel upgrade.', pendingApprovalRequestOptions(plan.payloadFacts.approvalIdentity))
-	            ));
-	            if (cancelled) {
-	                // The runner clears the short-lived cancelled state after its
-	                // approval poll. Refresh once more so the UI does not wait
-	                // for the regular 5–10 second transport poll to show Idle.
-	                window.setTimeout(() => fetchServers(true, "cancelled-settled"), cancelledStatusRefreshDelayMs);
-	            }
-	        }
-
-        async function scanVulnerabilities(name) {
-            await runSingleHostAction(name, "scan_vulnerabilities", "scan vulnerabilities", async () => {
-                try {
-                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/vulnerabilities/scan`, { method: "POST" });
-                    if (!response.ok) {
-                        const payload = await response.json().catch(() => ({}));
-                        statusActionAdapter.notify(payload.error || "Failed to start vulnerability scan");
+            await runSingleHostAction(
+                name,
+                "approve_all",
+                "approve",
+                async (plan) => {
+                    const server = getServerByName(name);
+                    if (
+                        !getServerApprovalTriage(server, {
+                            ignoreInFlight: true,
+                        }).can_approve_all
+                    ) {
+                        statusActionAdapter.notify(
+                            "No standard updates are eligible for approval.",
+                        );
                         return false;
                     }
-                    return true;
-                } catch (err) {
-                    statusActionAdapter.notify(err?.message || "Failed to start vulnerability scan");
-                    return false;
-                }
-            }, ["servers", "dashboard"]);
+                    return postServerAction(
+                        `/api/approve/${encodeURIComponent(name)}`,
+                        "Failed to approve updates.",
+                        pendingApprovalRequestOptions(
+                            plan.payloadFacts.approvalIdentity,
+                        ),
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
         }
 
-	        async function refreshHostFacts(name) {
-	            await runSingleHostAction(name, "refresh_facts", "refresh facts", async () => {
-	                try {
-	                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}/facts/refresh`, { method: 'POST' });
-	                    if (!response.ok) {
-	                        const payload = await response.json().catch(() => ({}));
-	                        statusActionAdapter.notify(payload.error || "Failed to refresh host facts");
-	                        return false;
-	                    }
-	                    return true;
-	                } catch (err) {
-	                    statusActionAdapter.notify(err?.message || "Failed to refresh host facts");
-	                    return false;
-	                }
-	            }, ["servers", "dashboard"]);
-	        }
+        async function approveSecurityUpdates(name) {
+            const lifetime = lifecycle.capture();
 
-
-        document.getElementById('selected-host-panel').addEventListener('click', (e) => {
-            const button = e.target.closest('button[data-action]');
-            if (button) {
-                handleServerAction(button.dataset.action || "", button.dataset.name || "", button.dataset.tab || "logs");
-            }
-        });
-        document.getElementById('selected-host-panel').addEventListener('toggle', (e) => {
-            const details = e.target;
-            if (!details?.matches?.('details.facts-more, details.installed-vulnerability-findings')) return;
-            const hostName = details.dataset.name || getStatusView().primaryServerName;
-            if (!hostName) return;
-            const expandedServers = details.matches('details.facts-more') ? expandedHostFactsServers : expandedInstalledVulnerabilityServers;
-            if (details.open) {
-                expandedServers.add(hostName);
-            } else {
-                expandedServers.delete(hostName);
-            }
-        }, true);
-
-	        document.querySelectorAll('.operations-grid, .context-ops-grid, .priority-attention-strip').forEach((panel) => {
-            panel.addEventListener('click', (e) => {
-                const actionButton = e.target.closest('button[data-action]');
-                if (actionButton) {
-                    handleServerAction(actionButton.dataset.action || "", actionButton.dataset.name || "", actionButton.dataset.tab || "logs");
-                    return;
-                }
-                const selectButton = e.target.closest('button[data-select-server]');
-                if (selectButton) {
-                    selectServer(selectButton.dataset.selectServer || "");
-                    return;
-                }
-                const miniListButton = e.target.closest('button[data-toggle-mini-list]');
-                if (miniListButton) {
-                    const listID = miniListButton.dataset.toggleMiniList || "";
-                    if (!listID) return;
-                    if (expandedMiniLists.has(listID)) {
-                        expandedMiniLists.delete(listID);
-                    } else {
-                        expandedMiniLists.add(listID);
+            await runSingleHostAction(
+                name,
+                "approve_security",
+                "approve security",
+                async (plan) => {
+                    const server = getServerByName(name);
+                    if (
+                        !getServerApprovalTriage(server, {
+                            ignoreInFlight: true,
+                        }).can_approve_security
+                    ) {
+                        statusActionAdapter.notify(
+                            "No standard security updates are eligible for approval.",
+                        );
+                        return false;
                     }
-                    renderDashboardPanels();
-                }
-            });
-        });
+                    return postServerAction(
+                        `/api/approve-security/${encodeURIComponent(name)}`,
+                        "Failed to approve security updates.",
+                        pendingApprovalRequestOptions(
+                            plan.payloadFacts.approvalIdentity,
+                        ),
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
 
-        document.getElementById('logout-btn').addEventListener('click', () => window.logout());
+        async function approveKeptBackSecurityUpdates(name) {
+            const lifetime = lifecycle.capture();
+
+            await runSingleHostAction(
+                name,
+                "approve_security_kept_back",
+                "approve kept-back security",
+                async (plan) => {
+                    const lifetime = lifecycle.capture();
+
+                    const server = getServerByName(name);
+                    const counts = plan.payloadFacts.counts;
+                    const triage = getServerApprovalTriage(server, {
+                        ignoreInFlight: true,
+                    });
+                    if (!triage.can_approve_kept_back_security) {
+                        if (!counts.keptBackSecurityPlanAvailable) {
+                            statusActionAdapter.notify(
+                                "Run a fresh package scan before approving kept-back security updates.",
+                            );
+                            return false;
+                        }
+                        statusActionAdapter.notify(
+                            "No kept-back security updates are eligible for approval.",
+                        );
+                        return false;
+                    }
+                    if (!counts.keptBackSecurityPlanAvailable) {
+                        statusActionAdapter.notify(
+                            "Run a fresh package scan before approving kept-back security updates.",
+                        );
+                        return false;
+                    }
+                    const pendingUpdates = plan.payloadFacts.pendingUpdates;
+                    const packages = pendingUpdates
+                        .filter(
+                            (update) =>
+                                !!update?.security &&
+                                (!!update?.kept_back ||
+                                    !!update?.requires_full_upgrade),
+                        )
+                        .map(
+                            (update) =>
+                                update?.install_package || update?.package,
+                        )
+                        .filter(Boolean);
+                    const removed = counts.keptBackSecurityRemovedPackages;
+                    const newPackages = counts.keptBackSecurityNewPackages;
+                    const impact = [];
+                    if (packages.length)
+                        impact.push(`Packages: ${packages.join(", ")}`);
+                    if (newPackages.length)
+                        impact.push(
+                            `May install dependencies: ${newPackages.join(", ")}`,
+                        );
+                    if (removed.length)
+                        impact.push(
+                            `May remove packages: ${removed.join(", ")}`,
+                        );
+                    const confirmText = [
+                        `Run kept-back security update on ${name}?`,
+                        "This uses targeted apt install for kept-back security packages only, not full-upgrade.",
+                        impact.join("\n"),
+                    ]
+                        .filter(Boolean)
+                        .join("\n\n");
+                    if (!(await statusActionAdapter.confirm(confirmText)))
+                        return false;
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    const options = pendingApprovalRequestOptions(
+                        plan.payloadFacts.approvalIdentity,
+                        removed.length > 0,
+                    );
+                    return postServerAction(
+                        `/api/approve-security-kept-back/${encodeURIComponent(name)}`,
+                        "Failed to approve kept-back security updates.",
+                        options,
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function approveFullUpgrade(name) {
+            const lifetime = lifecycle.capture();
+
+            await runSingleHostAction(
+                name,
+                "approve_full",
+                "approve full upgrade",
+                async (plan) => {
+                    const lifetime = lifecycle.capture();
+
+                    const server = getServerByName(name);
+                    const counts = plan.payloadFacts.counts;
+                    const triage = getServerApprovalTriage(server, {
+                        ignoreInFlight: true,
+                    });
+                    if (!triage.can_approve_full) {
+                        if (!counts.fullPlanAvailable) {
+                            statusActionAdapter.notify(
+                                "Run a fresh package scan before approving full-upgrade.",
+                            );
+                            return false;
+                        }
+                        statusActionAdapter.notify(
+                            "No full-upgrade packages are eligible for approval.",
+                        );
+                        return false;
+                    }
+                    if (!counts.fullPlanAvailable) {
+                        statusActionAdapter.notify(
+                            "Run a fresh package scan before approving full-upgrade.",
+                        );
+                        return false;
+                    }
+                    const removed = counts.removedPackages;
+                    const newPackages = counts.newPackages;
+                    const impact = [];
+                    if (newPackages.length)
+                        impact.push(`New packages: ${newPackages.join(", ")}`);
+                    if (removed.length)
+                        impact.push(`Removed packages: ${removed.join(", ")}`);
+                    const confirmText = [
+                        `Run full-upgrade on ${name}?`,
+                        impact.join("\n"),
+                    ]
+                        .filter(Boolean)
+                        .join("\n\n");
+                    if (!(await statusActionAdapter.confirm(confirmText)))
+                        return false;
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    const options = pendingApprovalRequestOptions(
+                        plan.payloadFacts.approvalIdentity,
+                        removed.length > 0,
+                    );
+                    return postServerAction(
+                        `/api/approve-full/${encodeURIComponent(name)}`,
+                        "Failed to approve full upgrade.",
+                        options,
+                    );
+                },
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function cancelUpgrade(name) {
+            const lifetime = lifecycle.capture();
+
+            const cancelled = await runSingleHostAction(
+                name,
+                "cancel",
+                "cancel",
+                (plan) =>
+                    postServerAction(
+                        `/api/cancel/${encodeURIComponent(name)}`,
+                        "Failed to cancel upgrade.",
+                        pendingApprovalRequestOptions(
+                            plan.payloadFacts.approvalIdentity,
+                        ),
+                    ),
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (cancelled) {
+                // The runner clears the short-lived cancelled state after its
+                // approval poll. Refresh once more so the UI does not wait
+                // for the regular 5–10 second transport poll to show Idle.
+                lifecycle.setTimeout(
+                    () => fetchServers(true, "cancelled-settled"),
+                    cancelledStatusRefreshDelayMs,
+                );
+            }
+        }
+
+        async function scanVulnerabilities(name) {
+            const lifetime = lifecycle.capture();
+
+            await runSingleHostAction(
+                name,
+                "scan_vulnerabilities",
+                "scan vulnerabilities",
+                async () => {
+                    const lifetime = lifecycle.capture();
+
+                    try {
+                        const response = await fetch(
+                            `/api/servers/${encodeURIComponent(name)}/vulnerabilities/scan`,
+                            { method: "POST" },
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                        if (!response.ok) {
+                            const payload = await response
+                                .json()
+                                .catch(() => ({}));
+                            if (!lifecycle.isCurrent(lifetime)) return;
+                            statusActionAdapter.notify(
+                                payload.error ||
+                                    "Failed to start vulnerability scan",
+                            );
+                            return false;
+                        }
+                        lifecycle.discardResponse(response);
+                        return true;
+                    } catch (err) {
+                        if (
+                            !lifecycle.isCurrent(lifetime) ||
+                            err?.name === "AbortError"
+                        )
+                            return;
+                        statusActionAdapter.notify(
+                            err?.message ||
+                                "Failed to start vulnerability scan",
+                        );
+                        return false;
+                    }
+                },
+                ["servers", "dashboard"],
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function refreshHostFacts(name) {
+            const lifetime = lifecycle.capture();
+
+            await runSingleHostAction(
+                name,
+                "refresh_facts",
+                "refresh facts",
+                async () => {
+                    const lifetime = lifecycle.capture();
+
+                    try {
+                        const response = await fetch(
+                            `/api/servers/${encodeURIComponent(name)}/facts/refresh`,
+                            { method: "POST" },
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
+                        if (!response.ok) {
+                            const payload = await response
+                                .json()
+                                .catch(() => ({}));
+                            if (!lifecycle.isCurrent(lifetime)) return;
+                            statusActionAdapter.notify(
+                                payload.error || "Failed to refresh host facts",
+                            );
+                            return false;
+                        }
+                        lifecycle.discardResponse(response);
+                        return true;
+                    } catch (err) {
+                        if (
+                            !lifecycle.isCurrent(lifetime) ||
+                            err?.name === "AbortError"
+                        )
+                            return;
+                        statusActionAdapter.notify(
+                            err?.message || "Failed to refresh host facts",
+                        );
+                        return false;
+                    }
+                },
+                ["servers", "dashboard"],
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        lifecycle.listen(
+            document.getElementById("selected-host-panel"),
+            "click",
+            (e) => {
+                const button = e.target.closest("button[data-action]");
+                if (button) {
+                    handleServerAction(
+                        button.dataset.action || "",
+                        button.dataset.name || "",
+                        button.dataset.tab || "logs",
+                    );
+                }
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("selected-host-panel"),
+            "toggle",
+            (e) => {
+                const details = e.target;
+                if (
+                    !details?.matches?.(
+                        "details.facts-more, details.installed-vulnerability-findings",
+                    )
+                )
+                    return;
+                const hostName =
+                    details.dataset.name || getStatusView().primaryServerName;
+                if (!hostName) return;
+                const expandedServers = details.matches("details.facts-more")
+                    ? expandedHostFactsServers
+                    : expandedInstalledVulnerabilityServers;
+                if (details.open) {
+                    expandedServers.add(hostName);
+                } else {
+                    expandedServers.delete(hostName);
+                }
+            },
+            true,
+        );
+
+        document
+            .querySelectorAll(
+                ".operations-grid, .context-ops-grid, .priority-attention-strip",
+            )
+            .forEach((panel) => {
+                lifecycle.listen(panel, "click", (e) => {
+                    const actionButton = e.target.closest(
+                        "button[data-action]",
+                    );
+                    if (actionButton) {
+                        handleServerAction(
+                            actionButton.dataset.action || "",
+                            actionButton.dataset.name || "",
+                            actionButton.dataset.tab || "logs",
+                        );
+                        return;
+                    }
+                    const selectButton = e.target.closest(
+                        "button[data-select-server]",
+                    );
+                    if (selectButton) {
+                        selectServer(selectButton.dataset.selectServer || "");
+                        return;
+                    }
+                    const miniListButton = e.target.closest(
+                        "button[data-toggle-mini-list]",
+                    );
+                    if (miniListButton) {
+                        const listID =
+                            miniListButton.dataset.toggleMiniList || "";
+                        if (!listID) return;
+                        if (expandedMiniLists.has(listID)) {
+                            expandedMiniLists.delete(listID);
+                        } else {
+                            expandedMiniLists.add(listID);
+                        }
+                        renderDashboardPanels();
+                    }
+                });
+            });
+
+        lifecycle.listen(document.getElementById("logout-btn"), "click", () =>
+            window.logout(),
+        );
         loadDashboardFilters();
         initColumnResizing();
-        setInterval(renderSyncState, 5000);
+        lifecycle.setInterval(renderSyncState, 5000);
         statusTransport.start();
         fetchDashboardExtras();
         fetchServers();
+
+        lifecycle.own(statusTransport.destroy);
+        lifecycle.own(() => {
+            hidePhaseTooltip();
+            closeDrawer();
+            closePasswordModal();
+            if (passwordReject) passwordReject(new Error("Page destroyed"));
+            passwordResolve = null;
+            passwordReject = null;
+        });
+        window.fetchServers = (...args) =>
+            lifecycle.active ? fetchServers(...args) : Promise.resolve();
+        // Preserve refresh entry points used by existing browser consumers.
+        window.fetchDashboardSummary = (...args) =>
+            lifecycle.active
+                ? fetchDashboardSummary(...args)
+                : Promise.resolve();
+        window.fetchDashboardExtras = (...args) =>
+            lifecycle.active
+                ? fetchDashboardExtras(...args)
+                : Promise.resolve();
+        // Settle outstanding confirmation promises before replacing this page.
+        lifecycle.own(() => {
+            for (const name of ["action-confirm", "typed-confirm"]) {
+                if (
+                    document
+                        .getElementById(`${name}-modal`)
+                        ?.classList.contains("active")
+                )
+                    document.getElementById(`${name}-cancel`)?.click();
+            }
+        });
+        const destroy = () => lifecycle.destroy();
+        lifecycle.listen(root, "pagehide", (event) => {
+            // A cached document keeps its one mounted interaction owner.
+            if (!event.persisted) destroy();
+        });
+        current = Object.freeze({ destroy, getServerByName });
+        return current;
+    }
+    root.StatusPage = Object.freeze({
+        mount,
+        destroy: () => current?.destroy(),
+        getServerByName: (name) => current?.getServerByName(name),
+    });
+    mount();
+})(globalThis);

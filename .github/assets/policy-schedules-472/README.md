@@ -13,8 +13,8 @@ explicit canary. The browser consumes the projected dates/UTC/DST facts.
 - `mobile-monthly-schedule.png`: 390 px monthly layout.
 - `mobile-once-schedule.png`: 390 px one-time editor and consumption rule.
 
-Regenerate from the three `policy schedules 472` scenarios in
-`tests/e2e/auth.setup-login.spec.js` with `CAPTURE_POLICY_SCHEDULES_472=1`.
+Regenerate from the `policy schedules 472` scenarios in
+`tests/e2e/admin.spec.js` with `CAPTURE_POLICY_SCHEDULES_472=1`.
 The capture helper places each panel below the sticky Admin chrome and uses a
 1800 px viewport height to include the whole panel. Production CSS is unchanged.
 Use a disposable localhost app/database as described in the issue validation

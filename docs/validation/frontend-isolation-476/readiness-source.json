@@ -1,0 +1,409 @@
+{
+  "readiness_commit": "b5bc2bd72065d02f0370a3d02b2826310f1a192c",
+  "production_commit": "18881ee209d45554583871337c44376c36aa26e2",
+  "fixture_build_commit": "8bdfae6ea935fd7d0ce17ebf5b5c1a9434f6f90f",
+  "test_binary_sha256": "ba5f38610c2847fdf60c1f4c6dafc80f2c11f1ea1bbf208f7493b73d263fb284",
+  "tree_sha256": "b2585831f2732dcd2c4844fad32c3765ed4d80e20d09d83c550ff688d3443587",
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "ac236a72ef47d379a1374b7bd73f4141fd677f694bda978f91477af8a7856ef9"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "171bbcc3eb33d143c5f0cd1e4e8dba9986bdd75f7396de56d0e5a40713b8a5d6"
+    },
+    {
+      "path": "dashboard_scaling_test.go",
+      "sha256": "fc75e80202269f81f1ed490dd3f1f72ad9a4f3d2711a225ffbcfb653822864a3"
+    },
+    {
+      "path": "docs/validation/frontend-isolation-476/foreground.cjs",
+      "sha256": "267353935f41df2d3b19533505adc2e964440dc8a1d7806a792000f38d86af3a"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "a23465225749f07c77a44fd8586d819e1823c841a97a7dcac325126e8d79095f"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "956f940528a89cebdd3e91aa9df7e45734a7d508cf684653aca96c89157a9fd9"
+    },
+    {
+      "path": "listen_address_test.go",
+      "sha256": "c9cffd5dcc21b27353707e3fb1537edc2d38c9ff7184b51d2ce325a25a517cb9"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "66c049bb811bbb1e9c6f112a73844937e966df841d9bf4d971a1b402dfd6bed7"
+    },
+    {
+      "path": "playwright.config.js",
+      "sha256": "c101635ee943ca0beb9f1913ff8378dd3faab7c29d8442a62e12819ce2e0eca4"
+    },
+    {
+      "path": "static/auth.js",
+      "sha256": "fc214e3fd8fdb4e1094c070fe7957e9e70a24a89cdbfa0de6ae76ea75fe943d4"
+    },
+    {
+      "path": "static/css/account.css",
+      "sha256": "786054ef3b91052ccd2654f650b811e52aedb8c95973e8318dfaafc121ac31c4"
+    },
+    {
+      "path": "static/css/admin.css",
+      "sha256": "06ce567bf647b2b780aad5eb3b61e4d574293c1b4a7720224382614d4cda2f76"
+    },
+    {
+      "path": "static/css/application-postchecks.css",
+      "sha256": "4d84c721912e8faa9e8a386ee0f00ee19b3c79f017ad8f3be559fd1f6f69c42c"
+    },
+    {
+      "path": "static/css/auth-common.css",
+      "sha256": "408030c84b7baf9afffb7f7e40c7933401b561d4ad307eb4bcf9e1ecb440f9a0"
+    },
+    {
+      "path": "static/css/base.css",
+      "sha256": "7580147afdcaa8525b39810ab250d3d0602cc154a154aa5fe16ca93c1a79859f"
+    },
+    {
+      "path": "static/css/index.css",
+      "sha256": "6ec4b5dccd32dc81f59d5be3f31c84c9bd00b43b4a81950a76258000981206cb"
+    },
+    {
+      "path": "static/css/maintenance.css",
+      "sha256": "7d773750ea58297d1fbaf254cd80691b2464b6ed425b027f42f6785ea6533af3"
+    },
+    {
+      "path": "static/css/manage.css",
+      "sha256": "706797c06a1819ff0f71d91abaa29f12a16e9776c10b6c2cac0d6666134c088b"
+    },
+    {
+      "path": "static/css/observability.css",
+      "sha256": "3f2b2d64c2a5d57622e629afbd3f2ef2aea35df533446c69f55bb7e108d7910c"
+    },
+    {
+      "path": "static/css/package-deferrals.css",
+      "sha256": "b08efc79eacffcfc96ebe921b58c59cae6f86be278d5a9e435f83eb9bdd41983"
+    },
+    {
+      "path": "static/css/setup.css",
+      "sha256": "e7a41f2537797d0c122fa6302e0eabdaeebd68b187341c545d1f111965856c32"
+    },
+    {
+      "path": "static/css/status-polish.css",
+      "sha256": "94a7970c0dc6017905775c3afabb49ac09d828142ca5e9388dc5e6b6c5e00d67"
+    },
+    {
+      "path": "static/js/account.js",
+      "sha256": "b751eb20e4fd95576485f0dc007a239dc5219520e30f87e7794fc618407998b2"
+    },
+    {
+      "path": "static/js/admin-account-adapter.js",
+      "sha256": "9261d4bfe0f32f580ed57b5e94f6471843515d2ccce34ffdc394c14b8d7e5a4b"
+    },
+    {
+      "path": "static/js/admin-backup-adapter.js",
+      "sha256": "4d9522838a3c1aecf10aa638a1298568ac965229234f6579eb4b5d6a2f4627b9"
+    },
+    {
+      "path": "static/js/admin-notifications-adapter.js",
+      "sha256": "312c790676e360192f1879a9a7b0e69530038e7fed1ad69cf106c995956838e5"
+    },
+    {
+      "path": "static/js/admin-page-interaction.js",
+      "sha256": "4ec1efe883a1bbadab7fc1bbc0c481f262f5942ec9e8cc78684df2f1a09d1923"
+    },
+    {
+      "path": "static/js/admin-policies-adapter.js",
+      "sha256": "52968c3d3824e2c30afa21e08a04c7c607be83493ccd6f816126e45c71ddeca0"
+    },
+    {
+      "path": "static/js/admin-session-ip-reveal.js",
+      "sha256": "25d579a91cc7e0a43a55bc2e6631f82e3b7f16bed491486eaccf9d3d1e0b6dd6"
+    },
+    {
+      "path": "static/js/admin-timezone-picker.js",
+      "sha256": "a74e2364d9bfbe120cb994d519a5d046fff861c8a6024f18eefe8d7cea30effb"
+    },
+    {
+      "path": "static/js/admin-timezones.js",
+      "sha256": "0c516d85f3e98f046df84782867828f568921c716893799d522735665a89afee"
+    },
+    {
+      "path": "static/js/admin.js",
+      "sha256": "11a5508626ded437c6e39f9a642600c59313f90add13e6dd3f50723be1eaef7d"
+    },
+    {
+      "path": "static/js/application-postcheck-adapter.js",
+      "sha256": "fb134012c1415d1aebe3ea5596a73532d2162159b36b3b735f17083d6f3e22bc"
+    },
+    {
+      "path": "static/js/browser-effects.js",
+      "sha256": "c52a9e770ccbf3a7f54c657206f2a126452f0c895932f0c8ca181d8dae675dff"
+    },
+    {
+      "path": "static/js/common.js",
+      "sha256": "a13bb67eb75ad07265ab689e6601ffcb9daaba37d2bb50ce3b0a1c5f1e113ef8"
+    },
+    {
+      "path": "static/js/dashboard-interaction.test.cjs",
+      "sha256": "7a2eaf0d98f10100dc1097c50d452b9fcb60de1c8be48460ead54f6c6b99c26a"
+    },
+    {
+      "path": "static/js/dashboard-projection-consumption.js",
+      "sha256": "fda9340532822f4b78ab02ee52bbf06fb619cf3f15cdb8c811e6f33033e03d75"
+    },
+    {
+      "path": "static/js/index-bulk-actions.js",
+      "sha256": "f62d06de073c9fb5a86c42ee0cb09cc650c11d5b48266daa7e36dd23c1dfe0e6"
+    },
+    {
+      "path": "static/js/index.js",
+      "sha256": "a48fabff7551836e1ac0b4025c727d3d9a586e07fe51758a4d15ad2321132abe"
+    },
+    {
+      "path": "static/js/inventory-import.js",
+      "sha256": "60fe0705e014fe74944a063bcaa736c0b3d7899c6ecbf3a1dd09678eda9dc3b8"
+    },
+    {
+      "path": "static/js/login.js",
+      "sha256": "fb160990cabbb2f868044b749eedf85c06a0eebe3b06ef63dfc07a8727b540d1"
+    },
+    {
+      "path": "static/js/maintenance.js",
+      "sha256": "d4da9a37ad339306cdc9af9bdd7c5a977eae76a88e0f1c2b277ba54584f87a99"
+    },
+    {
+      "path": "static/js/manage-audit-adapter.js",
+      "sha256": "abca3d2a50688e8527d514faed60d524a0bf0646a11c435ffb3701702928f134"
+    },
+    {
+      "path": "static/js/manage-modals.js",
+      "sha256": "77ab1751e761971fcdb19d0d8f0c4c36dcd3f470758bc7ffdcdad8a076869f93"
+    },
+    {
+      "path": "static/js/manage-page-interaction.js",
+      "sha256": "ef6f5e8a58e638ac716cfe978ea3b49eaf657e480a81c499cbeda34772293f14"
+    },
+    {
+      "path": "static/js/manage-policy-overrides.js",
+      "sha256": "0b3e70d57e78d20ff32e8b184d5f17291793fe254993d05ab20cde4557736560"
+    },
+    {
+      "path": "static/js/manage-workspace-adapter.js",
+      "sha256": "f6c42d81ef5fc3966d241d37501f4ac92cd47816f89b6e0d38893faff3d1f3d1"
+    },
+    {
+      "path": "static/js/manage.js",
+      "sha256": "55c12d814b8571f4863840b0f87e42da3db56651e43fb578220931577a2611e8"
+    },
+    {
+      "path": "static/js/observability-page-interaction.js",
+      "sha256": "9831c894926759be1f288d61331f9eb8cf763ac67de9644a151cc8723ce7fb37"
+    },
+    {
+      "path": "static/js/observability.js",
+      "sha256": "96d436b41fa431f78b84704d1f2bfe1fb10dcc41b68d14b68ee7789e8e0300d8"
+    },
+    {
+      "path": "static/js/package-deferrals.js",
+      "sha256": "50dc47c2618adfd6a718b5b4a7e52a3dd36c87d44d131aae77118cd2df7e13cc"
+    },
+    {
+      "path": "static/js/scheduled-policy-administration-interaction.js",
+      "sha256": "7118f19d3f69a025e3a30c25c2b0e7aad6709b2dab60bdaa1a38ac0fd0db6aaa"
+    },
+    {
+      "path": "static/js/server-onboarding-interaction.js",
+      "sha256": "1197b19e8888162ea9e6de1373df280135d1c598abddfd8ca80a7f5bf2ae07e1"
+    },
+    {
+      "path": "static/js/server-onboarding.js",
+      "sha256": "1b08a44b372a09471c49d7bb8fe86eb31ad944bee7b99bcc5437336dea321320"
+    },
+    {
+      "path": "static/js/setup.js",
+      "sha256": "47447cbf80845c348be83c1ef8444a58ea65a24973920a9c11550a8d6c46214f"
+    },
+    {
+      "path": "static/js/status-action-adapter.js",
+      "sha256": "901a387f2c798008ee3b36834fc18a11c45dd5473e344a8578163542d71684d8"
+    },
+    {
+      "path": "static/js/status-drawer-adapter.js",
+      "sha256": "0dc227a66385422c8269f8399b2b9e0fe78704ae63b4af205623a7ee6130ad78"
+    },
+    {
+      "path": "static/js/status-formatting.js",
+      "sha256": "594af558d55c49ddf97fe26820a7c0e92599ad1b806b43ac27db6e950d8471ed"
+    },
+    {
+      "path": "static/js/status-page-interaction.js",
+      "sha256": "e6daac47a37e1b99555ff8525f9c45e1914aaf16d12e7524d4115780f1f19755"
+    },
+    {
+      "path": "static/js/status-rendering.js",
+      "sha256": "dacc0c38d3958bc4b05d4deb1a094fff6d9c4bb8277098a753a193f64844ad61"
+    },
+    {
+      "path": "static/js/status-snapshot-adapter.js",
+      "sha256": "6749ec60b29cbcda54b300c2d45485a256c1ddcf3780bae75b87bfac731db0ae"
+    },
+    {
+      "path": "static/js/status-table-adapter.js",
+      "sha256": "1125d4061957b83fb58d7232537a974f29f573d6cf3e46933f57470c33fb5fa3"
+    },
+    {
+      "path": "static/js/status-transport.js",
+      "sha256": "521b404a9a0e9afbcc5bf80d2144b7813e2fcec0696d811c5db060e796e4195c"
+    },
+    {
+      "path": "templates/account.html",
+      "sha256": "640ac0d5bf6d9ab2a39e9cda551a3c38c10bf6cbc0d825171368d12c47669440"
+    },
+    {
+      "path": "templates/admin.html",
+      "sha256": "8acbae6768d5ea11cc5b883e121274ef67f792cf513f2fdb92a4c6995db0b6e1"
+    },
+    {
+      "path": "templates/index.html",
+      "sha256": "c9e726e9ef419c11a313adcf1b50087d46fc470b8f06fce1ed63bf7e22608920"
+    },
+    {
+      "path": "templates/login.html",
+      "sha256": "c7d04bc4c7a91473028b64d73aa2306ff84307d0e735923ba6b4fabb86329c36"
+    },
+    {
+      "path": "templates/manage.html",
+      "sha256": "c4d797095f6b96091ac254a9d2535ff6d9e27a97569040bb1b120bd4fe4e6c01"
+    },
+    {
+      "path": "templates/observability.html",
+      "sha256": "2bda9f7cb53afdc02a2fdc81b2cbb13bb455b6d425169d04a78b4a8f9f0262e4"
+    },
+    {
+      "path": "templates/operator-application-shell.html",
+      "sha256": "c99cd0a732a8b8d91c2c2be3db8200cf6ac19feb386052e6f39ff795d1d4b32f"
+    },
+    {
+      "path": "templates/setup.html",
+      "sha256": "c9d6a95ad5b74db7eb089a1af1e8fcf3742edee826c357ae442976550f151123"
+    },
+    {
+      "path": "tests/e2e/admin.spec.js",
+      "sha256": "f2ba10ab13015c9243a9777ccc7a9eaff60ba8ee0ff4f7b387a807798d4c56d2"
+    },
+    {
+      "path": "tests/e2e/auth.spec.js",
+      "sha256": "ae48d0d2f7bfdf5368aa695a4bcfb0bffa863866e1b2ea348e47b27677331818"
+    },
+    {
+      "path": "tests/e2e/identity.spec.js",
+      "sha256": "a3102638e57fea8265a862cfbe6a99699679c0a86567a0c27011183da98f5cb5"
+    },
+    {
+      "path": "tests/e2e/lifecycle.spec.js",
+      "sha256": "f312230b46c681a4b37975cf7cd94d90e3af716386c39f220d206a3dfb583ca3"
+    },
+    {
+      "path": "tests/e2e/manage.spec.js",
+      "sha256": "803ac39417d0adeeb7e6b4fb03135702e8949bc95b6ba411123af4ae0e88fb0f"
+    },
+    {
+      "path": "tests/e2e/observability.spec.js",
+      "sha256": "a6034692976794ad80e4935015cafc64d06e7e8f029a3a1278cdc32cb05d3689"
+    },
+    {
+      "path": "tests/e2e/status.spec.js",
+      "sha256": "3d8974631e8e6382875c17e540b44b3562f64337591ce2ed0a2b4fb046467fd1"
+    },
+    {
+      "path": "tests/e2e/support/builders.js",
+      "sha256": "506e81db8f825ee55b728532239aee125bd48d49186bffde82a8c30ca74d7577"
+    },
+    {
+      "path": "tests/e2e/support/fixtures.js",
+      "sha256": "ffdbe29a5093550fcd44dd804475489bf3d8fa93ed3e61d56ed8fc125b209129"
+    },
+    {
+      "path": "tests/e2e/support/global-setup.js",
+      "sha256": "be2724d75c40443dee41b35dd10a3822ab95447e2f961469215c9926eccc5f0e"
+    },
+    {
+      "path": "tests/e2e/support/installation.js",
+      "sha256": "e75e4e5d94b2cc229210b5748104887307177e28531408bef82db5535545aa1c"
+    },
+    {
+      "path": "tests/unit/account-auth.test.js",
+      "sha256": "3828a50b7bb28823a54b804f84fc1293170653d2bb58d44da06113faac97d43e"
+    },
+    {
+      "path": "tests/unit/admin-page-interaction.test.js",
+      "sha256": "28525a46cd6bd6be8be877281d037d3c47afdf44e33393f19ed0d17eeecdf2b1"
+    },
+    {
+      "path": "tests/unit/admin-session-ip-reveal.test.js",
+      "sha256": "98e846f650937779803a443a41de99bbfbbbc1e09087250f2a42b20609a0bfcc"
+    },
+    {
+      "path": "tests/unit/admin-timezone-picker.test.js",
+      "sha256": "9294f89af1dd88a8fb608e6e27262c2996f3a9e065506b7c2d67c13cac96f74d"
+    },
+    {
+      "path": "tests/unit/browser-effects.test.js",
+      "sha256": "702fd73f9f918988f54d2d19cd062cc1b096a3c58c9edef6b6597512e61e004e"
+    },
+    {
+      "path": "tests/unit/browser-installation.test.js",
+      "sha256": "7c3ba8ec3a6bed91a8da29b4e32003bec2c76f3eb66ea26c28a51e91c86fde71"
+    },
+    {
+      "path": "tests/unit/dashboard-projection-consumption.test.js",
+      "sha256": "129196e7bc357f0bfc32150c74f8593d392b7ba1465eddd4c8abf46b0ab39bc1"
+    },
+    {
+      "path": "tests/unit/global-font-style.test.js",
+      "sha256": "7384ad4bca1f8802497075db227779d2a13a1257ec580b9955cdb8be16483946"
+    },
+    {
+      "path": "tests/unit/manage-page-interaction.test.js",
+      "sha256": "3fbb30ac2e581f848db8fcca0803cc50d9526c7037c0b11de46c6937972f5efb"
+    },
+    {
+      "path": "tests/unit/observability-page-interaction.test.js",
+      "sha256": "2d5e318d84e1d834d3a1d2f83e17cbf3edddac70452641e980ee189ef334e4b8"
+    },
+    {
+      "path": "tests/unit/package-deferrals.test.js",
+      "sha256": "3af9d3da45dd4333137d1a06367c66036d028deadb8c8e0601145a5ccf2c2ec9"
+    },
+    {
+      "path": "tests/unit/scheduled-policy-administration-interaction.test.js",
+      "sha256": "56405eeceae4f8c0a4265ae33bb684731054bb21c5c7227abcded163580d46fc"
+    },
+    {
+      "path": "tests/unit/server-onboarding-interaction.test.js",
+      "sha256": "b0a41dd947718d3426ae6440220c40780222a1245133e1b809c009b7eb272ee8"
+    },
+    {
+      "path": "tests/unit/status-page-interaction.test.js",
+      "sha256": "16ff701d4c50808bb4a377571e33f5bdc00d99744e369460a1f6046d9c3c79da"
+    },
+    {
+      "path": "tests/unit/status-rendering.test.js",
+      "sha256": "2f811fd208cf83dd5f771dd784ce0dc88fefb100e0e5f4eac4f34e388509ca2a"
+    },
+    {
+      "path": "tools/frontend/capture.cjs",
+      "sha256": "62fec0dd6c8a9bf8269d2fa0aa06b004f21650f25826c15f13550a9d159d3b4e"
+    },
+    {
+      "path": "tools/frontend/independent-scenarios.cjs",
+      "sha256": "b6aefd24e7754b7f024a4d4403bf26f3dfd5ae6581ea47c4530b6c12927ee4c8"
+    },
+    {
+      "path": "tools/performance/dashboard-e2e.cjs",
+      "sha256": "609064ecdd229cfa22bc17f6950939836757f7c0b3da95112092042b6174422e"
+    }
+  ]
+}

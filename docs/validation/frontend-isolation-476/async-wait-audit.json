@@ -1,0 +1,99 @@
+{
+  "scope": "Conditional confirmation, reauthentication-adjacent, file-read and refresh waits before admission or subsequent effects",
+  "guards_added": 37,
+  "areas": [
+    {
+      "file": "static/js/admin.js",
+      "functions": [
+        "loadAdminSectionData"
+      ],
+      "conditional_waits": 7
+    },
+    {
+      "file": "static/js/index.js",
+      "functions": [
+        "callback",
+        "postServerAction"
+      ],
+      "conditional_waits": 3
+    },
+    {
+      "file": "static/js/manage.js",
+      "functions": [
+        "callback",
+        "clearEditKnownHost",
+        "clearGlobalKey",
+        "clearServerKey",
+        "clearServerPassword",
+        "deleteServer",
+        "performGlobalKeyRequest",
+        "performInventoryRequest",
+        "trustEditKnownHost"
+      ],
+      "conditional_waits": 12
+    },
+    {
+      "file": "static/js/admin-account-adapter.js",
+      "functions": [
+        "changeAdminPassword",
+        "clearAuthSessions",
+        "clearOtherAuthSessions",
+        "disableMetricsToken",
+        "revokeAuthSession",
+        "rotateMetricsToken"
+      ],
+      "conditional_waits": 6
+    },
+    {
+      "file": "static/js/admin-backup-adapter.js",
+      "functions": [
+        "restoreBackup"
+      ],
+      "conditional_waits": 1
+    },
+    {
+      "file": "static/js/admin-policies-adapter.js",
+      "functions": [
+        "deleteScheduledPolicy",
+        "runScheduledEffects"
+      ],
+      "conditional_waits": 5
+    },
+    {
+      "file": "static/js/manage-audit-adapter.js",
+      "functions": [
+        "performAuditRequest"
+      ],
+      "conditional_waits": 1
+    },
+    {
+      "file": "static/js/inventory-import.js",
+      "functions": [
+        "run"
+      ],
+      "conditional_waits": 1
+    },
+    {
+      "file": "static/js/server-onboarding.js",
+      "functions": [
+        "scan"
+      ],
+      "conditional_waits": 1
+    }
+  ],
+  "unchanged_contracts": [
+    "Existing confirmation precedes command admission",
+    "Existing Admin/Status/Manage interaction owners and Approval Scope plans",
+    "Existing captured approval identity and removal consent",
+    "Existing request IDs and recovery generation acceptance"
+  ],
+  "other_waits": [
+    "Direct fetch and response-body waits reject the captured lifetime and abort owned transport",
+    "Direct awaited declarations/effects and legacy catch/finally paths recheck the lifetime",
+    "Session IP reauthentication retains its existing abort controller and request identity",
+    "Timers, animation frames, observers and SSE callbacks are cancelled or generation-checked",
+    "Clipboard and archive/file waits cannot publish into a destroyed page",
+    "Backup object URLs are revoked synchronously after download dispatch"
+  ],
+  "browser_cache_contract": "Persisted pagehide/pageshow retain the same mounted owner, accepted selection and single stream; real unload and explicit remount destroy effects."
+}

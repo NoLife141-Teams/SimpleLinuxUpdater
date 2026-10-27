@@ -12,3 +12,7 @@ for issue #471, using documentation-only addresses and disposable test data.
 
 Regenerate with `npm run test:e2e -- --grep 'inventory import'` against the
 Playwright disposable database, then copy the matching images from `test-results`.
+
+Since #476 the scenarios are in `tests/e2e/manage.spec.js`, each with an isolated
+installation. Set `SLU_E2E_OUTPUT_DIR` to an owned temporary directory to locate
+new captures; the historical screenshots above retain their original provenance.

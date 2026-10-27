@@ -1,28 +1,30 @@
-const { defineConfig } = require('@playwright/test');
-
-const webServerCommand =
-  process.env.PLAYWRIGHT_WEBSERVER_COMMAND ||
-  'go build -o webserver . && mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_LISTEN_ADDR=127.0.0.1:8080 DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver';
-
+const { defineConfig } = require("@playwright/test");
+const os = require("node:os");
+const path = require("node:path");
 module.exports = defineConfig({
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
-  testDir: './tests/e2e',
-  timeout: 60_000,
-  expect: {
-    timeout: 10_000,
-  },
-  workers: process.env.CI ? 1 : undefined,
-  retries: process.env.CI ? 1 : 0,
-  use: {
-    baseURL: 'http://127.0.0.1:8080',
-    headless: true,
-    reducedMotion: 'reduce',
-    trace: 'on-first-retry',
-  },
-  webServer: {
-    command: webServerCommand,
-    url: 'http://127.0.0.1:8080/login',
-    timeout: 120_000,
-    reuseExistingServer: false,
-  },
+    reporter: process.env.CI
+        ? [
+              ["list"],
+              [
+                  "html",
+                  {
+                      open: "never",
+                      outputFolder:
+                          process.env.PLAYWRIGHT_HTML_OUTPUT_DIR ||
+                          path.join(os.tmpdir(), "slu-browser-report"),
+                  },
+              ],
+          ]
+        : "list",
+    testDir: "./tests/e2e",
+    globalSetup: require.resolve("./tests/e2e/support/global-setup"),
+    outputDir:
+        process.env.SLU_E2E_OUTPUT_DIR ||
+        path.join(os.tmpdir(), "slu-browser-results"),
+    timeout: 60000,
+    expect: { timeout: 10000 },
+    fullyParallel: true,
+    workers: process.env.CI ? 2 : undefined,
+    retries: process.env.CI ? 1 : 0,
+    use: { headless: true, reducedMotion: "reduce", trace: "on-first-retry" },
 });

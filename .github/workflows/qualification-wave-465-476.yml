@@ -1,0 +1,46 @@
+name: Qualification wave 465-476 VM
+on:
+  push:
+    branches: [codex/qualification-wave-465-476-20261027]
+permissions:
+  contents: read
+concurrency:
+  group: qualification-wave-465-476-vm
+  cancel-in-progress: false
+jobs:
+  reboot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: b27e5f2ce5e08d1f7aa19cc21b21f9e4dc7fad12
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Disposable runner prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client
+      - name: Verify official immutable cloud image
+        run: |
+          mkdir -p cloud evidence
+          curl --fail --location --retry 2 --max-time 300 -o cloud/SHA256SUMS https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS
+          grep '^04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94 [*]ubuntu-24.04-server-cloudimg-amd64.img$' cloud/SHA256SUMS > cloud/selected.sha256
+          curl --fail --location --retry 2 --max-time 600 -o cloud/ubuntu-24.04-server-cloudimg-amd64.img https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img
+          (cd cloud && sha256sum --check selected.sha256)
+          cp cloud/selected.sha256 evidence/cloud-image.sha256
+          git rev-parse HEAD > evidence/source-sha.txt
+          sha256sum tools/ci/ssh-apt/vm-reboot.py > evidence/harness.sha256
+      - name: Real systemd and controlled reboot
+        env:
+          GOMAXPROCS: '2'
+        run: python3 tools/ci/ssh-apt/vm-reboot.py --image cloud/ubuntu-24.04-server-cloudimg-amd64.img --sha256 04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94 --output evidence/vm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: qualification-wave-465-476-vm
+          path: evidence/
+          retention-days: 1

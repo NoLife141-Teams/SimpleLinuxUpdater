@@ -112,17 +112,19 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if jm == nil {
 		return fmt.Errorf("rebuild restored job manager: job manager unavailable")
 	}
+	deps.SetCurrentJobManager(jm)
+	if deps.VulnerabilityScans != nil {
+		// Recover Job State Transition before generic interruption. Audit hooks
+		// must wait until Notification Delivery Lifecycle persistence resumes.
+		if err := deps.VulnerabilityScans.reconcile(ctx, false); err != nil {
+			return fmt.Errorf("restore vulnerability scans: %w", err)
+		}
+	}
 	if err := jm.MarkUnfinishedJobsInterrupted(); err != nil {
 		return fmt.Errorf("interrupt unfinished restored jobs: %w", err)
 	}
 	if _, err := jm.PurgeExpiredLogs(); err != nil {
 		return fmt.Errorf("purge restored expired job logs: %w", err)
-	}
-	deps.SetCurrentJobManager(jm)
-	if deps.VulnerabilityScans != nil {
-		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
-			return fmt.Errorf("restore vulnerability scans: %w", err)
-		}
 	}
 	if deps.ServerInventoryService == nil || deps.ServerState == nil {
 		return fmt.Errorf("reload restored Server inventory: runtime dependency is unavailable")
@@ -156,6 +158,11 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
 		if err := reloader.ReloadPersistence(ctx); err != nil {
 			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
+		}
+	}
+	if deps.VulnerabilityScans != nil {
+		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
+			return fmt.Errorf("audit restored vulnerability scans: %w", err)
 		}
 	}
 	return nil

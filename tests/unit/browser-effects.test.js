@@ -515,6 +515,10 @@ test("an old typed backup confirmation cannot admit restore or alter feedback in
         document: { getElementById: (id) => controls[id] },
         console,
     };
+    // Load the shared identity transport used by the backup adapter.
+    context.window.BrowserEffects = { create };
+    vm.runInNewContext(fs.readFileSync(require.resolve('../../static/js/reauthentication.js'), 'utf8'), context);
+    context.Reauthentication = context.window.Reauthentication;
     vm.runInNewContext(
         fs.readFileSync(
             require.resolve("../../static/js/admin-backup-adapter.js"),
@@ -524,7 +528,7 @@ test("an old typed backup confirmation cannot admit restore or alter feedback in
     );
     const adapter = context.AdminBackupAdapter.create({
         adminPageView: () => ({ backup: { review: { safeCounts: {} } } }),
-        adminPageInteraction: { planCommand: () => ({ enabled: true }) },
+        adminPageInteraction: { planCommand: () => ({ enabled: true }), dispatch() {} },
         beginAdminCommand: () => {
             commands++;
             return null;

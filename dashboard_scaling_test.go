@@ -588,6 +588,36 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		return nil, fmt.Errorf("SSH host key scanning is unavailable in the isolated browser fixture")
 	}
 	t.Cleanup(func() { scanHostKeyFunc = originalScan })
+	// Fault injection exists only in this disposable test binary. The normal
+	// production router and its authentication/command handlers remain intact.
+	productionHandler := a.handler
+	a.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/__test/expire-reauthentication" {
+			productionHandler.ServeHTTP(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		cookie, err := r.Cookie(authpkg.DefaultSessionCookieName)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		sm := a.deps.CurrentSessionManager()
+		ctx, err := sm.Load(r.Context(), cookie.Value)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		sm.Put(ctx, "auth_reauthenticated_at", time.Now().Add(-6*time.Minute).Unix())
+		if _, _, err := sm.Commit(ctx); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)

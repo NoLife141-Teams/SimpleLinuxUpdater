@@ -99,6 +99,7 @@ test.describe("named identities on isolated installations", () => {
             ),
         ).toBeTruthy();
         await page.getByRole("button", { name: "Revoke", exact: true }).click();
+        await page.locator("#action-confirm-submit").click();
         await expect(page.locator("#token-list")).toContainText("revoked");
         expect((await api(page, "/api/servers", "GET")).status).toBe(200);
         await page.locator("#logout-btn").click();
@@ -221,7 +222,9 @@ test.describe("named identities on isolated installations", () => {
             .trim()
             .split("\n");
         expect(codes).toHaveLength(10);
-        await page.getByRole("link", { name: "Sign in again" }).click();
+        await expect(page.getByRole("button", { name: "Create personal token" })).toBeDisabled();
+        await expect(page.locator("#recovery-codes")).not.toBeEmpty();
+        await page.locator("#recovery-dismiss").click();
         await page.locator("#username").fill("admin");
         await page.locator("#password").fill(password);
         await page
@@ -245,6 +248,8 @@ test.describe("named identities on isolated installations", () => {
         await expect(page.locator("#account-status")).toContainText(
             "invalid authentication factor",
         );
+        await expect(page.locator("#reauth-password")).toHaveValue("");
+        await page.locator("#reauth-password").fill(password);
         await page.locator("#reauth-code").fill(codes[1]);
         await page.getByRole("button", { name: "Confirm identity" }).click();
         await expect(page.locator("#account-status")).toContainText(
@@ -253,6 +258,7 @@ test.describe("named identities on isolated installations", () => {
         await page
             .getByRole("button", { name: "Disable MFA", exact: true })
             .click();
+        await page.locator("#action-confirm-submit").click();
         await expect(page).toHaveURL(`${baseURL}/login`);
         await page.locator("#username").fill("admin");
         await page.locator("#password").fill(password);

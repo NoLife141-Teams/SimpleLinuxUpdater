@@ -4,6 +4,7 @@
     function create(options) {
         const lifecycle = root.BrowserEffects.create();
         const fetch = lifecycle.fetch;
+        let reauthentication;
         const IntersectionObserver = root.IntersectionObserver
             ? lifecycle.observer(root.IntersectionObserver)
             : undefined;
@@ -17,13 +18,33 @@
             escapeHtml,
             renderAdminDestructiveControls,
             adminPageInteraction,
-            beginAdminCommand,
+            beginAdminCommand: admitAdminCommand,
             parseErrorResponse,
-            finishAdminCommand,
+            finishAdminCommand: settleAdminCommand,
             beginAdminSnapshot,
             renderAdminWorkspace,
             updateFileLabel,
         } = options;
+        const commandPlans = new Set();
+        function beginAdminCommand(...args) {
+            const plan = admitAdminCommand(...args);
+            if (plan) commandPlans.add(plan);
+            return plan;
+        }
+        function finishAdminCommand(plan, ...args) {
+            if (!commandPlans.delete(plan)) return;
+            settleAdminCommand(plan, ...args);
+        }
+        function clearBackupCredentials() {
+            for (const id of ["backup-restore-passphrase", "backup-export-passphrase", "backup-export-passphrase-confirm"]) {
+                const input = document.getElementById(id);
+                if (input) input.value = "";
+            }
+            adminPageInteraction.dispatch({ type: "backupPassphraseChanged", valid: false });
+            for (const plan of commandPlans) {
+                finishAdminCommand(plan, null, "Backup action cancelled when leaving this page.", true);
+            }
+        }
         function deriveDownloadFilename(contentDisposition) {
             if (!contentDisposition) return "";
             const utf8Match = contentDisposition.match(
@@ -287,6 +308,8 @@
         function init() {
             if (lifecycle.active) return;
             lifecycle.init();
+            reauthentication = root.Reauthentication.create(lifecycle);
+            lifecycle.own(clearBackupCredentials);
             renderBackupAutomationControls();
         }
 
@@ -609,22 +632,11 @@
                 form.append("file", file);
                 form.append("passphrase", pass);
                 clearCredential = true;
-                const res = await fetch("/api/backup/restore", {
-                    method: "POST",
-                    body: form,
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
-                if (!res.ok) {
-                    const message = await parseErrorResponse(
-                        res,
-                        "Failed to restore backup.",
-                    );
-                    if (!lifecycle.isCurrent(lifetime)) return;
-                    finishAdminCommand(plan, null, message, true);
-                    window.notifyApp(message);
-                    return;
-                }
-                const payload = await res.json().catch(() => ({}));
+                const payload = await reauthentication.sensitive(
+                    "/api/backup/restore",
+                    { method: "POST", body: form },
+                    "Restore application backup",
+                );
                 if (!lifecycle.isCurrent(lifetime)) return;
                 finishAdminCommand(
                     plan,
@@ -644,19 +656,15 @@
                 await fetchBackupStatus();
                 if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
-                if (
-                    !lifecycle.isCurrent(lifetime) ||
-                    err?.name === "AbortError"
-                )
-                    return;
-                console.error("Failed to restore backup:", err);
+                if (!lifecycle.isCurrent(lifetime)) return;
+                // The transport error contains no archive or passphrase.
                 finishAdminCommand(
                     plan,
                     null,
-                    "Failed to restore backup.",
+                    err.message || "Failed to restore backup.",
                     true,
                 );
-                window.notifyApp("Failed to restore backup.");
+                window.notifyApp(err.message || "Failed to restore backup.");
             } finally {
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (clearCredential) {

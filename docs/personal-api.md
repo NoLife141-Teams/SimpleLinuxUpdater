@@ -64,7 +64,11 @@ recorded atomically and cannot be replayed. Tests include both RFCs' vectors.
 
 Confirmation displays ten random recovery codes once. Only SHA-256 hashes are
 stored; each code is consumed atomically. Enabling or disabling MFA signs out
-sessions and revokes personal tokens. Save recovery codes before signing in.
+sessions and revokes personal tokens. Account keeps those recovery codes visible
+after the deliberate session revocation and freezes all other Account commands. Choose **I have saved the
+recovery codes — sign in again** to clear them and return to login. No automatic
+refresh runs between confirmation and acknowledgement. Save the codes before
+leaving the page; they cannot be recovered on return.
 New enrollment replaces an unconfirmed enrollment; it never silently replaces
 an active factor.
 
@@ -83,7 +87,20 @@ After it expires, use Account's **Confirm identity** with password and, if MFA i
 enabled, a fresh TOTP or unused recovery code. Password changes and session-IP
 reveal still verify the current password; MFA accounts also require recent
 factor confirmation. `401` with `reauthentication_required: true` identifies this
-case. A normal unauthenticated request returns `401` without that flag.
+case. Account and Admin backup restore offer an identity-confirmation dialog
+without discarding the pending action. Successful reauthentication does not
+repeat that action: choose **Resume action** to explicitly submit it once, or
+cancel. A second expiry stops the attempt. Passwords and factor inputs are
+cleared after submission/cancellation; non-secret drafts and a selected backup
+archive remain available. A cancelled restore clears its passphrase and requires
+verification again before another restore.
+
+A normal unauthenticated request returns `401` without that flag. Rejected
+passwords and factors can also return `401`; Account checks the cookie identity
+before deciding whether to show the validation error or return to login. Account
+role/enabled-state changes, sensitive session/token revocations and MFA
+disablement use application confirmations describing their effects. Changing
+your own account signs you out when the server revokes its sessions.
 
 ## Local recovery
 
@@ -111,7 +128,13 @@ create accounts, reenable a disabled account, change roles or reopen setup.
 Create a named token in Account after confirming identity. Choose only the
 needed personal scopes and an expiration within one year. The secret appears
 once; copy it into your automation's secret storage. It cannot be retrieved by
-listing tokens. The database contains only its SHA-256 hash. Token lists show
+listing tokens. While an unacknowledged token or enrollment secret is displayed,
+Account blocks other mutations so another result cannot replace it. Use **I have
+saved the secret** to clear a token, or **Cancel and clear enrollment secret** to
+abandon an unconfirmed enrollment. Secrets live only in this document and are
+cleared when leaving it; browser back navigation cannot restore them. Repeated
+clicks or Enter presses admit only one pending Account command.
+The database contains only its SHA-256 hash. Token lists show
 non-secret IDs, names, scopes, expiration, revocation and last-used time plus a
 masked source address. Do not put tokens in URLs or shell history.
 

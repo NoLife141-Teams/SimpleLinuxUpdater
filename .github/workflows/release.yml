@@ -28,7 +28,8 @@ jobs:
       contents: read
     env:
       GO_COVERAGE_THRESHOLD: '73.0'
-      PLAYWRIGHT_WEBSERVER_COMMAND: 'mkdir -p .tmp-e2e && rm -f .tmp-e2e/servers.db && : > .tmp-e2e/known_hosts && DEBIAN_UPDATER_DB_PATH=.tmp-e2e/servers.db DEBIAN_UPDATER_KNOWN_HOSTS=.tmp-e2e/known_hosts ./webserver'
+      SLU_E2E_OUTPUT_DIR: test-results
+      PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

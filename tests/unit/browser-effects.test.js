@@ -1,0 +1,313 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { create } = require("../../static/js/browser-effects");
+const { createController } = require("../../static/js/status-transport");
+const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+        resolve = r;
+    });
+    return { promise, resolve };
+};
+function clock() {
+    let next = 0;
+    const pending = new Map();
+    return {
+        pending,
+        setTimeout: (fn) => {
+            pending.set(++next, fn);
+            return next;
+        },
+        clearTimeout: (id) => pending.delete(id),
+        setInterval: (fn) => {
+            pending.set(++next, fn);
+            return next;
+        },
+        clearInterval: (id) => pending.delete(id),
+        requestAnimationFrame: (fn) => {
+            pending.set(++next, fn);
+            return next;
+        },
+        cancelAnimationFrame: (id) => pending.delete(id),
+    };
+}
+
+test("mounted listeners detach, can be removed during a gesture, and mount once again", () => {
+    const lifecycle = create(),
+        target = new EventTarget();
+    let calls = 0;
+    const callback = () => calls++;
+    lifecycle.init();
+    lifecycle.init();
+    lifecycle.listen(target, "change", callback);
+    target.dispatchEvent(new Event("change"));
+    assert.equal(calls, 1);
+    lifecycle.unlisten(target, "change", callback);
+    target.dispatchEvent(new Event("change"));
+    assert.equal(calls, 1);
+    lifecycle.listen(target, "change", callback);
+    lifecycle.destroy();
+    lifecycle.destroy();
+    target.dispatchEvent(new Event("change"));
+    assert.equal(calls, 1);
+    lifecycle.init();
+    lifecycle.listen(target, "change", callback);
+    target.dispatchEvent(new Event("change"));
+    assert.equal(calls, 2);
+    lifecycle.destroy();
+});
+test("destroy clears all timers and suppresses callbacks queued before remount", () => {
+    const environment = clock(),
+        lifecycle = create(environment);
+    let calls = 0;
+    lifecycle.init();
+    lifecycle.setInterval(() => calls++, 10);
+    lifecycle.setTimeout(() => calls++, 20);
+    lifecycle.requestAnimationFrame(() => calls++);
+    const queued = [...environment.pending.values()];
+    lifecycle.destroy();
+    assert.equal(environment.pending.size, 0);
+    lifecycle.init();
+    queued.forEach((fn) => fn());
+    assert.equal(calls, 0);
+    lifecycle.destroy();
+});
+test("destroy aborts owned transport and ignores a late response even after reinitialization", async () => {
+    const gate = deferred();
+    let signal;
+    const lifecycle = create({
+        fetch: (_url, options) => {
+            signal = options.signal;
+            return gate.promise;
+        },
+    });
+    lifecycle.init();
+    const pending = lifecycle.fetch("/synthetic");
+    lifecycle.destroy();
+    assert.equal(signal.aborted, true);
+    lifecycle.init();
+    gate.resolve(new Response("{}"));
+    await assert.rejects(pending, { name: "AbortError" });
+    lifecycle.destroy();
+});
+test("late response bodies cannot enter an accepted view after destruction", async () => {
+    const gate = deferred();
+    const lifecycle = create({
+        fetch: async () => ({ ok: true, json: () => gate.promise }),
+    });
+    lifecycle.init();
+    const response = await lifecycle.fetch("/synthetic");
+    const body = response.json();
+    lifecycle.destroy();
+    lifecycle.init();
+    gate.resolve({ old: true });
+    await assert.rejects(body, { name: "AbortError" });
+    lifecycle.destroy();
+});
+test("an external cancellation signal also aborts owned requests", async () => {
+    let signal;
+    const lifecycle = create({
+            fetch: async (_url, options) => {
+                signal = options.signal;
+                return new Response("{}");
+            },
+        }),
+        external = new AbortController();
+    lifecycle.init();
+    await lifecycle.fetch("/synthetic", { signal: external.signal });
+    external.abort();
+    assert.equal(signal.aborted, true);
+    lifecycle.destroy();
+});
+test("observers disconnect and reject callbacks from a former mount", () => {
+    let callback,
+        disconnects = 0;
+    class Observer {
+        constructor(fn) {
+            callback = fn;
+        }
+        observe() {}
+        disconnect() {
+            disconnects++;
+        }
+    }
+    const lifecycle = create();
+    lifecycle.init();
+    let calls = 0;
+    const Type = lifecycle.observer(Observer);
+    new Type(() => calls++).observe({});
+    callback();
+    assert.equal(calls, 1);
+    lifecycle.destroy();
+    lifecycle.init();
+    callback();
+    assert.equal(calls, 1);
+    assert.equal(disconnects, 1);
+    lifecycle.destroy();
+});
+test("Status transport starts once, closes each stream, clears polling and rejects superseded stream events", () => {
+    const timers = clock(),
+        sources = [];
+    let logs = 0;
+    class Source {
+        constructor() {
+            this.listeners = new Map();
+            this.closed = 0;
+            sources.push(this);
+        }
+        addEventListener(type, callback) {
+            this.listeners.set(type, callback);
+        }
+        close() {
+            this.closed++;
+        }
+    }
+    const controller = createController({
+        timers,
+        EventSourceType: Source,
+        onJobLogEvent: () => logs++,
+    });
+    controller.start();
+    controller.start();
+    assert.equal(sources.length, 1);
+    assert.equal(timers.pending.size, 2);
+    sources[0].listeners.get("error")();
+    assert.equal(timers.pending.size, 3);
+    const reconnect = [...timers.pending.values()].at(-1);
+    controller.destroy();
+    assert.equal(timers.pending.size, 0);
+    reconnect();
+    assert.equal(sources.length, 1);
+    controller.start();
+    assert.equal(sources.length, 2);
+    sources[0].listeners.get("dashboard")({ data: '{"reason":"job.log"}' });
+    assert.equal(logs, 0);
+    sources[1].listeners.get("dashboard")({ data: '{"reason":"job.log"}' });
+    assert.equal(logs, 1);
+    controller.destroy();
+    assert.equal(timers.pending.size, 0);
+    assert.equal(sources[1].closed, 1);
+});
+
+test("timer ownership handles equal animation and timeout identifiers independently", () => {
+    const cleared = [];
+    const lifecycle = create({
+        setTimeout: () => 1,
+        requestAnimationFrame: () => 1,
+        clearTimeout: (id) => cleared.push(["timeout", id]),
+        cancelAnimationFrame: (id) => cleared.push(["frame", id]),
+    });
+    lifecycle.init();
+    lifecycle.setTimeout(() => {}, 0);
+    lifecycle.requestAnimationFrame(() => {});
+    lifecycle.destroy();
+    assert.deepEqual(cleared, [
+        ["timeout", 1],
+        ["frame", 1],
+    ]);
+});
+test("request completion and destruction detach external cancellation listeners", async () => {
+    class Signal extends EventTarget {
+        constructor() {
+            super();
+            this.count = 0;
+            this.aborted = false;
+        }
+        addEventListener(...args) {
+            this.count++;
+            super.addEventListener(...args);
+        }
+        removeEventListener(...args) {
+            this.count--;
+            super.removeEventListener(...args);
+        }
+    }
+    const signal = new Signal(),
+        lifecycle = create({ fetch: async () => new Response("{}") });
+    lifecycle.init();
+    const response = await lifecycle.fetch("/synthetic", { signal });
+    assert.equal(signal.count, 1);
+    await response.json();
+    assert.equal(signal.count, 0);
+    await lifecycle.fetch("/synthetic", { signal });
+    assert.equal(signal.count, 1);
+    lifecycle.destroy();
+    assert.equal(signal.count, 0);
+});
+
+test("Status snapshot adapter rejects the previous lifetime even when the same adapter initializes again", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs");
+    const gate = deferred(),
+        events = [];
+    const context = {
+        BrowserEffects: { create: () => create({ fetch: () => gate.promise }) },
+        window: { canUseScope: () => true },
+        console,
+    };
+    vm.runInNewContext(
+        fs.readFileSync(
+            require.resolve("../../static/js/status-snapshot-adapter.js"),
+            "utf8",
+        ),
+        context,
+    );
+    const adapter = context.StatusSnapshotAdapter.create({
+        dispatchStatusInteraction: (event) => events.push(event),
+        encodeURIComponent,
+    });
+    adapter.init();
+    const pending = adapter.executeStatusSnapshotFetch({
+        stream: "servers",
+        requestId: "old",
+    });
+    adapter.destroy();
+    adapter.init();
+    gate.resolve(new Response("[]"));
+    await pending;
+    assert.deepEqual(events, []);
+    adapter.destroy();
+});
+test("Admin notification adapter cannot render a previous request failure after destroy and reinitialization", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs");
+    const gate = deferred();
+    let writes = 0;
+    const context = {
+        BrowserEffects: { create: () => create({ fetch: () => gate.promise }) },
+        window: {},
+        document: {
+            getElementById() {
+                writes++;
+                return {};
+            },
+            querySelectorAll: () => [],
+        },
+        console,
+    };
+    vm.runInNewContext(
+        fs.readFileSync(
+            require.resolve("../../static/js/admin-notifications-adapter.js"),
+            "utf8",
+        ),
+        context,
+    );
+    const adapter = context.AdminNotificationsAdapter.create({
+        beginAdminSnapshot: () => 1,
+        adminPageInteraction: {
+            dispatch: () => {
+                writes++;
+                return [];
+            },
+        },
+        renderAdminWorkspace: () => writes++,
+    });
+    adapter.init();
+    const pending = adapter.fetchNotificationSettings();
+    adapter.destroy();
+    adapter.init();
+    gate.resolve(new Response("{}", { status: 503 }));
+    await pending;
+    assert.equal(writes, 0);
+    adapter.destroy();
+});

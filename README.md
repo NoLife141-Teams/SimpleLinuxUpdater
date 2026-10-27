@@ -148,6 +148,7 @@ For binary releases, export environment variables in your shell before starting 
 - [Production manual QA checklist](docs/production-manual-qa-checklist.md)
 - [Architecture](docs/architecture.md)
 - [Contributing](docs/contributing.md)
+- [Frontend adapters and isolated browser tests](docs/frontend-isolation.md)
 
 Choosing between SimpleLinuxUpdater, scripts, and Ansible: see [docs/usage.md](docs/usage.md#how-simplelinuxupdater-compares-to-scripts-and-ansible).
 

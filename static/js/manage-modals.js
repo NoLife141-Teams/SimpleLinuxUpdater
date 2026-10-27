@@ -1,103 +1,161 @@
-// Manage page modal focus and file-label helpers. Loaded before manage.js.
-let modalFocusStack = [];
-let manageModalBackgroundScrollY = 0;
+// Per-page modal focus and file-label lifecycle.
+(function (root) {
+    function create() {
+        const lifecycle = root.BrowserEffects.create();
+        lifecycle.init();
+        // Manage page modal focus and file-label helpers. Loaded before manage.js.
+        let modalFocusStack = [];
+        let manageModalBackgroundScrollY = 0;
 
-function syncManageModalScrollLock() {
-    const locked = modalFocusStack.length > 0;
-    const wasLocked = document.documentElement.classList.contains('manage-modal-open');
-    if (locked && !wasLocked) {
-        manageModalBackgroundScrollY = window.scrollY;
-        document.body.style.setProperty('--manage-modal-scroll-y', `${manageModalBackgroundScrollY}px`);
-    }
-    document.documentElement.classList.toggle('manage-modal-open', locked);
-    document.body.classList.toggle('manage-modal-open', locked);
-    if (!locked && wasLocked) {
-        document.body.style.removeProperty('--manage-modal-scroll-y');
-        window.scrollTo(0, manageModalBackgroundScrollY);
-    }
-}
+        function syncManageModalScrollLock() {
+            const locked = modalFocusStack.length > 0;
+            const wasLocked =
+                document.documentElement.classList.contains(
+                    "manage-modal-open",
+                );
+            if (locked && !wasLocked) {
+                manageModalBackgroundScrollY = window.scrollY;
+                document.body.style.setProperty(
+                    "--manage-modal-scroll-y",
+                    `${manageModalBackgroundScrollY}px`,
+                );
+            }
+            document.documentElement.classList.toggle(
+                "manage-modal-open",
+                locked,
+            );
+            document.body.classList.toggle("manage-modal-open", locked);
+            if (!locked && wasLocked) {
+                document.body.style.removeProperty("--manage-modal-scroll-y");
+                window.scrollTo(0, manageModalBackgroundScrollY);
+            }
+        }
 
-function modalFocusableElements(modal) {
-    if (!modal) return [];
-    return Array.from(modal.querySelectorAll([
-        'a[href]',
-        'button:not([disabled])',
-        'input:not([disabled]):not([type="hidden"])',
-        'select:not([disabled])',
-        'textarea:not([disabled])',
-        '[tabindex]:not([tabindex="-1"])'
-    ].join(','))).filter((el) => {
-        return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-    });
-}
+        function modalFocusableElements(modal) {
+            if (!modal) return [];
+            return Array.from(
+                modal.querySelectorAll(
+                    [
+                        "a[href]",
+                        "button:not([disabled])",
+                        'input:not([disabled]):not([type="hidden"])',
+                        "select:not([disabled])",
+                        "textarea:not([disabled])",
+                        '[tabindex]:not([tabindex="-1"])',
+                    ].join(","),
+                ),
+            ).filter((el) => {
+                return !!(
+                    el.offsetWidth ||
+                    el.offsetHeight ||
+                    el.getClientRects().length
+                );
+            });
+        }
 
-function activateModalFocus(modal, preferredTarget) {
-    if (!modal) return;
-    modalFocusStack = modalFocusStack.filter((entry) => entry.modal !== modal);
-    modalFocusStack.push({ modal, previous: document.activeElement });
-    syncManageModalScrollLock();
-    const focusable = modalFocusableElements(modal);
-    const target = preferredTarget && !preferredTarget.disabled ? preferredTarget : focusable[0];
-    if (target && typeof target.focus === 'function') {
-        window.setTimeout(() => target.focus({ preventScroll: true }), 0);
-    }
-}
+        function activateModalFocus(modal, preferredTarget) {
+            if (!modal) return;
+            modalFocusStack = modalFocusStack.filter(
+                (entry) => entry.modal !== modal,
+            );
+            modalFocusStack.push({ modal, previous: document.activeElement });
+            syncManageModalScrollLock();
+            const focusable = modalFocusableElements(modal);
+            const target =
+                preferredTarget && !preferredTarget.disabled
+                    ? preferredTarget
+                    : focusable[0];
+            if (target && typeof target.focus === "function") {
+                lifecycle.setTimeout(
+                    () => target.focus({ preventScroll: true }),
+                    0,
+                );
+            }
+        }
 
-function releaseModalFocus(modal) {
-    const index = modalFocusStack.map((entry) => entry.modal).lastIndexOf(modal);
-    if (index === -1) return;
-    const [entry] = modalFocusStack.splice(index, 1);
-    syncManageModalScrollLock();
-    const previous = entry.previous;
-    if (previous && document.contains(previous) && typeof previous.focus === 'function') {
-        window.setTimeout(() => previous.focus({ preventScroll: true }), 0);
-    }
-}
+        function releaseModalFocus(modal) {
+            const index = modalFocusStack
+                .map((entry) => entry.modal)
+                .lastIndexOf(modal);
+            if (index === -1) return;
+            const [entry] = modalFocusStack.splice(index, 1);
+            syncManageModalScrollLock();
+            const previous = entry.previous;
+            if (
+                previous &&
+                document.contains(previous) &&
+                typeof previous.focus === "function"
+            ) {
+                lifecycle.setTimeout(
+                    () => previous.focus({ preventScroll: true }),
+                    0,
+                );
+            }
+        }
 
-function trapActiveModalFocus(event) {
-    const entry = modalFocusStack[modalFocusStack.length - 1];
-    if (!entry || !entry.modal || !entry.modal.classList.contains('active')) {
-        return false;
-    }
-    const focusable = modalFocusableElements(entry.modal);
-    if (!focusable.length) {
-        event.preventDefault();
-        return true;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-        return true;
-    }
-    if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-        return true;
-    }
-    if (!entry.modal.contains(document.activeElement)) {
-        event.preventDefault();
-        first.focus();
-        return true;
-    }
-    return false;
-}
+        function trapActiveModalFocus(event) {
+            const entry = modalFocusStack[modalFocusStack.length - 1];
+            if (
+                !entry ||
+                !entry.modal ||
+                !entry.modal.classList.contains("active")
+            ) {
+                return false;
+            }
+            const focusable = modalFocusableElements(entry.modal);
+            if (!focusable.length) {
+                event.preventDefault();
+                return true;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+                return true;
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+                return true;
+            }
+            if (!entry.modal.contains(document.activeElement)) {
+                event.preventDefault();
+                first.focus();
+                return true;
+            }
+            return false;
+        }
 
-function fileInputEmptyLabel(input) {
-    if (!input) return 'Choose file';
-    switch (input.id) {
-        case 'global-key-file':
-            return 'Choose credential file';
-        case 'key_file':
-            return 'Choose per-server key';
-        case 'edit-key':
-            return 'Choose key';
-        default:
-            return 'Choose file';
-    }
-}
+        function fileInputEmptyLabel(input) {
+            if (!input) return "Choose file";
+            switch (input.id) {
+                case "global-key-file":
+                    return "Choose credential file";
+                case "key_file":
+                    return "Choose per-server key";
+                case "edit-key":
+                    return "Choose key";
+                default:
+                    return "Choose file";
+            }
+        }
 
-function resetFileInputLabel(input) {
-    updateFileLabel(input, fileInputEmptyLabel(input));
-}
+        function resetFileInputLabel(input) {
+            updateFileLabel(input, fileInputEmptyLabel(input));
+        }
+
+        lifecycle.own(() => {
+            modalFocusStack = [];
+            syncManageModalScrollLock();
+        });
+        return Object.freeze({
+            destroy: lifecycle.destroy,
+            activateModalFocus,
+            releaseModalFocus,
+            trapActiveModalFocus,
+            resetFileInputLabel,
+        });
+    }
+    root.ManageModalEffects = Object.freeze({ create });
+})(globalThis);

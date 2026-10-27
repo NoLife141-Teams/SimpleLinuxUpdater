@@ -1,285 +1,246 @@
-const managePageInteraction = window.ManagePageInteraction.createStore();
-let hostKeyModalPromise = null;
-let hostKeyModalResolvers = [];
-let editKnownHostCheckPromise = null;
-let auditFetchHadError = false;
-let manageSectionNavigationLockUntil = 0;
-let manageSectionSyncTimer = null;
-let manageSectionScrollFrame = null;
-let manageSectionResizeObserver = null;
-let manageInventoryRefreshPromise = Promise.resolve();
+// Composition of browser adapters; interaction owners retain state and decisions.
+(function (root) {
+    let current = null;
+    function mount() {
+        current?.destroy();
+        const lifecycle = root.BrowserEffects.create();
+        lifecycle.init();
+        const fetch = lifecycle.fetch;
+        const IntersectionObserver = root.IntersectionObserver
+            ? lifecycle.observer(root.IntersectionObserver)
+            : undefined;
+        const ResizeObserver = root.ResizeObserver
+            ? lifecycle.observer(root.ResizeObserver)
+            : undefined;
+        const modalEffects = window.ManageModalEffects.create();
+        const {
+            activateModalFocus,
+            releaseModalFocus,
+            trapActiveModalFocus,
+            resetFileInputLabel,
+        } = modalEffects;
+        lifecycle.own(modalEffects.destroy);
+        const managePageInteraction =
+            window.ManagePageInteraction.createStore();
+        let hostKeyModalPromise = null;
+        let hostKeyModalResolvers = [];
+        let editKnownHostCheckPromise = null;
 
-function renderManageWorkspace() {
-    const view = managePageInteraction.getView();
-    const workspace = view.workspace;
-    workspace.sections.forEach((section) => {
-        const root = document.querySelector(`[data-manage-section="${section.id}"]`);
-        const link = document.querySelector(`[data-manage-section-link="${section.id}"]`);
-        const navSummary = document.querySelector(`[data-manage-section-nav-summary="${section.id}"]`);
-        const summary = document.querySelector(`[data-manage-section-summary="${section.id}"]`);
-        const toggle = document.querySelector(`[data-manage-section-toggle="${section.id}"]`);
-        const content = document.querySelector(`[data-manage-section-content="${section.id}"]`);
-        root?.classList.toggle("is-collapsed", section.collapsed);
-        if (link) {
-            if (workspace.activeSection === section.id) link.setAttribute("aria-current", "location");
-            else link.removeAttribute("aria-current");
-        }
-        if (navSummary) navSummary.textContent = section.summary;
-        if (summary) {
-            summary.textContent = section.summary;
-            summary.hidden = !section.collapsed;
-        }
-        if (toggle) {
-            toggle.setAttribute("aria-expanded", String(!section.collapsed));
-            toggle.setAttribute("aria-label", `${section.collapsed ? "Expand" : "Collapse"} ${section.label}`);
-            const label = toggle.querySelector("[data-manage-section-toggle-label]");
-            if (label) label.textContent = section.collapsed ? "Expand" : "Collapse";
-        }
-        if (content) content.hidden = section.collapsed;
-    });
+        let manageInventoryRefreshPromise = Promise.resolve();
 
-    const fleet = view.inventory.summary;
-    document.getElementById("manage-summary-total").textContent = String(fleet.total);
-    document.getElementById("manage-summary-host-auth").textContent = String(fleet.password + fleet.serverKey);
-    document.getElementById("manage-summary-global-auth").textContent = String(fleet.globalKey);
-    document.getElementById("manage-summary-ambiguous").textContent = String(fleet.ambiguous);
-    document.getElementById("manage-summary-missing-auth").textContent = String(fleet.missing);
-    document.getElementById("manage-summary-unknown-auth").textContent = String(fleet.unknown);
-    document.getElementById("manage-summary-host-trust").textContent = String(fleet.hostKeyAttention);
-
-    renderAddAuthMethod();
-}
-
-function runManageWorkspaceEffects(effects) {
-    for (const effect of effects || []) {
-        if (effect.type === "render" && effect.area === "workspace") renderManageWorkspace();
-        if (effect.type === "focusSection") {
-            const section = document.querySelector(`[data-manage-section="${effect.sectionID}"]`);
-            const heading = document.getElementById(`manage-section-${effect.sectionID}-heading`);
-            section?.scrollIntoView({ behavior: "auto", block: "start" });
-            heading?.focus({ preventScroll: true });
-        }
-    }
-}
-
-function manageSectionIDFromHash() {
-    const prefix = "#manage-section-";
-    if (window.location.hash.startsWith(prefix)) return window.location.hash.slice(prefix.length);
-    if (window.location.hash === "#audit-trail") return "audit";
-    if (window.location.hash === "#server-directory") return "directory";
-    return "";
-}
-
-function navigateManageSection(sectionID, updateHistory = false) {
-    const effects = managePageInteraction.dispatch({ type: "sectionNavigationRequested", sectionID });
-    if (!effects.length) return;
-    manageSectionNavigationLockUntil = Date.now() + 750;
-    if (updateHistory) history.pushState(null, "", `#manage-section-${sectionID}`);
-    runManageWorkspaceEffects(effects);
-}
-
-function syncVisibleManageSection() {
-    const lockRemaining = manageSectionNavigationLockUntil - Date.now();
-    if (lockRemaining > 0) {
-        window.clearTimeout(manageSectionSyncTimer);
-        manageSectionSyncTimer = window.setTimeout(syncVisibleManageSection, lockRemaining + 16);
-        return;
-    }
-    manageSectionSyncTimer = null;
-    const sections = Array.from(document.querySelectorAll("[data-manage-section]"));
-    if (!sections.length) return;
-    const activeSection = managePageInteraction.getView().workspace.activeSection;
-    const documentIsScrollable = document.documentElement.scrollHeight > window.innerHeight + 1;
-    const atDocumentEnd = documentIsScrollable
-        && window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1;
-    let sectionID = atDocumentEnd ? sections[sections.length - 1].dataset.manageSection : "";
-    if (!sectionID) {
-        const navBottom = document.getElementById("manage-section-nav")?.getBoundingClientRect().bottom || 0;
-        const anchorY = navBottom + 8;
-        const sectionsAtAnchor = sections.filter((section) => {
-            const bounds = section.getBoundingClientRect();
-            return bounds.top <= anchorY && bounds.bottom > anchorY;
+        const manageWorkspace = window.ManageWorkspaceAdapter.create({
+            managePageInteraction: managePageInteraction,
+            renderAddAuthMethod: (...args) => renderAddAuthMethod(...args),
         });
-        const activeAtAnchor = sectionsAtAnchor.find(section => section.dataset.manageSection === activeSection);
-        sectionID = (activeAtAnchor || sectionsAtAnchor[0])?.dataset.manageSection || "";
-    }
-    if (!sectionID || sectionID === activeSection) return;
-    history.replaceState(null, "", `#manage-section-${sectionID}`);
-    runManageWorkspaceEffects(managePageInteraction.dispatch({ type: "sectionActivated", sectionID }));
-}
-
-function scheduleVisibleManageSectionSync() {
-    if (manageSectionScrollFrame !== null) return;
-    manageSectionScrollFrame = window.requestAnimationFrame(() => {
-        manageSectionScrollFrame = null;
-        syncVisibleManageSection();
-    });
-}
-
-function initializeManageWorkspace() {
-    document.getElementById("add-server-action")?.addEventListener("click", () => {
-        navigateManageSection("add-server", true);
-    });
-    document.getElementById("manage-section-nav")?.addEventListener("click", (event) => {
-        const link = event.target.closest("[data-manage-section-link]");
-        if (!link) return;
-        event.preventDefault();
-        navigateManageSection(link.dataset.manageSectionLink, true);
-    });
-    document.querySelectorAll("[data-manage-section-toggle]").forEach((toggle) => {
-        toggle.addEventListener("click", () => {
-            runManageWorkspaceEffects(managePageInteraction.dispatch({
-                type: "sectionCollapseToggled",
-                sectionID: toggle.dataset.manageSectionToggle
-            }));
-            scheduleVisibleManageSectionSync();
+        const { renderManageWorkspace, initializeManageWorkspace } =
+            manageWorkspace;
+        manageWorkspace.init();
+        lifecycle.own(manageWorkspace.destroy);
+        const manageAudit = window.ManageAuditAdapter.create({
+            managePageInteraction: managePageInteraction,
+            escapeHtml: (...args) => escapeHtml(...args),
+            safeStatusClassToken: (...args) => safeStatusClassToken(...args),
+            encodeURIComponent: (...args) => encodeURIComponent(...args),
+            activateModalFocus: (...args) => activateModalFocus(...args),
+            releaseModalFocus: (...args) => releaseModalFocus(...args),
+            renderManageWorkspace: (...args) => renderManageWorkspace(...args),
+            parseErrorResponse: (...args) => parseErrorResponse(...args),
         });
-    });
-    window.addEventListener("hashchange", () => {
-        const sectionID = manageSectionIDFromHash();
-        if (sectionID) navigateManageSection(sectionID);
-    });
-    window.addEventListener("scroll", scheduleVisibleManageSectionSync, { passive: true });
-    window.addEventListener("resize", scheduleVisibleManageSectionSync);
-    if ("ResizeObserver" in window) {
-        manageSectionResizeObserver = new ResizeObserver(scheduleVisibleManageSectionSync);
-        document.querySelectorAll("[data-manage-section]").forEach(section => {
-            manageSectionResizeObserver.observe(section);
-        });
-    }
-    const deepLink = manageSectionIDFromHash();
-    if (deepLink) window.requestAnimationFrame(() => navigateManageSection(deepLink));
-    else renderManageWorkspace();
-}
+        const {
+            hydrateAuditDateTimeInput,
+            renderAuditFailureCauseFilter,
+            auditEventByID,
+            openAuditDetailDrawer,
+            closeAuditDetailDrawer,
+            copyAuditDetail,
+            fetchAuditEvents,
+        } = manageAudit;
+        manageAudit.init();
+        lifecycle.own(manageAudit.destroy);
 
-function activeEditorName() {
-    const editor = managePageInteraction.getView().editor;
-    return editor.open ? editor.originalName : "";
-}
+        function activeEditorName() {
+            const editor = managePageInteraction.getView().editor;
+            return editor.open ? editor.originalName : "";
+        }
 
-function effectiveAuthLabel(value) {
-    return {
-        "per-server-key": "per-server SSH key",
-        "global-key": "Global SSH Credential",
-        "per-server-key-and-password": "per-server SSH key and password",
-        "global-key-and-password": "Global SSH Credential and password",
-        password: "password",
-        missing: "no usable credential",
-        unknown: "authentication status unknown"
-    }[value] || "unknown authentication";
-}
+        function effectiveAuthLabel(value) {
+            return (
+                {
+                    "per-server-key": "per-server SSH key",
+                    "global-key": "Global SSH Credential",
+                    "per-server-key-and-password":
+                        "per-server SSH key and password",
+                    "global-key-and-password":
+                        "Global SSH Credential and password",
+                    password: "password",
+                    missing: "no usable credential",
+                    unknown: "authentication status unknown",
+                }[value] || "unknown authentication"
+            );
+        }
 
-function renderCredentialOutcomes() {
-    const outcome = document.getElementById("credential-outcome");
-    if (!outcome) return;
-    const editor = managePageInteraction.getView().editor;
-    outcome.textContent = `Clear Password → ${effectiveAuthLabel(editor.credentialOutcomes?.clearPassword)}. Clear Key → ${effectiveAuthLabel(editor.credentialOutcomes?.clearKey)}.`;
-}
+        function renderCredentialOutcomes() {
+            const outcome = document.getElementById("credential-outcome");
+            if (!outcome) return;
+            const editor = managePageInteraction.getView().editor;
+            outcome.textContent = `Clear Password → ${effectiveAuthLabel(editor.credentialOutcomes?.clearPassword)}. Clear Key → ${effectiveAuthLabel(editor.credentialOutcomes?.clearKey)}.`;
+        }
 
-function commandExecution(command, payload = {}) {
-    return managePageInteraction.dispatch({ type: 'commandRequested', command, payload })
-        .find((effect) => effect.type === 'executeCommand');
-}
+        function commandExecution(command, payload = {}) {
+            if (!lifecycle.active) return null;
+            return managePageInteraction
+                .dispatch({ type: "commandRequested", command, payload })
+                .find((effect) => effect.type === "executeCommand");
+        }
 
-async function executeManageEffects(effects, options = {}) {
-    const announce = options.announce !== false;
-    const refreshStreams = new Set();
-    for (const effect of effects || []) {
-        if (effect.type === 'announce' && announce) window.notifyApp(effect.message || 'Manage action completed.');
-        if (effect.type === 'refresh') (effect.streams || []).forEach(stream => refreshStreams.add(stream));
-    }
-    const refreshes = [];
-    if (refreshStreams.has('inventory')) refreshes.push(fetchManageServers());
-    if (refreshStreams.has('globalKey')) refreshes.push(fetchGlobalKeyStatus());
-    if (refreshStreams.has('audit')) refreshes.push(fetchAuditEvents({ silent: true }));
-    await Promise.all(refreshes);
-}
+        async function executeManageEffects(effects, options = {}) {
+            const lifetime = lifecycle.capture();
 
-async function settleCommand(type, plan, message, options = {}) {
-    const effects = managePageInteraction.dispatch({ type, plan, message });
-    await executeManageEffects(effects, options);
-}
+            const announce = options.announce !== false;
+            const refreshStreams = new Set();
+            for (const effect of effects || []) {
+                if (effect.type === "announce" && announce)
+                    window.notifyApp(
+                        effect.message || "Manage action completed.",
+                    );
+                if (effect.type === "refresh")
+                    (effect.streams || []).forEach((stream) =>
+                        refreshStreams.add(stream),
+                    );
+            }
+            const refreshes = [];
+            if (refreshStreams.has("inventory"))
+                refreshes.push(fetchManageServers());
+            if (refreshStreams.has("globalKey"))
+                refreshes.push(fetchGlobalKeyStatus());
+            if (refreshStreams.has("audit"))
+                refreshes.push(fetchAuditEvents({ silent: true }));
+            await Promise.all(refreshes);
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
 
-const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
-    store: managePageInteraction,
-    escapeHTML: escapeHtml,
-    requestJSON: async (url, options, fallbackMessage) => {
-        const response = await fetch(url, options);
-        if (!response.ok) throw new Error(await parseErrorResponse(response, fallbackMessage));
-        return response.json().catch(() => ({}));
-    }
-});
+        async function settleCommand(type, plan, message, options = {}) {
+            const lifetime = lifecycle.capture();
 
-	        function escapeHtml(value) {
-	            return String(value ?? "")
-	                .replace(/&/g, "&amp;")
-	                .replace(/</g, "&lt;")
+            const effects = managePageInteraction.dispatch({
+                type,
+                plan,
+                message,
+            });
+            await executeManageEffects(effects, options);
+            if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        const managePolicyOverrides =
+            window.ManagePolicyOverrideAdapter.createAdapter({
+                store: managePageInteraction,
+                escapeHTML: escapeHtml,
+                requestJSON: async (url, options, fallbackMessage) => {
+                    const lifetime = lifecycle.capture();
+
+                    const response = await fetch(url, options);
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!response.ok)
+                        throw new Error(
+                            await parseErrorResponse(response, fallbackMessage),
+                        );
+                    return response.json().catch(() => ({}));
+                },
+            });
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
-	                .replace(/'/g, "&#39;");
-	        }
+                .replace(/'/g, "&#39;");
+        }
 
-
-	            function normalizePort(value, fallback = 22) {
-	                const parsed = Number.parseInt(value, 10);
-	                if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) return fallback;
-                return parsed;
-            }
+        function normalizePort(value, fallback = 22) {
+            const parsed = Number.parseInt(value, 10);
+            if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535)
+                return fallback;
+            return parsed;
+        }
 
         async function scanHostKey(host, port) {
-            const res = await fetch('/api/hostkeys/scan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ host, port })
+            const lifetime = lifecycle.capture();
+
+            const res = await fetch("/api/hostkeys/scan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ host, port }),
             });
+            if (!lifecycle.isCurrent(lifetime)) return;
             if (!res.ok) {
-                throw new Error(await parseErrorResponse(res, 'Failed to scan host key.'));
+                throw new Error(
+                    await parseErrorResponse(res, "Failed to scan host key."),
+                );
             }
             return res.json();
         }
 
-            async function trustHostKey(host, port, fingerprint) {
-                const res = await fetch('/api/hostkeys/trust', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ host, port, fingerprint_sha256: fingerprint })
-                });
-                if (!res.ok) {
-                    throw new Error(await parseErrorResponse(res, 'Failed to trust host key.'));
-                }
-                return res.json();
-            }
+        async function trustHostKey(host, port, fingerprint) {
+            const lifetime = lifecycle.capture();
 
-            async function clearKnownHost(host, port) {
-                const res = await fetch('/api/hostkeys/clear', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ host, port })
-                });
-                if (!res.ok) {
-                    throw new Error(await parseErrorResponse(res, 'Failed to clear known host entry.'));
-                }
-                return res.json();
+            const res = await fetch("/api/hostkeys/trust", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    host,
+                    port,
+                    fingerprint_sha256: fingerprint,
+                }),
+            });
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (!res.ok) {
+                throw new Error(
+                    await parseErrorResponse(res, "Failed to trust host key."),
+                );
             }
+            return res.json();
+        }
+
+        async function clearKnownHost(host, port) {
+            const lifetime = lifecycle.capture();
+
+            const res = await fetch("/api/hostkeys/clear", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ host, port }),
+            });
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (!res.ok) {
+                throw new Error(
+                    await parseErrorResponse(
+                        res,
+                        "Failed to clear known host entry.",
+                    ),
+                );
+            }
+            return res.json();
+        }
 
         function hostKeyPromptText(scanned) {
-            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
+            const replacing =
+                !!scanned?.host_entry_exists && !scanned?.already_trusted;
             return (
                 `Host: ${scanned.host}\n` +
                 `Port: ${scanned.port}\n` +
                 `Algorithm: ${scanned.algorithm}\n` +
                 `Fingerprint: ${scanned.fingerprint_sha256}\n\n` +
-                `${replacing ? 'Replace the saved key' : 'Add this key'} in known_hosts?`
+                `${replacing ? "Replace the saved key" : "Add this key"} in known_hosts?`
             );
         }
 
-	        function closeHostKeyModal(confirmed) {
-	            const modal = document.getElementById('hostkey-modal');
-	            if (modal) {
-	                modal.classList.remove('active');
-	                releaseModalFocus(modal);
-	            }
-	            const resolvers = hostKeyModalResolvers;
+        function closeHostKeyModal(confirmed) {
+            const modal = document.getElementById("hostkey-modal");
+            if (modal) {
+                modal.classList.remove("active");
+                releaseModalFocus(modal);
+            }
+            const resolvers = hostKeyModalResolvers;
             hostKeyModalResolvers = [];
             hostKeyModalPromise = null;
             for (const resolver of resolvers) {
@@ -288,53 +249,75 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         function confirmHostKeyWithModal(scanned) {
-            const modal = document.getElementById('hostkey-modal');
-            const details = document.getElementById('hostkey-modal-details');
-            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
+            const modal = document.getElementById("hostkey-modal");
+            const details = document.getElementById("hostkey-modal-details");
+            const replacing =
+                !!scanned?.host_entry_exists && !scanned?.already_trusted;
             if (!modal || !details) {
                 return window.confirmAction(
                     `Verify SSH host key before trusting:\n\n${hostKeyPromptText(scanned)}`,
-                    { confirmLabel: replacing ? "Replace key" : "Trust key" }
+                    { confirmLabel: replacing ? "Replace key" : "Trust key" },
                 );
             }
             if (hostKeyModalPromise) {
                 return Promise.resolve(false);
-	            }
-	            details.textContent = hostKeyPromptText(scanned);
-	            document.getElementById('hostkey-title').textContent = replacing ? 'Replace SSH Host Key' : 'Trust SSH Host Key';
-	            document.getElementById('hostkey-modal-trust').textContent = replacing ? 'Replace Key' : 'Trust Key';
-	            modal.classList.add('active');
-	            activateModalFocus(modal, document.getElementById('hostkey-modal-cancel'));
-	            hostKeyModalPromise = new Promise((resolve) => {
-	                hostKeyModalResolvers = [resolve];
+            }
+            details.textContent = hostKeyPromptText(scanned);
+            document.getElementById("hostkey-title").textContent = replacing
+                ? "Replace SSH Host Key"
+                : "Trust SSH Host Key";
+            document.getElementById("hostkey-modal-trust").textContent =
+                replacing ? "Replace Key" : "Trust Key";
+            modal.classList.add("active");
+            activateModalFocus(
+                modal,
+                document.getElementById("hostkey-modal-cancel"),
+            );
+            hostKeyModalPromise = new Promise((resolve) => {
+                hostKeyModalResolvers = [resolve];
             });
             return hostKeyModalPromise;
         }
 
         async function trustHostKeyFlow(host, port, hooks = {}) {
-            if (typeof hooks.onScanning === 'function') {
+            const lifetime = lifecycle.capture();
+
+            if (typeof hooks.onScanning === "function") {
                 hooks.onScanning();
             }
             const scanned = await scanHostKey(host, port);
-            if (typeof hooks.onScanned === 'function') {
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (typeof hooks.onScanned === "function") {
                 hooks.onScanned(scanned);
             }
             if (scanned && scanned.already_trusted) {
-                if (typeof hooks.onAlreadyTrusted === 'function') {
+                if (typeof hooks.onAlreadyTrusted === "function") {
                     hooks.onAlreadyTrusted(scanned);
                 }
                 return { alreadyTrusted: true, scanned };
             }
             const confirmed = await confirmHostKeyWithModal(scanned);
+            if (!lifecycle.isCurrent(lifetime)) return;
             if (!confirmed) {
-                throw new Error('Host key trust cancelled.');
+                throw new Error("Host key trust cancelled.");
             }
-            if (typeof hooks.onTrusting === 'function') {
+            if (typeof hooks.onTrusting === "function") {
                 hooks.onTrusting(scanned);
             }
-            const replacing = !!scanned?.host_entry_exists && !scanned?.already_trusted;
-            const trusted = await trustHostKey(scanned.host, scanned.port, scanned.fingerprint_sha256);
-            return { alreadyTrusted: !!trusted?.already_trusted, replaced: replacing, scanned, trusted };
+            const replacing =
+                !!scanned?.host_entry_exists && !scanned?.already_trusted;
+            const trusted = await trustHostKey(
+                scanned.host,
+                scanned.port,
+                scanned.fingerprint_sha256,
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
+            return {
+                alreadyTrusted: !!trusted?.already_trusted,
+                replaced: replacing,
+                scanned,
+                trusted,
+            };
         }
 
         function saveWindowScroll() {
@@ -347,56 +330,104 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         }
 
         async function performInventoryRequest(request, pageScroll) {
+            const lifetime = lifecycle.capture();
+
             try {
-                const response = await fetch('/api/servers');
+                const response = await fetch("/api/servers");
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
-                    throw new Error(await parseErrorResponse(response, 'Failed to load servers.'));
+                    throw new Error(
+                        await parseErrorResponse(
+                            response,
+                            "Failed to load servers.",
+                        ),
+                    );
                 }
                 const servers = await response.json();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (!Array.isArray(servers)) {
-                    throw new Error('Invalid server list response.');
+                    throw new Error("Invalid server list response.");
                 }
-                const effects = managePageInteraction.dispatch({ type: 'inventorySnapshotReceived', requestID: request.requestID, items: servers });
-                const tbody = document.querySelector('#manage-servers-table tbody');
-                tbody.innerHTML = '';
+                const effects = managePageInteraction.dispatch({
+                    type: "inventorySnapshotReceived",
+                    requestID: request.requestID,
+                    items: servers,
+                });
+                const tbody = document.querySelector(
+                    "#manage-servers-table tbody",
+                );
+                tbody.innerHTML = "";
                 renderTable();
-                requestAnimationFrame(() => restoreWindowScroll(pageScroll));
-                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'inventory');
-                if (followup) await performInventoryRequest(followup, saveWindowScroll());
+                lifecycle.requestAnimationFrame(() =>
+                    restoreWindowScroll(pageScroll),
+                );
+                const followup = effects.find(
+                    (effect) =>
+                        effect.type === "fetchSnapshot" &&
+                        effect.stream === "inventory",
+                );
+                if (followup)
+                    await performInventoryRequest(followup, saveWindowScroll());
             } catch (error) {
-                const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'inventory', requestID: request.requestID, error: error?.message });
-                window.notifyApp(error?.message || 'Failed to load servers.');
-                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'inventory');
-                if (followup) await performInventoryRequest(followup, saveWindowScroll());
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    error?.name === "AbortError"
+                )
+                    return;
+                const effects = managePageInteraction.dispatch({
+                    type: "snapshotFailed",
+                    stream: "inventory",
+                    requestID: request.requestID,
+                    error: error?.message,
+                });
+                window.notifyApp(error?.message || "Failed to load servers.");
+                const followup = effects.find(
+                    (effect) =>
+                        effect.type === "fetchSnapshot" &&
+                        effect.stream === "inventory",
+                );
+                if (followup)
+                    await performInventoryRequest(followup, saveWindowScroll());
             }
         }
 
         async function fetchManageServers() {
-            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'inventory' })
-                .find((effect) => effect.type === 'fetchSnapshot');
-            if (request) manageInventoryRefreshPromise = performInventoryRequest(request, saveWindowScroll());
+            const lifetime = lifecycle.capture();
+
+            const request = managePageInteraction
+                .dispatch({ type: "snapshotRequested", stream: "inventory" })
+                .find((effect) => effect.type === "fetchSnapshot");
+            if (request)
+                manageInventoryRefreshPromise = performInventoryRequest(
+                    request,
+                    saveWindowScroll(),
+                );
             await manageInventoryRefreshPromise;
+            if (!lifecycle.isCurrent(lifetime)) return;
         }
 
         function renderTable() {
-            const tbody = document.querySelector('#manage-servers-table tbody');
-            tbody.innerHTML = '';
+            const tbody = document.querySelector("#manage-servers-table tbody");
+            tbody.innerHTML = "";
             const projection = managePageInteraction.getView().inventory;
-            document.getElementById('page-info').textContent = `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
-            document.getElementById('server-filter-result').textContent = projection.activeFilterCount
-                ? `${projection.total} matching ${projection.total === 1 ? "server" : "servers"} · ${projection.activeFilterCount} active ${projection.activeFilterCount === 1 ? "filter" : "filters"}`
-                : `${projection.total} ${projection.total === 1 ? "server" : "servers"} visible`;
-            document.getElementById('clear-server-filters').disabled = projection.activeFilterCount === 0;
+            document.getElementById("page-info").textContent =
+                `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
+            document.getElementById("server-filter-result").textContent =
+                projection.activeFilterCount
+                    ? `${projection.total} matching ${projection.total === 1 ? "server" : "servers"} · ${projection.activeFilterCount} active ${projection.activeFilterCount === 1 ? "filter" : "filters"}`
+                    : `${projection.total} ${projection.total === 1 ? "server" : "servers"} visible`;
+            document.getElementById("clear-server-filters").disabled =
+                projection.activeFilterCount === 0;
             const groups = projection.groups;
-            groups.forEach(group => {
+            groups.forEach((group) => {
                 if (group.key) {
-                    const groupRow = document.createElement('tr');
-                    groupRow.className = 'group-row';
+                    const groupRow = document.createElement("tr");
+                    groupRow.className = "group-row";
                     groupRow.innerHTML = `<td colspan="6">${escapeHtml(group.key)}</td>`;
                     tbody.appendChild(groupRow);
                 }
-                group.items.forEach(server => {
-                    const row = document.createElement('tr');
+                group.items.forEach((server) => {
+                    const row = document.createElement("tr");
                     row.dataset.name = server.name;
                     const safeName = escapeHtml(server.name);
                     const safeHost = escapeHtml(server.host);
@@ -423,190 +454,450 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             renderManageWorkspace();
         }
 
-        document.querySelector('#manage-servers-table tbody').addEventListener('click', (e) => {
-            const button = e.target.closest('button[data-action]');
-            if (!button) return;
-            const name = button.dataset.name || "";
-            if (!name) return;
-            const action = button.dataset.action || "";
-            if (action === "edit-server") {
-                editServer(name);
-                return;
-            }
-            if (action === "toggle-server") {
-                toggleServerAvailability(name);
-                return;
-            }
-            if (action === "delete-server") {
-                deleteServer(name);
-            }
-        });
+        lifecycle.listen(
+            document.querySelector("#manage-servers-table tbody"),
+            "click",
+            (e) => {
+                const button = e.target.closest("button[data-action]");
+                if (!button) return;
+                const name = button.dataset.name || "";
+                if (!name) return;
+                const action = button.dataset.action || "";
+                if (action === "edit-server") {
+                    editServer(name);
+                    return;
+                }
+                if (action === "toggle-server") {
+                    toggleServerAvailability(name);
+                    return;
+                }
+                if (action === "delete-server") {
+                    deleteServer(name);
+                }
+            },
+        );
 
         const applyManageSortFromHeader = (th) => {
             if (!th) return;
             const key = th.dataset.sortKey;
-            managePageInteraction.dispatch({ type: 'sortChanged', key });
+            managePageInteraction.dispatch({ type: "sortChanged", key });
             renderTable();
         };
 
-        document.querySelectorAll('#manage-servers-table th.sortable').forEach((th) => {
-            const trigger = th.querySelector('.sort-header-btn');
-            if (trigger) {
-                trigger.addEventListener('click', () => {
+        document
+            .querySelectorAll("#manage-servers-table th.sortable")
+            .forEach((th) => {
+                const trigger = th.querySelector(".sort-header-btn");
+                if (trigger) {
+                    lifecycle.listen(trigger, "click", () => {
+                        applyManageSortFromHeader(th);
+                    });
+                    return;
+                }
+                lifecycle.listen(th, "click", () => {
                     applyManageSortFromHeader(th);
                 });
-                return;
-            }
-            th.addEventListener('click', () => {
-                applyManageSortFromHeader(th);
             });
-        });
 
         function syncInventoryFilters() {
-            managePageInteraction.dispatch({ type: 'filtersChanged', patch: {
-                search: document.getElementById('search').value,
-                tag: document.getElementById('tag-filter').value,
-                auth: document.getElementById('auth-filter').value,
-                group: document.getElementById('group-by').value,
-                pageSize: document.getElementById('page-size').value
-            } });
+            managePageInteraction.dispatch({
+                type: "filtersChanged",
+                patch: {
+                    search: document.getElementById("search").value,
+                    tag: document.getElementById("tag-filter").value,
+                    auth: document.getElementById("auth-filter").value,
+                    group: document.getElementById("group-by").value,
+                    pageSize: document.getElementById("page-size").value,
+                },
+            });
             renderTable();
         }
-        document.getElementById('search').addEventListener('input', syncInventoryFilters);
-        document.getElementById('tag-filter').addEventListener('input', syncInventoryFilters);
-        document.getElementById('auth-filter').addEventListener('change', syncInventoryFilters);
-        document.getElementById('group-by').addEventListener('change', syncInventoryFilters);
-        document.getElementById('page-size').addEventListener('change', syncInventoryFilters);
-        document.getElementById('clear-server-filters').addEventListener('click', () => {
-            document.getElementById('search').value = '';
-            document.getElementById('tag-filter').value = '';
-            document.getElementById('auth-filter').value = '';
-            document.getElementById('group-by').value = '';
-            document.getElementById('page-size').value = '20';
-            managePageInteraction.dispatch({ type: 'filtersReset' });
-            renderTable();
-        });
+        lifecycle.listen(
+            document.getElementById("search"),
+            "input",
+            syncInventoryFilters,
+        );
+        lifecycle.listen(
+            document.getElementById("tag-filter"),
+            "input",
+            syncInventoryFilters,
+        );
+        lifecycle.listen(
+            document.getElementById("auth-filter"),
+            "change",
+            syncInventoryFilters,
+        );
+        lifecycle.listen(
+            document.getElementById("group-by"),
+            "change",
+            syncInventoryFilters,
+        );
+        lifecycle.listen(
+            document.getElementById("page-size"),
+            "change",
+            syncInventoryFilters,
+        );
+        lifecycle.listen(
+            document.getElementById("clear-server-filters"),
+            "click",
+            () => {
+                document.getElementById("search").value = "";
+                document.getElementById("tag-filter").value = "";
+                document.getElementById("auth-filter").value = "";
+                document.getElementById("group-by").value = "";
+                document.getElementById("page-size").value = "20";
+                managePageInteraction.dispatch({ type: "filtersReset" });
+                renderTable();
+            },
+        );
 
-        document.getElementById('prev-page').addEventListener('click', () => {
-            managePageInteraction.dispatch({ type: 'pageChanged', page: Math.max(1, managePageInteraction.getView().inventory.page - 1) });
+        lifecycle.listen(document.getElementById("prev-page"), "click", () => {
+            managePageInteraction.dispatch({
+                type: "pageChanged",
+                page: Math.max(
+                    1,
+                    managePageInteraction.getView().inventory.page - 1,
+                ),
+            });
             renderTable();
         });
-        document.getElementById('next-page').addEventListener('click', () => {
-            managePageInteraction.dispatch({ type: 'pageChanged', page: managePageInteraction.getView().inventory.page + 1 });
+        lifecycle.listen(document.getElementById("next-page"), "click", () => {
+            managePageInteraction.dispatch({
+                type: "pageChanged",
+                page: managePageInteraction.getView().inventory.page + 1,
+            });
             renderTable();
         });
-        document.getElementById('audit-prev-page').addEventListener('click', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: Math.max(1, managePageInteraction.getView().audit.query.page - 1) } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-next-page').addEventListener('click', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: managePageInteraction.getView().audit.query.page + 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-target-filter').addEventListener('input', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-action-filter').addEventListener('input', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            document.getElementById('audit-action-preset').value = "";
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-action-preset').addEventListener('change', async () => {
-            document.getElementById('audit-action-filter').value = document.getElementById('audit-action-preset').value;
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-status-filter').addEventListener('change', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-from-filter').addEventListener('change', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-from-filter').addEventListener('input', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-to-filter').addEventListener('change', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-to-filter').addEventListener('input', async () => {
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch: { page: 1 } });
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-refresh').addEventListener('click', fetchAuditEvents);
-        document.getElementById('audit-clear-filters').addEventListener('click', async () => {
-            for (const id of ['audit-target-filter', 'audit-action-filter', 'audit-action-preset', 'audit-status-filter', 'audit-from-filter', 'audit-to-filter']) {
-                document.getElementById(id).value = '';
-            }
-            managePageInteraction.dispatch({
-                type: 'auditQueryChanged',
-                patch: { targetName: '', action: '', status: '', failureCause: '', from: '', to: '', page: 1 }
-            });
-            const url = new URL(window.location.href);
-            for (const parameter of ['audit_target', 'audit_action', 'audit_status', 'failure_cause', 'audit_from', 'audit_to']) {
-                url.searchParams.delete(parameter);
-            }
-            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
-            renderAuditFailureCauseFilter();
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-clear-failure-cause').addEventListener('click', async () => {
-            managePageInteraction.dispatch({
-                type: 'auditQueryChanged',
-                patch: { failureCause: '', page: 1 },
-            });
-            const url = new URL(window.location.href);
-            url.searchParams.delete('failure_cause');
-            window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
-            renderAuditFailureCauseFilter();
-            await fetchAuditEvents();
-        });
-        document.getElementById('audit-prune').addEventListener('click', async () => {
-            if (!(await window.confirmTypedAction('Prune audit events older than the configured retention window?', 'PRUNE'))) {
-                return;
-            }
-            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'auditPrune' });
-            const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) {
-                window.notifyApp(command.find((effect) => effect.type === 'commandRejected')?.reason || 'Audit prune is unavailable.');
-                return;
-            }
-            try {
-                const res = await fetch('/api/audit-events/prune', { method: 'POST' });
-                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to prune audit events.'));
-                await settleCommand('commandCompleted', execution.plan, 'Audit events pruned.', { announce: false });
-            } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err.message || 'Failed to prune audit events.');
-            }
-        });
-        document.querySelector('#audit-table tbody').addEventListener('click', (e) => {
-            const button = e.target.closest('button[data-audit-detail]');
-            if (!button) return;
-            openAuditDetailDrawer(auditEventByID(button.dataset.auditDetail));
-        });
+        lifecycle.listen(
+            document.getElementById("audit-prev-page"),
+            "click",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: {
+                        page: Math.max(
+                            1,
+                            managePageInteraction.getView().audit.query.page -
+                                1,
+                        ),
+                    },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-next-page"),
+            "click",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: {
+                        page:
+                            managePageInteraction.getView().audit.query.page +
+                            1,
+                    },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-target-filter"),
+            "input",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-action-filter"),
+            "input",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                document.getElementById("audit-action-preset").value = "";
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-action-preset"),
+            "change",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                document.getElementById("audit-action-filter").value =
+                    document.getElementById("audit-action-preset").value;
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-status-filter"),
+            "change",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-from-filter"),
+            "change",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-from-filter"),
+            "input",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-to-filter"),
+            "change",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-to-filter"),
+            "input",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { page: 1 },
+                });
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-refresh"),
+            "click",
+            fetchAuditEvents,
+        );
+        lifecycle.listen(
+            document.getElementById("audit-clear-filters"),
+            "click",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                for (const id of [
+                    "audit-target-filter",
+                    "audit-action-filter",
+                    "audit-action-preset",
+                    "audit-status-filter",
+                    "audit-from-filter",
+                    "audit-to-filter",
+                ]) {
+                    document.getElementById(id).value = "";
+                }
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: {
+                        targetName: "",
+                        action: "",
+                        status: "",
+                        failureCause: "",
+                        from: "",
+                        to: "",
+                        page: 1,
+                    },
+                });
+                const url = new URL(window.location.href);
+                for (const parameter of [
+                    "audit_target",
+                    "audit_action",
+                    "audit_status",
+                    "failure_cause",
+                    "audit_from",
+                    "audit_to",
+                ]) {
+                    url.searchParams.delete(parameter);
+                }
+                window.history.replaceState(
+                    null,
+                    "",
+                    `${url.pathname}${url.search}${url.hash}`,
+                );
+                renderAuditFailureCauseFilter();
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-clear-failure-cause"),
+            "click",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                managePageInteraction.dispatch({
+                    type: "auditQueryChanged",
+                    patch: { failureCause: "", page: 1 },
+                });
+                const url = new URL(window.location.href);
+                url.searchParams.delete("failure_cause");
+                window.history.replaceState(
+                    null,
+                    "",
+                    `${url.pathname}${url.search}${url.hash}`,
+                );
+                renderAuditFailureCauseFilter();
+                await fetchAuditEvents();
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("audit-prune"),
+            "click",
+            async () => {
+                const lifetime = lifecycle.capture();
+
+                if (
+                    !(await window.confirmTypedAction(
+                        "Prune audit events older than the configured retention window?",
+                        "PRUNE",
+                    ))
+                ) {
+                    return;
+                }
+                const command = managePageInteraction.dispatch({
+                    type: "commandRequested",
+                    command: "auditPrune",
+                });
+                const execution = command.find(
+                    (effect) => effect.type === "executeCommand",
+                );
+                if (!execution) {
+                    window.notifyApp(
+                        command.find(
+                            (effect) => effect.type === "commandRejected",
+                        )?.reason || "Audit prune is unavailable.",
+                    );
+                    return;
+                }
+                try {
+                    const res = await fetch("/api/audit-events/prune", {
+                        method: "POST",
+                    });
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!res.ok)
+                        throw new Error(
+                            await parseErrorResponse(
+                                res,
+                                "Failed to prune audit events.",
+                            ),
+                        );
+                    await settleCommand(
+                        "commandCompleted",
+                        execution.plan,
+                        "Audit events pruned.",
+                        { announce: false },
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                } catch (err) {
+                    if (
+                        !lifecycle.isCurrent(lifetime) ||
+                        err?.name === "AbortError"
+                    )
+                        return;
+                    await settleCommand(
+                        "commandFailed",
+                        execution.plan,
+                        err.message || "Failed to prune audit events.",
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                }
+            },
+        );
+        lifecycle.listen(
+            document.querySelector("#audit-table tbody"),
+            "click",
+            (e) => {
+                const button = e.target.closest("button[data-audit-detail]");
+                if (!button) return;
+                openAuditDetailDrawer(
+                    auditEventByID(button.dataset.auditDetail),
+                );
+            },
+        );
 
         function renderAccessPosture(server) {
             const authLabels = {
                 password: ["Password", "pill-success"],
                 "per-server-key": ["Per-server key", "pill-success"],
                 "global-key": ["Global SSH Credential", "pill"],
-                "per-server-key-and-password": ["Per-server key + password", "pill-warning"],
-                "global-key-and-password": ["Global SSH Credential + password", "pill-warning"],
+                "per-server-key-and-password": [
+                    "Per-server key + password",
+                    "pill-warning",
+                ],
+                "global-key-and-password": [
+                    "Global SSH Credential + password",
+                    "pill-warning",
+                ],
                 missing: ["Missing credential", "pill-danger"],
-                unknown: ["Authentication unknown", "pill-warning"]
+                unknown: ["Authentication unknown", "pill-warning"],
             };
             const trustLabels = {
                 trusted: "Host key trusted",
                 missing: "Host key not trusted",
                 changed: "Host key changed",
-                unknown: "Trust not checked"
+                unknown: "Trust not checked",
             };
-            const [label, className] = authLabels[server.effectiveAuth] || authLabels.missing;
-            const trust = trustLabels[server.host_key_status] || trustLabels.unknown;
+            const [label, className] =
+                authLabels[server.effectiveAuth] || authLabels.missing;
+            const trust =
+                trustLabels[server.host_key_status] || trustLabels.unknown;
             return `<span class="access-posture"><span class="pill ${className}">${label}</span><small>${escapeHtml(trust)}</small></span>`;
         }
 
@@ -614,250 +905,59 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
             if (!tags || tags.length === 0) {
                 return '<span class="pill pill-muted">None</span>';
             }
-            return tags.map(tag => `<span class="pill">${escapeHtml(tag)}</span>`).join(' ');
+            return tags
+                .map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`)
+                .join(" ");
         }
 
         function safeStatusClassToken(status) {
-            const normalized = String(status || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+            const normalized = String(status || "unknown")
+                .toLowerCase()
+                .replace(/[^a-z0-9_-]/g, "-");
             switch (normalized) {
-                case 'success':
-                case 'failure':
-                case 'started':
-                case 'ignored':
-                case 'error':
-                case 'pending':
-                case 'unknown':
+                case "success":
+                case "failure":
+                case "started":
+                case "ignored":
+                case "error":
+                case "pending":
+                case "unknown":
                     return normalized;
                 default:
-                    return 'unknown';
+                    return "unknown";
             }
-        }
-
-        function auditDateTimeToRFC3339(value) {
-            const raw = String(value || '').trim();
-            if (!raw) return '';
-            const parsed = new Date(raw);
-            if (Number.isNaN(parsed.getTime())) return '';
-            return parsed.toISOString();
-        }
-
-        function auditRFC3339ToDateTimeInput(value) {
-            const parsed = new Date(String(value || '').trim());
-            if (Number.isNaN(parsed.getTime())) return '';
-            const localTime = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
-            return localTime.toISOString().slice(0, 19);
-        }
-
-        function hydrateAuditDateTimeInput(input, value) {
-            const raw = String(value || '').trim();
-            input.value = auditRFC3339ToDateTimeInput(raw);
-            input.dataset.initialRFC3339 = raw;
-            input.dataset.initialValue = input.value;
-        }
-
-        function auditDateTimeInputToRFC3339(input) {
-            if (input.value === input.dataset.initialValue && input.dataset.initialRFC3339) {
-                return input.dataset.initialRFC3339;
-            }
-            return auditDateTimeToRFC3339(input.value);
-        }
-
-        function renderAuditFailureCauseFilter() {
-            const container = document.getElementById('audit-failure-cause-active');
-            const value = document.getElementById('audit-failure-cause-value');
-            if (!container || !value) return;
-            const failureCause = managePageInteraction.getView().audit.query.failureCause;
-            container.hidden = !failureCause;
-            value.textContent = failureCause;
-        }
-
-        function prettyAuditMetadata(raw) {
-            const text = String(raw || '').trim();
-            if (!text) return '{}';
-            try {
-                return JSON.stringify(JSON.parse(text), null, 2);
-            } catch (_) {
-                return text;
-            }
-        }
-
-        function auditEventByID(id) {
-            return managePageInteraction.getView().audit.items.find(evt => String(evt.id) === String(id));
-        }
-
-        function openAuditDetailDrawer(evt) {
-            if (!evt) return;
-            managePageInteraction.dispatch({ type: 'auditDetailSelected', id: evt.id });
-            const modal = document.getElementById('audit-detail-modal');
-            const status = escapeHtml(evt.status || 'unknown');
-            const statusClass = `status-${safeStatusClassToken(evt.status)}`;
-            const createdAt = window.formatAppTimestamp
-                ? window.formatAppTimestamp(evt.created_at, { titleUTC: true, preformattedPrimary: evt.created_at_display })
-                : { primary: evt.created_at || '', title: evt.created_at || '' };
-            document.getElementById('audit-detail-title').textContent = `Audit #${evt.id}`;
-            document.getElementById('audit-detail-actor').textContent = evt.actor || '-';
-            document.getElementById('audit-detail-status').innerHTML = `<span class="status-badge ${statusClass}">${status}</span>`;
-            document.getElementById('audit-detail-action').textContent = evt.action || '-';
-            document.getElementById('audit-detail-target').textContent = `${evt.target_type || '-'}: ${evt.target_name || '-'}`;
-            document.getElementById('audit-detail-time').textContent = createdAt.primary || evt.created_at || '-';
-            document.getElementById('audit-detail-client-ip').textContent = evt.client_ip || '-';
-            document.getElementById('audit-detail-request-id').textContent = evt.request_id || '-';
-            document.getElementById('audit-detail-message').textContent = evt.message || '-';
-            document.getElementById('audit-detail-meta').textContent = prettyAuditMetadata(evt.meta_json);
-            const report = document.getElementById('audit-detail-report');
-            report.href = `/api/reports/audit/${encodeURIComponent(evt.id)}`;
-            modal.classList.add('active');
-            activateModalFocus(modal, document.getElementById('audit-detail-close'));
-        }
-
-        function closeAuditDetailDrawer() {
-            const modal = document.getElementById('audit-detail-modal');
-            modal.classList.remove('active');
-            releaseModalFocus(modal);
-            managePageInteraction.dispatch({ type: 'auditDetailSelected', id: '' });
-        }
-
-        async function copyAuditDetail() {
-            const fieldText = (id) => document.getElementById(id).textContent.trim();
-            const text = [
-                fieldText('audit-detail-title'),
-                `Actor: ${fieldText('audit-detail-actor')}`,
-                `Status: ${fieldText('audit-detail-status')}`,
-                `Action: ${fieldText('audit-detail-action')}`,
-                `Target: ${fieldText('audit-detail-target')}`,
-                `Time: ${fieldText('audit-detail-time')}`,
-                `Client IP: ${fieldText('audit-detail-client-ip')}`,
-                `Request ID: ${fieldText('audit-detail-request-id')}`,
-                `Message: ${fieldText('audit-detail-message')}`,
-                'Metadata:',
-                fieldText('audit-detail-meta'),
-            ].join('\n');
-            try {
-                await navigator.clipboard.writeText(text);
-                window.notifyApp('Audit details copied.');
-            } catch (_) {
-                window.notifyApp('Failed to copy audit details. Copy them manually from the dialog.');
-            }
-        }
-
-        function renderAuditTable() {
-            const tbody = document.querySelector('#audit-table tbody');
-            if (!tbody) return;
-            const projection = managePageInteraction.getView().audit;
-            renderAuditFailureCauseFilter();
-            tbody.innerHTML = '';
-            if (!projection.items.length) {
-                const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="7" class="subtle">No activity yet.</td>';
-                tbody.appendChild(row);
-            } else {
-                projection.items.forEach(evt => {
-                    const row = document.createElement('tr');
-                    const status = escapeHtml(evt.status || 'unknown');
-                    const statusClass = `status-${safeStatusClassToken(evt.status)}`;
-                    const createdAt = window.formatAppTimestamp
-                        ? window.formatAppTimestamp(evt.created_at, { titleUTC: true, preformattedPrimary: evt.created_at_display })
-                        : { primary: evt.created_at || '', title: evt.created_at || '' };
-                    row.innerHTML = `
-                        <td title="${escapeHtml(createdAt.title || '')}">${escapeHtml(createdAt.primary || '')}</td>
-                        <td>${escapeHtml(evt.actor || '')}</td>
-                        <td>${escapeHtml(evt.action || '')}</td>
-                        <td>${escapeHtml(evt.target_type || '')}: ${escapeHtml(evt.target_name || '')}</td>
-                        <td><span class="status-badge ${statusClass}">${status}</span></td>
-                        <td>${escapeHtml(evt.message || '')}</td>
-                        <td><div class="audit-event-actions"><button class="inline-btn btn-ghost" type="button" data-audit-detail="${escapeHtml(String(evt.id))}">Details</button><a class="inline-btn btn-ghost" href="/api/reports/audit/${encodeURIComponent(evt.id)}">Report</a></div></td>
-                    `;
-                    tbody.appendChild(row);
-                });
-            }
-            const totalPages = Math.max(1, Math.ceil(projection.total / projection.query.pageSize));
-            const currentPage = Math.min(projection.query.page, totalPages);
-            document.getElementById('audit-page-info').textContent = `Page ${currentPage} of ${totalPages} (${projection.total} events)`;
-            renderManageWorkspace();
-        }
-
-        async function performAuditRequest(request, silent) {
-            const query = request.query || managePageInteraction.getView().audit.query;
-            try {
-                if (window.ensureAppTimezoneLoaded) {
-                    await window.ensureAppTimezoneLoaded();
-                }
-                const params = new URLSearchParams({
-                    page: String(query.page),
-                    page_size: String(query.pageSize)
-                });
-                if (query.targetName) params.set('target_name', query.targetName);
-                if (query.action) params.set('action', query.action);
-                if (query.status) params.set('status', query.status);
-                if (query.failureCause) params.set('failure_cause', query.failureCause);
-                if (query.from) params.set('from', query.from);
-                if (query.to) params.set('to', query.to);
-                const res = await fetch(`/api/audit-events?${params.toString()}`);
-                if (!res.ok) {
-                    throw new Error(await parseErrorResponse(res, 'Failed to load audit events.'));
-                }
-                const data = await res.json();
-                const effects = managePageInteraction.dispatch({ type: 'auditSnapshotReceived', requestID: request.requestID, data });
-                auditFetchHadError = false;
-                renderAuditTable();
-                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'audit');
-                if (followup) await performAuditRequest(followup, silent);
-            } catch (err) {
-                managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'audit', requestID: request.requestID, error: err?.message });
-                const message = err && err.message ? err.message : 'Failed to load audit events.';
-                const pageInfo = document.getElementById('audit-page-info');
-                if (pageInfo) {
-                    pageInfo.textContent = `Audit events unavailable: ${message}`;
-                }
-                if (!silent && !auditFetchHadError) {
-                    console.warn('Failed to load audit events:', err);
-                }
-                auditFetchHadError = true;
-            }
-        }
-
-        async function fetchAuditEvents(options = {}) {
-            const current = managePageInteraction.getView().audit.query;
-            const patch = {
-                targetName: document.getElementById('audit-target-filter').value.trim(),
-                action: document.getElementById('audit-action-filter').value.trim(),
-                status: document.getElementById('audit-status-filter').value,
-                failureCause: managePageInteraction.getView().audit.query.failureCause,
-                from: auditDateTimeInputToRFC3339(document.getElementById('audit-from-filter')),
-                to: auditDateTimeInputToRFC3339(document.getElementById('audit-to-filter')),
-                page: current.page,
-                pageSize: current.pageSize
-            };
-            managePageInteraction.dispatch({ type: 'auditQueryChanged', patch });
-            const query = managePageInteraction.getView().audit.query;
-            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'audit', payload: { query } })
-                .find(effect => effect.type === 'fetchSnapshot');
-            if (!request) return;
-            await performAuditRequest(request, !!options.silent);
         }
 
         function renderAddAuthMethod() {
             const creation = managePageInteraction.getView().creation;
-            document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
-                input.checked = input.value === creation.authenticationMethod;
-                if (input.value === 'global-key') input.disabled = !creation.globalCredentialAvailable;
-            });
-            document.getElementById('add-password-field').hidden = !creation.passwordFieldVisible;
-            document.getElementById('add-key-field').hidden = !creation.keyFieldVisible;
-            document.getElementById('pass').required = creation.passwordFieldVisible;
-            document.getElementById('global-auth-help').textContent = creation.globalCredentialAvailable
-                ? 'Uses the configured Global SSH Credential.'
-                : 'Configure a Global SSH Credential to use this option.';
+            document
+                .querySelectorAll('input[name="add-auth-method"]')
+                .forEach((input) => {
+                    input.checked =
+                        input.value === creation.authenticationMethod;
+                    if (input.value === "global-key")
+                        input.disabled = !creation.globalCredentialAvailable;
+                });
+            document.getElementById("add-password-field").hidden =
+                !creation.passwordFieldVisible;
+            document.getElementById("add-key-field").hidden =
+                !creation.keyFieldVisible;
+            document.getElementById("pass").required =
+                creation.passwordFieldVisible;
+            document.getElementById("global-auth-help").textContent =
+                creation.globalCredentialAvailable
+                    ? "Uses the configured Global SSH Credential."
+                    : "Configure a Global SSH Credential to use this option.";
         }
 
         const addServerFieldIDs = {
-            name: 'name',
-            host: 'host',
-            port: 'port',
-            user: 'user',
-            pass: 'pass',
-            key: 'key_file',
-            auth: 'add-auth-methods'
+            name: "name",
+            host: "host",
+            port: "port",
+            user: "user",
+            pass: "pass",
+            key: "key_file",
+            auth: "add-auth-methods",
         };
 
         function addServerField(field) {
@@ -867,94 +967,134 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         function setAddServerFieldInvalidState(field, invalid) {
             const input = addServerField(field);
             if (!input) return;
-            input.classList.toggle('is-invalid', !!invalid);
-            if (invalid) input.setAttribute('aria-invalid', 'true');
-            else input.removeAttribute('aria-invalid');
+            input.classList.toggle("is-invalid", !!invalid);
+            if (invalid) input.setAttribute("aria-invalid", "true");
+            else input.removeAttribute("aria-invalid");
         }
 
         function clearAddServerValidation() {
-            Object.keys(addServerFieldIDs).forEach(field => setAddServerFieldInvalidState(field, false));
-            document.getElementById('add-server-error').textContent = '';
+            Object.keys(addServerFieldIDs).forEach((field) =>
+                setAddServerFieldInvalidState(field, false),
+            );
+            document.getElementById("add-server-error").textContent = "";
         }
 
         function showAddServerValidation(rejection = {}) {
             clearAddServerValidation();
             const invalidFields = rejection.invalidFields || [];
-            invalidFields.forEach(field => setAddServerFieldInvalidState(field, true));
-            document.getElementById('add-server-error').textContent = rejection.reason || 'Server creation is unavailable.';
+            invalidFields.forEach((field) =>
+                setAddServerFieldInvalidState(field, true),
+            );
+            document.getElementById("add-server-error").textContent =
+                rejection.reason || "Server creation is unavailable.";
             const firstInvalid = addServerField(invalidFields[0]);
-            if (firstInvalid?.matches('fieldset')) firstInvalid.querySelector('input:not(:disabled)')?.focus();
+            if (firstInvalid?.matches("fieldset"))
+                firstInvalid.querySelector("input:not(:disabled)")?.focus();
             else firstInvalid?.focus();
         }
 
         function clearEditedAddServerField(field) {
             setAddServerFieldInvalidState(field, false);
-            const hasInvalidField = Object.keys(addServerFieldIDs).some(key => addServerField(key)?.hasAttribute('aria-invalid'));
-            if (!hasInvalidField) document.getElementById('add-server-error').textContent = '';
+            const hasInvalidField = Object.keys(addServerFieldIDs).some((key) =>
+                addServerField(key)?.hasAttribute("aria-invalid"),
+            );
+            if (!hasInvalidField)
+                document.getElementById("add-server-error").textContent = "";
         }
 
-        document.querySelectorAll('input[name="add-auth-method"]').forEach((input) => {
-            input.addEventListener('change', () => {
-                managePageInteraction.dispatch({
-                    type: 'creationAuthenticationChanged',
-                    authenticationMethod: input.value
+        document
+            .querySelectorAll('input[name="add-auth-method"]')
+            .forEach((input) => {
+                lifecycle.listen(input, "change", () => {
+                    managePageInteraction.dispatch({
+                        type: "creationAuthenticationChanged",
+                        authenticationMethod: input.value,
+                    });
+                    for (const field of ["auth", "pass", "key"])
+                        clearEditedAddServerField(field);
+                    renderAddAuthMethod();
                 });
-                for (const field of ['auth', 'pass', 'key']) clearEditedAddServerField(field);
-                renderAddAuthMethod();
             });
-        });
-        for (const field of ['name', 'host', 'port', 'user', 'pass']) {
-            addServerField(field).addEventListener('input', () => clearEditedAddServerField(field));
+        for (const field of ["name", "host", "port", "user", "pass"]) {
+            lifecycle.listen(addServerField(field), "input", () =>
+                clearEditedAddServerField(field),
+            );
         }
-        addServerField('key').addEventListener('change', () => clearEditedAddServerField('key'));
+        lifecycle.listen(addServerField("key"), "change", () =>
+            clearEditedAddServerField("key"),
+        );
 
-        window.ServerOnboarding.mount({
+        const onboardingAdapter = window.ServerOnboarding.mount({
             store: managePageInteraction,
             clearValidation: clearAddServerValidation,
             showValidation: showAddServerValidation,
             settle: settleCommand,
             onSaved() {
-                const keyFileInput = document.getElementById('key_file');
-                keyFileInput.value = '';
+                const keyFileInput = document.getElementById("key_file");
+                keyFileInput.value = "";
                 resetFileInputLabel(keyFileInput);
-                document.getElementById('server-key-file-selection').textContent = 'No file selected';
-                managePageInteraction.dispatch({ type: 'creationAuthenticationChanged', authenticationMethod: 'password' });
+                document.getElementById(
+                    "server-key-file-selection",
+                ).textContent = "No file selected";
+                managePageInteraction.dispatch({
+                    type: "creationAuthenticationChanged",
+                    authenticationMethod: "password",
+                });
                 renderAddAuthMethod();
-            }
+            },
         });
 
-        window.InventoryImport.mount({
+        const importAdapter = window.InventoryImport.mount({
             store: managePageInteraction,
             workspaceChanged: renderManageWorkspace,
             refresh: executeManageEffects,
             editServer: async (name) => {
+                const lifetime = lifecycle.capture();
+
                 const before = managePageInteraction.getView();
                 await fetchManageServers();
+                if (!lifecycle.isCurrent(lifetime)) return;
                 const current = managePageInteraction.getView();
-                if (current.editor.open || current.editor.sessionID !== before.editor.sessionID
-                    || current.inventoryImport.generation !== before.inventoryImport.generation) return;
-                if (!current.inventory.allItems.some(server => server.name === name)) {
-                    window.notifyApp('This server is no longer in inventory. Refresh the directory.');
+                if (
+                    current.editor.open ||
+                    current.editor.sessionID !== before.editor.sessionID ||
+                    current.inventoryImport.generation !==
+                        before.inventoryImport.generation
+                )
+                    return;
+                if (
+                    !current.inventory.allItems.some(
+                        (server) => server.name === name,
+                    )
+                ) {
+                    window.notifyApp(
+                        "This server is no longer in inventory. Refresh the directory.",
+                    );
                     return;
                 }
                 await editServer(name);
-            }
+                if (!lifecycle.isCurrent(lifetime)) return;
+            },
         });
 
-        document.addEventListener('change', (e) => {
-            if (e.target && e.target.classList.contains('file-input')) {
+        lifecycle.listen(document, "change", (e) => {
+            if (e.target && e.target.classList.contains("file-input")) {
                 resetFileInputLabel(e.target);
                 const selectionIDs = {
-                    'global-key-file': 'global-key-file-selection',
-                    'key_file': 'server-key-file-selection',
-                    'edit-key': 'edit-key-file-selection'
+                    "global-key-file": "global-key-file-selection",
+                    key_file: "server-key-file-selection",
+                    "edit-key": "edit-key-file-selection",
                 };
-                const selection = document.getElementById(selectionIDs[e.target.id]);
-                if (selection) selection.textContent = e.target.files?.[0]?.name || 'No file selected';
-                if (e.target.id === 'edit-key') {
+                const selection = document.getElementById(
+                    selectionIDs[e.target.id],
+                );
+                if (selection)
+                    selection.textContent =
+                        e.target.files?.[0]?.name || "No file selected";
+                if (e.target.id === "edit-key") {
                     managePageInteraction.dispatch({
-                        type: 'editorCredentialIntentChanged',
-                        keyReplacement: !!e.target.files?.length
+                        type: "editorCredentialIntentChanged",
+                        keyReplacement: !!e.target.files?.length,
                     });
                     setEditSaveButtonState(false);
                 }
@@ -962,681 +1102,1312 @@ const managePolicyOverrides = window.ManagePolicyOverrideAdapter.createAdapter({
         });
 
         async function toggleServerAvailability(name) {
-            const execution = commandExecution('setServerDisabled', { serverName: name });
+            const lifetime = lifecycle.capture();
+
+            const execution = commandExecution("setServerDisabled", {
+                serverName: name,
+            });
             if (!execution) return;
             renderTable();
             try {
-                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/availability`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ disabled: execution.plan.payload.disabled })
-                });
-                if (!response.ok) throw new Error(await parseErrorResponse(response, 'Failed to change server availability.'));
-                const message = execution.plan.payload.disabled ? 'Server disabled. Maintenance is paused.' : 'Server enabled. Maintenance can resume.';
-                await settleCommand('commandCompleted', execution.plan, message);
+                const response = await fetch(
+                    `/api/servers/${encodeURIComponent(name)}/availability`,
+                    {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            disabled: execution.plan.payload.disabled,
+                        }),
+                    },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!response.ok)
+                    throw new Error(
+                        await parseErrorResponse(
+                            response,
+                            "Failed to change server availability.",
+                        ),
+                    );
+                const message = execution.plan.payload.disabled
+                    ? "Server disabled. Maintenance is paused."
+                    : "Server enabled. Maintenance can resume.";
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    message,
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (error) {
-                await settleCommand('commandFailed', execution.plan, error?.message || 'Failed to change server availability.');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    error?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    error?.message || "Failed to change server availability.",
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
             } finally {
+                if (!lifecycle.isCurrent(lifetime)) return;
                 renderTable();
             }
         }
 
         async function deleteServer(name) {
-            if (await window.confirmTypedAction(`Delete server "${name}"?`, name)) {
-                const execution = commandExecution('deleteServer', { serverName: name });
+            const lifetime = lifecycle.capture();
+
+            if (
+                await window.confirmTypedAction(
+                    `Delete server "${name}"?`,
+                    name,
+                )
+            ) {
+                const execution = commandExecution("deleteServer", {
+                    serverName: name,
+                });
                 if (!execution) {
-                    window.notifyApp('This server action is already in progress.');
+                    window.notifyApp(
+                        "This server action is already in progress.",
+                    );
                     return;
                 }
                 try {
-                    const response = await fetch(`/api/servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+                    const response = await fetch(
+                        `/api/servers/${encodeURIComponent(name)}`,
+                        { method: "DELETE" },
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     if (!response.ok) {
-                        throw new Error(await parseErrorResponse(response, 'Failed to delete server.'));
+                        throw new Error(
+                            await parseErrorResponse(
+                                response,
+                                "Failed to delete server.",
+                            ),
+                        );
                     }
-                    await settleCommand('commandCompleted', execution.plan, 'Server deleted.', { announce: false });
+                    await settleCommand(
+                        "commandCompleted",
+                        execution.plan,
+                        "Server deleted.",
+                        { announce: false },
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
                 } catch (error) {
-                    await settleCommand('commandFailed', execution.plan, error?.message || 'Failed to delete server.', { announce: false });
-                    window.notifyApp(error?.message || 'Failed to delete server.');
+                    if (
+                        !lifecycle.isCurrent(lifetime) ||
+                        error?.name === "AbortError"
+                    )
+                        return;
+                    await settleCommand(
+                        "commandFailed",
+                        execution.plan,
+                        error?.message || "Failed to delete server.",
+                        { announce: false },
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    window.notifyApp(
+                        error?.message || "Failed to delete server.",
+                    );
                 }
             }
         }
 
-const packageDeferralEditor=window.PackageDeferrals.mount(document.getElementById("server-package-deferrals"));
-let applicationPostcheckPreviewController=null;
+        const packageDeferralEditor = window.PackageDeferrals.mount(
+            document.getElementById("server-package-deferrals"),
+        );
+        let applicationPostcheckPreviewController = null;
         async function loadApplicationPostcheckPreview(name) {
+            const lifetime = lifecycle.capture();
+
             applicationPostcheckPreviewController?.abort();
-            const controller=new AbortController();applicationPostcheckPreviewController=controller;
-            const sessionID=managePageInteraction.getView().editor.sessionID;
-            document.getElementById('edit-application-postchecks').textContent='Loading saved expectations…';
+            const controller = new AbortController();
+            applicationPostcheckPreviewController = controller;
+            const sessionID = managePageInteraction.getView().editor.sessionID;
+            document.getElementById("edit-application-postchecks").textContent =
+                "Loading saved expectations…";
             try {
-                const response=await fetch(`/api/servers/${encodeURIComponent(name)}/postchecks`,{cache:'no-store',signal:controller.signal});
-                const data=await response.json();
-                managePageInteraction.dispatch({type:'applicationPostchecksReceived',sessionID,profile:response.ok?data.profile:null,error:response.ok?'':data.error || 'Post-check profile unavailable.'});
-            }catch(error){if(controller.signal.aborted)return;managePageInteraction.dispatch({type:'applicationPostchecksReceived',sessionID,error:'Post-check profile unavailable.'});}
-            const editor=managePageInteraction.getView().editor;if(!editor.open||editor.sessionID!==sessionID)return;
-            const fact=editor.applicationPostchecks;
-            document.getElementById('edit-application-postchecks').textContent=fact?.error || (fact?.profile?`${fact.profile.name} · revision ${fact.profile.revision} · ${fact.profile.checks.map(c=>`${c.name} (${c.mode})`).join(', ')}`:'No application profile assigned. Existing post-check settings apply.');
+                const response = await fetch(
+                    `/api/servers/${encodeURIComponent(name)}/postchecks`,
+                    { cache: "no-store", signal: controller.signal },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const data = await response.json();
+                if (!lifecycle.isCurrent(lifetime)) return;
+                managePageInteraction.dispatch({
+                    type: "applicationPostchecksReceived",
+                    sessionID,
+                    profile: response.ok ? data.profile : null,
+                    error: response.ok
+                        ? ""
+                        : data.error || "Post-check profile unavailable.",
+                });
+            } catch (error) {
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (controller.signal.aborted) return;
+                managePageInteraction.dispatch({
+                    type: "applicationPostchecksReceived",
+                    sessionID,
+                    error: "Post-check profile unavailable.",
+                });
+            }
+            const editor = managePageInteraction.getView().editor;
+            if (!editor.open || editor.sessionID !== sessionID) return;
+            const fact = editor.applicationPostchecks;
+            document.getElementById("edit-application-postchecks").textContent =
+                fact?.error ||
+                (fact?.profile
+                    ? `${fact.profile.name} · revision ${fact.profile.revision} · ${fact.profile.checks.map((c) => `${c.name} (${c.mode})`).join(", ")}`
+                    : "No application profile assigned. Existing post-check settings apply.");
         }
 
-            async function editServer(name) {
-                const current = managePageInteraction.getView().inventory.allItems.find(server => server.name === name) || {};
-                managePageInteraction.dispatch({ type: 'editorOpened', name, server: current });
- void loadApplicationPostcheckPreview(name);
- void packageDeferralEditor.select({server_name:name});
-            document.getElementById('edit-name').value = current.name || name;
-            document.getElementById('edit-host').value = current.host || '';
-            document.getElementById('edit-port').value = current.port || '';
-            document.getElementById('edit-user').value = current.user || '';
-            document.getElementById('edit-tags').value = (current.tags || []).join(', ');
-            document.getElementById('edit-pass').value = '';
+        async function editServer(name) {
+            const lifetime = lifecycle.capture();
+
+            const current =
+                managePageInteraction
+                    .getView()
+                    .inventory.allItems.find(
+                        (server) => server.name === name,
+                    ) || {};
+            managePageInteraction.dispatch({
+                type: "editorOpened",
+                name,
+                server: current,
+            });
+            void loadApplicationPostcheckPreview(name);
+            void packageDeferralEditor.select({ server_name: name });
+            document.getElementById("edit-name").value = current.name || name;
+            document.getElementById("edit-host").value = current.host || "";
+            document.getElementById("edit-port").value = current.port || "";
+            document.getElementById("edit-user").value = current.user || "";
+            document.getElementById("edit-tags").value = (
+                current.tags || []
+            ).join(", ");
+            document.getElementById("edit-pass").value = "";
             renderCredentialOutcomes();
-            const keyInput = document.getElementById('edit-key');
+            const keyInput = document.getElementById("edit-key");
             if (keyInput) {
-                keyInput.value = '';
+                keyInput.value = "";
                 resetFileInputLabel(keyInput);
-                document.getElementById('edit-key-file-selection').textContent = 'No file selected';
-                }
-                setEditHostKeyStatus('');
-                clearEditValidationState();
+                document.getElementById("edit-key-file-selection").textContent =
+                    "No file selected";
+            }
+            setEditHostKeyStatus("");
+            clearEditValidationState();
+            setEditSaveButtonState(false);
+            renderEditKnownHostState("checking");
+            const editModal = document.getElementById("edit-modal");
+            editModal.classList.add("active");
+            activateModalFocus(editModal, document.getElementById("edit-name"));
+            checkEditKnownHostStatus();
+            document.getElementById("edit-policy-overrides").innerHTML =
+                '<div class="subtle">Loading matching policies...</div>';
+            try {
+                await managePolicyOverrides.fetchContext(name);
+                if (!lifecycle.isCurrent(lifetime)) return;
+                managePolicyOverrides.render(
+                    document.getElementById("edit-policy-overrides"),
+                );
                 setEditSaveButtonState(false);
-	            renderEditKnownHostState('checking');
-	                const editModal = document.getElementById('edit-modal');
-	                editModal.classList.add('active');
-	                activateModalFocus(editModal, document.getElementById('edit-name'));
-	                checkEditKnownHostStatus();
-                document.getElementById('edit-policy-overrides').innerHTML = '<div class="subtle">Loading matching policies...</div>';
-                try {
-                    await managePolicyOverrides.fetchContext(name);
-                    managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
-                    setEditSaveButtonState(false);
-                } catch (err) {
-                    document.getElementById('edit-policy-overrides').innerHTML = `<div class="subtle">${escapeHtml(err.message || 'Failed to load scheduled policies.')}</div>`;
-                }
+            } catch (err) {
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                document.getElementById("edit-policy-overrides").innerHTML =
+                    `<div class="subtle">${escapeHtml(err.message || "Failed to load scheduled policies.")}</div>`;
             }
+        }
 
-            function closeEditModal() {
- void packageDeferralEditor.clear();
- applicationPostcheckPreviewController?.abort();
-	                const editModal = document.getElementById('edit-modal');
-	                editModal.classList.remove('active');
-	                releaseModalFocus(editModal);
-                setEditHostKeyStatus('');
-                clearEditValidationState();
-                setEditSaveButtonState(false);
-                managePageInteraction.dispatch({ type: 'editorClosed' });
-                const overrides = document.getElementById('edit-policy-overrides');
-                if (overrides) {
-                    overrides.innerHTML = '';
-                }
+        function closeEditModal() {
+            void packageDeferralEditor.clear();
+            applicationPostcheckPreviewController?.abort();
+            const editModal = document.getElementById("edit-modal");
+            editModal.classList.remove("active");
+            releaseModalFocus(editModal);
+            setEditHostKeyStatus("");
+            clearEditValidationState();
+            setEditSaveButtonState(false);
+            managePageInteraction.dispatch({ type: "editorClosed" });
+            const overrides = document.getElementById("edit-policy-overrides");
+            if (overrides) {
+                overrides.innerHTML = "";
             }
+        }
 
-            async function requestCloseEditModal() {
-                const effects = managePageInteraction.dispatch({ type: 'editorCloseRequested' });
-                const confirmation = effects.find(effect => effect.type === 'confirmEditorDiscard');
-                if (confirmation) {
-                    const confirmed = await window.confirmAction('Discard unsaved server changes?', { confirmLabel: 'Discard changes' });
-                    if (!confirmed) return;
-                }
-                closeEditModal();
-            }
+        async function requestCloseEditModal() {
+            const lifetime = lifecycle.capture();
 
-            function renderEditorFieldsFromView() {
-                const draft = managePageInteraction.getView().editor.draft || {};
-                document.getElementById('edit-name').value = draft.name || '';
-                document.getElementById('edit-host').value = draft.host || '';
-                document.getElementById('edit-port').value = draft.port || 22;
-                document.getElementById('edit-user').value = draft.user || '';
-                document.getElementById('edit-tags').value = (draft.tags || []).join(', ');
-                document.getElementById('edit-pass').value = '';
+            const effects = managePageInteraction.dispatch({
+                type: "editorCloseRequested",
+            });
+            const confirmation = effects.find(
+                (effect) => effect.type === "confirmEditorDiscard",
+            );
+            if (confirmation) {
+                const confirmed = await window.confirmAction(
+                    "Discard unsaved server changes?",
+                    { confirmLabel: "Discard changes" },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!confirmed) return;
             }
+            closeEditModal();
+        }
+
+        function renderEditorFieldsFromView() {
+            const draft = managePageInteraction.getView().editor.draft || {};
+            document.getElementById("edit-name").value = draft.name || "";
+            document.getElementById("edit-host").value = draft.host || "";
+            document.getElementById("edit-port").value = draft.port || 22;
+            document.getElementById("edit-user").value = draft.user || "";
+            document.getElementById("edit-tags").value = (
+                draft.tags || []
+            ).join(", ");
+            document.getElementById("edit-pass").value = "";
+        }
 
         function setEditHostKeyStatus(message) {
-            const el = document.getElementById('edit-hostkey-status');
+            const el = document.getElementById("edit-hostkey-status");
             if (!el) return;
-            el.textContent = String(message || '').trim();
+            el.textContent = String(message || "").trim();
         }
 
         function editKnownHostStateFromKey(hostKey) {
-            if (hostKey?.alreadyTrusted) return 'trusted';
-            if (hostKey?.hostEntryExists) return 'changed';
-            if (hostKey?.checked || hostKey?.fingerprint) return 'missing';
-            return 'stale';
+            if (hostKey?.alreadyTrusted) return "trusted";
+            if (hostKey?.hostEntryExists) return "changed";
+            if (hostKey?.checked || hostKey?.fingerprint) return "missing";
+            return "stale";
         }
 
         function renderEditKnownHostState(state, hostKey = null) {
-            const badge = document.getElementById('edit-known-host-state');
-            const target = document.getElementById('edit-known-host-target');
-            const fingerprint = document.getElementById('edit-known-host-fingerprint');
-            const refreshButton = document.getElementById('edit-check-known-host');
-            const trustButton = document.getElementById('edit-trust-known-host');
-            const removeButton = document.getElementById('edit-clear-known-host');
-            if (!badge || !target || !fingerprint || !refreshButton || !trustButton || !removeButton) return;
+            const badge = document.getElementById("edit-known-host-state");
+            const target = document.getElementById("edit-known-host-target");
+            const fingerprint = document.getElementById(
+                "edit-known-host-fingerprint",
+            );
+            const refreshButton = document.getElementById(
+                "edit-check-known-host",
+            );
+            const trustButton = document.getElementById(
+                "edit-trust-known-host",
+            );
+            const removeButton = document.getElementById(
+                "edit-clear-known-host",
+            );
+            if (
+                !badge ||
+                !target ||
+                !fingerprint ||
+                !refreshButton ||
+                !trustButton ||
+                !removeButton
+            )
+                return;
 
             const labels = {
-                checking: 'Checking…',
-                trusted: 'Trusted',
-                missing: 'Not trusted',
-                changed: 'Key changed',
-                stale: 'Needs refresh',
-                error: 'Check failed'
+                checking: "Checking…",
+                trusted: "Trusted",
+                missing: "Not trusted",
+                changed: "Key changed",
+                stale: "Needs refresh",
+                error: "Check failed",
             };
-            const currentState = Object.hasOwn(labels, state) ? state : 'error';
+            const currentState = Object.hasOwn(labels, state) ? state : "error";
             const editor = managePageInteraction.getView().editor;
-            const host = String(hostKey?.host || editor.draft?.host || '').trim();
+            const host = String(
+                hostKey?.host || editor.draft?.host || "",
+            ).trim();
             const port = normalizePort(hostKey?.port || editor.draft?.port, 22);
-            const knownFingerprint = String(hostKey?.fingerprint || '').trim();
+            const knownFingerprint = String(hostKey?.fingerprint || "").trim();
 
             badge.className = `known-host-state is-${currentState}`;
             badge.textContent = labels[currentState];
-            target.textContent = host ? `${host}:${port}` : 'Host required';
-            fingerprint.textContent = knownFingerprint || 'Not checked';
+            target.textContent = host ? `${host}:${port}` : "Host required";
+            fingerprint.textContent = knownFingerprint || "Not checked";
 
-            const busy = currentState === 'checking';
+            const busy = currentState === "checking";
             refreshButton.disabled = busy;
-            refreshButton.textContent = busy ? 'Checking…' : 'Refresh status';
-            trustButton.hidden = currentState !== 'missing' && currentState !== 'changed';
+            refreshButton.textContent = busy ? "Checking…" : "Refresh status";
+            trustButton.hidden =
+                currentState !== "missing" && currentState !== "changed";
             trustButton.disabled = busy;
-            trustButton.textContent = currentState === 'changed' ? 'Replace Host Key' : 'Trust Host Key';
-            const canRemoveLocalEntry = !!host && (currentState === 'trusted' || currentState === 'changed' || currentState === 'error');
+            trustButton.textContent =
+                currentState === "changed"
+                    ? "Replace Host Key"
+                    : "Trust Host Key";
+            const canRemoveLocalEntry =
+                !!host &&
+                (currentState === "trusted" ||
+                    currentState === "changed" ||
+                    currentState === "error");
             removeButton.disabled = busy || !canRemoveLocalEntry;
-            removeButton.textContent = 'Remove Host Key';
+            removeButton.textContent = "Remove Host Key";
         }
 
-            function setEditValidationError(message) {
-                const el = document.getElementById('edit-error');
-                if (!el) return;
-                el.textContent = String(message || '').trim();
-            }
+        function setEditValidationError(message) {
+            const el = document.getElementById("edit-error");
+            if (!el) return;
+            el.textContent = String(message || "").trim();
+        }
 
-            function setEditFieldInvalidState(fieldId, isInvalid) {
+        function setEditFieldInvalidState(fieldId, isInvalid) {
+            const input = document.getElementById(fieldId);
+            if (!input) return;
+            input.classList.toggle("is-invalid", !!isInvalid);
+            if (isInvalid) {
+                input.setAttribute("aria-invalid", "true");
+            } else {
+                input.removeAttribute("aria-invalid");
+            }
+        }
+
+        function maybeClearEditValidationError() {
+            const requiredFields = ["edit-name", "edit-host", "edit-user"];
+            const hasInvalid = requiredFields.some((fieldId) => {
                 const input = document.getElementById(fieldId);
-                if (!input) return;
-                input.classList.toggle('is-invalid', !!isInvalid);
-                if (isInvalid) {
-                    input.setAttribute('aria-invalid', 'true');
-                } else {
-                    input.removeAttribute('aria-invalid');
-                }
+                return !!input && input.classList.contains("is-invalid");
+            });
+            if (!hasInvalid) {
+                setEditValidationError("");
             }
+        }
 
-            function maybeClearEditValidationError() {
-                const requiredFields = ['edit-name', 'edit-host', 'edit-user'];
-                const hasInvalid = requiredFields.some((fieldId) => {
-                    const input = document.getElementById(fieldId);
-                    return !!input && input.classList.contains('is-invalid');
-                });
-                if (!hasInvalid) {
-                    setEditValidationError('');
-                }
+        function clearEditValidationState() {
+            setEditValidationError("");
+            setEditFieldInvalidState("edit-name", false);
+            setEditFieldInvalidState("edit-host", false);
+            setEditFieldInvalidState("edit-port", false);
+            setEditFieldInvalidState("edit-user", false);
+        }
+
+        function setEditSaveButtonState(isBusy, label) {
+            const saveBtn = document.getElementById("edit-save");
+            const cancelBtn = document.getElementById("edit-cancel");
+            const closeBtn = document.getElementById("edit-close");
+            const discardBtn = document.getElementById("edit-discard");
+            const draftState = document.getElementById("edit-draft-state");
+            if (!saveBtn) return;
+            const editor = managePageInteraction.getView().editor;
+            saveBtn.disabled = !!isBusy || !editor.canSave;
+            saveBtn.textContent = isBusy ? label || "Saving..." : "Save Server";
+            if (cancelBtn) {
+                cancelBtn.disabled = !!isBusy;
             }
+            if (closeBtn) closeBtn.disabled = !!isBusy;
+            if (discardBtn) discardBtn.disabled = !!isBusy || !editor.dirty;
+            if (draftState)
+                draftState.textContent = editor.dirty
+                    ? "Unsaved changes"
+                    : "No unsaved changes";
+        }
 
-            function clearEditValidationState() {
-                setEditValidationError('');
-                setEditFieldInvalidState('edit-name', false);
-                setEditFieldInvalidState('edit-host', false);
-                setEditFieldInvalidState('edit-port', false);
-                setEditFieldInvalidState('edit-user', false);
+        async function checkEditKnownHostStatus() {
+            const lifetime = lifecycle.capture();
+
+            if (!activeEditorName()) return;
+            const editor = managePageInteraction.getView().editor;
+            const host = String(editor.draft?.host || "").trim();
+            const port = normalizePort(editor.draft?.port, 22);
+            if (!host) {
+                setEditHostKeyStatus("Known host status: host is required.");
+                return;
             }
+            const request = managePageInteraction
+                .dispatch({ type: "snapshotRequested", stream: "hostKey" })
+                .find((effect) => effect.type === "fetchSnapshot");
+            if (!request) return editKnownHostCheckPromise;
+            const sessionID = managePageInteraction.getView().editor.sessionID;
+            const currentCheck = (async () => {
+                const lifetime = lifecycle.capture();
 
-            function setEditSaveButtonState(isBusy, label) {
-                const saveBtn = document.getElementById('edit-save');
-                const cancelBtn = document.getElementById('edit-cancel');
-                const closeBtn = document.getElementById('edit-close');
-                const discardBtn = document.getElementById('edit-discard');
-                const draftState = document.getElementById('edit-draft-state');
-                if (!saveBtn) return;
-                const editor = managePageInteraction.getView().editor;
-                saveBtn.disabled = !!isBusy || !editor.canSave;
-                saveBtn.textContent = isBusy ? (label || 'Saving...') : 'Save Server';
-                if (cancelBtn) {
-                    cancelBtn.disabled = !!isBusy;
-                }
-                if (closeBtn) closeBtn.disabled = !!isBusy;
-                if (discardBtn) discardBtn.disabled = !!isBusy || !editor.dirty;
-                if (draftState) draftState.textContent = editor.dirty ? 'Unsaved changes' : 'No unsaved changes';
-            }
-
-            async function checkEditKnownHostStatus() {
-                if (!activeEditorName()) return;
-                const editor = managePageInteraction.getView().editor;
-                const host = String(editor.draft?.host || '').trim();
-                const port = normalizePort(editor.draft?.port, 22);
-                if (!host) {
-                    setEditHostKeyStatus('Known host status: host is required.');
-                    return;
-                }
-                const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'hostKey' })
-                    .find((effect) => effect.type === 'fetchSnapshot');
-                if (!request) return editKnownHostCheckPromise;
-                const sessionID = managePageInteraction.getView().editor.sessionID;
-                const currentCheck = (async () => {
-                    renderEditKnownHostState('checking');
-                    setEditHostKeyStatus('Scanning the remote SSH host key…');
-                    try {
-                        const scanned = await scanHostKey(host, port);
-                        const currentEditor = managePageInteraction.getView().editor;
-                        if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
-                            return;
-                        }
-                        const hostKey = {
-                            host,
-                            port,
-                            checked: true,
-                            fingerprint: scanned?.fingerprint_sha256 || '',
-                            algorithm: scanned?.algorithm || '',
-                            alreadyTrusted: !!scanned?.already_trusted,
-                            hostEntryExists: !!scanned?.host_entry_exists
-                        };
-                        managePageInteraction.dispatch({ type: 'hostKeyReceived', requestID: request.requestID, sessionID, host, port, hostKey });
-                        const state = editKnownHostStateFromKey(hostKey);
-                        renderEditKnownHostState(state, hostKey);
-                        setEditHostKeyStatus(state === 'trusted'
-                            ? 'The scanned fingerprint matches the saved known_hosts entry.'
-                            : state === 'changed'
-                                ? 'The remote fingerprint differs from the saved known_hosts entry. Verify it before replacing the key.'
-                                : 'No known_hosts entry exists for this host and port.');
-                    } catch (err) {
-                        const currentEditor = managePageInteraction.getView().editor;
-                        if (currentEditor.sessionID !== sessionID || String(currentEditor.draft?.host || '').trim() !== host || normalizePort(currentEditor.draft?.port, 22) !== port) {
-                            return;
-                        }
-                        managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'hostKey', requestID: request.requestID, error: err?.message });
-                        renderEditKnownHostState('error');
-                        setEditHostKeyStatus(`Unable to check the remote host key: ${err.message || 'unknown error'}`);
+                renderEditKnownHostState("checking");
+                setEditHostKeyStatus("Scanning the remote SSH host key…");
+                try {
+                    const scanned = await scanHostKey(host, port);
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    const currentEditor =
+                        managePageInteraction.getView().editor;
+                    if (
+                        currentEditor.sessionID !== sessionID ||
+                        String(currentEditor.draft?.host || "").trim() !==
+                            host ||
+                        normalizePort(currentEditor.draft?.port, 22) !== port
+                    ) {
+                        return;
                     }
-                })();
-                editKnownHostCheckPromise = currentCheck;
-                try {
-                    await currentCheck;
-                } finally {
-                    if (editKnownHostCheckPromise === currentCheck) {
-                        editKnownHostCheckPromise = null;
-                    }
-                }
-            }
-
-            async function trustEditKnownHost() {
-                if (!activeEditorName()) return;
-                const editor = managePageInteraction.getView().editor;
-                const host = String(editor.draft?.host || '').trim();
-                const port = normalizePort(editor.draft?.port, 22);
-                if (!host) {
-                    window.notifyApp('Host is required.');
-                    return;
-                }
-                if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
-                let currentKey = managePageInteraction.getView().editor.hostKey;
-                if (!currentKey?.fingerprint || currentKey.host !== host || currentKey.port !== port) {
-                    await checkEditKnownHostStatus();
-                    currentKey = managePageInteraction.getView().editor.hostKey;
-                }
-                if (!currentKey?.fingerprint || currentKey.alreadyTrusted) {
-                    renderEditKnownHostState(editKnownHostStateFromKey(currentKey), currentKey);
-                    return;
-                }
-
-                const scanned = {
-                    host,
-                    port,
-                    algorithm: currentKey.algorithm || 'unknown',
-                    fingerprint_sha256: currentKey.fingerprint,
-                    already_trusted: !!currentKey.alreadyTrusted,
-                    host_entry_exists: !!currentKey.hostEntryExists
-                };
-                if (!(await confirmHostKeyWithModal(scanned))) return;
-
-                const execution = commandExecution('trustHostKey', { serverName: activeEditorName(), host, port });
-                if (!execution) {
-                    window.notifyApp('Known host action is already in progress.');
-                    return;
-                }
-                renderEditKnownHostState('checking', currentKey);
-                const replacing = !!currentKey.hostEntryExists;
-                setEditHostKeyStatus(replacing ? 'Replacing the saved known_hosts entry…' : 'Saving the host key to known_hosts…');
-                try {
-                    const trusted = await trustHostKey(host, port, currentKey.fingerprint);
-                    const trustedKey = {
-                        ...currentKey,
-                        fingerprint: trusted?.fingerprint_sha256 || currentKey.fingerprint,
-                        alreadyTrusted: true,
-                        hostEntryExists: true
-                    };
-                    managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: editor.sessionID, host, port, hostKey: trustedKey });
-                    await settleCommand('commandCompleted', execution.plan, replacing ? 'Known host key replaced.' : 'Known host key trusted.', { announce: false });
-                    renderEditKnownHostState('trusted', trustedKey);
-                    setEditHostKeyStatus('The scanned fingerprint matches the saved known_hosts entry.');
-                } catch (err) {
-                    await settleCommand('commandFailed', execution.plan, err.message || 'Failed to trust host key.', { announce: false });
-                    renderEditKnownHostState('error', currentKey);
-                    setEditHostKeyStatus(`Unable to save the host key: ${err.message || 'unknown error'}`);
-                    window.notifyApp(err.message || 'Failed to trust host key.');
-                }
-            }
-
-            async function clearEditKnownHost() {
-                if (!activeEditorName()) return;
-                const editor = managePageInteraction.getView().editor;
-                const host = String(editor.draft?.host || '').trim();
-                const port = normalizePort(editor.draft?.port, 22);
-                if (!host) {
-                    window.notifyApp('Host is required.');
-                    return;
-                }
-                if (!(await window.confirmTypedAction(`Remove known_hosts entry for ${host}:${port}?`, `${host}:${port}`))) {
-                    return;
-                }
-                const execution = commandExecution('clearHostKey', { serverName: activeEditorName(), host, port });
-                if (!execution) {
-                    window.notifyApp('Known host action is already in progress.');
-                    return;
-                }
-                const currentKey = managePageInteraction.getView().editor.hostKey;
-                renderEditKnownHostState('checking', currentKey);
-                setEditHostKeyStatus('Removing the known_hosts entry…');
-                try {
-                    const result = await clearKnownHost(host, port);
-                    const clearedKey = {
-                        ...(currentKey || {}),
+                    const hostKey = {
                         host,
                         port,
                         checked: true,
-                        alreadyTrusted: false,
-                        hostEntryExists: false
+                        fingerprint: scanned?.fingerprint_sha256 || "",
+                        algorithm: scanned?.algorithm || "",
+                        alreadyTrusted: !!scanned?.already_trusted,
+                        hostEntryExists: !!scanned?.host_entry_exists,
                     };
-                    managePageInteraction.dispatch({ type: 'hostKeyReceived', sessionID: managePageInteraction.getView().editor.sessionID, host, port, hostKey: clearedKey });
-                    await settleCommand('commandCompleted', execution.plan, 'Known host entry cleared.', { announce: false });
-                    renderEditKnownHostState('missing', clearedKey);
-                    if (Number(result?.removed_entries || 0) > 0) {
-                        setEditHostKeyStatus('The known_hosts entry was removed.');
-                    } else {
-                        setEditHostKeyStatus('No known_hosts entry existed for this host and port.');
-                    }
+                    managePageInteraction.dispatch({
+                        type: "hostKeyReceived",
+                        requestID: request.requestID,
+                        sessionID,
+                        host,
+                        port,
+                        hostKey,
+                    });
+                    const state = editKnownHostStateFromKey(hostKey);
+                    renderEditKnownHostState(state, hostKey);
+                    setEditHostKeyStatus(
+                        state === "trusted"
+                            ? "The scanned fingerprint matches the saved known_hosts entry."
+                            : state === "changed"
+                              ? "The remote fingerprint differs from the saved known_hosts entry. Verify it before replacing the key."
+                              : "No known_hosts entry exists for this host and port.",
+                    );
                 } catch (err) {
-                    await settleCommand('commandFailed', execution.plan, err.message || 'Failed to clear known host entry.', { announce: false });
-                    renderEditKnownHostState('error', currentKey);
-                    setEditHostKeyStatus(`Unable to remove the known_hosts entry: ${err.message || 'unknown error'}`);
-                    window.notifyApp(err.message || 'Failed to clear known host entry.');
+                    if (
+                        !lifecycle.isCurrent(lifetime) ||
+                        err?.name === "AbortError"
+                    )
+                        return;
+                    const currentEditor =
+                        managePageInteraction.getView().editor;
+                    if (
+                        currentEditor.sessionID !== sessionID ||
+                        String(currentEditor.draft?.host || "").trim() !==
+                            host ||
+                        normalizePort(currentEditor.draft?.port, 22) !== port
+                    ) {
+                        return;
+                    }
+                    managePageInteraction.dispatch({
+                        type: "snapshotFailed",
+                        stream: "hostKey",
+                        requestID: request.requestID,
+                        error: err?.message,
+                    });
+                    renderEditKnownHostState("error");
+                    setEditHostKeyStatus(
+                        `Unable to check the remote host key: ${err.message || "unknown error"}`,
+                    );
+                }
+            })();
+            editKnownHostCheckPromise = currentCheck;
+            try {
+                await currentCheck;
+                if (!lifecycle.isCurrent(lifetime)) return;
+            } finally {
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (editKnownHostCheckPromise === currentCheck) {
+                    editKnownHostCheckPromise = null;
                 }
             }
+        }
+
+        async function trustEditKnownHost() {
+            const lifetime = lifecycle.capture();
+
+            if (!activeEditorName()) return;
+            const editor = managePageInteraction.getView().editor;
+            const host = String(editor.draft?.host || "").trim();
+            const port = normalizePort(editor.draft?.port, 22);
+            if (!host) {
+                window.notifyApp("Host is required.");
+                return;
+            }
+            if (editKnownHostCheckPromise) await editKnownHostCheckPromise;
+            let currentKey = managePageInteraction.getView().editor.hostKey;
+            if (
+                !currentKey?.fingerprint ||
+                currentKey.host !== host ||
+                currentKey.port !== port
+            ) {
+                await checkEditKnownHostStatus();
+                if (!lifecycle.isCurrent(lifetime)) return;
+                currentKey = managePageInteraction.getView().editor.hostKey;
+            }
+            if (!currentKey?.fingerprint || currentKey.alreadyTrusted) {
+                renderEditKnownHostState(
+                    editKnownHostStateFromKey(currentKey),
+                    currentKey,
+                );
+                return;
+            }
+
+            const scanned = {
+                host,
+                port,
+                algorithm: currentKey.algorithm || "unknown",
+                fingerprint_sha256: currentKey.fingerprint,
+                already_trusted: !!currentKey.alreadyTrusted,
+                host_entry_exists: !!currentKey.hostEntryExists,
+            };
+            if (!(await confirmHostKeyWithModal(scanned))) return;
+
+            const execution = commandExecution("trustHostKey", {
+                serverName: activeEditorName(),
+                host,
+                port,
+            });
+            if (!execution) {
+                window.notifyApp("Known host action is already in progress.");
+                return;
+            }
+            renderEditKnownHostState("checking", currentKey);
+            const replacing = !!currentKey.hostEntryExists;
+            setEditHostKeyStatus(
+                replacing
+                    ? "Replacing the saved known_hosts entry…"
+                    : "Saving the host key to known_hosts…",
+            );
+            try {
+                const trusted = await trustHostKey(
+                    host,
+                    port,
+                    currentKey.fingerprint,
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const trustedKey = {
+                    ...currentKey,
+                    fingerprint:
+                        trusted?.fingerprint_sha256 || currentKey.fingerprint,
+                    alreadyTrusted: true,
+                    hostEntryExists: true,
+                };
+                managePageInteraction.dispatch({
+                    type: "hostKeyReceived",
+                    sessionID: editor.sessionID,
+                    host,
+                    port,
+                    hostKey: trustedKey,
+                });
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    replacing
+                        ? "Known host key replaced."
+                        : "Known host key trusted.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                renderEditKnownHostState("trusted", trustedKey);
+                setEditHostKeyStatus(
+                    "The scanned fingerprint matches the saved known_hosts entry.",
+                );
+            } catch (err) {
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err.message || "Failed to trust host key.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                renderEditKnownHostState("error", currentKey);
+                setEditHostKeyStatus(
+                    `Unable to save the host key: ${err.message || "unknown error"}`,
+                );
+                window.notifyApp(err.message || "Failed to trust host key.");
+            }
+        }
+
+        async function clearEditKnownHost() {
+            const lifetime = lifecycle.capture();
+
+            if (!activeEditorName()) return;
+            const editor = managePageInteraction.getView().editor;
+            const host = String(editor.draft?.host || "").trim();
+            const port = normalizePort(editor.draft?.port, 22);
+            if (!host) {
+                window.notifyApp("Host is required.");
+                return;
+            }
+            if (
+                !(await window.confirmTypedAction(
+                    `Remove known_hosts entry for ${host}:${port}?`,
+                    `${host}:${port}`,
+                ))
+            ) {
+                return;
+            }
+            const execution = commandExecution("clearHostKey", {
+                serverName: activeEditorName(),
+                host,
+                port,
+            });
+            if (!execution) {
+                window.notifyApp("Known host action is already in progress.");
+                return;
+            }
+            const currentKey = managePageInteraction.getView().editor.hostKey;
+            renderEditKnownHostState("checking", currentKey);
+            setEditHostKeyStatus("Removing the known_hosts entry…");
+            try {
+                const result = await clearKnownHost(host, port);
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const clearedKey = {
+                    ...(currentKey || {}),
+                    host,
+                    port,
+                    checked: true,
+                    alreadyTrusted: false,
+                    hostEntryExists: false,
+                };
+                managePageInteraction.dispatch({
+                    type: "hostKeyReceived",
+                    sessionID: managePageInteraction.getView().editor.sessionID,
+                    host,
+                    port,
+                    hostKey: clearedKey,
+                });
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Known host entry cleared.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                renderEditKnownHostState("missing", clearedKey);
+                if (Number(result?.removed_entries || 0) > 0) {
+                    setEditHostKeyStatus("The known_hosts entry was removed.");
+                } else {
+                    setEditHostKeyStatus(
+                        "No known_hosts entry existed for this host and port.",
+                    );
+                }
+            } catch (err) {
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err.message || "Failed to clear known host entry.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                renderEditKnownHostState("error", currentKey);
+                setEditHostKeyStatus(
+                    `Unable to remove the known_hosts entry: ${err.message || "unknown error"}`,
+                );
+                window.notifyApp(
+                    err.message || "Failed to clear known host entry.",
+                );
+            }
+        }
 
         async function saveServerEdit() {
+            const lifetime = lifecycle.capture();
+
             const originalName = activeEditorName();
             if (!originalName) return;
-            const newPass = document.getElementById('edit-pass').value;
+            const newPass = document.getElementById("edit-pass").value;
             clearEditValidationState();
-            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'saveEditor' });
-            const execution = command.find((effect) => effect.type === 'executeCommand');
+            const command = managePageInteraction.dispatch({
+                type: "commandRequested",
+                command: "saveEditor",
+            });
+            const execution = command.find(
+                (effect) => effect.type === "executeCommand",
+            );
             if (!execution) {
-                const rejected = command.find((effect) => effect.type === 'commandRejected') || {};
-                const fieldIDs = { name: 'edit-name', host: 'edit-host', port: 'edit-port', user: 'edit-user' };
+                const rejected =
+                    command.find(
+                        (effect) => effect.type === "commandRejected",
+                    ) || {};
+                const fieldIDs = {
+                    name: "edit-name",
+                    host: "edit-host",
+                    port: "edit-port",
+                    user: "edit-user",
+                };
                 for (const field of rejected.invalidFields || []) {
                     setEditFieldInvalidState(fieldIDs[field], true);
                 }
-                setEditValidationError(rejected.reason || 'This server action is already in progress.');
-                const firstInvalid = document.getElementById(fieldIDs[(rejected.invalidFields || [])[0]]);
+                setEditValidationError(
+                    rejected.reason ||
+                        "This server action is already in progress.",
+                );
+                const firstInvalid = document.getElementById(
+                    fieldIDs[(rejected.invalidFields || [])[0]],
+                );
                 if (firstInvalid) firstInvalid.focus();
                 return;
             }
-            setEditSaveButtonState(true, 'Saving...');
+            setEditSaveButtonState(true, "Saving...");
             try {
                 const accepted = execution.plan.payload;
-                const res = await fetch(`/api/servers/${encodeURIComponent(originalName)}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: accepted.name, host: accepted.host, port: accepted.port, user: accepted.user, pass: newPass, tags: accepted.tags })
+                const res = await fetch(
+                    `/api/servers/${encodeURIComponent(originalName)}`,
+                    {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            name: accepted.name,
+                            host: accepted.host,
+                            port: accepted.port,
+                            user: accepted.user,
+                            pass: newPass,
+                            tags: accepted.tags,
+                        }),
+                    },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(
+                        await parseErrorResponse(res, "Failed to save server."),
+                    );
+                managePageInteraction.dispatch({
+                    type: "editorServerAccepted",
+                    sessionID: accepted.sessionID,
+                    server: accepted,
                 });
-                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to save server.'));
-                managePageInteraction.dispatch({ type: 'editorServerAccepted', sessionID: accepted.sessionID, server: accepted });
-                document.getElementById('edit-pass').value = '';
-                const replacementKey = document.getElementById('edit-key');
+                document.getElementById("edit-pass").value = "";
+                const replacementKey = document.getElementById("edit-key");
                 if (accepted.keyReplacement && replacementKey?.files?.length) {
-                    let keyUploadError = '';
+                    let keyUploadError = "";
                     try {
                         const keyForm = new FormData();
-                        keyForm.append('key', replacementKey.files[0]);
-                        const keyResponse = await fetch(`/api/servers/${encodeURIComponent(accepted.name)}/key`, {
-                            method: 'POST',
-                            body: keyForm
-                        });
+                        keyForm.append("key", replacementKey.files[0]);
+                        const keyResponse = await fetch(
+                            `/api/servers/${encodeURIComponent(accepted.name)}/key`,
+                            {
+                                method: "POST",
+                                body: keyForm,
+                            },
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
                         if (!keyResponse.ok) {
-                            keyUploadError = await parseErrorResponse(keyResponse, 'replacement key rejected');
+                            keyUploadError = await parseErrorResponse(
+                                keyResponse,
+                                "replacement key rejected",
+                            );
+                            if (!lifecycle.isCurrent(lifetime)) return;
                         }
                     } catch (err) {
-                        keyUploadError = err?.message || 'unknown error';
+                        if (
+                            !lifecycle.isCurrent(lifetime) ||
+                            err?.name === "AbortError"
+                        )
+                            return;
+                        keyUploadError = err?.message || "unknown error";
                     }
                     if (keyUploadError) {
                         const message = `Server saved, but the replacement SSH key failed to upload: ${keyUploadError}`;
-                        await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                        await settleCommand(
+                            "commandPartiallyCompleted",
+                            execution.plan,
+                            message,
+                            { announce: false },
+                        );
+                        if (!lifecycle.isCurrent(lifetime)) return;
                         window.notifyApp(message);
                         return;
                     }
-                    replacementKey.value = '';
+                    replacementKey.value = "";
                     resetFileInputLabel(replacementKey);
-                    document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                    document.getElementById(
+                        "edit-key-file-selection",
+                    ).textContent = "No file selected";
                     managePageInteraction.dispatch({
-                        type: 'editorCredentialIntentChanged',
-                        keyReplacement: false
+                        type: "editorCredentialIntentChanged",
+                        keyReplacement: false,
                     });
                 }
                 let overrideSaveError = null;
                 try {
-                    const outcome = await managePolicyOverrides.save(accepted.name, accepted.policyOverrides);
-                    if (outcome.status === 'partial' || outcome.status === 'failure') {
-                        const failures = outcome.failures.map(failure => `${failure.policyID}: ${failure.error}`).join('; ');
-                        throw new Error(`Failed to save scheduled update overrides for policy IDs ${failures}`);
+                    const outcome = await managePolicyOverrides.save(
+                        accepted.name,
+                        accepted.policyOverrides,
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (
+                        outcome.status === "partial" ||
+                        outcome.status === "failure"
+                    ) {
+                        const failures = outcome.failures
+                            .map(
+                                (failure) =>
+                                    `${failure.policyID}: ${failure.error}`,
+                            )
+                            .join("; ");
+                        throw new Error(
+                            `Failed to save scheduled update overrides for policy IDs ${failures}`,
+                        );
                     }
                 } catch (err) {
+                    if (
+                        !lifecycle.isCurrent(lifetime) ||
+                        err?.name === "AbortError"
+                    )
+                        return;
                     overrideSaveError = err;
                 }
                 if (overrideSaveError) {
-                    const message = `Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || 'unknown error'}`;
-                    await settleCommand('commandPartiallyCompleted', execution.plan, message, { announce: false });
+                    const message = `Server saved, but scheduled update overrides were not fully saved: ${overrideSaveError?.message || "unknown error"}`;
+                    await settleCommand(
+                        "commandPartiallyCompleted",
+                        execution.plan,
+                        message,
+                        { announce: false },
+                    );
+                    if (!lifecycle.isCurrent(lifetime)) return;
                     window.notifyApp(message);
                     return;
                 }
-                await settleCommand('commandCompleted', execution.plan, 'Server saved.', { announce: false });
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Server saved.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
                 closeEditModal();
             } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to save server.', { announce: false });
-                window.notifyApp(err?.message || 'Failed to save server.');
-                setEditHostKeyStatus('');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err?.message || "Failed to save server.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                window.notifyApp(err?.message || "Failed to save server.");
+                setEditHostKeyStatus("");
             } finally {
+                if (!lifecycle.isCurrent(lifetime)) return;
                 setEditSaveButtonState(false);
             }
         }
 
         async function uploadServerKey(name) {
-            const input = document.getElementById('edit-key');
+            const lifetime = lifecycle.capture();
+
+            const input = document.getElementById("edit-key");
             if (!input || !input.files || input.files.length === 0) {
-                window.notifyApp('Select a private key file to upload.');
+                window.notifyApp("Select a private key file to upload.");
                 return;
             }
-            const execution = commandExecution('uploadServerKey', { serverName: name });
-            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
+            const execution = commandExecution("uploadServerKey", {
+                serverName: name,
+            });
+            if (!execution) {
+                window.notifyApp("This server action is already in progress.");
+                return;
+            }
             const form = new FormData();
-            form.append('key', input.files[0]);
+            form.append("key", input.files[0]);
             try {
-                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'POST', body: form });
-                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to upload key.');
-                await settleCommand('commandCompleted', execution.plan, 'Server key uploaded.', { announce: false });
-                input.value = '';
+                const res = await fetch(
+                    `/api/servers/${encodeURIComponent(name)}/key`,
+                    { method: "POST", body: form },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(
+                        (await res.json().catch(() => ({}))).error ||
+                            "Failed to upload key.",
+                    );
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Server key uploaded.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                input.value = "";
                 resetFileInputLabel(input);
-                document.getElementById('edit-key-file-selection').textContent = 'No file selected';
+                document.getElementById("edit-key-file-selection").textContent =
+                    "No file selected";
                 managePageInteraction.dispatch({
-                    type: 'editorCredentialIntentChanged',
-                    keyReplacement: false
+                    type: "editorCredentialIntentChanged",
+                    keyReplacement: false,
                 });
                 setEditSaveButtonState(false);
             } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to upload key.', { announce: false });
-                window.notifyApp(err?.message || 'Failed to upload key.');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err?.message || "Failed to upload key.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                window.notifyApp(err?.message || "Failed to upload key.");
             }
         }
 
         async function clearServerKey(name) {
-            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearKey);
-            if (!(await window.confirmAction(`Clear this server SSH key? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear key' }))) return;
-            const execution = commandExecution('clearServerKey', { serverName: name });
-            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
+            const lifetime = lifecycle.capture();
+
+            const outcome = effectiveAuthLabel(
+                managePageInteraction.getView().editor.credentialOutcomes
+                    ?.clearKey,
+            );
+            if (
+                !(await window.confirmAction(
+                    `Clear this server SSH key? Effective authentication will become ${outcome}.`,
+                    { confirmLabel: "Clear key" },
+                ))
+            )
+                return;
+            const execution = commandExecution("clearServerKey", {
+                serverName: name,
+            });
+            if (!execution) {
+                window.notifyApp("This server action is already in progress.");
+                return;
+            }
             try {
-                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/key`, { method: 'DELETE' });
-                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear key.');
-                await settleCommand('commandCompleted', execution.plan, 'Server key cleared.', { announce: false });
+                const res = await fetch(
+                    `/api/servers/${encodeURIComponent(name)}/key`,
+                    { method: "DELETE" },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(
+                        (await res.json().catch(() => ({}))).error ||
+                            "Failed to clear key.",
+                    );
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Server key cleared.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to clear key.', { announce: false });
-                window.notifyApp(err?.message || 'Failed to clear key.');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err?.message || "Failed to clear key.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                window.notifyApp(err?.message || "Failed to clear key.");
             }
         }
 
         async function clearServerPassword(name) {
-            const outcome = effectiveAuthLabel(managePageInteraction.getView().editor.credentialOutcomes?.clearPassword);
-            if (!(await window.confirmAction(`Clear this server password? Effective authentication will become ${outcome}.`, { confirmLabel: 'Clear password' }))) return;
-            const execution = commandExecution('clearServerPassword', { serverName: name });
-            if (!execution) { window.notifyApp('This server action is already in progress.'); return; }
+            const lifetime = lifecycle.capture();
+
+            const outcome = effectiveAuthLabel(
+                managePageInteraction.getView().editor.credentialOutcomes
+                    ?.clearPassword,
+            );
+            if (
+                !(await window.confirmAction(
+                    `Clear this server password? Effective authentication will become ${outcome}.`,
+                    { confirmLabel: "Clear password" },
+                ))
+            )
+                return;
+            const execution = commandExecution("clearServerPassword", {
+                serverName: name,
+            });
+            if (!execution) {
+                window.notifyApp("This server action is already in progress.");
+                return;
+            }
             try {
-                const res = await fetch(`/api/servers/${encodeURIComponent(name)}/password`, { method: 'DELETE' });
-                if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to clear password.');
-                await settleCommand('commandCompleted', execution.plan, 'Server password cleared.', { announce: false });
+                const res = await fetch(
+                    `/api/servers/${encodeURIComponent(name)}/password`,
+                    { method: "DELETE" },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(
+                        (await res.json().catch(() => ({}))).error ||
+                            "Failed to clear password.",
+                    );
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Server password cleared.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
             } catch (err) {
-                await settleCommand('commandFailed', execution.plan, err?.message || 'Failed to clear password.', { announce: false });
-                window.notifyApp(err?.message || 'Failed to clear password.');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    err?.message || "Failed to clear password.",
+                    { announce: false },
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                window.notifyApp(err?.message || "Failed to clear password.");
             }
         }
 
-        document.getElementById('edit-cancel').addEventListener('click', requestCloseEditModal);
-        document.getElementById('edit-close').addEventListener('click', requestCloseEditModal);
-        document.getElementById('edit-discard').addEventListener('click', () => {
-            managePageInteraction.dispatch({ type: 'editorDiscarded' });
-            renderEditorFieldsFromView();
-            const keyInput = document.getElementById('edit-key');
-            keyInput.value = '';
-            resetFileInputLabel(keyInput);
-            document.getElementById('edit-key-file-selection').textContent = 'No file selected';
-            clearEditValidationState();
-            renderEditKnownHostState('stale');
-            setEditHostKeyStatus('Draft restored. Refresh host trust if needed.');
-            managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
-            renderCredentialOutcomes();
-            setEditSaveButtonState(false);
-        });
-        document.getElementById('edit-save').addEventListener('click', saveServerEdit);
-        document.getElementById('edit-upload-key').addEventListener('click', () => {
-            if (activeEditorName()) {
-                uploadServerKey(activeEditorName());
-            }
-        });
-        document.getElementById('edit-clear-key').addEventListener('click', () => {
-            if (activeEditorName()) {
-                clearServerKey(activeEditorName());
-            }
-        });
-            document.getElementById('edit-clear-password').addEventListener('click', () => {
+        lifecycle.listen(
+            document.getElementById("edit-cancel"),
+            "click",
+            requestCloseEditModal,
+        );
+        lifecycle.listen(
+            document.getElementById("edit-close"),
+            "click",
+            requestCloseEditModal,
+        );
+        lifecycle.listen(
+            document.getElementById("edit-discard"),
+            "click",
+            () => {
+                managePageInteraction.dispatch({ type: "editorDiscarded" });
+                renderEditorFieldsFromView();
+                const keyInput = document.getElementById("edit-key");
+                keyInput.value = "";
+                resetFileInputLabel(keyInput);
+                document.getElementById("edit-key-file-selection").textContent =
+                    "No file selected";
+                clearEditValidationState();
+                renderEditKnownHostState("stale");
+                setEditHostKeyStatus(
+                    "Draft restored. Refresh host trust if needed.",
+                );
+                managePolicyOverrides.render(
+                    document.getElementById("edit-policy-overrides"),
+                );
+                renderCredentialOutcomes();
+                setEditSaveButtonState(false);
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("edit-save"),
+            "click",
+            saveServerEdit,
+        );
+        lifecycle.listen(
+            document.getElementById("edit-upload-key"),
+            "click",
+            () => {
+                if (activeEditorName()) {
+                    uploadServerKey(activeEditorName());
+                }
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("edit-clear-key"),
+            "click",
+            () => {
+                if (activeEditorName()) {
+                    clearServerKey(activeEditorName());
+                }
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("edit-clear-password"),
+            "click",
+            () => {
                 if (activeEditorName()) {
                     clearServerPassword(activeEditorName());
                 }
+            },
+        );
+        lifecycle.listen(document.getElementById("edit-name"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: { name: document.getElementById("edit-name").value },
             });
-            document.getElementById('edit-name').addEventListener('input', () => {
-                managePageInteraction.dispatch({ type: 'editorChanged', patch: { name: document.getElementById('edit-name').value } });
-                setEditFieldInvalidState('edit-name', false);
-                maybeClearEditValidationError();
-                setEditSaveButtonState(false);
+            setEditFieldInvalidState("edit-name", false);
+            maybeClearEditValidationError();
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(document.getElementById("edit-host"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: { host: document.getElementById("edit-host").value },
             });
-            document.getElementById('edit-host').addEventListener('input', () => {
-                managePageInteraction.dispatch({ type: 'editorChanged', patch: { host: document.getElementById('edit-host').value } });
-                setEditFieldInvalidState('edit-host', false);
-                maybeClearEditValidationError();
-                if (activeEditorName()) {
-                    editKnownHostCheckPromise = null;
-                    renderEditKnownHostState('stale');
-                    setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
-                }
-                setEditSaveButtonState(false);
+            setEditFieldInvalidState("edit-host", false);
+            maybeClearEditValidationError();
+            if (activeEditorName()) {
+                editKnownHostCheckPromise = null;
+                renderEditKnownHostState("stale");
+                setEditHostKeyStatus(
+                    "Host or port changed. Refresh the status before trusting this host key.",
+                );
+            }
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(document.getElementById("edit-port"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: { port: document.getElementById("edit-port").value },
             });
-            document.getElementById('edit-port').addEventListener('input', () => {
-                managePageInteraction.dispatch({ type: 'editorChanged', patch: { port: document.getElementById('edit-port').value } });
-                setEditFieldInvalidState('edit-port', false);
-                maybeClearEditValidationError();
-                if (activeEditorName()) {
-                    editKnownHostCheckPromise = null;
-                    renderEditKnownHostState('stale');
-                    setEditHostKeyStatus('Host or port changed. Refresh the status before trusting this host key.');
-                }
-                setEditSaveButtonState(false);
+            setEditFieldInvalidState("edit-port", false);
+            maybeClearEditValidationError();
+            if (activeEditorName()) {
+                editKnownHostCheckPromise = null;
+                renderEditKnownHostState("stale");
+                setEditHostKeyStatus(
+                    "Host or port changed. Refresh the status before trusting this host key.",
+                );
+            }
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(document.getElementById("edit-tags"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: { tags: document.getElementById("edit-tags").value },
             });
-            document.getElementById('edit-tags').addEventListener('input', () => {
-                managePageInteraction.dispatch({ type: 'editorChanged', patch: { tags: document.getElementById('edit-tags').value } });
-                if (activeEditorName()) {
-                    managePolicyOverrides.render(document.getElementById('edit-policy-overrides'));
-                }
-                setEditSaveButtonState(false);
-            });
-            document.getElementById('edit-policy-overrides').addEventListener('change', (event) => {
-                const checkbox = event.target.closest('input[data-policy-id]');
+            if (activeEditorName()) {
+                managePolicyOverrides.render(
+                    document.getElementById("edit-policy-overrides"),
+                );
+            }
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(
+            document.getElementById("edit-policy-overrides"),
+            "change",
+            (event) => {
+                const checkbox = event.target.closest("input[data-policy-id]");
                 if (checkbox) {
-                    managePolicyOverrides.change(checkbox.dataset.policyId, checkbox.checked);
+                    managePolicyOverrides.change(
+                        checkbox.dataset.policyId,
+                        checkbox.checked,
+                    );
                     setEditSaveButtonState(false);
                 }
+            },
+        );
+        lifecycle.listen(document.getElementById("edit-user"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: { user: document.getElementById("edit-user").value },
             });
-            document.getElementById('edit-user').addEventListener('input', () => {
-                managePageInteraction.dispatch({ type: 'editorChanged', patch: { user: document.getElementById('edit-user').value } });
-                setEditFieldInvalidState('edit-user', false);
-                maybeClearEditValidationError();
-                setEditSaveButtonState(false);
+            setEditFieldInvalidState("edit-user", false);
+            maybeClearEditValidationError();
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(document.getElementById("edit-pass"), "input", () => {
+            managePageInteraction.dispatch({
+                type: "editorChanged",
+                patch: {
+                    passwordReplacement:
+                        !!document.getElementById("edit-pass").value,
+                },
             });
-            document.getElementById('edit-pass').addEventListener('input', () => {
-                managePageInteraction.dispatch({
-                    type: 'editorChanged',
-                    patch: { passwordReplacement: !!document.getElementById('edit-pass').value }
-                });
-                setEditSaveButtonState(false);
-            });
-            document.getElementById('edit-check-known-host').addEventListener('click', () => {
+            setEditSaveButtonState(false);
+        });
+        lifecycle.listen(
+            document.getElementById("edit-check-known-host"),
+            "click",
+            () => {
                 if (activeEditorName()) {
                     checkEditKnownHostStatus();
                 }
-            });
-            document.getElementById('edit-trust-known-host').addEventListener('click', () => {
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("edit-trust-known-host"),
+            "click",
+            () => {
                 if (activeEditorName()) {
                     trustEditKnownHost();
                 }
-            });
-            document.getElementById('edit-clear-known-host').addEventListener('click', () => {
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("edit-clear-known-host"),
+            "click",
+            () => {
                 if (activeEditorName()) {
                     clearEditKnownHost();
                 }
-            });
-            document.getElementById('hostkey-modal-cancel').addEventListener('click', () => closeHostKeyModal(false));
-        document.getElementById('hostkey-modal-trust').addEventListener('click', () => closeHostKeyModal(true));
-        document.getElementById('audit-detail-copy').addEventListener('click', copyAuditDetail);
-        document.getElementById('audit-detail-close').addEventListener('click', closeAuditDetailDrawer);
-        document.getElementById('audit-detail-modal').addEventListener('click', (e) => {
-            if (e.target && e.target.id === 'audit-detail-modal') {
-                closeAuditDetailDrawer();
-            }
-        });
-        document.getElementById('hostkey-modal').addEventListener('click', (e) => {
-            if (e.target && e.target.id === 'hostkey-modal') {
-                closeHostKeyModal(false);
-            }
-	        });
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Tab' && trapActiveModalFocus(e)) {
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("hostkey-modal-cancel"),
+            "click",
+            () => closeHostKeyModal(false),
+        );
+        lifecycle.listen(
+            document.getElementById("hostkey-modal-trust"),
+            "click",
+            () => closeHostKeyModal(true),
+        );
+        lifecycle.listen(
+            document.getElementById("audit-detail-copy"),
+            "click",
+            copyAuditDetail,
+        );
+        lifecycle.listen(
+            document.getElementById("audit-detail-close"),
+            "click",
+            closeAuditDetailDrawer,
+        );
+        lifecycle.listen(
+            document.getElementById("audit-detail-modal"),
+            "click",
+            (e) => {
+                if (e.target && e.target.id === "audit-detail-modal") {
+                    closeAuditDetailDrawer();
+                }
+            },
+        );
+        lifecycle.listen(
+            document.getElementById("hostkey-modal"),
+            "click",
+            (e) => {
+                if (e.target && e.target.id === "hostkey-modal") {
+                    closeHostKeyModal(false);
+                }
+            },
+        );
+        lifecycle.listen(document, "keydown", (e) => {
+            if (e.key === "Tab" && trapActiveModalFocus(e)) {
                 return;
             }
-            if (e.key === 'Escape') {
-                const hostKeyModal = document.getElementById('hostkey-modal');
-                if (hostKeyModal && hostKeyModal.classList.contains('active')) {
+            if (e.key === "Escape") {
+                const hostKeyModal = document.getElementById("hostkey-modal");
+                if (hostKeyModal && hostKeyModal.classList.contains("active")) {
                     closeHostKeyModal(false);
                     return;
                 }
-                const auditDetailModal = document.getElementById('audit-detail-modal');
-                if (auditDetailModal && auditDetailModal.classList.contains('active')) {
+                const auditDetailModal =
+                    document.getElementById("audit-detail-modal");
+                if (
+                    auditDetailModal &&
+                    auditDetailModal.classList.contains("active")
+                ) {
                     closeAuditDetailDrawer();
                     return;
                 }
-                const editModal = document.getElementById('edit-modal');
-                if (editModal && editModal.classList.contains('active')) {
-                    if (managePageInteraction.getView().commands.inFlight.some((key) => key.startsWith('saveEditor:'))) {
+                const editModal = document.getElementById("edit-modal");
+                if (editModal && editModal.classList.contains("active")) {
+                    if (
+                        managePageInteraction
+                            .getView()
+                            .commands.inFlight.some((key) =>
+                                key.startsWith("saveEditor:"),
+                            )
+                    ) {
                         return;
                     }
                     void requestCloseEditModal();
@@ -1645,38 +2416,82 @@ let applicationPostcheckPreviewController=null;
         });
 
         async function uploadGlobalKey() {
-            const input = document.getElementById('global-key-file');
-            const feedback = document.getElementById('global-key-feedback');
-            const uploadButton = document.getElementById('upload-global-key-btn');
+            const lifetime = lifecycle.capture();
+
+            const input = document.getElementById("global-key-file");
+            const feedback = document.getElementById("global-key-feedback");
+            const uploadButton = document.getElementById(
+                "upload-global-key-btn",
+            );
             if (!input || !input.files || input.files.length === 0) {
-                if (feedback) feedback.textContent = 'Select a private key file to upload.';
+                if (feedback)
+                    feedback.textContent =
+                        "Select a private key file to upload.";
                 return;
             }
-            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyUpload' });
-            const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
+            const command = managePageInteraction.dispatch({
+                type: "commandRequested",
+                command: "globalKeyUpload",
+            });
+            const execution = command.find(
+                (effect) => effect.type === "executeCommand",
+            );
+            if (!execution) {
+                window.notifyApp(
+                    "Global SSH Credential action is already in progress.",
+                );
+                return;
+            }
             const form = new FormData();
-            form.append('key', input.files[0]);
-            const previousLabel = uploadButton?.textContent || 'Add Global SSH Credential';
-            if (feedback) feedback.textContent = 'Uploading Global SSH Credential…';
+            form.append("key", input.files[0]);
+            const previousLabel =
+                uploadButton?.textContent || "Add Global SSH Credential";
+            if (feedback)
+                feedback.textContent = "Uploading Global SSH Credential…";
             if (uploadButton) {
                 uploadButton.disabled = true;
-                uploadButton.textContent = 'Uploading…';
+                uploadButton.textContent = "Uploading…";
             }
             try {
-                const res = await fetch('/api/keys/global', { method: 'POST', body: form });
-                if (!res.ok) throw new Error(await parseErrorResponse(res, 'Failed to upload Global SSH Credential.'));
-                await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential saved.');
-                if (feedback) feedback.textContent = 'Global SSH Credential saved.';
-                input.value = '';
+                const res = await fetch("/api/keys/global", {
+                    method: "POST",
+                    body: form,
+                });
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(
+                        await parseErrorResponse(
+                            res,
+                            "Failed to upload Global SSH Credential.",
+                        ),
+                    );
+                await settleCommand(
+                    "commandCompleted",
+                    execution.plan,
+                    "Global SSH Credential saved.",
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (feedback)
+                    feedback.textContent = "Global SSH Credential saved.";
+                input.value = "";
                 resetFileInputLabel(input);
-                document.getElementById('global-key-file-selection').textContent = 'No file selected';
+                document.getElementById(
+                    "global-key-file-selection",
+                ).textContent = "No file selected";
             } catch (error) {
-                const message = error?.message || 'Failed to upload Global SSH Credential.';
-                await settleCommand('commandFailed', execution.plan, message);
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    error?.name === "AbortError"
+                )
+                    return;
+                const message =
+                    error?.message || "Failed to upload Global SSH Credential.";
+                await settleCommand("commandFailed", execution.plan, message);
+                if (!lifecycle.isCurrent(lifetime)) return;
                 if (feedback) feedback.textContent = message;
             } finally {
-                if (uploadButton && uploadButton.textContent === 'Uploading…') {
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (uploadButton && uploadButton.textContent === "Uploading…") {
                     uploadButton.textContent = previousLabel;
                     uploadButton.disabled = false;
                 }
@@ -1684,89 +2499,198 @@ let applicationPostcheckPreviewController=null;
         }
 
         async function clearGlobalKey() {
-            if (!(await window.confirmTypedAction('Clear the Global SSH Credential?', 'CLEAR GLOBAL SSH CREDENTIAL'))) {
+            const lifetime = lifecycle.capture();
+
+            if (
+                !(await window.confirmTypedAction(
+                    "Clear the Global SSH Credential?",
+                    "CLEAR GLOBAL SSH CREDENTIAL",
+                ))
+            ) {
                 return;
             }
-            const command = managePageInteraction.dispatch({ type: 'commandRequested', command: 'globalKeyClear' });
-            const execution = command.find((effect) => effect.type === 'executeCommand');
-            if (!execution) { window.notifyApp('Global SSH Credential action is already in progress.'); return; }
-            const res = await fetch('/api/keys/global', { method: 'DELETE' });
+            const command = managePageInteraction.dispatch({
+                type: "commandRequested",
+                command: "globalKeyClear",
+            });
+            const execution = command.find(
+                (effect) => effect.type === "executeCommand",
+            );
+            if (!execution) {
+                window.notifyApp(
+                    "Global SSH Credential action is already in progress.",
+                );
+                return;
+            }
+            const res = await fetch("/api/keys/global", { method: "DELETE" });
+            if (!lifecycle.isCurrent(lifetime)) return;
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                await settleCommand('commandFailed', execution.plan, data.error || 'Failed to clear Global SSH Credential.');
+                if (!lifecycle.isCurrent(lifetime)) return;
+                await settleCommand(
+                    "commandFailed",
+                    execution.plan,
+                    data.error || "Failed to clear Global SSH Credential.",
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
                 return;
             }
-            await settleCommand('commandCompleted', execution.plan, 'Global SSH Credential cleared.');
+            await settleCommand(
+                "commandCompleted",
+                execution.plan,
+                "Global SSH Credential cleared.",
+            );
+            if (!lifecycle.isCurrent(lifetime)) return;
         }
 
-        function renderGlobalKeyState(state, detail = '') {
-            const status = document.getElementById('global-key-status');
-            const uploadButton = document.getElementById('upload-global-key-btn');
-            const clearButton = document.getElementById('clear-global-key-btn');
+        function renderGlobalKeyState(state, detail = "") {
+            const status = document.getElementById("global-key-status");
+            const uploadButton = document.getElementById(
+                "upload-global-key-btn",
+            );
+            const clearButton = document.getElementById("clear-global-key-btn");
             if (!status || !uploadButton || !clearButton) return;
 
             const states = {
-                checking: { label: 'Checking…', className: 'is-checking', hasKey: null },
-                configured: { label: 'Configured', className: 'is-configured', hasKey: true },
-                missing: { label: 'Not configured', className: 'is-missing', hasKey: false },
-                error: { label: 'Error', className: 'is-error', hasKey: null }
+                checking: {
+                    label: "Checking…",
+                    className: "is-checking",
+                    hasKey: null,
+                },
+                configured: {
+                    label: "Configured",
+                    className: "is-configured",
+                    hasKey: true,
+                },
+                missing: {
+                    label: "Not configured",
+                    className: "is-missing",
+                    hasKey: false,
+                },
+                error: { label: "Error", className: "is-error", hasKey: null },
             };
             const current = states[state] || states.error;
             status.className = `global-key-state ${current.className}`;
             status.textContent = current.label;
             status.title = detail || current.label;
 
-            uploadButton.textContent = current.hasKey ? 'Replace Global SSH Credential' : 'Add Global SSH Credential';
-            uploadButton.disabled = state === 'checking';
+            uploadButton.textContent = current.hasKey
+                ? "Replace Global SSH Credential"
+                : "Add Global SSH Credential";
+            uploadButton.disabled = state === "checking";
             clearButton.disabled = current.hasKey !== true;
-            clearButton.title = current.hasKey ? 'Remove the configured Global SSH Credential' : 'No Global SSH Credential is configured';
+            clearButton.title = current.hasKey
+                ? "Remove the configured Global SSH Credential"
+                : "No Global SSH Credential is configured";
             renderManageWorkspace();
         }
 
         async function performGlobalKeyRequest(request) {
+            const lifetime = lifecycle.capture();
+
             try {
-                const res = await fetch('/api/keys/global');
-                if (!res.ok) throw new Error(await parseErrorResponse(res, 'unknown'));
+                const res = await fetch("/api/keys/global");
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!res.ok)
+                    throw new Error(await parseErrorResponse(res, "unknown"));
                 const data = await res.json();
-                const effects = managePageInteraction.dispatch({ type: 'globalKeySnapshotReceived', requestID: request.requestID, hasKey: !!data.has_key });
-                renderGlobalKeyState(managePageInteraction.getView().globalKeyAvailable ? 'configured' : 'missing');
-                if (managePageInteraction.getView().inventory.allItems.length > 0) renderTable();
-                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const effects = managePageInteraction.dispatch({
+                    type: "globalKeySnapshotReceived",
+                    requestID: request.requestID,
+                    hasKey: !!data.has_key,
+                });
+                renderGlobalKeyState(
+                    managePageInteraction.getView().globalKeyAvailable
+                        ? "configured"
+                        : "missing",
+                );
+                if (
+                    managePageInteraction.getView().inventory.allItems.length >
+                    0
+                )
+                    renderTable();
+                const followup = effects.find(
+                    (effect) =>
+                        effect.type === "fetchSnapshot" &&
+                        effect.stream === "globalKey",
+                );
                 if (followup) await performGlobalKeyRequest(followup);
             } catch (err) {
-                const effects = managePageInteraction.dispatch({ type: 'snapshotFailed', stream: 'globalKey', requestID: request.requestID, error: err.message || 'unknown' });
-                renderGlobalKeyState('error', err.message || 'Unable to check the Global SSH Credential status');
-                const followup = effects.find(effect => effect.type === 'fetchSnapshot' && effect.stream === 'globalKey');
+                if (
+                    !lifecycle.isCurrent(lifetime) ||
+                    err?.name === "AbortError"
+                )
+                    return;
+                const effects = managePageInteraction.dispatch({
+                    type: "snapshotFailed",
+                    stream: "globalKey",
+                    requestID: request.requestID,
+                    error: err.message || "unknown",
+                });
+                renderGlobalKeyState(
+                    "error",
+                    err.message ||
+                        "Unable to check the Global SSH Credential status",
+                );
+                const followup = effects.find(
+                    (effect) =>
+                        effect.type === "fetchSnapshot" &&
+                        effect.stream === "globalKey",
+                );
                 if (followup) await performGlobalKeyRequest(followup);
             }
         }
 
         async function fetchGlobalKeyStatus() {
-            const request = managePageInteraction.dispatch({ type: 'snapshotRequested', stream: 'globalKey' })
-                .find((effect) => effect.type === 'fetchSnapshot');
+            const lifetime = lifecycle.capture();
+
+            const request = managePageInteraction
+                .dispatch({ type: "snapshotRequested", stream: "globalKey" })
+                .find((effect) => effect.type === "fetchSnapshot");
             if (!request) return;
-            renderGlobalKeyState('checking');
+            renderGlobalKeyState("checking");
             await performGlobalKeyRequest(request);
+            if (!lifecycle.isCurrent(lifetime)) return;
         }
 
-        document.getElementById('logout-btn').addEventListener('click', () => window.logout());
-        document.getElementById('upload-global-key-btn').addEventListener('click', uploadGlobalKey);
-        document.getElementById('clear-global-key-btn').addEventListener('click', clearGlobalKey);
+        lifecycle.listen(document.getElementById("logout-btn"), "click", () =>
+            window.logout(),
+        );
+        lifecycle.listen(
+            document.getElementById("upload-global-key-btn"),
+            "click",
+            uploadGlobalKey,
+        );
+        lifecycle.listen(
+            document.getElementById("clear-global-key-btn"),
+            "click",
+            clearGlobalKey,
+        );
         const manageDeepLink = new URLSearchParams(window.location.search);
-        const selectedServer = manageDeepLink.get('server') || "";
-        document.getElementById('search').value = selectedServer;
+        const selectedServer = manageDeepLink.get("server") || "";
+        document.getElementById("search").value = selectedServer;
         managePageInteraction.dispatch({
-            type: 'filtersChanged',
+            type: "filtersChanged",
             patch: { search: selectedServer },
         });
-        document.getElementById('audit-target-filter').value = manageDeepLink.get('audit_target') || "";
-        document.getElementById('audit-action-filter').value = manageDeepLink.get('audit_action') || "";
-        document.getElementById('audit-status-filter').value = manageDeepLink.get('audit_status') || "";
-        hydrateAuditDateTimeInput(document.getElementById('audit-from-filter'), manageDeepLink.get('audit_from'));
-        hydrateAuditDateTimeInput(document.getElementById('audit-to-filter'), manageDeepLink.get('audit_to'));
+        document.getElementById("audit-target-filter").value =
+            manageDeepLink.get("audit_target") || "";
+        document.getElementById("audit-action-filter").value =
+            manageDeepLink.get("audit_action") || "";
+        document.getElementById("audit-status-filter").value =
+            manageDeepLink.get("audit_status") || "";
+        hydrateAuditDateTimeInput(
+            document.getElementById("audit-from-filter"),
+            manageDeepLink.get("audit_from"),
+        );
+        hydrateAuditDateTimeInput(
+            document.getElementById("audit-to-filter"),
+            manageDeepLink.get("audit_to"),
+        );
         managePageInteraction.dispatch({
-            type: 'auditQueryChanged',
-            patch: { failureCause: manageDeepLink.get('failure_cause') || "" },
+            type: "auditQueryChanged",
+            patch: { failureCause: manageDeepLink.get("failure_cause") || "" },
         });
         renderAuditFailureCauseFilter();
         initializeManageWorkspace();
@@ -1774,4 +2698,42 @@ let applicationPostcheckPreviewController=null;
         fetchManageServers();
         fetchGlobalKeyStatus();
         fetchAuditEvents();
-        setInterval(fetchAuditEvents, 15000);
+        lifecycle.setInterval(fetchAuditEvents, 15000);
+
+        lifecycle.own(packageDeferralEditor.destroy);
+        lifecycle.own(onboardingAdapter.destroy);
+        lifecycle.own(importAdapter.destroy);
+        lifecycle.own(() => {
+            closeHostKeyModal(false);
+            closeEditModal();
+            closeAuditDetailDrawer();
+        });
+        // Settle outstanding confirmation promises before replacing this page.
+        lifecycle.own(() => {
+            for (const name of ["action-confirm", "typed-confirm"]) {
+                if (
+                    document
+                        .getElementById(`${name}-modal`)
+                        ?.classList.contains("active")
+                )
+                    document.getElementById(`${name}-cancel`)?.click();
+            }
+        });
+        const destroy = () => lifecycle.destroy();
+        lifecycle.listen(root, "pagehide", destroy, { once: true });
+        current = Object.freeze({
+            destroy,
+            getView: () => managePageInteraction.getView(),
+        });
+        return current;
+    }
+    root.ManagePage = Object.freeze({
+        mount,
+        destroy: () => current?.destroy(),
+        getView: () => current?.getView(),
+    });
+    root.addEventListener("pageshow", (event) => {
+        if (event.persisted) mount();
+    });
+    mount();
+})(globalThis);

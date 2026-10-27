@@ -52,9 +52,11 @@ func TestBootstrapNetworkBindingsAreExplicit(t *testing.T) {
 			"DEBIAN_UPDATER_LISTEN_ADDR=:8080",
 			"EXPOSE 8080",
 		},
-		"playwright.config.js": {
-			"DEBIAN_UPDATER_LISTEN_ADDR=127.0.0.1:8080",
-			"http://127.0.0.1:8080/login",
+		"tests/e2e/support/installation.js": {
+			"SLU_SCALING_E2E_LISTEN",
+			"127.0.0.1:0",
+			"SLU_SCALING_E2E_READY",
+			"TestDashboardScalingE2EServe",
 		},
 	}
 

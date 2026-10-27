@@ -14,6 +14,7 @@ SimpleLinuxUpdater is a single Go binary with a Gin web server, server-rendered 
 - [Update runner lifecycle](#update-runner-lifecycle)
 - [Scheduled policies](#scheduled-policies)
 - [Audit, reports, and observability](#audit-reports-and-observability)
+- [Browser adapter ownership](#browser-adapter-ownership)
 - [Development shape](#development-shape)
 
 ## Runtime shape
@@ -156,6 +157,20 @@ The observability dashboard and `/metrics` endpoint derive summaries from `updat
 Dashboard event streaming uses the app-scoped client event broker. The UI can fall back to polling when live events are unavailable.
 
 Notification admission consumes sanitized lifecycle intents after accepted audit/service outcomes. Delivery is asynchronous and best-effort, so destination failure is recorded diagnostically without changing the originating update, schedule, or restore result.
+
+## Browser adapter ownership
+
+Admin Page Interaction, Scheduled Policy Administration Interaction, Status Page
+Interaction, Manage Page Interaction and Dashboard Projection Consumption own
+accepted state and decisions. Per-page browser compositions inject those owners
+into responsibility-scoped adapters for notifications, account/session/metrics,
+backup, policies, Status transport/bulk controls and Manage workspace/audit/modal
+effects. They expose explicit mount/destruction, reject stale async lifetimes,
+and retain the existing synchronous Status render snapshot contract.
+
+The [frontend responsibility and lifecycle map](frontend-isolation.md) documents
+what remains in each shell, request/DOM ownership, compatible public entry points
+and disposable per-scenario Playwright router composition.
 
 ## Development shape
 

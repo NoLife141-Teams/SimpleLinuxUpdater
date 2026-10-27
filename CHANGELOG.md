@@ -32,6 +32,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Changed
 
+- Isolate remaining Admin, Status and Manage browser effects behind explicit
+  adapter lifecycles, preserving existing interaction owners and appearance.
+- Split browser scenarios by domain and run each against an independent
+  disposable installation, including password/session and parallel-worker tests.
+- Preserve accepted inventory-import result focus through viewport changes
+  while protecting newer navigation and editor focus.
+
 - Status renders reuse a snapshot within one synchronous render, bulk previews
   avoid unrelated fleet log/package projections, and SSE reconnections recover
   active/inspected jobs plus jobs followed before a connection loss. Terminal

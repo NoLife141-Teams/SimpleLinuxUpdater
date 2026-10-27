@@ -159,6 +159,11 @@ npm run test:unit
 npm run test:e2e
 ```
 
+Browser tests use a fresh disposable test-only router installation per scenario,
+with normal authentication and no SSH or production workers. See
+[frontend isolation](frontend-isolation.md) for independent domain commands,
+multiple-worker validation and screenshot reproduction.
+
 Coverage:
 
 ```bash

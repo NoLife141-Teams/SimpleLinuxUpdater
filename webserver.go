@@ -582,7 +582,7 @@ func aptPackageManagerLockState(client sshConnection, commandTimeout time.Durati
 	return aptLockProbeResult{active: err == nil, output: strings.TrimSpace(stdout), err: err}
 }
 
-func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler) (string, string, error) {
+func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect updatespkg.HostCommandEffect, stdin io.Reader, timeout time.Duration, onOutput updatespkg.HostCommandOutputHandler, drain ...bool) (string, string, error) {
 	if timeout <= 0 {
 		return runSSHCommandNoTimeoutStreaming(client, cmd, effect, stdin, onOutput)
 	}
@@ -611,6 +611,13 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect 
 		session = result.session
 	case <-sessionTimeout.C:
 		_ = client.Close()
+		if len(drain) > 0 && drain[0] {
+			result := <-newSessionCh
+			if result.session != nil {
+				_ = result.session.Close()
+			}
+			return "", "", fmt.Errorf("ssh session setup timed out after %s", timeout)
+		}
 		select {
 		case result := <-newSessionCh:
 			if result.session != nil {
@@ -736,6 +743,11 @@ func runSSHCommandWithTimeoutStreaming(client sshConnection, cmd string, effect 
 				_, _ = stderr.appendLocal(fmt.Sprintf("\nAPT liveness check stopped waiting: %s.\n", probeDetail))
 			}
 			_ = session.Close()
+			if len(drain) > 0 && drain[0] {
+				_ = client.Close()
+				<-runErrCh
+				return stdout.String(), stderr.String(), classifyCommandTimeout(effect, fmt.Errorf("command timed out after %s", timeout))
+			}
 			select {
 			case runErr := <-runErrCh:
 				timeoutStdout := stdout.String()
@@ -774,7 +786,7 @@ func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection
 	}
 	resultCh := make(chan commandResult, 1)
 	go func() {
-		stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, cmd, effect, stdin, timeout, gate.emit)
+		stdout, stderr, err := runSSHCommandWithTimeoutStreaming(client, cmd, effect, stdin, timeout, gate.emit, updatespkg.RequiresTransportDrain(ctx))
 		resultCh <- commandResult{stdout: stdout, stderr: stderr, err: err}
 	}()
 	select {
@@ -783,6 +795,9 @@ func runSSHCommandWithContextStreaming(ctx context.Context, client sshConnection
 	case <-ctx.Done():
 		if client != nil {
 			_ = client.Close()
+		}
+		if updatespkg.RequiresTransportDrain(ctx) {
+			<-resultCh
 		}
 		return "", "", classifyCommandTimeout(effect, ctx.Err())
 	}
@@ -2285,6 +2300,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 
 	r.GET("/api/servers/:name/vulnerabilities", func(c *gin.Context) { handleVulnerabilityObservation(c, deps) })
 	r.POST("/api/servers/:name/vulnerabilities/scan", func(c *gin.Context) { handleVulnerabilityScan(c, deps) })
+	r.POST("/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", func(c *gin.Context) { handleCancelVulnerabilityScan(c, deps) })
 
 	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {
 		handleServerFactsRefreshWithDeps(c, deps)

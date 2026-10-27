@@ -84,12 +84,17 @@ func dialSSHConnectionWithContext(ctx context.Context, dial func(Server, *ssh.Cl
 		}
 		return result.conn, result.err
 	case <-ctx.Done():
-		go func() {
+		drain := func() {
 			result := <-resultCh
 			if result.conn != nil {
 				_ = result.conn.Close()
 			}
-		}()
+		}
+		if updatespkg.RequiresTransportDrain(ctx) {
+			drain()
+		} else {
+			go drain()
+		}
 		return nil, ctx.Err()
 	}
 }

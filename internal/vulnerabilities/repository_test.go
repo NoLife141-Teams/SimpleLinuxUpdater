@@ -127,3 +127,29 @@ func TestKnownSeverityEvidenceSurvivesPartialDetailFailure(t *testing.T) {
 		t.Fatal(f)
 	}
 }
+
+func TestSaveGuardedCancelledCommitPreservesAcceptedFindings(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "cancel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	repository := Repository{DB: func() *sql.DB { return db }}
+	previous, err := repository.Save(t.Context(), "host", Scan{ID: "old", State: "complete", Scope: "installed_packages", FinishedAt: "2026-10-01T00:00:00Z", Findings: []Finding{{ID: "CVE-2026-1000", Package: "pkg"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, err = repository.SaveGuarded(ctx, "host", Scan{ID: "new", State: "complete", Scope: "installed_packages", FinishedAt: "2026-10-02T00:00:00Z"}, func(commit func() error) error { cancel(); return ctx.Err() })
+	if err == nil {
+		t.Fatal("cancelled transaction accepted result")
+	}
+	after, err := repository.Load(t.Context(), "host")
+	if err != nil || after.LastAttempt.ID != "old" || after.Accepted.FinishedAt != previous.Accepted.FinishedAt || after.Findings[0].ResolvedAt != "" {
+		t.Fatal(after, err)
+	}
+}

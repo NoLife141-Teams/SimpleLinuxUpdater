@@ -298,11 +298,16 @@
 
     function vulnerabilityPresentation(raw) {
         const info = record(raw);
-        const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running" };
+        const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running", cancelled: "Scan cancelled", interrupted: "Scan interrupted" };
         const dispositions = { fixed_by_candidate: "Fix available in candidate", still_affected: "Candidate still affected", no_fix_available: "No newer candidate available", candidate_unverified: "Candidate could not be verified" };
         return {
             ...clone(info),
             stateLabel: labels[text(info.state)] || labels.not_scanned,
+            progressLabel: (() => {
+                const progress = record(info.progress);
+                const phase = {inventory: "Inventory", metadata: "Metadata and provenance", evaluation: "Evaluation", persistence: "Persistence"}[text(progress.phase)] || "Preparing";
+                return `${phase} · ${count(progress.inventoried)} inventoried · ${count(progress.metadata)} metadata collected · ${count(progress.evaluated)} evaluated · ${count(progress.unknown)} unknown · ${count(progress.unsupported)} unsupported`;
+            })(),
             coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
             freshnessLabel: text(info.freshness, "unknown"),
             resultLabel: { confirmed_exposure: "Confirmed exposure", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",

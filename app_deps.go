@@ -99,6 +99,9 @@ func (deps AppDeps) initializeJobManager() error {
 		return err
 	}
 	deps.SetCurrentJobManager(jm)
+	if deps.VulnerabilityScans != nil {
+		return deps.VulnerabilityScans.Reconcile(context.Background())
+	}
 	return nil
 }
 

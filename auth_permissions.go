@@ -30,7 +30,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("operational:read", true, "GET", "/api/servers", "/api/servers/:name/vulnerabilities", "/api/dashboard/summary", "/api/observability/summary", "/api/observability/health-trends", "/api/app-settings/timezone", "/api/package-deferral-snapshots/:revision", "/api/servers/:name/package-deferrals")
 	add("logs:read", true, "GET", "/api/jobs/:id", "/api/jobs/:id/logs", "/api/reports/jobs/:id")
 	add("audit:read", true, "GET", "/api/audit-events", "/api/reports/audit/:id")
-	add("maintenance:write", true, "POST", "/api/update/:name", "/api/autoremove/:name", "/api/repair/:name", "/api/reboot/:name", "/api/servers/:name/facts/refresh", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/postchecks/test")
+	add("maintenance:write", true, "POST", "/api/update/:name", "/api/autoremove/:name", "/api/repair/:name", "/api/reboot/:name", "/api/servers/:name/facts/refresh", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", "/api/servers/:name/postchecks/test")
 	add("approvals:write", true, "POST", "/api/approve/:name", "/api/approve-security/:name", "/api/approve-security-kept-back/:name", "/api/approve-full/:name", "/api/cancel/:name")
 	add("inventory:write", false, "POST", "/api/servers", "/api/servers/:name/key", "/api/keys/global", "/api/hostkeys/scan", "/api/hostkeys/trust", "/api/hostkeys/clear", "/api/sudoers/:name", "/api/sudoers/disable/:name")
 	add("inventory:write", false, "PUT", "/api/servers/:name")

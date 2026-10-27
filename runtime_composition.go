@@ -119,6 +119,11 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) error {
 		return fmt.Errorf("purge restored expired job logs: %w", err)
 	}
 	deps.SetCurrentJobManager(jm)
+	if deps.VulnerabilityScans != nil {
+		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
+			return fmt.Errorf("restore vulnerability scans: %w", err)
+		}
+	}
 	if deps.ServerInventoryService == nil || deps.ServerState == nil {
 		return fmt.Errorf("reload restored Server inventory: runtime dependency is unavailable")
 	}

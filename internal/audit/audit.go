@@ -115,6 +115,17 @@ func (r *SQLiteRepository) Write(evt Event) error {
 	return writeEvent(r.db(), evt)
 }
 
+// WriteOnce atomically deduplicates a durable operation's terminal audit event.
+func (r *SQLiteRepository) WriteOnce(evt Event) (bool, error) {
+	result, err := r.db().Exec(`INSERT INTO audit_events (created_at, actor, action, target_type, target_name, status, message, meta_json, request_id, client_ip)
+ SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE action = ? AND request_id = ?)`, evt.CreatedAt, evt.Actor, evt.Action, evt.TargetType, evt.TargetName, evt.Status, evt.Message, evt.MetaJSON, evt.RequestID, evt.ClientIP, evt.Action, evt.RequestID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
 // WriteTx records an already prepared event in its caller's atomic operation.
 func WriteTx(tx *sql.Tx, evt Event) error { return writeEvent(tx, evt) }
 
@@ -425,6 +436,14 @@ func (s *Service) Write(evt Event) error {
 }
 
 func (s *Service) Record(actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) error {
+	return s.record("", actor, clientIP, action, targetType, targetName, status, message, meta)
+}
+
+func (s *Service) RecordOnce(key, actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) error {
+	return s.record(key, actor, clientIP, action, targetType, targetName, status, message, meta)
+}
+
+func (s *Service) record(key, actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) error {
 	meta = withStableActorIdentity(actor, meta)
 	evt := Event{
 		CreatedAt:  s.now().UTC().Format(time.RFC3339),
@@ -435,7 +454,7 @@ func (s *Service) Record(actor, clientIP, action, targetType, targetName, status
 		Status:     truncateString(status, 32),
 		Message:    truncateString(message, MessageMaxLen),
 		MetaJSON:   SanitizeMeta(meta),
-		RequestID:  "",
+		RequestID:  truncateString(key, 128),
 		ClientIP:   truncateString(clientIP, 128),
 	}
 	if evt.Actor == "" {
@@ -444,7 +463,16 @@ func (s *Service) Record(actor, clientIP, action, targetType, targetName, status
 	if evt.TargetName == "" {
 		evt.TargetName = "-"
 	}
-	if err := s.Write(evt); err != nil {
+	if key != "" {
+		repo, ok := s.repo.(interface{ WriteOnce(Event) (bool, error) })
+		if !ok {
+			return errors.New("audit repository does not support durable deduplication")
+		}
+		inserted, err := repo.WriteOnce(evt)
+		if err != nil || !inserted {
+			return err
+		}
+	} else if err := s.Write(evt); err != nil {
 		return err
 	}
 	if s.notify != nil {

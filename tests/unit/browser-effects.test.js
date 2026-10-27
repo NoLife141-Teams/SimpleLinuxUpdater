@@ -235,6 +235,114 @@ test("request completion and destruction detach external cancellation listeners"
     assert.equal(signal.count, 0);
 });
 
+test("discarded Status error responses do not accumulate across polling cycles", async () => {
+    const vm = require("node:vm"),
+        fs = require("node:fs"),
+        signals = [];
+    let cancelled = 0;
+    const context = {
+        BrowserEffects: {
+            create: () => create({
+                fetch: async (_url, options) => {
+                    signals.push(options.signal);
+                    return new Response(new ReadableStream({
+                        cancel() { cancelled++; },
+                    }), { status: 503 });
+                },
+            }),
+        },
+        window: { canUseScope: () => true },
+        console: { error() {} },
+        URLSearchParams,
+    };
+    vm.runInNewContext(fs.readFileSync(
+        require.resolve("../../static/js/status-snapshot-adapter.js"), "utf8",
+    ), context);
+    const adapter = context.StatusSnapshotAdapter.create({
+        dispatchStatusInteraction: () => [],
+        encodeURIComponent,
+    });
+    adapter.init();
+    for (let cycle = 0; cycle < 5; cycle++) {
+        for (const stream of [
+            "servers", "dashboard", "commandHistory", "audit",
+            "observability", "policies", "globalKey",
+        ]) {
+            await adapter.executeStatusSnapshotFetch({ stream, requestId: cycle });
+        }
+        await adapter.executeJobLogFetch({ jobId: "synthetic", serverName: "host" });
+    }
+    assert.equal(signals.length, 40);
+    adapter.destroy();
+    assert.equal(signals.filter((signal) => signal.aborted).length, 0,
+        "completed error responses must be released before page destruction");
+    assert.equal(cancelled, 40, "discarded bodies must stop consuming transport");
+});
+
+test("successful bulk commands release ignored response bodies before destruction", async () => {
+    const vm = require("node:vm"), fs = require("node:fs");
+    for (const buttonID of ["bulk-update", "refresh-all-facts"]) {
+        const buttons = new Map(), signals = [], completed = deferred();
+        const names = Array.from({ length: 20 }, (_, index) => `host-${index}`);
+        const context = {
+            BrowserEffects: {
+                create: () => create({ fetch: async (_url, options) => {
+                    signals.push(options.signal);
+                    return new Response('{"ok":true}');
+                } }),
+            },
+            window: { notifyApp() {} },
+            document: { getElementById(id) {
+                if (!buttons.has(id)) buttons.set(id, new EventTarget());
+                return buttons.get(id);
+            } },
+            console,
+        };
+        vm.runInNewContext(fs.readFileSync(
+            require.resolve("../../static/js/index-bulk-actions.js"), "utf8",
+        ), context);
+        const adapter = context.StatusBulkActions.create({
+            getStatusView: () => ({ actions: { bulk: null, inFlight: [{ operationId: "bulk" }] } }),
+            statusInteraction: { planBulkAction: () => ({
+                id: "bulk", selectedNames: names, visibleNames: names,
+                eligibleNames: names, hiddenNames: [], ineligible: [], skippedHosts: [],
+                payloadFacts: {},
+            }) },
+            dispatchStatusInteraction: (event) => {
+                if (event.type === "actionCompleted") completed.resolve();
+            },
+        });
+        adapter.init();
+        buttons.get(buttonID).dispatchEvent(new Event("click"));
+        await completed.promise;
+        adapter.destroy();
+        assert.equal(signals.length, 20);
+        assert.equal(signals.filter((signal) => signal.aborted).length, 0,
+            `${buttonID} must release completed command responses`);
+    }
+});
+
+test("discarding an unused response preserves cancellation and stale rejection for a pending JSON body", async () => {
+    const gate = deferred(), signals = [];
+    const lifecycle = create({ fetch: async (_url, options) => {
+        signals.push(options.signal);
+        return signals.length === 1 ? new Response("unused") : { json: () => gate.promise };
+    } });
+    lifecycle.init();
+    const unused = await lifecycle.fetch("/unused");
+    lifecycle.discardResponse(unused);
+    lifecycle.discardResponse(unused);
+    const response = await lifecycle.fetch("/pending-json");
+    const body = response.json();
+    lifecycle.destroy();
+    lifecycle.init();
+    gate.resolve({ superseded: true });
+    await assert.rejects(body, { name: "AbortError" });
+    assert.equal(signals[0].aborted, false);
+    assert.equal(signals[1].aborted, true);
+    lifecycle.destroy();
+});
+
 test("Status snapshot adapter rejects the previous lifetime even when the same adapter initializes again", async () => {
     const vm = require("node:vm"),
         fs = require("node:fs");

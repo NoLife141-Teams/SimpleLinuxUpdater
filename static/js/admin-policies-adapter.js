@@ -2185,6 +2185,7 @@
                         ),
                     );
                 }
+                lifecycle.discardResponse(res);
                 const successMessage =
                     plan.command === "updatePolicy"
                         ? "Policy updated."
@@ -2401,6 +2402,7 @@
                         ),
                     );
                 }
+                lifecycle.discardResponse(res);
                 if (document.getElementById("policy-id").value === String(id)) {
                     resetPolicyForm();
                 }

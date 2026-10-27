@@ -342,6 +342,7 @@
                 const res = await fetch("/api/auth/sessions");
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!res.ok) {
+                    lifecycle.discardResponse(res);
                     adminPageInteraction.dispatch({
                         type: "snapshotFailed",
                         stream: "account",
@@ -641,6 +642,7 @@
                     window.notifyApp(message);
                     return;
                 }
+                lifecycle.discardResponse(res);
                 finishAdminCommand(plan, null, "Session revoked.");
                 if (current) {
                     window.location.assign("/login");
@@ -834,6 +836,7 @@
                     window.notifyApp(message);
                     return;
                 }
+                lifecycle.discardResponse(res);
                 finishAdminCommand(plan, { count: 0 }, "Sessions cleared.");
                 adminPageInteraction.dispatch({ type: "metricsTokenHidden" });
                 window.location.assign("/login");
@@ -956,6 +959,7 @@
                 const res = await fetch("/api/metrics/token");
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!res.ok) {
+                    lifecycle.discardResponse(res);
                     adminPageInteraction.dispatch({
                         type: "snapshotFailed",
                         stream: "metrics",
@@ -1114,6 +1118,7 @@
                     window.notifyApp(message);
                     return;
                 }
+                lifecycle.discardResponse(res);
                 finishAdminCommand(
                     plan,
                     { enabled: false },

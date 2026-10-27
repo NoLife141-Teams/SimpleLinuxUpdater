@@ -232,7 +232,14 @@ test("Status remount closes superseded streams and leaves one selection and acti
         ),
     ).toBe(0);
     await page.evaluate(() => window.StatusPage.mount());
-    await expect(page.locator("#servers-table")).toContainText("demo-host");
+    // The previous table or an early dashboard projection can already contain
+    // the name while this mount is still waiting for its server snapshot.
+    await page.waitForFunction(() =>
+        Boolean(window.StatusPage.getServerByName("demo-host")),
+    );
+    await expect(
+        page.locator('#servers-table [data-action="open-drawer"]'),
+    ).toBeVisible();
     await page.evaluate(async () => {
         document.getElementById("search").focus();
         document

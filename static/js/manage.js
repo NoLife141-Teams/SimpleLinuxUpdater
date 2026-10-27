@@ -841,6 +841,7 @@
                                 "Failed to prune audit events.",
                             ),
                         );
+                    lifecycle.discardResponse(res);
                     await settleCommand(
                         "commandCompleted",
                         execution.plan,
@@ -1131,6 +1132,7 @@
                             "Failed to change server availability.",
                         ),
                     );
+                lifecycle.discardResponse(response);
                 const message = execution.plan.payload.disabled
                     ? "Server disabled. Maintenance is paused."
                     : "Server enabled. Maintenance can resume.";
@@ -1190,6 +1192,7 @@
                             ),
                         );
                     }
+                    lifecycle.discardResponse(response);
                     await settleCommand(
                         "commandCompleted",
                         execution.plan,
@@ -1871,6 +1874,7 @@
                     throw new Error(
                         await parseErrorResponse(res, "Failed to save server."),
                     );
+                lifecycle.discardResponse(res);
                 managePageInteraction.dispatch({
                     type: "editorServerAccepted",
                     sessionID: accepted.sessionID,
@@ -1898,6 +1902,7 @@
                             );
                             if (!lifecycle.isCurrent(lifetime)) return;
                         }
+                        lifecycle.discardResponse(keyResponse);
                     } catch (err) {
                         if (
                             !lifecycle.isCurrent(lifetime) ||
@@ -2026,6 +2031,7 @@
                         (await res.json().catch(() => ({}))).error ||
                             "Failed to upload key.",
                     );
+                lifecycle.discardResponse(res);
                 await settleCommand(
                     "commandCompleted",
                     execution.plan,
@@ -2092,6 +2098,7 @@
                         (await res.json().catch(() => ({}))).error ||
                             "Failed to clear key.",
                     );
+                lifecycle.discardResponse(res);
                 await settleCommand(
                     "commandCompleted",
                     execution.plan,
@@ -2149,6 +2156,7 @@
                         (await res.json().catch(() => ({}))).error ||
                             "Failed to clear password.",
                     );
+                lifecycle.discardResponse(res);
                 await settleCommand(
                     "commandCompleted",
                     execution.plan,
@@ -2474,6 +2482,7 @@
                             "Failed to upload Global SSH Credential.",
                         ),
                     );
+                lifecycle.discardResponse(res);
                 await settleCommand(
                     "commandCompleted",
                     execution.plan,
@@ -2545,6 +2554,7 @@
                 if (!lifecycle.isCurrent(lifetime)) return;
                 return;
             }
+            lifecycle.discardResponse(res);
             await settleCommand(
                 "commandCompleted",
                 execution.plan,

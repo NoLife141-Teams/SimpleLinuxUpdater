@@ -3032,6 +3032,7 @@
                     if (!lifecycle.isCurrent(lifetime)) return;
                     return false;
                 }
+                lifecycle.discardResponse(response);
                 return true;
             } catch (error) {
                 if (
@@ -3862,6 +3863,7 @@
                             );
                             return false;
                         }
+                        lifecycle.discardResponse(response);
                         return true;
                     } catch (err) {
                         if (
@@ -3907,6 +3909,7 @@
                             );
                             return false;
                         }
+                        lifecycle.discardResponse(response);
                         return true;
                     } catch (err) {
                         if (

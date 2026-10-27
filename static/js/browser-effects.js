@@ -11,6 +11,7 @@
         const cleanups = new Set();
         const timers = new Map();
         const requests = new Map();
+        const responseReleases = new WeakMap();
         let listeners = new WeakMap();
         const current = (ticket) => active && ticket === generation;
         const stale = () =>
@@ -93,8 +94,8 @@
                 controller = new AbortController();
             const abortExternal = () => controller.abort();
             const release = () => {
+                if (!requests.delete(controller)) return;
                 options.signal?.removeEventListener("abort", abortExternal);
-                requests.delete(controller);
             };
             requests.set(controller, release);
             if (options.signal) {
@@ -110,8 +111,8 @@
                     signal: controller.signal,
                 });
                 if (!current(ticket)) throw stale();
-                const wrap = (response) =>
-                    new Proxy(response, {
+                const wrap = (response) => {
+                    const wrapped = new Proxy(response, {
                         get(target, key) {
                             const value = Reflect.get(target, key, target);
                             if (key === "clone")
@@ -139,6 +140,9 @@
                                 : value;
                         },
                     });
+                    responseReleases.set(wrapped, release);
+                    return wrapped;
+                };
                 // Retain the controller through body consumption or destruction.
                 if (response.body === null) release();
                 return wrap(response);
@@ -146,6 +150,15 @@
                 release();
                 throw error;
             }
+        }
+        // Status-only consumers must abandon their unused body explicitly.
+        // Keep other responses owned until their delayed body finishes reading.
+        function discardResponse(response) {
+            const release = responseReleases.get(response);
+            if (!release) return;
+            responseReleases.delete(response);
+            release();
+            response.body?.cancel().catch(() => {});
         }
         function observer(Type) {
             return class {
@@ -193,6 +206,7 @@
             listen,
             unlisten,
             fetch: fetchOwned,
+            discardResponse,
             observer,
             setTimeout: (callback, delay) =>
                 schedule("setTimeout", callback, delay),

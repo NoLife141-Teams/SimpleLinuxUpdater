@@ -382,6 +382,7 @@
                 const res = await fetch("/api/backup/status");
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!res.ok) {
+                    lifecycle.discardResponse(res);
                     adminPageInteraction.dispatch({
                         type: "snapshotFailed",
                         stream: "backup",

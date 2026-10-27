@@ -254,6 +254,7 @@
                                 : `${response.status} ${response.statusText}`.trim();
                         throw new Error(detail || "Request failed");
                     }
+                    lifecycle.discardResponse(response);
                 });
 
                 const results = await Promise.allSettled(jobs);
@@ -374,6 +375,7 @@
                                 `${name}: ${payload.error || response.statusText || response.status}`,
                             );
                         }
+                        lifecycle.discardResponse(response);
                     } catch (err) {
                         if (
                             !lifecycle.isCurrent(lifetime) ||

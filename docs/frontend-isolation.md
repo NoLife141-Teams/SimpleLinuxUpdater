@@ -65,7 +65,10 @@ file-read and refresh waits also recheck their captured lifetime before command
 admission or subsequent effects. Response bodies also reject a superseded
 lifetime; an old failure cannot render after destroy/init. External cancellation
 listeners detach when a body completes, a request fails or the adapter is
-destroyed. Timer namespaces remain independent. Status row selection and import
+destroyed. Consumers that only use the HTTP status explicitly discard the
+unused body, releasing request ownership without retaining command payloads.
+Pending JSON/body reads stay cancellable until consumption finishes.
+Timer namespaces remain independent. Status row selection and import
 Configure use stable delegated containers; repeated rendering does not register
 per-row cleanups. Pointer listeners and destruction hooks unregister when a
 resize gesture ends.

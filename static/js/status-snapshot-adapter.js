@@ -28,7 +28,10 @@
                     "/api/audit-events?page=1&page_size=8",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -63,7 +66,10 @@
                     "/api/observability/summary?window=7d",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 await dispatchStatusInteraction({
                     type: "secondarySnapshotReceived",
                     stream: "observability",
@@ -103,7 +109,10 @@
             try {
                 const response = await fetch("/api/update-policies");
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -160,7 +169,10 @@
                     "/api/dashboard/summary?window=7d&include_command_history=false",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const nextDashboardSummary = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -212,7 +224,10 @@
                     `/api/audit-events?${query.toString()}`,
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -254,7 +269,10 @@
                     `/api/jobs/${encodeURIComponent(jobId)}/logs?after_seq=${encodeURIComponent(afterSequence)}&limit=200`,
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const page = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -300,7 +318,10 @@
             try {
                 const response = await fetch("/api/keys/global");
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`HTTP ${response.status}`);
+                }
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
                 await dispatchStatusInteraction({
@@ -334,6 +355,7 @@
                 const response = await fetch("/api/servers");
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
+                    lifecycle.discardResponse(response);
                     throw new Error(
                         `Failed to fetch servers: HTTP ${response.status}`,
                     );

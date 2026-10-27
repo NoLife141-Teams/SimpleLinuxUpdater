@@ -786,14 +786,12 @@
                         true,
                     );
                     renderNotificationDiagnostics();
-                    setNotificationFeedback(
-                        "",
-                        await parseErrorResponse(
-                            res,
-                            "Notification test failed.",
-                        ),
+                    const message = await parseErrorResponse(
+                        res,
+                        "Notification test failed.",
                     );
                     if (!lifecycle.isCurrent(lifetime)) return;
+                    setNotificationFeedback("", message);
                     return;
                 }
                 finishAdminCommand(

@@ -1103,13 +1103,12 @@
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!res.ok) {
-                    window.notifyApp(
-                        await parseErrorResponse(
-                            res,
-                            "Failed to load job details.",
-                        ),
+                    const message = await parseErrorResponse(
+                        res,
+                        "Failed to load job details.",
                     );
                     if (!lifecycle.isCurrent(lifetime)) return;
+                    window.notifyApp(message);
                     return;
                 }
                 const data = await res.json().catch(() => ({}));

@@ -255,6 +255,48 @@ test("Status remount closes superseded streams and leaves one selection and acti
         "aria-hidden",
         "true",
     );
+    await page.waitForFunction(() =>
+        Boolean(window.StatusPage.getServerByName("demo-host")),
+    );
+    await expect(
+        page.locator('#servers-table [data-action="cancel-upgrade"]'),
+    ).toBeVisible();
+    const staleErrors = await page.evaluate(async () => {
+        const originalFetch = window.fetch, originalNotify = window.notifyApp;
+        const notifications = [];
+        let releaseBody, beginReading;
+        const body = new Promise((resolve) => (releaseBody = resolve));
+        const reading = new Promise((resolve) => (beginReading = resolve));
+        window.fetch = (url, options) => String(url).startsWith("/api/cancel/")
+            ? Promise.resolve({
+                ok: false,
+                status: 503,
+                json: () => {
+                    beginReading();
+                    return body;
+                },
+            })
+            : originalFetch(url, options);
+        window.notifyApp = (message) => notifications.push(message);
+        try {
+            document
+                .querySelector('#servers-table [data-action="cancel-upgrade"]')
+                .click();
+            await reading;
+            window.StatusPage.mount();
+            originalNotify("Current mounted page feedback");
+            releaseBody({ error: "Superseded command failure" });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return notifications;
+        } finally {
+            window.fetch = originalFetch;
+            window.notifyApp = originalNotify;
+        }
+    });
+    expect(staleErrors).toEqual([]);
+    await expect(page.locator("#app-feedback-region")).toHaveText(
+        "Current mounted page feedback",
+    );
     expect(errors).toEqual([]);
 });
 

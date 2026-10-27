@@ -3023,10 +3023,12 @@
                 });
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
-                    statusActionAdapter.notify(
-                        await parseErrorResponse(response, fallbackMessage),
+                    const message = await parseErrorResponse(
+                        response,
+                        fallbackMessage,
                     );
                     if (!lifecycle.isCurrent(lifetime)) return;
+                    statusActionAdapter.notify(message);
                     if (response.status === 409)
                         await fetchServers(true, "action-conflict");
                     if (!lifecycle.isCurrent(lifetime)) return;

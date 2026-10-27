@@ -419,6 +419,49 @@ test("Admin notification adapter cannot render a previous request failure after 
     assert.equal(writes, 0);
     adapter.destroy();
 });
+test("a delayed policy job error body cannot notify a subsequent adapter lifetime", async () => {
+    const vm = require("node:vm"), fs = require("node:fs");
+    const body = deferred(), reading = deferred(), notifications = [];
+    const context = {
+        BrowserEffects: {
+            create: () => create({ fetch: async () => ({
+                ok: false,
+                json: () => {
+                    reading.resolve();
+                    return body.promise;
+                },
+            }) }),
+        },
+        window: { notifyApp: (message) => notifications.push(message) },
+        console,
+    };
+    vm.runInNewContext(fs.readFileSync(
+        require.resolve("../../static/js/admin-policies-adapter.js"), "utf8",
+    ), context);
+    const adapter = context.AdminPoliciesAdapter.create({
+        scheduledPolicyAdministration: {
+            dispatch: () => [{ type: "fetchSnapshot", requestId: "old" }],
+        },
+        encodeURIComponent,
+        // Common error parsing deliberately turns a failed body into fallback
+        // text, including when destruction aborted that body.
+        parseErrorResponse: async (response, fallback) => {
+            const data = await response.json().catch(() => ({}));
+            return data.error || fallback;
+        },
+    });
+    adapter.init();
+    adapter.handleScheduledRunsTableClick({ target: {
+        closest: () => ({ dataset: { action: "job-detail", jobId: "old-job" } }),
+    } });
+    await reading.promise;
+    adapter.destroy();
+    adapter.init();
+    body.resolve({ error: "superseded job error" });
+    await new Promise(setImmediate);
+    assert.deepEqual(notifications, []);
+    adapter.destroy();
+});
 
 test("an old account confirmation cannot admit a command after adapter destruction and reinitialization", async () => {
     const vm = require("node:vm"),

@@ -83,10 +83,7 @@ func inventoryImportAuditRecords(event serverpkg.CommandAudit) []serverpkg.Comma
 		return []serverpkg.CommandAudit{event}
 	}
 	metaFor := func(names []string, part, parts int) map[string]any {
-		meta := make(map[string]any, len(event.Meta)+2)
-		for key, value := range event.Meta {
-			meta[key] = value
-		}
+		meta := auditpkg.CloneMeta(event.Meta)
 		meta["created_names"], meta["part"], meta["parts"] = names, part, parts
 		return meta
 	}

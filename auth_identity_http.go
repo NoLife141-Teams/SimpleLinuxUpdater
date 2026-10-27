@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	auditpkg "debian-updater/internal/audit"
 	authpkg "debian-updater/internal/auth"
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
@@ -34,10 +35,7 @@ func identityAuditMeta(c *gin.Context, meta map[string]any) map[string]any {
 	if !ok {
 		return meta
 	}
-	out := make(map[string]any, len(meta)+2)
-	for k, v := range meta {
-		out[k] = v
-	}
+	out := auditpkg.CloneMeta(meta)
 	out["account_id"] = p.Account.ID
 	if p.Bearer {
 		out["personal_token_id"] = p.Token.ID

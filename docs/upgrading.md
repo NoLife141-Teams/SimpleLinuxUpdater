@@ -184,7 +184,9 @@ hashes, individual passed/failed/not-run steps, real container/global exits,
 negative-control provenance and cleanup. Interrupted starts without an observable
 scenario report are explicitly marked `not-observed`, rather than falsely `not-run`. Logs, raw DB/config, ciphertext,
 passwords, cookies, keys, backup passphrases and archives stay private and are
-deleted. Startup/shutdown and container execution have deadlines; signals trigger
+deleted. Startup/shutdown and container execution have deadlines. The negative-control
+wrapper forwards cancellation to the runner and waits for its bounded cleanup;
+a timeout cannot count as the expected diagnostic failure. Signals trigger
 owned-process shutdown, label-checked container cleanup and independent temporary
 file cleanup. CI bounds the whole job to 15 minutes and retains just the two
 redacted reports for one day. This qualifies Linux amd64 persistence from

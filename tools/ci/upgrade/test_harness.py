@@ -21,6 +21,7 @@ def module(name):
 
 runner = module('run')
 scenario = module('scenario')
+negative = module('negative_control')
 
 
 class HarnessTests(unittest.TestCase):
@@ -141,6 +142,38 @@ class ContainerOwnershipTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 runner.cleanup_container('owned-name')
         self.assertEqual(calls[-1], ['docker', 'rm', '--force', 'owned-name'])
+
+class NegativeControlCancellationTests(unittest.TestCase):
+    def test_timeout_sends_term_and_waits_for_runner_cleanup(self):
+        process = mock.Mock(returncode=1)
+        process.wait.side_effect = [negative.subprocess.TimeoutExpired('owned-runner', 300), 1]
+        process.poll.return_value = None
+        with mock.patch.object(negative.subprocess, 'Popen', return_value=process), \
+             mock.patch.object(negative.signal, 'signal'):
+            code, interrupted = negative.run_harness(['owned-runner'])
+        self.assertEqual((code, interrupted), (1, True))
+        process.terminate.assert_called_once()
+        self.assertEqual(process.wait.call_args_list, [mock.call(timeout=300), mock.call(timeout=150)])
+        process.kill.assert_not_called()
+
+    def test_signal_forwards_to_runner_and_cannot_count_as_negative_success(self):
+        process = mock.Mock(returncode=1)
+        handlers = {}
+        def register(kind, handler):
+            previous = handlers.get(kind)
+            handlers[kind] = handler
+            return previous
+        def wait(**_kwargs):
+            handlers[negative.signal.SIGTERM](negative.signal.SIGTERM, None)
+            process.poll.return_value = 1
+        process.poll.return_value = None
+        process.wait.side_effect = wait
+        with mock.patch.object(negative.subprocess, 'Popen', return_value=process), \
+             mock.patch.object(negative.signal, 'signal', side_effect=register):
+            self.assertEqual(negative.run_harness(['owned-runner']), (1, True))
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+
 
 class PreparationFailureTests(unittest.TestCase):
     def test_prepare_failure_reports_not_run_and_removes_temporary_files(self):

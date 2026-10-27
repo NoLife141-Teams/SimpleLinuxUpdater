@@ -9,6 +9,8 @@ import (
 
 type Repository struct{ DB func() *sql.DB }
 
+var ErrObservationChanged = errors.New("vulnerability observation changed during reconciliation")
+
 func EnsureSchema(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS server_vulnerability_observations (server_name TEXT PRIMARY KEY, observation TEXT NOT NULL)`)
 	return err
@@ -57,6 +59,16 @@ func (r Repository) Save(ctx context.Context, name string, scan Scan) (Observati
 // SaveGuarded stages the observation under the operation context, then lets its
 // admission owner serialize acceptance with cancellation at the commit boundary.
 func (r Repository) SaveGuarded(ctx context.Context, name string, scan Scan, acceptCommit func(func() error) error) (Observation, error) {
+	return r.save(ctx, name, scan, acceptCommit, nil)
+}
+
+// SaveReconciled updates only the attempt that was read for recovery. Inventory
+// edits can rename or remove its observation while reconciliation is in flight.
+func (r Repository) SaveReconciled(ctx context.Context, name string, scan Scan, expectedID string) (Observation, error) {
+	return r.save(ctx, name, scan, func(commit func() error) error { return commit() }, &expectedID)
+}
+
+func (r Repository) save(ctx context.Context, name string, scan Scan, acceptCommit func(func() error) error, expectedID *string) (Observation, error) {
 	tx, err := r.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return Observation{}, err
@@ -72,6 +84,9 @@ func (r Repository) SaveGuarded(ctx context.Context, name string, scan Scan, acc
 		if err := json.Unmarshal([]byte(raw), &previous); err != nil {
 			return Observation{}, err
 		}
+	}
+	if expectedID != nil && (errors.Is(err, sql.ErrNoRows) || previous.LastAttempt.ID != *expectedID) {
+		return Observation{}, ErrObservationChanged
 	}
 	next := Accept(previous, scan)
 	blob, err := json.Marshal(next)

@@ -3,10 +3,12 @@ package vulnerabilities
 import (
 	"context"
 	"database/sql"
-	_ "modernc.org/sqlite"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
@@ -151,5 +153,41 @@ func TestSaveGuardedCancelledCommitPreservesAcceptedFindings(t *testing.T) {
 	after, err := repository.Load(t.Context(), "host")
 	if err != nil || after.LastAttempt.ID != "old" || after.Accepted.FinishedAt != previous.Accepted.FinishedAt || after.Findings[0].ResolvedAt != "" {
 		t.Fatal(after, err)
+	}
+}
+
+func TestSaveReconciledRequiresTheOriginalAttempt(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "reconcile.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	repository := Repository{DB: func() *sql.DB { return db }}
+	for _, tc := range []struct {
+		name, storedID, expectedID string
+		missing                    bool
+	}{
+		{name: "deleted", expectedID: "old", missing: true},
+		{name: "deleted legacy", missing: true},
+		{name: "replaced", storedID: "new", expectedID: "old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.missing {
+				if _, err := repository.Save(t.Context(), tc.name, Scan{ID: tc.storedID, State: "running"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := repository.SaveReconciled(t.Context(), tc.name, Scan{ID: tc.expectedID, State: "interrupted"}, tc.expectedID); !errors.Is(err, ErrObservationChanged) {
+				t.Fatalf("stale reconciliation error = %v", err)
+			}
+			next, err := repository.Load(t.Context(), tc.name)
+			if err != nil || next.LastAttempt.ID != tc.storedID || next.LastAttempt.State == "interrupted" {
+				t.Fatalf("overwrote changed observation: %+v %v", next, err)
+			}
+		})
 	}
 }

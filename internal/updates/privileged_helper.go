@@ -1,20 +1,21 @@
 package updates
 
 import (
-	"debian-updater/internal/deferrals"
 	"fmt"
 	"strings"
 
+	"debian-updater/internal/deferrals"
+	"debian-updater/internal/helperprotocol"
 	"debian-updater/internal/servers"
 )
 
 const (
-	RootHelperPath          = "/usr/local/sbin/simplelinuxupdater-root-helper"
+	RootHelperPath          = helperprotocol.Path
 	ManagedSudoersPath      = "/etc/sudoers.d/simplelinuxupdater"
 	LegacyAptSudoersPath    = "/etc/sudoers.d/apt-nopasswd"
-	rootHelperOwnerMarker   = "# Managed by SimpleLinuxUpdater; do not edit."
+	rootHelperOwnerMarker   = helperprotocol.OwnerMarker
 	managedSudoersMarker    = "# Managed by SimpleLinuxUpdater; do not edit."
-	rootHelperScriptVersion = "3"
+	rootHelperScriptVersion = helperprotocol.Version
 )
 
 func IsValidPackageSelector(selector string) bool { return deferrals.ValidSelector(selector) }
@@ -117,6 +118,10 @@ operation=$1
 shift
 
 case "$operation" in
+    capabilities)
+        require_no_args "$@"
+        printf '%s\n' '` + helperprotocol.Capabilities + `'
+        ;;
 ` + guardedInstallHelperScript() + `
     update)
         require_no_args "$@"
@@ -294,17 +299,29 @@ SLU_GUARD
 }
 
 func BuildSudoersBootstrapCommand(user string) (string, error) {
+	script, err := RootHelperInstallScript(user)
+	if err != nil {
+		return "", err
+	}
+	return "sudo -S -p '' /bin/sh -c " + shellQuote(script), nil
+}
+
+// RootHelperInstallScript is shared by remote provisioning and offline export.
+func RootHelperInstallScript(user string) (string, error) {
 	managedContent, legacyContent, err := sudoersManagedAndLegacyContent(user)
 	if err != nil {
 		return "", err
 	}
-	script := sudoersGuardScript(legacyContent) + `
-helper_tmp=$(mktemp /usr/local/sbin/.simplelinuxupdater-root-helper.XXXXXX)
-sudoers_tmp=$(mktemp /etc/sudoers.d/.simplelinuxupdater.XXXXXX)
+	script := "#!/bin/sh\n" + sudoersGuardScript(legacyContent) + `
+[ "$(id -u)" -eq 0 ] || refuse "run this reviewed script as root on the target"
+helper_tmp=
+sudoers_tmp=
 cleanup() {
     rm -f -- "$helper_tmp" "$sudoers_tmp"
 }
 trap cleanup EXIT HUP INT TERM
+helper_tmp=$(mktemp /usr/local/sbin/.simplelinuxupdater-root-helper.XXXXXX)
+sudoers_tmp=$(mktemp /etc/sudoers.d/.simplelinuxupdater.XXXXXX)
 helper_content=` + shellQuote(strings.TrimSuffix(RootHelperScript(), "\n")) + `
 managed_content=` + shellQuote(strings.TrimSuffix(managedContent, "\n")) + `
 printf '%s\n' "$helper_content" > "$helper_tmp"
@@ -320,7 +337,7 @@ mv -f -- "$sudoers_tmp" "$managed"
 trap - EXIT HUP INT TERM
 /usr/sbin/visudo -cf "$managed"
 `
-	return "sudo -S -p '' /bin/sh -c " + shellQuote(script), nil
+	return script, nil
 }
 
 func BuildSudoersDisableCommand(user string) (string, error) {
@@ -376,7 +393,7 @@ if [ -e "$helper" ] || [ -L "$helper" ]; then
 fi
 if [ -e "$legacy" ] || [ -L "$legacy" ]; then
     is_root_owned_regular "$legacy" || refuse "legacy apt-nopasswd path is not a root-owned regular file"
-    [ "$(cat -- "$legacy")" = "$legacy_content" ] || refuse "legacy apt-nopasswd is not an exact app-generated rule; remove or migrate it manually"
+    [ "$(cat -- "$legacy"; printf '.')" = "$(printf '%s\n.' "$legacy_content")" ] || refuse "legacy apt-nopasswd is not an exact app-generated rule; remove or migrate it manually"
 fi
 `
 }

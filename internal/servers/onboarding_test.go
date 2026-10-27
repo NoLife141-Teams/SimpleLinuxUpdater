@@ -114,6 +114,28 @@ func TestOnboardingChecksAreReadOnlyAndGateCreation(t *testing.T) {
 	}
 }
 
+func TestOnboardingHelperDiagnosticsRemainReadOnly(t *testing.T) {
+	for token, want := range map[string]string{"SLU_HELPER_MISSING": "absent", "SLU_HELPER_OLD": "too old", "SLU_HELPER_SUDO_DENIED": "sudo policy denies", "SLU_HELPER_UNRECOGNIZED": "not a recognized"} {
+		t.Run(token, func(t *testing.T) {
+			svc, session, repo, draft, path := newOnboardingTest(t)
+			session.outputs[OnboardingSudoCommand] = token + "\n"
+			session.errors[OnboardingSudoCommand] = errors.New("remote failure")
+			report, err := svc.Check(context.Background(), draft)
+			if err != nil || report.Ready || repo.saveCalls != 0 {
+				t.Fatalf("check: %+v %v", report, err)
+			}
+			for _, check := range report.Checks {
+				if check.ID == "sudo" && (!strings.Contains(check.Message, want) || !strings.Contains(check.Remediation, "helper export --user") || !strings.Contains(check.Remediation, "Retry checks")) {
+					t.Fatal(check)
+				}
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("Check persisted trust")
+			}
+		})
+	}
+}
+
 func TestOnboardingCreateRechecksAndSavesCredentialsTogether(t *testing.T) {
 	svc, session, repo, draft, _ := newOnboardingTest(t)
 	draft.AuthMethod, draft.Key = "per-server-key", testPrivateKeyPEM(t)

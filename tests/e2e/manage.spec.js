@@ -478,6 +478,17 @@ test("onboarding failed checks block saving and allow correction and retry", asy
     );
     await expect(page.locator("#onboarding-next")).toBeDisabled();
     expect(state.onboardingCreateCount || 0).toBe(0);
+    await page.locator("#onboarding-helper-install summary").click();
+    await expect(page.locator("#onboarding-helper-install")).toContainText(
+        "./webserver helper export --user SSH_USER > install-helper.sh",
+    );
+    await expect(page.locator("#onboarding-helper-install")).toContainText(
+        "docker run --rm --entrypoint /app/webserver",
+    );
+    await expect(page.locator("#onboarding-helper-install")).toContainText(
+        "sudo /bin/sh install-helper.sh",
+    );
+    await expect(page.locator("#onboarding-helper-install")).toContainText("Retry checks");
     state.onboardingReady = true;
     await page.locator("#onboarding-retry").click();
     await expect(page.locator("#onboarding-check-result")).toContainText(

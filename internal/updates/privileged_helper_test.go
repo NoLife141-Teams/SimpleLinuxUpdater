@@ -6,7 +6,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"debian-updater/internal/helperprotocol"
 )
+
+func TestHelperExportSharesBootstrapAndProductionContent(t *testing.T) {
+	script, err := RootHelperInstallScript("operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := BuildSudoersBootstrapCommand("operator")
+	if err != nil || bootstrap != "sudo -S -p '' /bin/sh -c "+shellQuote(script) {
+		t.Fatal("bootstrap and export diverged", err)
+	}
+	if output, err := exec.Command("sh", "-n", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("invalid script: %v %s", err, output)
+	}
+	// Evaluate only the generated literal assignments, never the installer.
+	_, assignments, ok := strings.Cut(script, "helper_content=")
+	if !ok {
+		t.Fatal("missing helper assignment")
+	}
+	assignments, _, ok = strings.Cut(assignments, "printf '%s\\n' \"$helper_content\" >")
+	if !ok {
+		t.Fatal("missing end of assignments")
+	}
+	for _, content := range []struct{ variable, want string }{{"helper_content", RootHelperScript()}, {"managed_content", mustManagedSudoers(t)}} {
+		output, err := exec.Command("sh", "-c", "helper_content="+assignments+"printf '%s\\n' \"$"+content.variable+"\"").Output()
+		if err != nil || string(output) != content.want {
+			t.Fatalf("%s bytes differ: %v", content.variable, err)
+		}
+	}
+}
+
+func mustManagedSudoers(t *testing.T) string {
+	t.Helper()
+	content, err := ManagedSudoersContent("operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
+func TestRootHelperReadOnlyCapabilities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper")
+	if err := os.WriteFile(path, []byte(RootHelperScript()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command("sh", path, "capabilities").Output()
+	if err != nil || string(output) != helperprotocol.Capabilities+"\n" {
+		t.Fatalf("capabilities: %q %v", output, err)
+	}
+	if err := exec.Command("sh", path, "capabilities", "extra").Run(); err == nil {
+		t.Fatal("capabilities accepted arguments")
+	}
+}
 
 func TestManagedSudoersContentContainsOnlyTypedHelperOperations(t *testing.T) {
 	content, err := ManagedSudoersContent("operator")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"debian-updater/internal/deferrals"
+	"debian-updater/internal/helperprotocol"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/servers"
 )
@@ -160,7 +161,7 @@ func TestRunUpdatePackageDeferralsAllScopesAndScheduledAudit(t *testing.T) {
 					}
 					if req.Effect == HostCommandEffectPackageStateMutation {
 						mutation++
-						if !strings.Contains(req.Command, "guarded-install") || !strings.Contains(req.Command, "'deferred:amd64'") {
+						if !strings.HasPrefix(req.Command, helperprotocol.RequiredCommand+" && ") || !strings.Contains(req.Command, "guarded-install") || !strings.Contains(req.Command, "'deferred:amd64'") {
 							t.Fatal(req)
 						}
 					}

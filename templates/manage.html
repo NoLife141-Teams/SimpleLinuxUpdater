@@ -152,6 +152,13 @@
                                 <ul class="onboarding-checks" id="onboarding-checks"></ul>
                                 <p id="onboarding-check-result" role="status" aria-live="polite"></p>
                                 <p class="muted">These checks verify prerequisites at this moment. Update permissions and disk requirements are checked again when maintenance runs.</p>
+                                <details id="onboarding-helper-install">
+                                    <summary>Install or upgrade the managed helper</summary>
+                                    <p>On the machine with the downloaded binary, export <code>./webserver helper export --user SSH_USER &gt; install-helper.sh</code>, replacing SSH_USER with this server's SSH account.</p>
+                                    <p>For Docker, use <code>docker run --rm --entrypoint /app/webserver IMAGE helper export --user SSH_USER &gt; install-helper.sh</code> with your application image.</p>
+                                    <p>Review the script, transfer it to the target, then explicitly run <code>sudo /bin/sh install-helper.sh</code> on that target. Use its console or an administrator account if necessary. The script installs only the managed helper and restricted sudo policy; it refuses unrecognized files.</p>
+                                    <p>Return here and choose <strong>Retry checks</strong>. Check never installs or upgrades the helper. Active package deferrals require the current helper even with root SSH; rescan and approve again after upgrading.</p>
+                                </details>
                             </section>
                             <section class="onboarding-panel full-width" data-onboarding-panel="4" hidden>
                                 <h3 tabindex="-1">Ready to add this server?</h3>

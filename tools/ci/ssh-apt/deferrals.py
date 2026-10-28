@@ -1,140 +1,240 @@
 #!/usr/bin/env python3
-"""Offline real-APT proof; shares #469's image allowlist, ownership and commands.
-
-No SSH, host package changes, bind mounts, volumes or outbound network are used.
-"""
+"""Bounded offline real-APT qualification of the source-generated protocol 3 helper."""
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import time
 import uuid
 
 import run
 
+SCENARIOS = tuple("independent-" + scope for scope in ("all", "security", "security_kept_back", "full_upgrade")) + (
+    "dependency-forces-deferred", "implicit-removal-of-deferred", "confirmed-independent-removal",
+    "administrator-hold-enforced", "multiarch-dependency", "expired-rules",
+    "unapproved-dependency-drift", "approved-action-missing-after-pin-drift")
+REASONS = {"dependency-forces-deferred": "would change deferred",
+           "implicit-removal-of-deferred": "would change deferred", "multiarch-dependency": "would change deferred",
+           "expired-rules": "expired", "unapproved-dependency-drift": "changed since approval",
+           "approved-action-missing-after-pin-drift": "changed since approval"}
+SOURCE = Path(os.environ.get("SLU_DEFERRALS_SOURCE", run.REPO)).resolve()
 
-def qualify(helper, output, distro):
+
+def source_identity():
+    return run.command(["git", "rev-parse", "HEAD"], cwd=SOURCE).strip()
+
+
+def generate_helper():
+    # Always compile the production generator in the checked-out candidate.
+    result = subprocess.run(["go", "run", "./tools/ci/package-deferral-helper"], cwd=SOURCE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    run.require(result.returncode == 0, "helper generation failed: " + result.stderr.decode(errors="replace")[-5000:])
+    run.require(result.stdout.startswith(b"#!/bin/sh\n"), "generator did not emit a shell helper")
+    return result.stdout
+
+
+def source_manifest():
+    files = run.command(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "internal/updates/",
+                         "internal/deferrals/", "internal/helperprotocol/",
+                         "tools/ci/package-deferral-helper/"], cwd=SOURCE).split("\0")
+    return {name: hashlib.sha256((SOURCE / name).read_bytes()).hexdigest() for name in files if name}
+
+
+def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-generated"):
+    run.require(distro in run.IMAGES, "unsupported deferral fixture distribution")
     owner = uuid.uuid4().hex
-    name = "slu-package-deferrals-473-" + owner
-    run.require(distro in ("debian13", "ubuntu2404"), "unsupported deferral fixture distribution")
+    name = "slu-package-deferrals-" + owner
     image = run.IMAGES[distro]
-    records = []
-    administrator_state_verified = False
+    report = {"schema_version": 2, "status": "failed", "exit_code": 1,
+              "source_sha": source_sha or source_identity(), "distribution": distro, "image": image,
+              "source_files_sha256": {}, "helper_origin": helper_origin,
+              "architecture": "not_observed", "image_id": None,
+              "helper_sha256": hashlib.sha256(helper).hexdigest(),
+              "fixture_sha256": hashlib.sha256((run.HERE / "deferrals-fixture.sh").read_bytes()).hexdigest(),
+              "container": name, "owner": owner, "network": "none", "mounts": [],
+              "limits": {"seconds": 600, "memory": "512m", "pids": 128},
+              "provenance": "synthetic local fixture; no official origin or CVE inference",
+              "administrator_holds_and_pins": "not_verified", "scenarios": [],
+              "cleanup": {"status": "not_created", "errors": []}}
+    records = report["scenarios"]
+    started = time.monotonic()
 
-    def docker(*args, data=None):
-        return run.command([*run.DOCKER, *args], data=data, timeout=120)
+    def docker(*args, data=None, checked=True):
+        remaining = 600 - (time.monotonic() - started)
+        if remaining <= 0 and args[0] not in ("inspect", "rm"):
+            raise TimeoutError("qualification exceeded 600-second budget")
+        # Cleanup has its own budget after the qualification deadline or signal.
+        timeout = 30 if args[0] in ("inspect", "rm") else min(120, max(1, remaining))
+        result = subprocess.run([*run.DOCKER, *args], input=data, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=timeout)
+        if checked and result.returncode:
+            raise RuntimeError(f"docker {args[0]} failed ({result.returncode}): {result.stdout.decode(errors='replace')[-5000:]}")
+        return result.stdout.decode(errors="replace") if checked else result
 
     def owned():
-        return docker("inspect", "--format", '{{index .Config.Labels "' + run.LABEL + '"}}', name).strip() == owner
+        result = docker("inspect", "--format", '{{index .Config.Labels "' + run.LABEL + '"}}', name, checked=False)
+        if result.returncode:
+            run.require("no such" in result.stdout.decode(errors="replace").lower(), "could not inspect target ownership")
+            return False
+        return result.stdout.decode().strip() == owner
 
-    def target(*args, data=None):
+    def target(*args, data=None, checked=True):
         run.require(owned(), "refusing unowned target")
         run.require(docker("exec", name, "cat", "/run/slu-fixture-owner").strip() == owner, "marker mismatch")
-        return docker("exec", "-i", name, *args, data=data)
+        return docker("exec", "-i", name, *args, data=data, checked=checked)
 
     def versions():
-        return target("dpkg-query", "-W", "-f=${binary:Package}=${Version}\n", "slu-*").splitlines()
+        return target("sh", "-c", "dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}=${Version}\\n' | sed -n 's/^ii  //p'").splitlines()
 
-    def guarded(scope, deferred, transaction, targets, *, removals=False, deadline=None):
+    def state():
+        # Full installed state and dpkg log prove refusals precede dpkg mutation.
+        return target("sh", "-c", "sha256sum /var/lib/dpkg/status; if test -f /var/log/dpkg.log; then sha256sum /var/log/dpkg.log; fi").splitlines()
+
+    def guarded(scenario, scope, deferred, transaction, targets, *, removals=False, deadline=None):
         args = ["/usr/local/sbin/simplelinuxupdater-root-helper", "guarded-install", scope,
                 str(deadline or int(time.time()) + 3600), str(len(deferred)), *deferred,
                 str(len(transaction)), *transaction, "allow-removals" if removals else "no-remove", *targets]
-        before = versions()
-        try:
-            text = target(*args)
-            return {"status": "succeeded", "before": before, "after": versions(), "output": text}
-        except RuntimeError as error:
-            return {"status": "blocked", "before": before, "after": versions(), "output": str(error)}
+        record = {"scenario": scenario, "status": "failed"}
+        records.append(record)
+        before, dpkg_before = versions(), state()
+        administrator_before = target("sh", "-c", "sha256sum /etc/apt/preferences.d/administrator; apt-mark showhold")
+        result = target(*args, checked=False)
+        record.update({"outcome": "succeeded" if result.returncode == 0 else "blocked",
+                "exit_code": result.returncode, "before": before, "after": versions(),
+                "dpkg_before": dpkg_before, "dpkg_after": state(),
+                "administrator_before": administrator_before,
+                "administrator_after": target("sh", "-c", "sha256sum /etc/apt/preferences.d/administrator; apt-mark showhold"),
+                "output": result.stdout.decode(errors="replace")[-12000:]})
+        return record
 
-    created = False
-    cleanup = "not-created"
+    def verify(record):
+        record["status"] = "failed"
+        scenario = record["scenario"]
+        run.require(record["administrator_before"] == record["administrator_after"], "administrator hold/pin changed: " + scenario)
+        report["administrator_holds_and_pins"] = "preserved"
+        positive = scenario.startswith("independent-") or scenario == "confirmed-independent-removal"
+        if positive:
+            before, after = set(record["before"]), set(record["after"])
+            removed, added = before - after, after - before
+            if scenario.startswith("independent-"):
+                expected_removed, expected_added = {"slu-independent=1"}, {"slu-independent=2"}
+            else:
+                expected_removed, expected_added = {"slu-victim=1"}, {"slu-safe-replacement=2"}
+            run.require(record["outcome"] == "succeeded" and removed == expected_removed and added == expected_added,
+                        "unexpected fixture mutation: " + scenario)
+        else:
+            run.require(record["outcome"] == "blocked" and record["before"] == record["after"]
+                        and record["dpkg_before"] == record["dpkg_after"], "guard did not prevent dpkg mutation: " + scenario)
+            if scenario in REASONS:
+                run.require(REASONS[scenario] in record["output"], "expected guard refusal absent: " + scenario)
+            else:
+                run.require("held packages" in record["output"], "administrator hold refusal absent")
+        record["status"] = "passed"
+        print(scenario + ": passed", flush=True)
+
+    handlers = {}
+    def interrupted(signum, frame):
+        raise InterruptedError("qualification interrupted by signal " + str(signum))
+
     try:
-        # No user mounts, no Docker socket mount and no external networking.
+        report["source_files_sha256"] = source_manifest()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            handlers[sig] = signal.signal(sig, interrupted)
         docker("run", "-d", "--name", name, "--label", run.LABEL + "=" + owner,
                "--network", "none", "--pids-limit", "128", "--memory", "512m",
                "--entrypoint", "/bin/sh", image, "-c",
                "printf '%s\\n' '" + owner + "' > /run/slu-fixture-owner; exec sleep infinity")
-        created = True
+        report["image_id"] = docker("inspect", "--format", "{{.Image}}", name).strip()
+        report["architecture"] = target("dpkg", "--print-architecture").strip()
         target("sh", "-c", "cat > /usr/local/sbin/simplelinuxupdater-root-helper; chmod 755 /usr/local/sbin/simplelinuxupdater-root-helper", data=helper)
         target("sh", "-s", data=(run.HERE / "deferrals-fixture.sh").read_bytes())
         native = target("cat", "/run/slu-native").strip()
-        baseline = versions()
+        report["architecture"] = native
+        report["baseline"] = versions()
         for scope in ("all", "security", "security_kept_back", "full_upgrade"):
             # Reset only this fixture package in this disposable target.
             target("dpkg", "--force-downgrade", "-i", f"/tmp/slu-debs/slu-independent-1-{native}.deb")
-            record = guarded(scope, ["slu-deferred:" + native], [f"slu-independent:{native}=2"], ["slu-independent:" + native])
-            record["scenario"] = "independent-" + scope
-            run.require(record["status"] == "succeeded" and f"slu-deferred=1" in record["after"] and "slu-independent=2" in record["after"], str(record))
-            records.append(record)
+            record = guarded("independent-" + scope, scope, ["slu-deferred:" + native], [f"slu-independent:{native}=2"], ["slu-independent:" + native])
+            verify(record)
         simulation = target("apt-get", "-s", "install", "slu-dependent")
         run.require("Inst slu-deferred" in simulation, "fixture did not force deferred dependency")
-        blocked = guarded("full_upgrade", ["slu-deferred:" + native],
+        blocked = guarded("dependency-forces-deferred", "full_upgrade", ["slu-deferred:" + native],
                           [f"slu-dependent:{native}=2", f"slu-deferred:{native}=2"], ["slu-dependent"])
-        blocked.update(scenario="dependency-forces-deferred", simulation=simulation)
-        run.require(blocked["status"] == "blocked" and blocked["before"] == blocked["after"] and "would change deferred" in blocked["output"], str(blocked))
-        records.append(blocked)
-        removal = guarded("full_upgrade", ["slu-deferred"], [f"slu-replacement:{native}=2", f"slu-deferred:{native}=-"], ["slu-replacement"], removals=True)
-        removal["scenario"] = "implicit-removal-of-deferred"
-        run.require(removal["status"] == "blocked" and removal["before"] == removal["after"] and "would change deferred" in removal["output"], str(removal))
-        records.append(removal)
-        safe_removal = guarded("full_upgrade", ["slu-deferred"], [f"slu-safe-replacement:{native}=2",f"slu-victim:{native}=-"], ["slu-safe-replacement"], removals=True)
-        safe_removal["scenario"] = "confirmed-independent-removal"
-        run.require(safe_removal["status"] == "succeeded" and "slu-deferred=1" in safe_removal["after"] and "slu-safe-replacement=2" in safe_removal["after"] and "slu-victim=1" not in safe_removal["after"], str(safe_removal))
-        records.append(safe_removal)
-        held = guarded("full_upgrade", ["slu-deferred"], [f"slu-admin-held:{native}=2"], ["slu-admin-held"])
-        held["scenario"] = "administrator-hold-enforced"
-        run.require(held["status"] == "blocked" and held["before"] == held["after"], str(held))
-        records.append(held)
-        multi = guarded("full_upgrade", ["slu-multi:i386"], [f"slu-multi:{native}=2", "slu-multi:i386=2"], ["slu-multi:" + native])
-        multi["scenario"] = "multiarch-dependency"
-        run.require(multi["status"] == "blocked" and multi["before"] == multi["after"] and "would change deferred" in multi["output"], str(multi))
-        records.append(multi)
-        expired = guarded("all", ["slu-deferred"], [f"slu-dependent:{native}=2"], ["slu-dependent"], deadline=int(time.time()) - 1)
-        expired["scenario"] = "expired-rules"
-        run.require(expired["status"] == "blocked" and expired["before"] == expired["after"] and "expired" in expired["output"], str(expired))
-        records.append(expired)
-        drift = guarded("full_upgrade", ["slu-multi:i386"], [f"slu-dependent:{native}=2"], ["slu-dependent"])
-        drift["scenario"] = "unapproved-dependency-drift"
-        run.require(drift["status"] == "blocked" and drift["before"] == drift["after"] and "changed since approval" in drift["output"], str(drift))
-        records.append(drift)
+        blocked.update(simulation=simulation)
+        verify(blocked)
+        removal = guarded("implicit-removal-of-deferred", "full_upgrade", ["slu-deferred"], [f"slu-replacement:{native}=2", f"slu-deferred:{native}=-"], ["slu-replacement"], removals=True)
+        verify(removal)
+        safe_removal = guarded("confirmed-independent-removal", "full_upgrade", ["slu-deferred"], [f"slu-safe-replacement:{native}=2",f"slu-victim:{native}=-"], ["slu-safe-replacement"], removals=True)
+        verify(safe_removal)
+        held = guarded("administrator-hold-enforced", "full_upgrade", ["slu-deferred"], [f"slu-admin-held:{native}=2"], ["slu-admin-held"])
+        verify(held)
+        multi = guarded("multiarch-dependency", "full_upgrade", ["slu-multi:i386"], [f"slu-multi:{native}=2", "slu-multi:i386=2"], ["slu-multi:" + native])
+        verify(multi)
+        expired = guarded("expired-rules", "all", ["slu-deferred"], [f"slu-dependent:{native}=2"], ["slu-dependent"], deadline=int(time.time()) - 1)
+        verify(expired)
+        drift = guarded("unapproved-dependency-drift", "full_upgrade", ["slu-multi:i386"], [f"slu-dependent:{native}=2"], ["slu-dependent"])
+        verify(drift)
         # Model a pin/candidate change after approval: the approved pinned
         # upgrade disappears, but APT can still apply the independent upgrade.
         target("dpkg", "--force-downgrade", "-i", f"/tmp/slu-debs/slu-independent-1-{native}.deb")
-        subset = guarded("full_upgrade", ["slu-deferred"],
+        subset = guarded("approved-action-missing-after-pin-drift", "full_upgrade", ["slu-deferred"],
                          [f"slu-independent:{native}=2", f"slu-admin-pinned:{native}=2"],
                          ["slu-independent", "slu-admin-pinned"])
-        subset["scenario"] = "approved-action-missing-after-pin-drift"
-        records.append(subset)
-        run.require(subset["status"] == "blocked" and subset["before"] == subset["after"] and "changed since approval" in subset["output"], str(subset))
+        verify(subset)
         target("sh", "-c", "sha256sum -c /run/slu-pin-before && apt-mark showhold > /run/slu-holds-after && cmp /run/slu-holds-before /run/slu-holds-after")
-        administrator_state_verified = True
-        packages = target("dpkg-query", "-W", "-f=${Package}=${Version}\n", "apt", "dpkg").splitlines()
+        report["administrator_holds_and_pins"] = "preserved"
+        report["packages"] = target("dpkg-query", "-W", "-f=${Package}=${Version}\n", "apt", "dpkg").splitlines()
         transient = target("sh", "-c", "find /tmp -maxdepth 1 -name 'simplelinuxupdater-guard.*' -print")
         run.require(not transient.strip(), "helper temporary resources leaked")
+        report.update(status="passed", exit_code=0)
+    except (Exception, KeyboardInterrupt) as error:
+        report["error"] = str(error)[-5000:]
     finally:
-        # Recover by unique name after a partial Docker creation failure, too.
+        # Inspect after partial creation too, never remove another owner's resource.
         try:
-            if created or owned():
-                run.require(owned(), "refusing cleanup of unowned container")
+            if owned():
                 docker("rm", "-f", name)
-                cleanup = "removed-owned-container"
-        except RuntimeError as error:
-            if "no such" not in str(error).lower():
-                raise
+                report["cleanup"]["status"] = "passed"
+            else:
+                report["cleanup"]["status"] = "absent_or_unowned"
+        except Exception as error:
+            report["cleanup"] = {"status": "failed", "errors": [str(error)[-5000:]]}
+            report.update(status="failed", exit_code=1)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        executed = {record["scenario"] for record in records}
+        records.extend({"scenario": scenario, "status": "not_executed"} for scenario in SCENARIOS if scenario not in executed)
+        report["duration_seconds"] = round(time.monotonic() - started, 3)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps({"schema_version": 1, "distribution": distro, "image": image,
-            "helper_sha256": hashlib.sha256(helper).hexdigest(), "fixture_sha256": hashlib.sha256((run.HERE / "deferrals-fixture.sh").read_bytes()).hexdigest(), "container": name,
-            "network": "none", "mounts": [], "cleanup": cleanup,
-            "packages": locals().get("packages", []), "baseline": locals().get("baseline", []),
-            "administrator_holds_and_pins": "preserved" if administrator_state_verified else "not-verified",
-            "scenarios": records}, indent=2) + "\n")
-    print(f"{len(records)} real APT scenarios passed; {cleanup}; {output}")
+        output.write_text(json.dumps(report, indent=2) + "\n")
+    print(f"{distro}: {report['status']}; exit={report['exit_code']}; {output}", flush=True)
+    return report["exit_code"]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distro", choices=tuple(run.IMAGES), required=True)
+    parser.add_argument("--helper", type=Path, help="explicit helper override for disposable negative controls")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        source = source_identity()
+        helper = args.helper.read_bytes() if args.helper else generate_helper()
+    except Exception as error:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps({"schema_version": 2, "status": "failed", "exit_code": 1,
+            "source_sha": locals().get("source"), "helper_sha256": None,
+            "image": run.IMAGES[args.distro], "architecture": "not_observed",
+            "distribution": args.distro, "error": str(error)[-5000:],
+            "scenarios": [{"scenario": name, "status": "not_executed"} for name in SCENARIOS]}) + "\n")
+        return 1
+    return qualify(helper, args.output, args.distro, source_sha=source,
+                   helper_origin="explicit-override" if args.helper else "source-generated")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--distro", choices=("debian13","ubuntu2404"), required=True)
-    parser.add_argument("--helper", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    qualify(args.helper.read_bytes(), args.output, args.distro)
+    sys.exit(main())

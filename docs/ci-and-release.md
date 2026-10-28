@@ -163,3 +163,17 @@ OS packages or the application Go binary was not detected. The same scan is a
 mandatory release qualification. JSON findings and scanner stderr survive failures.
 The audit has read-only repository/registry permissions and does not publish.
 Dependabot and managed CodeQL retain their existing responsibilities.
+
+## Package Deferral gate
+
+The selected `ssh-apt` job also runs the source-generated protocol 3 Package
+Deferral qualification and its real negative control on Debian 13/Ubuntu 24.04.
+The same control and healthy fixture run across all five pinned distributions
+in the existing extended workflow. The read-only release `deferrals-gate`
+matrix runs after `release-gate`, using its trusted harness with the verified
+candidate's generator, and is required before either publication job.
+Helper/rule/plan Go files, generator inputs, harness/fixture scripts and workflow
+changes select the normal SSH/APT matrix. `ci-required` rejects a skipped,
+failed or cancelled selected matrix. Distribution/attempt-specific artifacts
+retain only the three explicit redacted JSON reports, even on failure, for one
+day. See [scenarios, limits and reproduction](ssh-apt-qualification.md#continuous-package-deferral-qualification).

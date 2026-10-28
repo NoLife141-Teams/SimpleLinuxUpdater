@@ -65,6 +65,9 @@ func TestCIPathFiltersCoverValidationInputs(t *testing.T) {
 	}
 	for path, want := range map[string]bool{
 		"ssh_transport.go": true, "internal/updates/privileged_helper.go": true,
+		"tools/ci/ssh-apt/deferrals.py": true, "tools/ci/ssh-apt/deferrals-fixture.sh": true,
+		"tools/ci/ssh-apt/deferrals-negative.py": true, "tools/ci/package-deferral-helper/main.go": true,
+		"tools/ci/package-deferral-helper/generator-input.json": true, "internal/updates/deferrals.go": true,
 		"tools/ci/ssh-apt/target.Dockerfile": true, "tools/ci/ssh-apt/images.json": true,
 		".github/workflows/ssh-apt-extended.yml": true, "templates/index.html": true,
 		"docs/installation.md": false, "CHANGELOG.md": false,

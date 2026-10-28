@@ -49,7 +49,8 @@ class HarnessSafetyTests(unittest.TestCase):
                         break
                     if line.strip():
                         files.append(line.strip())
-                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log"])
+                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log",
+                                         "deferrals-evidence/report.json", "deferrals-evidence/negative.json", "deferrals-evidence/positive.json"])
 
     def test_collected_evidence_never_copies_private_runtime_files(self):
         harness, resources, _ = self.fake_harness()

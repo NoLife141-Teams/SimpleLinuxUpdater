@@ -30,6 +30,9 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Qualify source-generated Package Deferral guard and negative control
+        timeout-minutes: 8
+        run: python3 tools/ci/ssh-apt/deferrals-negative.py --distro '${{ matrix.distro }}' --output deferrals-evidence
       - name: Qualify disposable targets
         run: python3 tools/ci/ssh-apt/run.py --distro '${{ matrix.distro }}' --output ssh-apt-evidence
       - name: Retain redacted evidence
@@ -40,4 +43,7 @@ jobs:
           path: |
             ssh-apt-evidence/report.json
             ssh-apt-evidence/app.log
+            deferrals-evidence/report.json
+            deferrals-evidence/negative.json
+            deferrals-evidence/positive.json
           retention-days: 1

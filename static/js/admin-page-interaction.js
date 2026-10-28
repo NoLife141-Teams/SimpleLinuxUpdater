@@ -188,6 +188,16 @@
             retryAt: String(data.retry_at || ""),
             lastAttemptAt: String(data.last_attempt_at || ""),
             lastSuccessAt: String(data.last_success_at || ""),
+            catalog: {
+                archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 100).map(item => ({
+                    id: String(item.id || ""), publishedAt: String(item.published_at || ""),
+                    sizeBytes: item.size_bytes == null ? null : Math.max(0, Number(item.size_bytes) || 0),
+                    knownHostsIncluded: item.known_hosts_included == null ? null : Boolean(item.known_hosts_included),
+                    sha256: String(item.sha256 || ""), lastVerifiedAt: String(item.last_verified_at || ""),
+                    verification: String(item.verification || "unknown"), availability: String(item.availability || "unavailable"), jobID: String(item.job_id || "")
+                })),
+                truncated: Boolean(data.catalog?.truncated)
+            },
             config: { enabled: Boolean(config.enabled), cadence: config.cadence || "daily", time: config.time || "02:00", weekday: Number(config.weekday) || 0, retain: Number(config.retain) || 7, include_known_hosts: config.include_known_hosts !== false }
         };
     }
@@ -338,7 +348,9 @@
             credentialValid: false,
             credentialRevision: 0,
             review: null,
-            reviewBinding: null
+            reviewBinding: null,
+            catalogReview: null,
+            catalogFeedback: null
         };
         let activeSection = sectionDefinitions[0].id;
         let collapsedSections = [];
@@ -727,6 +739,12 @@
                     return backup.automation?.configured && !backup.blocked
                         ? { enabled: true, command, key, payload: {} }
                         : { enabled: false, command, key, reason: "Save and validate the local backup destination and secret first." };
+                case "downloadBackupArchive": case "reverifyBackupArchive": {
+                    if (backup.blocked || inFlight.has("downloadBackupArchive") || inFlight.has("reverifyBackupArchive")) return { enabled: false, command, key, reason: "A backup operation is unavailable or already in progress." };
+                    const archive = backup.automation.catalog.archives.find(item => item.id === payload.id);
+                    if (!archive || archive.availability !== "present") return { enabled: false, command, key, reason: "Choose an available registered archive." };
+                    return { enabled: true, command, key, payload: { id: archive.id } };
+                }
                 case "exportBackup":
                     if (backup.blocked) return { enabled: false, command, key, reason: backup.reason || "Backup is unavailable." };
                     if (!payload.passphraseValid || !payload.passwordsMatch) return { enabled: false, command, key, reason: "A valid matching backup passphrase is required." };
@@ -764,6 +782,10 @@
             if (plan.command === "rotateMetricsToken" && !failed) applyMetrics(data || {}, true);
             if (plan.command === "disableMetricsToken" && !failed) metrics = normalizeMetrics(data || {});
             if (["saveBackupSchedule", "runBackupSchedule"].includes(plan.command) && !failed) backup.automation = normalizeBackupAutomation(data || {});
+            if (["downloadBackupArchive", "reverifyBackupArchive"].includes(plan.command)) backup.catalogFeedback = { message: String(message || ""), error: Boolean(failed) };
+            if (plan.command === "reverifyBackupArchive") {
+                backup.catalogReview = !failed ? clone(data) : null;
+            }
             if (plan.command === "verifyBackup") {
                 if (!failed && backupBindingMatches(plan.binding)) {
                     backup.review = normalizeBackupReview(data || {});

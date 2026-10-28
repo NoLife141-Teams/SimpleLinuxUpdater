@@ -311,6 +311,10 @@
             reauthentication = root.Reauthentication.create(lifecycle);
             lifecycle.own(clearBackupCredentials);
             renderBackupAutomationControls();
+            lifecycle.listen(document.getElementById("backup-archive-catalog"), "click", event => {
+                const button = event.target.closest("button[data-backup-archive]");
+                if (button) void operateBackupArchive(button.dataset.backupArchive, button.dataset.backupOperation);
+            });
         }
 
         function renderBackupAutomation(updateForm = false) {
@@ -329,6 +333,7 @@
                     ? formatSessionTime(view.lastSuccessAt)
                     : "Never";
             renderBackupAutomationControls();
+            renderBackupCatalog();
             if (updateForm) {
                 const config = view.config;
                 for (const name of ["cadence", "time", "weekday", "retain"])
@@ -339,6 +344,86 @@
                 document.getElementById(
                     "backup-automation-known-hosts",
                 ).checked = config.include_known_hosts;
+            }
+        }
+
+        function renderBackupCatalog() {
+            const container = document.getElementById("backup-archive-catalog");
+            if (!container) return;
+            const view = adminPageView().backup;
+            const catalog = view.automation.catalog;
+            if (view.catalogFeedback && !adminPageView().commands.inFlight.some(command => ["downloadBackupArchive", "reverifyBackupArchive"].includes(command))) {
+                document.getElementById("backup-catalog-result").textContent = view.catalogFeedback.message;
+            }
+            const focused = document.activeElement?.dataset;
+            const focusedID = focused?.backupArchive, focusedOperation = focused?.backupOperation;
+            container.innerHTML = catalog.archives.length ? catalog.archives.map(archive => {
+                const download = adminPageInteraction.planCommand("downloadBackupArchive", { id: archive.id });
+                const verify = adminPageInteraction.planCommand("reverifyBackupArchive", { id: archive.id });
+                return `<article class="backup-block" data-archive-id="${escapeHtml(archive.id)}">
+                    <h4>Published ${escapeHtml(archive.publishedAt ? formatSessionTime(archive.publishedAt) : "Unknown")}</h4>
+                    <p>Size: ${escapeHtml(archive.sizeBytes === null ? "Unknown" : formatBackupBytes(archive.sizeBytes))} · known_hosts: ${archive.knownHostsIncluded === null ? "Unknown" : archive.knownHostsIncluded ? "Included" : "Not included"}</p>
+                    <p>Local availability: <strong>${escapeHtml(archive.availability)}</strong> · Latest review: ${escapeHtml(archive.verification)}</p>
+                    <p>Last successful verification: ${escapeHtml(archive.lastVerifiedAt ? formatSessionTime(archive.lastVerifiedAt) : "Unknown")}</p>
+                    <details><summary>Recorded SHA-256</summary><code>${escapeHtml(archive.sha256 || "Unknown")}</code></details>
+                    <button type="button" class="btn-ghost" data-backup-archive="${escapeHtml(archive.id)}" data-backup-operation="download" ${download.enabled ? "" : "disabled"}>Download encrypted</button>
+                    <button type="button" class="btn-ghost" data-backup-archive="${escapeHtml(archive.id)}" data-backup-operation="verify" ${verify.enabled ? "" : "disabled"}>Reverify</button>
+                    ${archive.jobID ? `<a href="/api/reports/jobs/${encodeURIComponent(archive.jobID)}">View publication job</a>` : ""}
+                </article>`;
+            }).join("") : '<p class="muted">No registered automated archives.</p>';
+            if (catalog.truncated) container.insertAdjacentHTML("beforeend", '<p class="muted">Only the latest 100 entries are shown.</p>');
+            if (focusedID) {
+                const target = [...container.querySelectorAll("button[data-backup-archive]")].find(button => button.dataset.backupArchive === focusedID && button.dataset.backupOperation === focusedOperation);
+                if (target && !target.disabled) target.focus({ preventScroll: true });
+            }
+        }
+
+        async function operateBackupArchive(id, operation) {
+            const lifetime = lifecycle.capture();
+            const command = operation === "download" ? "downloadBackupArchive" : "reverifyBackupArchive";
+            const plan = beginAdminCommand(command, { id });
+            if (!plan) return;
+            const output = document.getElementById("backup-catalog-result");
+            output.textContent = operation === "download" ? "Validating encrypted archive…" : "Reviewing restore readiness without replacing active data…";
+            renderBackupCatalog();
+            try {
+                const result = await reauthentication.sensitive(`/api/backup/archives/${encodeURIComponent(plan.payload.id)}/${operation}`, {
+                    method: "POST", ...(operation === "download" ? { responseType: "blob" } : {})
+                }, operation === "download" ? "Download registered encrypted backup" : "Reverify registered backup");
+                if (!lifecycle.isCurrent(lifetime)) return;
+                let message;
+                if (operation === "download") {
+                    const url = URL.createObjectURL(result);
+                    try {
+                        const link = document.createElement("a");
+                        link.href = url; link.download = "simplelinuxupdater-automated-backup.slubkp";
+                        document.body.appendChild(link); link.click(); link.remove();
+                    } finally { URL.revokeObjectURL(url); }
+                    message = "Encrypted backup downloaded. Keep its passphrase separately.";
+                } else {
+                    message = result.restore_ready ? "Reverification succeeded. Active data was not replaced." : "Reverification completed with restore blockers.";
+                    const counts = result.safe_counts || {};
+                    message += ` Archived data: ${Number(counts.servers) || 0} servers, ${Number(counts.policies) || 0} policies, ${Number(counts.jobs) || 0} jobs. `;
+                    message += [...(result.blockers || []), ...(result.warnings || [])].map(issue => issue.message).join(" ");
+                }
+                finishAdminCommand(plan, operation === "verify" ? result : null, message);
+                output.textContent = message;
+            } catch (error) {
+                if (!lifecycle.isCurrent(lifetime)) return;
+                const message = error.name === "AbortError" ? "Backup action cancelled." : error.message || "Registered backup request failed.";
+                finishAdminCommand(plan, null, message, true);
+                output.textContent = message;
+            } finally {
+                if (lifecycle.isCurrent(lifetime)) {
+                    await fetchBackupStatus();
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    renderBackupCatalog();
+                    const container = document.getElementById("backup-archive-catalog");
+                    if (document.activeElement === document.body || container?.contains(document.activeElement)) {
+                        const button = [...container.querySelectorAll("button[data-backup-archive]")].find(item => item.dataset.backupArchive === id && item.dataset.backupOperation === operation);
+                        if (button && !button.disabled) button.focus({ preventScroll: true });
+                    }
+                }
             }
         }
 

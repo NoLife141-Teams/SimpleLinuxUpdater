@@ -50,7 +50,7 @@ func requestBodyBudgetMiddleware() gin.HandlerFunc {
 			limit = 256 * 1024
 		case path == "/api/package-deferrals":
 			limit = packageDeferralMaxRequestBytes
-		case path == "/api/backup/automation":
+		case path == "/api/backup/automation" || strings.HasPrefix(path, "/api/backup/archives/"):
 			limit = 4096
 		case path == "/api/backup/export":
 			limit = backupMaxExportRequestBytes

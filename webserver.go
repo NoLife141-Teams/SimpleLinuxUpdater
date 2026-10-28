@@ -1907,6 +1907,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.DELETE("/api/metrics/token", func(c *gin.Context) {
 		handleMetricsTokenClearWithService(c, deps.MetricsAccessCredential)
 	})
+	r.GET("/api/backup/archives", func(c *gin.Context) { handleBackupCatalog(c, deps.BackupAutomation) })
+	r.POST("/api/backup/archives/:id/download", requireRecentAuthentication(), func(c *gin.Context) { handleBackupCatalogOperation(c, deps.BackupAutomation, false) })
+	r.POST("/api/backup/archives/:id/verify", requireRecentAuthentication(), func(c *gin.Context) { handleBackupCatalogOperation(c, deps.BackupAutomation, true) })
 	r.GET("/api/backup/automation", func(c *gin.Context) { handleBackupAutomationStatus(c, deps.BackupAutomation) })
 	r.PUT("/api/backup/automation", func(c *gin.Context) { handleBackupAutomationConfigure(c, deps.BackupAutomation) })
 	r.POST("/api/backup/automation/run", func(c *gin.Context) { handleBackupAutomationRun(c, deps.BackupAutomation) })

@@ -38,9 +38,17 @@ type backupScheduleConfig struct {
 }
 
 type ownedBackupArchive struct {
-	Name   string `json:"name"`
-	SHA256 string `json:"sha256"`
-	Owner  string `json:"owner"`
+	Name               string `json:"name"`
+	SHA256             string `json:"sha256"`
+	Owner              string `json:"owner"`
+	PublishedAt        string `json:"published_at,omitempty"`
+	SizeBytes          *int64 `json:"size_bytes,omitempty"`
+	KnownHostsIncluded *bool  `json:"known_hosts_included,omitempty"`
+	LastVerifiedAt     string `json:"last_verified_at,omitempty"`
+	Verification       string `json:"verification,omitempty"`
+	Availability       string `json:"availability,omitempty"`
+	FileIdentity       string `json:"file_identity,omitempty"`
+	JobID              string `json:"job_id,omitempty"`
 }
 
 type backupAutomationState struct {
@@ -62,6 +70,7 @@ type backupAutomationState struct {
 
 type backupAutomationStatus struct {
 	LocalArchiveCount int                  `json:"local_archive_count"`
+	Catalog           backupArchiveCatalog `json:"catalog"`
 	Config            backupScheduleConfig `json:"config"`
 	State             string               `json:"state"`
 	Message           string               `json:"message"`
@@ -350,15 +359,16 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	status := backupAutomationStatus{Config: s.Config, State: s.Outcome, Message: s.Message, LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt}
 	root, _, owner, binding, validationErr := a.destination(false)
 	if root != nil {
-		for _, archive := range s.Archives {
-			if archive.Owner != owner || filepath.Base(archive.Name) != archive.Name || !strings.HasPrefix(archive.Name, "slu-auto-"+owner+"-") {
-				continue
-			}
-			if info, err := root.Lstat(archive.Name); err == nil && info.Mode().IsRegular() {
-				status.LocalArchiveCount++
-			}
+		defer root.Close()
+	}
+	status.Catalog, err = a.catalogLocked(ctx, &s, root, owner)
+	if err != nil {
+		return backupAutomationStatus{}, err
+	}
+	for _, archive := range status.Catalog.Archives {
+		if archive.Availability == "present" {
+			status.LocalArchiveCount++
 		}
-		_ = root.Close()
 	}
 	status.Configured = validationErr == nil && s.Approval == binding
 	if !s.Config.Enabled {
@@ -642,6 +652,13 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 	if outcome.ExportFile.Path != "" {
 		_ = outcome.ExportFile.Remove()
 	}
+	if outcome.JobID != "" && published {
+		for i := range s.Archives {
+			if s.Archives[i].Name == name {
+				s.Archives[i].JobID = outcome.JobID
+			}
+		}
+	}
 	if outcome.Kind == backupOperationSucceeded {
 		s.Outcome = "succeeded"
 		s.Message = "Verified encrypted backup published."
@@ -819,6 +836,15 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 		return archive, errors.New("published backup directory sync failed")
 	}
 	archive.SHA256 = hex.EncodeToString(digest.Sum(nil))
+	archive.PublishedAt = backupStamp(a.now())
+	archive.LastVerifiedAt = archive.PublishedAt
+	archive.SizeBytes = &written
+	archive.KnownHostsIncluded = &result.KnownHostsIncluded
+	archive.Verification = "verified"
+	archive.Availability = "present"
+	if info, err := root.Lstat(name); err == nil {
+		archive.FileIdentity = backupCatalogFileIdentity(info)
+	}
 	return archive, nil
 }
 
@@ -955,7 +981,7 @@ func (a *backupAutomation) recordVerifiedPublication(archive ownedBackupArchive,
 	if a.deps.AuditService == nil {
 		return
 	}
-	if err := a.deps.AuditService.Record("backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive": archive.Name}); err != nil {
+	if err := a.deps.AuditService.Record("backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive_id": backupArchiveID(archive)}); err != nil {
 		log.Printf("automated backup verification audit unavailable: %v", err)
 	}
 }

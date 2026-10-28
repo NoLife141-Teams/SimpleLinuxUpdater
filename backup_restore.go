@@ -218,6 +218,7 @@ func handleBackupStatusWithService(c *gin.Context, service *BackupService, autom
 	if len(automation) > 0 && automation[0] != nil {
 		if scheduled, scheduleErr := automation[0].Status(c.Request.Context()); scheduleErr == nil {
 			automationStatus = &scheduled
+			recoveryHealth, err = service.RecoveryHealth(c.Request.Context())
 			recoveryHealth.Schedule.Scheduled = scheduled.Config.Enabled && scheduled.Configured
 			recoveryHealth.Schedule.NextBackupAt = scheduled.NextAt
 			recoveryHealth.Schedule.Message = scheduled.Message

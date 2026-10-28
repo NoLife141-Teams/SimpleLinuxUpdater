@@ -5,8 +5,9 @@ const username = "admin",
     changedPassword = "NewStrongPass123";
 const test = base.extend({
     scanTransportPhase: ["", {option: true}],
-    installation: async ({scanTransportPhase}, use) => {
-        const installation = await startInstallation(undefined, {SLU_E2E_VULNERABILITY_PHASE: scanTransportPhase});
+    backupCatalogFixture: [false, { option: true }],
+    installation: async ({scanTransportPhase, backupCatalogFixture}, use) => {
+        const installation = await startInstallation(undefined, {SLU_E2E_VULNERABILITY_PHASE: scanTransportPhase, SLU_E2E_BACKUP_CATALOG: backupCatalogFixture ? "1" : ""});
         try {
             await use(installation);
         } finally {

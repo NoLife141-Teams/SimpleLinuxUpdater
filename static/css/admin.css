@@ -1955,3 +1955,19 @@
         max-height: calc(100vh - 120px);
     }
 }
+
+/* Catalog entries keep long recorded digests inside the mobile card. */
+#backup-archive-catalog,
+#backup-archive-catalog > article,
+#backup-archive-catalog details {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+#backup-archive-catalog code {
+    display: block;
+    overflow-wrap: anywhere;
+}
+#backup-catalog-result {
+    overflow-wrap: anywhere;
+}

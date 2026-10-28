@@ -21,7 +21,9 @@
             transport.destroy();
         });
         async function request(path, options = {}) {
-            const response = await transport.fetch(path, { cache: 'no-store', ...options });
+            const { responseType, ...requestOptions } = options;
+            const response = await transport.fetch(path, { cache: 'no-store', ...requestOptions });
+            if (response.ok && responseType === 'blob') return response.blob();
             const data = await response.json().catch(error => { if (error.name === 'AbortError') throw error; return {}; });
             if (options.signal?.aborted) throw new DOMException('Request superseded', 'AbortError');
             if (!response.ok) {

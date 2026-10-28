@@ -2,7 +2,10 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
+import threading
 import unittest
 from unittest import mock
 
@@ -27,6 +30,7 @@ class DeferralHarnessTests(unittest.TestCase):
     def fake_run(self, mode):
         owner = 'a' * 32
         state = {'created': False, 'removed': False}
+        real_run = subprocess.run
 
         def execute(args, **kwargs):
             self.assertEqual(args[:2], run.DOCKER)
@@ -50,6 +54,17 @@ class DeferralHarnessTests(unittest.TestCase):
                 if args[-1] == '/run/slu-fixture-owner':
                     return subprocess.CompletedProcess(args, 0, ('wrong-marker' if mode == 'marker' else owner).encode())
                 if args[-1] == '-s':
+                    if mode == 'real-signal':
+                        import os
+                        import signal
+                        timer = threading.Timer(.1, lambda: os.kill(os.getpid(), signal.SIGTERM))
+                        timer.start()
+                        try:
+                            # Exercise the actual selector/poll loop that retries EINTR.
+                            real_run([sys.executable, '-c', 'import time; time.sleep(3)'],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+                        finally:
+                            timer.cancel()
                     if mode == 'interrupt':
                         raise InterruptedError('injected interruption')
                     if mode == 'signal':
@@ -76,17 +91,22 @@ class DeferralHarnessTests(unittest.TestCase):
                 deferrals.generate_helper()
 
     def test_cleanup_after_setup_failure_partial_creation_timeout_and_signal(self):
-        for mode in ('failure', 'partial-create', 'interrupt', 'signal', 'timeout', 'marker', 'unowned'):
+        for mode in ('failure', 'partial-create', 'interrupt', 'signal', 'real-signal', 'timeout', 'marker', 'unowned'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as output:
                 owner, state, execute = self.fake_run(mode)
                 with mock.patch.object(deferrals, 'source_manifest', return_value={}), \
                      mock.patch.object(deferrals.uuid, 'uuid4', return_value=mock.Mock(hex=owner)), \
                      mock.patch.object(deferrals.subprocess, 'run', side_effect=execute):
                     path = Path(output, 'report.json')
+                    started = time.monotonic()
                     self.assertEqual(deferrals.qualify(b'helper', path, 'debian13', source_sha='f' * 40), 1)
+                    if mode == 'real-signal':
+                        self.assertLess(time.monotonic() - started, 2, 'SIGTERM was swallowed by subprocess EINTR retry')
                 report = json.loads(path.read_text())
                 self.assertEqual(report['status'], 'failed')
                 self.assertEqual(report['exit_code'], 1)
+                if mode == 'real-signal':
+                    self.assertIn('interrupted by signal', report['error'])
                 self.assertTrue(all(r['status'] == 'not_executed' for r in report['scenarios']))
                 self.assertEqual(state['removed'], mode != 'unowned')
                 self.assertEqual(report['cleanup']['status'], 'absent_or_unowned' if mode == 'unowned' else 'passed')

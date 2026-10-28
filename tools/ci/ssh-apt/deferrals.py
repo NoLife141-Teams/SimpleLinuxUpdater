@@ -24,6 +24,10 @@ REASONS = {"dependency-forces-deferred": "would change deferred",
 SOURCE = Path(os.environ.get("SLU_DEFERRALS_SOURCE", run.REPO)).resolve()
 
 
+class QualificationInterrupted(BaseException):
+    """Do not let subprocess/selector EINTR retries swallow a signal."""
+
+
 def source_identity():
     return run.command(["git", "rev-parse", "HEAD"], cwd=SOURCE).strip()
 
@@ -138,7 +142,7 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
 
     handlers = {}
     def interrupted(signum, frame):
-        raise InterruptedError("qualification interrupted by signal " + str(signum))
+        raise QualificationInterrupted("qualification interrupted by signal " + str(signum))
 
     try:
         report["source_files_sha256"] = source_manifest()
@@ -191,9 +195,12 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
         transient = target("sh", "-c", "find /tmp -maxdepth 1 -name 'simplelinuxupdater-guard.*' -print")
         run.require(not transient.strip(), "helper temporary resources leaked")
         report.update(status="passed", exit_code=0)
-    except (Exception, KeyboardInterrupt) as error:
+    except (Exception, KeyboardInterrupt, QualificationInterrupted) as error:
         report["error"] = str(error)[-5000:]
     finally:
+        # A second termination signal must not interrupt ownership checks/removal.
+        for sig in handlers:
+            signal.signal(sig, signal.SIG_IGN)
         # Inspect after partial creation too, never remove another owner's resource.
         try:
             if owned():

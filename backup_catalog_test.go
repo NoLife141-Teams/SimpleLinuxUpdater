@@ -555,6 +555,59 @@ func TestBackupCatalogListingRecordsLossOnceWithoutChangingPublicationFacts(t *t
 	}
 }
 
+func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
+	for _, operation := range []string{"listing", "download", "verify"} {
+		t.Run(operation, func(t *testing.T) {
+			app, a, cookie, archive := publishedCatalogFixture(t)
+			before := catalogProtectedState(t, app)
+			if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_catalog_loss_audit BEFORE INSERT ON audit_events WHEN NEW.action='backup.verify' AND NEW.status='failure' BEGIN SELECT RAISE(ABORT,'controlled catalog audit failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
+				t.Fatal(err)
+			}
+			var response *httptest.ResponseRecorder
+			if operation == "listing" {
+				response = performContractRequest(app.Handler, "GET", "/api/backup/archives", nil, cookie, false)
+			} else {
+				response = catalogRequest(app, cookie, archive.ID, operation)
+			}
+			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "controlled catalog audit failure") {
+				t.Fatalf("failed loss audit response=%d %s", response.Code, response.Body.String())
+			}
+			state := backupAutomationStateForTest(t, a)
+			if state.Archives[0].Availability != archive.Availability || state.Archives[0].Verification != archive.Verification {
+				t.Fatal("failed audit write persisted the loss deduplication marker")
+			}
+			if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_catalog_loss_audit"); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 2; i++ {
+				item := catalogFacts(t, app, cookie).Archives[0]
+				if item.Availability != "missing" || item.Verification != "failed" || item.LastVerifiedAt != archive.LastVerifiedAt {
+					t.Fatalf("retried loss projection=%+v", item)
+				}
+			}
+			var failures int
+			if err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&failures); err != nil || failures != 1 {
+				t.Fatalf("retried loss audit count=%d %v", failures, err)
+			}
+			health, err := app.Deps.BackupService.RecoveryHealth(context.Background())
+			if err != nil || health.Verification.State != internalbackup.RecoveryStateFailed {
+				t.Fatalf("retried loss recovery health=%+v %v", health, err)
+			}
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now)
+			batch, err := source(context.Background(), "", nil)
+			if err != nil || !lastConditionFact(batch.Facts, "backup/verify").Active {
+				t.Fatalf("retried loss notification condition missing: %v", err)
+			}
+			if catalogProtectedState(t, app) != before {
+				t.Fatal("retried loss mutated protected active data")
+			}
+		})
+	}
+}
+
 func TestBackupCatalogPersistedIDSurvivesSecretFailureRotationAndRestart(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	ctx := context.Background()

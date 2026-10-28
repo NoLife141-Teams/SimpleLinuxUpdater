@@ -140,7 +140,11 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		if availability != "present" && availability != "foreign" && availability != "unavailable" && archive.Availability != availability {
 			archive.Availability = availability
 			archive.Verification = "failed"
-			a.catalogAudit("backup-scheduler", "", "backup.verify", *archive, false)
+			// Do not persist the deduplication marker unless recovery consumers can
+			// observe the damage. A later listing must retry a failed audit write.
+			if err := a.catalogAudit("backup-scheduler", "", "backup.verify", *archive, false); err != nil {
+				return catalog, err
+			}
 			changed = true
 		}
 		verification := archive.Verification
@@ -159,9 +163,9 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 	return catalog, nil
 }
 
-func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedBackupArchive, ready bool) {
+func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedBackupArchive, ready bool) error {
 	if a.deps.AuditService == nil {
-		return
+		return nil
 	}
 	status, message := "failure", "Registered backup is unavailable or did not pass restore readiness verification"
 	if ready {
@@ -182,7 +186,7 @@ func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedB
 	if archive.SizeBytes != nil {
 		meta["archive_size_bytes"] = *archive.SizeBytes
 	}
-	_ = a.deps.AuditService.Record(actor, ip, action, "backup", "automatic", status, message, meta)
+	return a.deps.AuditService.Record(actor, ip, action, "backup", "automatic", status, message, meta)
 }
 
 type backupCatalogReader struct {
@@ -320,8 +324,11 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		if ctx.Err() == nil && errors.Is(err, errBackupCatalogUnavailable) {
 			archive.Availability = backupArchiveAvailability(root, *archive, owner)
 			archive.Verification = "failed"
+			if err := a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
+				return
+			}
 			_ = a.save(ctx, s)
-			a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
 		}
 		c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
 		return

@@ -49,7 +49,7 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 			t.Errorf("trusted release workflow does not enforce main-history provenance %q", required)
 		}
 	}
-	if got := strings.Count(release, "run: tools/release/verify-tag-on-main.sh"); got != 3 {
+	if got := strings.Count(release, "run: tools/release/verify-tag-on-main.sh"); got != 4 {
 		t.Errorf("each release job must independently verify provenance, got %d gates", got)
 	}
 	if strings.Contains(release, "ref: ${{ env.RELEASE_SHA }}") {
@@ -70,10 +70,10 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 	if strings.Contains(trigger, "uses:") || strings.Contains(trigger, "contents: write") {
 		t.Error("untrusted tag signal workflow must not check out code or receive write permissions")
 	}
-	if !strings.Contains(release, "needs: release-gate") {
+	if !strings.Contains(release, "needs: [release-gate, deferrals-gate]") {
 		t.Error("GitHub release publication is not gated by release-gate")
 	}
-	if !strings.Contains(release, "needs: [release-gate, publish-release]") {
+	if !strings.Contains(release, "needs: [release-gate, deferrals-gate, publish-release]") {
 		t.Error("container publication is not gated by release-gate and GitHub release publication")
 	}
 	for _, required := range []string{
@@ -145,7 +145,7 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 	if strings.Contains(release, "type=raw,value=latest") {
 		t.Error("build must not overwrite latest before runtime verification and version policy")
 	}
-	for _, job := range []struct{ name, next string }{{"release-gate", "publish-release"}, {"publish-release", "publish-docker"}, {"publish-docker", ""}} {
+	for _, job := range []struct{ name, next string }{{"release-gate", "deferrals-gate"}, {"deferrals-gate", "publish-release"}, {"publish-release", "publish-docker"}, {"publish-docker", ""}} {
 		source := workflowJobForTest(t, release, job.name, job.next)
 		verify := strings.Index(source, "run: tools/release/verify-tag-on-main.sh")
 		preserve := strings.Index(source, `cp -R tools "$RUNNER_TEMP/trusted-tools"`)

@@ -173,8 +173,51 @@ jobs:
           fi
           grep -Eq "^VERSION=\"${ESCAPED_VERSION}\"$" README.md
 
-  publish-release:
+  deferrals-gate:
     needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian13, ubuntu2404]
+    steps:
+      - name: Checkout trusted validation tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify trusted release signal and main ancestry
+        run: tools/release/verify-tag-on-main.sh
+      - name: Preserve trusted harness and check out release source
+        run: |
+          cp -R tools "$RUNNER_TEMP/trusted-tools"
+          git checkout --detach "$RELEASE_SHA"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Qualify release source-generated Package Deferral guard
+        timeout-minutes: 8
+        env:
+          SLU_DEFERRALS_SOURCE: ${{ github.workspace }}
+        run: python3 "$RUNNER_TEMP/trusted-tools/ci/ssh-apt/deferrals-negative.py" --distro '${{ matrix.distro }}' --output deferrals-evidence
+      - name: Retain redacted Package Deferral evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-deferrals-${{ matrix.distro }}-${{ github.run_attempt }}
+          path: |
+            deferrals-evidence/report.json
+            deferrals-evidence/negative.json
+            deferrals-evidence/positive.json
+          retention-days: 1
+
+  publish-release:
+    needs: [release-gate, deferrals-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -301,7 +344,7 @@ jobs:
           retention-days: 1
 
   publish-docker:
-    needs: [release-gate, publish-release]
+    needs: [release-gate, deferrals-gate, publish-release]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

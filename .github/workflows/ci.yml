@@ -83,6 +83,7 @@ jobs:
               - 'templates/**'
               - 'static/**'
               - 'tools/ci/ssh-apt/**'
+              - 'tools/ci/package-deferral-helper/**'
               - '.github/workflows/**'
 
       - name: Verify canonical Go toolchain alignment
@@ -318,6 +319,9 @@ jobs:
           cache: true
       - name: Test harness safety and cleanup
         run: python3 -m unittest discover -s tools/ci/ssh-apt -p 'test_*.py' -v
+      - name: Qualify source-generated Package Deferral guard and negative control
+        timeout-minutes: 8
+        run: python3 tools/ci/ssh-apt/deferrals-negative.py --distro '${{ matrix.distro }}' --output deferrals-evidence
       - name: Qualify real SSH and APT on disposable targets
         run: python3 tools/ci/ssh-apt/run.py --distro '${{ matrix.distro }}' --output ssh-apt-evidence
       - name: Retain redacted qualification evidence
@@ -328,6 +332,9 @@ jobs:
           path: |
             ssh-apt-evidence/report.json
             ssh-apt-evidence/app.log
+            deferrals-evidence/report.json
+            deferrals-evidence/negative.json
+            deferrals-evidence/positive.json
           retention-days: 1
 
   upgrade-qualification:

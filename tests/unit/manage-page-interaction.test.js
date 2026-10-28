@@ -850,3 +850,22 @@ test("inventory import validates file boundaries and makes failures retryable wi
     store.dispatch({ type: "importSelectionRequested" });
     assert.equal(store.getView().inventoryImport.phase, "preview");
 });
+
+test("operational export plans use explicit scopes and all filtered pages, without transport effects", () => {
+    const store = createStore();
+    store.dispatch({type:"inventorySnapshotReceived",items:Array.from({length:31},(_,i)=>({name:`host-${i}`,host:`host-${i}.example.test`,user:"root",tags:i===30?["hidden"]:["prod"]}))});
+    store.dispatch({type:"filtersChanged",patch:{tag:"prod",pageSize:10}});
+    store.dispatch({type:"bulkSelectionChanged",name:"host-0",selected:true});
+    store.dispatch({type:"pageChanged",page:2});
+    store.dispatch({type:"bulkSelectionChanged",name:"host-20",selected:true});
+    assert.deepEqual(store.dispatch({type:"inventoryExportRequested",scope:"selection"})[0].body,{scope:"selection",names:["host-0","host-20"],count:2});
+    assert.equal(store.dispatch({type:"inventoryExportRequested",scope:"filtered"})[0].body.count,30);
+    assert.equal(store.dispatch({type:"inventoryExportRequested",scope:"all"})[0].body.count,31);
+    assert.deepEqual(store.dispatch({type:"inventoryExportRequested"}),[]);
+    store.dispatch({type:"auditQueryChanged",patch:{page:3,pageSize:10,actor:"account:1",category:"admin_activity",targetName:"host-0",action:"server.import",status:"failure",failureCause:"error_class:network",from:"2026-10-27T00:00:00Z"}});
+    const effect = store.dispatch({type:"auditExportRequested",format:"csv"})[0];
+    assert.equal(effect.path,"/api/audit-events/export");
+    assert.deepEqual(effect.body,{format:"csv",filters:{actor:"account:1",category:"admin_activity",target_name:"host-0",action:"server.import",status:"failure",failure_cause:"error_class:network",from:"2026-10-27T00:00:00Z"}});
+    assert.equal(effect.filename,"audit-v1.csv");
+    assert.deepEqual(store.dispatch({type:"auditExportRequested",format:"html"}),[]);
+});

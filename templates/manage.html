@@ -222,6 +222,15 @@
                     </div>
                 </div>
                 <div class="manage-section-content" id="manage-section-directory-content" data-manage-section-content="directory">
+                <div class="card section-spaced" id="inventory-export">
+                    <h3>Export inventory</h3>
+                    <p class="subtle">JSON v1 contains name, host, port, user and tags only. Reimported hosts are disabled, without credentials or host-key trust.</p>
+                    <label for="inventory-export-scope">Export scope<select id="inventory-export-scope"><option value="">Choose a scope</option><option value="selection">Explicit selection</option><option value="filtered">Entire filtered view</option><option value="all">All inventory</option></select></label>
+                    <p id="inventory-export-count" role="status" aria-live="polite">Choose an export scope to review its count.</p>
+                    <button class="btn-ghost" id="inventory-export-download" type="button" disabled>Download inventory JSON</button>
+                    <button class="btn-ghost" id="inventory-export-cancel" type="button" hidden>Cancel inventory export</button>
+                    <p id="inventory-export-feedback" role="status" aria-live="polite"></p>
+                </div>
                 <div class="control-strip">
                     <div class="controls manage-filter-grid">
                         <label class="filter-field" for="search"><span>Search</span><input type="text" id="search" placeholder="Name, host, user, or tag"></label>
@@ -317,6 +326,8 @@
                 <div class="control-strip">
                     <div class="audit-controls manage-filter-grid">
                         <label class="filter-field" for="audit-target-filter"><span>Target</span><input type="text" id="audit-target-filter" placeholder="Target name"></label>
+                        <label class="filter-field" for="audit-actor-filter"><span>Actor</span><input type="text" id="audit-actor-filter" placeholder="account:1"></label>
+                        <label class="filter-field" for="audit-category-filter"><span>Category</span><select id="audit-category-filter"><option value="">All categories</option><option value="admin_activity">Administration</option></select></label>
                         <label class="filter-field" for="audit-action-filter"><span>Action</span><input type="text" id="audit-action-filter" placeholder="server.create"></label>
                         <label class="filter-field" for="audit-action-preset"><span>Preset</span><select id="audit-action-preset">
                             <option value="">Action presets</option>
@@ -346,6 +357,13 @@
                         <button class="btn-ghost inline-btn" id="audit-clear-filters" type="button">Clear filters</button>
                         <button class="btn-ghost inline-btn" id="audit-prune" type="button">Prune (90d)</button>
                     </div>
+                </div>
+                <div class="control-strip">
+                    <p class="subtle">Export the entire accepted search, across all pages. Maximum 10,000 events / 32 MiB / 15 seconds preparation. CSV protects spreadsheet formula cells; JSON preserves public values.</p>
+                    <button class="btn-ghost" id="audit-export-json" type="button">Download audit JSON</button>
+                    <button class="btn-ghost" id="audit-export-csv" type="button">Download audit CSV</button>
+                    <button class="btn-ghost" id="export-cancel" type="button" hidden>Cancel export</button>
+                    <p id="audit-export-feedback" role="status" aria-live="polite"></p>
                 </div>
                 <div class="table-shell">
                     <div class="table-shell-head">
@@ -538,6 +556,7 @@
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/manage-workspace-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/manage-audit-adapter.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/operational-exports.js?v=operational-exports-20261028"></script>
 <script src="/static/js/inventory-bulk.js?v=bulk-inventory-20261027"></script>
 <script src="/static/js/manage.js?v=frontend-isolation-20261027"></script>
 </body>

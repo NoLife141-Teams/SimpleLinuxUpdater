@@ -29,6 +29,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Named local accounts with reader/operator/administrator permissions, optional TOTP MFA and scoped personal API tokens ([permissions, migration, recovery and automation](docs/personal-api.md), [OpenAPI v1](docs/openapi-v1.json)). Existing installations keep their administrator password and sign in again once after migration.
 - Multi-server management (custom SSH ports supported)
 - Read-only onboarding checks with [managed helper export from binary archives or Docker](docs/usage.md#managed-helper-installation) for fresh non-root targets
+- Inventory JSON v1 and complete filtered audit JSON/CSV exports without secrets ([workflow and bounds](docs/usage.md#export-inventories-and-audit-searches))
 - CSV/JSON inventory import with normalized previews, row selection, atomic creation and disabled-by-default servers ([format and workflow](docs/usage.md#import-an-inventory))
 - Select up to 1,000 explicit hosts in Manage for atomic tag and availability changes, with per-host policy schedule previews and a separate confirmation ([bulk workflow](docs/usage.md#bulk-inventory-administration)).
 - Enable or disable servers from Manage Servers. Disabling preserves credentials and history while blocking manual maintenance, scheduled runs, and automatic host-facts refreshes. Finish or cancel any active operation before disabling a server; re-enable it to resume normal scheduling.

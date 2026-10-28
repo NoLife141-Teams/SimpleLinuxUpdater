@@ -455,6 +455,7 @@
                 });
             });
             bulkAdapter.render();
+            exportsAdapter.render();
             renderManageWorkspace();
         }
 
@@ -738,6 +739,8 @@
 
                 for (const id of [
                     "audit-target-filter",
+                    "audit-actor-filter",
+                    "audit-category-filter",
                     "audit-action-filter",
                     "audit-action-preset",
                     "audit-status-filter",
@@ -750,6 +753,8 @@
                     type: "auditQueryChanged",
                     patch: {
                         targetName: "",
+                        actor: "",
+                        category: "",
                         action: "",
                         status: "",
                         failureCause: "",
@@ -1050,6 +1055,12 @@
             },
         });
 
+        const exportsAdapter = window.OperationalExports.mount({ store: managePageInteraction });
+        lifecycle.own(exportsAdapter.destroy);
+        for (const id of ["audit-actor-filter", "audit-category-filter"]) lifecycle.listen(document.getElementById(id), "change", async () => {
+            managePageInteraction.dispatch({ type: "auditQueryChanged", patch: { page: 1 } });
+            await fetchAuditEvents();
+        });
         const bulkAdapter = window.InventoryBulk.mount({ store: managePageInteraction, refresh: executeManageEffects });
         lifecycle.own(bulkAdapter.destroy);
 

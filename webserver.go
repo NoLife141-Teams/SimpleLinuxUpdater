@@ -822,58 +822,14 @@ func handleAuditEventsWithService(c *gin.Context, service *AuditService) {
 	if pageSize > 200 {
 		pageSize = 200
 	}
-	targetName := strings.TrimSpace(c.Query("target_name"))
-	targetType := strings.TrimSpace(c.Query("target_type"))
-	order := strings.TrimSpace(c.Query("order"))
-	action := strings.TrimSpace(c.Query("action"))
-	status := strings.TrimSpace(c.Query("status"))
-	failureCause := strings.TrimSpace(c.Query("failure_cause"))
-	category := strings.TrimSpace(c.Query("category"))
-	from := strings.TrimSpace(c.Query("from"))
-	to := strings.TrimSpace(c.Query("to"))
-	if category != "" && category != AuditListCategoryAdminActivity {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit category"})
+	filter, err := parseAuditQuery(c.Request.URL.Query())
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if order != "" && order != auditpkg.ListOrderCreatedAt {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid audit order"})
-		return
-	}
-	if failureCause != "" && !auditpkg.ValidFailureCause(failureCause) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid failure cause"})
-		return
-	}
-
-	if from != "" {
-		normalizedFrom, err := normalizeAuditFilterTimestamp(from)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid from timestamp; expected RFC3339"})
-			return
-		}
-		from = normalizedFrom
-	}
-	if to != "" {
-		normalizedTo, err := normalizeAuditFilterTimestamp(to)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid to timestamp; expected RFC3339"})
-			return
-		}
-		to = normalizedTo
-	}
-
-	result, err := service.List(AuditListFilter{
-		Page:         page,
-		PageSize:     pageSize,
-		Category:     category,
-		Order:        order,
-		TargetType:   targetType,
-		TargetName:   targetName,
-		Action:       action,
-		Status:       status,
-		FailureCause: failureCause,
-		From:         from,
-		To:           to,
-	})
+	filter.Page = page
+	filter.PageSize = pageSize
+	result, err := service.List(filter)
 	if err != nil {
 		message := "failed to load audit events"
 		var listErr *AuditListError
@@ -2152,6 +2108,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	deps = deps.withDefaults()
 	inventoryService := deps.ServerInventoryService
 	inventoryCommands := serverpkg.NewCommandService(inventoryService)
+	registerOperationalExportRoutes(r, deps)
 	registerServerInventoryImportRoutes(r, deps, inventoryCommands)
 	registerServerInventoryBulkRoutes(r, deps, inventoryCommands)
 	registerServerAvailabilityRoutes(r, deps, inventoryCommands)

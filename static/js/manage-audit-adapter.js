@@ -234,6 +234,8 @@
                     page: String(query.page),
                     page_size: String(query.pageSize),
                 });
+                if (query.actor) params.set("actor", query.actor);
+                if (query.category) params.set("category", query.category);
                 if (query.targetName)
                     params.set("target_name", query.targetName);
                 if (query.action) params.set("action", query.action);
@@ -302,6 +304,8 @@
 
             const current = managePageInteraction.getView().audit.query;
             const patch = {
+                actor: document.getElementById("audit-actor-filter").value.trim(),
+                category: document.getElementById("audit-category-filter").value,
                 targetName: document
                     .getElementById("audit-target-filter")
                     .value.trim(),

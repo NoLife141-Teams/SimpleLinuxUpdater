@@ -84,7 +84,7 @@
             collapsed: Object.fromEntries(sectionDefinitions.map(section => [section.id, section.collapsed]))
         };
         let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
-        let audit = { query: { targetName: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
+        let audit = { query: { targetName: "", actor: "", category: "", action: "", status: "", failureCause: "", from: "", to: "", page: 1, pageSize: 20 }, items: [], total: 0, selectedID: "" };
         let inventoryImport = { generation: 0, phase: "file", fileName: "", format: "", fileValid: false, preview: null, selected: [], created: [], error: "", busy: false };
         let inventoryBulk = { generation: 0, selected: [], addTags: "", removeTags: "", availability: "", phase: "draft", preview: null, busy: false, message: "" };
         const inFlightCommands = new Set();
@@ -215,6 +215,7 @@
             });
             return {
                 allItems: inventory.map(projectedServer),
+                filteredNames: filtered.map(server => server.name),
                 items: items.map(projectedServer),
                 groups: Array.from(groups.entries()).map(([key, value]) => ({ key, items: value.map(projectedServer) })),
                 total: filtered.length,
@@ -557,6 +558,20 @@
                 case "policyContextReceived": if (editor.open && input.sessionID === editor.sessionID) { const context = input.context || {}; const overrides = clone(context.overrides || {}); editor.policyContext = { policies: clone(Array.isArray(context.policies) ? context.policies : []), overrides, originalOverrides: clone(overrides), outcome: { status: "idle", failures: [] } }; } return received("policyContext", input.requestID, input.context);
                 case "policyOverrideChanged": if (editor.open) editor.policyContext.overrides[String(input.policyID || "")] = !!input.disabled; return [effect("render", { area: "policyOverrides" })];
                 case "policyOverrideBatchCompleted": if (editor.open && input.sessionID === editor.sessionID) { const results = Array.isArray(input.results) ? input.results : []; const failures = []; let successes = 0; results.forEach(result => { const policyID = String(result.policyID || ""); if (result.ok) { successes++; editor.policyContext.overrides[policyID] = !!result.disabled; editor.policyContext.originalOverrides[policyID] = !!result.disabled; } else failures.push({ policyID, error: String(result.error || "unknown error") }); }); editor.policyContext.outcome = { status: failures.length ? (successes ? "partial" : "failure") : "success", failures }; } return [effect("render", { area: "policyOverrides" })];
+                case "inventoryExportRequested": {
+                    const projection = projectedInventory();
+                    const scope = String(input.scope || "");
+                    if (!["selection", "filtered", "all"].includes(scope)) return [];
+                    const names = scope === "selection" ? clone(inventoryBulk.selected) : scope === "filtered" ? projection.filteredNames : [];
+                    const count = scope === "all" ? inventory.length : names.length;
+                    return [effect("downloadExport", { path: "/api/servers/export", filename: "inventory-v1.json", body: { scope, names, count } })];
+                }
+                case "auditExportRequested": {
+                    if (!["json", "csv"].includes(input.format)) return [];
+                    const query = audit.query;
+                    const filters = Object.fromEntries([["target_name",query.targetName],["actor",query.actor],["category",query.category],["action",query.action],["status",query.status],["failure_cause",query.failureCause],["from",query.from],["to",query.to]].filter(([,value])=>value));
+                    return [effect("downloadExport", { path: "/api/audit-events/export", filename: `audit-v1.${input.format}`, body: { format: input.format, filters } })];
+                }
                 case "auditQueryChanged": audit.query = { ...audit.query, ...(input.patch || {}) }; audit.query.page = Math.max(1, Number(audit.query.page) || 1); audit.query.pageSize = pageSizes.has(Number(audit.query.pageSize)) ? Number(audit.query.pageSize) : 20; return [effect("render", { area: "audit" })];
                 case "auditSnapshotReceived": { if (input.requestID && streams.audit.inFlight !== input.requestID) return []; const data = input.data || {}; audit.items = clone(Array.isArray(data.items) ? data.items : []); audit.total = Math.max(0, Number(data.total) || 0); const pages = Math.max(1, Math.ceil(audit.total / audit.query.pageSize)); if (audit.query.page > pages) { audit.query.page = pages; return [...received("audit", input.requestID, data), ...request("audit", { query: clone(audit.query) })]; } return received("audit", input.requestID, data); }
                 case "auditDetailSelected": audit.selectedID = String(input.id || ""); return [effect("render", { area: "auditDetail" })];

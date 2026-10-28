@@ -40,7 +40,10 @@ without `logs:read`. Every emission revalidates the durable session and current
 identity; a downgraded or disabled account receives no later events.
 
 Job details, raw log pagination and job report downloads require `logs:read`.
-Full audit listing and audit report downloads require `audit:read`. Inventory,
+Full audit listing, audit report downloads and complete filtered JSON/CSV searches
+(`POST /api/audit-events/export`) require `audit:read`. Export limits, manifest and
+CSV formula neutralization are documented in [usage](usage.md#export-inventories-and-audit-searches).
+Inventory JSON v1 export (`POST /api/servers/export`) requires administrator cookies. Inventory,
 SSH credentials, trust management, sudo configuration, import/onboarding,
 policies, deferral administration, application-check definitions, notifications,
 backup exports/restores, metrics credential management and account administration

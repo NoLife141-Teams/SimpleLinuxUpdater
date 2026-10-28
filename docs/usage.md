@@ -74,6 +74,44 @@ API clients can set the same state with `PUT /api/servers/:name/availability` an
 setting. Availability changes appear in the audit trail as `server.disable` and
 `server.enable`.
 
+## Bulk inventory administration
+
+In Manage → Server directory, select individual hosts using their checkboxes.
+Selection starts empty. Pagination retains explicit choices; changing a search,
+tag, authentication or grouping filter, or page size, clears selection. The counter and
+**Selected hosts** disclosure include choices made on other pages. At most 1,000
+hosts can be selected; hidden hosts are never selected automatically.
+
+Enter tags to add/remove and/or choose Enable or Disable, then select **Preview
+changes**. Tags use the existing inventory trimming and uniqueness rules. The
+resulting host supports up to 64 tags and 4,096 tag characters. The
+server returns each host's before/after values, current blocking action and
+canonical policy schedule facts, including no-run windows. Review these facts,
+choose **Review confirmation**, then **Apply reviewed changes**. Any changed
+selection or values requires another preview. Previews expire after 15 minutes
+and confirmations are single-use; all selected hosts commit together or none do.
+Concurrent inventory/policy changes, missing hosts, active actions and pending
+approvals require a new preview. Conflicting current values remain available for
+review, and successful batches show per-host before/after facts and a batch ID.
+
+The command changes only tags and availability. It preserves credentials, trust,
+post-checks, deferrals, overrides, history and accepted rollout manifests. Future
+policy matching uses current tags. The command starts no SSH or maintenance;
+enabling hosts resumes normal scheduling and automatic refreshes, so configured
+policies may run afterward. Disablement retains existing active-action guards.
+
+If a response is lost, Manage refreshes inventory and audit and marks the result
+uncertain. Check those current facts and request a fresh preview before applying
+anything else. It never automatically repeats a confirmation. The audit action
+is `server.bulk`; all parts retain the batch ID, authenticated actor, selected
+count and numbered, lossless JSON fragments of every target's before/after facts.
+Concatenate `changes_json_fragment` in `part` order to reconstruct large batches.
+
+The cookie-only administrator endpoints are `POST /api/servers/bulk/preview`
+(`names`, `add_tags`, `remove_tags`, optional boolean `disabled`) and
+`POST /api/servers/bulk` (`batch_id` from the reviewed preview). Both require
+`inventory:write`, same-origin requests and normal maintenance admission.
+
 ## Import an inventory
 
 Open **Manage → Import inventory** and download the CSV or JSON example. Choose

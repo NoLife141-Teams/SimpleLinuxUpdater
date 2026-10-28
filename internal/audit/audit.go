@@ -505,10 +505,7 @@ func withStableActorIdentity(actor string, meta map[string]any) map[string]any {
 			}
 		}
 	}
-	out := make(map[string]any, len(meta)+2)
-	for k, v := range meta {
-		out[k] = v
-	}
+	out := CloneMeta(meta)
 	out["account_id"] = id
 	if hasToken {
 		out["personal_token_id"] = token

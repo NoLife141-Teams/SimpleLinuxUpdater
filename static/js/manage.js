@@ -411,7 +411,8 @@
         function renderTable() {
             const tbody = document.querySelector("#manage-servers-table tbody");
             tbody.innerHTML = "";
-            const projection = managePageInteraction.getView().inventory;
+            const view = managePageInteraction.getView();
+            const projection = view.inventory;
             document.getElementById("page-info").textContent =
                 `Page ${projection.page} of ${projection.totalPages} (${projection.total} hosts)`;
             document.getElementById("server-filter-result").textContent =
@@ -436,7 +437,7 @@
                     const safeUser = escapeHtml(server.user);
                     const safeDataName = escapeHtml(server.name);
                     row.innerHTML = `
-                        <td>${safeName}<small class="server-availability" title="${escapeHtml(server.availability.description)}">${server.availability.label}</small></td>
+                        <td><input type="checkbox" data-bulk-name="${safeDataName}" aria-label="Select ${safeDataName} for bulk changes" ${view.inventoryBulk.selected.includes(server.name) ? "checked" : ""} ${view.inventoryBulk.busy ? "disabled" : ""}> ${safeName}<small class="server-availability" title="${escapeHtml(server.availability.description)}">${server.availability.label}</small></td>
                         <td><span class="server-endpoint"><span>${safeHost}</span><small>SSH port ${escapeHtml(server.port || 22)}</small></span></td>
                         <td>${safeUser}</td>
                         <td>${renderTags(server.tags)}</td>
@@ -453,6 +454,7 @@
                     tbody.appendChild(row);
                 });
             });
+            bulkAdapter.render();
             renderManageWorkspace();
         }
 
@@ -1047,6 +1049,9 @@
                 renderAddAuthMethod();
             },
         });
+
+        const bulkAdapter = window.InventoryBulk.mount({ store: managePageInteraction, refresh: executeManageEffects });
+        lifecycle.own(bulkAdapter.destroy);
 
         const importAdapter = window.InventoryImport.mount({
             store: managePageInteraction,

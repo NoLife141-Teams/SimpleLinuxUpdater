@@ -789,3 +789,73 @@ and guarded-install capability without sudo or APT. This is a separate contract
 from APT's transaction hook protocol. With active package deferrals the current
 helper is mandatory for both root and non-root SSH; after installation or upgrade,
 rescan and approve the new plan. Old helpers fail closed before package mutation.
+
+## Export inventories and audit searches
+
+In **Manage → Server directory → Export inventory**, explicitly choose **Explicit
+selection**, **Entire filtered view**, or **All inventory**. Review the host count
+before choosing **Download inventory JSON**. Selection includes individual choices
+on other pages; filtered view includes all matching pages. An empty view downloads
+`[]`. Changing inventory counts before the request returns a conflict and requires
+reviewing the current count. Export starts no remote connection.
+
+Inventory JSON v1 is the import-compatible array containing exactly `name`, `host`,
+`port`, `user`, `tags`, sorted by name. No passwords, keys, fingerprints, trust,
+availability, profiles, tokens or internal facts are exported. Reimport into another
+installation uses the normal preview and selection workflow: new hosts are
+**disabled**, with no credentials or host-key trust. Configure and verify these
+separately before explicitly enabling hosts. Export is limited to the import
+bounds: 1,000 hosts and 2 MiB, with an explicit error rather than truncation.
+
+The cookie-only administrator endpoint is `POST /api/servers/export`, requiring
+`inventory:write`. Send a JSON body such as
+`{"scope":"selection","names":["web-1"],"count":1}` or
+`{"scope":"all","count":3}`. Scope `filtered` uses explicit names from the
+entire currently filtered view. Omitted scope, missing hosts, duplicate names and
+changed counts are rejected. The fixed filename is `inventory-v1.json`;
+`X-SLU-Export-Format: simplelinuxupdater-inventory`, `X-SLU-Export-Version: 1`
+and `X-SLU-Export-Count` identify the format and count without changing the strict
+import payload.
+
+In **Manage → Audit trail**, apply target, actor, action/category, result, cause,
+and date window filters, then choose **Download audit JSON** or **Download audit
+CSV**. This exports the **entire accepted search**, across all pages. It does not
+use page size or page number. The final manifest contains
+`format: simplelinuxupdater-audit`, `version: 1`, canonical `filters`, exact `count`,
+`order`, and `exported_from` / `exported_to`: the minimum/maximum timestamps
+actually exported, not the requested window. Empty searches have count zero and
+empty actual timestamps. JSON is an object with `items` then `manifest`.
+
+CSV is UTF-8, with a real CSV encoder, quoted embedded commas/quotes/newlines and
+CRLF record separators. Its header is
+`record_type,manifest_json,id,created_at,actor,action,target_type,target_name,status,message,meta_json,request_id,client_ip`.
+`event` rows contain the events; the final `manifest` row stores the manifest JSON
+in `manifest_json`, including for empty results. CSV alone prefixes an apostrophe
+when a cell begins with `=`, `+`, `-` or `@`, including after whitespace, controls
+or BOM; leading tab/CR/LF also receives that prefix. CSV normalizes embedded CRLF
+and omits standalone CR according to Go's CSV encoder. Use JSON when exact public
+string values are needed for automation. Both formats reapply audit metadata
+sanitation, including nested secret fields.
+
+Audit exports require administrator `audit:read`; administrator cookies and
+personal Bearer credentials scoped to `audit:read` are supported. Readers and
+operators cannot export inventory or audit. `POST /api/audit-events/export`
+accepts `{"format":"json","filters":{"action":"update.complete","actor":"account:1"}}`.
+The same canonical filters as `/api/audit-events` are accepted: `from`, `to`,
+`action`, `category`, `target_type`, `target_name`, `actor`, `status`,
+`failure_cause`, `order`. No filter values or credentials appear in generated
+links or query strings. See [the personal API contract](openapi-v1.json).
+
+Audit preparation holds one SQLite read snapshot, ordered by ID descending (or
+`created_at DESC, id DESC` when requested). Concurrent inserts and pruning cannot
+duplicate or skip snapshot events. It streams one event at a time to a private
+0600 temporary file, bounded to **10,000 events, 32 MiB and 15 seconds**. Memory
+usage is independent of result size; disk usage is at most 32 MiB per active
+request. The database cursor and transaction close before downloading, so a slow
+client does not retain a database read snapshot. Preparation failure returns an
+explicit HTTP 413 (size/count) or 408 (time) and removes the file, without sending
+a partial download. Downloads have a separate **30 second** write deadline and
+`Content-Length`, making an interrupted transfer detectable. Cancel export or
+leave Manage to abort the client request. Every success, failure and cancellation
+closes the spool; downloads use `no-store` and fixed safe filenames. There is no
+change to audit retention, backup storage or database export behavior.

@@ -45,17 +45,18 @@ type Event struct {
 }
 
 type ListFilter struct {
-	Page         int
-	PageSize     int
-	Category     string
-	Order        string
-	TargetType   string
-	TargetName   string
-	Action       string
-	Status       string
-	FailureCause string
-	From         string
-	To           string
+	Page         int    `json:"-"`
+	PageSize     int    `json:"-"`
+	Actor        string `json:"actor"`
+	Category     string `json:"category"`
+	Order        string `json:"order"`
+	TargetType   string `json:"target_type"`
+	TargetName   string `json:"target_name"`
+	Action       string `json:"action"`
+	Status       string `json:"status"`
+	FailureCause string `json:"failure_cause"`
+	From         string `json:"from"`
+	To           string `json:"to"`
 }
 
 const ListCategoryAdminActivity = "admin_activity"
@@ -285,6 +286,10 @@ func auditWhereClause(filter ListFilter) (string, []any) {
 			"notifications.*",
 			"update_policy.*",
 		)
+	}
+	if filter.Actor != "" {
+		whereParts = append(whereParts, "actor = ?")
+		args = append(args, filter.Actor)
 	}
 	if filter.TargetName != "" {
 		whereParts = append(whereParts, "target_name = ?")

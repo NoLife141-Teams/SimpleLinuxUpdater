@@ -1382,6 +1382,14 @@
               "maximum": 200,
               "default": 50
             }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact stable audit actor, for example account:1."
           }
         ],
         "responses": {
@@ -3367,6 +3375,303 @@
         },
         "x-slu-request-body-limit-bytes": 1048576,
         "description": "Cookie sessions or operational personal Bearer token with maintenance:write. Returns 202 while cancellation drains SSH, source HTTP and persistence; resources remain reserved until drainage. A stale identity or identity belonging to another Server returns 409 without affecting the active scan."
+      }
+    },
+    "/api/audit-events/export": {
+      "post": {
+        "operationId": "post_api_audit_events_export",
+        "summary": "Export the complete audit search from one SQLite snapshot",
+        "x-slu-scope": "audit:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Complete prepared download. CSV record_type=event rows are followed by one manifest row, including for empty results. Fixed filenames audit-v1.json / audit-v1.csv. Headers X-SLU-Export-Format, X-SLU-Export-Version, X-SLU-Export-Count.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items",
+                    "manifest"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditEvent"
+                      }
+                    },
+                    "manifest": {
+                      "type": "object",
+                      "required": [
+                        "format",
+                        "version",
+                        "filters",
+                        "count",
+                        "exported_from",
+                        "exported_to",
+                        "order"
+                      ],
+                      "properties": {
+                        "format": {
+                          "const": "simplelinuxupdater-audit"
+                        },
+                        "version": {
+                          "const": 1
+                        },
+                        "filters": {
+                          "type": "object",
+                          "properties": {
+                            "actor": {
+                              "type": "string"
+                            },
+                            "category": {
+                              "type": "string",
+                              "enum": [
+                                "",
+                                "admin_activity"
+                              ]
+                            },
+                            "order": {
+                              "type": "string",
+                              "enum": [
+                                "",
+                                "created_at"
+                              ]
+                            },
+                            "target_type": {
+                              "type": "string"
+                            },
+                            "target_name": {
+                              "type": "string"
+                            },
+                            "action": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "failure_cause": {
+                              "type": "string"
+                            },
+                            "from": {
+                              "type": "string"
+                            },
+                            "to": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "count": {
+                          "type": "integer"
+                        },
+                        "exported_from": {
+                          "type": "string"
+                        },
+                        "exported_to": {
+                          "type": "string"
+                        },
+                        "order": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Export exceeds 10000 events or 32 MiB; narrow the search. No partial file is returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Preparation exceeded 15 seconds; narrow the search."
+          }
+        },
+        "description": "Requires audit:read. POST keeps filters out of download links. JSON v1 retains public values; UTF-8 CSV v1 uses CRLF and prefixes spreadsheet-dangerous cells with an apostrophe. Both include a final manifest with canonical filters, exact count, stable order and actual exported timestamp interval (empty strings when empty). Preparation streams to a private temporary file: at most 10000 events, 32 MiB and 15 seconds. Exceeding a bound returns an explicit error before download. Transfer has a separate 30 second deadline, fixed safe filename, Content-Length and Cache-Control: no-store. Client cancellation closes cursors, transactions and the temporary file. No offset pagination; concurrent events do not alter the read snapshot.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "format"
+                ],
+                "properties": {
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "json",
+                      "csv"
+                    ]
+                  },
+                  "filters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "actor": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "",
+                          "admin_activity"
+                        ]
+                      },
+                      "order": {
+                        "type": "string",
+                        "enum": [
+                          "",
+                          "created_at"
+                        ]
+                      },
+                      "target_type": {
+                        "type": "string"
+                      },
+                      "target_name": {
+                        "type": "string"
+                      },
+                      "action": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "failure_cause": {
+                        "type": "string"
+                      },
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "example": {
+                "format": "json",
+                "filters": {
+                  "action": "update.complete",
+                  "status": "failure"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },

@@ -923,3 +923,25 @@ test("application post-check drafts preserve saved revisions and reject stale re
     dispatch("discard");assert.equal(store.getView().postchecks.dirty,false);
     dispatch("delete");assert.equal(store.getView().postchecks.draft.profiles.length,0);
 });
+
+test("registered backup commands use accepted manifest IDs and serialize downloads with reverification", () => {
+    const store = createStore();
+    store.dispatch({ type: "backupSnapshotReceived", data: { automation: { catalog: { archives: [
+        { id: "owned", availability: "present", size_bytes: null, known_hosts_included: null },
+        { id: "foreign", availability: "foreign" }, { id: "missing", availability: "missing" }
+    ] } } } });
+    const catalog = store.getView().backup.automation.catalog;
+    assert.equal(catalog.archives[0].sizeBytes, null);
+    assert.equal(catalog.archives[0].knownHostsIncluded, null);
+    assert.equal(catalog.archives[0].lastVerifiedAt, "");
+    for (const id of ["../config.json", "unknown", "foreign", "missing"]) {
+        assert.equal(store.planCommand("downloadBackupArchive", { id }).enabled, false);
+        assert.equal(store.planCommand("reverifyBackupArchive", { id }).enabled, false);
+    }
+    const requested = effect(store.dispatch({ type: "commandRequested", command: "downloadBackupArchive", payload: { id: "owned", path: "/ignored" } }), "executeCommand");
+    assert.deepEqual(requested.plan.payload, { id: "owned" });
+    assert.equal(store.planCommand("reverifyBackupArchive", { id: "owned" }).enabled, false);
+    store.dispatch({ type: "commandCompleted", plan: requested.plan, message: "Downloaded" });
+    assert.equal(store.planCommand("reverifyBackupArchive", { id: "owned" }).enabled, true);
+    assert.equal(store.getView().backup.review, null);
+});

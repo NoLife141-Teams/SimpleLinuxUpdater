@@ -190,6 +190,58 @@ The UI reports configuration/suspension, next attempt, last attempt, last verifi
 
 Restoration preserves historical configuration and results but clears local approval, even when restoring into the same installation. Revalidate destination and secret in Admin before resuming. Existing manual exports and archives remain compatible. No S3/SFTP backend or remote-server filesystem snapshot is provided.
 
+### Registered automated archive catalog
+
+**Admin → Backup & Restore → Registered automated archives** shows at most the
+latest 100 entries from this installation's persisted automation manifest.
+Publication date, recorded byte size, known_hosts inclusion, SHA-256 and last
+successful verification come from actual publication or verification. Legacy
+entries retain unknown fields; filesystem modification times are never used as
+verification evidence. Catalog IDs are independent 256-bit random values persisted
+in the manifest, not hashes of a passphrase, owner or filename. Missing legacy IDs
+are allocated and saved once before exposure; they remain stable across restarts,
+secret absence/rotation and verification outcomes. Malformed or duplicate stored
+IDs make the catalog unavailable rather than selecting an ambiguous archive.
+The initial, unreleased PR's computed IDs are replaced once by this persisted-ID
+migration; existing archive hashes, ownership and unknown recovery metadata stay
+unchanged. Presence is a local filesystem observation, not a fresh
+integrity or restore-readiness check. Last verified publication remains historical
+when a later file is missing, replaced or corrupt.
+
+**Download encrypted** retrieves an existing archive without creating a new
+export. **Reverify** reads it through the normal manifest, decryption and restore
+readiness pipeline with the currently configured deployment passphrase. It shows
+structured readiness, blockers, warnings and safe archived counts without
+replacing active inventory, accounts, settings, configuration or known_hosts.
+Verification evidence and audit tracking are written normally. Rotated or missing
+secrets can prevent reverification of older archives; retain their original
+passphrase files separately. Catalog use never validates or resumes a schedule
+suspended after restoration and never imports another installation's archives.
+
+These commands require an administrator cookie, `backup:write`, and password/MFA
+confirmation within five minutes. Responses are not cached. The server accepts
+only an opaque manifest ID, uses the pinned destination root, rejects foreign
+ownership, symlinks and invalid regular files, then checks the actual opened
+file's recorded hash before any bytes are served or decrypted. A bounded private
+copy of the encrypted bytes prevents a later source mutation from changing the
+validated stream. It is removed on completion, failure or cancellation. Commands
+share the maintenance admission and 30-minute transfer budget with Backup
+Operation Lifecycle; one catalog command runs at a time, excluding concurrent
+publication, retention or restore. The staging disk must have space for one
+accepted encrypted archive in addition to the existing verification pipeline's
+bounded temporary files.
+
+Observed loss or corruption and explicit reverification reuse `backup.verify`
+in the existing audit, recovery health and notification conditions; downloads
+use `backup.download` with encrypted hash validation evidence, without claiming
+restore readiness. Repeated listing of the same loss does not create repeated
+audit entries. The filtered full audit and publication job links provide the existing
+history; there is no separate backup delivery log or one-click restore action.
+The read API is `GET /api/backup/archives`; sensitive commands are
+`POST /api/backup/archives/:id/download` and
+`POST /api/backup/archives/:id/verify`.
+
+
 ## Storage paths
 
 The updater persists state in SQLite and encrypts SSH credentials at rest.

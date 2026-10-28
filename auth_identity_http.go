@@ -49,6 +49,7 @@ func handleIdentity(c *gin.Context) {
 }
 func requireRecentAuthentication() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		setNoStoreHeaders(c)
 		sm := sessionManagerForContext(c)
 		at, _ := sm.Get(c.Request.Context(), "auth_reauthenticated_at").(int64)
 		if at <= 0 || time.Now().Unix()-at > 300 {

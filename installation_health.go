@@ -232,7 +232,7 @@ func installationFileSize(path string) *int64 {
 	return &n
 }
 func (a *backupAutomation) installationFacts(ctx context.Context) (backupAutomationState, error) {
-	return a.load(ctx)
+	return a.readState(ctx)
 }
 func handleInstallationDiagnostics(c *gin.Context, deps AppDeps) {
 	setNoStoreHeaders(c)

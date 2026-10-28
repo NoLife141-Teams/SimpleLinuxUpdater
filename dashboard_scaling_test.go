@@ -584,6 +584,16 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		t.Fatal("E2E helper requires explicit IPv4 loopback")
 	}
 	a := newScalingRuntime(t, 0, false, false)
+	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
+		automation := a.deps.BackupAutomation
+		automation.deployment = backupAutomationDeployment{Directory: t.TempDir(), SecretFile: filepath.Join(t.TempDir(), "catalog-passphrase")}
+		if err := os.Chmod(automation.deployment.Directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(automation.deployment.SecretFile, []byte("disposable-browser-catalog-passphrase"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if phase := os.Getenv("SLU_E2E_VULNERABILITY_PHASE"); phase != "" {
 		switch phase {
 		case "inventory", "metadata", "evaluation", "persistence":

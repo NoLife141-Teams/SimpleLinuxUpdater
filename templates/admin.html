@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=disclosure-chevron-20260729">
-    <link rel="stylesheet" href="/static/css/admin.css?v=calendar-mobile-20261023">
+    <link rel="stylesheet" href="/static/css/admin.css?v=backup-catalog-20261028">
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
     <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
@@ -943,6 +943,13 @@
                 </form>
                 <p class="muted">Active work defers a backup by five minutes, for at most one hour. Missing DST times are skipped; repeated times run once. Retention runs only after a new verified archive is published.</p>
             </section>
+            <div class="backup-block section-spaced" aria-labelledby="backup-catalog-title">
+                <h3 id="backup-catalog-title">Registered automated archives</h3>
+                <p class="muted">Latest 100 manifest entries. Presence does not verify encrypted contents. Unknown legacy metadata remains unknown. Keep your passphrase file separately.</p>
+                <p><a href="/manage?audit_target=automatic#audit-trail">View archive events in audit</a></p>
+                <div id="backup-archive-catalog" aria-live="polite"></div>
+                <div id="backup-catalog-result" role="status" aria-live="polite"></div>
+            </div>
             <div class="backup-grid">
                 <div class="backup-block">
                     <h3>Export Backup</h3>
@@ -1167,17 +1174,17 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
-    <script src="/static/js/reauthentication.js?v=account-commands-20261027"></script>
+    <script src="/static/js/reauthentication.js?v=backup-catalog-20261028"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
-    <script src="/static/js/admin-page-interaction.js?v=installation-health-494"></script>
+    <script src="/static/js/admin-page-interaction.js?v=backup-catalog-20261028"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-backup-adapter.js?v=account-commands-20261027"></script>
+<script src="/static/js/admin-backup-adapter.js?v=backup-catalog-20261028"></script>
 <script src="/static/js/admin-policies-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin.js?v=installation-health-494-frontend-isolation-20261027"></script>
 </body>

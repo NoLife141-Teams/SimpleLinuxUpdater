@@ -61,3 +61,17 @@ test('an aborted snapshot cannot redirect when its late 401 body ignores cancell
     await assert.rejects(pending, { name: 'AbortError' });
     assert.deepEqual(redirects, []); lifecycle.destroy();
 });
+
+test('sensitive encrypted download preserves binary bytes and still decodes reauthentication errors as JSON', async () => {
+    const expected = new Uint8Array([0, 255, 7, 128]);
+    let sentOptions;
+    const { api, lifecycle } = fixture(async (path, options) => { sentOptions = options; return new Response(expected); });
+    const blob = await api.sensitive('/api/backup/archives/id/download', { method: 'POST', responseType: 'blob' }, 'Download');
+    assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), expected);
+    assert.equal(sentOptions.responseType, undefined);
+    assert.equal(sentOptions.cache, 'no-store');
+    lifecycle.destroy();
+    const rejected = fixture(async () => response(401, { error: 'confirmation needed', reauthentication_required: true }));
+    await assert.rejects(rejected.api.request('/api/backup/archives/id/download', { method: 'POST', responseType: 'blob' }), error => error.reauthenticationRequired === true);
+    rejected.lifecycle.destroy();
+});

@@ -146,7 +146,7 @@ func (r backupCatalogReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-var errBackupCatalogUnavailable = errors.New("Registered backup is unavailable or failed validation.")
+var errBackupCatalogUnavailable = errors.New("registered backup is unavailable or failed validation")
 
 // snapshotBackupArchive hashes the descriptor that it reads, after no-follow
 // open and inode checks. A private encrypted snapshot pins the validated bytes
@@ -179,13 +179,13 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	}
 	directory, err := os.MkdirTemp("", "slu-backup-catalog-*")
 	if err != nil {
-		return empty, noop, errors.New("Backup staging is unavailable.")
+		return empty, noop, errors.New("backup staging is unavailable")
 	}
 	cleanup := func() { _ = os.RemoveAll(directory) }
 	dst, err := os.OpenFile(filepath.Join(directory, "archive.slubkp"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		cleanup()
-		return empty, noop, errors.New("Backup staging is unavailable.")
+		return empty, noop, errors.New("backup staging is unavailable")
 	}
 	digest := sha256.New()
 	size, copyErr := io.Copy(io.MultiWriter(dst, digest), io.LimitReader(backupCatalogReader{ctx, src}, internalbackup.MaxUploadBytes+1))

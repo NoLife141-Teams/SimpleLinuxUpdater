@@ -608,6 +608,96 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 	}
 }
 
+func TestBackupCatalogExplicitVerificationRequiresAuditEvidence(t *testing.T) {
+	for _, kind := range []string{"decryption failure", "readiness blockers", "success"} {
+		t.Run(kind, func(t *testing.T) {
+			app, a, cookie, archive := publishedCatalogFixture(t)
+			before := catalogProtectedState(t, app)
+			if kind == "decryption failure" {
+				if err := os.WriteFile(a.deployment.SecretFile, []byte("a different deployment passphrase"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if kind == "readiness blockers" {
+				a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
+					return internalbackup.VerifyResult{Blockers: []internalbackup.ReadinessIssue{{Code: "unsupported_version", Message: "Unsupported archive version."}}}, nil
+				}
+			} else {
+				// Make a successful review observable as a state transition too.
+				state := backupAutomationStateForTest(t, a)
+				state.Archives[0].Verification = "failed"
+				if err := a.save(context.Background(), state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := backupAutomationStateForTest(t, a).Archives[0]
+			if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_explicit_catalog_audit BEFORE INSERT ON audit_events WHEN NEW.action='backup.verify' BEGIN SELECT RAISE(ABORT,'controlled explicit verification audit failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			response := catalogRequest(app, cookie, archive.ID, "verify")
+			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "controlled explicit") {
+				t.Fatalf("unrecorded verification response=%d %s", response.Code, response.Body.String())
+			}
+			persisted := backupAutomationStateForTest(t, a).Archives[0]
+			if persisted.Verification != original.Verification || persisted.LastVerifiedAt != original.LastVerifiedAt {
+				t.Fatal("unrecorded verification changed persisted review evidence")
+			}
+			if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_explicit_catalog_audit"); err != nil {
+				t.Fatal(err)
+			}
+			response = catalogRequest(app, cookie, archive.ID, "verify")
+			wantStatus, wantState := http.StatusOK, internalbackup.RecoveryStateFailed
+			if kind == "decryption failure" {
+				wantStatus = http.StatusBadRequest
+			} else if kind == "success" {
+				wantState = internalbackup.RecoveryStateHealthy
+			}
+			if response.Code != wantStatus {
+				t.Fatalf("retried verification=%d %s", response.Code, response.Body.String())
+			}
+			health, err := app.Deps.BackupService.RecoveryHealth(context.Background())
+			if err != nil || health.Verification.State != wantState {
+				t.Fatalf("retried verification health=%+v %v", health, err)
+			}
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now)
+			batch, err := source(context.Background(), "", nil)
+			if err != nil || lastConditionFact(batch.Facts, "backup/verify").Active != (wantState == internalbackup.RecoveryStateFailed) {
+				t.Fatalf("retried verification notification evidence=%+v %v", batch, err)
+			}
+			if catalogProtectedState(t, app) != before {
+				t.Fatal("explicit verification changed protected active data")
+			}
+		})
+	}
+}
+
+func TestBackupCatalogStatusFailsClosedWhenLossEvidenceCannotBeRecorded(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_status_catalog_audit BEFORE INSERT ON audit_events WHEN NEW.action='backup.verify' AND NEW.status='failure' BEGIN SELECT RAISE(ABORT,'controlled status audit failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	response := performContractRequest(app.Handler, "GET", "/api/backup/status", nil, cookie, false)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"state":"healthy"`) || strings.Contains(response.Body.String(), "controlled status") {
+		t.Fatalf("unrecorded loss status=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_status_catalog_audit"); err != nil {
+		t.Fatal(err)
+	}
+	response = performContractRequest(app.Handler, "GET", "/api/backup/status", nil, cookie, false)
+	var status struct {
+		RecoveryHealth internalbackup.RecoveryHealth `json:"recovery_health"`
+		Automation     backupAutomationStatus        `json:"automation"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || status.RecoveryHealth.Verification.State != internalbackup.RecoveryStateFailed || len(status.Automation.Catalog.Archives) != 1 || status.Automation.Catalog.Archives[0].Availability != "missing" {
+		t.Fatalf("retried status=%d %+v", response.Code, status)
+	}
+}
+
 func TestBackupCatalogPersistedIDSurvivesSecretFailureRotationAndRestart(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	ctx := context.Background()

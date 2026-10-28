@@ -348,11 +348,16 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			archive.SizeBytes = &snapshot.Size
 			archive.KnownHostsIncluded = &result.KnownHostsIncluded
 		}
+		// Recovery health and notifications consume the audit, so never report
+		// a completed review or persist its marker without that shared evidence.
+		if err = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, ready); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
+			return
+		}
 		if err = a.save(ctx, s); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
 			return
 		}
-		a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, ready)
 		if verifyErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Backup could not be decrypted or verified with the deployment secret.", "archive_id": id, "restore_ready": false})
 			return

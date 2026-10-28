@@ -225,6 +225,11 @@ func handleBackupStatusWithService(c *gin.Context, service *BackupService, autom
 			recoveryHealth.Retention.ArchiveRetained = scheduled.LocalArchiveCount > 0
 			recoveryHealth.Retention.AutomaticDeletion = scheduled.Config.Enabled && scheduled.Configured
 			recoveryHealth.Retention.ArchiveDescription = fmt.Sprintf("Automated backups retain up to %d verified archives owned by this instance, after a new verified success. Manual downloads remain operator-managed.", scheduled.Config.Retain)
+		} else {
+			// Catalog observations can invalidate previously healthy evidence.
+			// Do not return that older health when recording an observation failed.
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "backup catalog evidence unavailable"})
+			return
 		}
 	}
 	status.RecoveryHealth = recoveryHealth

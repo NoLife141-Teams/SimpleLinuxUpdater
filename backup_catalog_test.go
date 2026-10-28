@@ -389,7 +389,14 @@ func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *
 	temp := t.TempDir()
 	t.Setenv("TMPDIR", temp)
 	entered := make(chan struct{})
-	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, _ string) (internalbackup.VerifyResult, error) {
+	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
+		// A scheduled Tick may be admitted only after the catalogue lease closes.
+		// Gate the first catalogue call; later publications use the real pipeline.
+		select {
+		case <-entered:
+			return a.deps.BackupService.VerifyArchiveFile(ctx, file, pass)
+		default:
+		}
 		if _, err := os.Stat(file.Path); err != nil {
 			t.Error(err)
 		}

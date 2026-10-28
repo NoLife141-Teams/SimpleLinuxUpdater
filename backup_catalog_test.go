@@ -665,6 +665,45 @@ func mustCatalogJSON(t *testing.T, catalog backupArchiveCatalog) []byte {
 	return raw
 }
 
+func TestBackupCatalogInstallationFactsLeaveLegacyStateReadOnly(t *testing.T) {
+	app, a, _ := newBackupAutomationTest(t)
+	state := backupAutomationStateForTest(t, a)
+	state.Archives = []ownedBackupArchive{{Name: "slu-auto-legacy.slubkp", Owner: "legacy", SHA256: strings.Repeat("0", 64)}}
+	if err := a.save(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	readPersisted := func() string {
+		t.Helper()
+		var raw string
+		if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key=?", backupAutomationSettingsKey).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	before := readPersisted()
+	// Diagnostics can overlap a command holding the automation mutex. They
+	// must neither wait for that command nor save a competing migrated snapshot.
+	a.mu.Lock()
+	facts, err := a.installationFacts(context.Background())
+	a.mu.Unlock()
+	if err != nil || !facts.Config.Enabled {
+		t.Fatalf("installation facts unavailable: %+v %v", facts, err)
+	}
+	if after := readPersisted(); after != before {
+		t.Fatal("installation facts migrated or overwrote legacy automation state")
+	}
+	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_diagnostic_backup_writes BEFORE UPDATE ON settings WHEN NEW.key='backup_automation_v1' BEGIN SELECT RAISE(ABORT,'diagnostics must remain read only'); END`); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := installationSnapshot(context.Background(), app.Deps)
+	if _, ok := snapshot.Workers["backup"]; !ok {
+		t.Fatal("legacy backup diagnostics depend on a successful migration write")
+	}
+	if after := readPersisted(); after != before {
+		t.Fatal("installation snapshot changed legacy automation state")
+	}
+}
+
 func TestBackupCatalogLegacyIDMigrationIsDurableWithoutSecretOrInventedFacts(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	state := backupAutomationStateForTest(t, a)

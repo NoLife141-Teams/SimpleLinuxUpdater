@@ -162,6 +162,20 @@ func nextBackupOccurrence(c backupScheduleConfig, after time.Time, interpretatio
 }
 
 func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, error) {
+	s, err := a.readState(ctx)
+	if err == nil {
+		var changed bool
+		changed, err = ensureBackupArchiveIDs(s.Archives)
+		if err == nil && changed {
+			err = a.save(ctx, s)
+		}
+	}
+	return s, err
+}
+
+// readState also serves concurrent installation diagnostics. Keep it free of
+// migrations and writes; load callers hold mu before persisting catalog IDs.
+func (a *backupAutomation) readState(ctx context.Context) (backupAutomationState, error) {
 	s := backupAutomationState{Config: defaultBackupSchedule(), Outcome: "disabled", Message: "Automated backups are disabled."}
 	var raw string
 	err := a.deps.DB().QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw)
@@ -174,13 +188,6 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 	err = json.Unmarshal([]byte(raw), &s)
 	if err == nil {
 		err = s.Config.validate()
-	}
-	if err == nil {
-		var changed bool
-		changed, err = ensureBackupArchiveIDs(s.Archives)
-		if err == nil && changed {
-			err = a.save(ctx, s)
-		}
 	}
 	return s, err
 }

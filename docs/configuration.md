@@ -197,7 +197,14 @@ latest 100 entries from this installation's persisted automation manifest.
 Publication date, recorded byte size, known_hosts inclusion, SHA-256 and last
 successful verification come from actual publication or verification. Legacy
 entries retain unknown fields; filesystem modification times are never used as
-verification evidence. Presence is a local filesystem observation, not a fresh
+verification evidence. Catalog IDs are independent 256-bit random values persisted
+in the manifest, not hashes of a passphrase, owner or filename. Missing legacy IDs
+are allocated and saved once before exposure; they remain stable across restarts,
+secret absence/rotation and verification outcomes. Malformed or duplicate stored
+IDs make the catalog unavailable rather than selecting an ambiguous archive.
+The initial, unreleased PR's computed IDs are replaced once by this persisted-ID
+migration; existing archive hashes, ownership and unknown recovery metadata stay
+unchanged. Presence is a local filesystem observation, not a fresh
 integrity or restore-readiness check. Last verified publication remains historical
 when a later file is missing, replaced or corrupt.
 

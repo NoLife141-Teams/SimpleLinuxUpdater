@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -19,11 +20,61 @@ import (
 
 const backupCatalogLimit = 100
 
-// IDs depend only on persisted ownership, never on filesystem timestamps. This
-// additive projection also gives legacy rows stable IDs without rewriting them.
-func backupArchiveID(archive ownedBackupArchive) string {
-	sum := sha256.Sum256([]byte(archive.Owner + "\x00" + archive.Name))
-	return hex.EncodeToString(sum[:])
+// A catalog ID is an independent random lookup key, never a fingerprint of
+// ownership, a filename or a deployment credential. It grants no authority:
+// every command still checks local ownership and the opened encrypted bytes.
+const backupArchiveIDBytes = 32
+
+func newBackupArchiveID() (string, error) {
+	token := make([]byte, backupArchiveIDBytes)
+	if _, err := rand.Read(token); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token), nil
+}
+
+func validBackupArchiveID(id string) bool {
+	if len(id) != backupArchiveIDBytes*2 || id != strings.ToLower(id) {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}
+
+// Existing metadata remains untouched. Missing legacy IDs are saved by load
+// before any caller can expose them; invalid or duplicate persisted IDs fail
+// closed instead of ambiguously resolving an operation to another row.
+func ensureBackupArchiveIDs(archives []ownedBackupArchive) (bool, error) {
+	used := make(map[string]struct{})
+	for _, archive := range archives {
+		if archive.ID == "" {
+			continue
+		}
+		if !validBackupArchiveID(archive.ID) {
+			return false, errors.New("invalid backup catalog identifier")
+		}
+		if _, duplicate := used[archive.ID]; duplicate {
+			return false, errors.New("duplicate backup catalog identifier")
+		}
+		used[archive.ID] = struct{}{}
+	}
+	changed := false
+	for i := range archives {
+		if archives[i].ID != "" {
+			continue
+		}
+		id, err := newBackupArchiveID()
+		if err != nil {
+			return false, err
+		}
+		if _, duplicate := used[id]; duplicate {
+			return false, errors.New("backup catalog identifier allocation failed")
+		}
+		archives[i].ID = id
+		used[id] = struct{}{}
+		changed = true
+	}
+	return changed, nil
 }
 
 type backupArchiveCatalog struct {
@@ -97,7 +148,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 			verification = "unknown"
 		}
 		catalog.Archives = append(catalog.Archives, backupArchiveView{
-			ID: backupArchiveID(*archive), PublishedAt: archive.PublishedAt, SizeBytes: archive.SizeBytes,
+			ID: archive.ID, PublishedAt: archive.PublishedAt, SizeBytes: archive.SizeBytes,
 			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
 			Verification: verification, Availability: availability, JobID: archive.JobID,
 		})
@@ -121,7 +172,7 @@ func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedB
 	}
 	// Never include filenames, paths, passphrases, raw pipeline errors or manifest
 	// contents. Existing backup.verify consumers own recovery and notifications.
-	meta := map[string]any{"archive_id": backupArchiveID(archive)}
+	meta := map[string]any{"archive_id": archive.ID}
 	if action == "backup.download" {
 		// Encrypted integrity is not a new decryption/readiness review.
 		meta["hash_valid"] = ready
@@ -214,12 +265,7 @@ func handleBackupCatalog(c *gin.Context, a *backupAutomation) {
 func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bool) {
 	setNoStoreHeaders(c)
 	id := c.Param("id")
-	if len(id) != sha256.Size*2 {
-		c.JSON(http.StatusNotFound, gin.H{"error": errBackupCatalogUnavailable.Error()})
-		return
-	}
-	decoded, err := hex.DecodeString(id)
-	if err != nil || len(decoded) != sha256.Size || id != strings.ToLower(id) {
+	if !validBackupArchiveID(id) {
 		c.JSON(http.StatusNotFound, gin.H{"error": errBackupCatalogUnavailable.Error()})
 		return
 	}
@@ -243,7 +289,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	}
 	index := -1
 	for i := len(s.Archives) - 1; i >= 0; i-- {
-		if backupArchiveID(s.Archives[i]) == id {
+		if s.Archives[i].ID == id {
 			index = i
 			break
 		}

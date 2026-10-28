@@ -38,6 +38,7 @@ type backupScheduleConfig struct {
 }
 
 type ownedBackupArchive struct {
+	ID                 string `json:"id,omitempty"`
 	Name               string `json:"name"`
 	SHA256             string `json:"sha256"`
 	Owner              string `json:"owner"`
@@ -173,6 +174,13 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 	err = json.Unmarshal([]byte(raw), &s)
 	if err == nil {
 		err = s.Config.validate()
+	}
+	if err == nil {
+		var changed bool
+		changed, err = ensureBackupArchiveIDs(s.Archives)
+		if err == nil && changed {
+			err = a.save(ctx, s)
+		}
 	}
 	return s, err
 }
@@ -786,7 +794,11 @@ func (a *backupAutomation) cleanupTemporary(root *os.Root, s *backupAutomationSt
 }
 
 func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source internalbackup.TemporaryFile, pass, owner, name, temp string) (ownedBackupArchive, error) {
-	archive := ownedBackupArchive{Name: name, Owner: owner}
+	id, err := newBackupArchiveID()
+	archive := ownedBackupArchive{ID: id, Name: name, Owner: owner}
+	if err != nil {
+		return archive, errors.New("backup catalog identifier could not be created")
+	}
 	src, err := os.Open(source.Path)
 	if err != nil {
 		return archive, errors.New("backup export file cannot be read")
@@ -981,7 +993,7 @@ func (a *backupAutomation) recordVerifiedPublication(archive ownedBackupArchive,
 	if a.deps.AuditService == nil {
 		return
 	}
-	if err := a.deps.AuditService.Record("backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive_id": backupArchiveID(archive)}); err != nil {
+	if err := a.deps.AuditService.Record("backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive_id": archive.ID}); err != nil {
 		log.Printf("automated backup verification audit unavailable: %v", err)
 	}
 }

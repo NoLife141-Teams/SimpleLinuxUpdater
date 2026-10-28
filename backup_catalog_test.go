@@ -213,7 +213,7 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 			case "wrong owner":
 				state := backupAutomationStateForTest(t, a)
 				state.Archives[0].Owner = "another-installation"
-				id = backupArchiveID(state.Archives[0])
+				id = state.Archives[0].ID
 				err = a.save(context.Background(), state)
 			case "wrong hash":
 				state := backupAutomationStateForTest(t, a)
@@ -318,12 +318,12 @@ func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.
 
 func TestBackupCatalogUnknownIDsAndSensitiveCookieAdmission(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
-	for _, id := range []string{"unknown", "..%2F..%2Fconfig.json", strings.Repeat("f", 64), backupArchiveID(archive) + "%00"} {
+	for _, id := range []string{"unknown", "..%2F..%2Fconfig.json", strings.Repeat("f", 64), archive.ID + "%00"} {
 		if rec := catalogRequest(app, cookie, id, "download"); rec.Code < 400 {
 			t.Fatalf("invalid ID accepted: %d", rec.Code)
 		}
 	}
-	id := backupArchiveID(archive)
+	id := archive.ID
 	for _, operation := range []string{"download", "verify"} {
 		if rec := catalogRequest(app, nil, id, operation); rec.Code != 401 {
 			t.Fatalf("anonymous %s=%d", operation, rec.Code)
@@ -405,7 +405,7 @@ func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *
 		return internalbackup.VerifyResult{}, ctx.Err()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("POST", "/api/backup/archives/"+backupArchiveID(archive)+"/verify", nil).WithContext(ctx)
+	req := httptest.NewRequest("POST", "/api/backup/archives/"+archive.ID+"/verify", nil).WithContext(ctx)
 	req.AddCookie(cookie)
 	markSameOriginAuthRequest(req)
 	done := make(chan struct{})
@@ -430,7 +430,7 @@ func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *
 	}
 	tickDone := make(chan error, 1)
 	go func() { tickDone <- a.Tick(context.Background(), true) }() // deferred, never retain while reader holds lease
-	if rec := catalogRequest(app, cookie, backupArchiveID(archive), "verify"); rec.Code != 409 {
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != 409 {
 		t.Fatalf("parallel verification=%d", rec.Code)
 	}
 	cancel()
@@ -511,7 +511,7 @@ func TestBackupCatalogServesPinnedBytesWhenSourceChangesDuringStream(t *testing.
 	}
 	var mutationErr error
 	writer := &catalogMutatingWriter{ResponseRecorder: httptest.NewRecorder(), mutate: func() { mutationErr = os.WriteFile(path, bytes.Repeat([]byte("x"), len(original)), 0600) }}
-	req := httptest.NewRequest("POST", "/api/backup/archives/"+backupArchiveID(archive)+"/download", nil)
+	req := httptest.NewRequest("POST", "/api/backup/archives/"+archive.ID+"/download", nil)
 	req.AddCookie(cookie)
 	markSameOriginAuthRequest(req)
 	app.Handler.ServeHTTP(writer, req)
@@ -521,7 +521,7 @@ func TestBackupCatalogServesPinnedBytesWhenSourceChangesDuringStream(t *testing.
 	if writer.Code != 200 || !bytes.Equal(writer.Body.Bytes(), original) {
 		t.Fatal("hash-to-stream mutation changed validated bytes")
 	}
-	if rec := catalogRequest(app, cookie, backupArchiveID(archive), "download"); rec.Code != 409 {
+	if rec := catalogRequest(app, cookie, archive.ID, "download"); rec.Code != 409 {
 		t.Fatal("later corruption was accepted")
 	}
 }
@@ -552,5 +552,215 @@ func TestBackupCatalogListingRecordsLossOnceWithoutChangingPublicationFacts(t *t
 	rec := performContractRequest(app.Handler, "GET", "/api/backup/status", nil, cookie, false)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"failed"`) {
 		t.Fatalf("public recovery state=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBackupCatalogPersistedIDSurvivesSecretFailureRotationAndRestart(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	ctx := context.Background()
+	before := catalogProtectedState(t, app)
+	secret, err := os.ReadFile(a.deployment.SecretFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalID := catalogFacts(t, app, cookie).Archives[0].ID
+	if originalID != archive.ID || !validBackupArchiveID(originalID) {
+		t.Fatal("publication did not persist a valid opaque ID")
+	}
+	var raw string
+	if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key=?", backupAutomationSettingsKey).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var persisted backupAutomationState
+	if err := json.Unmarshal([]byte(raw), &persisted); err != nil || persisted.Archives[0].ID != originalID {
+		t.Fatal("public ID was not durable before exposure")
+	}
+	for _, tc := range []struct {
+		name, secret string
+		missing      bool
+	}{
+		{name: "missing", missing: true},
+		{name: "invalid", secret: "short"},
+		{name: "rotated", secret: "a different disposable deployment passphrase"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.missing {
+				err = os.Remove(a.deployment.SecretFile)
+			} else {
+				err = os.WriteFile(a.deployment.SecretFile, []byte(tc.secret), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted := newBackupAutomation(app.Deps)
+			restarted.deployment = a.deployment
+			status, err := restarted.Status(ctx)
+			if err != nil || len(status.Catalog.Archives) != 1 || status.Catalog.Archives[0].ID != originalID {
+				t.Fatalf("secret state changed durable ID: %v", err)
+			}
+			response := catalogRequest(app, cookie, originalID, "verify")
+			if response.Code < 400 {
+				t.Fatalf("verification accepted %s secret", tc.name)
+			}
+			facts := catalogFacts(t, app, cookie)
+			if facts.Archives[0].ID != originalID {
+				t.Fatal("failed verification rotated catalog ID")
+			}
+			for _, private := range []string{string(bytes.TrimSpace(secret)), tc.secret, a.deployment.SecretFile, archive.Owner, archive.Name} {
+				if private != "" && (strings.Contains(response.Body.String(), private) || strings.Contains(string(mustCatalogJSON(t, facts)), private)) {
+					t.Fatal("catalog or refusal leaked private identity/credential data")
+				}
+			}
+			if catalogProtectedState(t, app) != before {
+				t.Fatal("secret failure changed protected active data")
+			}
+		})
+	}
+	if err := os.WriteFile(a.deployment.SecretFile, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if response := catalogRequest(app, cookie, originalID, "verify"); response.Code != 200 {
+		t.Fatalf("restored secret verification=%d %s", response.Code, response.Body.String())
+	}
+	if facts := catalogFacts(t, app, cookie); facts.Archives[0].ID != originalID {
+		t.Fatal("successful verification rotated catalog ID")
+	}
+	if catalogProtectedState(t, app) != before {
+		t.Fatal("verification changed protected data")
+	}
+	rows, err := app.Deps.DB().Query("SELECT meta_json FROM audit_events WHERE action IN ('backup.verify','backup.download')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			t.Fatal(err)
+		}
+		if meta["archive_id"] != originalID {
+			t.Fatal("audit lost durable archive correlation")
+		}
+		for _, private := range []string{string(bytes.TrimSpace(secret)), "a different disposable deployment passphrase", archive.Owner, archive.Name} {
+			if strings.Contains(raw, private) {
+				t.Fatal("private fact leaked into audit")
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustCatalogJSON(t *testing.T, catalog backupArchiveCatalog) []byte {
+	t.Helper()
+	raw, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestBackupCatalogLegacyIDMigrationIsDurableWithoutSecretOrInventedFacts(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	state := backupAutomationStateForTest(t, a)
+	state.Archives = []ownedBackupArchive{{Name: archive.Name, Owner: archive.Owner, SHA256: archive.SHA256}, {Name: "slu-auto-foreign-legacy.slubkp", Owner: "foreign", SHA256: archive.SHA256}}
+	if err := a.save(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := os.ReadFile(a.deployment.SecretFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(a.deployment.SecretFile); err != nil {
+		t.Fatal(err)
+	}
+	first := catalogFacts(t, app, cookie)
+	if len(first.Archives) != 2 || first.Archives[0].ID == first.Archives[1].ID {
+		t.Fatal("legacy rows lack distinct independent IDs")
+	}
+	migrated := backupAutomationStateForTest(t, a)
+	for i, item := range migrated.Archives {
+		if !validBackupArchiveID(item.ID) || item.PublishedAt != "" || item.LastVerifiedAt != "" || item.SizeBytes != nil || item.KnownHostsIncluded != nil || item.Verification != "" || item.Name != state.Archives[i].Name || item.Owner != state.Archives[i].Owner || item.SHA256 != state.Archives[i].SHA256 {
+			t.Fatal("ID migration changed legacy facts or failed to persist")
+		}
+	}
+	if migrated.Approval != state.Approval || migrated.LastSuccessAt != state.LastSuccessAt || migrated.Outcome != state.Outcome {
+		t.Fatal("ID migration changed automation approval/history")
+	}
+	if err := os.WriteFile(a.deployment.SecretFile, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newBackupAutomation(app.Deps)
+	restarted.deployment = a.deployment
+	status, err := restarted.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range status.Catalog.Archives {
+		if item.ID != first.Archives[i].ID {
+			t.Fatal("restart or secret reappearance changed legacy ID")
+		}
+	}
+	if response := catalogRequest(app, cookie, first.Archives[0].ID, "verify"); response.Code != 409 {
+		t.Fatal("ID migration granted foreign ownership")
+	}
+	if response := catalogRequest(app, cookie, first.Archives[1].ID, "verify"); response.Code != 200 {
+		t.Fatalf("migrated owned archive verification=%d", response.Code)
+	}
+}
+
+func TestBackupCatalogMigrationCannotExposeUnsavedOrAmbiguousIDs(t *testing.T) {
+	for _, kind := range []string{"persistence failure", "duplicate", "invalid"} {
+		t.Run(kind, func(t *testing.T) {
+			app, a, cookie, archive := publishedCatalogFixture(t)
+			state := backupAutomationStateForTest(t, a)
+			switch kind {
+			case "persistence failure":
+				state.Archives[0].ID = ""
+				if err := a.save(context.Background(), state); err != nil {
+					t.Fatal(err)
+				}
+				_, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_catalog_id_migration BEFORE UPDATE ON settings WHEN NEW.key='backup_automation_v1' BEGIN SELECT RAISE(ABORT,'controlled catalog migration failure'); END`)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "duplicate":
+				state.Archives = append(state.Archives, archive)
+				if err := a.save(context.Background(), state); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid":
+				state.Archives[0].ID = "../../private-passphrase"
+				if err := a.save(context.Background(), state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := performContractRequest(app.Handler, "GET", "/api/backup/archives", nil, cookie, false)
+			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"archives"`) || strings.Contains(response.Body.String(), "private-passphrase") {
+				t.Fatalf("invalid migration exposed catalog: %d %s", response.Code, response.Body.String())
+			}
+			if kind == "persistence failure" {
+				var raw string
+				if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key=?", backupAutomationSettingsKey).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var stored backupAutomationState
+				if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Archives[0].ID != "" {
+					t.Fatal("failed migration was partially persisted")
+				}
+				if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_catalog_id_migration"); err != nil {
+					t.Fatal(err)
+				}
+				allocated := catalogFacts(t, app, cookie).Archives[0].ID
+				if !validBackupArchiveID(allocated) || catalogFacts(t, app, cookie).Archives[0].ID != allocated {
+					t.Fatal("recovered migration did not expose a durable stable ID")
+				}
+			}
+		})
 	}
 }

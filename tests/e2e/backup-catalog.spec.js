@@ -27,6 +27,11 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     const entry = (await catalogResponse.json()).archives[0];
     expect(JSON.stringify(entry)).not.toContain(installation.directory);
     expect(entry.published_at).toBeTruthy();
+    expect(entry.id).toMatch(/^[a-f0-9]{64}$/);
+    await page.reload();
+    await expect(catalog.locator('article')).toHaveAttribute('data-archive-id', entry.id);
+    const reloaded = await page.request.get('/api/backup/archives');
+    expect((await reloaded.json()).archives[0].id).toBe(entry.id);
     const downloadEvent = page.waitForEvent('download');
     await catalog.getByRole('button', { name: 'Download encrypted' }).focus();
     await page.keyboard.press('Enter');

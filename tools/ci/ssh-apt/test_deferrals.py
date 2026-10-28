@@ -14,6 +14,11 @@ import run
 
 
 class DeferralHarnessTests(unittest.TestCase):
+    def test_installed_inventory_includes_administrator_held_versions(self):
+        self.assertEqual(deferrals.installed_versions(
+            'ii  independent=1\nhi  administrator-held=1\nrc  removed=1\nun  absent=\n'),
+            ['independent=1', 'administrator-held=1'])
+
     def test_all_existing_distributions_are_admitted(self):
         self.assertEqual(set(run.IMAGES), {'debian12', 'debian13', 'ubuntu2204', 'ubuntu2404', 'ubuntu2604'})
         with mock.patch.object(deferrals.subprocess, 'run') as execute:

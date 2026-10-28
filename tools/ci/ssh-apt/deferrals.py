@@ -48,6 +48,11 @@ def source_manifest():
     return {name: hashlib.sha256((SOURCE / name).read_bytes()).hexdigest() for name in files if name}
 
 
+def installed_versions(text):
+    # The desired state may be "hold" (hi), while the actual state is installed.
+    return [line[4:] for line in text.splitlines() if len(line) >= 4 and line[1:3] == "i "]
+
+
 def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-generated"):
     run.require(distro in run.IMAGES, "unsupported deferral fixture distribution")
     owner = uuid.uuid4().hex
@@ -92,7 +97,7 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
         return docker("exec", "-i", name, *args, data=data, checked=checked)
 
     def versions():
-        return target("sh", "-c", "dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}=${Version}\\n' | sed -n 's/^ii  //p'").splitlines()
+        return installed_versions(target("dpkg-query", "-W", "-f=${db:Status-Abbrev} ${binary:Package}=${Version}\n"))
 
     def state():
         # Full installed state and dpkg log prove refusals precede dpkg mutation.
@@ -159,6 +164,7 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
         native = target("cat", "/run/slu-native").strip()
         report["architecture"] = native
         report["baseline"] = versions()
+        run.require("slu-admin-held=1" in report["baseline"], "held installed package missing from inventory")
         for scope in ("all", "security", "security_kept_back", "full_upgrade"):
             # Reset only this fixture package in this disposable target.
             target("dpkg", "--force-downgrade", "-i", f"/tmp/slu-debs/slu-independent-1-{native}.deb")

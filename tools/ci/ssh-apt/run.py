@@ -91,13 +91,13 @@ class API:
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
-    def request(self, method, path, data=None, *, allowed=(200,), raw=None, content_type=None):
+    def request(self, method, path, data=None, *, allowed=(200,), raw=None, content_type=None, timeout=20):
         require(path.startswith("/api/") and not path.startswith("//"), "invalid fixture API path")
         body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
         request = urllib.request.Request(self.base + path, data=body, method=method,
             headers={"Origin": self.base, "Content-Type": content_type or "application/json"})
         try:
-            response = self.client.open(request, timeout=20)
+            response = self.client.open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
         result = json.loads(response.read())

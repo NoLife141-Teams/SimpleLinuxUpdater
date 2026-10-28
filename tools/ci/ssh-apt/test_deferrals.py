@@ -34,7 +34,7 @@ class DeferralHarnessTests(unittest.TestCase):
 
     def fake_run(self, mode):
         owner = 'a' * 32
-        state = {'created': False, 'removed': False}
+        state = {'created': False, 'removed': False, 'marker_reads': 0, 'fixture_started': False}
         real_run = subprocess.run
 
         def execute(args, **kwargs):
@@ -53,12 +53,28 @@ class DeferralHarnessTests(unittest.TestCase):
             elif op == 'inspect':
                 if not state['created']:
                     return subprocess.CompletedProcess(args, 1, b'Error: No such object')
+                if '.State.Running' in args[4]:
+                    return subprocess.CompletedProcess(args, 0, json.dumps({
+                        'owner': 'other-owner' if mode == 'unowned' else owner,
+                        'running': mode != 'startup-exit'}).encode())
                 return subprocess.CompletedProcess(args, 0, (('other-owner' if mode == 'unowned' else owner)
                     if '.Config.Labels' in args[4] else 'sha256:fixture-image').encode())
             elif op == 'exec':
+                if args[-1] == deferrals.MARKER_PROBE:
+                    state['marker_reads'] += 1
+                    if mode == 'startup-signal':
+                        import os
+                        import signal
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    if mode == 'startup-timeout' or (mode == 'slow-start' and state['marker_reads'] < 3):
+                        return subprocess.CompletedProcess(args, 75, b'')
+                    if mode == 'startup-read-error':
+                        return subprocess.CompletedProcess(args, 1, b'Permission denied')
+                    return subprocess.CompletedProcess(args, 0, ('wrong-marker' if mode == 'marker' else owner).encode())
                 if args[-1] == '/run/slu-fixture-owner':
                     return subprocess.CompletedProcess(args, 0, ('wrong-marker' if mode == 'marker' else owner).encode())
                 if args[-1] == '-s':
+                    state['fixture_started'] = True
                     if mode == 'real-signal':
                         import os
                         import signal
@@ -115,6 +131,67 @@ class DeferralHarnessTests(unittest.TestCase):
                 self.assertTrue(all(r['status'] == 'not_executed' for r in report['scenarios']))
                 self.assertEqual(state['removed'], mode != 'unowned')
                 self.assertEqual(report['cleanup']['status'], 'absent_or_unowned' if mode == 'unowned' else 'passed')
+
+    def test_startup_waits_for_marker_and_keeps_cleanup_on_startup_failures(self):
+        for mode in ('slow-start', 'marker', 'unowned', 'startup-exit', 'startup-read-error',
+                     'startup-timeout', 'startup-signal'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as output:
+                owner, state, execute = self.fake_run(mode)
+                clock = [0.0]
+                def sleep(seconds):
+                    clock[0] += seconds
+                with mock.patch.object(deferrals, 'source_manifest', return_value={}), \
+                     mock.patch.object(deferrals.uuid, 'uuid4', return_value=mock.Mock(hex=owner)), \
+                     mock.patch.object(deferrals.subprocess, 'run', side_effect=execute), \
+                     mock.patch.object(deferrals.time, 'monotonic', side_effect=lambda: clock[0]), \
+                     mock.patch.object(deferrals.time, 'sleep', side_effect=sleep):
+                    path = Path(output, 'report.json')
+                    # The fake fixture deliberately fails after startup; no APT result
+                    # can be manufactured by this admission/cleanup test.
+                    self.assertEqual(deferrals.qualify(b'helper', path, 'debian13', source_sha='f' * 40), 1)
+                report = json.loads(path.read_text())
+                self.assertEqual(report['startup']['status'], 'passed' if mode == 'slow-start' else 'failed')
+                self.assertEqual(state['fixture_started'], mode == 'slow-start')
+                self.assertEqual(state['removed'], mode != 'unowned')
+                self.assertEqual(report['cleanup']['status'], 'absent_or_unowned' if mode == 'unowned' else 'passed')
+                self.assertTrue(all(r['status'] == 'not_executed' for r in report['scenarios']))
+                if mode == 'slow-start':
+                    self.assertEqual(state['marker_reads'], 3)
+                elif mode == 'startup-timeout':
+                    self.assertEqual(clock[0], 30)
+                    self.assertIn('not ready within 30 seconds', report['error'])
+                elif mode == 'startup-signal':
+                    self.assertIn('interrupted by signal', report['error'])
+
+    def test_startup_rechecks_owner_and_running_state_before_each_marker_read(self):
+        for change in ({'owner': 'foreign', 'running': True}, {'owner': 'owned', 'running': False}):
+            with self.subTest(change=change):
+                responses = iter([json.dumps({'owner': 'owned', 'running': True}), json.dumps(change)])
+                calls = []
+                def docker(*args, **kwargs):
+                    calls.append(args[0])
+                    if args[0] == 'inspect': return next(responses)
+                    return subprocess.CompletedProcess([], 75, b'')
+                with mock.patch.object(deferrals.time, 'sleep'), self.assertRaises(AssertionError):
+                    deferrals.wait_for_target(docker, 'owned-target', 'owned')
+                self.assertEqual(calls, ['inspect', 'exec', 'inspect'])
+
+    def test_startup_command_timeouts_share_the_remaining_startup_budget(self):
+        clock = [0.0]
+        calls = []
+        def docker(*args, **kwargs):
+            remaining = 30 - clock[0]
+            self.assertEqual(kwargs['timeout_seconds'], remaining)
+            calls.append((args[0], kwargs['timeout_seconds']))
+            # A slow inspect consumes most of the budget; the marker read must
+            # receive only what is left, and a late successful read cannot pass.
+            clock[0] += 29 if args[0] == 'inspect' else 1
+            if args[0] == 'inspect':
+                return json.dumps({'owner': 'owned', 'running': True})
+            return subprocess.CompletedProcess([], 0, b'owned')
+        with mock.patch.object(deferrals.time, 'monotonic', side_effect=lambda: clock[0]), self.assertRaises(TimeoutError):
+            deferrals.wait_for_target(docker, 'owned-target', 'owned')
+        self.assertEqual(calls, [('inspect', 30), ('exec', 1)])
 
     def test_generator_failure_writes_not_executed_evidence(self):
         with tempfile.TemporaryDirectory() as output, mock.patch.object(deferrals, 'source_identity', return_value='f' * 40), \

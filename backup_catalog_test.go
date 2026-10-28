@@ -136,6 +136,16 @@ func TestBackupCatalogPublishedRoundTripReadOnlyAndAudit(t *testing.T) {
 	if err := database.QueryRow("SELECT meta_json FROM audit_events WHERE action='backup.download' ORDER BY id DESC LIMIT 1").Scan(&metadata); err != nil || !strings.Contains(metadata, item.ID) {
 		t.Fatalf("download audit: %s %v", metadata, err)
 	}
+	var downloadMeta map[string]any
+	if err := json.Unmarshal([]byte(metadata), &downloadMeta); err != nil {
+		t.Fatal(err)
+	}
+	if downloadMeta["hash_valid"] != true {
+		t.Fatalf("download integrity evidence missing: %s", metadata)
+	}
+	if _, claimedReadiness := downloadMeta["restore_ready"]; claimedReadiness {
+		t.Fatal("download falsely claims restore readiness")
+	}
 	rows, err := database.Query("SELECT meta_json FROM audit_events WHERE action='backup.verify'")
 	if err != nil {
 		t.Fatal(err)

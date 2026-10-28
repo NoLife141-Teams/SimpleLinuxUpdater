@@ -226,8 +226,9 @@ bounded temporary files.
 
 Observed loss or corruption and explicit reverification reuse `backup.verify`
 in the existing audit, recovery health and notification conditions; downloads
-use `backup.download`. Repeated listing of the same loss does not create repeated
-audit entries. Recent Activity and publication job links provide the existing
+use `backup.download` with encrypted hash validation evidence, without claiming
+restore readiness. Repeated listing of the same loss does not create repeated
+audit entries. The filtered full audit and publication job links provide the existing
 history; there is no separate backup delivery log or one-click restore action.
 The read API is `GET /api/backup/archives`; sensitive commands are
 `POST /api/backup/archives/:id/download` and

@@ -121,7 +121,13 @@ func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedB
 	}
 	// Never include filenames, paths, passphrases, raw pipeline errors or manifest
 	// contents. Existing backup.verify consumers own recovery and notifications.
-	meta := map[string]any{"archive_id": backupArchiveID(archive), "restore_ready": ready}
+	meta := map[string]any{"archive_id": backupArchiveID(archive)}
+	if action == "backup.download" {
+		// Encrypted integrity is not a new decryption/readiness review.
+		meta["hash_valid"] = ready
+	} else {
+		meta["restore_ready"] = ready
+	}
 	if archive.SizeBytes != nil {
 		meta["archive_size_bytes"] = *archive.SizeBytes
 	}

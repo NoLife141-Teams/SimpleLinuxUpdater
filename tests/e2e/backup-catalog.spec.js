@@ -19,6 +19,8 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await expect(catalog).toContainText('Local availability: present');
     await expect(catalog).toContainText('Latest review: verified');
     await expect(catalog.getByRole('link', { name: 'View publication job' })).toHaveCount(1);
+    const jobLink = await catalog.getByRole('link', { name: 'View publication job' }).getAttribute('href');
+    expect((await page.request.get(jobLink)).status()).toBe(200);
     const catalogResponse = await page.request.get('/api/backup/archives');
     expect(catalogResponse.status()).toBe(200);
     expect(catalogResponse.headers()['cache-control']).toContain('no-store');
@@ -51,6 +53,10 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await expect(page.locator('#backup-catalog-result')).toContainText('Reverification succeeded. Active data was not replaced.');
     expect(attempts).toBe(2);
     await expect(catalog.getByRole('button', { name: 'Reverify', exact: true })).toBeEnabled();
+    await catalog.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    await expect(catalog.locator('code')).toBeVisible();
+    await expect(catalog.locator('code')).toHaveText(entry.sha256);
     const catalogFits = await catalog.evaluate(el => {
         const right = el.getBoundingClientRect().right;
         return right <= innerWidth && [...el.querySelectorAll('*')].every(child => child.getBoundingClientRect().right <= innerWidth + 1);
@@ -73,4 +79,9 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await expect(page.locator('#backup-catalog-result')).toContainText('Backup action cancelled.');
     expect(attempts).toBe(3);
     await expect(catalog.getByRole('button', { name: 'Reverify', exact: true })).toBeFocused();
+    await page.getByRole('link', { name: 'View archive events in audit' }).click();
+    await expect(page).toHaveURL(/\/manage\?audit_target=automatic#audit-trail$/);
+    await expect(page.locator('#audit-target-filter')).toHaveValue('automatic');
+    await expect(page.locator('#audit-table')).toContainText('backup.download');
+    await expect(page.locator('#audit-table')).toContainText('backup.verify');
 });

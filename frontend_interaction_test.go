@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -50,18 +51,53 @@ func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
 }
 
 func TestStatusPageModalsRenderAboveDrawer(t *testing.T) {
-	contents, err := os.ReadFile("static/css/index.css")
+	statusCSS, err := os.ReadFile("static/css/index.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(contents)
-	drawerLayer := regexp.MustCompile(`(?s)\.side-drawer\s*\{[^}]*z-index:\s*90\s*;`)
-	modalLayer := regexp.MustCompile(`(?s)\.modal-backdrop\s*\{[^}]*z-index:\s*100\s*;`)
-	if !drawerLayer.MatchString(source) {
+	sharedCSS, err := os.ReadFile("static/css/base.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compare each backdrop's declared layer rather than requiring the old,
+	// unscoped modal selector. Browser tests cover the composed stacking order.
+	rules := regexp.MustCompile(`(?s)([^{}]+)\{([^{}]*)\}`)
+	zIndex := regexp.MustCompile(`(?:^|;)\s*z-index:\s*(-?\d+)\s*;`)
+	layer := func(source []byte, selector string) int {
+		t.Helper()
+		value, found := 0, false
+		for _, rule := range rules.FindAllStringSubmatch(string(source), -1) {
+			for _, candidate := range strings.Split(rule[1], ",") {
+				if strings.TrimSpace(candidate) != selector {
+					continue
+				}
+				if match := zIndex.FindStringSubmatch(rule[2]); match != nil {
+					parsed, parseErr := strconv.Atoi(match[1])
+					if parseErr != nil {
+						t.Fatal(parseErr)
+					}
+					value = parsed
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s has no declared integer layer", selector)
+		}
+		return value
+	}
+	drawer := layer(statusCSS, ".side-drawer")
+	if drawer != 90 {
 		t.Fatal("status drawer must retain its documented layer")
 	}
-	if !modalLayer.MatchString(source) {
+	modal := layer(statusCSS, ".modal-backdrop:not(.action-confirm-backdrop):not(.typed-confirm-backdrop)")
+	if modal <= drawer {
 		t.Fatal("status-page modal backdrops must render above the drawer")
+	}
+	for _, selector := range []string{".action-confirm-backdrop", ".typed-confirm-backdrop"} {
+		if layer(sharedCSS, selector) <= modal {
+			t.Errorf("%s must render above both the status modal and drawer", selector)
+		}
 	}
 }
 

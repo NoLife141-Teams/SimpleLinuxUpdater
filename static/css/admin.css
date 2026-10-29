@@ -1236,13 +1236,6 @@
     text-transform: uppercase;
 }
 
-#policy-package-deferrals .deferral-fields label {
-    display: grid;
-    grid-template-rows: subgrid;
-    grid-row: span 2;
-    gap: 6px;
-}
-
 .backup-automation-form {
     display: grid;
     gap: 16px;

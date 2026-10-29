@@ -1102,12 +1102,15 @@
 
         lifecycle.listen(document, "change", (e) => {
             if (e.target && e.target.classList.contains("file-input")) {
-                resetFileInputLabel(e.target);
                 const selectionIDs = {
                     "global-key-file": "global-key-file-selection",
                     key_file: "server-key-file-selection",
                     "edit-key": "edit-key-file-selection",
                 };
+                // Import owns its file state and keeps a stable trigger label.
+                // This legacy label effect belongs only to credential inputs.
+                if (!Object.hasOwn(selectionIDs, e.target.id)) return;
+                resetFileInputLabel(e.target);
                 const selection = document.getElementById(
                     selectionIDs[e.target.id],
                 );

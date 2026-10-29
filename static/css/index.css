@@ -31,13 +31,13 @@ body.status-page .dashboard-shell {
 body.status-page a {
     color: inherit;
 }
-body.status-page button,
-body.status-page select,
-body.status-page input,
-body.status-page textarea {
+body.status-page button:where(:not(.confirmation-modal *)),
+body.status-page select:where(:not(.confirmation-modal *)),
+body.status-page input:where(:not(.confirmation-modal *)),
+body.status-page textarea:where(:not(.confirmation-modal *)) {
     font: inherit;
 }
-body.status-page button {
+body.status-page button:where(:not(.confirmation-modal *)) {
     cursor: pointer;
 }
 
@@ -308,9 +308,9 @@ body.status-page .control-strip {
 .controls select {
     flex: 0 1 156px;
 }
-body.status-page input,
-body.status-page select,
-body.status-page textarea {
+body.status-page input:where(:not(.confirmation-modal *)),
+body.status-page select:where(:not(.confirmation-modal *)),
+body.status-page textarea:where(:not(.confirmation-modal *)) {
     min-height: 38px;
     padding: 9px 11px;
     border: 1px solid var(--border);
@@ -325,11 +325,11 @@ body.status-page textarea {
     min-height: 30px;
     padding-block: 5px;
 }
-body.status-page input:focus,
-body.status-page select:focus,
-body.status-page textarea:focus,
-body.status-page button:focus-visible,
-body.status-page a:focus-visible {
+body.status-page input:focus:where(:not(.confirmation-modal *)),
+body.status-page select:focus:where(:not(.confirmation-modal *)),
+body.status-page textarea:focus:where(:not(.confirmation-modal *)),
+body.status-page button:focus-visible:where(:not(.confirmation-modal *)),
+body.status-page a:focus-visible:where(:not(.confirmation-modal *)) {
     border-color: var(--border-strong);
     box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
 }
@@ -358,8 +358,8 @@ body.status-page a:focus-visible {
     background: var(--action-blue);
     color: #ffffff;
 }
-body.status-page .danger-action,
-body.status-page .btn-danger {
+body.status-page .danger-action:where(:not(.confirmation-modal *)),
+body.status-page .btn-danger:where(:not(.confirmation-modal *)) {
     border-color: var(--action-red);
     background: var(--action-red);
     color: #ffffff;
@@ -1515,7 +1515,7 @@ pre {
 }
 
 .drawer-backdrop,
-.modal-backdrop {
+.modal-backdrop:not(.action-confirm-backdrop):not(.typed-confirm-backdrop) {
     position: fixed;
     inset: 0;
     display: none;
@@ -1527,12 +1527,12 @@ pre {
     z-index: 80;
 }
 
-.modal-backdrop {
+.modal-backdrop:not(.action-confirm-backdrop):not(.typed-confirm-backdrop) {
     z-index: 100;
 }
 
 .drawer-backdrop.open,
-.modal-backdrop.active {
+.modal-backdrop.active:not(.action-confirm-backdrop):not(.typed-confirm-backdrop) {
     display: block;
 }
 
@@ -1613,13 +1613,13 @@ pre {
     padding-right: 4px;
     overscroll-behavior: contain;
 }
-body.status-page .modal {
+body.status-page .modal:not(.confirmation-modal) {
     width: min(560px, calc(100vw - 32px));
     margin: 12vh auto 0;
     padding: 20px;
 }
 
-.modal input {
+.modal:not(.confirmation-modal) input {
     width: 100%;
     margin-top: 12px;
 }

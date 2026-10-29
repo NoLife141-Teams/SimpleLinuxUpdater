@@ -1,0 +1,15 @@
+.access-denied-main {
+    max-width: 900px;
+}
+
+.access-denied-main p {
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+.access-denied-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 20px;
+}

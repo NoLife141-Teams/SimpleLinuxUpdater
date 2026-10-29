@@ -95,6 +95,7 @@ func TestIdentityEveryRoutePermissionMatrixWithRealCookiesAndPersonalTokens(t *t
 	// Exercise the production authentication/authorization middleware with a
 	// transport probe after admission; no authorization or session is mocked.
 	probe := gin.New()
+	probe.HTMLRender = app.Router.HTMLRender
 	probe.Use(authRuntimeMiddleware(app.Deps), authGateMiddleware(), sameOriginWriteMiddleware())
 	public := map[string]bool{"GET /setup": true, "GET /login": true, "POST /api/auth/setup": true, "POST /api/auth/login": true, "GET /api/auth/status": true, "POST /api/auth/mfa/challenge": true, "GET /api/maintenance": true, "GET /metrics": true}
 	count := 0
@@ -144,10 +145,34 @@ func TestIdentityEveryRoutePermissionMatrixWithRealCookiesAndPersonalTokens(t *t
 						want = 302
 					}
 				}
-				rec := httptest.NewRecorder()
-				handler.ServeHTTP(rec, req)
-				if rec.Code != want {
-					t.Errorf("%s: status %d want %d; %s", label, rec.Code, want, rec.Body.String())
+				accepts := []string{""}
+				if want == 403 || (transport == "bearer" && want == 401) {
+					accepts = append(accepts, "application/json", "text/html", "*/*")
+				}
+				for _, accept := range accepts {
+					request := req.Clone(req.Context())
+					request.Header.Set("Accept", accept)
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, request)
+					if rec.Code != want {
+						t.Errorf("%s Accept=%q: status %d want %d; %s", label, accept, rec.Code, want, rec.Body.String())
+					}
+					if want != 403 && !(transport == "bearer" && want == 401) {
+						continue
+					}
+					humanHTML := want == 403 && transport == "cookie" && accept == "text/html" && route.Method == "GET" && (route.Path == "/admin" || route.Path == "/manage")
+					if humanHTML {
+						if !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") || !strings.Contains(rec.Body.String(), "Access denied") {
+							t.Errorf("%s: missing human refusal", label)
+						}
+					} else {
+						var payload map[string]any
+						if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") || json.Unmarshal(rec.Body.Bytes(), &payload) != nil {
+							t.Errorf("%s Accept=%q: technical refusal changed format", label, accept)
+						} else if want == 403 && (len(payload) != 1 || payload["error"] != "permission denied") {
+							t.Errorf("%s: technical refusal changed body: %v", label, payload)
+						}
+					}
 				}
 			}
 		}

@@ -818,7 +818,7 @@
                 if (["loaded","saved","tested","failed"].includes(type) && event.requestID !== postchecks.requestID) return [];
                 if (type === "loaded" || type === "saved") {
                     postchecks.accepted=clone(event.data);postchecks.draft=clone(event.data);postchecks.busy=false;
-                    if (!postchecks.draft.profiles.some(p=>p.id===postchecks.selectedID)) postchecks.selectedID=postchecks.draft.profiles[0]?.id || "";
+                    if (!postchecks.draft.profiles.some(p=>p.id===postchecks.selectedID)) postchecks.selectedID="";
                     postchecks.testResults=null;postchecks.message=type==="saved"?"Application post-check profiles saved.":"";
                 }
                 if (type === "failed") {postchecks.busy=false;postchecks.error=true;postchecks.message=String(event.message || "Request failed.");}

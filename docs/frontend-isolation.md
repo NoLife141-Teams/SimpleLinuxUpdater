@@ -66,7 +66,9 @@ scrolling intent; a non-scrollable page preserves its initial or explicit
 selection. Admin starts each open section’s lazy read when it approaches within
 one viewport of the visible area; closed sections stay closed and unloaded.
 Unchanged Installation Health facts keep their DOM nodes across navigation
-renders so scroll tracking does not discard browser scroll anchors. Selection stays
+renders so scroll tracking does not discard browser scroll anchors. Loading an
+Application Checks profile list preserves an existing explicit selection and
+otherwise leaves the editor closed until a profile is chosen. Selection stays
 in the interaction owners, while hash/history, horizontal nav visibility and
 focus remain browser effects. Explicitly collapsing the URL’s destination clears
 that fragment so a reload can restore the saved disclosure state. Initial deep-link

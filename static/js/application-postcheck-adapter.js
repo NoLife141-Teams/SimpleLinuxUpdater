@@ -27,7 +27,9 @@
         }
         function render() {
             const state = view();
-            el("profile-select").innerHTML = state.draft.profiles
+            el("profile-select").innerHTML = (state.draft.profiles.length
+                ? '<option value="">Choose a profile to edit</option>'
+                : "") + state.draft.profiles
                 .map(
                     (p) =>
                         `<option value="${escape(p.id)}">${escape(p.name)} (revision ${Number(p.revision)})</option>`,
@@ -69,7 +71,7 @@
                     (id === "delete" && !p) ||
                     (id === "reload" && state.dirty);
             el("save").disabled = state.busy || !state.dirty;
-            el("test").disabled = state.busy || state.dirty;
+            el("test").disabled = state.busy || state.dirty || !p;
             el("test-server").disabled = state.busy;
             el("test-server").value = state.testServer;
             el("feedback").textContent = state.busy

@@ -100,3 +100,15 @@ test("Admin also warms sections above the viewport when arriving by a bottom dee
     assert.deepEqual(store.getView().workspace.collapsedSections, ["notifications"]);
     assert.ok(!effects.some(x => ["focusSection", "persistSectionPreferences"].includes(x.type)));
 });
+
+test("Loading application profiles keeps the editor closed until an explicit choice and preserves that choice on refresh", () => {
+    const store = admin.createStore();
+    const data = { revision: 1, profiles: [{ id: "web", name: "Web", revision: 1, target_servers: [], target_tags: [], checks: [] }] };
+    store.dispatch({ type: "postcheck:request" });
+    store.dispatch({ type: "postcheck:loaded", requestID: store.getView().postchecks.requestID, data });
+    assert.equal(store.getView().postchecks.selectedID, "");
+    store.dispatch({ type: "postcheck:select", id: "web" });
+    store.dispatch({ type: "postcheck:request" });
+    store.dispatch({ type: "postcheck:loaded", requestID: store.getView().postchecks.requestID, data });
+    assert.equal(store.getView().postchecks.selectedID, "web");
+});

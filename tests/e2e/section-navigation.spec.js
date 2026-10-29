@@ -252,3 +252,40 @@ test("Admin loads approaching open sections before their headings enter the view
     await expect(page.locator('[data-admin-section-toggle="scheduled-runs"]')).toHaveAttribute("aria-expanded", "true");
     await expect(heading).not.toBeFocused();
 });
+
+test("A delayed application profile list does not expand an editor while the reader scrolls elsewhere", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, {});
+    let release, requested = false;
+    const ready = new Promise(resolve => { release = resolve; });
+    await page.route("**/api/postcheck-profiles", async route => {
+        requested = true;
+        await ready;
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ revision: 1, profiles: [{
+            id: "web", name: "Website recovery", revision: 1, target_servers: [], target_tags: ["web"],
+            checks: [{ id: "http", name: "HTTP readiness", kind: "http_status", url: "https://example.invalid/health", expected_status: 200, timeout_seconds: 30, interval_seconds: 2, mode: "blocking" }],
+        }] }) });
+    });
+    try {
+        await page.goto("/admin#admin-section-account-security");
+        await expect.poll(() => requested).toBe(true);
+        await expect(page.locator("#admin-section-account-security-heading")).toBeFocused();
+        const editor = page.locator("#postcheck-editor");
+        await expect(editor).toBeHidden();
+        const height = await page.locator("#admin-section-application-checks").evaluate(node => node.getBoundingClientRect().height);
+        await page.mouse.move(8, 400);
+        await page.mouse.wheel(0, 140);
+        release();
+        await expect(page.locator('#postcheck-profile-select option[value="web"]')).toHaveCount(1);
+        await settle(page);
+        await expect(editor).toBeHidden();
+        await expect(page.locator("#postcheck-test")).toBeDisabled();
+        expect(await page.locator("#admin-section-application-checks").evaluate(node => node.getBoundingClientRect().height)).toBeCloseTo(height, 0);
+        await page.locator('[data-admin-section-link="application-checks"]').click();
+        await page.locator("#postcheck-profile-select").selectOption("web");
+        await expect(editor).toBeVisible();
+        await expect(page.locator("#postcheck-name")).toHaveValue("Website recovery");
+    } finally {
+        release();
+    }
+});

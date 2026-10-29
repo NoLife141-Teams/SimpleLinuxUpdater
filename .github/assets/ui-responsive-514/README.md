@@ -9,9 +9,11 @@ Reproduce with:
 SLU_CAPTURE_UI_514=1 npm run test:e2e -- tests/e2e/ui-responsive.spec.js --workers=2 --retries=0
 ```
 
-- `manage-{700,768,900,1284}.png` and `admin-{700,768,900,1284}.png`:
-  section navigation after a deep link, viewport changes and scrolling. The sticky
-  offset follows the measured header, including the static-header breakpoint.
+- `manage-{390,700,768,900,1284}.png` and `admin-{390,700,768,900,1284}.png`:
+  section navigation after a deep link, scrolling and mobile → tablet → desktop
+  → tablet → mobile transitions. The sticky offset follows the measured header,
+  including the static-header breakpoint. Capture waits for the real wheel scroll
+  to settle so the fixed header and nav are painted at their final positions.
 - `admin-loading-{320,390}.png` and `admin-unavailable-{320,390}.png`:
   delayed/failed Installation Health reads; wrapped controls fit without root overflow.
 - `observability-{320,390}.png`: metadata reflow with a long host option; tables

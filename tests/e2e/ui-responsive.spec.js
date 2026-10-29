@@ -16,12 +16,27 @@ async function capture(page, testInfo, name) {
     }
 }
 async function navClearsHeader(page, prefix) {
-    await expect.poll(() => page.evaluate(prefix => {
+    const gap = () => page.evaluate(prefix => {
         const header = document.querySelector('.app-header');
         const pinned = ['sticky', 'fixed'].includes(getComputedStyle(header).position);
         const nav = document.getElementById(`${prefix}-section-nav`).getBoundingClientRect();
         return nav.top - (pinned ? header.getBoundingClientRect().bottom : 0);
-    }, prefix)).toBeGreaterThanOrEqual(7);
+    }, prefix);
+    await expect.poll(gap).toBeGreaterThanOrEqual(7);
+    await expect.poll(gap).toBeLessThanOrEqual(9);
+}
+async function scrollAndSettle(page, delta) {
+    const before = await page.evaluate(() => scrollY);
+    await page.mouse.wheel(0, delta);
+    await expect.poll(() => page.evaluate(() => scrollY)).not.toBe(before);
+    let previous, stable = 0;
+    await expect.poll(async () => {
+        const current = await page.evaluate(() => scrollY);
+        stable = current === previous ? stable + 1 : 0;
+        previous = current;
+        return stable;
+    }, { intervals: [20, 30, 40] }).toBeGreaterThanOrEqual(2);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 for (const prefix of ['manage', 'admin']) {
     test(`${prefix} section navigation clears the real header after tablet resize and deep links`, async ({ page }, testInfo) => {
@@ -29,11 +44,11 @@ for (const prefix of ['manage', 'admin']) {
         if (prefix === 'manage') await stubManageApi(page, { servers: [makeServer('responsive-host')] });
         else await stubAdminApi(page, {});
         const section = prefix === 'manage' ? 'import' : 'notifications';
-        await page.setViewportSize({ width: 768, height: 884 });
+        await page.setViewportSize({ width: 390, height: 884 });
         await page.goto(`/${prefix}#${prefix}-section-${section}`);
         const heading = page.locator(`#${prefix}-section-${section}-heading`);
         await expect(heading).toBeFocused();
-        for (const width of [768, 900, 1284, 700, 768]) {
+        for (const width of [390, 900, 1284, 900, 700, 768]) {
             await page.setViewportSize({ width, height: 884 });
             await navClearsHeader(page, prefix);
             await page.locator(`[data-${prefix}-section-link="${section}"]`).click();
@@ -44,9 +59,9 @@ for (const prefix of ['manage', 'admin']) {
                 return heading.top - nav.bottom;
             }, { prefix, section })).toBeGreaterThanOrEqual(0);
             await page.mouse.move(8, 400);
-            await page.mouse.wheel(0, 180);
+            await scrollAndSettle(page, 180);
             await navClearsHeader(page, prefix);
-            await page.mouse.wheel(0, -100);
+            await scrollAndSettle(page, -100);
             await navClearsHeader(page, prefix);
             await fitsDocument(page);
             await capture(page, testInfo, `${prefix}-${width}`);

@@ -20,18 +20,6 @@
             container.style.setProperty("--app-header-offset", `${pinned ? Math.ceil(header.getBoundingClientRect().height) : 0}px`);
             container.style.setProperty("--section-nav-height", `${Math.ceil(nav.getBoundingClientRect().height)}px`);
         }
-        // Measure before fragment focus, including when load is still pending.
-        updateOffsets();
-        lifecycle.listen(window, "resize", updateOffsets);
-        if (root.ResizeObserver) {
-            const Observer = lifecycle.observer(root.ResizeObserver);
-            const offsets = new Observer(() => {
-                updateOffsets();
-                if (observing) schedule();
-            });
-            if (header) offsets.observe(header);
-            if (nav) offsets.observe(nav);
-        }
         function publish(event) {
             const before = interaction.getView().workspace.activeSection;
             // A same-document navigation changes the URL before hashchange runs.
@@ -96,6 +84,19 @@
             schedule();
         }
         function init(initialSectionID = "", navigate = () => {}) {
+            // Manage constructs this adapter before activating its lifecycle.
+            // Mount effects only after activation, before fragment focus/load.
+            updateOffsets();
+            lifecycle.listen(window, "resize", updateOffsets);
+            if (root.ResizeObserver) {
+                const Observer = lifecycle.observer(root.ResizeObserver);
+                const offsets = new Observer(() => {
+                    updateOffsets();
+                    if (observing) schedule();
+                });
+                if (header) offsets.observe(header);
+                if (nav) offsets.observe(nav);
+            }
             // Accept a card choice immediately, including while native fragment
             // focus is pending; geometry must retain that choice within a row.
             lifecycle.listen(document, "focusin", interact);

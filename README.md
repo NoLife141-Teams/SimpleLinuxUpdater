@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.4.16
+Version: v0.5.0
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -14,6 +14,7 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 
 - [Overview](#overview)
 - [Features](#features)
+- [Upgrading to v0.5.0](#upgrading-to-v050)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -51,14 +52,22 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
+## Upgrading to v0.5.0
+
+Before replacing v0.4.16, export and verify an encrypted backup. This release
+migrates account and scheduling data, signs out old sessions once, and adds
+protocol 3 requirements for package deferrals. Follow the
+[upgrade, restore and rollback guide](docs/upgrading.md) and
+[release compatibility notes](CHANGELOG.md#upgrade-notes).
+
 ## Quick start
 
 ### Docker (official image)
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.0
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.0
 ```
 
 Open `http://localhost:8080`.
@@ -126,7 +135,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.4.16"
+VERSION="0.5.0"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

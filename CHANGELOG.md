@@ -6,47 +6,72 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-10-29
+
 ### Added
 
-- Isolated, provenance-pinned v0.4.16 upgrade qualification with real legacy
-  backup export, candidate restore, restart continuity, diagnostic failure
-  control and redacted CI/release reports.
-
-- Reproducible synthetic Dashboard Projection measurements for 10, 100 and 1,000
-  Servers, authenticated API and browser benchmarks, SSE reconnection evidence,
-  and CI budgets for payloads, SQL statements and allocations.
-
-- Stable named local accounts with reader/operator/administrator permissions,
-  optional confirmed TOTP MFA and single-use recovery codes, scoped expiring
-  personal API tokens, and a versioned cookie-free operational API contract.
-- Account UI for identities, role/disable commands, MFA, personal tokens and
-  isolated sessions; targeted password/MFA recovery through the existing locked CLI.
-- Persistent Server and policy package deferrals with mandatory reasons and
-  expiration, authenticated audit attribution, cumulative policy inheritance,
-  Manage/Admin controls, and security exposure that remains visible.
-- Executable plans for all four Approval Scope choices with exact transaction
-  identities, renewed consent on deferral drift/expiry, and a protocol 3 helper
-  guard that checks dependencies and removals before dpkg starts.
-- Immutable deferral snapshots that preserve complete rule evidence when the
-  bounded audit preview is truncated, including across backup restoration.
-- One-time local-date and monthly numeric/last-day policy schedules, short-month
-  diagnostics, explicit canary selection, and revision/stage details in Admin.
-- Durable one-time consumption and accepted rollout manifests that preserve
-  members and policy revision across edits, restarts, timezone changes and backups.
+- Named local accounts with reader/operator/administrator permissions, optional
+  confirmed TOTP MFA, single-use recovery codes, scoped expiring personal API
+  tokens, and a versioned operational API with an OpenAPI contract.
+- Account administration, isolated sessions and exclusive local CLI recovery
+  with atomic credential/session revocation and audit attribution.
+- Persistent installed-package vulnerability scans with coverage and freshness,
+  severity, remediation objectives, cancellation and restart reconciliation;
+  packages without an available upgrade remain visible.
+- Opt-in verified encrypted automatic backups with daily/weekly scheduling,
+  bounded retention, restore suspension and an administrator archive catalog
+  for downloading and reverifying registered encrypted archives.
+- Persistent operational notification conditions, delivery diagnostics and
+  optional grouped reminders for approval, reboot and backup events.
+- Versioned per-Server/tag application post-check profiles for bounded remote
+  systemd and HTTP health probes, with blocking and warning-only outcomes.
+- CSV/JSON inventory import with normalized previews, row selection, atomic
+  creation and disabled-by-default entries; atomic bulk tag/availability
+  administration for up to 1,000 explicitly selected Servers.
+- Inventory JSON v1 and complete filtered audit JSON/CSV exports without secrets.
+- Managed SSH helper export from binaries/Docker and read-only onboarding
+  diagnostics that validate prerequisites before saving inventory and trust.
+- Expiring Server and policy Package Deferrals with mandatory reasons,
+  authenticated authors, cumulative inheritance and immutable audit snapshots.
+- Executable deferral-safe plans for all four Approval Scope choices, renewed
+  consent on drift/expiry, and a protocol 3 root-helper guard that checks direct,
+  dependency and removal changes before dpkg starts.
+- One-time and monthly numeric/last-day schedules, explicit canary selection,
+  short-month diagnostics and durable rollout membership across edits/restarts.
+- Public minimal `/healthz` and `/readyz` probes and authenticated installation
+  diagnostics, plus Docker health probes and deployment guidance.
+- Reproducible Dashboard Projection measurements for 10, 100 and 1,000 Servers,
+  authenticated API/browser/SSE benchmarks and payload/SQL/allocation CI budgets.
+- Provenance-pinned v0.4.16 migration, restart and real encrypted-backup
+  export/restore qualification, with an independent diagnostic negative control.
+- Real isolated SSH/APT qualification on Debian 13 and Ubuntu 24.04 in PR CI;
+  the extended matrix covers Debian 12 and Ubuntu 22.04/26.04 too. Package
+  Deferral positive/negative controls exercise source-generated helper bytes.
 
 ### Changed
 
-- Isolate remaining Admin, Status and Manage browser effects behind explicit
-  adapter lifecycles, preserving existing interaction owners and appearance.
-- Split browser scenarios by domain and run each against an independent
-  disposable installation, including password/session and parallel-worker tests.
-- Preserve accepted inventory-import result focus through viewport changes
-  while protecting newer navigation and editor focus.
+- Isolate Admin, Status and Manage browser effects behind explicit adapter
+  lifecycles and run browser scenarios against independent disposable installs.
+- Reuse Status snapshots within a render, bound bulk preview work, and recover
+  followed jobs after SSE reconnects; unopened terminal output stays on demand.
+- Align responsive navigation, form actions, confirmations, file inputs, dates
+  and informative metadata contrast across Status, Manage, Admin and Account.
+- Return role-aware access-refusal pages with permitted navigation for human
+  pages while preserving the operational API authorization contract.
+- Update Playwright and pinned Docker setup/login actions; share a bounded
+  startup-readiness wait across the disposable container and VM CI harnesses.
 
-- Status renders reuse a snapshot within one synchronous render, bulk previews
-  avoid unrelated fleet log/package projections, and SSE reconnections recover
-  active/inspected jobs plus jobs followed before a connection loss. Terminal
-  job output remains available on demand.
+### Fixed
+
+- Preserve accepted inventory-import focus through viewport changes without
+  overriding newer navigation/editor focus, and correct mobile layout overflow.
+- Make Account commands and sensitive-action reauthentication reliable, including
+  form feedback and targeted session isolation.
+- Bound admitted JSON requests and backup transfers without admitting partial
+  mutations or weakening restore validation.
+- Prevent transient startup HTTP 503 responses from failing SSH/APT CI before
+  the disposable application leaves maintenance mode; permanent errors, exited
+  containers and exhausted startup deadlines still fail qualification.
 
 ### Upgrade notes
 
@@ -75,6 +100,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   create a new policy for another operation. See the [schedule and recovery
   rules](docs/usage.md#policy-schedule-cadences-and-recovery), including the
   conservative first observation of rollouts active before upgrade.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.5.0 release readiness record](docs/release-v0.5.0-readiness.md).
+Preparation does not create a tag, publish a GitHub Release or push an image.
 
 ## [v0.4.16] - 2026-10-23
 

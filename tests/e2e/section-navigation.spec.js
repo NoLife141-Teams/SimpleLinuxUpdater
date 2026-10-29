@@ -342,3 +342,56 @@ test("A delayed application profile list does not expand an editor while the rea
         release();
     }
 });
+
+for (const prefix of ["manage", "admin"]) {
+    test(`${prefix} keyboard scrolling from a section button releases its navigation priority`, async ({ page }) => {
+        await page.setViewportSize({ width: 1284, height: 884 });
+        await ensureAuthenticatedSession(page);
+        if (prefix === "manage") await stubManageApi(page, { servers: [] });
+        else await stubAdminApi(page, {});
+        await page.goto(`/${prefix}`);
+        for (const id of await page.locator(`[data-${prefix}-section-link]`).evaluateAll((nodes, prefix) => nodes.map(node => node.getAttribute(`data-${prefix}-section-link`)), prefix)) {
+            await page.locator(`[data-${prefix}-section-link="${id}"]`).click();
+            await settle(page);
+        }
+        const destination = prefix === "manage" ? "directory" : "backup";
+        const previous = prefix === "manage" ? "import" : "scheduled-runs";
+        await page.locator(`[data-${prefix}-section-link="${destination}"]`).click();
+        const button = page.locator(`[data-${prefix}-section-toggle="${destination}"]`);
+        await button.focus();
+        await settle(page);
+        const before = await page.evaluate(() => scrollY);
+        await page.keyboard.press("ArrowUp");
+        await expect.poll(() => page.evaluate(() => scrollY)).toBeLessThan(before - 20);
+        await settle(page);
+        await expect.poll(() => active(page, prefix)).toBe(previous);
+        await expect(button).toBeFocused();
+        await expect(page.locator(`[data-${prefix}-section-toggle="${destination}"]`)).toHaveAttribute("aria-expanded", "true");
+    });
+}
+
+test("Application Checks keeps Test unavailable without an explicit profile choice after Server input", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, {});
+    await page.route("**/api/postcheck-profiles", route => route.fulfill({ json: {
+        revision: 1, profiles: [{ id: "web", name: "Website", revision: 1, target_servers: [], target_tags: ["web"], checks: [] }],
+    } }));
+    let testRequests = 0;
+    await page.route("**/api/servers/*/postchecks/test", route => {
+        testRequests++;
+        return route.fulfill({ status: 409, json: { error: "No test should be admitted without a selection" } });
+    });
+    await page.goto("/admin#admin-section-application-checks");
+    await expect(page.locator('#postcheck-profile-select option[value="web"]')).toHaveCount(1);
+    await expect(page.locator("#postcheck-test")).toBeDisabled();
+    await page.locator("#postcheck-test-server").fill("fixture-host");
+    await expect(page.locator("#postcheck-test")).toBeDisabled();
+    await expect(page.locator("#postcheck-editor")).toBeHidden();
+    await page.locator("#postcheck-test").dispatchEvent("click");
+    expect(testRequests).toBe(0);
+    await page.locator("#postcheck-profile-select").selectOption("web");
+    await expect(page.locator("#postcheck-test")).toBeEnabled();
+    await page.locator("#postcheck-profile-select").selectOption("");
+    await page.locator("#postcheck-test-server").fill("fixture-host-2");
+    await expect(page.locator("#postcheck-test")).toBeDisabled();
+});

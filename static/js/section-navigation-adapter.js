@@ -38,7 +38,9 @@
         function scrollIntent(event) {
             if (event.type === "wheel" && event.deltaX && !event.deltaY) return;
             if (event.type === "keydown" && (!["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " "].includes(event.key)
-                || event.target.closest?.("input, textarea, select, button, [contenteditable=true]"))) return;
+                || event.defaultPrevented
+                || event.target.closest?.("input, textarea, select, [contenteditable=true]")
+                || (event.key === " " && event.target.closest?.("button")))) return;
             interaction.dispatch({ type: "sectionScrollIntent" });
             schedule();
         }

@@ -833,9 +833,25 @@ body.manage-modal-open {
     white-space: pre-line;
 }
 
-.confirmation-modal {
+.modal.confirmation-modal {
     width: min(620px, 100%);
     overscroll-behavior: contain;
+}
+
+.action-confirm-backdrop,
+.typed-confirm-backdrop {
+    z-index: 110;
+}
+
+.confirmation-modal .modal-actions {
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.confirmation-modal input {
+    margin-top: 0;
 }
 
 .confirmation-summary {

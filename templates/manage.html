@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=ui-responsive-514-20261029">
+    <link rel="stylesheet" href="/static/css/base.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/manage.css?v=ui-responsive-514-20261029">
-<link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
+<link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
 </head>
 <body data-account-role="{{.Role}}">
     <div class="dashboard-shell">
@@ -194,7 +194,7 @@
                         <p class="muted">UTF-8 CSV or a JSON array, up to 2 MiB and 1,000 rows. Fields: <code>name,host,port,user,tags</code>. CSV requires all five headers; an empty port defaults to 22. JSON requires name, host and user; port and tags may be omitted.</p>
                         <p class="muted">Tags use a JSON string array in both formats (for example <code>["production","web"]</code>); quote and escape the CSV cell as shown in the example. Tags are trimmed and deduplicated using inventory rules; commas inside tags separate tags. Credentials, host keys and other fields are rejected.</p>
                         <div class="import-actions"><a class="btn-ghost inline-btn" href="/api/servers/import/example/csv" download>Download CSV example</a><a class="btn-ghost inline-btn" href="/api/servers/import/example/json" download>Download JSON example</a></div>
-                        <div class="import-actions"><label for="inventory-import-file">Inventory file</label><input id="inventory-import-file" type="file" accept=".csv,.json,text/csv,application/json" aria-describedby="import-file-name"><span class="muted" id="import-file-name">No file selected</span><button class="primary-action" id="import-preview-button" type="button" disabled>Validate file</button><button class="btn-ghost" id="import-reset" type="button">Clear import draft</button></div>
+                        <div class="import-actions"><input class="file-input" id="inventory-import-file" type="file" accept=".csv,.json,text/csv,application/json" aria-describedby="import-file-name"><label class="file-btn" for="inventory-import-file">Choose inventory file</label><span class="file-selection muted" id="import-file-name">No file selected</span><button class="primary-action" id="import-preview-button" type="button" disabled>Validate file</button><button class="btn-ghost" id="import-reset" type="button">Clear import draft</button></div>
                         <p id="import-feedback" class="bad" role="status" aria-live="polite" tabindex="-1"></p>
                         <div id="import-preview" hidden>
                             <h3 id="import-preview-heading" tabindex="-1">Review normalized rows</h3><p id="import-preview-summary" role="status" aria-live="polite"></p><p class="muted">Only valid rows can be selected. The first valid occurrence of a name or endpoint is kept. Uncheck any row you do not want to create.</p>
@@ -485,9 +485,9 @@
                 <section class="package-deferrals full-width field-span" id="server-package-deferrals" aria-label="Package deferrals">
 <h4>Package deferrals</h4><p>Security warning: deferring a package can postpone security fixes and leaves its CVE exposure visible. Rules from this Server and all matching enabled policies accumulate. Existing administrator holds and pins are preserved.</p>
 <div data-deferral-list role="status"></div><div class="deferral-fields">
-<label>Exact package (optional :architecture)<input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
-<label>Reason<input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
-<label>Expiry (timestamp with timezone)<input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
+<label><span>Exact package (optional :architecture)</span><input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
+<label><span>Reason</span><input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
+<label><span>Expiry (timestamp with timezone)</span><input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
 </div><button type="button" class="btn-ghost" data-add-deferral>Add package deferral</button><p data-deferral-feedback role="status" aria-live="polite"></p></section>
 <div class="full-width"><div class="eyebrow">Application post-checks</div><p id="edit-application-postchecks" class="muted" role="status">Loading saved expectations…</p><a href="/admin#admin-section-application-checks">Configure profiles and run a read-only test in Admin</a><p class="muted">Preview uses saved Server tags. Save inventory changes before reviewing the effective profile.</p></div>
                 <div id="edit-error" class="form-error full-width" aria-live="polite" aria-atomic="true"></div>

@@ -84,6 +84,36 @@ def copy_assets(work):
         shutil.copyfile(REPO / relative, destination)
 
 
+def wait_for_app(api, *, check_running=None):
+    """Wait within the startup budget, including transient startup maintenance."""
+    deadline = time.monotonic() + 30
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("application startup was not ready within 30 seconds")
+        if check_running is not None:
+            check_running(remaining)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("application startup was not ready within 30 seconds")
+        try:
+            api.request("GET", "/api/auth/status", timeout=min(20, remaining))
+        except OSError:
+            pass
+        except AssertionError as error:
+            # API.request emits this prefix from the actual HTTP status, not
+            # response-body text. Permanent HTTP errors and unrelated assertions
+            # remain fatal; only startup maintenance is retried.
+            if not str(error).startswith("GET /api/auth/status: HTTP 503:"):
+                raise
+        else:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("application startup exceeded 30 seconds")
+            return
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+
+
+
 class API:
     def __init__(self, port):
         validate_local_endpoint("127.0.0.1", port)
@@ -227,13 +257,7 @@ class Harness:
         host, port = self.docker("port", self.app_name, "8080/tcp").strip().rsplit(":", 1)
         validate_local_endpoint(host, int(port))
         self.api = API(int(port))
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
-            require(self.docker("inspect", "--format", "{{.State.Running}}", self.app_name).strip() == "true", "isolated application exited before readiness")
-            try:
-                self.api.request("GET", "/api/auth/status")
-                break
-            except OSError: time.sleep(.1)
+        self.wait_for_app()
         self.api.request("POST", "/api/auth/setup", {"username": "fixture-admin", "password": self.password})
         self.identity = self.api.request("GET", "/api/auth/identity")["account"]
         require(self.identity["id"] == 1 and self.identity["username"] == "fixture-admin"
@@ -246,6 +270,13 @@ class Harness:
             "id": "fixture", "name": "Real fixture HTTP health", "target_servers": [], "target_tags": ["fixture"],
             "checks": [{"id": "health", "name": "Fixture responds", "kind": "http_status", "url": "http://localhost:18080/version",
                 "expected_status": 200, "timeout_seconds": 3, "interval_seconds": 1, "mode": "blocking"}]}]})
+
+    def wait_for_app(self):
+        def check_running(remaining):
+            require(self.docker("inspect", "--format", "{{.State.Running}}", self.app_name,
+                                timeout=min(20, remaining)).strip() == "true",
+                    "isolated application exited before readiness")
+        wait_for_app(self.api, check_running=check_running)
 
     def trust(self):
         require(self.ssh_host == self.name and self.ssh_port == 22 and self.owned("container", self.container), "invalid owned SSH target")

@@ -74,6 +74,67 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertEqual(clock[0], 30)
         self.assertLess(timeouts[-1], 1)
 
+    def test_container_startup_retries_real_maintenance_response_before_setup(self):
+        harness = object.__new__(run.Harness)
+        harness.app_name = "isolated-app"
+        harness.api = run.API(30000)
+        harness.docker = mock.Mock(return_value="true")
+        maintenance = mock.Mock(code=503)
+        maintenance.read.return_value = b'{"maintenance":true,"error":"maintenance mode active"}'
+        ready = mock.Mock(code=200)
+        ready.read.return_value = b'{}'
+        clock = [0.0]
+        with mock.patch.object(harness.api.client, 'open', side_effect=[OSError('not listening'), maintenance, ready]) as request, \
+             mock.patch.object(run.time, 'monotonic', side_effect=lambda: clock[0]), \
+             mock.patch.object(run.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            harness.wait_for_app()
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(harness.docker.call_count, 3)
+        self.assertAlmostEqual(clock[0], .2)
+        for call in request.call_args_list:
+            self.assertEqual(call.args[0].get_method(), 'GET')
+            self.assertTrue(call.args[0].full_url.endswith('/api/auth/status'))
+        for call in harness.docker.call_args_list:
+            self.assertEqual(call.args, ('inspect', '--format', '{{.State.Running}}', harness.app_name))
+            self.assertEqual(call.kwargs, {'timeout': 20})
+
+    def test_container_startup_fails_when_application_exits(self):
+        harness = object.__new__(run.Harness)
+        harness.app_name = "isolated-app"
+        harness.api = mock.Mock()
+        harness.docker = mock.Mock(return_value="false")
+        with self.assertRaisesRegex(AssertionError, 'exited before readiness'):
+            harness.wait_for_app()
+        harness.api.request.assert_not_called()
+
+    def test_container_startup_inspection_and_http_share_deadline(self):
+        harness = object.__new__(run.Harness)
+        harness.app_name = "isolated-app"
+        harness.api = mock.Mock()
+        clock = [0.0]
+        timeouts = []
+
+        def docker(*args, **kwargs):
+            self.assertEqual(kwargs['timeout'], min(20, 30 - clock[0]))
+            clock[0] += min(5, 30 - clock[0])
+            return "true"
+
+        def request(*args, **kwargs):
+            self.assertEqual(args, ('GET', '/api/auth/status'))
+            self.assertEqual(kwargs['timeout'], min(20, 30 - clock[0]))
+            timeouts.append(kwargs['timeout'])
+            raise AssertionError('GET /api/auth/status: HTTP 503: {}')
+
+        harness.docker = mock.Mock(side_effect=docker)
+        harness.api.request.side_effect = request
+        with mock.patch.object(run.time, 'monotonic', side_effect=lambda: clock[0]), \
+             mock.patch.object(run.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+             self.assertRaisesRegex(TimeoutError, 'not ready within 30 seconds'):
+            harness.wait_for_app()
+        self.assertEqual(clock[0], 30)
+        self.assertLess(timeouts[-1], timeouts[0])
+        self.assertTrue(all(call.args == ('GET', '/api/auth/status') for call in harness.api.request.call_args_list))
+
     def test_only_loopback_allocated_api_endpoints(self):
         for host, port in (("production.example", 2222), ("127.0.0.2", 2222), ("::1", 2222), ("127.0.0.1", 22), ("127.0.0.1", 65536)):
             with self.subTest(host=host, port=port), self.assertRaises(AssertionError):

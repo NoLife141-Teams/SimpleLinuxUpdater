@@ -22,6 +22,9 @@ REASONS = {"dependency-forces-deferred": "would change deferred",
            "expired-rules": "expired", "unapproved-dependency-drift": "changed since approval",
            "approved-action-missing-after-pin-drift": "changed since approval"}
 SOURCE = Path(os.environ.get("SLU_DEFERRALS_SOURCE", run.REPO)).resolve()
+STARTUP_TIMEOUT_SECONDS = 30
+MARKER_PROBE = ('if [ ! -e /run/slu-fixture-owner ] && [ ! -L /run/slu-fixture-owner ]; '
+                'then exit 75; fi; cat /run/slu-fixture-owner')
 
 
 class QualificationInterrupted(BaseException):
@@ -53,6 +56,35 @@ def installed_versions(text):
     return [line[4:] for line in text.splitlines() if len(line) >= 4 and line[1:3] == "i "]
 
 
+def wait_for_target(docker, name, owner):
+    """A detached Docker start does not guarantee the entrypoint published its marker."""
+    deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("target ownership marker was not ready within 30 seconds")
+        return budget
+
+    template = ('{"owner":{{json (index .Config.Labels "' + run.LABEL + '")}},'
+                '"running":{{json .State.Running}}}')
+    while True:
+        facts = json.loads(docker("inspect", "--format", template, name,
+                                  timeout_seconds=remaining()))
+        run.require(facts["owner"] == owner, "refusing unowned target during startup")
+        run.require(facts["running"] is True, "target exited before its ownership marker was ready")
+        marker = docker("exec", name, "sh", "-c", MARKER_PROBE,
+                        checked=False, timeout_seconds=remaining())
+        remaining()
+        if marker.returncode == 0:
+            run.require(marker.stdout.decode(errors="replace").strip() == owner, "marker mismatch during startup")
+            return
+        # Only absence reported by our read-only probe is transient. Docker errors,
+        # unreadable markers, stopped containers and mismatched owners fail closed.
+        run.require(marker.returncode == 75, "could not read target ownership marker during startup")
+        time.sleep(min(.1, remaining()))
+
+
 def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-generated"):
     run.require(distro in run.IMAGES, "unsupported deferral fixture distribution")
     owner = uuid.uuid4().hex
@@ -68,16 +100,19 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
               "limits": {"seconds": 600, "memory": "512m", "pids": 128},
               "provenance": "synthetic local fixture; no official origin or CVE inference",
               "administrator_holds_and_pins": "not_verified", "scenarios": [],
+              "startup": {"status": "not_executed", "timeout_seconds": STARTUP_TIMEOUT_SECONDS},
               "cleanup": {"status": "not_created", "errors": []}}
     records = report["scenarios"]
     started = time.monotonic()
 
-    def docker(*args, data=None, checked=True):
+    def docker(*args, data=None, checked=True, timeout_seconds=None):
         remaining = 600 - (time.monotonic() - started)
         if remaining <= 0 and args[0] not in ("inspect", "rm"):
             raise TimeoutError("qualification exceeded 600-second budget")
         # Cleanup has its own budget after the qualification deadline or signal.
         timeout = 30 if args[0] in ("inspect", "rm") else min(120, max(1, remaining))
+        if timeout_seconds is not None:
+            timeout = min(timeout, timeout_seconds, max(.001, remaining))
         result = subprocess.run([*run.DOCKER, *args], input=data, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout)
         if checked and result.returncode:
@@ -156,8 +191,12 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
         docker("run", "-d", "--name", name, "--label", run.LABEL + "=" + owner,
                "--network", "none", "--pids-limit", "128", "--memory", "512m",
                "--entrypoint", "/bin/sh", image, "-c",
-               "printf '%s\\n' '" + owner + "' > /run/slu-fixture-owner; exec sleep infinity")
+               "printf '%s\\n' '" + owner + "' > /run/slu-fixture-owner.tmp && "
+               "mv /run/slu-fixture-owner.tmp /run/slu-fixture-owner && exec sleep infinity")
         report["image_id"] = docker("inspect", "--format", "{{.Image}}", name).strip()
+        report["startup"]["status"] = "waiting"
+        wait_for_target(docker, name, owner)
+        report["startup"]["status"] = "passed"
         report["architecture"] = target("dpkg", "--print-architecture").strip()
         target("sh", "-c", "cat > /usr/local/sbin/simplelinuxupdater-root-helper; chmod 755 /usr/local/sbin/simplelinuxupdater-root-helper", data=helper)
         target("sh", "-s", data=(run.HERE / "deferrals-fixture.sh").read_bytes())
@@ -203,6 +242,8 @@ def qualify(helper, output, distro, *, source_sha=None, helper_origin="source-ge
         report.update(status="passed", exit_code=0)
     except (Exception, KeyboardInterrupt, QualificationInterrupted) as error:
         report["error"] = str(error)[-5000:]
+        if report["startup"]["status"] == "waiting":
+            report["startup"]["status"] = "failed"
     finally:
         # A second termination signal must not interrupt ownership checks/removal.
         for sig in handlers:

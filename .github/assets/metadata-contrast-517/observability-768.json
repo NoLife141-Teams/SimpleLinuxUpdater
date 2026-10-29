@@ -1,0 +1,50 @@
+[
+  {
+    "label": "kpi-success-context",
+    "text": "0 successful runs · 1 failed run",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      42,
+      42,
+      44
+    ],
+    "minimum": 5.884378258156838,
+    "samples": 2379
+  },
+  {
+    "label": "kpi-total-context",
+    "text": "Runs in selected window",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      42,
+      42,
+      44
+    ],
+    "minimum": 5.884378258156838,
+    "samples": 1911
+  },
+  {
+    "label": "kpi-duration-samples",
+    "text": "No duration data · 0 of 1 runs with duration · 1 missing",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      42,
+      42,
+      44
+    ],
+    "minimum": 5.884378258156838,
+    "samples": 4225
+  }
+]

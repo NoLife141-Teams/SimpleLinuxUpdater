@@ -1781,6 +1781,8 @@ test("application post-check profiles edit, persist and test with bounded expect
             "Application post-check profiles saved.",
         );
         await page.reload();
+        await expect(page.locator("#postcheck-editor")).toBeHidden();
+        await page.locator("#postcheck-profile-select").selectOption({ label: "Website recovery (revision 1)" });
         await expect(page.locator("#postcheck-name")).toHaveValue(
             "Website recovery",
         );
@@ -1896,6 +1898,8 @@ test("application post-check profiles edit, persist and test with bounded expect
         );
 
         await page.goto("/admin#admin-section-application-checks");
+        await expect(page.locator("#postcheck-editor")).toBeHidden();
+        await page.locator("#postcheck-profile-select").selectOption({ label: "Website recovery (revision 1)" });
         await expect(page.locator("#postcheck-name")).toHaveValue(
             "Website recovery",
         );

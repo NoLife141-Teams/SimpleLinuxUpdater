@@ -1,0 +1,82 @@
+[
+  {
+    "label": "selected detail",
+    "text": "Not configured",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      40,
+      53,
+      68
+    ],
+    "minimum": 5.1258769718574175,
+    "samples": 803
+  },
+  {
+    "label": "neutral detail",
+    "text": "Not configured",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      39,
+      37,
+      38
+    ],
+    "minimum": 6.256168893912858,
+    "samples": 730
+  },
+  {
+    "label": "neutral title",
+    "text": "Global SSH Credential",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      39,
+      38,
+      39
+    ],
+    "minimum": 6.193613454002445,
+    "samples": 2058
+  },
+  {
+    "label": "hover detail",
+    "text": "Not configured",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      32,
+      32,
+      33
+    ],
+    "minimum": 6.687323185516947,
+    "samples": 730
+  },
+  {
+    "label": "focus detail",
+    "text": "Not configured",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      41,
+      53,
+      68
+    ],
+    "minimum": 5.113540421369375,
+    "samples": 730
+  }
+]

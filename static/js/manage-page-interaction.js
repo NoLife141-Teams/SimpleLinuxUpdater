@@ -1,8 +1,8 @@
 (function initManagePageInteraction(root, factory) {
-    const api = factory();
+    const api = factory(typeof module === "object" && module.exports ? require("./section-navigation.js") : root.SectionNavigation);
     if (typeof module === "object" && module.exports) module.exports = api;
     if (root) root.ManagePageInteraction = api;
-}(typeof globalThis !== "undefined" ? globalThis : this, function managePageInteractionFactory() {
+}(typeof globalThis !== "undefined" ? globalThis : this, function managePageInteractionFactory(navigation) {
     "use strict";
 
     const pageSizes = new Set([10, 20, 25, 50, 100]);
@@ -80,7 +80,7 @@
         let sort = { key: "name", direction: "asc" };
         let page = 1;
         let workspace = {
-            activeSection: "directory",
+            navigation: navigation.create("directory"),
             collapsed: Object.fromEntries(sectionDefinitions.map(section => [section.id, section.collapsed]))
         };
         let editor = { sessionID: 0, open: false, originalName: "", originalDraft: null, draft: null, hostKey: null, policyContext: emptyPolicyContext() };
@@ -349,7 +349,8 @@
         function projectedWorkspace() {
             const summary = inventorySummary();
             return {
-                activeSection: workspace.activeSection,
+                activeSection: workspace.navigation.activeSection,
+                areaSections: workspace.navigation.areaSections,
                 sections: sectionDefinitions.map(section => {
                     let sectionSummary = "";
                     if (section.id === "global-key") {
@@ -542,9 +543,27 @@
                 case "filtersReset": if (!inventoryBulk.busy) { inventoryBulk.selected = []; inventoryBulk.preview = null; inventoryBulk.phase = "draft"; inventoryBulk.generation++; } filters = defaultFilters(); page = 1; return [effect("render", { area: "inventory" })];
                 case "sortChanged": sort = sort.key === input.key ? { key: input.key, direction: sort.direction === "asc" ? "desc" : "asc" } : { key: input.key || "name", direction: "asc" }; return [effect("render", { area: "inventory" })];
                 case "pageChanged": page = Math.max(1, Number(input.page) || 1); return [effect("render", { area: "inventory" })];
-                case "sectionCollapseToggled": if (workspace.collapsed[input.sectionID] !== undefined) workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID]; return [effect("render", { area: "workspace" })];
-                case "sectionActivated": if (workspace.collapsed[input.sectionID] !== undefined) workspace.activeSection = input.sectionID; return [effect("render", { area: "workspace" })];
-                case "sectionNavigationRequested": if (workspace.collapsed[input.sectionID] !== undefined) { workspace.activeSection = input.sectionID; workspace.collapsed[input.sectionID] = false; return [effect("render", { area: "workspace" }), effect("focusSection", { sectionID: input.sectionID })]; } return [];
+                case "sectionScrollIntent":
+                    workspace.navigation = { ...workspace.navigation, explicitSection: "" };
+                    return [];
+                case "sectionInteracted":
+                    if (workspace.collapsed[input.sectionID] === undefined) return [];
+                    workspace.navigation = navigation.select(workspace.navigation, input.sectionID);
+                    return [effect("render", { area: "workspace" })];
+                case "sectionGeometryReceived": {
+                    const next = navigation.reconcile(workspace.navigation, { ...input.geometry, sections: (input.geometry.sections || []).filter(section => workspace.collapsed[section.id] !== undefined) });
+                    if (JSON.stringify(next) === JSON.stringify(workspace.navigation)) return [];
+                    workspace.navigation = next;
+                    return [effect("render", { area: "workspace" })];
+                }
+                case "sectionCollapseToggled": {
+                    if (workspace.collapsed[input.sectionID] === undefined) return [];
+                    workspace.collapsed[input.sectionID] = !workspace.collapsed[input.sectionID];
+                    return [effect("render", { area: "workspace" }),
+                        ...(workspace.collapsed[input.sectionID] ? [effect("clearSectionLocation", { sectionID: input.sectionID })] : [])];
+                }
+                case "sectionActivated": if (workspace.collapsed[input.sectionID] !== undefined) workspace.navigation = navigation.select(workspace.navigation, input.sectionID); return [effect("render", { area: "workspace" })];
+                case "sectionNavigationRequested": if (workspace.collapsed[input.sectionID] !== undefined) { workspace.navigation = navigation.select(workspace.navigation, input.sectionID); workspace.collapsed[input.sectionID] = false; return [effect("render", { area: "workspace" }), effect("focusSection", { sectionID: input.sectionID })]; } return [];
                 case "applicationPostchecksReceived": if(editor.open && input.sessionID===editor.sessionID){editor.applicationPostchecks={profile:clone(input.profile || null),error:String(input.error || "")};} return [effect("render",{area:"editor"})];
  case "editorOpened": { invalidateEditorStreams(); const server = inventory.find(item => item.name === input.name) || input.server || {}; const draft = { ...clone(server), tags: normalizeTags(server.tags) }; editor = { sessionID: editor.sessionID + 1, open: true, originalName: String(server.name || input.name || ""), applicationPostchecks:null, originalDraft: clone(draft), draft, keyReplacement: false, hostKey: null, policyContext: emptyPolicyContext() }; return [effect("render", { area: "editor" })]; }
                 case "editorChanged": if (editor.open) { const previousHost = String(editor.draft?.host || "").trim(); const previousPort = normalizePort(editor.draft?.port); editor.draft = { ...editor.draft, ...(input.patch || {}) }; if (previousHost !== String(editor.draft?.host || "").trim() || previousPort !== normalizePort(editor.draft?.port)) { editor.hostKey = null; invalidateStream("hostKey"); } } return [effect("render", { area: "editor" })];

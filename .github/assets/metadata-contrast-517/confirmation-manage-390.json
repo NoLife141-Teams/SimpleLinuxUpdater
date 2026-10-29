@@ -1,0 +1,162 @@
+[
+  {
+    "label": "confirmation context",
+    "text": "Operation",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 710
+  },
+  {
+    "label": "confirmation context",
+    "text": "Review fixture",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 1105
+  },
+  {
+    "label": "confirmation context",
+    "text": "Affected resources",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 1420
+  },
+  {
+    "label": "confirmation context",
+    "text": "Synthetic resource",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 1456
+  },
+  {
+    "label": "confirmation context",
+    "text": "Consequences",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 1010
+  },
+  {
+    "label": "confirmation context",
+    "text": "No business action will run.",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 2132
+  },
+  {
+    "label": "confirmation context",
+    "text": "Reversibility",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 930
+  },
+  {
+    "label": "confirmation context",
+    "text": "Review the operation before continuing.",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 3133
+  },
+  {
+    "label": "confirmation context",
+    "text": "Authentication",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 1090
+  },
+  {
+    "label": "confirmation context",
+    "text": "Your current signed-in Admin session authorizes this action.",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      37,
+      37,
+      38
+    ],
+    "minimum": 6.290860702851163,
+    "samples": 4602
+  }
+]

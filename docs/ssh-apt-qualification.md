@@ -72,6 +72,11 @@ python3 tools/ci/ssh-apt/vm-reboot.py \
 
 Retain `report.json` from the VM run. The VM is terminated and its overlay, seed, private keys and temporary app data are deleted on exit; the downloaded backing image remains available for another fresh run. New cloud images require an explicitly reviewed URL/checksum update. No VM execution is implied by the presence of this command or its prerequisite tests.
 
+Application startup waits at most 30 seconds, including connection failures and
+HTTP 503 responses while startup maintenance is active. Each API call uses the
+remaining startup budget. Other HTTP failures remain fatal, and exhaustion of
+the startup budget fails qualification and runs cleanup before setup can start.
+
 ## Continuous Package Deferral qualification
 
 The existing SSH/APT matrices also run `deferrals-negative.py`: Debian 13 and
@@ -107,6 +112,16 @@ workflow steps are limited to eight minutes and jobs to 12 or 20 minutes. No
 host packages, real inventory, production secrets or administrator sudo policy
 are used. This fixture repository establishes no official Debian/Ubuntu origin
 or CVE evidence. Official provenance remains a separate SSH/APT concern.
+
+The container entrypoint publishes its ownership marker atomically. A detached
+Docker start is followed by a startup wait of at most 30 seconds within the
+existing qualification budget. Every attempt checks the owner label and running
+state before probing the marker, with each command bounded by the remaining
+startup time. Only an absent marker is retried; an incorrect or unreadable
+marker, a foreign owner, a stopped container or another Docker failure stops
+qualification before helper installation or fixture mutation. The report's
+`startup` status distinguishes this stage from unexecuted APT scenarios, and
+ownership-checked cleanup also runs after timeout or interruption.
 
 Each healthy distribution must pass twelve scenarios: independent upgrade in
 all four Approval Scopes; deferred dependency, deferred removal and multiarch

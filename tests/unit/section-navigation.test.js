@@ -86,3 +86,17 @@ test("Admin starts nearby open-section reads before selection, once, without exp
     assert.deepEqual(store.getView().workspace.collapsedSections, ["backup"]);
     assert.ok(!receive(1650).some(x => x.type === "loadSectionData"));
 });
+
+test("Admin also warms sections above the viewport when arriving by a bottom deep link", () => {
+    const store = admin.createStore();
+    store.dispatch({ type: "sectionPreferencesRestored", collapsedSections: ["notifications"] });
+    store.dispatch({ type: "sectionNavigationRequested", sectionID: "metrics" });
+    const effects = store.dispatch({ type: "sectionGeometryReceived", geometry: geometry([
+        rect("notifications", -1200, -500), rect("scheduled-runs", -2600, -1800),
+        rect("backup", -1900, -1100), rect("installation", -600, -200), rect("metrics", 160, 1500),
+    ]) });
+    assert.equal(store.getView().workspace.activeSection, "metrics");
+    assert.deepEqual(effects.filter(x => x.type === "loadSectionData").map(x => x.sectionID), ["installation"]);
+    assert.deepEqual(store.getView().workspace.collapsedSections, ["notifications"]);
+    assert.ok(!effects.some(x => ["focusSection", "persistSectionPreferences"].includes(x.type)));
+});

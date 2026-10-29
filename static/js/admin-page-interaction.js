@@ -963,7 +963,7 @@
                     // Start reads one viewport ahead of open sections, before
                     // arriving at their content. Loading never changes disclosure.
                     const approaching = Number.isFinite(geometry.viewportHeight) && geometry.viewportHeight > 0
-                        ? sections.filter(section => section.bottom > geometry.anchorY && section.top < geometry.viewportHeight * 2).map(section => section.id)
+                        ? sections.filter(section => section.bottom > geometry.anchorY - geometry.viewportHeight && section.top < geometry.viewportHeight * 2).map(section => section.id)
                         : [];
                     const load = [...new Set([...next.areaSections, ...approaching])]
                         .flatMap(id => activateSectionData(id));

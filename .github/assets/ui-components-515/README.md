@@ -14,6 +14,8 @@ SLU_CAPTURE_UI_515=1 npm run test:e2e -- tests/e2e/ui-components.spec.js --worke
   Width, field/action gap, input dimensions and button weights are compared across
   pages. Tests also cover typed gating, pointer confirmation, Tab/Shift+Tab, Escape,
   cancellation and focus return.
+  Permanent browser checks also verify local dialogs above the Status drawer and
+  both shared confirmation kinds above them, including long content at 320×480.
 - `inventory-file-390.png` shows the shared file trigger and one filename/state.
   Tests exercise keyboard focus, CSV/JSON selection, replacement, preview and reset.
   The trigger keeps its accessible name after selection and reset; the import

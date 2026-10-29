@@ -119,6 +119,54 @@ for (const width of [1284, 390]) {
         expect(new Set(controls).size).toBe(1);
     });
 }
+for (const viewport of [{ width: 1284, height: 884 }, { width: 320, height: 480 }]) {
+    test(`Status confirmations stay above the drawer and local dialog at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await ensureAuthenticatedSession(page);
+        await stubDashboardApi(page, () => [makeServer('layered-confirmation-host')]);
+        await page.goto('/');
+        await page.locator('[data-action="open-drawer"]').first().click();
+        await expect(page.locator('#status-drawer')).toHaveAttribute('aria-hidden', 'false');
+        // Exercise the local backdrop's CSS without starting a sudo/SSH command.
+        await page.locator('#password-modal').evaluate(node => node.classList.add('active'));
+        const localCancel = page.locator('#password-modal-cancel');
+        const isTopmost = node => {
+            const rect = node.getBoundingClientRect();
+            return node === document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        };
+        await localCancel.scrollIntoViewIfNeeded();
+        expect(await localCancel.evaluate(isTopmost)).toBe(true);
+        for (const typed of [false, true]) {
+            await page.evaluate(typed => {
+                const message = 'Review the affected resources and consequences before continuing. '.repeat(35);
+                const options = { title: 'Review fixture operation', resources: 'layered-confirmation-host', consequences: message, danger: true };
+                window.__layeredConfirmationResult = undefined;
+                const result = typed ? window.confirmTypedAction(message, 'CONFIRM', options) : window.confirmAction(message, options);
+                void result.then(value => { window.__layeredConfirmationResult = value; });
+            }, typed);
+            const prefix = typed ? 'typed' : 'action';
+            const backdrop = page.locator(`#${prefix}-confirm-modal`);
+            await expect(backdrop).toBeVisible();
+            // Hit tests skip inert backgrounds even if their paint layer is higher.
+            // Compare the browser's composed layers as well as pointer reachability.
+            const layers = await backdrop.evaluate(node => ({
+                confirmation: Number(getComputedStyle(node).zIndex),
+                local: Number(getComputedStyle(document.getElementById('password-modal')).zIndex),
+                drawer: Number(getComputedStyle(document.getElementById('status-drawer')).zIndex),
+            }));
+            expect(layers.confirmation).toBeGreaterThan(layers.local);
+            expect(layers.confirmation).toBeGreaterThan(layers.drawer);
+            const cancel = page.locator(`#${prefix}-confirm-cancel`);
+            await cancel.scrollIntoViewIfNeeded();
+            expect(await cancel.evaluate(isTopmost)).toBe(true);
+            await cancel.click();
+            await expect(backdrop).not.toBeVisible();
+            expect(await page.evaluate(() => window.__layeredConfirmationResult)).toBe(false);
+            expect(await localCancel.evaluate(isTopmost)).toBe(true);
+        }
+        await page.locator('#password-modal').evaluate(node => node.classList.remove('active'));
+    });
+}
 test('inventory file component has one state, visible keyboard focus, selection and reset', async ({ page }, testInfo) => {
     await ensureAuthenticatedSession(page);
     await stubManageApi(page, { servers: [] });

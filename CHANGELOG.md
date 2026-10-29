@@ -63,6 +63,9 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Restore macOS release compilation for administrator recovery by using the BSD
+  input-flush mask without relying on an unavailable Go binding constant; CI now
+  cross-compiles that recovery path before release.
 - Preserve accepted inventory-import focus through viewport changes without
   overriding newer navigation/editor focus, and correct mobile layout overflow.
 - Make Account commands and sensitive-action reauthentication reliable, including

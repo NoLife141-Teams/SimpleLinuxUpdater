@@ -154,6 +154,13 @@ jobs:
       - name: Run Go vet
         run: go vet ./...
 
+      - name: Cross-compile macOS recovery support
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: amd64
+        run: go build -o "$RUNNER_TEMP/webserver-darwin-amd64" .
+
       - name: Run staticcheck
         run: staticcheck ./...
 

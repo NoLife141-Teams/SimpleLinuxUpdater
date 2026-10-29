@@ -489,10 +489,8 @@ async function stubAdminApi(page, state = {}) {
     });
     await page.route("**/api/auth/sessions/*/reveal-ip", async (route) => {
         state.sessionIPRevealPayload = await route.request().postDataJSON();
-        if (state.sessionIPRevealDelayMs) {
-            await new Promise((resolve) =>
-                setTimeout(resolve, state.sessionIPRevealDelayMs),
-            );
+        if (state.sessionIPRevealResponseGate) {
+            await state.sessionIPRevealResponseGate;
         }
         if (state.sessionIPRevealFailure) {
             return route.fulfill({
@@ -501,10 +499,11 @@ async function stubAdminApi(page, state = {}) {
                 body: JSON.stringify({ error: "current password is invalid" }),
             });
         }
-        return fulfillJson(route, {
+        await fulfillJson(route, {
             ip: "192.168.1.44",
             visible_for_seconds: state.sessionIPRevealSeconds || 30,
         });
+        state.sessionIPRevealResponseFinished = true;
     });
     await page.route("**/api/auth/sessions/others", async (route) => {
         state.sessionClearOthersCount =

@@ -1,0 +1,82 @@
+[
+  {
+    "label": "selected detail",
+    "text": "America/Toronto",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      39,
+      52,
+      67
+    ],
+    "minimum": 5.201357888384797,
+    "samples": 880
+  },
+  {
+    "label": "neutral detail",
+    "text": "America/Toronto",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      38,
+      38,
+      39
+    ],
+    "minimum": 6.210795465271416,
+    "samples": 800
+  },
+  {
+    "label": "neutral title",
+    "text": "App Time",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      38,
+      38,
+      39
+    ],
+    "minimum": 6.210795465271416,
+    "samples": 868
+  },
+  {
+    "label": "hover detail",
+    "text": "America/Toronto",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      32,
+      32,
+      33
+    ],
+    "minimum": 6.687323185516947,
+    "samples": 800
+  },
+  {
+    "label": "focus detail",
+    "text": "America/Toronto",
+    "foreground": [
+      166,
+      166,
+      166
+    ],
+    "background": [
+      41,
+      54,
+      69
+    ],
+    "minimum": 5.050998072003978,
+    "samples": 800
+  }
+]

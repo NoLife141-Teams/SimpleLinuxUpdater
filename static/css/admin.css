@@ -33,7 +33,7 @@
     padding: 9px 11px;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    color: var(--subtle);
+    color: var(--muted);
     text-decoration: none;
     transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
 }
@@ -51,7 +51,7 @@
 }
 
 .admin-section-nav .section-area-badge {
-    color: var(--subtle);
+    color: var(--muted);
     font-size: 9px;
     font-style: normal;
     line-height: 1.2;
@@ -79,7 +79,7 @@
 
 .admin-section-nav a small {
     overflow: hidden;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -127,7 +127,7 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 11px;
     font-weight: 750;
     white-space: nowrap;
@@ -164,7 +164,7 @@
 }
 
 .admin-section-lifecycle [data-admin-section-refreshed] {
-    color: var(--faint);
+    color: var(--muted);
     font-weight: 600;
 }
 
@@ -395,7 +395,7 @@
 }
 
 .draft-state {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     font-weight: 750;
 }
@@ -491,7 +491,7 @@
 }
 
 .app-time-context-facts dt {
-    color: var(--faint);
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 10px;
     font-weight: 800;
@@ -676,7 +676,7 @@
 }
 
 .session-item-details dt {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 11px;
     font-weight: 750;
     letter-spacing: 0.08em;
@@ -852,7 +852,7 @@
     border: 1px solid var(--border);
     border-bottom-color: var(--border-strong);
     border-radius: 4px;
-    color: var(--faint);
+    color: var(--muted);
     background: rgba(255, 255, 255, 0.035);
     font-family: var(--mono);
     font-size: 10px;

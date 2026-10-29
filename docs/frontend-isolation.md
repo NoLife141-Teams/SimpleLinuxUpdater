@@ -34,7 +34,8 @@ timezone components had listeners without a complete page-remount contract.
 | `status-snapshot-adapter.js` | Snapshot, command-history and generation-aware job-log HTTP effects. Publishes the existing request/stream identities unchanged; the store accepts or rejects replies and plans follow-up pages. |
 | `index-bulk-actions.js` | Scoped bulk controls and command-plan execution; consumes the same Status Page Interaction and synchronous snapshot reader as the shell. |
 | `status-transport.js` | Idempotent `start`/`init`, SSE, polling and reconnect backoff. `destroy` closes the stream, clears timers and rejects callbacks from superseded connections. |
-| `manage-workspace-adapter.js` | Section DOM, navigation/focus, scroll/resize scheduling and ResizeObserver. Section decisions stay in Manage Page Interaction. |
+| `manage-workspace-adapter.js` | Section DOM, disclosure rendering and navigation/focus effects. Section decisions stay in Manage Page Interaction. |
+| `section-navigation.js` / `section-navigation-adapter.js` | Shared deterministic row/selection rule consumed by the Manage and Admin interaction owners; shared adapter collects geometry and owns scroll/resize/focus listeners through the page BrowserEffects lifetime. No accepted navigation state lives in the adapter. |
 | `inventory-bulk.js` | Explicit inventory selection controls, accepted per-host preview/confirmation/result rendering and HTTP effects. The shared Manage Page Interaction owns selection, drafts, preview generations and single-command admission; lost responses refresh current facts and require a fresh preview. |
 | `manage-audit-adapter.js` | Audit query input/time conversion, accepted table/detail rendering, clipboard and HTTP effects. |
 | `manage-modals.js` | Per-page modal focus stack, scroll lock, focus timers and file-label effects. |
@@ -50,6 +51,23 @@ confirmations settle as cancellation, modal state and focus locks close, and old
 commands cannot run.
 Existing refresh entry points remain compatible. Read-only Manage/Status page
 inspection is through `ManagePage.getView()` / `StatusPage.getServerByName()`.
+
+Manage and Admin navigation distinguish `workspace.areaSections` (the current
+geometric row, with an eight-pixel tolerance and boundary dead band) from the
+single `workspace.activeSection`. All links in that row show “In this area”; only
+the selected link carries `aria-current="location"`. Explicit navigation or
+interaction within a card chooses the priority within its row. Full geometry
+snapshots replace callback-local IntersectionObserver ranking, so forward and
+backward scrolling follow the same ordered rows. ResizeObserver includes the
+cards, navigation and body to account for asynchronous layout changes. Automatic
+tracking never focuses or expands a card. A still-visible explicit destination
+remains selected across layout changes and at the document end until the next
+scrolling intent; a non-scrollable page preserves its initial or explicit
+selection. Selection stays
+in the interaction owners, while hash/history, horizontal nav visibility and
+focus remain browser effects. Explicitly collapsing the URL’s destination clears
+that fragment so a reload can restore the saved disclosure state. Initial deep-link
+focus waits for `load`, after the browser applies its native fragment navigation.
 
 The Admin shell retains workspace/disclosure/timezone composition and event
 routing across sections. The Status shell retains coherent table, dashboard,

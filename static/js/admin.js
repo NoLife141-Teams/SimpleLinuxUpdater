@@ -6,12 +6,6 @@
         const lifecycle = root.BrowserEffects.create();
         lifecycle.init();
         const fetch = lifecycle.fetch;
-        const IntersectionObserver = root.IntersectionObserver
-            ? lifecycle.observer(root.IntersectionObserver)
-            : undefined;
-        const ResizeObserver = root.ResizeObserver
-            ? lifecycle.observer(root.ResizeObserver)
-            : undefined;
         const scheduledPolicyInteraction =
             window.ScheduledPolicyAdministrationInteraction.createStore();
         const adminPageInteraction = window.AdminPageInteraction.createStore({
@@ -47,8 +41,10 @@
 
         let appTimezonePicker = null;
         let appTimezonePreviewTimer = 0;
-        let adminSectionObserver = null;
-        let adminSectionNavigationLockUntil = 0;
+        const sectionNavigation = root.SectionNavigationAdapter.create({
+            lifecycle, page: "admin", interaction: adminPageInteraction,
+            renderEffects: runAdminWorkspaceEffects,
+        });
 
         const adminSectionPreferenceKey =
             "simplelinuxupdater.admin.collapsed-sections.v1";
@@ -292,11 +288,7 @@
                     "aria-busy",
                     String(section.lifecycle?.status === "loading"),
                 );
-                if (link) {
-                    if (workspace.activeSection === section.id)
-                        link.setAttribute("aria-current", "location");
-                    else link.removeAttribute("aria-current");
-                }
+                if (link) globalThis.SectionNavigationAdapter.renderLink(link, workspace, section.id);
                 if (navSummary) navSummary.textContent = section.summary;
                 if (summary) {
                     summary.textContent = section.summary;
@@ -371,6 +363,8 @@
                             return;
                     }
                 }
+                if (effect.type === "clearSectionLocation")
+                    globalThis.SectionNavigationAdapter.clearLocation("admin", effect.sectionID);
                 if (effect.type === "focusSection") {
                     const section = document.querySelector(
                         `[data-admin-section="${effect.sectionID}"]`,
@@ -473,11 +467,11 @@
                 sectionID,
             });
             if (!effects.length) return;
-            adminSectionNavigationLockUntil = Date.now() + 750;
             if (updateHistory) {
-                history.pushState(null, "", `#admin-section-${sectionID}`);
+                history.pushState(history.state, "", `#admin-section-${sectionID}`);
             }
             runAdminWorkspaceEffects(effects);
+            sectionNavigation.schedule();
         }
 
         function initializeAdminWorkspace() {
@@ -519,6 +513,7 @@
                                 sectionID: toggle.dataset.adminSectionToggle,
                             }),
                         );
+                        sectionNavigation.schedule();
                     });
                 });
             document
@@ -538,48 +533,16 @@
                 if (sectionID) navigateAdminSection(sectionID);
             });
 
-            if ("IntersectionObserver" in window) {
-                adminSectionObserver = new IntersectionObserver(
-                    (entries) => {
-                        if (Date.now() < adminSectionNavigationLockUntil)
-                            return;
-                        const visible = entries
-                            .filter((entry) => entry.isIntersecting)
-                            .sort(
-                                (left, right) =>
-                                    right.intersectionRatio -
-                                    left.intersectionRatio,
-                            )[0];
-                        const sectionID =
-                            visible?.target?.dataset?.adminSection;
-                        if (!sectionID) return;
-                        runAdminWorkspaceEffects(
-                            adminPageInteraction.dispatch({
-                                type: "sectionActivated",
-                                sectionID,
-                            }),
-                        );
-                    },
-                    {
-                        rootMargin: "-150px 0px -55% 0px",
-                        threshold: [0.01, 0.25, 0.5],
-                    },
-                );
-                document
-                    .querySelectorAll("[data-admin-section]")
-                    .forEach((section) =>
-                        adminSectionObserver.observe(section),
-                    );
-            }
-
             const deepLinkedSection = adminSectionIDFromHash();
+            renderAdminWorkspace();
             if (deepLinkedSection) {
-                lifecycle.requestAnimationFrame(() =>
-                    navigateAdminSection(deepLinkedSection),
-                );
-            } else {
-                renderAdminWorkspace();
-            }
+                const start = () => {
+                    navigateAdminSection(deepLinkedSection);
+                    sectionNavigation.init();
+                };
+                if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
+                else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
+            } else sectionNavigation.init();
         }
 
         function beginAdminCommand(command, payload = {}) {

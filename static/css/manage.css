@@ -45,6 +45,23 @@
     color: var(--text);
 }
 
+.manage-section-nav a.is-in-area {
+    border-color: var(--border);
+    background: rgba(var(--field-rgb), 0.58);
+    color: var(--text);
+}
+
+.manage-section-nav .section-area-badge {
+    color: var(--subtle);
+    font-size: 9px;
+    font-style: normal;
+    line-height: 1.2;
+}
+
+.manage-section-nav .section-area-badge[hidden] {
+    display: none;
+}
+
 .manage-section-nav a:focus-visible,
 .manage-section-nav a[aria-current="location"] {
     border-color: var(--accent);

@@ -25,3 +25,7 @@ An actual delayed timezone 401 after MFA activation must also preserve the froze
 recovery-code view until the user explicitly acknowledges the codes and signs in.
 A negative control against the previous files reproduces the missing contextual
 errors/loading states and date presentation. Original files are restored afterward.
+
+MFA validation is also checked at 320×568 and 390×568: the local feedback and
+protected code input remain visible together after rejection, while focus returns
+to the code field. These checks record geometry only and do not capture secrets.

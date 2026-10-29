@@ -186,3 +186,27 @@ test('Retry and delayed timezone reads cannot read over a protected one-time tok
         expect(await page.locator('#token-secret').evaluate(el => el.textContent.length)).toBe(0);
     } finally { releaseTimezone(); }
 });
+for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 568 }]) {
+    test(`MFA validation stays visible with the protected code field focused at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await facts(page);
+        // This public fixture value is never a usable server credential. The
+        // existing real-backend workflows separately verify MFA/recovery policy.
+        await page.route('**/api/auth/mfa/enroll', route => fulfillJson(route, { secret: 'JBSWY3DPEHPK3PXP' }));
+        await page.route('**/api/auth/mfa/confirm', route => fulfillJson(route, { error: 'invalid or expired enrollment code' }, 401));
+        await ready(page);
+        await page.locator('#mfa-enroll').click();
+        await page.locator('#mfa-confirm-code').fill('000000');
+        await page.locator('#mfa-confirm-code').press('Enter');
+        await expect(page.locator('#mfa-feedback')).toContainText('invalid or expired enrollment code');
+        await expect(page.locator('#mfa-confirm-code')).toBeFocused();
+        await expect.poll(() => page.evaluate(() => {
+            const feedback = document.getElementById('mfa-feedback').getBoundingClientRect();
+            const field = document.getElementById('mfa-confirm-code').getBoundingClientRect();
+            return Math.min(feedback.top, field.top) >= 0 && Math.max(feedback.bottom, field.bottom) <= innerHeight;
+        })).toBe(true);
+        await expect(page.locator('#mfa-enrollment')).toBeVisible();
+        await page.locator('#mfa-cancel').click();
+        expect(await page.locator('#mfa-secret').evaluate(node => node.textContent.length)).toBe(0);
+    });
+}

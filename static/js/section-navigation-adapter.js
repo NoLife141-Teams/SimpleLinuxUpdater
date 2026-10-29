@@ -13,7 +13,7 @@
         const header = document.querySelector(".app-header");
         const container = nav?.parentElement;
         let observing = false;
-        let acceptedLocation = location.href;
+        let acceptedFragment = location.hash;
         function updateOffsets() {
             if (!container || !nav) return;
             const pinned = header && ["sticky", "fixed"].includes(getComputedStyle(header).position);
@@ -24,7 +24,8 @@
             const before = interaction.getView().workspace.activeSection;
             // A same-document navigation changes the URL before hashchange runs.
             // A queued resize/scroll sample must not overwrite that destination.
-            if (event.type === "sectionGeometryReceived" && location.href !== acceptedLocation && sections.some(section => {
+            // Query-only audit filter edits do not create a pending fragment.
+            if (event.type === "sectionGeometryReceived" && location.hash !== acceptedFragment && sections.some(section => {
                 const id = section.getAttribute(attribute);
                 return id !== before && matchesLocation(page, id);
             })) return;
@@ -32,7 +33,7 @@
             const after = interaction.getView().workspace.activeSection;
             if (event.type === "sectionGeometryReceived" && before !== after) {
                 history.replaceState(history.state, "", `#${page}-section-${after}`);
-                acceptedLocation = location.href;
+                acceptedFragment = location.hash;
             }
         }
         function sync() {
@@ -130,7 +131,7 @@
             if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
             else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
         }
-        return Object.freeze({ init, schedule, acknowledgeLocation() { acceptedLocation = location.href; } });
+        return Object.freeze({ init, schedule, acknowledgeLocation() { acceptedFragment = location.hash; } });
     }
     function renderLink(link, workspace, sectionID) {
         const inArea = workspace.areaSections.includes(sectionID);

@@ -224,7 +224,7 @@ body.status-page .metric-wide {
 body.status-page .metric-item small {
     display: block;
     margin-top: 7px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
     overflow-wrap: anywhere;
@@ -929,7 +929,7 @@ th.resizing .col-resize-handle::before {
 
 .host-facts dt,
 .mini-label {
-    color: var(--faint);
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 10px;
     font-weight: 700;
@@ -1915,7 +1915,7 @@ body.status-page .head-meta {
 }
 
 .rail-label {
-    color: var(--faint);
+    color: var(--muted);
     font-family: var(--mono);
     font-size: 9px;
     font-weight: 800;
@@ -2271,7 +2271,7 @@ body.status-page .maintenance-table {
 .server-subline {
     display: block;
     margin-top: 2px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 10px;
     font-weight: 600;
     overflow: hidden;
@@ -2353,7 +2353,7 @@ body.status-page .maintenance-table {
 
 .phase-pending,
 .phase-idle {
-    color: var(--faint);
+    color: var(--muted);
 }
 
 .timeline-progress-ring {

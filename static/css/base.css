@@ -417,7 +417,7 @@ h4 {
 .metric-item small {
     display: block;
     margin-top: 7px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
     overflow-wrap: anywhere;
@@ -877,7 +877,7 @@ body.manage-modal-open {
 }
 
 .confirmation-summary dt {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 10px;
     font-weight: 850;
     letter-spacing: 0.08em;
@@ -886,7 +886,7 @@ body.manage-modal-open {
 
 .confirmation-summary dd {
     margin: 0;
-    color: var(--subtle);
+    color: var(--muted);
     font-size: 12px;
     line-height: 1.45;
     overflow-wrap: anywhere;

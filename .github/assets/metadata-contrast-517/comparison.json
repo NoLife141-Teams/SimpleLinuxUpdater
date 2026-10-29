@@ -1,0 +1,182 @@
+[
+  {
+    "component": "manage-1284",
+    "text": "Not configured",
+    "before": {
+      "label": "selected detail",
+      "text": "Not configured",
+      "foreground": [
+        111,
+        111,
+        111
+      ],
+      "background": [
+        40,
+        53,
+        68
+      ],
+      "minimum": 2.4832899108061564,
+      "samples": 803
+    },
+    "after": {
+      "label": "selected detail",
+      "text": "Not configured",
+      "foreground": [
+        166,
+        166,
+        166
+      ],
+      "background": [
+        40,
+        53,
+        68
+      ],
+      "minimum": 5.1258769718574175,
+      "samples": 803
+    }
+  },
+  {
+    "component": "admin-1284",
+    "text": "America/Toronto",
+    "before": {
+      "label": "selected detail",
+      "text": "America/Toronto",
+      "foreground": [
+        111,
+        111,
+        111
+      ],
+      "background": [
+        39,
+        52,
+        67
+      ],
+      "minimum": 2.519857506848736,
+      "samples": 880
+    },
+    "after": {
+      "label": "selected detail",
+      "text": "America/Toronto",
+      "foreground": [
+        166,
+        166,
+        166
+      ],
+      "background": [
+        39,
+        52,
+        67
+      ],
+      "minimum": 5.201357888384797,
+      "samples": 880
+    }
+  },
+  {
+    "component": "observability-1284",
+    "text": "0 successful runs \u00b7 1 failed run",
+    "before": {
+      "label": "kpi-success-context",
+      "text": "0 successful runs \u00b7 1 failed run",
+      "foreground": [
+        111,
+        111,
+        111
+      ],
+      "background": [
+        42,
+        42,
+        44
+      ],
+      "minimum": 2.8507545616243966,
+      "samples": 2379
+    },
+    "after": {
+      "label": "kpi-success-context",
+      "text": "0 successful runs \u00b7 1 failed run",
+      "foreground": [
+        166,
+        166,
+        166
+      ],
+      "background": [
+        42,
+        42,
+        44
+      ],
+      "minimum": 5.884378258156838,
+      "samples": 2379
+    }
+  },
+  {
+    "component": "confirmation-status-1284",
+    "text": "Operation",
+    "before": {
+      "label": "confirmation context",
+      "text": "Operation",
+      "foreground": [
+        111,
+        111,
+        111
+      ],
+      "background": [
+        37,
+        37,
+        38
+      ],
+      "minimum": 3.047679645736095,
+      "samples": 710
+    },
+    "after": {
+      "label": "confirmation context",
+      "text": "Operation",
+      "foreground": [
+        166,
+        166,
+        166
+      ],
+      "background": [
+        37,
+        37,
+        38
+      ],
+      "minimum": 6.290860702851163,
+      "samples": 710
+    }
+  },
+  {
+    "component": "confirmation-status-1284",
+    "text": "Review fixture",
+    "before": {
+      "label": "confirmation context",
+      "text": "Review fixture",
+      "foreground": [
+        133,
+        133,
+        133
+      ],
+      "background": [
+        37,
+        37,
+        38
+      ],
+      "minimum": 4.150150994476017,
+      "samples": 1105
+    },
+    "after": {
+      "label": "confirmation context",
+      "text": "Review fixture",
+      "foreground": [
+        166,
+        166,
+        166
+      ],
+      "background": [
+        37,
+        37,
+        38
+      ],
+      "minimum": 6.290860702851163,
+      "samples": 1105
+    }
+  }
+]

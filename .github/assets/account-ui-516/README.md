@@ -21,5 +21,7 @@ SLU_CAPTURE_UI_516=1 npm run test:e2e -- tests/e2e/account-ui.spec.js --workers=
 
 Functional tests also verify stale-row retention, protected-secret retry admission,
 late timezone completion without additional list reads, confirmations and focus.
+An actual delayed timezone 401 after MFA activation must also preserve the frozen
+recovery-code view until the user explicitly acknowledges the codes and signs in.
 A negative control against the previous files reproduces the missing contextual
 errors/loading states and date presentation. Original files are restored afterward.

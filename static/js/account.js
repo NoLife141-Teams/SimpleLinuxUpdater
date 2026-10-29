@@ -174,6 +174,29 @@
         byID('account-timezone').textContent = `Dates shown in ${window.getAppTimezoneLabel()}. Token expiry entry uses your browser timezone.`;
         document.querySelectorAll('time[data-account-timestamp]').forEach(formatTimestamp);
     }
+    async function discoverDatePresentation() {
+        // Optional display metadata must not use auth.js's redirecting fetch:
+        // MFA can revoke the cookie while recovery codes await acknowledgement.
+        const transport = window.BrowserEffects.create({ fetch: (...args) => (window.__nativeFetch || window.fetch.bind(window))(...args) });
+        transport.init();
+        const release = lifecycle.own(() => transport.destroy());
+        try {
+            const response = await transport.fetch('/api/app-settings/timezone', { cache: 'no-store' });
+            if (!response.ok) {
+                transport.discardResponse(response);
+                return;
+            }
+            const data = await response.json();
+            if (!lifecycle.active) return;
+            window.setAppTimezoneCache(data);
+            refreshDatePresentation();
+        } catch (_) {
+            // Keep the explicit UTC fallback if this passive read is unavailable.
+        } finally {
+            transport.destroy();
+            release();
+        }
+    }
     async function snapshot(name, path) {
         const version = ++snapshots[name];
         snapshotRequests[name]?.abort();
@@ -299,7 +322,7 @@
     refreshDatePresentation();
     // Timezone discovery only reformats accepted DOM facts. It never starts
     // another identity/list read or touches an unacknowledged secret.
-    void window.ensureAppTimezoneLoaded().then(refreshDatePresentation, refreshDatePresentation);
+    void discoverDatePresentation();
     (async () => {
         const { account, scopes } = await request('/api/auth/identity'); ownAccountID = account.id; byID('identity-summary').textContent = `${account.username} · ${account.role} · account ${account.id}`;
         byID('mfa-status').textContent = account.mfa_enabled ? 'Authenticator enabled.' : 'Authenticator is optional and currently disabled.'; byID('mfa-enroll').hidden = account.mfa_enabled; byID('mfa-disable').hidden = !account.mfa_enabled;

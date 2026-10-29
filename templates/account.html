@@ -6,7 +6,7 @@
  <link rel="icon" type="image/png" href="/static/logo.png">
  <link rel="stylesheet" href="/static/css/base.css?v=ui-components-515-20261029">
  <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
- <link rel="stylesheet" href="/static/css/account.css">
+ <link rel="stylesheet" href="/static/css/account.css?v=account-ui-516-20261029">
 </head>
 <body data-account-role="{{.Role}}">
  <div class="dashboard-shell">
@@ -14,31 +14,40 @@
  <main class="dashboard-main account-main">
   <section class="hero"><div class="eyebrow">Account security</div><h1>Your account</h1><p id="identity-summary" class="muted">Loading identity…</p></section>
   <p id="account-status" tabindex="-1" role="status" aria-live="polite"></p>
+  <p class="muted" id="account-timezone">Dates shown in UTC.</p>
   <section class="card"><h2>Confirm your identity</h2><p class="muted">Sensitive changes require your password and, when enabled, a fresh authenticator or recovery code. Confirmation lasts five minutes.</p>
    <form id="reauth-form"><label for="reauth-password">Current password</label><input id="reauth-password" type="password" autocomplete="current-password" required maxlength="64">
    <label for="reauth-code">Authenticator or recovery code (if enabled)</label><input id="reauth-code" autocomplete="one-time-code" maxlength="32">
-   <button type="submit">Confirm identity</button></form>
+   <button class="primary-action" type="submit">Confirm identity</button></form>
+   <p class="account-feedback" id="reauth-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
   </section>
-  <section class="card"><h2>Multi-factor authentication</h2><p id="mfa-status"></p>
-   <button id="mfa-enroll" type="button">Set up authenticator</button><button id="mfa-disable" type="button" hidden>Disable MFA</button>
+  <section class="card"><h2>Multi-factor authentication</h2><p class="account-feedback" id="mfa-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p><p id="mfa-status"></p>
+   <button class="primary-action" id="mfa-enroll" type="button">Set up authenticator</button><button class="btn-danger" id="mfa-disable" type="button" hidden>Disable MFA</button>
    <div id="mfa-enrollment" hidden><p>Enter this secret in your authenticator. Enrollment expires in ten minutes. Enabling MFA signs out all your browser sessions and revokes all your personal tokens. Save the recovery codes before signing in again.</p><pre id="mfa-secret" class="one-time-secret"></pre>
-    <button id="mfa-cancel" type="button">Cancel and clear enrollment secret</button><form id="mfa-confirm-form"><label for="mfa-confirm-code">Six-digit authenticator code</label><input id="mfa-confirm-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required><button type="submit">Enable MFA</button></form>
+    <button class="btn-ghost" id="mfa-cancel" type="button">Cancel and clear enrollment secret</button><form id="mfa-confirm-form"><label for="mfa-confirm-code">Six-digit authenticator code</label><input id="mfa-confirm-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required><button class="primary-action" type="submit">Enable MFA</button></form>
    </div>
-   <div id="recovery-result" hidden><p>Save these single-use recovery codes now. They cannot be displayed again. Sessions and personal tokens were revoked.</p><pre id="recovery-codes" class="one-time-secret"></pre><button id="recovery-dismiss" type="button">I have saved the recovery codes — sign in again</button></div>
+   <div id="recovery-result" hidden><p>Save these single-use recovery codes now. They cannot be displayed again. Sessions and personal tokens were revoked.</p><pre id="recovery-codes" class="one-time-secret"></pre><button class="primary-action" id="recovery-dismiss" type="button">I have saved the recovery codes — sign in again</button></div>
   </section>
   <section class="card"><h2>Personal API tokens</h2><p class="muted">Tokens use your current role and selected scopes. The secret appears once. Tokens expire within one year; backup restoration revokes them.</p>
-   <form id="token-form"><label for="token-name">Token name</label><input id="token-name" maxlength="80" required><fieldset id="token-scopes"><legend>Scopes</legend></fieldset><label for="token-expiry">Expiry (your browser timezone)</label><input id="token-expiry" type="datetime-local" required><button type="submit">Create personal token</button></form>
-   <div id="token-result" hidden><p>Copy this secret now. It cannot be retrieved again.</p><pre id="token-secret" class="one-time-secret"></pre><button id="token-dismiss" type="button">I have saved the secret</button></div>
-   <ul id="token-list" aria-label="Your personal tokens"></ul>
+   <form id="token-form"><label for="token-name">Token name</label><input id="token-name" maxlength="80" required><fieldset id="token-scopes"><legend>Scopes</legend></fieldset><label for="token-expiry">Expiry (your browser timezone)</label><input id="token-expiry" type="datetime-local" required><button class="primary-action" type="submit">Create personal token</button></form>
+   <p class="account-feedback" id="token-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
+   <div id="token-result" hidden><p>Copy this secret now. It cannot be retrieved again.</p><pre id="token-secret" class="one-time-secret"></pre><button class="primary-action" id="token-dismiss" type="button">I have saved the secret</button></div>
+   <div class="account-list-state" id="tokens-state" data-state="loading"><span id="tokens-status" role="status" aria-live="polite" aria-atomic="true">Loading personal tokens…</span><button class="btn-ghost small-btn" type="button" data-account-list-retry="tokens" hidden>Retry</button></div>
+   <ul tabindex="-1" aria-busy="true" id="token-list" aria-label="Your personal tokens"></ul>
   </section>
   <section class="card"><h2>Password and sessions</h2>
-   <form id="account-password-form"><label for="account-current-password">Current password</label><input id="account-current-password" type="password" autocomplete="current-password" required><label for="account-new-password">New password</label><input id="account-new-password" type="password" minlength="10" maxlength="64" autocomplete="new-password" required><label for="account-confirm-password">Confirm new password</label><input id="account-confirm-password" type="password" autocomplete="new-password" required><button type="submit">Change password and revoke other sessions</button></form>
-   <ul id="session-list" aria-label="Your sessions"></ul>
+   <form id="account-password-form"><label for="account-current-password">Current password</label><input id="account-current-password" type="password" autocomplete="current-password" required><label for="account-new-password">New password</label><input id="account-new-password" type="password" minlength="10" maxlength="64" autocomplete="new-password" required><label for="account-confirm-password">Confirm new password</label><input id="account-confirm-password" type="password" autocomplete="new-password" required><button class="primary-action" type="submit">Change password and revoke other sessions</button></form>
+   <p class="account-feedback" id="password-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
+   <p class="account-feedback" id="session-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
+   <div class="account-list-state" id="sessions-state" data-state="loading"><span id="sessions-status" role="status" aria-live="polite" aria-atomic="true">Loading sessions…</span><button class="btn-ghost small-btn" type="button" data-account-list-retry="sessions" hidden>Retry</button></div>
+   <ul tabindex="-1" aria-busy="true" id="session-list" aria-label="Your sessions"></ul>
   </section>
   <section class="card" id="accounts-section" hidden><h2>Named accounts</h2><p class="muted">Readers consult operational data. Operators maintain hosts and approve updates. Administrators manage credentials, policies, backups and accounts. The last enabled administrator is protected.</p>
-   <form id="account-create-form"><label for="new-account-name">Username</label><input id="new-account-name" required maxlength="64" autocomplete="off"><label for="new-account-password">Initial password</label><input id="new-account-password" type="password" required minlength="10" maxlength="64" autocomplete="new-password"><label for="new-account-role">Role</label><select id="new-account-role"><option value="reader">Reader</option><option value="operator">Operator</option><option value="admin">Administrator</option></select><button type="submit">Create account</button></form>
-   <ul id="account-list" aria-label="Named accounts"></ul>
+   <form id="account-create-form"><label for="new-account-name">Username</label><input id="new-account-name" required maxlength="64" autocomplete="off"><label for="new-account-password">Initial password</label><input id="new-account-password" type="password" required minlength="10" maxlength="64" autocomplete="new-password"><label for="new-account-role">Role</label><select id="new-account-role"><option value="reader">Reader</option><option value="operator">Operator</option><option value="admin">Administrator</option></select><button class="primary-action" type="submit">Create account</button></form>
+   <p class="account-feedback" id="accounts-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
+   <div class="account-list-state" id="accounts-state" data-state="loading"><span id="accounts-status" role="status" aria-live="polite" aria-atomic="true">Loading named accounts…</span><button class="btn-ghost small-btn" type="button" data-account-list-retry="accounts" hidden>Retry</button></div>
+   <ul tabindex="-1" aria-busy="true" id="account-list" aria-label="Named accounts"></ul>
   </section>
  </main></div>
- <script src="/static/auth.js"></script><script src="/static/js/browser-effects.js"></script><script src="/static/js/common.js"></script><script src="/static/js/reauthentication.js?v=account-commands-20261027"></script><script src="/static/js/account-command-state.js?v=account-commands-20261027"></script><script src="/static/js/account.js?v=account-commands-20261027"></script>
+ <script src="/static/auth.js"></script><script src="/static/js/browser-effects.js"></script><script src="/static/js/common.js"></script><script src="/static/js/reauthentication.js?v=account-ui-516-20261029"></script><script src="/static/js/account-command-state.js?v=account-commands-20261027"></script><script src="/static/js/account.js?v=account-ui-516-20261029"></script>
 </body></html>

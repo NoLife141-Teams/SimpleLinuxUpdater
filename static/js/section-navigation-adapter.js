@@ -1,16 +1,51 @@
 // Geometry, listeners and rendering effects only; the injected page interaction owns navigation.
 (function (root) {
     "use strict";
+    function matchesLocation(page, sectionID) {
+        const aliases = page === "manage" ? { audit: "#audit-trail", directory: "#server-directory" } : {};
+        return location.hash === `#${page}-section-${sectionID}` || location.hash === aliases[sectionID];
+    }
     function create({ lifecycle, page, interaction, renderEffects }) {
         let frame = null;
         const attribute = `data-${page}-section`;
         const sections = Array.from(document.querySelectorAll(`[${attribute}]`));
         const nav = document.getElementById(`${page}-section-nav`);
+        const header = document.querySelector(".app-header");
+        const container = nav?.parentElement;
+        let observing = false;
+        let acceptedLocation = location.href;
+        function updateOffsets() {
+            if (!container || !nav) return;
+            const pinned = header && ["sticky", "fixed"].includes(getComputedStyle(header).position);
+            container.style.setProperty("--app-header-offset", `${pinned ? Math.ceil(header.getBoundingClientRect().height) : 0}px`);
+            container.style.setProperty("--section-nav-height", `${Math.ceil(nav.getBoundingClientRect().height)}px`);
+        }
+        // Measure before fragment focus, including when load is still pending.
+        updateOffsets();
+        lifecycle.listen(window, "resize", updateOffsets);
+        if (root.ResizeObserver) {
+            const Observer = lifecycle.observer(root.ResizeObserver);
+            const offsets = new Observer(() => {
+                updateOffsets();
+                if (observing) schedule();
+            });
+            if (header) offsets.observe(header);
+            if (nav) offsets.observe(nav);
+        }
         function publish(event) {
             const before = interaction.getView().workspace.activeSection;
+            // A same-document navigation changes the URL before hashchange runs.
+            // A queued resize/scroll sample must not overwrite that destination.
+            if (event.type === "sectionGeometryReceived" && location.href !== acceptedLocation && sections.some(section => {
+                const id = section.getAttribute(attribute);
+                return id !== before && matchesLocation(page, id);
+            })) return;
             renderEffects(interaction.dispatch(event));
             const after = interaction.getView().workspace.activeSection;
-            if (event.type === "sectionGeometryReceived" && before !== after) history.replaceState(history.state, "", `#${page}-section-${after}`);
+            if (event.type === "sectionGeometryReceived" && before !== after) {
+                history.replaceState(history.state, "", `#${page}-section-${after}`);
+                acceptedLocation = location.href;
+            }
         }
         function sync() {
             frame = null;
@@ -45,6 +80,7 @@
             schedule();
         }
         function observe() {
+            observing = true;
             lifecycle.listen(window, "scroll", schedule, { passive: true });
             lifecycle.listen(window, "resize", schedule);
             lifecycle.listen(window, "wheel", scrollIntent, { passive: true });
@@ -93,7 +129,7 @@
             if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
             else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
         }
-        return Object.freeze({ init, schedule });
+        return Object.freeze({ init, schedule, acknowledgeLocation() { acceptedLocation = location.href; } });
     }
     function renderLink(link, workspace, sectionID) {
         const inArea = workspace.areaSections.includes(sectionID);
@@ -117,8 +153,7 @@
         }
     }
     function clearLocation(page, sectionID) {
-        const aliases = page === "manage" ? { audit: "#audit-trail", directory: "#server-directory" } : {};
-        if (location.hash === `#${page}-section-${sectionID}` || location.hash === aliases[sectionID])
+        if (matchesLocation(page, sectionID))
             history.replaceState(history.state, "", location.pathname + location.search);
     }
     root.SectionNavigationAdapter = Object.freeze({ create, renderLink, clearLocation });

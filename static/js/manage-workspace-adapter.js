@@ -117,6 +117,7 @@
             if (!effects.length) return;
             if (updateHistory)
                 history.pushState(history.state, "", `#manage-section-${sectionID}`);
+            navigation.acknowledgeLocation();
             runManageWorkspaceEffects(effects);
             navigation.schedule();
         }

@@ -160,16 +160,7 @@
             });
             const deepLink = manageSectionIDFromHash();
             renderManageWorkspace();
-            if (deepLink) {
-                // The browser applies its initial fragment after DOMContentLoaded.
-                // Focus after load so it cannot undo the requested heading focus.
-                const start = () => {
-                    navigateManageSection(deepLink);
-                    navigation.init();
-                };
-                if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
-                else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
-            } else navigation.init();
+            navigation.init(deepLink, navigateManageSection);
         }
         return Object.freeze({
             init: lifecycle.init,

@@ -73,6 +73,9 @@ in the interaction owners, while hash/history, horizontal nav visibility and
 focus remain browser effects. Explicitly collapsing the URL’s destination clears
 that fragment so a reload can restore the saved disclosure state. Initial deep-link
 focus waits for `load`, after the browser applies its native fragment navigation.
+If the user navigates or interacts before that load completes, the deferred
+initial focus is cancelled; geometry tracking still starts without replaying
+the old destination over the newer interaction.
 
 The Admin shell retains workspace/disclosure/timezone composition and event
 routing across sections. The Status shell retains coherent table, dashboard,

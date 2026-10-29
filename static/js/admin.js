@@ -536,14 +536,7 @@
 
             const deepLinkedSection = adminSectionIDFromHash();
             renderAdminWorkspace();
-            if (deepLinkedSection) {
-                const start = () => {
-                    navigateAdminSection(deepLinkedSection);
-                    sectionNavigation.init();
-                };
-                if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
-                else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
-            } else sectionNavigation.init();
+            sectionNavigation.init(deepLinkedSection, navigateAdminSection);
         }
 
         function beginAdminCommand(command, payload = {}) {

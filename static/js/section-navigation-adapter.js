@@ -42,14 +42,12 @@
             interaction.dispatch({ type: "sectionScrollIntent" });
             schedule();
         }
-        function init() {
+        function observe() {
             lifecycle.listen(window, "scroll", schedule, { passive: true });
             lifecycle.listen(window, "resize", schedule);
             lifecycle.listen(window, "wheel", scrollIntent, { passive: true });
             lifecycle.listen(window, "touchmove", scrollIntent, { passive: true });
             lifecycle.listen(document, "keydown", scrollIntent);
-            lifecycle.listen(document, "focusin", interact);
-            lifecycle.listen(document, "pointerdown", interact);
             if (root.ResizeObserver) {
                 const Observer = lifecycle.observer(root.ResizeObserver);
                 const observer = new Observer(schedule);
@@ -58,6 +56,40 @@
                 observer.observe(document.body);
             }
             schedule();
+        }
+        function init(initialSectionID = "", navigate = () => {}) {
+            // Accept a card choice immediately, including while native fragment
+            // focus is pending; geometry must retain that choice within a row.
+            lifecycle.listen(document, "focusin", interact);
+            lifecycle.listen(document, "pointerdown", interact);
+            if (!initialSectionID) {
+                observe();
+                return;
+            }
+            // Native fragment navigation finishes at load. Its deferred focus
+            // must not replay over navigation or input already chosen by a user.
+            const initialLocation = location.href;
+            let interrupted = false;
+            let tracking = false;
+            const track = () => {
+                if (tracking) return;
+                tracking = true;
+                observe();
+            };
+            const interrupt = event => {
+                interrupted = true;
+                track();
+                if (["wheel", "touchmove", "keydown"].includes(event.type)) scrollIntent(event);
+            };
+            const intents = ["pointerdown", "keydown", "wheel", "touchmove"];
+            intents.forEach(type => lifecycle.listen(window, type, interrupt, { passive: true }));
+            const start = () => {
+                intents.forEach(type => lifecycle.unlisten(window, type, interrupt));
+                if (!interrupted && location.href === initialLocation) navigate(initialSectionID);
+                track();
+            };
+            if (document.readyState === "complete") lifecycle.requestAnimationFrame(start);
+            else lifecycle.listen(window, "load", () => lifecycle.requestAnimationFrame(start));
         }
         return Object.freeze({ init, schedule });
     }

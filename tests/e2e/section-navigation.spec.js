@@ -31,6 +31,59 @@ async function rows(page, prefix) {
 }
 
 for (const prefix of ["manage", "admin"]) {
+    for (const action of ["navigation", "reading"]) {
+        test(`${prefix} keeps newer section ${action} when initial resources finish loading`, async ({ page }) => {
+            await ensureAuthenticatedSession(page);
+            if (prefix === "manage") await stubManageApi(page, { servers: [] });
+            else await stubAdminApi(page, {});
+            const initial = prefix === "manage"
+                ? action === "reading" ? "global-key" : "add-server"
+                : "notifications";
+            const destination = prefix === "manage"
+                ? action === "reading" ? "add-server" : "global-key"
+                : "app-time";
+            let release;
+            const ready = new Promise(resolve => { release = resolve; });
+            await page.route("**/static/logo.png", async route => {
+                await ready;
+                await route.continue();
+            });
+            try {
+                await page.goto(`/${prefix}#${prefix}-section-${initial}`, { waitUntil: "domcontentloaded" });
+                expect(await page.evaluate(() => document.readyState)).toBe("interactive");
+                const target = action === "navigation"
+                    ? `[data-${prefix}-section-link="${destination}"]`
+                    : `#${prefix}-section-${destination}-heading`;
+                await page.locator(target).click();
+                await expect(page.locator(`#${prefix}-section-${destination}-heading`)).toBeFocused();
+                if (action === "navigation") {
+                    // A slow image must not suspend tracking of the reader's scroll.
+                    await page.mouse.move(8, 400);
+                    await expect.poll(async () => {
+                        await page.mouse.wheel(0, 100000);
+                        return active(page, prefix);
+                    }).toBe(prefix === "manage" ? "audit" : "metrics");
+                    await page.locator(`[data-${prefix}-section-link="${destination}"]`).click();
+                }
+                const url = page.url();
+                release();
+                await page.waitForLoadState("load");
+                await settle(page);
+                if (action === "navigation") await expect(page).toHaveURL(url);
+                await expect(page.locator(`#${prefix}-section-${destination}-heading`)).toBeFocused();
+                await expect.poll(() => active(page, prefix)).toBe(destination);
+                // Tracking must still start even though the old initial focus was cancelled.
+                await page.mouse.move(8, 400);
+                // Lazy sections may grow after the first wheel reaches the old end.
+                await expect.poll(async () => {
+                    await page.mouse.wheel(0, 100000);
+                    return active(page, prefix);
+                }).toBe(prefix === "manage" ? "audit" : "metrics");
+            } finally {
+                release();
+            }
+        });
+    }
     for (const viewport of [{ width: 1284, height: 884 }, { width: 390, height: 844 }]) {
         test(`${prefix} section areas track stable rows in both directions at ${viewport.width}px without moving focus`, async ({ page }) => {
             await page.setViewportSize(viewport);

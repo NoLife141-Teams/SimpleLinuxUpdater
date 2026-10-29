@@ -6,7 +6,7 @@
 
 .manage-section-nav {
     position: sticky;
-    top: 84px;
+    top: calc(var(--app-header-offset, 72px) + 8px);
     z-index: 24;
     margin-bottom: 16px;
     padding: 6px;
@@ -35,7 +35,7 @@
     padding: 9px 11px;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    color: var(--subtle);
+    color: var(--muted);
     text-decoration: none;
 }
 
@@ -43,6 +43,23 @@
     border-color: var(--border);
     background: rgba(var(--field-rgb), 0.58);
     color: var(--text);
+}
+
+.manage-section-nav a.is-in-area {
+    border-color: var(--border);
+    background: rgba(var(--field-rgb), 0.58);
+    color: var(--text);
+}
+
+.manage-section-nav .section-area-badge {
+    color: var(--muted);
+    font-size: 9px;
+    font-style: normal;
+    line-height: 1.2;
+}
+
+.manage-section-nav .section-area-badge[hidden] {
+    display: none;
 }
 
 .manage-section-nav a:focus-visible,
@@ -66,7 +83,7 @@
 }
 
 .manage-section-nav a small {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 10px;
 }
 
@@ -87,7 +104,7 @@
 .manage-workspace-section {
     min-width: 0;
     max-width: 100%;
-    scroll-margin-top: 164px;
+    scroll-margin-top: calc(var(--app-header-offset, 72px) + var(--section-nav-height, 80px) + 16px);
 }
 
 .manage-workspace-section [id$="-heading"] {
@@ -288,7 +305,7 @@
 }
 
 .server-endpoint small {
-    color: var(--faint);
+    color: var(--muted);
     font-family: var(--mono);
 }
 
@@ -298,7 +315,7 @@
 }
 
 .access-posture small {
-    color: var(--faint);
+    color: var(--muted);
 }
 
 .row-actions {
@@ -634,10 +651,6 @@
 }
 
 @media (max-width: 640px) {
-    .manage-section-nav {
-        top: 8px;
-    }
-
     .manage-summary {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }

@@ -1,8 +1,8 @@
 (function initAdminPageInteraction(root, factory) {
-    const api = factory();
+    const api = factory(typeof module === "object" && module.exports ? require("./section-navigation.js") : root.SectionNavigation);
     if (typeof module === "object" && module.exports) module.exports = api;
     if (root) root.AdminPageInteraction = api;
-}(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory() {
+}(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory(navigation) {
     "use strict";
 
     const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks", "installation"];
@@ -352,7 +352,7 @@
             catalogReview: null,
             catalogFeedback: null
         };
-        let activeSection = sectionDefinitions[0].id;
+        let sectionNavigation = navigation.create(sectionDefinitions[0].id);
         let collapsedSections = [];
         const activatedSections = new Set();
         const feedback = Object.fromEntries(streamNames.map(name => [name, { message: "", error: false }]));
@@ -651,7 +651,8 @@
                 metrics: streams.metrics.accepted ? freshnessSummary(metricsSummary(), streams.metrics.freshness === "stale") : "Metrics token status unavailable"
             };
             return {
-                activeSection,
+                activeSection: sectionNavigation.activeSection,
+                areaSections: sectionNavigation.areaSections,
                 collapsedSections: clone(collapsedSections),
                 sections: sectionDefinitions.map(section => ({
                     ...section,
@@ -817,7 +818,7 @@
                 if (["loaded","saved","tested","failed"].includes(type) && event.requestID !== postchecks.requestID) return [];
                 if (type === "loaded" || type === "saved") {
                     postchecks.accepted=clone(event.data);postchecks.draft=clone(event.data);postchecks.busy=false;
-                    if (!postchecks.draft.profiles.some(p=>p.id===postchecks.selectedID)) postchecks.selectedID=postchecks.draft.profiles[0]?.id || "";
+                    if (!postchecks.draft.profiles.some(p=>p.id===postchecks.selectedID)) postchecks.selectedID="";
                     postchecks.testResults=null;postchecks.message=type==="saved"?"Application post-check profiles saved.":"";
                 }
                 if (type === "failed") {postchecks.busy=false;postchecks.error=true;postchecks.message=String(event.message || "Request failed.");}
@@ -944,10 +945,34 @@
                 case "sectionPreferencesRestored":
                     collapsedSections = normalizeSectionIDs(event.collapsedSections);
                     return [effect("render", { area: "workspace" })];
+                case "sectionScrollIntent":
+                    sectionNavigation = { ...sectionNavigation, explicitSection: "" };
+                    return [];
+                case "sectionInteracted": {
+                    const sectionID = String(event.sectionID || "");
+                    if (!sectionIDs.has(sectionID)) return [];
+                    sectionNavigation = navigation.select(sectionNavigation, sectionID);
+                    return [effect("render", { area: "workspace" }), ...activateSectionData(sectionID)];
+                }
+                case "sectionGeometryReceived": {
+                    const geometry = event.geometry || {};
+                    const sections = (geometry.sections || []).filter(section => sectionIDs.has(section.id));
+                    const next = navigation.reconcile(sectionNavigation, { ...geometry, sections });
+                    const changed = !sameValue(next, sectionNavigation);
+                    sectionNavigation = next;
+                    // Start reads one viewport ahead of open sections, before
+                    // arriving at their content. Loading never changes disclosure.
+                    const approaching = Number.isFinite(geometry.viewportHeight) && geometry.viewportHeight > 0
+                        ? sections.filter(section => section.bottom > geometry.anchorY - geometry.viewportHeight && section.top < geometry.viewportHeight * 2).map(section => section.id)
+                        : [];
+                    const load = [...new Set([...next.areaSections, ...approaching])]
+                        .flatMap(id => activateSectionData(id));
+                    return [...(changed ? [effect("render", { area: "workspace" })] : []), ...load];
+                }
                 case "sectionNavigationRequested": {
                     const sectionID = String(event.sectionID || "").trim();
                     if (!sectionIDs.has(sectionID)) return [];
-                    activeSection = sectionID;
+                    sectionNavigation = navigation.select(sectionNavigation, sectionID);
                     collapsedSections = collapsedSections.filter(value => value !== sectionID);
                     return [
                         effect("render", { area: "workspace" }),
@@ -966,15 +991,15 @@
                     return [
                         effect("render", { area: "workspace" }),
                         effect("persistSectionPreferences", { collapsedSections: clone(collapsedSections) }),
-                        ...(expanding ? activateSectionData(sectionID) : [])
+                        ...(expanding ? activateSectionData(sectionID) : [effect("clearSectionLocation", { sectionID })])
                     ];
                 }
                 case "sectionActivated": {
                     const sectionID = String(event.sectionID || "").trim();
                     if (!sectionIDs.has(sectionID) || collapsedSections.includes(sectionID)) return [];
                     const effects = activateSectionData(sectionID);
-                    if (sectionID !== activeSection) {
-                        activeSection = sectionID;
+                    if (sectionID !== sectionNavigation.activeSection) {
+                        sectionNavigation = navigation.select(sectionNavigation, sectionID);
                         effects.unshift(effect("render", { area: "workspace" }));
                     }
                     return effects;

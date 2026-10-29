@@ -13,6 +13,67 @@ import run
 
 
 class HarnessSafetyTests(unittest.TestCase):
+    def test_api_request_uses_the_callers_remaining_timeout(self):
+        api = run.API(30000)
+        response = mock.Mock(code=200)
+        response.read.return_value = b'{}'
+        with mock.patch.object(api.client, 'open', return_value=response) as execute:
+            self.assertEqual(api.request('GET', '/api/auth/status', timeout=.25), {})
+        self.assertEqual(execute.call_args.kwargs['timeout'], .25)
+
+    def test_vm_startup_retries_connection_errors_and_actual_maintenance_status(self):
+        spec = importlib.util.spec_from_file_location('vm_reboot_readiness', run.HERE / 'vm-reboot.py')
+        vm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vm)
+        api = mock.Mock()
+        api.request.side_effect = [OSError('not listening'),
+            AssertionError('GET /api/auth/status: HTTP 503: {"error":"maintenance mode active"}'), {}]
+        clock = [0.0]
+        with mock.patch.object(vm.time, 'monotonic', side_effect=lambda: clock[0]), \
+             mock.patch.object(vm.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            vm.wait_for_app(api)
+        self.assertEqual(api.request.call_count, 3)
+        for call in api.request.call_args_list:
+            self.assertEqual(call.args, ('GET', '/api/auth/status'))
+            self.assertEqual(call.kwargs, {'timeout': 20})
+        self.assertAlmostEqual(clock[0], .2)
+
+    def test_vm_startup_permanent_errors_are_not_retried(self):
+        spec = importlib.util.spec_from_file_location('vm_reboot_permanent', run.HERE / 'vm-reboot.py')
+        vm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vm)
+        errors = [AssertionError('GET /api/auth/status: HTTP ' + str(code) + ': {}') for code in (400, 401, 403, 500)]
+        errors += [AssertionError('GET /api/auth/status: HTTP 500: {"error":"HTTP 503:"}'),
+                   AssertionError('unrelated HTTP 503: assertion'), KeyboardInterrupt()]
+        for error in errors:
+            with self.subTest(error=error):
+                api = mock.Mock()
+                api.request.side_effect = error
+                with mock.patch.object(vm.time, 'sleep') as sleep, self.assertRaises(type(error)):
+                    vm.wait_for_app(api)
+                self.assertEqual(api.request.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_vm_startup_timeout_stops_without_advancing_to_setup(self):
+        spec = importlib.util.spec_from_file_location('vm_reboot_timeout', run.HERE / 'vm-reboot.py')
+        vm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vm)
+        clock = [0.0]
+        api = mock.Mock()
+        timeouts = []
+        def request(*args, **kwargs):
+            self.assertEqual(args, ('GET', '/api/auth/status'))
+            self.assertEqual(kwargs['timeout'], min(20, 30 - clock[0]))
+            timeouts.append(kwargs['timeout'])
+            raise AssertionError('GET /api/auth/status: HTTP 503: {}')
+        api.request.side_effect = request
+        with mock.patch.object(vm.time, 'monotonic', side_effect=lambda: clock[0]), \
+             mock.patch.object(vm.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+             self.assertRaisesRegex(TimeoutError, 'not ready within 30 seconds'):
+            vm.wait_for_app(api)
+        self.assertEqual(clock[0], 30)
+        self.assertLess(timeouts[-1], 1)
+
     def test_only_loopback_allocated_api_endpoints(self):
         for host, port in (("production.example", 2222), ("127.0.0.2", 2222), ("::1", 2222), ("127.0.0.1", 22), ("127.0.0.1", 65536)):
             with self.subTest(host=host, port=port), self.assertRaises(AssertionError):
@@ -49,7 +110,8 @@ class HarnessSafetyTests(unittest.TestCase):
                         break
                     if line.strip():
                         files.append(line.strip())
-                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log"])
+                self.assertEqual(files, ["ssh-apt-evidence/report.json", "ssh-apt-evidence/app.log",
+                                         "deferrals-evidence/report.json", "deferrals-evidence/negative.json", "deferrals-evidence/positive.json"])
 
     def test_collected_evidence_never_copies_private_runtime_files(self):
         harness, resources, _ = self.fake_harness()
@@ -303,7 +365,7 @@ class HarnessSafetyTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("vm_reboot_cleanup", run.HERE / "vm-reboot.py")
         vm = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(vm)
-        for failure in (None, "output-log", "vm-log-read"):
+        for failure in (None, "output-log", "vm-log-read", "startup-timeout"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
                 root = Path(root)
                 image = root / "cloud.qcow2"
@@ -316,6 +378,7 @@ class HarnessSafetyTests(unittest.TestCase):
                 owner = "a" * 32
                 app_name = "slu-reboot-app-" + owner
                 resources = set()
+                clock = [0.0]
                 process = mock.Mock()
                 process.poll.return_value = None
 
@@ -341,7 +404,9 @@ class HarnessSafetyTests(unittest.TestCase):
                         elif args[2] == "rm": resources.remove(args[-1])
                     return ""
 
-                def request(method, path, data=None):
+                def request(method, path, data=None, **kwargs):
+                    if failure == "startup-timeout" and path == "/api/auth/status":
+                        raise AssertionError('GET /api/auth/status: HTTP 503: {}')
                     if path == "/api/auth/setup": raise RuntimeError("injected setup failure")
                     return {}
 
@@ -362,6 +427,8 @@ class HarnessSafetyTests(unittest.TestCase):
                         mock.patch.object(vm, "API") as api, \
                         mock.patch.object(vm.subprocess, "Popen", return_value=process), \
                         mock.patch.object(vm.signal, "signal"), \
+                        mock.patch.object(vm.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(vm.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
                         mock.patch.object(Path, "read_text", new=read):
                     api.return_value.request.side_effect = request
                     self.assertEqual(vm.main(), 1)
@@ -372,9 +439,10 @@ class HarnessSafetyTests(unittest.TestCase):
                 self.assertEqual(image.read_bytes(), b"owned cloud image fixture")
                 report = json.loads((output / "report.json").read_text())
                 self.assertEqual(report["status"], "failed")
-                self.assertEqual(report["error"], "injected setup failure")
-                self.assertEqual(report["cleanup"]["status"], "failed" if failure else "passed")
-                self.assertEqual(len(report["cleanup"]["errors"]), 1 if failure else 0)
+                self.assertEqual(report["error"], "application startup was not ready within 30 seconds" if failure == "startup-timeout" else "injected setup failure")
+                evidence_error = failure in ("output-log", "vm-log-read")
+                self.assertEqual(report["cleanup"]["status"], "failed" if evidence_error else "passed")
+                self.assertEqual(len(report["cleanup"]["errors"]), 1 if evidence_error else 0)
 
 
 if __name__ == "__main__": unittest.main()

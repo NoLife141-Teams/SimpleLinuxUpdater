@@ -71,3 +71,91 @@ python3 tools/ci/ssh-apt/vm-reboot.py \
 ```
 
 Retain `report.json` from the VM run. The VM is terminated and its overlay, seed, private keys and temporary app data are deleted on exit; the downloaded backing image remains available for another fresh run. New cloud images require an explicitly reviewed URL/checksum update. No VM execution is implied by the presence of this command or its prerequisite tests.
+
+Application startup waits at most 30 seconds, including connection failures and
+HTTP 503 responses while startup maintenance is active. Each API call uses the
+remaining startup budget. Other HTTP failures remain fatal, and exhaustion of
+the startup budget fails qualification and runs cleanup before setup can start.
+
+## Continuous Package Deferral qualification
+
+The existing SSH/APT matrices also run `deferrals-negative.py`: Debian 13 and
+Ubuntu 24.04 in selected PR/push jobs, and all five pinned images in the weekly
+or manual extended workflow. The release workflow has an independent 12-minute,
+read-only `deferrals-gate` matrix for Debian 13 and Ubuntu 24.04. Both publication
+jobs depend on its success. It preserves the trusted default-branch harness,
+checks out the verified release commit, and generates the helper from that
+candidate via `SLU_DEFERRALS_SOURCE`; it never uses a checked-in golden helper.
+No release or registry publication is necessary to reproduce this gate.
+
+```bash
+python3 tools/ci/ssh-apt/deferrals-negative.py \
+  --distro debian13 --output /tmp/slu-deferrals/debian13
+python3 tools/ci/ssh-apt/deferrals.py \
+  --distro ubuntu2404 --output /tmp/slu-deferrals/ubuntu2404-positive.json
+```
+
+Both commands generate the production helper with
+`go run ./tools/ci/package-deferral-helper` from the tested source. Compiler
+stderr is kept separate from the helper bytes. Reports identify the Git commit,
+source-file SHA256 manifest, generated helper SHA256, fixture SHA256, pinned
+image and local image ID, architecture, APT/dpkg versions, owner, limits and real
+exit codes. `--helper` is an explicit override for controlled experiments and is
+labelled as such; continuous positive runs always generate the helper themselves.
+
+The fixture works directly from each of the five allowlisted base images. It
+builds harmless `slu-*` packages with dpkg-deb inside a fresh owned container,
+replaces its sources with a synthetic local `file:` repository, and executes all
+transactions with `--network none`, no mounts, 512 MiB and 128 processes. The
+qualification has a 600-second command budget and separate bounded cleanup;
+workflow steps are limited to eight minutes and jobs to 12 or 20 minutes. No
+host packages, real inventory, production secrets or administrator sudo policy
+are used. This fixture repository establishes no official Debian/Ubuntu origin
+or CVE evidence. Official provenance remains a separate SSH/APT concern.
+
+The container entrypoint publishes its ownership marker atomically. A detached
+Docker start is followed by a startup wait of at most 30 seconds within the
+existing qualification budget. Every attempt checks the owner label and running
+state before probing the marker, with each command bounded by the remaining
+startup time. Only an absent marker is retried; an incorrect or unreadable
+marker, a foreign owner, a stopped container or another Docker failure stops
+qualification before helper installation or fixture mutation. The report's
+`startup` status distinguishes this stage from unexecuted APT scenarios, and
+ownership-checked cleanup also runs after timeout or interruption.
+
+Each healthy distribution must pass twelve scenarios: independent upgrade in
+all four Approval Scopes; deferred dependency, deferred removal and multiarch
+refusal; confirmed independent removal; preserved administrator hold; expired
+rule; extra unapproved dependency; and a pinned approved action disappearing
+while another upgrade remains possible. Refusals compare every installed package
+version and hashes of the full dpkg status and log before/after. Positive cases
+require the exact expected version additions/removals across the complete
+installed inventory. Administrator holds and the pin file must remain unchanged.
+An unsupported APT hook protocol fails closed; adding a matrix entry cannot
+substitute for a real transaction proof.
+
+The negative control changes only an in-memory copy of the generated helper to
+disable the approved-action completeness check. The real qualification must
+return **1** on `approved-action-missing-after-pin-drift`, with a successful APT
+transaction and changed fixture versions demonstrating the regression. An
+infrastructure failure cannot satisfy the control. A fresh container then runs
+the original helper and must return **0**. The wrapper returns 0 only when both
+expectations hold, retaining the negative gate's internal exit code 1.
+
+Only the explicit `deferrals-evidence/report.json`, `negative.json` and
+`positive.json` paths are uploaded, by distribution and workflow attempt, for one
+day, including failure. They contain bounded synthetic transaction diagnostics;
+no database, keys, credentials or Docker configuration is uploaded. Failed,
+passed and not_executed scenarios remain distinct; generation or earlier-stage
+failures cannot produce a successful qualification. Labels and target markers
+are checked before execution. Cleanup handles failure and SIGINT/SIGTERM,
+recovers partial creation by its unique name and removes only matching owned
+containers. SIGKILL cannot run cleanup; inspect the recorded name/owner and do
+not globally prune Docker resources.
+
+Harness tests exercise admission, generation, source selection, partial-create
+recovery, timeout, signal, marker and ownership rejection, report states,
+infrastructure rejection by the negative control and workflow publication gates.
+The Go preflight/path-selection and `ci-required` tests execute their actual
+selection/gate contracts: changes to the helper, deferral rules/plans, generator,
+harness and fixture select SSH/APT, and a required skipped job fails the gate.

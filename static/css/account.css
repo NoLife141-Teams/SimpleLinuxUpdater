@@ -9,3 +9,38 @@
 .account-main fieldset input { width: auto; }
 .one-time-secret { background: var(--card-alt); border: 1px solid var(--border); padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
 @media (max-width: 600px) { .account-main .card { padding: 16px; } .account-main { width: 100%; min-width: 0; } }
+
+.account-feedback:not([hidden]),
+#account-status:not(:empty) {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    background: var(--card-alt);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.account-feedback[data-state="error"],
+#account-status[data-state="error"],
+.account-list-state[data-state="failed"] {
+    border-color: var(--danger);
+}
+.account-feedback[data-state="success"] { border-color: var(--success); }
+.account-feedback a { display: inline-block; margin-left: 8px; color: var(--accent-text); }
+.account-feedback:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
+.account-list-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    font-size: 13px;
+}
+.account-list-state[data-state="loading"] { color: var(--accent-text); }
+.account-list-state[data-state="failed"] { color: var(--text); }
+.account-main time { overflow-wrap: anywhere; }

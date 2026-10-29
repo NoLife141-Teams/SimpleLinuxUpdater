@@ -69,6 +69,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   form feedback and targeted session isolation.
 - Bound admitted JSON requests and backup transfers without admitting partial
   mutations or weakening restore validation.
+- Keep first-connection SSH diagnostics out of the disposable VM ownership
+  marker check while retaining strict fixture identity verification.
 - Prevent transient startup HTTP 503 responses from failing SSH/APT CI before
   the disposable application leaves maintenance mode; permanent errors, exited
   containers and exhausted startup deadlines still fail qualification.

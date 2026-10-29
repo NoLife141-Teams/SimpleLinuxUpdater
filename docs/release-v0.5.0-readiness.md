@@ -10,7 +10,8 @@ Pre-tag preparation. This branch creates no tag, GitHub Release or registry imag
 - Preparation branch: `codex/prepare-v0.5.0`.
 - README, displayed version, installation/deployment/configuration examples and
   changelog are aligned to `v0.5.0`.
-- Preparation changes version metadata and documentation. Application Go code,
+- Preparation changes version metadata, documentation and the qualification
+  harness SSH log level. Application Go code,
   database migrations, SSH helper and dependencies retain the implementation
   base's behavior. SQLite remains at `v1.60.1`; PR #510 is not part of this release.
 - Builds and archives use a clean source checkout. Local untracked prototypes

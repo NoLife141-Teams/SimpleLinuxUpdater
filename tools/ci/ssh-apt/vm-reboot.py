@@ -77,7 +77,7 @@ def main():
             return command(["ssh", "-F", "/dev/null", "-i", str(work / "client"), "-p", str(ssh_port), "-o", "BatchMode=yes",
                 "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "GlobalKnownHostsFile=/dev/null",
                 "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "ControlMaster=no", "-o", "ControlPath=none",
-                "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + str(work / "control_known_hosts"),
+                "-o", "LogLevel=ERROR", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + str(work / "control_known_hosts"),
                 "-o", "ConnectTimeout=3", "root@127.0.0.1", text], timeout=10,
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(work)})
 

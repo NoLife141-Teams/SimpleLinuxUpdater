@@ -6,12 +6,6 @@
         const lifecycle = root.BrowserEffects.create();
         lifecycle.init();
         const fetch = lifecycle.fetch;
-        const IntersectionObserver = root.IntersectionObserver
-            ? lifecycle.observer(root.IntersectionObserver)
-            : undefined;
-        const ResizeObserver = root.ResizeObserver
-            ? lifecycle.observer(root.ResizeObserver)
-            : undefined;
         const scheduledPolicyInteraction =
             window.ScheduledPolicyAdministrationInteraction.createStore();
         const adminPageInteraction = window.AdminPageInteraction.createStore({
@@ -47,8 +41,11 @@
 
         let appTimezonePicker = null;
         let appTimezonePreviewTimer = 0;
-        let adminSectionObserver = null;
-        let adminSectionNavigationLockUntil = 0;
+        let renderedInstallationHealth = "";
+        const sectionNavigation = root.SectionNavigationAdapter.create({
+            lifecycle, page: "admin", interaction: adminPageInteraction,
+            renderEffects: runAdminWorkspaceEffects,
+        });
 
         const adminSectionPreferenceKey =
             "simplelinuxupdater.admin.collapsed-sections.v1";
@@ -254,7 +251,7 @@
         }
 
         function renderAdminWorkspace() {
- renderInstallationHealth();
+            renderInstallationHealth();
             const workspace = adminPageView().workspace;
             if (!workspace) return;
             const lifecycleLabels = {
@@ -292,11 +289,7 @@
                     "aria-busy",
                     String(section.lifecycle?.status === "loading"),
                 );
-                if (link) {
-                    if (workspace.activeSection === section.id)
-                        link.setAttribute("aria-current", "location");
-                    else link.removeAttribute("aria-current");
-                }
+                if (link) globalThis.SectionNavigationAdapter.renderLink(link, workspace, section.id);
                 if (navSummary) navSummary.textContent = section.summary;
                 if (summary) {
                     summary.textContent = section.summary;
@@ -371,6 +364,8 @@
                             return;
                     }
                 }
+                if (effect.type === "clearSectionLocation")
+                    globalThis.SectionNavigationAdapter.clearLocation("admin", effect.sectionID);
                 if (effect.type === "focusSection") {
                     const section = document.querySelector(
                         `[data-admin-section="${effect.sectionID}"]`,
@@ -473,11 +468,11 @@
                 sectionID,
             });
             if (!effects.length) return;
-            adminSectionNavigationLockUntil = Date.now() + 750;
             if (updateHistory) {
-                history.pushState(null, "", `#admin-section-${sectionID}`);
+                history.pushState(history.state, "", `#admin-section-${sectionID}`);
             }
             runAdminWorkspaceEffects(effects);
+            sectionNavigation.schedule();
         }
 
         function initializeAdminWorkspace() {
@@ -519,6 +514,7 @@
                                 sectionID: toggle.dataset.adminSectionToggle,
                             }),
                         );
+                        sectionNavigation.schedule();
                     });
                 });
             document
@@ -538,48 +534,9 @@
                 if (sectionID) navigateAdminSection(sectionID);
             });
 
-            if ("IntersectionObserver" in window) {
-                adminSectionObserver = new IntersectionObserver(
-                    (entries) => {
-                        if (Date.now() < adminSectionNavigationLockUntil)
-                            return;
-                        const visible = entries
-                            .filter((entry) => entry.isIntersecting)
-                            .sort(
-                                (left, right) =>
-                                    right.intersectionRatio -
-                                    left.intersectionRatio,
-                            )[0];
-                        const sectionID =
-                            visible?.target?.dataset?.adminSection;
-                        if (!sectionID) return;
-                        runAdminWorkspaceEffects(
-                            adminPageInteraction.dispatch({
-                                type: "sectionActivated",
-                                sectionID,
-                            }),
-                        );
-                    },
-                    {
-                        rootMargin: "-150px 0px -55% 0px",
-                        threshold: [0.01, 0.25, 0.5],
-                    },
-                );
-                document
-                    .querySelectorAll("[data-admin-section]")
-                    .forEach((section) =>
-                        adminSectionObserver.observe(section),
-                    );
-            }
-
             const deepLinkedSection = adminSectionIDFromHash();
-            if (deepLinkedSection) {
-                lifecycle.requestAnimationFrame(() =>
-                    navigateAdminSection(deepLinkedSection),
-                );
-            } else {
-                renderAdminWorkspace();
-            }
+            renderAdminWorkspace();
+            sectionNavigation.init(deepLinkedSection, navigateAdminSection);
         }
 
         function beginAdminCommand(command, payload = {}) {
@@ -626,6 +583,10 @@
             const view = adminPageView().installation;
             const root = document.getElementById("installation-health-facts");
             if (!root || !view) return;
+            // Scroll tracking also renders the workspace. Keep existing fact
+            // nodes and browser scroll anchors while their values are unchanged.
+            const signature = JSON.stringify(view);
+            if (signature === renderedInstallationHealth) return;
             const missing = "Unavailable";
             const date = value => !value || value.startsWith("0001-") ? "Never observed" : new Date(value).toLocaleString();
             const number = value => value === null ? missing : value.toLocaleString();
@@ -645,6 +606,7 @@
                 }
                 return row;
             }));
+            renderedInstallationHealth = signature;
         }
 
         function beginAdminSnapshot(stream) {

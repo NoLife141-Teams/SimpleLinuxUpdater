@@ -329,7 +329,7 @@
             window.scrollTo(pos.x, pos.y);
         }
 
-        async function performInventoryRequest(request, pageScroll) {
+        async function performInventoryRequest(request) {
             const lifetime = lifecycle.capture();
 
             try {
@@ -356,18 +356,24 @@
                 const tbody = document.querySelector(
                     "#manage-servers-table tbody",
                 );
+                // Navigation can change while the response is pending. Preserve
+                // the position at rendering time, never the request's old scroll.
+                const pageScroll = saveWindowScroll();
                 tbody.innerHTML = "";
                 renderTable();
-                lifecycle.requestAnimationFrame(() =>
-                    restoreWindowScroll(pageScroll),
-                );
+                const renderedScroll = saveWindowScroll();
+                lifecycle.requestAnimationFrame(() => {
+                    // A newer navigation or scrolling gesture owns its position.
+                    if (window.scrollX === renderedScroll.x && window.scrollY === renderedScroll.y)
+                        restoreWindowScroll(pageScroll);
+                });
                 const followup = effects.find(
                     (effect) =>
                         effect.type === "fetchSnapshot" &&
                         effect.stream === "inventory",
                 );
                 if (followup)
-                    await performInventoryRequest(followup, saveWindowScroll());
+                    await performInventoryRequest(followup);
                 if (!lifecycle.isCurrent(lifetime)) return;
             } catch (error) {
                 if (
@@ -388,7 +394,7 @@
                         effect.stream === "inventory",
                 );
                 if (followup)
-                    await performInventoryRequest(followup, saveWindowScroll());
+                    await performInventoryRequest(followup);
                 if (!lifecycle.isCurrent(lifetime)) return;
             }
         }
@@ -400,10 +406,7 @@
                 .dispatch({ type: "snapshotRequested", stream: "inventory" })
                 .find((effect) => effect.type === "fetchSnapshot");
             if (request)
-                manageInventoryRefreshPromise = performInventoryRequest(
-                    request,
-                    saveWindowScroll(),
-                );
+                manageInventoryRefreshPromise = performInventoryRequest(request);
             await manageInventoryRefreshPromise;
             if (!lifecycle.isCurrent(lifetime)) return;
         }

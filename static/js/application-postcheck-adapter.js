@@ -25,9 +25,14 @@
             if (redraw) render();
             onChange();
         }
+        function canTest(state = view()) {
+            return !state.busy && !state.dirty && state.draft.profiles.some(profile => profile.id === state.selectedID);
+        }
         function render() {
             const state = view();
-            el("profile-select").innerHTML = state.draft.profiles
+            el("profile-select").innerHTML = (state.draft.profiles.length
+                ? '<option value="">Choose a profile to edit</option>'
+                : "") + state.draft.profiles
                 .map(
                     (p) =>
                         `<option value="${escape(p.id)}">${escape(p.name)} (revision ${Number(p.revision)})</option>`,
@@ -69,7 +74,7 @@
                     (id === "delete" && !p) ||
                     (id === "reload" && state.dirty);
             el("save").disabled = state.busy || !state.dirty;
-            el("test").disabled = state.busy || state.dirty;
+            el("test").disabled = !canTest(state);
             el("test-server").disabled = state.busy;
             el("test-server").value = state.testServer;
             el("feedback").textContent = state.busy
@@ -153,7 +158,7 @@
                     );
                 }
                 el("save").disabled = view().busy || !view().dirty;
-                el("test").disabled = view().busy || view().dirty;
+                el("test").disabled = !canTest();
                 el("reload").disabled = view().busy || view().dirty;
             },
             { signal: lifecycle.signal },
@@ -190,6 +195,7 @@
                     });
                 if (target.id === "postcheck-reload") void load();
                 if (target.id === "postcheck-test") {
+                    if (!canTest()) return;
                     const name = view().testServer.trim();
                     if (!name) {
                         el("feedback").textContent =

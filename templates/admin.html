@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=disclosure-chevron-20260729">
-    <link rel="stylesheet" href="/static/css/admin.css?v=backup-catalog-20261028">
+    <link rel="stylesheet" href="/static/css/admin.css?v=admin-form-spacing-20261029">
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=473">
     <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
@@ -483,9 +483,9 @@
 <section class="package-deferrals full-width field-span" id="policy-package-deferrals" aria-label="Package deferrals">
 <h4>Package deferrals</h4><p>Security warning: deferring a package can postpone security fixes and leaves its CVE exposure visible. Rules from this Server and all matching enabled policies accumulate. Existing administrator holds and pins are preserved.</p>
 <div data-deferral-list role="status"></div><div class="deferral-fields">
-<label>Exact package (optional :architecture)<input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
-<label>Reason<input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
-<label>Expiry (timestamp with timezone)<input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
+<label><span>Exact package (optional :architecture)</span><input data-deferral-field="selector" placeholder="openssl:amd64" maxlength="255"></label>
+<label><span>Reason</span><input data-deferral-field="reason" placeholder="Compatibility investigation" maxlength="1000"></label>
+<label><span>Expiry (timestamp with timezone)</span><input data-deferral-field="expires_at" placeholder="2026-11-10T18:00:00+01:00" maxlength="40"></label>
 </div><button type="button" class="btn-ghost" data-add-deferral>Add package deferral</button><p data-deferral-feedback role="status" aria-live="polite"></p></section>
                         <div class="field-span policy-draft-action-bar" id="policy-draft-action-bar" hidden>
                             <div>
@@ -929,17 +929,19 @@
                     <div><dt>Last attempt</dt><dd id="backup-automation-attempt">—</dd></div>
                     <div><dt>Last verified success</dt><dd id="backup-automation-success">—</dd></div>
                 </dl>
-                <form id="backup-automation-form">
+                <form id="backup-automation-form" class="backup-automation-form">
                     <label class="checkbox-inline"><input type="checkbox" id="backup-automation-enabled"> Enable scheduled backups</label>
                     <div class="backup-grid">
-                        <div><label for="backup-automation-cadence">Cadence</label><select id="backup-automation-cadence"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
-                        <div><label for="backup-automation-time">Time (application timezone)</label><input type="time" id="backup-automation-time" value="02:00" required></div>
-                        <div><label for="backup-automation-weekday">Weekday (weekly only)</label><select id="backup-automation-weekday"><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
-                        <div><label for="backup-automation-retain">Archives to retain</label><input type="number" id="backup-automation-retain" min="1" max="100" value="7" required></div>
+                        <div class="field"><label for="backup-automation-cadence">Cadence</label><select id="backup-automation-cadence"><option value="daily">Daily</option><option value="weekly">Weekly</option></select></div>
+                        <div class="field"><label for="backup-automation-time">Time (application timezone)</label><input type="time" id="backup-automation-time" value="02:00" required></div>
+                        <div class="field"><label for="backup-automation-weekday">Weekday (weekly only)</label><select id="backup-automation-weekday"><option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
+                        <div class="field"><label for="backup-automation-retain">Archives to retain</label><input type="number" id="backup-automation-retain" min="1" max="100" value="7" required></div>
                     </div>
                     <label class="checkbox-inline"><input type="checkbox" id="backup-automation-known-hosts" checked> Include known_hosts</label>
-                    <button type="submit" class="primary-action" id="backup-automation-save">Save and Validate</button>
-                    <button type="button" class="btn-ghost" id="backup-automation-run" disabled>Run Control Backup</button>
+                    <div class="policy-actions">
+                        <button type="submit" class="primary-action" id="backup-automation-save">Save and Validate</button>
+                        <button type="button" class="btn-ghost" id="backup-automation-run" disabled>Run Control Backup</button>
+                    </div>
                 </form>
                 <p class="muted">Active work defers a backup by five minutes, for at most one hour. Missing DST times are skipped; repeated times run once. Retention runs only after a new verified archive is published.</p>
             </section>
@@ -1178,14 +1180,16 @@
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
-    <script src="/static/js/admin-page-interaction.js?v=backup-catalog-20261028"></script>
+    <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
+    <script src="/static/js/section-navigation-adapter.js?v=keyboard-scroll-priority-20261029"></script>
+    <script src="/static/js/admin-page-interaction.js?v=admin-explicit-profile-20261029"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
-    <script src="/static/js/application-postcheck-adapter.js?v=frontend-isolation-20261027"></script>
+    <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-backup-adapter.js?v=backup-catalog-20261028"></script>
 <script src="/static/js/admin-policies-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin.js?v=installation-health-494-frontend-isolation-20261027"></script>
+<script src="/static/js/admin.js?v=initial-navigation-priority-20261029"></script>
 </body>
 </html>

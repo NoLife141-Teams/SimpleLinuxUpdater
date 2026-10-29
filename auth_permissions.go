@@ -121,6 +121,9 @@ func authorizeRequest(c *gin.Context) bool {
 		return false
 	}
 	if !declared || (permission.Scope != "self" && !authpkg.RoleAllows(p.Account.Role, permission.Scope)) || (p.Bearer && !p.Token.Allows(p.Account, permission.Scope)) {
+		if declared && renderPageAccessDenied(c, p) {
+			return false
+		}
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "permission denied"})
 		return false
 	}

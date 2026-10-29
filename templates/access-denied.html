@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleLinuxUpdater - Access denied</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/access-denied.css?v=access-denied-518-20261029">
+</head>
+<body data-account-role="{{.Role}}">
+    <div class="dashboard-shell">
+        {{template "operator-application-shell" .}}
+        <main class="dashboard-main access-denied-main">
+            <section class="card" aria-labelledby="access-denied-heading">
+                <div class="eyebrow">403 · Access restricted</div>
+                <h1 id="access-denied-heading">Access denied</h1>
+                <p>Your account does not have permission to open this page.</p>
+                <p>You can return to Status or manage your own account.</p>
+                <div class="access-denied-actions" aria-label="Return options">
+                    <a class="btn-link primary-action" href="/">Return to Status</a>
+                    <a class="btn-link" href="/account">Go to Account</a>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/static/auth.js"></script>
+    <script src="/static/js/access-denied.js?v=access-denied-518-20261029"></script>
+</body>
+</html>

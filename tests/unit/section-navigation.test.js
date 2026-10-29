@@ -70,3 +70,19 @@ for (const [name, api, ids] of [["Manage", manage, ["global-key", "add-server", 
         assert.ok(effects.some(effect => effect.type === "clearSectionLocation" && effect.sectionID === ids[1]));
     });
 }
+
+test("Admin starts nearby open-section reads before selection, once, without expanding closed sections", () => {
+    const store = admin.createStore();
+    store.dispatch({ type: "sectionPreferencesRestored", collapsedSections: ["backup"] });
+    const receive = top => store.dispatch({ type: "sectionGeometryReceived", geometry: geometry([
+        rect("app-time", 100, 2000), rect("notifications", top, top + 500),
+        rect("backup", 1500, 2000), rect("metrics", 4000, 4500),
+    ]) });
+    receive(1800);
+    const effects = receive(1700);
+    assert.equal(store.getView().workspace.activeSection, "app-time");
+    assert.deepEqual(effects.filter(x => x.type === "loadSectionData").map(x => x.sectionID), ["notifications"]);
+    assert.ok(!effects.some(x => ["focusSection", "persistSectionPreferences"].includes(x.type)));
+    assert.deepEqual(store.getView().workspace.collapsedSections, ["backup"]);
+    assert.ok(!receive(1650).some(x => x.type === "loadSectionData"));
+});

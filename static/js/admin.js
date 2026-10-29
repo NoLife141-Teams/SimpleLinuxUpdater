@@ -41,6 +41,7 @@
 
         let appTimezonePicker = null;
         let appTimezonePreviewTimer = 0;
+        let renderedInstallationHealth = "";
         const sectionNavigation = root.SectionNavigationAdapter.create({
             lifecycle, page: "admin", interaction: adminPageInteraction,
             renderEffects: runAdminWorkspaceEffects,
@@ -250,7 +251,7 @@
         }
 
         function renderAdminWorkspace() {
- renderInstallationHealth();
+            renderInstallationHealth();
             const workspace = adminPageView().workspace;
             if (!workspace) return;
             const lifecycleLabels = {
@@ -589,6 +590,10 @@
             const view = adminPageView().installation;
             const root = document.getElementById("installation-health-facts");
             if (!root || !view) return;
+            // Scroll tracking also renders the workspace. Keep existing fact
+            // nodes and browser scroll anchors while their values are unchanged.
+            const signature = JSON.stringify(view);
+            if (signature === renderedInstallationHealth) return;
             const missing = "Unavailable";
             const date = value => !value || value.startsWith("0001-") ? "Never observed" : new Date(value).toLocaleString();
             const number = value => value === null ? missing : value.toLocaleString();
@@ -608,6 +613,7 @@
                 }
                 return row;
             }));
+            renderedInstallationHealth = signature;
         }
 
         function beginAdminSnapshot(stream) {

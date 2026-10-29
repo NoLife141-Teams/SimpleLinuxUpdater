@@ -955,10 +955,19 @@
                     return [effect("render", { area: "workspace" }), ...activateSectionData(sectionID)];
                 }
                 case "sectionGeometryReceived": {
-                    const next = navigation.reconcile(sectionNavigation, { ...event.geometry, sections: (event.geometry.sections || []).filter(section => sectionIDs.has(section.id)) });
-                    if (JSON.stringify(next) === JSON.stringify(sectionNavigation)) return [];
+                    const geometry = event.geometry || {};
+                    const sections = (geometry.sections || []).filter(section => sectionIDs.has(section.id));
+                    const next = navigation.reconcile(sectionNavigation, { ...geometry, sections });
+                    const changed = !sameValue(next, sectionNavigation);
                     sectionNavigation = next;
-                    return [effect("render", { area: "workspace" }), ...next.areaSections.filter(id => !collapsedSections.includes(id)).flatMap(id => activateSectionData(id))];
+                    // Start reads one viewport ahead of open sections, before
+                    // arriving at their content. Loading never changes disclosure.
+                    const approaching = Number.isFinite(geometry.viewportHeight) && geometry.viewportHeight > 0
+                        ? sections.filter(section => section.bottom > geometry.anchorY && section.top < geometry.viewportHeight * 2).map(section => section.id)
+                        : [];
+                    const load = [...new Set([...next.areaSections, ...approaching])]
+                        .flatMap(id => activateSectionData(id));
+                    return [...(changed ? [effect("render", { area: "workspace" })] : []), ...load];
                 }
                 case "sectionNavigationRequested": {
                     const sectionID = String(event.sectionID || "").trim();

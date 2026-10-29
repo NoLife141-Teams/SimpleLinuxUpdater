@@ -173,3 +173,82 @@ for (const viewport of [{ width: 1284, height: 884 }, { width: 390, height: 844 
         }
     });
 }
+
+for (const viewport of [{ width: 1284, height: 884 }, { width: 390, height: 844 }]) {
+    test(`Admin scrolling preserves page position and disclosures after health loads at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await ensureAuthenticatedSession(page);
+        await stubAdminApi(page, {});
+        const health = {
+            state: "ready", checked_at: "2026-10-29T01:00:00Z",
+            workers: { scheduler: { enabled: true, running: true, errors: 0 } },
+            storage: { db_bytes: 348160, wal_bytes: 4120032, available_bytes: 41431736320 },
+        };
+        await page.route("**/api/installation/health", route => route.fulfill({
+            status: 200, contentType: "application/json", body: JSON.stringify(health),
+        }));
+        await page.goto("/admin#admin-section-installation");
+        await expect(page.locator("#installation-state")).toHaveText("ready");
+        const ids = await page.locator("[data-admin-section-link]").evaluateAll(nodes => nodes.map(node => node.dataset.adminSectionLink));
+        // Complete lazy reads before comparing wheel movement with actual page movement.
+        for (const id of ids) {
+            await page.locator(`[data-admin-section-link="${id}"]`).click();
+            await expect(page.locator('[data-admin-section-lifecycle][data-status="loading"]')).toHaveCount(0);
+            await settle(page);
+        }
+        await page.locator('[data-admin-section-link="installation"]').click();
+        await settle(page);
+        const disclosureState = await page.locator("[data-admin-section-toggle]").evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-expanded")));
+        await page.evaluate(() => {
+            window.healthWorkerAnchor = document.querySelector("#installation-workers tr");
+            window.healthScrollAudit = { mutations: 0, disclosures: [] };
+            new MutationObserver(records => {
+                for (const record of records) {
+                    if (record.target.closest?.("#installation-workers")) window.healthScrollAudit.mutations++;
+                    if (record.attributeName === "hidden" && record.target.matches("[data-admin-section-content]") && record.oldValue !== record.target.getAttribute("hidden"))
+                        window.healthScrollAudit.disclosures.push(record.target.id);
+                }
+            }).observe(document.querySelector("main"), { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden"], attributeOldValue: true });
+        });
+        await page.mouse.move(8, 400);
+        const drift = [];
+        for (const delta of [...Array(10).fill(140), ...Array(24).fill(-140)]) {
+            const before = await page.evaluate(() => ({ y: scrollY, max: document.documentElement.scrollHeight - innerHeight }));
+            await page.mouse.wheel(0, delta);
+            await page.waitForTimeout(120);
+            const after = await page.evaluate(() => scrollY);
+            drift.push(after - Math.max(0, Math.min(before.max, before.y + delta)));
+        }
+        expect(drift.every(value => Math.abs(value) <= 2), JSON.stringify(drift)).toBe(true);
+        expect(await page.locator("[data-admin-section-toggle]").evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-expanded")))).toEqual(disclosureState);
+        expect(await page.evaluate(() => window.healthScrollAudit.disclosures)).toEqual([]);
+        // Navigation alone must not discard a possible browser scroll anchor.
+        expect(await page.evaluate(() => window.healthWorkerAnchor.isConnected)).toBe(true);
+        expect(await page.evaluate(() => window.healthScrollAudit.mutations)).toBe(0);
+        health.state = "maintenance";
+        health.workers.scheduler.enabled = false;
+        await page.locator('#admin-section-installation [data-admin-section-retry="installation"]').last().click();
+        await expect(page.locator("#installation-state")).toHaveText("maintenance");
+        await expect(page.locator("#installation-workers tr").first().locator("td").nth(1)).toHaveText("Disabled");
+    });
+}
+
+test("Admin loads approaching open sections before their headings enter the viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 1284, height: 884 });
+    await ensureAuthenticatedSession(page);
+    const state = {};
+    await stubAdminApi(page, state);
+    await page.goto("/admin");
+    await settle(page);
+    expect(state.scheduledRunsLoadCount || 0).toBe(0);
+    const heading = page.locator("#admin-section-scheduled-runs-heading");
+    await heading.evaluate(node => {
+        dispatchEvent(new WheelEvent("wheel", { deltaY: 1 }));
+        scrollTo(0, scrollY + node.getBoundingClientRect().top - innerHeight * 1.5);
+    });
+    await expect.poll(() => state.scheduledRunsLoadCount || 0).toBe(1);
+    await expect(heading).not.toBeInViewport();
+    await expect(page.locator('[data-admin-section-lifecycle="scheduled-runs"]')).toHaveAttribute("data-status", "current");
+    await expect(page.locator('[data-admin-section-toggle="scheduled-runs"]')).toHaveAttribute("aria-expanded", "true");
+    await expect(heading).not.toBeFocused();
+});

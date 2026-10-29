@@ -1234,6 +1234,38 @@
     text-transform: uppercase;
 }
 
+#policy-package-deferrals .deferral-fields label {
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-row: span 2;
+    gap: 6px;
+}
+
+.backup-automation-form {
+    display: grid;
+    gap: 16px;
+}
+
+.backup-automation-form .backup-grid {
+    align-items: end;
+    margin-top: 0;
+}
+
+.backup-automation-form .field {
+    min-width: 0;
+}
+
+.backup-automation-form .field input,
+.backup-automation-form .field select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.backup-automation-form > .checkbox-inline {
+    justify-self: start;
+}
+
 .backup-grid {
     margin-top: 12px;
 }
@@ -1241,7 +1273,7 @@
 .backup-recovery-health {
     display: grid;
     gap: 16px;
-    margin-top: 12px;
+    margin: 12px 0 16px;
     padding: 18px;
     border: 1px solid var(--border);
     border-radius: 14px;
@@ -1456,6 +1488,10 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
     margin: 0;
+}
+
+#installation-health-facts {
+    margin-bottom: 16px;
 }
 
 .metrics-credential-facts > div {

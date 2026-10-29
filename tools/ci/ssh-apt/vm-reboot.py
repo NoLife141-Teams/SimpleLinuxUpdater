@@ -13,31 +13,7 @@ import tempfile
 import time
 import uuid
 
-from run import API, DOCKER, IMAGES, LABEL, REPO, app_environment, command, copy_assets, loopback_port, require
-
-
-def wait_for_app(api):
-    """Wait within the startup budget, including transient startup maintenance."""
-    deadline = time.monotonic() + 30
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("application startup was not ready within 30 seconds")
-        try:
-            api.request("GET", "/api/auth/status", timeout=min(20, remaining))
-        except OSError:
-            pass
-        except AssertionError as error:
-            # API.request emits this prefix from the actual HTTP status, not
-            # response-body text. Permanent HTTP errors and unrelated assertions
-            # remain fatal; only startup maintenance is retried.
-            if not str(error).startswith("GET /api/auth/status: HTTP 503:"):
-                raise
-        else:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("application startup exceeded 30 seconds")
-            return
-        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+from run import API, DOCKER, IMAGES, LABEL, REPO, app_environment, command, copy_assets, loopback_port, require, wait_for_app
 
 
 def main():

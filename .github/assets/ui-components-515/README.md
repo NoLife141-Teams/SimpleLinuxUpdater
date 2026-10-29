@@ -16,6 +16,8 @@ SLU_CAPTURE_UI_515=1 npm run test:e2e -- tests/e2e/ui-components.spec.js --worke
   cancellation and focus return.
 - `inventory-file-390.png` shows the shared file trigger and one filename/state.
   Tests exercise keyboard focus, CSV/JSON selection, replacement, preview and reset.
+  The trigger keeps its accessible name after selection and reset; the import
+  controller owns the filename independently from credential-file label effects.
 
 The negative control restored the previous styles/Manage markup temporarily and
 produced the expected failures for Manage alignment, confirmation footer spacing

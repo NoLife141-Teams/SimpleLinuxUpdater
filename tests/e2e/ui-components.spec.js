@@ -3,6 +3,7 @@ const { stubAdminApi, stubManageApi, stubDashboardApi, makeServer, fulfillJson }
 const fs = require('node:fs');
 const path = require('node:path');
 async function capture(page, testInfo, name) {
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const image = await page.screenshot({ fullPage: false });
     await testInfo.attach(name, { body: image, contentType: 'image/png' });
     if (process.env.SLU_CAPTURE_UI_515) {
@@ -132,14 +133,21 @@ test('inventory file component has one state, visible keyboard focus, selection 
     await expect(trigger).toHaveCSS('outline-style', 'solid');
     await input.setInputFiles({ name: 'first.csv', mimeType: 'text/csv', buffer: Buffer.from('name,host,port,user,tags\nui-host,192.0.2.90,22,root,[]\n') });
     await expect(page.locator('#import-file-name')).toHaveText('first.csv');
+    await expect(page.locator('#inventory-import').getByText('first.csv', { exact: true })).toHaveCount(1);
+    await expect(input).toHaveAccessibleName('Choose inventory file');
     await expect(page.locator('#import-preview-button')).toBeEnabled();
     await input.setInputFiles({ name: 'replacement.json', mimeType: 'application/json', buffer: Buffer.from('[{"name":"ui-host","host":"192.0.2.90","user":"root"}]') });
     await expect(page.locator('#import-file-name')).toHaveText('replacement.json');
+    await expect(page.locator('#inventory-import').getByText('replacement.json', { exact: true })).toHaveCount(1);
+    await expect(input).toHaveAccessibleName('Choose inventory file');
     await page.locator('#import-preview-button').click();
     await expect(page.locator('#import-preview')).toBeVisible();
     await page.locator('#import-reset').click();
     await expect(page.locator('#import-file-name')).toHaveText('No file selected');
     await expect(input).toHaveValue('');
+    await expect(trigger).toHaveText('Choose inventory file');
+    await expect(input).toHaveAccessibleName('Choose inventory file');
+    await expect(page.locator('#inventory-import').getByText('replacement.json', { exact: true })).toHaveCount(0);
     await expect(page.locator('#import-preview-button')).toBeDisabled();
     await page.setViewportSize({ width: 390, height: 844 });
     await trigger.scrollIntoViewIfNeeded();

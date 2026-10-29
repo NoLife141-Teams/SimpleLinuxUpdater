@@ -137,3 +137,39 @@ for (const prefix of ["manage", "admin"]) {
         await page.screenshot({path: test.info().outputPath(`${prefix}-desktop.png`)});
     });
 }
+
+for (const viewport of [{ width: 1284, height: 884 }, { width: 390, height: 844 }]) {
+    test(`Manage legacy fragments survive delayed inventory responses at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await ensureAuthenticatedSession(page);
+        await stubManageApi(page, { servers: [makeServer("legacy-host")] });
+        for (const [fragment, sectionID] of [["#server-directory", "directory"], ["#audit-trail", "audit"]]) {
+            let release;
+            const responseReady = new Promise(resolve => { release = resolve; });
+            const handler = async route => {
+                await responseReady;
+                await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([makeServer("legacy-host")]) });
+            };
+            await page.route("**/api/servers", handler);
+            const requested = `/manage?server=legacy-host&audit_target=legacy-host${fragment}`;
+            try {
+                await page.goto(requested);
+                await expect(page.locator(`#manage-section-${sectionID}-heading`)).toBeFocused();
+                await expect.poll(() => active(page, "manage")).toBe(sectionID);
+                await page.evaluate(() => history.replaceState({ aliasTest: "preserved" }, "", location.href));
+                release();
+                await expect(page.locator("#manage-servers-table")).toContainText("legacy-host");
+                await settle(page);
+                await expect(page).toHaveURL(new URL(requested, page.url()).href);
+                await expect(page.locator("#search")).toHaveValue("legacy-host");
+                await expect(page.locator("#audit-target-filter")).toHaveValue("legacy-host");
+                await expect(page.locator(`#manage-section-${sectionID}-heading`)).toBeFocused();
+                await expect.poll(() => active(page, "manage")).toBe(sectionID);
+                expect(await page.evaluate(() => history.state)).toEqual({ aliasTest: "preserved" });
+            } finally {
+                release();
+                await page.unroute("**/api/servers", handler);
+            }
+        }
+    });
+}

@@ -70,11 +70,24 @@
     justify-content: flex-end;
 }
 
+.compact-controls select {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 10rem;
+}
+
 .workspace-head-actions {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 12px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.workspace-head-actions > * {
+    min-width: 0;
+    max-width: 100%;
 }
 
 .source-lifecycle {

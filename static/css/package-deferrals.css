@@ -1,6 +1,6 @@
 .package-deferrals,.package-deferral-summary {background:var(--card-alt);border:1px solid var(--border);border-radius:12px;padding:16px;min-width:0;overflow-wrap:anywhere}
 .deferral-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:12px 0}
-.deferral-fields label {display:flex;flex-direction:column;gap:6px;color:var(--text)}
+.deferral-fields label {display:grid;grid-template-rows:subgrid;grid-row:span 2;gap:6px;color:var(--text)}
 .deferral-fields input {width:100%;min-width:0;box-sizing:border-box;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px}
 .deferral-list {list-style:none;padding:0;display:grid;gap:12px}
 .deferral-list li {border-top:1px solid var(--border);padding-top:12px}

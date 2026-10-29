@@ -23,9 +23,11 @@ import (
 	"testing"
 	"time"
 
+	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	observabilitypkg "debian-updater/internal/observability"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
 
@@ -597,63 +599,203 @@ func TestApplyBackupFilesRemovesSQLiteSidecars(t *testing.T) {
 	}
 }
 
-func TestAppScopedBackupRestoreInvalidatesMetricsAccessCredential(t *testing.T) {
-	preserveServerState(t)
-	preserveDBState(t)
-	preserveSessionState(t)
-	preserveEncryptionState(t)
-	dbFile := filepath.Join(t.TempDir(), "restore-metrics-cache.db")
+// A restore test needs a reopenable, app-owned provider: the package-global
+// cache may legitimately still belong to another runtime in the same process.
+func newMetricsRestoreTestRuntime(t *testing.T, dbFile string) AppDeps {
+	t.Helper()
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", dbFile)
+	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", filepath.Join(filepath.Dir(dbFile), "known_hosts"))
+	var ownerMu sync.Mutex
+	var ownedDB *sql.DB
+	database := func() *sql.DB {
+		ownerMu.Lock()
+		defer ownerMu.Unlock()
+		if ownedDB == nil {
+			var err error
+			ownedDB, err = sql.Open("sqlite", dbFile)
+			if err != nil {
+				t.Fatalf("open restore fixture: %v", err)
+			}
+			ownedDB.SetMaxOpenConns(1)
+			ownedDB.SetMaxIdleConns(1)
+			if err := ensureSchema(ownedDB); err != nil {
+				t.Fatalf("migrate restore fixture: %v", err)
+			}
+		}
+		return ownedDB
+	}
+	closeDatabase := func() {
+		ownerMu.Lock()
+		defer ownerMu.Unlock()
+		if ownedDB != nil {
+			if err := ownedDB.Close(); err != nil {
+				t.Errorf("close restore fixture: %v", err)
+			}
+			ownedDB = nil
+		}
+	}
+	// Register before composition so its Notification Delivery Lifecycle drains
+	// before the final connection closes. Restore closes/reopens only this DB.
+	t.Cleanup(closeDatabase)
+	composition := newRuntimeComposition(AppDeps{
+		DB:                   database,
+		DBPath:               func() string { return dbFile },
+		ApplicationTime:      apptimepkg.New(apptimepkg.Deps{Store: apptimepkg.NewMemoryStore("UTC")}),
+		SetCurrentJobManager: func(*JobManager) {},
+		SetSessionManager: func(sm *scs.SessionManager) {
+			if cleanup, ok := sm.Store.(interface{ StopCleanup() }); ok {
+				t.Cleanup(cleanup.StopCleanup)
+			}
+		},
+	})
+	composition.resetCaches = closeDatabase
+	return composeRuntimeForTest(t, composition)
+}
 
-	servers = []Server{{Name: "srv-cache", Host: "example.org", Port: 22, User: "root", Pass: "pw"}}
-	if err := saveServers(); err != nil {
-		t.Fatalf("saveServers() unexpected error: %v", err)
-	}
-	deps := appDepsWithDefaultsForTest(t, AppDeps{})
-	restoredToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
-	if err != nil {
-		t.Fatalf("rotate restored Metrics Access Credential: %v", err)
-	}
-	dbSnapshot, err := createDBBackupSnapshot()
-	if err != nil {
-		t.Fatalf("createDBBackupSnapshot() unexpected error: %v", err)
-	}
-	configData, err := os.ReadFile(configPath())
-	if err != nil {
-		t.Fatalf("ReadFile(configPath()) unexpected error: %v", err)
-	}
+func TestAppScopedBackupRestoreInvalidatesMetricsAccessCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		preexisting bool
+		used        bool
+	}{
+		{name: "new credential"},
+		{name: "rotated credential", preexisting: true},
+		{name: "used credential", preexisting: true, used: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preserveDBState(t)
+			preserveSessionState(t)
+			preserveEncryptionState(t)
+			// Keep a different runtime cached globally, with a sentinel that
+			// must survive both fixture creation and persistence replacement.
+			foreignFile := filepath.Join(t.TempDir(), "unrelated.db")
+			t.Setenv("DEBIAN_UPDATER_DB_PATH", foreignFile)
+			foreignDB := getDB()
+			foreignStore := observabilitypkg.SQLiteMetricsCredentialStore{DB: func() *sql.DB { return foreignDB }}
+			foreignRecord := observabilitypkg.MetricsCredentialRecord{
+				Hash:      "synthetic-unrelated-hash",
+				Lifecycle: observabilitypkg.MetricsCredentialLifecycle{CreatedAt: "2020-01-02T03:04:05Z"},
+			}
+			if err := foreignStore.Replace(context.Background(), foreignRecord); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := foreignDB.Exec("INSERT INTO settings(key,value) VALUES('restore-test-sentinel','unchanged')"); err != nil {
+				t.Fatal(err)
+			}
+			foreignBefore, err := foreignStore.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	staleToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
-	if err != nil {
-		t.Fatalf("rotate stale Metrics Access Credential: %v", err)
-	}
-	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); verifyErr != nil || result != observabilitypkg.MetricsAccessAccepted {
-		t.Fatalf("stale credential before restore = %q, %v; want accepted", result, verifyErr)
-	}
-
-	if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{
-		"servers.db":  dbSnapshot,
-		"config.json": configData,
-	}); err != nil {
-		t.Fatalf("ApplyFiles() unexpected error: %v", err)
-	}
-	if status, statusErr := deps.MetricsAccessCredential.Status(context.Background()); statusErr != nil || status != observabilitypkg.MetricsAccessEnabled {
-		t.Fatalf("credential status after restore = %q, %v; want restored enabled state", status, statusErr)
-	}
-	restoredDetails, detailsErr := deps.MetricsAccessCredential.Details(context.Background())
-	if detailsErr != nil {
-		t.Fatalf("credential details after restore: %v", detailsErr)
-	}
-	if restoredDetails.LifecycleState != observabilitypkg.MetricsAccessLifecycleNeverUsed ||
-		restoredDetails.CreatedAt == "" || restoredDetails.RotatedAt != "" ||
-		restoredDetails.LastUsedAt != "" || restoredDetails.LastUsedOriginMasked != "" {
-		t.Fatalf("credential lifecycle after restore = %+v, want archived never-used lifecycle", restoredDetails)
-	}
-	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); verifyErr != nil || result != observabilitypkg.MetricsAccessRejected {
-		t.Fatalf("stale credential after restore = %q, %v; want rejected", result, verifyErr)
-	}
-	if result, verifyErr := deps.MetricsAccessCredential.Verify(context.Background(), restoredToken); verifyErr != nil || result != observabilitypkg.MetricsAccessAccepted {
-		t.Fatalf("restored credential after restore = %q, %v; want accepted", result, verifyErr)
+			dbFile := filepath.Join(t.TempDir(), "restore-metrics-cache.db")
+			deps := newMetricsRestoreTestRuntime(t, dbFile)
+			deps.ServerState.Lock()
+			deps.ServerState.SetServers([]Server{{Name: "srv-cache", Host: "example.org", Port: 22, User: "root", Pass: "pw"}})
+			deps.ServerState.Unlock()
+			if err := deps.ServerInventoryService.SaveWithTxHook(nil); err != nil {
+				t.Fatalf("save fixture inventory: %v", err)
+			}
+			if deps.DB() == foreignDB || deps.BackupService.Status().DBPath != dbFile {
+				t.Fatal("restore fixture does not own coherent persistence")
+			}
+			if status, err := deps.MetricsAccessCredential.Status(context.Background()); err != nil || status != observabilitypkg.MetricsAccessDisabled {
+				t.Fatalf("fresh fixture credential status = %q, %v", status, err)
+			}
+			if tc.preexisting {
+				if _, err := deps.MetricsAccessCredential.Rotate(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restoredToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
+			if err != nil {
+				t.Fatalf("rotate archived credential: %v", err)
+			}
+			if tc.used {
+				if result, err := deps.MetricsAccessCredential.VerifyWithOrigin(context.Background(), restoredToken, "198.51.100.42"); err != nil || result != observabilitypkg.MetricsAccessAccepted {
+					t.Fatalf("use archived credential = %q, %v", result, err)
+				}
+			}
+			archivedDetails, err := deps.MetricsAccessCredential.Details(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if archivedDetails.CreatedAt == "" || (archivedDetails.RotatedAt != "") != tc.preexisting {
+				t.Fatal("archive fixture lost creation/rotation distinction")
+			}
+			if tc.used {
+				if archivedDetails.LastUsedAt == "" || archivedDetails.LastUsedOriginMasked != "198.51.100.x" || archivedDetails.LifecycleState != observabilitypkg.MetricsAccessLifecycleCurrent {
+					t.Fatal("used archive fixture lost usage metadata")
+				}
+			} else if archivedDetails.LifecycleState != observabilitypkg.MetricsAccessLifecycleNeverUsed || archivedDetails.LastUsedAt != "" || archivedDetails.LastUsedOriginMasked != "" {
+				t.Fatal("unused archive fixture gained usage metadata")
+			}
+			archivedRecord, err := (observabilitypkg.SQLiteMetricsCredentialStore{DB: deps.DB}).Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			dbSnapshot, err := deps.BackupService.CreateDBSnapshot()
+			if err != nil {
+				t.Fatalf("snapshot fixture: %v", err)
+			}
+			configData, err := os.ReadFile(configPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			staleToken, err := deps.MetricsAccessCredential.Rotate(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := deps.MetricsAccessCredential.VerifyWithOrigin(context.Background(), staleToken, "203.0.113.42"); err != nil || result != observabilitypkg.MetricsAccessAccepted {
+				t.Fatalf("stale credential before restore = %q, %v", result, err)
+			}
+			staleDetails, err := deps.MetricsAccessCredential.Details(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if staleDetails == archivedDetails {
+				t.Fatal("fixture did not distinguish archive from newer credential lifecycle")
+			}
+			if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{"servers.db": dbSnapshot, "config.json": configData}); err != nil {
+				t.Fatalf("restore fixture: %v", err)
+			}
+			if status, err := deps.MetricsAccessCredential.Status(context.Background()); err != nil || status != observabilitypkg.MetricsAccessEnabled {
+				t.Fatalf("credential status after restore = %q, %v", status, err)
+			}
+			restoredDetails, err := deps.MetricsAccessCredential.Details(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restoredDetails != archivedDetails {
+				t.Fatalf("credential lifecycle after restore = %+v, want exact archived lifecycle %+v", restoredDetails, archivedDetails)
+			}
+			restoredRecord, err := (observabilitypkg.SQLiteMetricsCredentialStore{DB: deps.DB}).Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restoredRecord != archivedRecord {
+				t.Fatal("restored credential hash/lifecycle differs from archived persistence")
+			}
+			if result, err := deps.MetricsAccessCredential.Verify(context.Background(), staleToken); err != nil || result != observabilitypkg.MetricsAccessRejected {
+				t.Fatalf("stale credential after restore = %q, %v", result, err)
+			}
+			if result, err := deps.MetricsAccessCredential.Verify(context.Background(), restoredToken); err != nil || result != observabilitypkg.MetricsAccessAccepted {
+				t.Fatalf("archived credential after restore = %q, %v", result, err)
+			}
+			if db != foreignDB || foreignDB.Ping() != nil {
+				t.Fatal("app restore replaced or closed unrelated global persistence")
+			}
+			foreignAfter, err := foreignStore.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if foreignAfter != foreignBefore {
+				t.Fatal("app restore changed unrelated credential persistence")
+			}
+			var sentinel string
+			if err := foreignDB.QueryRow("SELECT value FROM settings WHERE key='restore-test-sentinel'").Scan(&sentinel); err != nil || sentinel != "unchanged" {
+				t.Fatalf("unrelated DB sentinel changed: %v", err)
+			}
+		})
 	}
 }
 

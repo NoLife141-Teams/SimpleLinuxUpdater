@@ -351,6 +351,37 @@ test('obsolete initial session reads cannot dismiss unacknowledged MFA recovery 
     await page.locator('#recovery-dismiss').click();
     await expect(page).toHaveURL(/\/login$/);
 });
+test('a delayed timezone read cannot dismiss unacknowledged MFA recovery codes', async ({ page }) => {
+    let release, completed;
+    const gate = new Promise(resolve => { release = resolve; });
+    const finished = new Promise(resolve => { completed = resolve; });
+    await page.route('**/api/app-settings/timezone', async route => {
+        await gate;
+        try {
+            // The real cookie has been revoked by the successful MFA command.
+            const response = await route.fetch();
+            expect(response.status()).toBe(401);
+            await route.fulfill({ response }).catch(() => {});
+        } finally { completed(); }
+    });
+    try {
+        await page.reload();
+        await page.locator('#mfa-enroll').click();
+        await expect(page.locator('#mfa-enrollment')).toBeVisible();
+        const secret = await page.locator('#mfa-secret').textContent();
+        await page.locator('#mfa-confirm-code').fill(totp(secret));
+        await page.locator('#mfa-confirm-code').press('Enter');
+        await expect(page.locator('#recovery-result')).toBeVisible();
+        release(); await finished;
+        expect((await page.request.get('/api/auth/identity')).status()).toBe(401);
+        await expect(page.locator('#recovery-result')).toBeVisible();
+        await expect(page).toHaveURL(/\/account$/);
+        expect(await page.locator('#recovery-codes').evaluate(el => el.textContent.length > 0)).toBe(true);
+        await expect(page.locator('#token-form button')).toBeDisabled();
+        await page.locator('#recovery-dismiss').click();
+        await expect(page).toHaveURL(/\/login$/);
+    } finally { release(); }
+});
 test('Account waits for identity initialization before admitting a session-revoking MFA command', async ({ page }) => {
     let release, reads = 0, mutations = 0;
     const gate = new Promise(resolve => { release = resolve; });

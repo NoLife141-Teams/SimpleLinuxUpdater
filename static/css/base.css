@@ -232,6 +232,10 @@ button:active,
     margin-bottom: 16px;
 }
 
+.dashboard-head > * {
+    min-width: 0;
+}
+
 .eyebrow,
 .hero-kicker,
 .panel-kicker,
@@ -298,6 +302,14 @@ h4 {
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
+}
+
+.head-meta .meta-pill {
+    min-width: 0;
+    max-width: 100%;
+    padding-block: 5px;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .meta-pill,
@@ -405,7 +417,7 @@ h4 {
 .metric-item small {
     display: block;
     margin-top: 7px;
-    color: var(--faint);
+    color: var(--muted);
     font-size: 12px;
     line-height: 1.35;
     overflow-wrap: anywhere;
@@ -821,9 +833,25 @@ body.manage-modal-open {
     white-space: pre-line;
 }
 
-.confirmation-modal {
+.modal.confirmation-modal {
     width: min(620px, 100%);
     overscroll-behavior: contain;
+}
+
+.action-confirm-backdrop,
+.typed-confirm-backdrop {
+    z-index: 110;
+}
+
+.confirmation-modal .modal-actions {
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.confirmation-modal input {
+    margin-top: 0;
 }
 
 .confirmation-summary {
@@ -849,7 +877,7 @@ body.manage-modal-open {
 }
 
 .confirmation-summary dt {
-    color: var(--faint);
+    color: var(--muted);
     font-size: 10px;
     font-weight: 850;
     letter-spacing: 0.08em;
@@ -858,7 +886,7 @@ body.manage-modal-open {
 
 .confirmation-summary dd {
     margin: 0;
-    color: var(--subtle);
+    color: var(--muted);
     font-size: 12px;
     line-height: 1.45;
     overflow-wrap: anywhere;
@@ -1073,6 +1101,11 @@ pre {
 }
 
 @media (max-width: 760px) {
+    .manage-main,
+    .admin-main {
+        --app-header-offset: 0px;
+    }
+
     .app-header {
         position: static;
         grid-template-columns: 1fr;

@@ -16,6 +16,30 @@ import uuid
 from run import API, DOCKER, IMAGES, LABEL, REPO, app_environment, command, copy_assets, loopback_port, require
 
 
+def wait_for_app(api):
+    """Wait within the startup budget, including transient startup maintenance."""
+    deadline = time.monotonic() + 30
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("application startup was not ready within 30 seconds")
+        try:
+            api.request("GET", "/api/auth/status", timeout=min(20, remaining))
+        except OSError:
+            pass
+        except AssertionError as error:
+            # API.request emits this prefix from the actual HTTP status, not
+            # response-body text. Permanent HTTP errors and unrelated assertions
+            # remain fatal; only startup maintenance is retried.
+            if not str(error).startswith("GET /api/auth/status: HTTP 503:"):
+                raise
+        else:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("application startup exceeded 30 seconds")
+            return
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, help="local official Debian/Ubuntu amd64 cloud qcow2 image")
@@ -110,10 +134,7 @@ def main():
         command([*DOCKER, "run", "-d", "--name", app_name, "--network", "host", "--label", LABEL + "=" + owner,
             "--user", f"{os.getuid()}:{os.getgid()}", "--mount", f"type=bind,src={work},dst=/work",
             "--workdir", "/work", "--entrypoint", "/work/webserver", *env_args, IMAGES["debian13"]])
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
-            try: api.request("GET", "/api/auth/status"); break
-            except OSError: time.sleep(.1)
+        wait_for_app(api)
         api.request("POST", "/api/auth/setup", {"username": "fixture-admin", "password": password})
         endpoint = {"host": "127.0.0.1", "port": ssh_port}
         scan = api.request("POST", "/api/hostkeys/scan", endpoint)

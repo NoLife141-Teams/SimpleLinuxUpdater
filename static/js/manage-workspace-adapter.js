@@ -3,21 +3,11 @@
     "use strict";
     function create(options) {
         const lifecycle = root.BrowserEffects.create();
-        const fetch = lifecycle.fetch;
-        const IntersectionObserver = root.IntersectionObserver
-            ? lifecycle.observer(root.IntersectionObserver)
-            : undefined;
-        const ResizeObserver = root.ResizeObserver
-            ? lifecycle.observer(root.ResizeObserver)
-            : undefined;
         const { managePageInteraction, renderAddAuthMethod } = options;
-        let manageSectionNavigationLockUntil = 0;
-
-        let manageSectionSyncTimer = null;
-
-        let manageSectionScrollFrame = null;
-
-        let manageSectionResizeObserver = null;
+        const navigation = root.SectionNavigationAdapter.create({
+            lifecycle, page: "manage", interaction: managePageInteraction,
+            renderEffects: runManageWorkspaceEffects,
+        });
 
         function renderManageWorkspace() {
             const view = managePageInteraction.getView();
@@ -42,11 +32,7 @@
                     `[data-manage-section-content="${section.id}"]`,
                 );
                 root?.classList.toggle("is-collapsed", section.collapsed);
-                if (link) {
-                    if (workspace.activeSection === section.id)
-                        link.setAttribute("aria-current", "location");
-                    else link.removeAttribute("aria-current");
-                }
+                if (link) globalThis.SectionNavigationAdapter.renderLink(link, workspace, section.id);
                 if (navSummary) navSummary.textContent = section.summary;
                 if (summary) {
                     summary.textContent = section.summary;
@@ -95,6 +81,8 @@
             for (const effect of effects || []) {
                 if (effect.type === "render" && effect.area === "workspace")
                     renderManageWorkspace();
+                if (effect.type === "clearSectionLocation")
+                    globalThis.SectionNavigationAdapter.clearLocation("manage", effect.sectionID);
                 if (effect.type === "focusSection") {
                     const section = document.querySelector(
                         `[data-manage-section="${effect.sectionID}"]`,
@@ -127,72 +115,11 @@
                 sectionID,
             });
             if (!effects.length) return;
-            manageSectionNavigationLockUntil = Date.now() + 750;
             if (updateHistory)
-                history.pushState(null, "", `#manage-section-${sectionID}`);
+                history.pushState(history.state, "", `#manage-section-${sectionID}`);
+            navigation.acknowledgeLocation();
             runManageWorkspaceEffects(effects);
-        }
-
-        function syncVisibleManageSection() {
-            const lockRemaining = manageSectionNavigationLockUntil - Date.now();
-            if (lockRemaining > 0) {
-                lifecycle.clearTimeout(manageSectionSyncTimer);
-                manageSectionSyncTimer = lifecycle.setTimeout(
-                    syncVisibleManageSection,
-                    lockRemaining + 16,
-                );
-                return;
-            }
-            manageSectionSyncTimer = null;
-            const sections = Array.from(
-                document.querySelectorAll("[data-manage-section]"),
-            );
-            if (!sections.length) return;
-            const activeSection =
-                managePageInteraction.getView().workspace.activeSection;
-            const documentIsScrollable =
-                document.documentElement.scrollHeight > window.innerHeight + 1;
-            const atDocumentEnd =
-                documentIsScrollable &&
-                window.scrollY + window.innerHeight >=
-                    document.documentElement.scrollHeight - 1;
-            let sectionID = atDocumentEnd
-                ? sections[sections.length - 1].dataset.manageSection
-                : "";
-            if (!sectionID) {
-                const navBottom =
-                    document
-                        .getElementById("manage-section-nav")
-                        ?.getBoundingClientRect().bottom || 0;
-                const anchorY = navBottom + 8;
-                const sectionsAtAnchor = sections.filter((section) => {
-                    const bounds = section.getBoundingClientRect();
-                    return bounds.top <= anchorY && bounds.bottom > anchorY;
-                });
-                const activeAtAnchor = sectionsAtAnchor.find(
-                    (section) =>
-                        section.dataset.manageSection === activeSection,
-                );
-                sectionID =
-                    (activeAtAnchor || sectionsAtAnchor[0])?.dataset
-                        .manageSection || "";
-            }
-            if (!sectionID || sectionID === activeSection) return;
-            history.replaceState(null, "", `#manage-section-${sectionID}`);
-            runManageWorkspaceEffects(
-                managePageInteraction.dispatch({
-                    type: "sectionActivated",
-                    sectionID,
-                }),
-            );
-        }
-
-        function scheduleVisibleManageSectionSync() {
-            if (manageSectionScrollFrame !== null) return;
-            manageSectionScrollFrame = lifecycle.requestAnimationFrame(() => {
-                manageSectionScrollFrame = null;
-                syncVisibleManageSection();
-            });
+            navigation.schedule();
         }
 
         function initializeManageWorkspace() {
@@ -225,40 +152,16 @@
                                 sectionID: toggle.dataset.manageSectionToggle,
                             }),
                         );
-                        scheduleVisibleManageSectionSync();
+                        navigation.schedule();
                     });
                 });
             lifecycle.listen(window, "hashchange", () => {
                 const sectionID = manageSectionIDFromHash();
                 if (sectionID) navigateManageSection(sectionID);
             });
-            lifecycle.listen(
-                window,
-                "scroll",
-                scheduleVisibleManageSectionSync,
-                { passive: true },
-            );
-            lifecycle.listen(
-                window,
-                "resize",
-                scheduleVisibleManageSectionSync,
-            );
-            if ("ResizeObserver" in window) {
-                manageSectionResizeObserver = new ResizeObserver(
-                    scheduleVisibleManageSectionSync,
-                );
-                document
-                    .querySelectorAll("[data-manage-section]")
-                    .forEach((section) => {
-                        manageSectionResizeObserver.observe(section);
-                    });
-            }
             const deepLink = manageSectionIDFromHash();
-            if (deepLink)
-                lifecycle.requestAnimationFrame(() =>
-                    navigateManageSection(deepLink),
-                );
-            else renderManageWorkspace();
+            renderManageWorkspace();
+            navigation.init(deepLink, navigateManageSection);
         }
         return Object.freeze({
             init: lifecycle.init,

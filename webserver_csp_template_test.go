@@ -27,6 +27,15 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 
 	checks := []templateCheck{
 		{
+			path: "templates/access-denied.html",
+			requiredContains: []string{
+				`/static/css/base.css`,
+				`/static/css/access-denied.css`,
+				`/static/auth.js`,
+				`/static/js/access-denied.js`,
+			},
+		},
+		{
 			path: "templates/setup.html",
 			requiredContains: []string{
 				`/static/css/base.css`,
@@ -62,6 +71,8 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 				`/static/css/manage.css`,
 				`/static/auth.js`,
 				`/static/js/common.js`,
+				`/static/js/section-navigation.js`,
+				`/static/js/section-navigation-adapter.js`,
 				`/static/js/manage.js`,
 			},
 		},
@@ -82,6 +93,8 @@ func TestTemplatesStrictCSPCompliance(t *testing.T) {
 				`/static/css/admin.css`,
 				`/static/auth.js`,
 				`/static/js/common.js`,
+				`/static/js/section-navigation.js`,
+				`/static/js/section-navigation-adapter.js`,
 				`/static/js/admin.js`,
 			},
 		},

@@ -4,7 +4,7 @@
 
 .admin-section-nav {
     position: sticky;
-    top: 84px;
+    top: calc(var(--app-header-offset, 72px) + 8px);
     z-index: 24;
     margin-bottom: 16px;
     padding: 6px;
@@ -88,7 +88,7 @@
 .admin-workspace-section {
     min-width: 0;
     max-width: 100%;
-    scroll-margin-top: 164px;
+    scroll-margin-top: calc(var(--app-header-offset, 72px) + var(--section-nav-height, 80px) + 16px);
 }
 
 .admin-section-content {
@@ -107,7 +107,9 @@
 
 .admin-section-controls {
     display: flex;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: 12px;
@@ -1790,14 +1792,6 @@
 }
 
 @media (max-width: 760px) {
-    .admin-section-nav {
-        top: 8px;
-    }
-
-    .admin-workspace-section {
-        scroll-margin-top: 96px;
-    }
-
     .admin-section-nav a {
         flex-basis: 132px;
     }

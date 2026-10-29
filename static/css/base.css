@@ -232,6 +232,10 @@ button:active,
     margin-bottom: 16px;
 }
 
+.dashboard-head > * {
+    min-width: 0;
+}
+
 .eyebrow,
 .hero-kicker,
 .panel-kicker,
@@ -298,6 +302,14 @@ h4 {
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
+}
+
+.head-meta .meta-pill {
+    min-width: 0;
+    max-width: 100%;
+    padding-block: 5px;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .meta-pill,
@@ -1073,6 +1085,11 @@ pre {
 }
 
 @media (max-width: 760px) {
+    .manage-main,
+    .admin-main {
+        --app-header-offset: 0px;
+    }
+
     .app-header {
         position: static;
         grid-template-columns: 1fr;

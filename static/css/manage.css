@@ -6,7 +6,7 @@
 
 .manage-section-nav {
     position: sticky;
-    top: 84px;
+    top: calc(var(--app-header-offset, 72px) + 8px);
     z-index: 24;
     margin-bottom: 16px;
     padding: 6px;
@@ -104,7 +104,7 @@
 .manage-workspace-section {
     min-width: 0;
     max-width: 100%;
-    scroll-margin-top: 164px;
+    scroll-margin-top: calc(var(--app-header-offset, 72px) + var(--section-nav-height, 80px) + 16px);
 }
 
 .manage-workspace-section [id$="-heading"] {
@@ -651,10 +651,6 @@
 }
 
 @media (max-width: 640px) {
-    .manage-section-nav {
-        top: 8px;
-    }
-
     .manage-summary {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }

@@ -471,6 +471,7 @@
             if (updateHistory) {
                 history.pushState(history.state, "", `#admin-section-${sectionID}`);
             }
+            sectionNavigation.acknowledgeLocation();
             runAdminWorkspaceEffects(effects);
             sectionNavigation.schedule();
         }

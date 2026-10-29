@@ -452,6 +452,10 @@ class HarnessSafetyTests(unittest.TestCase):
                     elif args[0] == "qemu-img":
                         (work / "overlay.qcow2").write_text("private VM overlay")
                     elif args[0] == "ssh":
+                        # A first SSH connection otherwise prefixes stdout with
+                        # its accepted-host warning, breaking marker validation.
+                        if "LogLevel=ERROR" not in args:
+                            return "Warning: Permanently added fixture host.\n" + owner
                         return {"cat /var/lib/slu-fixture-owner": owner,
                                 "systemctl is-active ssh.service": "active",
                                 "cut -d' ' -f1 /proc/uptime": "120"}[args[-1]]

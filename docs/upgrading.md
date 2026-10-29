@@ -1,11 +1,11 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading from v0.4.16
+# Upgrading from v0.4.16 to v0.5.0
 
-These instructions describe the next release candidate after v0.4.16. Read the
-[Unreleased compatibility notes](../CHANGELOG.md#upgrade-notes) and substitute
-the actual target release's version or immutable image digest. No next release
-has been published by this qualification.
+These instructions cover the v0.5.0 release candidate and its compatibility with
+published v0.4.16. Read the [v0.5.0 compatibility notes](../CHANGELOG.md#upgrade-notes).
+The preparation PR does not publish v0.5.0. Use the download commands below only
+after publication, with the image digest from that release's `publication.json`.
 
 ## Before changing the application
 
@@ -56,7 +56,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='REPLACE_WITH_TARGET_VERSION_WITHOUT_v'
+VERSION='0.5.0'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

@@ -38,6 +38,17 @@ type InventoryProof struct {
 	Packages   []string `json:"packages"`
 }
 
+// InventoryAbsenceProof preserves the negative knowledge of a complete stable
+// inventory after a later inventory includes the package again. It supersedes
+// older approval snapshots, not new positive evidence or current unknowns.
+type InventoryAbsenceProof struct {
+	ScanID     string `json:"scan_id"`
+	ServerName string `json:"server_name"`
+	Package    string `json:"package"`
+	ObservedAt string `json:"observed_at"`
+	VerifiedAt string `json:"verified_at"`
+}
+
 type Resolution struct {
 	Reason           string `json:"reason"`
 	ScanID           string `json:"scan_id"`
@@ -160,6 +171,12 @@ func (o Observation) SupersedesPackageEvidence(name, observedAt string) bool {
 			return true
 		}
 	}
+	if p, ok := o.PackageAbsenceProofs[name]; ok && p.Package == name {
+		verified, err := time.Parse(time.RFC3339, p.VerifiedAt)
+		if err == nil && !verified.Before(at) {
+			return true
+		}
+	}
 	if p := o.InventoryProof; p != nil {
 		verified, err := time.Parse(time.RFC3339, p.VerifiedAt)
 		if err == nil && !verified.Before(at) {
@@ -175,6 +192,59 @@ func (o Observation) SupersedesPackageEvidence(name, observedAt string) bool {
 }
 
 func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProof, removal bool) {
+	absences := make(map[string]InventoryAbsenceProof, len(out.PackageAbsenceProofs))
+	for name, p := range out.PackageAbsenceProofs {
+		absences[name] = p
+	}
+	recordAbsence := func(name string, inventory *InventoryProof) {
+		if name == "" || inventory == nil || !inventory.Complete || !inventory.Stable || inventory.ScanID == "" || inventory.ServerName == "" {
+			return
+		}
+		at, err := time.Parse(time.RFC3339, inventory.VerifiedAt)
+		observed, observedErr := time.Parse(time.RFC3339, inventory.ObservedAt)
+		if err != nil || observedErr != nil || at.Before(observed) {
+			return
+		}
+		previous, err := time.Parse(time.RFC3339, absences[name].VerifiedAt)
+		if err == nil && at.Before(previous) {
+			return
+		}
+		absences[name] = InventoryAbsenceProof{ScanID: inventory.ScanID, ServerName: inventory.ServerName, Package: name, ObservedAt: inventory.ObservedAt, VerifiedAt: inventory.VerifiedAt}
+	}
+	if removal {
+		currentNames := make(map[string]bool, len(scan.Packages))
+		for _, p := range scan.Packages {
+			currentNames[p.Name] = true
+		}
+		for name := range out.PackageProofs {
+			if !currentNames[name] {
+				recordAbsence(name, scan.InventoryProof)
+			}
+		}
+		for _, f := range out.Findings {
+			if !currentNames[f.Package] {
+				recordAbsence(f.Package, scan.InventoryProof)
+			}
+		}
+		// A package newly appearing in this inventory was absent in the previous
+		// complete inventory, even if its earlier approval match was never in the
+		// installed ledger. Keep that cutoff before replacing the inventory.
+		if previous := out.InventoryProof; previous != nil {
+			previousNames := make(map[string]bool, len(previous.Packages))
+			for _, name := range previous.Packages {
+				previousNames[name] = true
+			}
+			for name := range currentNames {
+				if !previousNames[name] {
+					recordAbsence(name, previous)
+				}
+			}
+		}
+	}
+	if len(absences) == 0 {
+		absences = nil
+	}
+	out.PackageAbsenceProofs = absences
 	copyProofs := make(map[string]EvaluationProof, len(out.PackageProofs)+len(scan.Packages))
 	for name, p := range out.PackageProofs {
 		copyProofs[name] = p

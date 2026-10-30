@@ -87,13 +87,14 @@ type Scan struct {
 // attempt. Findings are a durable ledger; only complete stable package evidence
 // (or a complete stable removal inventory) can resolve a missing finding.
 type Observation struct {
-	PackageProofs  map[string]EvaluationProof `json:"package_proofs,omitempty"`
-	InventoryProof *InventoryProof            `json:"inventory_proof,omitempty"`
-	AuditedScanID  string                     `json:"audited_scan_id,omitempty"`
-	LastAttempt    Scan                       `json:"last_attempt"`
-	Accepted       *Scan                      `json:"accepted,omitempty"`
-	LastSuccess    string                     `json:"last_success,omitempty"`
-	Findings       []Finding                  `json:"findings"`
+	PackageAbsenceProofs map[string]InventoryAbsenceProof `json:"package_absence_proofs,omitempty"`
+	PackageProofs        map[string]EvaluationProof       `json:"package_proofs,omitempty"`
+	InventoryProof       *InventoryProof                  `json:"inventory_proof,omitempty"`
+	AuditedScanID        string                           `json:"audited_scan_id,omitempty"`
+	LastAttempt          Scan                             `json:"last_attempt"`
+	Accepted             *Scan                            `json:"accepted,omitempty"`
+	LastSuccess          string                           `json:"last_success,omitempty"`
+	Findings             []Finding                        `json:"findings"`
 }
 
 func Accept(previous Observation, scan Scan) Observation {

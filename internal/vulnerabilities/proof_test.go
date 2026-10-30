@@ -172,6 +172,71 @@ func TestRemovalRequiresStableCompleteInventory(t *testing.T) {
 	}
 }
 
+func TestInventoryAbsenceSupersedesOldApprovalAfterUnknownReinstall(t *testing.T) {
+	for _, hadFinding := range []bool{false, true} {
+		t.Run(map[bool]string{false: "approval only", true: "accepted finding"}[hadFinding], func(t *testing.T) {
+			var old Observation
+			if hadFinding {
+				old = initialEvidence()
+			}
+			removed := evidenceScan("removed", "2026-10-02T12:00:00Z", []Package{{Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			afterRemoval := Accept(old, removed)
+			approvalAt := "2026-10-01T13:00:00Z"
+			if !afterRemoval.SupersedesPackageEvidence("a:amd64", approvalAt) {
+				t.Fatal("complete absence did not supersede older approval")
+			}
+			reinstalled := evidenceScan("reinstalled", "2026-10-03T12:00:00Z", []Package{{Name: "a:amd64", Version: "2", State: "unknown"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			next := Accept(afterRemoval, reinstalled)
+			if !next.SupersedesPackageEvidence("a:amd64", approvalAt) {
+				t.Fatal("unknown reinstall resurrected approval evidence predating complete absence")
+			}
+			if next.SupersedesPackageEvidence("a:amd64", "2026-10-03T13:00:00Z") {
+				t.Fatal("historical absence suppressed newer approval evidence")
+			}
+			if !hadFinding && len(afterRemoval.PackageAbsenceProofs) != 0 {
+				t.Fatal("later inventory mutated the previous observation")
+			}
+			raw, err := json.Marshal(next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restored Observation
+			if err := json.Unmarshal(raw, &restored); err != nil || !restored.SupersedesPackageEvidence("a:amd64", approvalAt) {
+				t.Fatal("absence cutoff did not survive JSON", err)
+			}
+			positive := evidenceScan("positive", "2026-10-04T12:00:00Z", []Package{{Name: "a:amd64", Version: "2", State: "unknown"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, []Finding{{Package: "a:amd64", ID: "CVE-A"}})
+			current := Accept(restored, positive)
+			unknown := evidenceScan("later unknown", "2026-10-05T12:00:00Z", []Package{{Name: "a:amd64", Version: "2", State: "unknown"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			if f := finding(t, Accept(current, unknown), "a:amd64", "CVE-A"); f.ResolvedAt != "" {
+				t.Fatal("historical absence closed a newly observed finding", f)
+			}
+		})
+	}
+}
+
+func TestUnverifiedInventoryCannotCreateAnAbsenceCutoff(t *testing.T) {
+	for _, invalid := range []string{"incomplete", "unstable", "other scan", "other Server"} {
+		t.Run(invalid, func(t *testing.T) {
+			s := evidenceScan("removed", "2026-10-02T12:00:00Z", []Package{{Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			switch invalid {
+			case "incomplete":
+				s.InventoryProof.Complete = false
+			case "unstable":
+				s.InventoryProof.Stable = false
+			case "other scan":
+				s.InventoryProof.ScanID = "other"
+			case "other Server":
+				s.InventoryProof.ServerName = "other"
+			}
+			o := Accept(initialEvidence(), s)
+			reinstalled := evidenceScan("reinstalled", "2026-10-03T12:00:00Z", []Package{{Name: "a:amd64", Version: "2", State: "unknown"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			if next := Accept(o, reinstalled); next.SupersedesPackageEvidence("a:amd64", "2026-10-01T13:00:00Z") || len(next.PackageAbsenceProofs) != 0 {
+				t.Fatal("unverified inventory became a retained absence cutoff", next)
+			}
+		})
+	}
+}
+
 func TestProofResolutionLegacyMultiarchReappearanceAndTimeOrdering(t *testing.T) {
 	old := Accept(Observation{}, evidenceScan("old", "2026-10-01T12:00:00Z", []Package{{Name: "lib:amd64", Version: "1"}, {Name: "lib:i386", Version: "1"}}, []Finding{{Package: "lib:amd64", ID: "CVE-A"}, {Package: "lib:i386", ID: "CVE-A"}}))
 	s := evidenceScan("new", "2026-10-02T12:00:00Z", []Package{{Name: "lib:amd64", Version: "2"}, {Name: "lib:i386", Version: "1", State: "unknown"}}, nil)

@@ -4143,6 +4143,12 @@
               "$ref": "#/components/schemas/VulnerabilityPackageProof"
             }
           },
+          "package_absence_proofs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VulnerabilityInventoryAbsenceProof"
+            }
+          },
           "inventory_proof": {
             "$ref": "#/components/schemas/VulnerabilityInventoryProof"
           }
@@ -4341,6 +4347,27 @@
           }
         },
         "description": "Complete stable whole-inventory proof; package absence can demonstrate removal independently of CVE coverage of remaining packages."
+      },
+      "VulnerabilityInventoryAbsenceProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          }
+        },
+        "description": "Per-package absence established by a complete stable inventory. Retained to suppress approval snapshots older than that absence after a later unknown reinstall. This is not an evaluation of the current installed version and cannot close new findings."
       },
       "VulnerabilityResolution": {
         "type": "object",

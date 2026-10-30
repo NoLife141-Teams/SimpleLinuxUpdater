@@ -5077,6 +5077,58 @@
           },
           "full_upgrade_plan_available": {
             "type": "boolean"
+          },
+          "full_upgrade_simulation_digest": {
+            "type": "string",
+            "description": "Digest of normalized APT install/upgrade/removal facts, including versions, architecture and origins. Remediation revalidation requires renewed approval on drift; raw command output is never exposed."
+          },
+          "full_upgrade_simulation_packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "package",
+                "candidate_version"
+              ],
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "current_version": {
+                  "type": "string"
+                },
+                "candidate_version": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Parsed simulated package versions, including dependencies absent from installed upgradable packages. Repository credentials and raw simulation output are omitted."
+          },
+          "kept_back_security_simulation_digest": {
+            "type": "string",
+            "description": "Digest of normalized APT install/upgrade/removal facts, including versions, architecture and origins. Remediation revalidation requires renewed approval on drift; raw command output is never exposed."
+          },
+          "kept_back_security_simulation_packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "package",
+                "candidate_version"
+              ],
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "current_version": {
+                  "type": "string"
+                },
+                "candidate_version": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Parsed simulated package versions, including dependencies absent from installed upgradable packages. Repository credentials and raw simulation output are omitted."
           }
         },
         "additionalProperties": true

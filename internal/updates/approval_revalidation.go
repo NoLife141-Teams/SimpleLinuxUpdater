@@ -125,7 +125,8 @@ func remediationDiscoveryEqual(a, b PackageDiscoveryOutcome) bool {
 		return false
 	}
 	ap, bp := a.UpgradePlan, b.UpgradePlan
-	return ap.PackageDeferrals.Revision == bp.PackageDeferrals.Revision && reflect.DeepEqual(ap.DeferralScopes, bp.DeferralScopes) &&
+	return ap.FullUpgradeSimulationDigest == bp.FullUpgradeSimulationDigest && ap.KeptBackSecuritySimulationDigest == bp.KeptBackSecuritySimulationDigest &&
+		ap.PackageDeferrals.Revision == bp.PackageDeferrals.Revision && reflect.DeepEqual(ap.DeferralScopes, bp.DeferralScopes) &&
 		ap.FullUpgradePlanAvailable == bp.FullUpgradePlanAvailable && ap.KeptBackSecurityPlanAvailable == bp.KeptBackSecurityPlanAvailable &&
 		approvalPackageSetsEqual(ap.FullUpgradeNewPackages, bp.FullUpgradeNewPackages) && approvalPackageSetsEqual(ap.FullUpgradeRemovedPackages, bp.FullUpgradeRemovedPackages) &&
 		approvalPackageSetsEqual(ap.KeptBackSecurityNewPackages, bp.KeptBackSecurityNewPackages) && approvalPackageSetsEqual(ap.KeptBackSecurityRemovedPackages, bp.KeptBackSecurityRemovedPackages)

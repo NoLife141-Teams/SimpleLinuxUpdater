@@ -2,6 +2,8 @@ package updates
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -496,6 +498,9 @@ func BuildUpgradePlan(pending []servers.PendingUpdate, fullUpgradeStdout string,
 		FullUpgradeNewPackages:     parseAptSummaryPackages(fullUpgradeStdout, "the following new packages will be installed:"),
 		FullUpgradeRemovedPackages: parseAptSummaryPackages(fullUpgradeStdout, "the following packages will be removed:"),
 	}
+	if fullUpgradePlanAvailable {
+		plan.FullUpgradeSimulationDigest, plan.FullUpgradeSimulationPackages = packageSimulationIdentity(fullUpgradeStdout)
+	}
 	if facts, ok := parseAptDiskFacts(fullUpgradeStdout); fullUpgradePlanAvailable && ok {
 		plan.FullUpgradeDiskFactsAvailable = true
 		plan.FullUpgradeArchiveBytes = facts.ArchiveBytes
@@ -626,6 +631,7 @@ func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
 		return
 	}
 	plan.KeptBackSecurityPlanAvailable = true
+	plan.KeptBackSecuritySimulationDigest, plan.KeptBackSecuritySimulationPackages = packageSimulationIdentity(stdout)
 	plan.KeptBackSecurityNewPackages = parseAptSummaryPackages(stdout, "the following new packages will be installed:")
 	plan.KeptBackSecurityRemovedPackages = parseAptSummaryPackages(stdout, "the following packages will be removed:")
 	if facts, ok := parseAptDiskFacts(stdout); ok {
@@ -634,6 +640,31 @@ func ApplyKeptBackSecuritySimulation(plan *servers.UpgradePlan, stdout string) {
 		plan.KeptBackInstalledDeltaBytes = facts.InstalledDeltaBytes
 	}
 	applyPlanDiskEstimate(plan)
+}
+
+// Bind every simulated install/upgrade/removal, including newly introduced
+// dependencies absent from apt list --upgradable. The digest also binds origin
+// and architecture, but only parsed names and versions are public evidence.
+func packageSimulationIdentity(output string) (string, []servers.SimulatedPackage) {
+	facts := []string{}
+	packages := []servers.SimulatedPackage{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Inst ") {
+			facts = append(facts, strings.Join(strings.Fields(line), " "))
+			p := ParsePendingUpdateEntry(strings.TrimPrefix(line, "Inst "))
+			packages = append(packages, servers.SimulatedPackage{Package: p.Package, CurrentVersion: p.CurrentVersion, CandidateVersion: p.CandidateVersion})
+		} else if strings.HasPrefix(line, "Remv ") {
+			facts = append(facts, strings.Join(strings.Fields(line), " "))
+		}
+	}
+	sort.Strings(facts)
+	sort.Slice(packages, func(i, j int) bool { return packages[i].Package < packages[j].Package })
+	if len(facts) == 0 {
+		return "", packages
+	}
+	digest := sha256.Sum256([]byte(strings.Join(facts, "\n")))
+	return hex.EncodeToString(digest[:]), packages
 }
 
 func ParseAptListMetadataEntry(line string) (servers.PendingUpdate, bool) {

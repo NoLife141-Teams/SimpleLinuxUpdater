@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +17,7 @@ import (
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 	"debian-updater/internal/vulnerabilities"
+	"github.com/gin-gonic/gin"
 )
 
 type remediationTestScanner struct {
@@ -21,6 +25,50 @@ type remediationTestScanner struct {
 	fail    *atomic.Bool
 	partial bool
 	now     func() time.Time
+}
+
+func TestRiskReviewDoesNotAttachOldFindingToReplacementServer(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "review-host", Host: "review-host.invalid", User: "root", Pass: "synthetic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version atomic.Int32
+	version.Store(1)
+	scan, err := (remediationTestScanner{version: &version, now: app.Deps.Now}).ScanInstalled(vulnerabilities.WithScanIdentity(t.Context(), server.Name, "before-review"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = (vulnerabilities.Repository{DB: app.Deps.DB}).Save(t.Context(), server.Name, scan); err != nil {
+		t.Fatal(err)
+	}
+	deps := app.Deps
+	deps.Remediation = newRemediationLifecycle(deps)
+	first := true
+	deps.Remediation.deps.DB = func() *sql.DB {
+		if first {
+			first = false
+			// Force replacement at the first stable-key access, after the old
+			// implementation had already accepted the original finding.
+			if err := app.Deps.ServerInventoryService.Delete(server.Name); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := app.Deps.ServerInventoryService.Create(server); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return app.Deps.DB()
+	}
+	body, _ := json.Marshal(remediation.Review{Package: "addressable", Owner: "operator", Reason: "Review original finding", Decision: "Mitigate", ReevaluateAt: app.Deps.Now().Add(time.Hour).Format(time.RFC3339)})
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Params = gin.Params{{Key: "name", Value: server.Name}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handleRiskReview(c, deps)
+	if response.Code != 409 {
+		t.Fatalf("review attached to replacement: HTTP %d %s", response.Code, response.Body.String())
+	}
 }
 
 func (s remediationTestScanner) Scan(_ context.Context, _ HostMaintenanceSession, p []PendingUpdate) ([]PendingUpdate, error) {
@@ -74,7 +122,7 @@ func (s remediationTestScanner) ScanInstalled(ctx context.Context, _ HostMainten
 	return scan, nil
 }
 func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *testing.T) {
-	for _, mode := range []string{"success", "late_candidate_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
+	for _, mode := range []string{"success", "late_candidate_drift", "late_dependency_version_drift", "late_dependency_origin_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
 		t.Run(mode, func(t *testing.T) {
 			app := newIsolatedTestApp(t)
 			server, err := app.Deps.ServerInventoryService.Create(Server{Name: "example-host", Host: "example-host.invalid", User: "root", Pass: "synthetic"})
@@ -91,7 +139,7 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 				scope = "security"
 			case "kept_back_scope":
 				scope = "security_kept_back"
-			case "full_scope":
+			case "full_scope", "late_dependency_version_drift", "late_dependency_origin_drift":
 				scope = "full_upgrade"
 			}
 			discoveries, mutations, approvals := 0, 0, 0
@@ -104,7 +152,15 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 						if mode == "late_candidate_drift" && discoveries > 1 {
 							candidate = "3"
 						}
-						return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"addressable"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: candidate, Source: "stable", CVEState: "done", Security: scope == "security" || scope == "security_kept_back", KeptBack: scope == "security_kept_back", RequiresFull: scope == "security_kept_back"}}, UpgradePlan: UpgradePlan{StandardPackageCount: 1, FullUpgradePlanAvailable: true, KeptBackSecurityPlanAvailable: true, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}, KeptBackSecurityNewPackages: []string{"new-dependency"}, KeptBackSecurityRemovedPackages: []string{"old-runtime"}}}}, nil
+						dependencyVersion, dependencyOrigin := "1", "Debian:stable"
+						if discoveries > 1 && mode == "late_dependency_version_drift" {
+							dependencyVersion = "2"
+						}
+						if discoveries > 1 && mode == "late_dependency_origin_drift" {
+							dependencyOrigin = "Other:stable"
+						}
+						simulation := updatespkg.BuildUpgradePlan(nil, fmt.Sprintf("Inst new-dependency (%s %s [amd64])\n", dependencyVersion, dependencyOrigin), true)
+						return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"addressable"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: candidate, Source: "stable", CVEState: "done", Security: scope == "security" || scope == "security_kept_back", KeptBack: scope == "security_kept_back", RequiresFull: scope == "security_kept_back"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationDigest: simulation.FullUpgradeSimulationDigest, FullUpgradeSimulationPackages: simulation.FullUpgradeSimulationPackages, StandardPackageCount: 1, FullUpgradePlanAvailable: true, KeptBackSecurityPlanAvailable: true, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}, KeptBackSecurityNewPackages: []string{"new-dependency"}, KeptBackSecurityRemovedPackages: []string{"old-runtime"}}}}, nil
 					},
 					RunCommandFunc: func(_ context.Context, r HostCommandRequest) (HostCommandResult, error) {
 						if r.Operation == "remediation.installed_inventory" {
@@ -197,7 +253,7 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 			if mutations != wantMutations || approvals < 1 {
 				t.Fatalf("mutations=%d approvals=%d", mutations, approvals)
 			}
-			if mode == "late_candidate_drift" && approvals != 2 {
+			if strings.HasPrefix(mode, "late_") && approvals != 2 {
 				t.Fatalf("AutoApprove bypassed renewed approval: %d", approvals)
 			}
 			if auditMeta["remediation_plan_id"] == "" || auditMeta["remediation_digest"] == "" || auditMeta["before_scan_id"] != beforeID {
@@ -402,7 +458,7 @@ func syntheticRemediationService(deps AppDeps, failVerification bool) *UpdateSer
 		}
 		return HostCommandResult{Attempts: 1}, nil
 	}, DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
-		return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 2, Upgradable: []string{"addressable", "extra-package"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}, {Package: "extra-package", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}}, UpgradePlan: UpgradePlan{StandardPackageCount: 2, FullUpgradePlanAvailable: true, FullUpgradePackageCount: 2, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}}}}, nil
+		return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 2, Upgradable: []string{"addressable", "extra-package"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}, {Package: "extra-package", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationPackages: []serverpkg.SimulatedPackage{{Package: "new-dependency", CandidateVersion: "2"}}, StandardPackageCount: 2, FullUpgradePlanAvailable: true, FullUpgradePackageCount: 2, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}}}}, nil
 	}})
 	return NewUpdateService(base)
 }

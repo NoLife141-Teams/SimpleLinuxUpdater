@@ -323,3 +323,11 @@ Cookie same-origin protections and PAT role/scope intersection apply unchanged.
 Verification job `parent_job_id` links the update job; audit metadata retains
 plan/digest, update job and before/after scan IDs. `verified` means the proof
 comparison completed, never that every CVE or host health issue was corrected.
+
+Upgrade Plan adds `full_upgrade_simulation_digest`, `full_upgrade_simulation_packages`,
+`kept_back_security_simulation_digest` and `kept_back_security_simulation_packages`.
+Digests bind normalized simulated installs/upgrades/removals, including dependency
+versions, architecture and origins, so drift requires renewed remediation approval.
+Parsed package/version facts are visible; raw simulation output and repository credentials are omitted.
+Risk review persistence revalidates the stable Server owner; a concurrent rename or
+delete/recreate cannot attach the original finding review to the replacement.

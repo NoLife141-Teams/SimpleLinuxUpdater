@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"debian-updater/internal/vulnerabilities"
 	"encoding/json"
+	"errors"
 	_ "modernc.org/sqlite"
 	"testing"
 	"time"
@@ -134,6 +135,12 @@ func TestDurablePlanRenameDeleteRecreateAndCAS(t *testing.T) {
 	}
 	if _, err = r.ServerName(ctx, key); err == nil {
 		t.Fatal("deleted plan attached to replacement")
+	}
+	if err = r.SaveReview(ctx, key, "renamed-host", Review{ID: ID(), Package: "example-package"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("review accepted stale Server ownership: %v", err)
+	}
+	if reviews, err := r.Reviews(ctx, replacement); err != nil || len(reviews) != 0 {
+		t.Fatalf("replacement inherited old review: %+v %v", reviews, err)
 	}
 }
 func TestRiskReviewRequiresOwnedTreatmentAndFutureReevaluation(t *testing.T) {

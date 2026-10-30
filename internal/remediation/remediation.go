@@ -276,12 +276,19 @@ func (v Review) Valid(now time.Time) bool {
 	at, err := time.Parse(time.RFC3339, v.ReevaluateAt)
 	return err == nil && at.After(now) && strings.TrimSpace(v.Package) != "" && len(v.Package) <= 300 && strings.TrimSpace(v.Owner) != "" && len(v.Owner) <= 200 && strings.TrimSpace(v.Reason) != "" && len(v.Reason) <= 4000 && strings.TrimSpace(v.Decision) != "" && len(v.Decision) <= 4000 && len(v.Mitigation) <= 4000 && len(v.CVE) <= 100
 }
-func (r Repository) SaveReview(ctx context.Context, key string, v Review) error {
+func (r Repository) SaveReview(ctx context.Context, key, name string, v Review) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	_, err = r.DB().ExecContext(ctx, `INSERT INTO vulnerability_risk_reviews(id,server_key,body) VALUES(?,?,?)`, v.ID, key, string(b))
+	result, err := r.DB().ExecContext(ctx, `INSERT INTO vulnerability_risk_reviews(id,server_key,body) SELECT ?,id,? FROM remediation_servers WHERE id=? AND server_name=?`, v.ID, string(b), key, name)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n != 1 {
+		return sql.ErrNoRows
+	}
 	return err
 }
 func (r Repository) Reviews(ctx context.Context, key string) ([]Review, error) {

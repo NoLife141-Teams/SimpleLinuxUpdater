@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -401,6 +402,13 @@ func handleRiskReview(c *gin.Context, deps AppDeps) {
 		c.JSON(404, gin.H{"error": "Server not found"})
 		return
 	}
+	// Resolve ownership before reading finding evidence. A later delete/rename
+	// invalidates this key rather than moving the review onto a replacement.
+	key, err := deps.Remediation.repo().ServerKey(c.Request.Context(), c.Param("name"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Cannot record risk review"})
+		return
+	}
 	observation, loadErr := (vulnerabilities.Repository{DB: deps.DB}).Load(c.Request.Context(), c.Param("name"))
 	known := false
 	for _, f := range observation.Findings {
@@ -412,15 +420,14 @@ func handleRiskReview(c *gin.Context, deps AppDeps) {
 		c.JSON(409, gin.H{"error": "Review must identify a currently recorded unresolved package finding"})
 		return
 	}
-	key, err := deps.Remediation.repo().ServerKey(c.Request.Context(), c.Param("name"))
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Cannot record risk review"})
-		return
-	}
 	v.ID = remediation.ID()
 	v.Actor = actorFromContext(c)
 	v.CreatedAt = deps.Now().UTC().Format(time.RFC3339Nano)
-	if err = deps.Remediation.repo().SaveReview(c.Request.Context(), key, v); err != nil {
+	if err = deps.Remediation.repo().SaveReview(c.Request.Context(), key, c.Param("name"), v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(409, gin.H{"error": "Server identity changed; refresh finding evidence before reviewing"})
+			return
+		}
 		c.JSON(500, gin.H{"error": "Cannot record risk review"})
 		return
 	}
@@ -444,6 +451,7 @@ func (s *remediationLifecycle) ValidateApproval(status *ServerStatus, server Ser
 }
 
 type remediationScope struct {
+	Simulation        []serverpkg.SimulatedPackage   `json:"simulation_packages,omitempty"`
 	Transaction       []string                       `json:"transaction_packages,omitempty"`
 	DependencyImpacts []string                       `json:"dependency_impacts,omitempty"`
 	Scope             string                         `json:"scope"`
@@ -471,15 +479,20 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 			row.Reason = "Review the transaction and removals before explicitly approving this scope."
 		}
 		if scope == updatespkg.ApprovalScopeFullUpgrade {
+			row.Simulation = status.UpgradePlan.FullUpgradeSimulationPackages
 			row.Added = status.UpgradePlan.FullUpgradeNewPackages
 			row.Removed = status.UpgradePlan.FullUpgradeRemovedPackages
 		}
 		if scope == updatespkg.ApprovalScopeSecurityKeptBack {
+			row.Simulation = status.UpgradePlan.KeptBackSecuritySimulationPackages
 			row.Added = status.UpgradePlan.KeptBackSecurityNewPackages
 			row.Removed = status.UpgradePlan.KeptBackSecurityRemovedPackages
 		}
 		if len(status.UpgradePlan.PackageDeferrals.Rules) > 0 {
 			protected := status.UpgradePlan.DeferralScopes[scope]
+			// Protected transactions already carry package=version selectors;
+			// the unrestricted simulation is not this scope's executable plan.
+			row.Simulation = nil
 			row.Selected = protected.SelectedPackages
 			row.Added = protected.NewPackages
 			row.Removed = protected.RemovedPackages

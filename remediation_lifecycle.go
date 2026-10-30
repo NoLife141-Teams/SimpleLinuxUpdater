@@ -501,12 +501,28 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 			row.Available = row.Available && protected.Available
 		}
 		pending := map[string]PendingUpdate{}
-		for _, p := range status.PendingUpdates {
-			pending[p.Package] = p
-		}
-		selected := map[string]bool{}
+		selected := map[string]string{}
+		selectedNames := map[string]bool{}
 		for _, pkg := range row.Selected {
-			selected[pkg] = true
+			selectedNames[pkg] = true
+		}
+		for _, p := range status.PendingUpdates {
+			selectors := updatespkg.PackageDiscoverySelectors(p)
+			selection := ""
+			if selectedNames[p.Package] {
+				selection = p.Package
+			}
+			for _, selector := range selectors {
+				pending[selector] = p
+				if selectedNames[selector] {
+					selection = selector
+				}
+			}
+			if selection != "" {
+				for _, selector := range selectors {
+					selected[selector] = selection
+				}
+			}
 		}
 		scoped := info
 		scoped.Findings = append([]observability.DashboardVulnerabilityFinding{}, info.Findings...)
@@ -514,7 +530,8 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 		for i := range scoped.Findings {
 			f := &scoped.Findings[i]
 			actual := pending[f.Package]
-			eligible := selected[f.Package] && row.Available && f.InstalledVersion == actual.CurrentVersion && f.Availability != nil && f.CandidateVersion == actual.CandidateVersion && f.Availability.CandidateBinaryVersion == actual.CandidateVersion
+			selection, included := selected[f.Package]
+			eligible := included && row.Available && f.InstalledVersion == actual.CurrentVersion && f.Availability != nil && f.CandidateVersion == actual.CandidateVersion && f.Availability.CandidateBinaryVersion == actual.CandidateVersion
 			if actual.SourcePackage != "" && f.SourcePackage != actual.SourcePackage {
 				eligible = false
 			}
@@ -531,13 +548,13 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 				}
 			}
 			if !eligible {
-				if !selected[f.Package] || !row.Available {
+				if !included || !row.Available {
 					f.Disposition = "still_affected"
 				} else if f.Disposition == "fixed_by_candidate" {
 					f.Disposition = "candidate_unverified"
 				}
 			} else if observability.CandidateRemediationFinding(*f) {
-				addressed[f.Package] = true
+				addressed[selection] = true
 			}
 		}
 		for _, pkg := range row.Selected {

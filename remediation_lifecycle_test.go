@@ -510,6 +510,54 @@ func TestRemediationScopesShowProtectedTransactionsAndPointReleaseBoundary(t *te
 	}
 }
 
+func TestRemediationScopeImpactMatchesEvidencedBinaryArchitecture(t *testing.T) {
+	for _, raw := range []string{"addressable/stable-security 2 amd64 [upgradable from: 1]", "addressable [1] (2 Debian-Security:12 [amd64])"} {
+		for _, keptBack := range []bool{false, true} {
+			for _, foreign := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/kept_back=%t/foreign=%t", raw, keptBack, foreign), func(t *testing.T) {
+					now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+					var version atomic.Int32
+					version.Store(1)
+					scan, err := (remediationTestScanner{version: &version, now: func() time.Time { return now }}).ScanInstalled(vulnerabilities.WithScanIdentity(t.Context(), "example-host", "before"), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					selector := "addressable:amd64"
+					if foreign {
+						selector = "addressable:i386"
+					}
+					scan.Findings[0].Package = selector
+					scan.Packages[0].Name = selector
+					scan.Packages[0].Proof.Package = selector
+					scan.InventoryProof.Packages[0] = selector
+					scopes := []vulnerabilities.ScopeInstallability{{Scope: "full_upgrade", State: "simulated"}}
+					if keptBack {
+						scopes = append(scopes, vulnerabilities.ScopeInstallability{Scope: "security_kept_back", State: "simulated"})
+					} else {
+						scopes = append(scopes, vulnerabilities.ScopeInstallability{Scope: "all", State: "simulated"}, vulnerabilities.ScopeInstallability{Scope: "security", State: "simulated"})
+					}
+					scan.Findings[0].Availability.Scopes = scopes
+					pending := PendingUpdate{Package: "addressable", Raw: raw, CurrentVersion: "1", CandidateVersion: "2", Security: true, KeptBack: keptBack, RequiresFull: keptBack}
+					if keptBack {
+						pending.InstallPackage = "addressable:amd64"
+					}
+					status := &ServerStatus{PendingUpdates: []PendingUpdate{pending}, UpgradePlan: UpgradePlan{FullUpgradePlanAvailable: true, KeptBackSecurityPlanAvailable: true}}
+					tx := buildRemediationTransaction("example-host", status, vulnerabilities.Accept(vulnerabilities.Observation{}, scan), now)
+					for _, scope := range tx.Scopes {
+						want := 0
+						if !foreign && (scope.Scope == "full_upgrade" || keptBack && scope.Scope == "security_kept_back" || !keptBack && (scope.Scope == "all" || scope.Scope == "security")) {
+							want = 1
+						}
+						if scope.Impact.PotentialCVEs != want || want == 1 && len(scope.Extra) != 0 {
+							t.Fatalf("scope %s lost binary selection or included foreign architecture: %+v extras=%v", scope.Scope, scope.Impact, scope.Extra)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestRemediationRecoveryDoesNotStealLiveCompletionHealth(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "completion-host", Host: "completion-host.invalid", User: "root", Pass: "synthetic"})

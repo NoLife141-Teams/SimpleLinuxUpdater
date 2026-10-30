@@ -225,7 +225,13 @@ func (s *remediationLifecycle) Reconcile(ctx context.Context) error {
 		}
 		if p.State == "queued" {
 			// Admission must occur after FinishActionRunner and the enclosing shared lease drain.
-			id, run, admitErr := s.deps.VulnerabilityScans.admitCorrelatedScan(ctx, name, p.Actor, "", p.JobID, p.ID)
+			id, run, admitErr := s.deps.VulnerabilityScans.admitCorrelatedScan(ctx, name, p.Actor, "", p.JobID, p.ID, func(reserved Server) error {
+				owner, err := s.repo().ServerName(ctx, p.ServerKey)
+				if err != nil || owner != reserved.Name || p.TargetIdentity != remediationTarget(reserved) {
+					return errors.New("Server identity changed before verification admission; original request remains queued")
+				}
+				return nil
+			})
 			if admitErr != nil {
 				if p.Message != admitErr.Error() {
 					p.Message = admitErr.Error()

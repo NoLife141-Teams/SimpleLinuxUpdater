@@ -24,7 +24,7 @@
         function syncFilters() {
             const query = store.view().query;
             for (const input of byId("cve-filters").elements) { if (input.name) input.value = query[input.name]; }
-            byId("cve-plan-link").href = "/vulnerabilities/plan" + (query.server ? `?server=${encodeURIComponent(query.server)}` : "");
+            byId("cve-plan-link").href = "/remediation" + (query.server ? `?server=${encodeURIComponent(query.server)}` : "");
         }
         function renderList() {
             const {list, query} = store.view();

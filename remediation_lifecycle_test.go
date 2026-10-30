@@ -502,3 +502,70 @@ func TestRemediationRecoveryDoesNotStealLiveCompletionHealth(t *testing.T) {
 		t.Fatal("verification ran before release or lost failed health", loaded.State, err)
 	}
 }
+
+func TestRemediationVerificationRevalidatesReservedServerIdentity(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delete_recreate=%t", replace), func(t *testing.T) {
+			app := newIsolatedTestApp(t)
+			server, err := app.Deps.ServerInventoryService.Create(Server{Name: "identity-host", Host: "identity-host.invalid", User: "root", Pass: "synthetic"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, err := app.Deps.CurrentJobManager().CreateJob(JobCreateParams{Kind: jobKindUpdate, ServerName: server.Name, Status: jobStatusSucceeded})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := app.Deps.Remediation.repo()
+			key, err := repo.ServerKey(t.Context(), server.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := remediation.Plan{ID: remediation.ID(), TargetIdentity: remediationTarget(server), ServerKey: key, Server: server.Name, JobID: job.ID, State: "queued", Actor: "operator"}
+			if err = repo.Insert(t.Context(), p); err != nil {
+				t.Fatal(err)
+			}
+			app.Deps.VulnerabilityScans.deps.UpdateService = NewUpdateService(UpdateServiceDeps{
+				HostMaintenanceSessions: testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{}),
+			})
+			// Inventory mutations are legal until scan admission reserves the Server.
+			// Change it after the worker's optimistic identity read, before reservation.
+			app.Deps.VulnerabilityScans.deps.MaintenanceReadiness = func([]Server) map[string]serverpkg.MaintenanceReadiness {
+				if replace {
+					if err := app.Deps.ServerInventoryService.Delete(server.Name); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := app.Deps.ServerInventoryService.Create(server); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					changed := server
+					changed.Host = "changed-target.invalid"
+					if _, err := app.Deps.ServerInventoryService.Update(server.Name, changed); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return map[string]serverpkg.MaintenanceReadiness{server.Name: {Ready: true}}
+			}
+			started := 0
+			app.Deps.Remediation.deps.StartJobRunner = func(id string, run func(), _ ...func()) {
+				started++
+				// Drain without any transport if this regression admits the wrong target.
+				_ = app.Deps.VulnerabilityScans.Cancel(server.Name, id)
+				run()
+			}
+			if err = app.Deps.Remediation.Reconcile(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := repo.Load(t.Context(), p.ID)
+			if err != nil || loaded.State != "queued" || loaded.ScanID != "" || started != 0 {
+				t.Fatalf("verification admitted a different Server identity: state=%s scan=%s started=%d err=%v", loaded.State, loaded.ScanID, started, err)
+			}
+			if got := len(app.Deps.VulnerabilityScans.slots); got != 0 {
+				t.Fatalf("failed identity guard retained %d scan slots", got)
+			}
+			if status := app.Deps.ServerState.CurrentStatusSnapshot(server.Name); status.Status == "vulnerability_scan" {
+				t.Fatal("failed identity guard retained Server reservation")
+			}
+		})
+	}
+}

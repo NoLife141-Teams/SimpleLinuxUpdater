@@ -32,7 +32,9 @@ func (a Assessment) Qualification() string {
 	}
 	switch a.VendorStatus {
 	case "unimportant", "not_affected":
-		return QualificationQualified
+		if a.Confidence == "vendor_qualified" && a.Applicability == "source_match" {
+			return QualificationQualified
+		}
 	case "withdrawn":
 		return QualificationWithdrawn
 	case "affected", "needed":

@@ -33,7 +33,7 @@ func TestInstalledScanGeneratesBoundStablePackageProofs(t *testing.T) {
 				for i, q := range req.Queries {
 					if mode == "pagination_failure" {
 						if q.PageToken != "" {
-							http.Error(w, "page unavailable", 503)
+							http.Error(w, "page unavailable", http.StatusServiceUnavailable)
 							return
 						}
 						res.Results[i].NextPageToken = "next"

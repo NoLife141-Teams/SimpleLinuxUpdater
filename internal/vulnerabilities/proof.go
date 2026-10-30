@@ -144,10 +144,7 @@ func (scan Scan) HasRemovalProof() bool {
 		}
 		delete(seen, name)
 	}
-	if len(seen) != 0 {
-		return false
-	}
-	return true
+	return len(seen) == 0
 }
 
 // SupersedesPackageEvidence prevents an old approval snapshot from resurrecting

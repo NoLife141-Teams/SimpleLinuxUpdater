@@ -370,3 +370,23 @@ func attemptIsOlder(previous Observation, scan Scan) bool {
 	}
 	return false
 }
+
+// Checkpoints are synchronous, operation-owned publication boundaries. The
+// collector verifies installed identity before publishing; the lifecycle retains
+// cancellation/restore admission and does not mark its owner as finishing.
+// The callback consumes the scan synchronously; retaining its borrowed slices
+// beyond the callback requires the receiver to copy them.
+type checkpointContextKey struct{}
+
+func WithCheckpoint(ctx context.Context, save func(Scan) error) context.Context {
+	return context.WithValue(ctx, checkpointContextKey{}, save)
+}
+func PublishCheckpoint(ctx context.Context, scan Scan) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if save, ok := ctx.Value(checkpointContextKey{}).(func(Scan) error); ok {
+		return save(scan)
+	}
+	return nil
+}

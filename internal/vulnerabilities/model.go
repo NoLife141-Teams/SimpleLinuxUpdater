@@ -41,15 +41,49 @@ type Package struct {
 	Reason        string           `json:"reason,omitempty"`
 }
 
+// ScanMetrics contains measured counts and elapsed milliseconds, never estimates.
+type ScanMetrics struct {
+	InventoryMS     int64 `json:"inventory_ms"`
+	MetadataMS      int64 `json:"metadata_ms"`
+	EvaluationMS    int64 `json:"evaluation_ms"`
+	EnrichmentMS    int64 `json:"enrichment_ms"`
+	PersistenceMS   int64 `json:"persistence_ms"`
+	UniqueQueries   int   `json:"unique_queries"`
+	QueryRequests   int   `json:"query_requests"`
+	QueryPages      int   `json:"query_pages"`
+	QueryReuse      int   `json:"query_reuse"`
+	DetailRequests  int   `json:"detail_requests"`
+	DetailCacheHits int   `json:"detail_cache_hits"`
+	Checkpoints     int   `json:"checkpoints"`
+}
+
+type Diagnostic struct {
+	Phase string `json:"phase"`
+	Code  string `json:"code"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type Enrichment struct {
+	RequestLimit int          `json:"request_limit"`
+	Concurrency  int          `json:"concurrency"`
+	BudgetMS     int64        `json:"budget_ms"`
+	Diagnostics  []Diagnostic `json:"diagnostics,omitempty"`
+	State        string       `json:"state"`
+	Requested    int          `json:"requested"`
+	Obtained     int          `json:"obtained"`
+	Missing      int          `json:"missing"`
+}
+
 // Progress contains observed facts only; no estimated percentage or ETA.
 type Progress struct {
-	Phase       string `json:"phase"`
-	Inventoried int    `json:"inventoried"`
-	Metadata    int    `json:"metadata"`
-	Evaluated   int    `json:"evaluated"`
-	Unknown     int    `json:"unknown"`
-	Unsupported int    `json:"unsupported"`
-	Findings    int    `json:"findings"`
+	Metrics     ScanMetrics `json:"metrics,omitzero"`
+	Phase       string      `json:"phase"`
+	Inventoried int         `json:"inventoried"`
+	Metadata    int         `json:"metadata"`
+	Evaluated   int         `json:"evaluated"`
+	Unknown     int         `json:"unknown"`
+	Unsupported int         `json:"unsupported"`
+	Findings    int         `json:"findings"`
 }
 
 type progressContextKey struct{}
@@ -64,6 +98,11 @@ func PublishProgress(ctx context.Context, progress Progress) {
 }
 
 type Scan struct {
+	Checkpoint       bool            `json:"checkpoint,omitempty"`
+	Metrics          ScanMetrics     `json:"metrics,omitzero"`
+	Diagnostics      []Diagnostic    `json:"diagnostics,omitempty"`
+	Enrichment       Enrichment      `json:"enrichment,omitzero"`
+	Truncated        bool            `json:"truncated,omitempty"`
 	RuntimeContext   RuntimeContext  `json:"runtime_context,omitzero"`
 	ServerName       string          `json:"server_name,omitempty"`
 	InventoryProof   *InventoryProof `json:"inventory_proof,omitempty"`
@@ -105,6 +144,11 @@ func Accept(previous Observation, scan Scan) Observation {
 	}
 	out := previous
 	out.LastAttempt = scan
+	if scan.Checkpoint && scan.State == "partial" {
+		// A validated accepted boundary does not terminalize its running owner.
+		out.LastAttempt.State = "running"
+		out.LastAttempt.FinishedAt = ""
+	}
 	if scan.State != "complete" && scan.State != "partial" {
 		return out
 	}
@@ -143,7 +187,7 @@ func Accept(previous Observation, scan Scan) Observation {
 			f.SeverityType = old.SeverityType
 			f.SeverityValue = old.SeverityValue
 			f.SeverityObservedAt = old.SeverityObservedAt
-		} else if f.SeveritySource != "" {
+		} else if f.SeveritySource != "" && f.SeverityObservedAt == "" {
 			f.SeverityObservedAt = scan.FinishedAt
 		}
 		f.LastSeen = scan.FinishedAt

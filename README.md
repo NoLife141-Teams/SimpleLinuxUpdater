@@ -206,6 +206,8 @@ The selected-host panel exposes a read-only **Scan vulnerabilities** action and 
 
 Component context distinguishes development headers, active/inactive installed kernel images and external container-host kernels without asserting runtime exploitability. CVE scope is host OS packages only: Docker images and application dependencies are not scanned, and third-party repositories are not covered. Missing or stale read-only probes remain unknown; no additional privileges or other-host access are requested.
 
+Installed scan work, checkpoint recovery, cache/enrichment bounds and reproducible synthetic measurements are documented in [Vulnerability scan performance](docs/vulnerability-scan-performance.md).
+
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.

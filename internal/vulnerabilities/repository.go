@@ -88,6 +88,14 @@ func (r Repository) save(ctx context.Context, name string, scan Scan, acceptComm
 	if expectedID != nil && (errors.Is(err, sql.ErrNoRows) || previous.LastAttempt.ID != *expectedID) {
 		return Observation{}, ErrObservationChanged
 	}
+	if (scan.ServerName != "" && scan.ServerName != name) || attemptIsOlder(previous, scan) {
+		return Observation{}, ErrObservationChanged
+	}
+	if scanMayResolve(scan) && previous.LastAttempt.ID != "" && previous.LastAttempt.ID != scan.ID {
+		// A proof-bearing terminal result must belong to the operation admitted
+		// into this row. Never rebind late evidence to a different generation.
+		return Observation{}, ErrObservationChanged
+	}
 	next := Accept(previous, scan)
 	blob, err := json.Marshal(next)
 	if err != nil {

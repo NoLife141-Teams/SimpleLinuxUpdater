@@ -513,6 +513,39 @@ test("installed vulnerability scans show trust states and residual exposure with
     expect(overflow).toBe(false);
 });
 
+test("partial package resolution shows remaining uncertainty and inspectable proof", async ({ page }) => {
+    const server = makeServer("proof-host", "done");
+    await stubDashboardApi(page, () => [server]);
+    await page.route("**/api/dashboard/summary*", route => {
+        const summary = makeDashboardSummary([server]);
+        summary.servers[0].risk = { level: "unknown", cves: ["CVE-2026-2000"], vulnerability: {
+            state: "partial", coverage: "partial", freshness: "fresh", result: "needs_review",
+            inventoried: 2, evaluated: 1, unknown: 1, unsupported: 0,
+            reported_cves: 1, needs_review_cves: 1, occurrences: 1,
+            current_occurrences: 0, unverified_occurrences: 1, resolved_occurrences: 1,
+            findings: [{id: "CVE-2026-2000", package: "unverified-package", evidence_state: "not_reverified", freshness: "stale", severity: "unknown"}],
+            resolved_findings: [{id: "CVE-2026-1000", package: "updated-package", resolved_at: "2026-10-02T00:00:00Z", resolution: {reason: "installed_version_changed", scan_id: "proof-528", verified_at: "2026-10-02T00:00:00Z", source: "https://example.invalid/querybatch"}}],
+            enrichment_errors: ["Optional advisory details unavailable"]
+        }};
+        return fulfillJson(route, summary);
+    });
+    await ensureAuthenticatedSession(page);
+    const section = page.getByRole("region", {name: "Installed package vulnerabilities"});
+    await expect(section).toContainText("Partial scan");
+    await expect(section).toContainText("0 current package findings · 1 not reverified · 1 resolved by scan evidence");
+    await expect(section).toContainText("Advisory enrichment incomplete");
+    await section.getByText("1 active package findings", {exact: true}).click();
+    await expect(section).toContainText("CVE-2026-2000");
+    await section.getByText("1 resolved package findings", {exact: true}).click();
+    await expect(section).toContainText("CVE-2026-1000");
+    await expect(section).toContainText("No longer reported after installed version changed");
+    await expect(section).toContainText("Scan: proof-528");
+    await page.evaluate(() => window.fetchDashboardSummary(true));
+    await expect(section.locator(".resolved-vulnerability-findings")).toHaveAttribute("open", "");
+    await page.setViewportSize({width: 390, height: 844});
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+});
+
 test("attention metrics and filters use the same facts and CVE semantics", async ({
     baseURL,
     page,

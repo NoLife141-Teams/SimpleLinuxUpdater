@@ -8,34 +8,36 @@ import (
 )
 
 type Finding struct {
-	Assessment         Assessment `json:"assessment"`
-	ID                 string     `json:"id"`
-	Disposition        string     `json:"disposition"`
-	AdvisoryURL        string     `json:"advisory_url,omitempty"`
-	Source             string     `json:"source,omitempty"`
-	FixedByVersion     string     `json:"fixed_by_version,omitempty"`
-	Severity           string     `json:"severity"`
-	SeveritySource     string     `json:"severity_source,omitempty"`
-	SeverityType       string     `json:"severity_type,omitempty"`
-	SeverityObservedAt string     `json:"severity_observed_at,omitempty"`
-	SeverityValue      string     `json:"severity_value,omitempty"`
-	Package            string     `json:"package,omitempty"`
-	SourcePackage      string     `json:"source_package,omitempty"`
-	InstalledVersion   string     `json:"installed_version,omitempty"`
-	CandidateVersion   string     `json:"candidate_version,omitempty"`
-	FixAvailable       bool       `json:"fix_available"`
-	FirstSeen          string     `json:"first_seen,omitempty"`
-	LastSeen           string     `json:"last_seen,omitempty"`
-	ResolvedAt         string     `json:"resolved_at,omitempty"`
+	Resolution         *Resolution `json:"resolution,omitempty"`
+	Assessment         Assessment  `json:"assessment"`
+	ID                 string      `json:"id"`
+	Disposition        string      `json:"disposition"`
+	AdvisoryURL        string      `json:"advisory_url,omitempty"`
+	Source             string      `json:"source,omitempty"`
+	FixedByVersion     string      `json:"fixed_by_version,omitempty"`
+	Severity           string      `json:"severity"`
+	SeveritySource     string      `json:"severity_source,omitempty"`
+	SeverityType       string      `json:"severity_type,omitempty"`
+	SeverityObservedAt string      `json:"severity_observed_at,omitempty"`
+	SeverityValue      string      `json:"severity_value,omitempty"`
+	Package            string      `json:"package,omitempty"`
+	SourcePackage      string      `json:"source_package,omitempty"`
+	InstalledVersion   string      `json:"installed_version,omitempty"`
+	CandidateVersion   string      `json:"candidate_version,omitempty"`
+	FixAvailable       bool        `json:"fix_available"`
+	FirstSeen          string      `json:"first_seen,omitempty"`
+	LastSeen           string      `json:"last_seen,omitempty"`
+	ResolvedAt         string      `json:"resolved_at,omitempty"`
 }
 
 type Package struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	SourcePackage string `json:"source_package,omitempty"`
-	SourceVersion string `json:"source_version,omitempty"`
-	State         string `json:"state"` // evaluated, unknown, unsupported
-	Reason        string `json:"reason,omitempty"`
+	Proof         *EvaluationProof `json:"proof,omitempty"`
+	Name          string           `json:"name"`
+	Version       string           `json:"version"`
+	SourcePackage string           `json:"source_package,omitempty"`
+	SourceVersion string           `json:"source_version,omitempty"`
+	State         string           `json:"state"` // evaluated, unknown, unsupported
+	Reason        string           `json:"reason,omitempty"`
 }
 
 // Progress contains observed facts only; no estimated percentage or ETA.
@@ -61,8 +63,11 @@ func PublishProgress(ctx context.Context, progress Progress) {
 }
 
 type Scan struct {
-	ID       string   `json:"scan_id,omitempty"`
-	Progress Progress `json:"progress"`
+	ServerName       string          `json:"server_name,omitempty"`
+	InventoryProof   *InventoryProof `json:"inventory_proof,omitempty"`
+	EnrichmentErrors []string        `json:"enrichment_errors,omitempty"`
+	ID               string          `json:"scan_id,omitempty"`
+	Progress         Progress        `json:"progress"`
 
 	State       string    `json:"state"` // running, complete, partial, unavailable, cancelled, interrupted
 	Scope       string    `json:"scope"`
@@ -79,22 +84,34 @@ type Scan struct {
 }
 
 // Observation preserves the last accepted inventory independently of the last
-// attempt. Findings are a durable ledger: partial scans can add, never resolve.
+// attempt. Findings are a durable ledger; only complete stable package evidence
+// (or a complete stable removal inventory) can resolve a missing finding.
 type Observation struct {
-	AuditedScanID string    `json:"audited_scan_id,omitempty"`
-	LastAttempt   Scan      `json:"last_attempt"`
-	Accepted      *Scan     `json:"accepted,omitempty"`
-	LastSuccess   string    `json:"last_success,omitempty"`
-	Findings      []Finding `json:"findings"`
+	PackageProofs  map[string]EvaluationProof `json:"package_proofs,omitempty"`
+	InventoryProof *InventoryProof            `json:"inventory_proof,omitempty"`
+	AuditedScanID  string                     `json:"audited_scan_id,omitempty"`
+	LastAttempt    Scan                       `json:"last_attempt"`
+	Accepted       *Scan                      `json:"accepted,omitempty"`
+	LastSuccess    string                     `json:"last_success,omitempty"`
+	Findings       []Finding                  `json:"findings"`
 }
 
 func Accept(previous Observation, scan Scan) Observation {
+	if attemptIsOlder(previous, scan) {
+		return previous
+	}
 	out := previous
 	out.LastAttempt = scan
 	if scan.State != "complete" && scan.State != "partial" {
 		return out
 	}
 	out.Accepted = &scan
+	proofs, removal := validatedPackageProofs(scan), scan.HasRemovalProof()
+	installed := map[string]bool{}
+	for _, p := range scan.Packages {
+		installed[p.Name] = true
+	}
+	retainProofs(&out, scan, proofs, removal)
 	complete := scan.State == "complete" && scan.Scope == "installed_packages" && scan.Unknown == 0 && scan.Unsupported == 0 && scan.Evaluated == scan.Inventoried && len(scan.Errors) == 0
 	if complete {
 		out.LastSuccess = scan.FinishedAt
@@ -107,6 +124,12 @@ func Accept(previous Observation, scan Scan) Observation {
 	for _, f := range scan.Findings {
 		key := f.Package + "\x00" + f.ID
 		old := byKey[key]
+		oldSeen, oldErr := time.Parse(time.RFC3339, old.LastSeen)
+		nowSeen, nowErr := time.Parse(time.RFC3339, scan.FinishedAt)
+		if oldErr == nil && nowErr == nil && nowSeen.Before(oldSeen) {
+			seen[key] = true
+			continue
+		}
 		f.FirstSeen = old.FirstSeen
 		if f.FirstSeen == "" {
 			f.FirstSeen = scan.FinishedAt
@@ -122,6 +145,7 @@ func Accept(previous Observation, scan Scan) Observation {
 		}
 		f.LastSeen = scan.FinishedAt
 		f.ResolvedAt = ""
+		f.Resolution = nil
 		if f.Severity == "" {
 			f.Severity = "unknown"
 		}
@@ -130,8 +154,15 @@ func Accept(previous Observation, scan Scan) Observation {
 	}
 	out.Findings = make([]Finding, 0, len(byKey))
 	for key, f := range byKey {
-		if complete && !seen[key] && f.ResolvedAt == "" {
-			f.ResolvedAt = scan.FinishedAt
+		if !seen[key] && f.ResolvedAt == "" {
+			if proof := resolutionFor(scan, f, proofs, installed, removal); proof != nil {
+				last, err := time.Parse(time.RFC3339, f.LastSeen)
+				verified, _ := time.Parse(time.RFC3339, proof.VerifiedAt)
+				if err != nil || !verified.Before(last) {
+					f.ResolvedAt = scan.FinishedAt
+					f.Resolution = proof
+				}
+			}
 		}
 		out.Findings = append(out.Findings, f)
 	}

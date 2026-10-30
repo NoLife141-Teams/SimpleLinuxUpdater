@@ -202,7 +202,7 @@ MIT. See [LICENSE](LICENSE).
 
 Distribution triage, applicability/confidence and CVSS are separate. Debian vendor-qualified findings and Ubuntu OSV triage uncertainty remain visible without being automatically treated as confirmed runtime exposure. See [distribution qualification](docs/usage.md#distribution-qualification-and-confidence).
 
-The selected-host panel exposes a read-only **Scan vulnerabilities** action and persisted coverage, freshness, severity, and findings, including packages with no newer candidate. Never-scanned, unavailable, partial, and complete scans are distinct. Failed or partial scans do not resolve prior findings; updates alone do not resolve them either. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans).
+The selected-host panel exposes a read-only **Scan vulnerabilities** action and persisted coverage, freshness, severity, and findings, including packages with no newer candidate. Never-scanned, unavailable, partial, and complete scans are distinct. Failed scans and updates alone never resolve findings. A partial host scan can resolve a package only with its complete, stable, provenance-verified evaluation proof; unknown packages remain open. Legacy scans without these proofs stay conservative. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans).
 
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.

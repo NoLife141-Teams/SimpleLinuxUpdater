@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Resolve installed CVE findings only from complete stable per-package evidence,
+  independently of unrelated unknown packages or advisory enrichment failures;
+  retain closure proofs and distinguish current, unverified and resolved history.
+
 - Preserve release/source-specific distribution triage separately from CVSS in
   installed and approval CVE scans; show current vendor-confirmed, review,
   qualified and withdrawn matches without inventing runtime exploitability.

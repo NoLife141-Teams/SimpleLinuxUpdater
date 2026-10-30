@@ -3986,7 +3986,7 @@
       },
       "VulnerabilityScanProgress": {
         "type": "object",
-        "description": "Sanitary observed facts shared by direct observation and dashboard/SSE. No raw logs, percentages or ETA. Each first phase publishes immediately, then counters are bounded to one publication per second.",
+        "description": "Sanitary observed facts shared by direct observation and dashboard/SSE. No raw logs, percentages or ETA. Each first phase and every verification, persistence or enrichment boundary publishes immediately; ordinary repeated counters are bounded to one publication per second.",
         "required": [
           "phase",
           "inventoried",
@@ -4004,7 +4004,9 @@
               "inventory",
               "metadata",
               "evaluation",
-              "persistence"
+              "inventory_verification",
+              "persistence",
+              "enrichment"
             ]
           },
           "inventoried": {

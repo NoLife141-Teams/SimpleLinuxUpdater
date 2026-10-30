@@ -307,7 +307,7 @@
             stateLabel: labels[text(info.state)] || labels.not_scanned,
             progressLabel: (() => {
                 const progress = record(info.progress);
-                const phase = {inventory: "Inventory", metadata: "Metadata and provenance", evaluation: "Evaluation", persistence: "Persistence"}[text(progress.phase)] || "Preparing";
+                const phase = {inventory: "Inventory", metadata: "Metadata and provenance", evaluation: "Evaluation", inventory_verification: "Inventory verification", persistence: "Persistence", enrichment: "Advisory enrichment"}[text(progress.phase)] || "Preparing";
                 return `${phase} · ${count(progress.inventoried)} inventoried · ${count(progress.metadata)} metadata collected · ${count(progress.evaluated)} evaluated · ${count(progress.unknown)} unknown · ${count(progress.unsupported)} unsupported`;
             })(),
             coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,

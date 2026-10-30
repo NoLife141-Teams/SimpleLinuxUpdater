@@ -374,13 +374,15 @@ test("resolution preview distinguishes visible details from the complete count",
 });
 
 test("installed scan progress carries identity and observed facts without estimated percentage", () => {
-    const view = project({statusView: statusView({servers: [{name: "alpha", status: "vulnerability_scan"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {
-        scan_id: "scan-493", state: "running", progress: {phase: "metadata", inventoried: 9, metadata: 4, evaluated: 2, unknown: 1, unsupported: 1}, findings: []
-    }}}]})});
-    const info = view.selectedHost.vulnerability;
-    assert.equal(info.scan_id, "scan-493");
-    assert.match(info.progressLabel, /Metadata and provenance · 9 inventoried · 4 metadata collected · 2 evaluated/);
-    assert.doesNotMatch(info.progressLabel, /%|ETA/);
+    for (const [phase, label] of Object.entries({metadata: "Metadata and provenance", inventory_verification: "Inventory verification", persistence: "Persistence", enrichment: "Advisory enrichment"})) {
+        const view = project({statusView: statusView({servers: [{name: "alpha", status: "vulnerability_scan"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {
+            scan_id: "scan-493", state: "running", progress: {phase, inventoried: 9, metadata: 4, evaluated: 2, unknown: 1, unsupported: 1}, findings: []
+        }}}]})});
+        const info = view.selectedHost.vulnerability;
+        assert.equal(info.scan_id, "scan-493");
+        assert.ok(info.progressLabel.startsWith(`${label} · 9 inventoried · 4 metadata collected · 2 evaluated`), info.progressLabel);
+        assert.doesNotMatch(info.progressLabel, /%|ETA/);
+    }
 });
 
 test("vendor qualification remains separate from CVSS and unique CVE counters", () => {

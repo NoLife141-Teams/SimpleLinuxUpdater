@@ -367,6 +367,16 @@
             return `<span class="runtime-applicability"><small>Component: ${escapeHtml(runtime.component || "source_match")} · ${executionLabel}: ${escapeHtml(runtime.execution || "unknown")} · Exposure: ${escapeHtml(runtime.exposure || "unknown")} · Exploitability: ${escapeHtml(runtime.exploitability || "unknown")}</small><small>${escapeHtml(runtime.reason || "Source match only; binary applicability requires review")}</small><small>Responsible operator: ${escapeHtml(runtime.owner || "unknown")} · ${escapeHtml(runtime.action || "Collect missing read-only component context")}</small><small>Runtime source: ${escapeHtml(runtime.source || "unknown")} · observed ${escapeHtml(runtime.observed_at || "unknown")} (${escapeHtml(finding.runtime_freshness || "freshness must be verified")}) · Kernel: ${escapeHtml(runtime.kernel_release || "unknown")} · Virtualization: ${escapeHtml(runtime.virtualization || "unknown")}</small></span>`;
         }
 
+        function fixAvailabilityHtml(finding) {
+            const a = finding.availability || {};
+            const published = a.published || {};
+            const candidate = {addresses: "Candidate addresses these findings; installation unverified", affected: "Candidate still affected", same: "Candidate equals installed version", absent: "No candidate observed", unverified: "Candidate could not be verified"}[a.candidate_state] || "No verified candidate fix in observed data";
+            const publication = {published: "Fix published for this exact release and source", not_established: "No published fix established by the source", withdrawn: "Advisory withdrawn; no package fix demonstrated"}[published.state] || "Publisher fix status unknown";
+            const repository = {published_not_observed: "Fix published but no addressing candidate currently observed here", observed: "Candidate observed in configured repositories"}[a.repository_state] || "Availability unknown";
+            const apt = a.apt || {};
+            return `<span class="fix-availability"><small>${escapeHtml(publication)}${Array.isArray(published.fixed_versions) && published.fixed_versions.length ? ` · Published source versions: ${published.fixed_versions.map(escapeHtml).join(", ")}` : ""} · ${escapeHtml(published.ecosystem || "release unknown")} / ${escapeHtml(published.source_package || "source unknown")}</small><small>Publisher evidence: ${escapeHtml(published.source || "unknown")} · observed ${escapeHtml(published.observed_at || "unknown")} (${escapeHtml(finding.published_fix_freshness || "freshness must be verified")})</small><small>${escapeHtml(candidate)} · Source candidate: ${escapeHtml(a.candidate_source_package || "unknown")} ${escapeHtml(a.candidate_source_version || "unknown")} · Binary candidate: ${escapeHtml(a.candidate_binary_version || finding.candidate_version || "none")} · Origin: ${escapeHtml(a.candidate_origin || "unknown")} · ${escapeHtml(a.candidate_ecosystem || "unverified release")}</small><small>${escapeHtml(repository)} · Candidate query observed ${escapeHtml(a.query_observed_at || "unknown")} (${escapeHtml(finding.availability_freshness || "freshness must be verified")})</small><small>APT index freshness: ${escapeHtml(apt.state || "unknown")} · oldest local index ${escapeHtml(apt.oldest_index_at || "unknown")} · last recorded success ${escapeHtml(apt.last_success_at || "unknown")} · last known refresh outcome: ${escapeHtml(apt.last_refresh_state || "unknown")} · observed ${escapeHtml(apt.last_refresh_at || "unknown")}${apt.last_refresh_error ? ` · ${escapeHtml(apt.last_refresh_error)}` : ""}</small><small>${escapeHtml(a.reason || "No verified candidate fix in observed legacy data; publisher fix status is unknown")}</small>${a.restrictions?.length ? `<small>Observed policy facts (cause requires review): ${a.restrictions.map(escapeHtml).join(", ")}</small>` : ""}${(Array.isArray(a.scopes) ? a.scopes : []).map(scope => `<small>Approval Scope ${escapeHtml(scope.scope)}: ${escapeHtml(scope.state)} · ${escapeHtml(scope.reason)}${scope.removed_packages?.length ? ` · Removals require review: ${scope.removed_packages.map(escapeHtml).join(", ")}` : ""}</small>`).join("")}<small>${escapeHtml(a.action || "Review a fresh maintenance package scan with maintenance permissions")}. Candidate evidence does not resolve an installed finding.</small></span>`;
+        }
+
         function vulnerabilityFindingListHtml(findings, title, tone) {
             if (!findings.length) return "";
             const items = findings
@@ -381,7 +391,7 @@
                     ).trim();
                     const assessment = finding.assessment || {};
                     const vendor = assessment.vendor_status || "unknown";
-                    return `<li>${idHtml}${runtimeApplicabilityHtml(finding)}<small>Binary: ${escapeHtml(finding.package || "unknown")} · Source: ${escapeHtml(finding.source_package || assessment.source_package || "unknown")}</small><small>Distribution triage: ${escapeHtml(vendor)} · Applicability: ${escapeHtml(assessment.applicability || "unknown")} · Confidence: ${escapeHtml(assessment.confidence || "unknown")}</small><small>${escapeHtml(assessment.vendor_reason || "Legacy match: distribution triage requires review")}</small><small>Assessment: ${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || "unknown")} ${escapeHtml(assessment.source_version || "unknown")} · observed ${escapeHtml(assessment.observed_at || "unknown")}</small>${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
+                    return `<li>${idHtml}${runtimeApplicabilityHtml(finding)}${fixAvailabilityHtml(finding)}<small>Binary: ${escapeHtml(finding.package || "unknown")} · Source: ${escapeHtml(finding.source_package || assessment.source_package || "unknown")}</small><small>Distribution triage: ${escapeHtml(vendor)} · Applicability: ${escapeHtml(assessment.applicability || "unknown")} · Confidence: ${escapeHtml(assessment.confidence || "unknown")}</small><small>${escapeHtml(assessment.vendor_reason || "Legacy match: distribution triage requires review")}</small><small>Assessment: ${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || "unknown")} ${escapeHtml(assessment.source_version || "unknown")} · observed ${escapeHtml(assessment.observed_at || "unknown")}</small>${fixedVersion ? `<small>Evaluated candidate source version: ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
                 })
                 .join("");
             return `
@@ -426,6 +436,7 @@
                     <div class="cve-findings-content">
                         ${vulnerabilityFindingListHtml(fixed, "Absent from the candidate source assessment", "fixed")}
                         ${vulnerabilityFindingListHtml(remaining, "Still reported in the candidate source assessment", "remaining")}
+                        ${vulnerabilityFindingListHtml(findings.filter(f => !["fixed_by_candidate", "still_affected"].includes(f.disposition)), "Candidate availability requires review", "remaining")}
                         <p class="cve-findings-source">${source}${scannedAt}</p>
                     </div>
                 </details>
@@ -1315,6 +1326,7 @@
                 <p>${escapeHtml(finding.assessment?.vendor_reason || "Legacy match: distribution triage requires review")}</p>
                 <p>Assessment source: ${escapeHtml(finding.assessment?.source || "unknown")} · ${escapeHtml(finding.assessment?.ecosystem || "unknown")} / ${escapeHtml(finding.assessment?.source_package || "unknown")} ${escapeHtml(finding.assessment?.source_version || "unknown")} · modified ${escapeHtml(finding.assessment?.modified_at || "unknown")} · observed ${escapeHtml(finding.assessment?.observed_at || "unknown")} (${escapeHtml(finding.assessment_freshness || "unknown")})</p>
                 <p>${runtimeApplicabilityHtml(finding)}</p>
+                <p>${fixAvailabilityHtml(finding)}</p>
                 <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
                 <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
                 <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
@@ -1331,6 +1343,7 @@
                 <p>${escapeHtml(info.componentCountsLabel)}</p>
                 <p>${escapeHtml(info.qualificationCountsLabel)}</p>
                 <p>${escapeHtml(info.evidenceCountsLabel)}</p>
+                <p>${escapeHtml(info.availabilityCountsLabel)}</p>
                 ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}
                 <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
                 <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>

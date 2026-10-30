@@ -109,28 +109,29 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
-	ApplicationPostcheckProfile *postchecks.Snapshot `json:"application_postcheck_profile,omitempty"`
-	Disabled                    bool                 `json:"disabled"`
-	ActionGeneration            uint64               `json:"-"`
-	ApprovalGeneration          uint64               `json:"approval_generation,omitempty"`
-	ActionRunning               bool                 `json:"-"`
-	JobRevision                 int64                `json:"-"`
-	Name                        string               `json:"name"`
-	JobID                       string               `json:"job_id,omitempty"`
-	Host                        string               `json:"host"`
-	Port                        int                  `json:"port"`
-	User                        string               `json:"user"`
-	Status                      string               `json:"status"`
-	ApprovalScope               string               `json:"-"`
-	ApprovalConfirmRemovals     bool                 `json:"-"`
-	Logs                        string               `json:"logs"`
-	Upgradable                  []string             `json:"upgradable"`
-	PendingUpdates              []PendingUpdate      `json:"pending_updates"`
-	UpgradePlan                 UpgradePlan          `json:"upgrade_plan"`
-	HasPassword                 bool                 `json:"has_password"`
-	HasKey                      bool                 `json:"has_key"`
-	HostKeyStatus               HostKeyStatus        `json:"host_key_status"`
-	Tags                        []string             `json:"tags"`
+	APTMetadata                 vulnerabilities.APTContext `json:"apt_metadata,omitzero"`
+	ApplicationPostcheckProfile *postchecks.Snapshot       `json:"application_postcheck_profile,omitempty"`
+	Disabled                    bool                       `json:"disabled"`
+	ActionGeneration            uint64                     `json:"-"`
+	ApprovalGeneration          uint64                     `json:"approval_generation,omitempty"`
+	ActionRunning               bool                       `json:"-"`
+	JobRevision                 int64                      `json:"-"`
+	Name                        string                     `json:"name"`
+	JobID                       string                     `json:"job_id,omitempty"`
+	Host                        string                     `json:"host"`
+	Port                        int                        `json:"port"`
+	User                        string                     `json:"user"`
+	Status                      string                     `json:"status"`
+	ApprovalScope               string                     `json:"-"`
+	ApprovalConfirmRemovals     bool                       `json:"-"`
+	Logs                        string                     `json:"logs"`
+	Upgradable                  []string                   `json:"upgradable"`
+	PendingUpdates              []PendingUpdate            `json:"pending_updates"`
+	UpgradePlan                 UpgradePlan                `json:"upgrade_plan"`
+	HasPassword                 bool                       `json:"has_password"`
+	HasKey                      bool                       `json:"has_key"`
+	HostKeyStatus               HostKeyStatus              `json:"host_key_status"`
+	Tags                        []string                   `json:"tags"`
 }
 
 type PendingUpdate struct {

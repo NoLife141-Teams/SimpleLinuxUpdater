@@ -333,7 +333,7 @@ test("installed vulnerability confidence and residual exposure survive projectio
         assert.equal(view.selectedHost.vulnerability.freshnessLabel, "stale");
         assert.equal(view.selectedHost.vulnerability.resultLabel, "Historical source matches — review required");
         assert.match(view.selectedHost.vulnerability.coverageLabel, /8 of 10/);
-        assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No newer candidate available");
+        assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No verified candidate fix in observed data");
         assert.equal(view.selectedHost.risk.level, "unknown");
         assert.equal(view.panels.risk.length, 1);
     }
@@ -419,4 +419,12 @@ test("component scope and kernel ownership stay separate from vendor source coun
         assert.match(info.qualificationCountsLabel, /1000 vendor-confirmed source matches/);
         assert.match(info.kernelCoverageLabel, kernel === "external" ? /External container-host kernel/ : kernel === "evaluated" ? /context evaluated/ : /context unknown/);
     }
+});
+
+test("fix availability dimensions and counters survive dashboard consumption", () => {
+    const availability = {published: {state: "published", fixed_versions: ["1:1.0-1+deb12u1", "1:1.0-1+deb12u3"]}, candidate_state: "same", repository_state: "published_not_observed", apt: {state: "stale", last_refresh_state: "failed"}};
+    const view = project({statusView: statusView({servers: [{name: "alpha", status: "done"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {published_fix_occurrences: 2, candidate_addressed_occurrences: 1, resolved_occurrences: 0, findings: [{id: "CVE-2026-1000", availability}]}}}]})});
+    assert.deepEqual(view.selectedHost.vulnerability.findings[0].availability, availability);
+    assert.match(view.selectedHost.vulnerability.availabilityCountsLabel, /2 package findings with a published fix · 1 addressed by an observed candidate · 0 resolved/);
+    assert.equal(availability.candidate_state, "same");
 });

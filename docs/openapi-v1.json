@@ -3810,6 +3810,9 @@
           },
           "upgrade_plan": {
             "$ref": "#/components/schemas/UpgradePlan"
+          },
+          "apt_metadata": {
+            "$ref": "#/components/schemas/VulnerabilityAPTContext"
           }
         },
         "additionalProperties": true
@@ -4232,6 +4235,21 @@
           },
           "runtime": {
             "$ref": "#/components/schemas/VulnerabilityRuntimeApplicability"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/VulnerabilityFixAvailability"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "Legacy enum retained. no_fix_available means no verified candidate fix in observed data; it never means no publisher fix. fixed_by_candidate refers to comparative source evaluation, not installation or resolution."
+          },
+          "fixed_by_version": {
+            "type": "string",
+            "description": "Legacy evaluated candidate source version; never the first publisher fixed version. Use availability.published.fixed_versions for publisher events."
+          },
+          "fix_available": {
+            "type": "boolean",
+            "description": "Legacy candidate-addresses observation; never an installability or resolution guarantee. Historical values remain readable but have unknown additive availability until reverified."
           }
         },
         "additionalProperties": true,
@@ -4337,6 +4355,16 @@
             "items": {
               "$ref": "#/components/schemas/DashboardVulnerabilityFinding"
             }
+          },
+          "published_fix_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active package/CVE occurrence count from current independent publisher evidence."
+          },
+          "candidate_addressed_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active package/CVE occurrence count with current comparable candidate evaluation. Distinct from installed-package evidence in resolved_occurrences."
           }
         },
         "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability. Active occurrences are separated into current and not-reverified evidence; resolved_findings retains closure proof/history and is excluded from active CVE counts. Enrichment failures are independent of package coverage. Runtime component counters and kernel_coverage are separate; confirmed_cves continues to count vendor-confirmed source matches, never confirmed running-kernel vulnerabilities."
@@ -4643,6 +4671,14 @@
               "stale",
               "unknown"
             ]
+          },
+          "availability_freshness": {
+            "type": "string",
+            "description": "Freshness of comparative source-query evidence combined with package observation, independently of publisher downloads and APT metadata."
+          },
+          "published_fix_freshness": {
+            "type": "string",
+            "description": "Freshness of source-attributed publisher advisory download, independently of host inventory and package queries."
           }
         },
         "description": "runtime_view uses newer accepted scan or approval host context for retained findings and demotes stale/future/missing or unverified image identities to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
@@ -4763,6 +4799,207 @@
             }
           }
         }
+      },
+      "VulnerabilityVersionEvent": {
+        "type": "object",
+        "properties": {
+          "introduced": {
+            "type": "string"
+          },
+          "fixed": {
+            "type": "string"
+          },
+          "last_affected": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          }
+        },
+        "description": "Publisher version event, retained without SemVer conversion. Full Debian/Ubuntu source versions include epoch and revision. Multiple affected intervals and reopen events remain ordered."
+      },
+      "VulnerabilityFixRange": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityVersionEvent"
+            }
+          }
+        },
+        "description": "Exact publisher ecosystem range. A fixed event publishes a source fix; later introduced events can reopen the affected interval."
+      },
+      "VulnerabilityPublishedFix": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "published",
+              "not_established",
+              "unknown",
+              "withdrawn"
+            ]
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "fixed_versions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ranges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFixRange"
+            }
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          }
+        },
+        "description": "Exact release/source publisher evidence. fixed_versions are all established fixed events in Debian order, not the candidate version and not a claim that every later version is fixed. not_established means no published fix was established from matching metadata; it never asserts that the publisher has no fix. Unknown/malformed/other-release data stays unknown."
+      },
+      "VulnerabilityAPTContext": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "stale"
+            ]
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "oldest_index_at": {
+            "type": "string"
+          },
+          "last_success_at": {
+            "type": "string"
+          },
+          "last_refresh_state": {
+            "type": "string"
+          },
+          "last_refresh_error": {
+            "type": "string"
+          },
+          "last_refresh_at": {
+            "type": "string",
+            "description": "Time of the latest maintenance refresh actually observed by this process; independent of local file-age observation."
+          }
+        },
+        "description": "Independent host metadata context. Local index timestamps older than 24 hours are stale; recent files cannot prove complete refresh and remain unknown. Last known refresh outcome is recorded only when observed by maintenance, with sanitary error reason; missing outcomes remain unknown. CVE query/detail freshness never refreshes APT."
+      },
+      "VulnerabilityScopeInstallability": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "security",
+              "security_kept_back",
+              "full_upgrade"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "blocked",
+              "not_selected",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "removed_packages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Canonical Approval Scope and Package Deferral interpretation for an exact observed package candidate. Simulated is advisory and still requires maintenance revalidation and permissions; removals require explicit confirmation. Missing facts never prove dependency/pin/hold/subscription causes."
+      },
+      "VulnerabilityFixAvailability": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "$ref": "#/components/schemas/VulnerabilityPublishedFix"
+          },
+          "candidate_state": {
+            "type": "string",
+            "enum": [
+              "addresses",
+              "affected",
+              "same",
+              "absent",
+              "unverified"
+            ]
+          },
+          "candidate_source_package": {
+            "type": "string"
+          },
+          "candidate_source_version": {
+            "type": "string"
+          },
+          "candidate_binary_version": {
+            "type": "string"
+          },
+          "candidate_origin": {
+            "type": "string"
+          },
+          "candidate_ecosystem": {
+            "type": "string"
+          },
+          "query_observed_at": {
+            "type": "string"
+          },
+          "repository_state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "apt": {
+            "$ref": "#/components/schemas/VulnerabilityAPTContext"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScopeInstallability"
+            }
+          },
+          "restrictions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Independent publication, repository observation, candidate comparison and installability evidence. published_not_observed records that no addressing candidate is observed here; it is not proof that all repository versions were enumerated. A candidate cannot resolve an installed finding. Unknown, downgrade, source migration, wrong signed release, older cached negative comparison and unstable inventory cannot establish candidate fixes. Restrictions are observed facts, not invented root causes."
       }
     }
   }

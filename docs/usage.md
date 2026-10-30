@@ -718,7 +718,7 @@ The panel separates:
 - **Freshness:** accepted inventory timestamp and last complete success, distinct from the latest attempt. Failed scans preserve the previous accepted result and mark it stale.
 - **Result and severity:** vendor-confirmed source matches, matches requiring review, vendor-qualified findings, no findings in evaluated packages, or inconclusive. Source matching is not proof of runtime exploitability. CVSS and distribution priority/triage are independent; unknown severity is never automatically critical.
 
-Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` means no different candidate was found; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. A complete, stable, provenance-verified evaluation of the exact binary/source package can resolve its absent findings even when unrelated packages remain unknown. A full stable inventory is required to prove a removed package. This intentionally evolves the earlier whole-host-completeness rule (#465/#493). Legacy scans without explicit proofs, incomplete pagination, changed identities and cancelled/interrupted attempts cannot resolve findings. A reappearing finding keeps its original `first_seen`.
+Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` is a legacy value meaning no verified candidate fix in the observed data, never that the publisher has no fix; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. A complete, stable, provenance-verified evaluation of the exact binary/source package can resolve its absent findings even when unrelated packages remain unknown. A full stable inventory is required to prove a removed package. This intentionally evolves the earlier whole-host-completeness rule (#465/#493). Legacy scans without explicit proofs, incomplete pagination, changed identities and cancelled/interrupted attempts cannot resolve findings. A reappearing finding keeps its original `first_seen`.
 
 Scan observations are persisted in SQLite and included in backups. Renaming a Server preserves its ledger; deletion removes it. Changing its SSH endpoint clears the old endpoint's observation. Restore reuses restored observations, without a separate runtime cache.
 
@@ -956,3 +956,68 @@ When a newer accepted scan or approval snapshot supplies host context, retained
 findings use that newer context in `runtime_view`; an older active-image snapshot
 cannot override a changed running-image owner or missing current identity proof.
 The original `runtime` observation and source finding remain available.
+
+
+### Published fixes and observed APT availability
+
+Each finding now carries additive `availability` evidence. Publisher fix events
+are matched to the exact distribution ecosystem and source package. All fixed
+source versions and ordered ranges are retained, including reopened intervals;
+the first published version is independent of the currently evaluated source
+candidate and installable binary version. Full Debian ordering respects epochs,
+distribution revisions, binNMUs and backports. A more recent upstream number is
+not a substitute for a distribution fix.
+
+Candidate addresses, candidate still affected, same/absent candidate and
+unverified candidate remain distinct. A comparison requires complete evaluations,
+a strictly newer binary, a nondecreasing source version, the same source and
+verified official release. The signed InRelease Origin and Codename must match
+the host release, including its official security/updates/backports pockets.
+A downgrade, unproved source/channel migration or changed installed inventory
+cannot establish a candidate fix. Approval comparisons also require a complete
+installed-inventory digest, stable across metadata chunks and the final reread,
+and an unchanged distribution release; invalid or failed digest collection is
+not accepted as proof. An older cached candidate absence cannot
+outvote a newer installed positive query; observation timestamps are preserved.
+Publisher fixes without an addressing observed candidate are shown separately.
+This does not prove that every configured repository/version was enumerated.
+
+APT file ages are separate from fresh CVE queries and advisory downloads. Index
+files older than 24 hours are stale. Recent local files cannot prove refresh
+completeness and remain unknown. The last maintenance refresh outcome is retained
+when observed (including failures and partial retrieval); remote output remains
+in authorized job logs, never in public diagnostic reasons. Process-local refresh
+facts can become unknown after restart; availability recorded with findings is
+durable. File timestamps alone do not invent a latest error or success outcome.
+
+After a verified package checkpoint, optional read-only Package Discovery and
+Upgrade Plan collection has a five-second aggregate budget and is skipped when
+less time remains. Unavailable diagnostics do not discard complete package proofs.
+The four existing Approval Scope values and existing Package Deferral determine
+simulated/blocked/not-selected/unknown installability. Simulated transactions need
+fresh maintenance revalidation and operator permissions, including confirmation
+of removals. Observed holds and negative version pins are retained; a pin on an
+unrelated version does not invent a cause. Missing security repositories,
+dependency conflicts or ESM/subscription access are not inferred from absent
+candidates. An ESM origin/channel is reported only with signed observed evidence.
+
+Use the existing maintenance package scan to refresh indexes with maintenance
+permissions, then explicitly review the plan, repositories and administrator
+policy. The vulnerability scan never runs apt update or changes sources, pins,
+holds, subscriptions, releases or package versions. Candidate evidence never
+closes a finding; only the existing complete stable post-maintenance package
+assessment/removal proofs can do that. Dashboard counts separate published-fix
+occurrences, candidate-addressed occurrences and resolved package findings. The
+current Status list/details display these facts; full-page remediation belongs
+to the separate maintenance workflow.
+
+Existing JSON records need no schema rewrite. Loading legacy observations lazily
+adds unknown availability while preserving old disposition fields. API clients
+should read `availability` for the independent dimensions. `fixed_by_version`
+continues to mean the evaluated candidate source version; publisher versions are
+in `availability.published.fixed_versions`. An absent/missing publisher range
+never proves that no publisher fix exists.
+
+Sources: [Debian version comparison](https://www.debian.org/doc/debian-policy/ch-controlfields.html#version),
+[Ubuntu source-version OSV events](https://documentation.ubuntu.com/security/security-updates/osv/),
+[APT local-cache limitations](https://manpages.debian.org/trixie/apt/apt-cache.8.en.html).

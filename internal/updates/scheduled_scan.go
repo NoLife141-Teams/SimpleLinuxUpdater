@@ -10,6 +10,7 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 )
 
 const scheduledScanFactsRefreshSource = "scheduled_scan"
@@ -173,7 +174,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		setFailure("Scheduled scan package deferral planning failed", ruleErr, jobs.PhaseAptUpdate, logs)
 		return
 	}
-	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(maintenanceCtx, session, discovery.PendingUpdates)
+	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(withAvailabilityPlan(context.WithValue(maintenanceCtx, availabilityAPTKey{}, refreshObservation(vulnerabilities.APTContext{}, deps.Now(), stdout+"\n"+stderr, nil)), discovery), session, discovery.PendingUpdates)
 	if scanErr != nil {
 		if errors.Is(scanErr, context.Canceled) {
 			setFailure("Scheduled scan vulnerability lookup interrupted", scanErr, jobs.PhaseLookup, logs)

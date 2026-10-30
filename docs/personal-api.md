@@ -260,3 +260,35 @@ not schedule an immediate retry. The previous accepted observation, last complet
 success and finding ledger survive cancellation/interruption; freshness becomes
 stale and incomplete coverage never falsely resolves findings. Scans remain
 read-only and never change packages or refresh APT indexes.
+
+
+## Fix publication and candidate availability
+
+`VulnerabilityFinding.availability` is additive on both installed findings and
+pending-update enrichment. It separates exact release/source publisher events
+(`published`, including all ordered ranges and fixed versions), candidate source
+and binary versions with signed origin, observed repository availability, local
+`apt` index/refresh evidence and the four canonical Approval Scope `scopes`.
+`simulated` does not authorize execution or prove installation. Deferred packages,
+proven holds and removal-confirmation requirements remain subject to existing
+maintenance permissions and Package Deferral. Unknown causes remain unknown.
+
+Legacy disposition/API fields remain readable. `no_fix_available` means no
+verified candidate fix in observed data, not no publisher fix;
+`fixed_by_version` is the evaluated candidate source version. Legacy persisted
+records are lazily normalized to unknown additive availability; no database schema
+migration or replacement of existing resolution proofs is required.
+
+Dashboard `risk.vulnerability` adds `published_fix_occurrences` and
+`candidate_addressed_occurrences` (omitted when zero); existing `resolved_occurrences` still requires
+installed-package evidence. Finding `availability_freshness` tracks package and
+query observations while `published_fix_freshness` tracks raw advisory downloads.
+Neither asserts fresh APT indexes. Complete older cached candidate absence cannot
+establish a fix against newer installed positive evidence. Source-detail cache
+objects remain host-independent and preserve actual download timestamps.
+
+Server status can also expose optional `apt_metadata` for a maintenance refresh
+observed by this process. Errors are sanitary reasons; authorized job logs retain
+the command output. These observations do not establish that no later external
+refresh happened and can be unknown after restart. Finding `availability.apt`
+preserves the host metadata context recorded with that observation.

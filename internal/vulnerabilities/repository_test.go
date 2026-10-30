@@ -194,3 +194,42 @@ func TestSaveReconciledRequiresTheOriginalAttempt(t *testing.T) {
 		})
 	}
 }
+
+func TestAvailabilityPersistenceAndLegacyLazyMigration(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "availability.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"last_attempt":{"state":"partial","findings":[{"id":"CVE-2026-1000","disposition":"no_fix_available"}]},"findings":[{"id":"CVE-2026-1000","package":"example","disposition":"no_fix_available"}]}`
+	if _, err := db.Exec(`INSERT INTO server_vulnerability_observations VALUES (?,?)`, "synthetic", legacy); err != nil {
+		t.Fatal(err)
+	}
+	r := Repository{DB: func() *sql.DB { return db }}
+	o, err := r.Load(t.Context(), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Findings[0].Disposition != "no_fix_available" || o.Findings[0].Availability.Published.State != "unknown" || o.LastAttempt.Findings[0].Availability.CandidateState != "unverified" {
+		t.Fatal(o)
+	}
+	all, err := r.All(t.Context())
+	if err != nil || all["synthetic"].Findings[0].Availability.Published.State != "unknown" {
+		t.Fatal(all, err)
+	}
+	a := FixAvailability{Published: PublishedFix{State: "published", Ecosystem: "Debian:12", SourcePackage: "example", FixedVersions: []string{"1.0-1+deb12u1", "1.0-1+deb12u3"}, Ranges: []FixRange{{Type: "ECOSYSTEM", Events: []VersionEvent{{Introduced: "0"}, {Fixed: "1.0-1+deb12u1"}, {Introduced: "1.0-1+deb12u2"}, {Fixed: "1.0-1+deb12u3"}}}}}, CandidateState: "same", APT: APTContext{State: "stale", LastRefreshState: "failed", LastRefreshError: "Recorded refresh failed"}}
+	scan := Scan{State: "partial", Scope: "installed_packages", FinishedAt: "2026-10-30T00:00:00Z", Findings: []Finding{{ID: "CVE-2026-1000", Package: "example", Availability: &a}}}
+	if _, err := r.Save(t.Context(), "synthetic", scan); err != nil {
+		t.Fatal(err)
+	}
+	o, err = r.Load(t.Context(), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Findings[0].Availability.Published.Ranges[0].Events) != 4 || o.Findings[0].Availability.APT.LastRefreshState != "failed" || o.Findings[0].ResolvedAt != "" {
+		t.Fatal(o)
+	}
+}

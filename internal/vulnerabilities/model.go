@@ -8,6 +8,7 @@ import (
 )
 
 type Finding struct {
+	Availability       *FixAvailability     `json:"availability,omitempty"`
 	Runtime            RuntimeApplicability `json:"runtime,omitzero"`
 	Resolution         *Resolution          `json:"resolution,omitempty"`
 	Assessment         Assessment           `json:"assessment"`

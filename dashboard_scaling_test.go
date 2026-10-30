@@ -596,11 +596,14 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	}
 	if phase := os.Getenv("SLU_E2E_VULNERABILITY_PHASE"); phase != "" {
 		switch phase {
-		case "inventory", "metadata", "evaluation", "persistence":
+		case "inventory", "metadata", "evaluation", "persistence", "availability":
 		default:
 			t.Fatal("invalid isolated scan transport phase")
 		}
 		a.deps.VulnerabilityScans.deps.UpdateService = controlledInstalledScanService(phase, nil, nil, nil)
+		if phase == "availability" {
+			a.deps.VulnerabilityScans.deps.UpdateService = syntheticAvailabilityService(dashboardfixture.Now)
+		}
 		if phase == "persistence" {
 			repository := vulnerabilities.Repository{DB: a.deps.DB}
 			a.deps.VulnerabilityScans.saveResult = func(ctx context.Context, name string, scan vulnerabilities.Scan, guard func(func() error) error) (vulnerabilities.Observation, error) {

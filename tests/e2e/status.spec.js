@@ -487,7 +487,7 @@ test("installed vulnerability scans show trust states and residual exposure with
                 "",
             );
             await expect(section).toContainText("CVE-2026-1000");
-            await expect(section).toContainText("No newer candidate available");
+            await expect(section).toContainText("No verified candidate fix in observed data");
             await expect(section).toContainText("Severity: unknown");
             await expect(section).toContainText("Age: 24 days");
             if (state === "unavailable")

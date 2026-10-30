@@ -522,8 +522,11 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 
 	l.deps.StartJobRunner(job.ID, func() {
 		defer l.reconcileCurrentJob(run.ID, job.ID)
-		defer l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
-		l.deps.UpdateService.RunScheduledScanJob(updates.ScheduledScanRunRequest{
+		// Restore the prior operational state while retaining the refresh actually
+		// observed by this run, including failure before package discovery.
+		restored := servers.CloneServerStatus(preStartStatus)
+		defer func() { l.deps.ServerState.RestoreStatusSnapshot(server.Name, restored) }()
+		aptMetadata := l.deps.UpdateService.RunScheduledScanJob(updates.ScheduledScanRunRequest{
 			JobID:           job.ID,
 			RunID:           run.ID,
 			ScheduledForUTC: run.ScheduledForUTC,
@@ -531,6 +534,9 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			Policy:          policy,
 			RetryPolicy:     retryPolicy,
 		})
+		if restored != nil {
+			restored.APTMetadata = aptMetadata
+		}
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		l.reconcileCurrentJob(run.ID, job.ID)

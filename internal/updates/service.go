@@ -1000,6 +1000,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			})
 			metadataOutput.Flush()
 			r.aptUpdateAttempts += commandResult.Attempts
+			_ = r.withStatus(func(status *servers.ServerStatus) {
+				status.APTMetadata = refreshObservation(status.APTMetadata, deps.Now(), commandResult.Stdout+"\n"+commandResult.Stderr, err)
+			})
 			stdout, stderr := commandResult.Stdout, commandResult.Stderr
 			logs := r.currentLogs()
 			if !metadataOutput.Received() {
@@ -1893,7 +1896,7 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			}
 			return
 		}
-		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(cveCtx, cveSession, updates)
+		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(withAvailabilityPlan(context.WithValue(cveCtx, availabilityAPTKey{}, snapshot.APTMetadata), PackageDiscoveryOutcome{PendingUpdates: updates, UpgradePlan: snapshot.UpgradePlan}), cveSession, updates)
 		if scanErr != nil {
 			if errors.Is(scanErr, context.Canceled) || errors.Is(cveCtx.Err(), context.Canceled) {
 				markInterrupted(scanErr)

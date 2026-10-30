@@ -16,9 +16,109 @@ import (
 	"debian-updater/internal/scheduledruns"
 	"debian-updater/internal/servers"
 	"debian-updater/internal/updates"
+	"debian-updater/internal/vulnerabilities"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testing.T) {
+	for _, outcome := range []string{"succeeded", "partial", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			db, repository, _, audits := newReconciliationHarness(t)
+			now := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+			previousSuccess := now.Add(-time.Hour).Format(time.RFC3339Nano)
+			server := servers.Server{Name: "apt-observation", Host: "synthetic.invalid", User: "fixture"}
+			inventory := []servers.Server{server}
+			statuses := map[string]*servers.ServerStatus{server.Name: {Name: server.Name, Status: "done", APTMetadata: vulnerabilities.APTContext{ObservedAt: previousSuccess, LastSuccessAt: previousSuccess, LastRefreshState: "succeeded"}}}
+			state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+			jm := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{Now: func() time.Time { return now }, NewID: func() string { return "apt-refresh" }})
+			session := &updates.HostMaintenanceSessionFuncs{
+				RunUpdatePrechecksFunc: func(context.Context) updates.PrecheckSummary { return updates.PrecheckSummary{AllPassed: true} },
+				RunCommandFunc: func(_ context.Context, req updates.HostCommandRequest) (updates.HostCommandResult, error) {
+					if req.Operation != "scheduled_scan.apt_update" {
+						t.Fatalf("unexpected operation: %s", req.Operation)
+					}
+					if outcome == "failed" {
+						return updates.HostCommandResult{}, errors.New("synthetic refresh failure")
+					}
+					if outcome == "partial" {
+						return updates.HostCommandResult{Stderr: "Some index files failed to download"}, nil
+					}
+					return updates.HostCommandResult{}, nil
+				},
+				DiscoverPackagesFunc: func(context.Context, updates.HostOperationRequest) (updates.HostPackageDiscoveryResult, error) {
+					return updates.HostPackageDiscoveryResult{}, nil
+				},
+			}
+			service := updates.NewService(updates.ServiceDeps{
+				SaveServerFacts: func(updates.ServerFactsRecord) error { return nil },
+				AuditWithActor: func(actor, ip, action, kind, target, status, message string, meta map[string]any) {
+					_ = audits.Record(actor, ip, action, kind, target, status, message, meta)
+				},
+				Now:               func() time.Time { return now },
+				ServerState:       state,
+				CurrentJobManager: func() *jobs.Manager { return jm },
+				HostMaintenanceSessions: updates.HostMaintenanceSessionFactoryFunc(func(context.Context, updates.HostMaintenanceSessionRequest) (updates.HostMaintenanceSession, error) {
+					return session, nil
+				}),
+			})
+			lifecycle := scheduledruns.New(scheduledruns.Deps{
+				AuditService:                    audits,
+				CurrentJobManager:               func() *jobs.Manager { return jm },
+				JobTimestampNow:                 func() string { return now.Format(time.RFC3339Nano) },
+				LoadRetryPolicy:                 func() updates.RetryPolicy { return updates.RetryPolicy{} },
+				PolicyRepository:                repository,
+				ServerState:                     state,
+				StartJobRunner:                  func(_ string, run func(), _ ...func()) { run() },
+				StartScheduledRunReconciliation: func(int64, string) {},
+				UpdateService:                   service,
+			})
+			policy := policies.Policy{ID: 92, Name: "apt refresh evidence", ExecutionMode: policies.ExecutionScanOnly, PackageScope: policies.PackageScopeFull, UpgradeMode: policies.UpgradeModeStandard}
+			result := lifecycle.HandleScheduledRun(policies.ScheduledRunRequest{Policy: policy, Server: server, ScheduledForUTC: now.Format(time.RFC3339Nano), Admitted: true})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			status := state.CurrentStatusSnapshot(server.Name)
+			if status.Status != "done" || status.APTMetadata.LastRefreshState != outcome || status.APTMetadata.LastRefreshAt != now.Format(time.RFC3339Nano) {
+				t.Fatalf("refresh evidence lost during status restoration: %+v", status)
+			}
+			wantSuccess := previousSuccess
+			if outcome == "succeeded" {
+				wantSuccess = now.Format(time.RFC3339Nano)
+			}
+			if status.APTMetadata.LastSuccessAt != wantSuccess {
+				t.Fatalf("last success = %s, want %s", status.APTMetadata.LastSuccessAt, wantSuccess)
+			}
+			job, err := jm.GetJob(result.JobID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantJob := jobs.StatusSucceeded
+			if outcome == "failed" {
+				wantJob = jobs.StatusFailed
+			}
+			if job.Status != wantJob {
+				t.Fatalf("job=%+v", job)
+			}
+			action := "schedule.run.completed"
+			if outcome == "failed" {
+				action = "schedule.run.failed"
+			}
+			listed, err := audits.List(audit.ListFilter{Action: action, TargetName: server.Name})
+			if err != nil || listed.Total != 1 {
+				t.Fatalf("completion audit missing: %+v %v", listed, err)
+			}
+			var meta struct {
+				RunID    int64  `json:"run_id"`
+				JobID    string `json:"job_id"`
+				PolicyID int64  `json:"policy_id"`
+			}
+			if err := json.Unmarshal([]byte(listed.Items[0].MetaJSON), &meta); err != nil || meta.RunID != result.RunID || meta.JobID != result.JobID || meta.PolicyID != policy.ID {
+				t.Fatalf("completion audit identity: %+v %v", meta, err)
+			}
+		})
+	}
+}
 
 type failingRunUpdateRepository struct {
 	delegate *policies.SQLiteRepository

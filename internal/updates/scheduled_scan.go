@@ -10,6 +10,7 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/policies"
 	"debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 )
 
 const scheduledScanFactsRefreshSource = "scheduled_scan"
@@ -58,8 +59,13 @@ func maintenanceContextForSession(session HostMaintenanceSession) context.Contex
 	return context.Background()
 }
 
-func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
+func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) (aptMetadata vulnerabilities.APTContext) {
 	deps := s.EnsureDeps()
+	if deps.ServerState != nil {
+		if status := deps.ServerState.CurrentStatusSnapshot(req.Server.Name); status != nil {
+			aptMetadata = status.APTMetadata
+		}
+	}
 	jm := deps.CurrentJobManager()
 	setFailure := func(summary string, err error, phase string, logs string) {
 		if jm != nil && strings.TrimSpace(req.JobID) != "" {
@@ -150,6 +156,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		ReplayPolicy: ReplayRetryableOutputErrors,
 	})
 	stdout, stderr := commandResult.Stdout, commandResult.Stderr
+	aptMetadata = refreshObservation(aptMetadata, deps.Now(), stdout+"\n"+stderr, err)
 	logs += "\n" + stdout + stderr
 	if err != nil {
 		setFailure("Scheduled scan apt update failed", err, jobs.PhaseAptUpdate, logs)
@@ -173,7 +180,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 		setFailure("Scheduled scan package deferral planning failed", ruleErr, jobs.PhaseAptUpdate, logs)
 		return
 	}
-	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(maintenanceCtx, session, discovery.PendingUpdates)
+	scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(withAvailabilityPlan(context.WithValue(maintenanceCtx, availabilityAPTKey{}, aptMetadata), discovery), session, discovery.PendingUpdates)
 	if scanErr != nil {
 		if errors.Is(scanErr, context.Canceled) {
 			setFailure("Scheduled scan vulnerability lookup interrupted", scanErr, jobs.PhaseLookup, logs)
@@ -220,6 +227,7 @@ func (s *Service) RunScheduledScanJob(req ScheduledScanRunRequest) {
 			MetaJSON: &metaJSON,
 		})
 	}
+	return
 }
 
 func (s *Service) refreshFactsAfterScheduledScan(ctx context.Context, req ScheduledScanRunRequest, session HostMaintenanceSession, logs string) (string, error) {

@@ -27,6 +27,9 @@ func (r Repository) Load(ctx context.Context, name string) (Observation, error) 
 	}
 	var out Observation
 	err = json.Unmarshal([]byte(raw), &out)
+	if err == nil {
+		NormalizeLegacyAvailability(&out)
+	}
 	return out, err
 }
 
@@ -46,6 +49,7 @@ func (r Repository) All(ctx context.Context) (map[string]Observation, error) {
 		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
 			return nil, err
 		}
+		NormalizeLegacyAvailability(&observation)
 		out[name] = observation
 	}
 	return out, rows.Err()
@@ -102,6 +106,7 @@ func (r Repository) save(ctx context.Context, name string, scan Scan, acceptComm
 		return Observation{}, ErrObservationChanged
 	}
 	next := Accept(previous, scan)
+	NormalizeLegacyAvailability(&next)
 	blob, err := json.Marshal(next)
 	if err != nil {
 		return Observation{}, err

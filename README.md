@@ -206,6 +206,8 @@ The selected-host panel exposes a read-only **Scan vulnerabilities** action and 
 
 Component context distinguishes development headers, active/inactive installed kernel images and external container-host kernels without asserting runtime exploitability. CVE scope is host OS packages only: Docker images and application dependencies are not scanned, and third-party repositories are not covered. Missing or stale read-only probes remain unknown; no additional privileges or other-host access are requested.
 
+Published source fixes, observed candidate source/binary versions, APT metadata uncertainty and installability by the existing Approval Scope/Package Deferral are separate. Candidate fixes do not resolve findings. See [availability semantics](docs/usage.md#published-fixes-and-observed-apt-availability).
+
 Installed scan work, checkpoint recovery, cache/enrichment bounds and reproducible synthetic measurements are documented in [Vulnerability scan performance](docs/vulnerability-scan-performance.md).
 
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.

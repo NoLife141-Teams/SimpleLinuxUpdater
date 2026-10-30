@@ -361,6 +361,12 @@
             return `<span class="pending-badge">Unknown state</span>`;
         }
 
+        function runtimeApplicabilityHtml(finding) {
+            const runtime = finding.runtime_view || finding.runtime || {};
+            const executionLabel = finding.runtime_view ? "Execution" : "Observed execution (current status unverified)";
+            return `<span class="runtime-applicability"><small>Component: ${escapeHtml(runtime.component || "source_match")} · ${executionLabel}: ${escapeHtml(runtime.execution || "unknown")} · Exposure: ${escapeHtml(runtime.exposure || "unknown")} · Exploitability: ${escapeHtml(runtime.exploitability || "unknown")}</small><small>${escapeHtml(runtime.reason || "Source match only; binary applicability requires review")}</small><small>Responsible operator: ${escapeHtml(runtime.owner || "unknown")} · ${escapeHtml(runtime.action || "Collect missing read-only component context")}</small><small>Runtime source: ${escapeHtml(runtime.source || "unknown")} · observed ${escapeHtml(runtime.observed_at || "unknown")} (${escapeHtml(finding.runtime_freshness || "freshness must be verified")}) · Kernel: ${escapeHtml(runtime.kernel_release || "unknown")} · Virtualization: ${escapeHtml(runtime.virtualization || "unknown")}</small></span>`;
+        }
+
         function vulnerabilityFindingListHtml(findings, title, tone) {
             if (!findings.length) return "";
             const items = findings
@@ -375,12 +381,12 @@
                     ).trim();
                     const assessment = finding.assessment || {};
                     const vendor = assessment.vendor_status || "unknown";
-                    return `<li>${idHtml}<small>Distribution triage: ${escapeHtml(vendor)} · Applicability: ${escapeHtml(assessment.applicability || "unknown")} · Confidence: ${escapeHtml(assessment.confidence || "unknown")}</small><small>${escapeHtml(assessment.vendor_reason || "Legacy match: distribution triage requires review")}</small><small>Assessment: ${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || "unknown")} ${escapeHtml(assessment.source_version || "unknown")} · observed ${escapeHtml(assessment.observed_at || "unknown")}</small>${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
+                    return `<li>${idHtml}${runtimeApplicabilityHtml(finding)}<small>Binary: ${escapeHtml(finding.package || "unknown")} · Source: ${escapeHtml(finding.source_package || assessment.source_package || "unknown")}</small><small>Distribution triage: ${escapeHtml(vendor)} · Applicability: ${escapeHtml(assessment.applicability || "unknown")} · Confidence: ${escapeHtml(assessment.confidence || "unknown")}</small><small>${escapeHtml(assessment.vendor_reason || "Legacy match: distribution triage requires review")}</small><small>Assessment: ${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || "unknown")} ${escapeHtml(assessment.source_version || "unknown")} · observed ${escapeHtml(assessment.observed_at || "unknown")}</small>${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
                 })
                 .join("");
             return `
                 <section class="cve-finding-group cve-finding-${tone}">
-                    <h5>${escapeHtml(title)}</h5>
+                    <h5>${escapeHtml(title)}</h5><p>Host OS packages only. Docker images and application dependencies are not scanned. Third-party repositories are not covered.</p>
                     <ul>${items}</ul>
                 </section>
             `;
@@ -1308,6 +1314,7 @@
                 <p>${escapeHtml(finding.qualificationLabel)} · Distribution triage: ${escapeHtml(finding.assessment?.vendor_status || "unknown")} · Vendor priority: ${escapeHtml(finding.assessment?.vendor_priority || "unknown")} · Applicability: ${escapeHtml(finding.assessment?.applicability || "unknown")}</p>
                 <p>${escapeHtml(finding.assessment?.vendor_reason || "Legacy match: distribution triage requires review")}</p>
                 <p>Assessment source: ${escapeHtml(finding.assessment?.source || "unknown")} · ${escapeHtml(finding.assessment?.ecosystem || "unknown")} / ${escapeHtml(finding.assessment?.source_package || "unknown")} ${escapeHtml(finding.assessment?.source_version || "unknown")} · modified ${escapeHtml(finding.assessment?.modified_at || "unknown")} · observed ${escapeHtml(finding.assessment?.observed_at || "unknown")} (${escapeHtml(finding.assessment_freshness || "unknown")})</p>
+                <p>${runtimeApplicabilityHtml(finding)}</p>
                 <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
                 <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
                 <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
@@ -1319,6 +1326,9 @@
                 <h3>Installed package vulnerabilities</h3>
                 <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
                 <p>${escapeHtml(info.coverageLabel)}</p>
+                <p>${escapeHtml(info.scopeLabel)}</p>
+                <p>${escapeHtml(info.kernelCoverageLabel)}</p>
+                <p>${escapeHtml(info.componentCountsLabel)}</p>
                 <p>${escapeHtml(info.qualificationCountsLabel)}</p>
                 <p>${escapeHtml(info.evidenceCountsLabel)}</p>
                 ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}

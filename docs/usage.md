@@ -887,3 +887,72 @@ An unqualified APT selector can refer to an architecture-qualified dpkg inventor
 The observation keeps the last validated proof per package and the last complete stable inventory independently of the latest attempt. Per-package absence cutoffs preserve the knowledge of a complete stable inventory after a later inventory contains that package again without an evaluation. Older approval snapshots cannot resurrect findings superseded by a newer evaluation or proven absence, including after a subsequent unknown scan or unknown reinstall; newer approval observations remain visible. These cutoffs do not evaluate the reinstalled version or resolve new findings. Generation/commit guards protect against late results and cancellation; rename, deletion and backup/restore retain their existing ownership. Recovery after an authorized rename keeps the collector's original Server name only for the exact admitted operation and owner already stored in the renamed row. Other Server proofs and replacement generations remain rejected.
 
 Dashboard Projection separates current occurrences, findings not reverified, and resolved history. An occurrence reopened by newer approval evidence is active, excluded from the current resolved count, while its earlier closure remains in the durable ledger. The dashboard shows at most the 50 most recent resolved details with the complete resolved count, so accumulating historical evidence does not grow the inspector or refresh payload without bound. The complete ledger remains available in the Server vulnerability observation. Detail/severity freshness and `enrichment_errors` remain independent from package coverage. Last complete host success remains separately reported. No checkpoint from an interrupted scan is accepted by this contract; future resumable scanning must validate each boundary first.
+
+### Binary components, kernel responsibility and scan scope
+
+CVE views cover the Server's **host OS packages**, using verified official
+Debian/Ubuntu source-package data. Third-party repositories are not covered.
+**Docker images and application dependencies are not scanned**, regardless of
+what a Server is named. No network reachability, process monitoring or complete
+exploitability assessment is performed.
+
+Installed scans and approval enrichment collect fresh component context through
+Host Maintenance Session: `uname -r`, unprivileged `systemd-detect-virt` container
+and VM detection, DPKG ownership of `/boot/vmlinuz-<running release>`, and installed
+`linux-image-*` binary/version/source identities. Collection has a ten-second
+context deadline with transport drainage, a 128 KiB parsed-output bound and at
+most 256 installed images. Missing commands, denied probes, ambiguous ownership,
+image/source changes and unrecognized virtualization remain **unknown**; no
+extra privileges are requested. Installed scans reconcile image identities with
+both inventory boundaries; an invalidated running-image identity also makes
+comparisons with inactive images unknown, while unrelated package changes do not.
+A timed-out probe reconnects through the existing
+session boundary before subsequent package reads. Existing Host Health
+Observation kernel strings do not include exact image/source ownership or
+virtualization, so they cannot substitute for this fresh contextual evidence.
+
+- An **active image** requires exact installed binary/architecture, version,
+  source/version and observed running-image ownership, with VM or non-container
+  evidence. A source match on that image remains visible, with a Server kernel
+  maintenance/reboot review action; it does not prove exploitability.
+- An **inactive image** stays visible and requires review of boot policy and
+  usage. Inactive does not mean risk-free; nothing is automatically removed.
+- In a positively identified **container**, the running kernel is **external**,
+  including when no image is in the guest DPKG inventory. The container-host
+  operator must verify and maintain that kernel. A container update/reboot does
+  not establish host-kernel remediation. SLU never connects to another host.
+- The exact `linux` source / `linux-libc-dev` binary combination is classified as
+  **development headers**, retaining every advisory and rationale. Debian
+  documents that it supplies userspace headers under `/usr/include`, not the
+  running kernel image ([package description](https://packages.debian.org/trixie/linux-libc-dev)).
+  A kernel TCP advisory such as
+  [CVE-2004-0230](https://security-tracker.debian.org/tracker/CVE-2004-0230)
+  matched to that source is not proof of active-kernel exposure through this
+  binary. Header usage and binary applicability still require review. This is
+  a component distinction, not a finding exclusion.
+
+There are no blanket exclusions for `*-dev`, CLIs, old kernels, stopped services
+or old CVEs. Other binaries retain a source-match review signal. Installed,
+executed, exposed and exploitable are separate facts; exposure and exploitability
+remain unknown. Reclassification never closes an occurrence, suppresses its CVE,
+changes vendor qualification/CVSS, or weakens the Package Vulnerability Evaluation
+Proof rules.
+
+The observation API adds `scan.runtime_context` and `finding.runtime`, retained
+in SQLite/backups and across rename/restore. Dashboard Projection adds
+`runtime_context`, `kernel_coverage` (evaluated/external/unknown), `not_scanned`,
+component occurrence counters (zero values may be omitted). `confirmed_cves` still
+means vendor-confirmed **source** matches. A synthetic 1,000-header-match scan
+can therefore retain 1,000 source matches and 1,000 header occurrences with zero
+active-image occurrences. Header occurrences also count as execution unknown;
+these groups are not disjoint. `finding.runtime_view` and `runtime_freshness`
+apply the configured CVE evidence age; stale/future/missing context has unknown
+execution and responsibility while the original `runtime` observation remains
+inspectable. Approval details label their observed execution as a snapshot whose
+current status needs verification. Legacy data defaults to unknown. See the
+[OpenAPI contract](openapi-v1.json).
+
+When a newer accepted scan or approval snapshot supplies host context, retained
+findings use that newer context in `runtime_view`; an older active-image snapshot
+cannot override a changed running-image owner or missing current identity proof.
+The original `runtime` observation and source finding remain available.

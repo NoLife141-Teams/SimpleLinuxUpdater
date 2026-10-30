@@ -311,6 +311,9 @@
                 return `${phase} · ${count(progress.inventoried)} inventoried · ${count(progress.metadata)} metadata collected · ${count(progress.evaluated)} evaluated · ${count(progress.unknown)} unknown · ${count(progress.unsupported)} unsupported`;
             })(),
             coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
+            scopeLabel: "Host OS packages only; verified official Debian/Ubuntu provenance. Third-party repositories are not covered. Docker images and application dependencies are not scanned.",
+            kernelCoverageLabel: {evaluated: "Running kernel context evaluated; source matches do not prove exploitability", external: "External container-host kernel; host operator verification required"}[text(info.kernel_coverage)] || "Running kernel context unknown; collect missing read-only facts",
+            componentCountsLabel: `${count(info.active_kernel_occurrences)} active kernel image matches · ${count(info.inactive_kernel_occurrences)} inactive kernel image matches · ${count(info.external_kernel_occurrences)} external kernel image matches · ${count(info.header_occurrences)} development-header matches · ${count(info.runtime_unknown_occurrences)} execution unknown`,
             freshnessLabel: text(info.freshness, "unknown"),
             qualificationCountsLabel: `${count(info.reported_cves)} reported CVEs · ${count(info.confirmed_cves)} vendor-confirmed source matches · ${count(info.needs_review_cves)} to review · ${count(info.vendor_qualified_cves)} vendor-qualified · ${count(info.withdrawn_cves)} withdrawn · ${count(info.occurrences)} package occurrences`,
             evidenceCountsLabel: `${count(info.current_occurrences)} current package findings · ${count(info.unverified_occurrences)} not reverified · ${count(info.resolved_occurrences)} resolved by scan evidence`,

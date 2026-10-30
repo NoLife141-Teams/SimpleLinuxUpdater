@@ -20,6 +20,7 @@
                     <div class="eyebrow">Status dashboard</div>
                     <h1>Fleet status</h1>
                     <p class="muted">Package approvals, running phases, and host facts are tracked from one operator surface.</p>
+                    <p class="muted">CVE scope: host OS packages only. Docker images and application dependencies are not scanned; third-party repositories are not covered.</p>
                 </div>
                 <div class="head-meta" aria-label="Runtime metadata">
                     <span class="version-pill">v0.5.0</span>
@@ -147,7 +148,7 @@
                         <button type="button" class="metric-item metric-button" data-metric-filter="high_risk">
                             <span>CVE matches</span>
                             <strong id="metric-high-risk-cve">0</strong>
-                            <small>CVE-exposed hosts</small>
+                            <small>Hosts with source matches</small>
                         </button>
                         <article class="metric-item metric-hidden">
                             <span>Reachable hosts</span>

@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Separate source-package CVE matches from observed binary/kernel applicability,
+  retain header and inactive-image signals, and identify external container-host
+  kernel responsibility with explicit OS-package-only scan scope.
+
 - Resolve installed CVE findings only from complete stable per-package evidence,
   independently of unrelated unknown packages or advisory enrichment failures;
   retain closure proofs and distinguish current, unverified and resolved history.

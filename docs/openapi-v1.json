@@ -4112,6 +4112,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "runtime_context": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeContext"
           }
         },
         "additionalProperties": true
@@ -4202,10 +4205,13 @@
           },
           "resolution": {
             "$ref": "#/components/schemas/VulnerabilityResolution"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeApplicability"
           }
         },
         "additionalProperties": true,
-        "description": "Durable package/CVE occurrence. Distribution assessment, severity evidence, candidate disposition and resolution are independent. Existing fields remain available."
+        "description": "Durable package/CVE occurrence. Distribution assessment, severity evidence, candidate disposition and resolution are independent. Existing fields remain available. Component/runtime reclassification never resolves an occurrence or alters its source/vendor assessment."
       },
       "VulnerabilityQualificationCounts": {
         "type": "object",
@@ -4257,9 +4263,59 @@
             "items": {
               "$ref": "#/components/schemas/VulnerabilityFinding"
             }
+          },
+          "runtime_context": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeContext"
+          },
+          "kernel_coverage": {
+            "type": "string",
+            "enum": [
+              "evaluated",
+              "external",
+              "unknown"
+            ],
+            "description": "Component context only. evaluated does not imply all kernel vulnerabilities assessed or any exposure confirmed."
+          },
+          "not_scanned": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Includes Docker images, application dependencies and third-party repositories; scope installed_packages means host OS packages only. Missing optional component counts mean zero; missing legacy runtime context means unknown."
+          },
+          "active_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "inactive_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "external_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "header_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "runtime_unknown_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardVulnerabilityFinding"
+            }
           }
         },
-        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability. Active occurrences are separated into current and not-reverified evidence; resolved_findings retains closure proof/history and is excluded from active CVE counts. Enrichment failures are independent of package coverage."
+        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability. Active occurrences are separated into current and not-reverified evidence; resolved_findings retains closure proof/history and is excluded from active CVE counts. Enrichment failures are independent of package coverage. Runtime component counters and kernel_coverage are separate; confirmed_cves continues to count vendor-confirmed source matches, never confirmed running-kernel vulnerabilities."
       },
       "VulnerabilityPackageProof": {
         "type": "object",
@@ -4433,6 +4489,139 @@
           }
         },
         "description": "Inventoried package with independent assessment state and optional complete evidence."
+      },
+      "VulnerabilityRuntimeApplicability": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Observed binary component context, independently of vendor source triage, CVSS, candidate disposition and resolution. No observation proves reachability or exploitability. Legacy missing fields are unknown. runtime_view is the projection after freshness checks; runtime retains the original observation.",
+        "properties": {
+          "component": {
+            "type": "string",
+            "enum": [
+              "source_match",
+              "development_headers",
+              "kernel_image"
+            ]
+          },
+          "execution": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "active",
+              "inactive",
+              "external"
+            ]
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          },
+          "exploitability": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "kernel_release": {
+            "type": "string"
+          },
+          "virtualization": {
+            "type": "string"
+          },
+          "kernel_owner": {
+            "type": "string"
+          }
+        }
+      },
+      "VulnerabilityKernelImage": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          }
+        }
+      },
+      "VulnerabilityRuntimeContext": {
+        "type": "object",
+        "description": "Fresh bounded unprivileged Host Maintenance Session evidence: uname, systemd virtualization/container detection and exact dpkg image ownership plus installed image/source identities. Ten-second context deadline with transport drain; max 256 images and 128 KiB parsed output. Missing, denied, oversized and malformed probes are unknown. No hypervisor access or privilege escalation.",
+        "properties": {
+          "kernel_release": {
+            "type": "string"
+          },
+          "virtualization": {
+            "type": "string"
+          },
+          "kernel_owner": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "images": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityKernelImage"
+            }
+          }
+        }
+      },
+      "DashboardVulnerabilityFinding": {
+        "type": "object",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VulnerabilityFinding"
+          }
+        ],
+        "properties": {
+          "runtime_view": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeApplicability"
+          },
+          "runtime_freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          }
+        },
+        "description": "runtime_view uses newer accepted scan or approval host context for retained findings and demotes stale/future/missing or unverified image identities to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
       }
     }
   }

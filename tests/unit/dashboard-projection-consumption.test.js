@@ -400,3 +400,21 @@ test("vendor qualification remains separate from CVSS and unique CVE counters", 
     assert.equal(info.findings[0].assessment.vendor_status,"unimportant");
     assert.equal(view.selectedHost.risk.level,"unknown");
 });
+
+test("component scope and kernel ownership stay separate from vendor source counts", () => {
+    for (const kernel of ["evaluated", "external", "unknown"]) {
+        const view = project({statusView: statusView({servers: [{name: "component-host", status: "done"}], dashboardServers: [{name: "component-host", risk: {vulnerability: {
+            kernel_coverage: kernel, reported_cves: 1000, confirmed_cves: 1000, header_occurrences: 1000,
+            active_kernel_occurrences: 0, runtime_unknown_occurrences: 1000,
+            findings: [{id: "CVE-2004-0230", package: "linux-libc-dev", runtime_view: {component: "development_headers", execution: "unknown", exposure: "unknown", reason: "Headers do not prove running-kernel exposure"}}]
+        }}}]})});
+        const info = view.selectedHost.vulnerability;
+        assert.match(info.scopeLabel, /Docker images and application dependencies are not scanned/);
+        assert.match(info.scopeLabel, /Third-party repositories are not covered/);
+        assert.match(info.componentCountsLabel, /0 active kernel image matches/);
+        assert.match(info.componentCountsLabel, /1000 development-header matches/);
+        assert.equal(info.findings[0].runtime_view.execution, "unknown");
+        assert.match(info.qualificationCountsLabel, /1000 vendor-confirmed source matches/);
+        assert.match(info.kernelCoverageLabel, kernel === "external" ? /External container-host kernel/ : kernel === "evaluated" ? /context evaluated/ : /context unknown/);
+    }
+});

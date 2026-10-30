@@ -716,13 +716,13 @@ The panel separates:
 - **State:** never scanned, running, unavailable, partial, or complete.
 - **Coverage:** inventoried, evaluated, unknown, and unsupported package counts.
 - **Freshness:** accepted inventory timestamp and last complete success, distinct from the latest attempt. Failed scans preserve the previous accepted result and mark it stale.
-- **Result and severity:** confirmed exposure, no findings in evaluated packages, or inconclusive. A confirmed CVE with no usable severity is `unknown`, never automatically critical.
+- **Result and severity:** vendor-confirmed source matches, matches requiring review, vendor-qualified findings, no findings in evaluated packages, or inconclusive. Source matching is not proof of runtime exploitability. CVSS and distribution priority/triage are independent; unknown severity is never automatically critical.
 
 Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` means no different candidate was found; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. Only a complete successful scan with verified installed provenance and a stable before/after inventory can resolve absent findings. A reappearing finding keeps its original `first_seen`.
 
 Scan observations are persisted in SQLite and included in backups. Renaming a Server preserves its ledger; deletion removes it. Changing its SSH endpoint clears the old endpoint's observation. Restore reuses restored observations, without a separate runtime cache.
 
-Authenticated API additions: `POST /api/servers/:name/vulnerabilities/scan` returns `202` after admission (`409` if disabled/busy/unavailable; `404` for a missing server). `GET /api/servers/:name/vulnerabilities` returns the full observation, package inventory, last attempt, accepted result and finding ledger, including resolved entries. Dashboard Projection adds `risk.vulnerability` and fleet scan-state counters; existing API fields remain available. The legacy `high_risk_cve` fleet counter continues to mean hosts with confirmed exposure, regardless of severity.
+Authenticated API additions: `POST /api/servers/:name/vulnerabilities/scan` returns `202` after admission (`409` if disabled/busy/unavailable; `404` for a missing server). `GET /api/servers/:name/vulnerabilities` returns the full observation, package inventory, last attempt, accepted result and finding ledger, including resolved entries. Dashboard Projection adds `risk.vulnerability` and fleet scan-state counters; existing API fields remain available. The legacy `risk.cves`, triage `cve_count` and `high_risk_cve` fleet counter retain reported-source-match counts for compatibility; they do not imply confirmed exposure. Fleet adds `vendor_confirmed_cve_hosts`, `review_cve_hosts`, `vendor_qualified_cve_hosts` and `withdrawn_cve_hosts` (host counts).
 
 ### Source limits
 
@@ -859,3 +859,15 @@ a partial download. Downloads have a separate **30 second** write deadline and
 leave Manage to abort the client request. Every success, failure and cancellation
 closes the spool; downloads use `no-store` and fixed safe filenames. There is no
 change to audit retention, backup storage or database export behavior.
+
+### Distribution qualification and confidence
+
+Each installed or pending-update finding includes an additive `assessment` object: exact ecosystem, source package/version, vendor status and reason, vendor priority, applicability/confidence, advisory source, source modification timestamp and observation timestamp. Existing JSON/SQLite/backups need no destructive migration; findings without assessment remain unknown and require review. New unavailable details never inherit an old vendor decision as current.
+
+Debian OSV `affected[].ecosystem_specific.urgency` is matched to the exact release and source package. `unimportant` is shown as **vendor-qualified**, which can mean no practical security impact or a package outside security support: inspect the vendor rationale, rather than treating it as proof of harmlessness. Known low/medium/high Debian triage plus the source-version match can establish a vendor-confirmed **source-package** match; runtime applicability is unverified. `no-dsa` alone never excludes or resolves a finding, and unknown/unassigned/conflicting triage requires review.
+
+Ubuntu's official OSV conversion lists needs-triage, needed, ignored, pending and deferred entries under affected without preserving their distinction. This adapter therefore keeps Ubuntu triage **unknown**; absence of a fixed event never establishes a confirmed vulnerability. Ubuntu priority remains separate from CVSS. This limitation is explicit until an official source carrying the missing status is integrated.
+
+Dashboard `risk.vulnerability` separates distinct `reported_cves`, current vendor `confirmed_cves`, `needs_review_cves`, `vendor_qualified_cves`, `withdrawn_cves` and package/ID `occurrences`. A CVE on multiple packages counts once; mixed qualifications use confirmed > review > qualified > withdrawn. Current package and assessment evidence are both required for confirmation. Stale/future/missing assessments require review. CVSS remains visible for qualified findings, but does not elevate the Server risk or create a remediation deadline on its own; configured targets apply to current vendor-confirmed source matches. A withdrawn/requalified advisory remains in the ledger, not marked as a package correction.
+
+References: [Debian triage](https://security-team.debian.org/security_tracker.html#severity-levels) and [Ubuntu status mapping](https://documentation.ubuntu.com/security/security-updates/osv/#mapping-ubuntu-cve-tracker-statuses-in-osv).

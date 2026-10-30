@@ -530,7 +530,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
     const cveMetric = page.locator('[data-metric-filter="high_risk"]');
     await expect(factsMetric).toContainText("Host facts to refresh");
     await expect(factsMetric.locator("strong")).toHaveText("2");
-    await expect(cveMetric).toContainText("CVE exposure");
+    await expect(cveMetric).toContainText("CVE matches");
     await expect(cveMetric.locator("strong")).toHaveText("1");
 
     const factsFilter = page.locator('[data-fleet-filter="stale_facts"]');
@@ -548,7 +548,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
         .toEqual(["stale-host", "unknown-host"]);
 
     const cveFilter = page.locator('[data-fleet-filter="high_risk"]');
-    await expect(cveFilter).toContainText("CVE exposure");
+    await expect(cveFilter).toContainText("CVE matches");
     await expect(cveFilter.locator("strong")).toHaveText("1");
     await cveFilter.evaluate((button) => button.click());
     const cveRows = page.locator("#servers-table tbody tr[data-name]");
@@ -2507,4 +2507,34 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
     await expect(page.locator(".app-feedback")).toContainText(
         "pending update changed",
     );
+});
+
+test("distribution qualification explains a critical CVSS source match without confirming exposure", async ({ page }) => {
+    const server=makeServer("triage-host","done");
+    await stubDashboardApi(page,()=>[server]);
+    await page.route("**/api/dashboard/summary*",route=>{
+        const summary=makeDashboardSummary([server]);
+        summary.servers[0].risk={level:"unknown",summary:"1 reported CVE · 0 vendor-confirmed source matches · 1 vendor-qualified",vulnerability:{
+            state:"complete",freshness:"fresh",result:"qualified_findings",inventoried:1,evaluated:1,unknown:0,unsupported:0,
+            reported_cves:1,confirmed_cves:0,needs_review_cves:0,vendor_qualified_cves:1,withdrawn_cves:0,occurrences:1,
+            findings:[{id:"CVE-2007-2243",package:"example-client",severity:"critical",disposition:"no_fix_available",qualification:"vendor_qualified",assessment_freshness:"fresh",assessment:{
+                vendor_status:"unimportant",vendor_priority:"unimportant",applicability:"source_match",confidence:"vendor_qualified",
+                vendor_reason:"Vendor triage retained <not executable>",ecosystem:"Debian:13",source_package:"openssh",source_version:"1:1.0-1",
+                source:"https://example.invalid/advisory",modified_at:"2026-10-01T00:00:00Z",observed_at:"2026-10-02T00:00:00Z"
+            }}]
+        }};
+        return fulfillJson(route,summary);
+    });
+    await ensureAuthenticatedSession(page);
+    const section=page.getByRole("region",{name:"Installed package vulnerabilities"});
+    await expect(section).toContainText("1 reported CVEs · 0 vendor-confirmed source matches");
+    await section.locator("summary").click();
+    await expect(section).toContainText("Vendor-qualified: inspect rationale");
+    await expect(section).toContainText("Distribution triage: unimportant");
+    await expect(section).toContainText("Vendor triage retained <not executable>");
+    await expect(section).toContainText("Severity: critical");
+    await expect(section).toContainText("Debian:13 / openssh 1:1.0-1");
+    await expect(section).not.toContainText("Confirmed exposure");
+    await page.setViewportSize({width:390,height:844});
+    await expect(section).toContainText("Vendor-qualified: inspect rationale");
 });

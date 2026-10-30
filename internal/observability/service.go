@@ -458,7 +458,7 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 			risk.SecurityUpdates++
 		}
 		for _, finding := range update.CVEFindings {
-			if finding.SeveritySource != "" && vulnerabilities.SeverityRank(finding.Severity) > vulnerabilities.SeverityRank(severity) {
+			if finding.Assessment.Qualification() == vulnerabilities.QualificationConfirmed && finding.SeveritySource != "" && vulnerabilities.SeverityRank(finding.Severity) > vulnerabilities.SeverityRank(severity) {
 				severity = finding.Severity
 			}
 			cve := strings.TrimSpace(finding.ID)
@@ -476,7 +476,7 @@ func DashboardRiskFromStatus(status *servers.ServerStatus) DashboardRiskInfo {
 	switch {
 	case len(risk.CVEs) > 0:
 		risk.Level = severity
-		risk.Summary = fmt.Sprintf("%d confirmed CVE · %s severity", len(risk.CVEs), severity)
+		risk.Summary = fmt.Sprintf("%d reported CVE · %s severity · distribution triage requires a current scan", len(risk.CVEs), severity)
 	case risk.SecurityUpdates > 0:
 		risk.Level = "elevated"
 		risk.Summary = fmt.Sprintf("%d security", risk.SecurityUpdates)

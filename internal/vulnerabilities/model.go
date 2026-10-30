@@ -8,24 +8,25 @@ import (
 )
 
 type Finding struct {
-	ID                 string `json:"id"`
-	Disposition        string `json:"disposition"`
-	AdvisoryURL        string `json:"advisory_url,omitempty"`
-	Source             string `json:"source,omitempty"`
-	FixedByVersion     string `json:"fixed_by_version,omitempty"`
-	Severity           string `json:"severity"`
-	SeveritySource     string `json:"severity_source,omitempty"`
-	SeverityType       string `json:"severity_type,omitempty"`
-	SeverityObservedAt string `json:"severity_observed_at,omitempty"`
-	SeverityValue      string `json:"severity_value,omitempty"`
-	Package            string `json:"package,omitempty"`
-	SourcePackage      string `json:"source_package,omitempty"`
-	InstalledVersion   string `json:"installed_version,omitempty"`
-	CandidateVersion   string `json:"candidate_version,omitempty"`
-	FixAvailable       bool   `json:"fix_available"`
-	FirstSeen          string `json:"first_seen,omitempty"`
-	LastSeen           string `json:"last_seen,omitempty"`
-	ResolvedAt         string `json:"resolved_at,omitempty"`
+	Assessment         Assessment `json:"assessment"`
+	ID                 string     `json:"id"`
+	Disposition        string     `json:"disposition"`
+	AdvisoryURL        string     `json:"advisory_url,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	FixedByVersion     string     `json:"fixed_by_version,omitempty"`
+	Severity           string     `json:"severity"`
+	SeveritySource     string     `json:"severity_source,omitempty"`
+	SeverityType       string     `json:"severity_type,omitempty"`
+	SeverityObservedAt string     `json:"severity_observed_at,omitempty"`
+	SeverityValue      string     `json:"severity_value,omitempty"`
+	Package            string     `json:"package,omitempty"`
+	SourcePackage      string     `json:"source_package,omitempty"`
+	InstalledVersion   string     `json:"installed_version,omitempty"`
+	CandidateVersion   string     `json:"candidate_version,omitempty"`
+	FixAvailable       bool       `json:"fix_available"`
+	FirstSeen          string     `json:"first_seen,omitempty"`
+	LastSeen           string     `json:"last_seen,omitempty"`
+	ResolvedAt         string     `json:"resolved_at,omitempty"`
 }
 
 type Package struct {

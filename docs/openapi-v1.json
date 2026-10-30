@@ -366,7 +366,8 @@
               }
             }
           }
-        }
+        },
+        "description": " Distribution qualification is included in risk.vulnerability; see VulnerabilityQualificationCounts and VulnerabilityAssessment. Legacy risk.cves/high_risk_cve retain reported-source-match semantics. Fleet also exposes vendor_confirmed_cve_hosts, review_cve_hosts, vendor_qualified_cve_hosts and withdrawn_cve_hosts (host counts)."
       }
     },
     "/api/observability/summary": {
@@ -4081,6 +4082,15 @@
             "items": {
               "type": "string"
             }
+          },
+          "findings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFinding"
+            }
           }
         },
         "additionalProperties": true
@@ -4103,12 +4113,90 @@
               "null"
             ],
             "items": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/VulnerabilityFinding"
             }
           }
         },
         "description": "Accepted scan and durable finding ledger survive cancelled, interrupted, unavailable and partial attempts. Partial coverage never resolves absent findings."
+      },
+      "VulnerabilityAssessment": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "vendor_status": {
+            "type": "string"
+          },
+          "vendor_reason": {
+            "type": "string"
+          },
+          "vendor_priority": {
+            "type": "string"
+          },
+          "applicability": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          }
+        },
+        "description": "Distribution triage scoped to exact ecosystem/source/version, independently of CVSS and candidate availability. Missing legacy data is unknown. Applicability source_match does not prove runtime exploitability; vendor status unimportant is qualified separately, not a package fix. Ubuntu OSV currently cannot distinguish tracker triage statuses; remains unknown."
+      },
+      "VulnerabilityFinding": {
+        "type": "object",
+        "properties": {
+          "assessment": {
+            "$ref": "#/components/schemas/VulnerabilityAssessment"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Durable package/CVE occurrence. Distribution assessment, severity evidence, candidate disposition and resolution are independent. Existing fields remain available."
+      },
+      "VulnerabilityQualificationCounts": {
+        "type": "object",
+        "properties": {
+          "reported_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "confirmed_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "needs_review_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vendor_qualified_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "withdrawn_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "occurrences": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability."
       }
     }
   }

@@ -147,9 +147,23 @@ func dashboardFleetRollup(servers []DashboardServerSummary) map[string]any {
 	fleetStaleFacts := 0
 	coverage := map[string]int{}
 	staleScans := 0
+	qualifiedHosts, confirmedHosts, reviewHosts, withdrawnHosts := 0, 0, 0, 0
 
 	for _, server := range servers {
 		coverage[server.Risk.Vulnerability.State]++
+		assessment := server.Risk.Vulnerability
+		if assessment.ConfirmedCVEs > 0 {
+			confirmedHosts++
+		}
+		if assessment.NeedsReviewCVEs > 0 {
+			reviewHosts++
+		}
+		if assessment.VendorQualifiedCVEs > 0 {
+			qualifiedHosts++
+		}
+		if assessment.WithdrawnCVEs > 0 {
+			withdrawnHosts++
+		}
 		if server.Risk.Vulnerability.Freshness == "stale" {
 			staleScans++
 		}
@@ -187,7 +201,11 @@ func dashboardFleetRollup(servers []DashboardServerSummary) map[string]any {
 	fleet["done"] = fleetDone
 	fleet["pending_packages"] = fleetPendingPackages
 	fleet["security_updates"] = fleetSecurityUpdates
-	fleet["high_risk_cve"] = fleetHighRiskCVE
+	fleet["high_risk_cve"] = fleetHighRiskCVE // Legacy count of hosts with reported source matches.
+	fleet["vendor_confirmed_cve_hosts"] = confirmedHosts
+	fleet["review_cve_hosts"] = reviewHosts
+	fleet["vendor_qualified_cve_hosts"] = qualifiedHosts
+	fleet["withdrawn_cve_hosts"] = withdrawnHosts
 	fleet["hosts_needing_reboot"] = fleetReboot
 	fleet["stale_facts"] = fleetStaleFacts
 	return fleet

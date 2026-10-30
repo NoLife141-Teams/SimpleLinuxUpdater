@@ -6,6 +6,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve release/source-specific distribution triage separately from CVSS in
+  installed and approval CVE scans; show current vendor-confirmed, review,
+  qualified and withdrawn matches without inventing runtime exploitability.
+
 ## [v0.5.0] - 2026-10-29
 
 ### Added

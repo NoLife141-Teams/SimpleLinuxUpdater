@@ -21,7 +21,7 @@ func TestFrontendInteractionContracts(t *testing.T) {
 	}
 }
 
-func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
+func TestPendingUpdateCVEsUseReportedExpandableGroups(t *testing.T) {
 	contents, err := os.ReadFile("static/js/index.js")
 	if err != nil {
 		t.Fatal(err)
@@ -31,8 +31,8 @@ func TestPendingUpdateCVEsUseConfirmedExpandableGroups(t *testing.T) {
 		"cve_findings",
 		"fixed_by_candidate",
 		"still_affected",
-		"Fixed by the available update",
-		"Still affected after the available update",
+		"Absent from the candidate source assessment",
+		"Still reported in the candidate source assessment",
 		"advisory_url",
 		"Coverage unknown",
 		"official_installed_unverified",

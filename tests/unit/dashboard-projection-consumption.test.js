@@ -331,7 +331,7 @@ test("installed vulnerability confidence and residual exposure survive projectio
         }) });
         assert.equal(view.selectedHost.vulnerability.stateLabel, label);
         assert.equal(view.selectedHost.vulnerability.freshnessLabel, "stale");
-        assert.equal(view.selectedHost.vulnerability.resultLabel, "Confirmed exposure");
+        assert.equal(view.selectedHost.vulnerability.resultLabel, "Historical source matches — review required");
         assert.match(view.selectedHost.vulnerability.coverageLabel, /8 of 10/);
         assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No newer candidate available");
         assert.equal(view.selectedHost.risk.level, "unknown");
@@ -348,4 +348,22 @@ test("installed scan progress carries identity and observed facts without estima
     assert.equal(info.scan_id, "scan-493");
     assert.match(info.progressLabel, /Metadata and provenance · 9 inventoried · 4 metadata collected · 2 evaluated/);
     assert.doesNotMatch(info.progressLabel, /%|ETA/);
+});
+
+test("vendor qualification remains separate from CVSS and unique CVE counters", () => {
+    const view = project({statusView: statusView({
+        servers: [{name: "triage-host", status: "done"}],
+        dashboardServers: [{name: "triage-host", risk: {level: "unknown", vulnerability: {
+            state: "complete", result: "qualified_findings", reported_cves: 1, confirmed_cves: 0, needs_review_cves: 0,
+            vendor_qualified_cves: 1, withdrawn_cves: 0, occurrences: 2,
+            findings: [{id: "CVE-2007-2243", severity: "critical", qualification: "vendor_qualified", assessment: {vendor_status: "unimportant", applicability: "source_match"}}]
+        }}}]
+    })});
+    const info=view.selectedHost.vulnerability;
+    assert.match(info.qualificationCountsLabel,/1 reported CVEs · 0 vendor-confirmed source matches/);
+    assert.match(info.qualificationCountsLabel,/1 vendor-qualified · 0 withdrawn · 2 package occurrences/);
+    assert.equal(info.findings[0].severity,"critical");
+    assert.equal(info.findings[0].qualificationLabel,"Vendor-qualified: inspect rationale");
+    assert.equal(info.findings[0].assessment.vendor_status,"unimportant");
+    assert.equal(view.selectedHost.risk.level,"unknown");
 });

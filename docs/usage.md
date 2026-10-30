@@ -903,7 +903,10 @@ and VM detection, DPKG ownership of `/boot/vmlinuz-<running release>`, and insta
 context deadline with transport drainage, a 128 KiB parsed-output bound and at
 most 256 installed images. Missing commands, denied probes, ambiguous ownership,
 image/source changes and unrecognized virtualization remain **unknown**; no
-extra privileges are requested. A timed-out probe reconnects through the existing
+extra privileges are requested. Installed scans reconcile image identities with
+both inventory boundaries; an invalidated running-image identity also makes
+comparisons with inactive images unknown, while unrelated package changes do not.
+A timed-out probe reconnects through the existing
 session boundary before subsequent package reads. Existing Host Health
 Observation kernel strings do not include exact image/source ownership or
 virtualization, so they cannot substitute for this fresh contextual evidence.
@@ -948,3 +951,8 @@ execution and responsibility while the original `runtime` observation remains
 inspectable. Approval details label their observed execution as a snapshot whose
 current status needs verification. Legacy data defaults to unknown. See the
 [OpenAPI contract](openapi-v1.json).
+
+When a newer accepted scan or approval snapshot supplies host context, retained
+findings use that newer context in `runtime_view`; an older active-image snapshot
+cannot override a changed running-image owner or missing current identity proof.
+The original `runtime` observation and source finding remain available.

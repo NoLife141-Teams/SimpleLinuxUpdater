@@ -103,6 +103,23 @@ func ProjectRuntime(r RuntimeApplicability, now time.Time, maxAge time.Duration)
 	return r, "fresh"
 }
 
+// A retained package finding may outlive the runtime snapshot attached to it.
+// Prefer newer host evidence without replacing the original durable observation.
+func ProjectFindingRuntime(f Finding, host RuntimeContext, now time.Time, maxAge time.Duration) (RuntimeApplicability, string) {
+	hostAt, hostErr := time.Parse(time.RFC3339, host.ObservedAt)
+	findingAt, findingErr := time.Parse(time.RFC3339, f.Runtime.ObservedAt)
+	if host.Source != "" && hostErr == nil && (findingErr != nil || hostAt.After(findingAt)) {
+		r := ClassifyRuntime(f.Package, f.InstalledVersion, f.SourcePackage, f.Assessment.SourceVersion, host)
+		if f.Runtime.Component == "kernel_image" && r.Component != "kernel_image" {
+			r.Component, r.Owner = "kernel_image", "unknown"
+			r.Reason = "Newer host context does not verify this finding's exact installed kernel image identity; the source match remains for review"
+			r.Action = "Collect fresh read-only kernel context; no additional privileges requested"
+		}
+		return ProjectRuntime(r, now, maxAge)
+	}
+	return ProjectRuntime(f.Runtime, now, maxAge)
+}
+
 // KernelCoverage is a statement about component context, never a clean CVE result.
 func (h RuntimeContext) KernelCoverage(now time.Time, maxAge time.Duration) string {
 	at, err := time.Parse(time.RFC3339, h.ObservedAt)

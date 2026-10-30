@@ -4621,7 +4621,7 @@
             ]
           }
         },
-        "description": "runtime_view demotes stale/future/missing runtime context to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
+        "description": "runtime_view uses newer accepted scan or approval host context for retained findings and demotes stale/future/missing or unverified image identities to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
       }
     }
   }

@@ -2151,12 +2151,15 @@ test("operator pages share one responsive and accessible application shell", asy
         ["/", "/", "Status"],
         ["/manage", "/manage", "Manage Servers"],
         ["/observability", "/observability", "Observability"],
+        ["/vulnerabilities", "/vulnerabilities", "CVE analysis"],
+        ["/remediation", "/vulnerabilities", "Correction plan"],
         ["/admin", "/admin", "Admin"],
     ];
     const expectedLinks = [
         ["Status", "/"],
         ["Manage Servers", "/manage"],
         ["Observability", "/observability"],
+        ["CVE analysis", "/vulnerabilities"],
         ["Admin", "/admin"],
         ["Account", "/account"],
     ];

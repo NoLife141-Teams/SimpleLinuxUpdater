@@ -1166,7 +1166,14 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 		return DashboardSummaryResponse{}, err
 	}
 	projection := newDashboardProjection()
-	return projection.Project(projectionInput), nil
+	result := projection.Project(projectionInput)
+	if options.OmitVulnerabilityFindings {
+		for i := range result.Servers {
+			result.Servers[i].Risk.Vulnerability.Findings = nil
+			result.Servers[i].Risk.Vulnerability.ResolvedFindings = nil
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) acquireDashboardProjection(ctx context.Context) error {

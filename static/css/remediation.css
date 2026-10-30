@@ -1,0 +1,26 @@
+.plan-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 14px; align-items: end; }
+.plan-filters label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; }
+.plan-filters :is(input,select) { width: 100%; min-width: 0; box-sizing: border-box; }
+.plan-table { width: 100%; min-width: 1000px; }
+.plan-table :is(th,td) { padding: 12px; vertical-align: top; }
+.plan-table th { white-space: normal; }
+.plan-versions { max-width: 240px; overflow-wrap: anywhere; }
+#plan-steps { padding-left: 22px; color: var(--text); }
+#plan-steps li { margin-block: 8px; }
+.plan-workflow { margin-top: 12px; }
+.plan-workflow summary { cursor: pointer; color: var(--accent-text); }
+#plan-detail { width: min(1400px, calc(100vw - 32px)); max-height: 85vh; box-sizing: border-box; overflow: auto; padding: 24px; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+#plan-detail::backdrop { background: rgba(0,0,0,.7); }
+#plan-detail-error { color: var(--danger); margin: 12px 0; }
+@media (max-width: 900px) { .plan-filters { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 600px) { .plan-filters { grid-template-columns: minmax(0,1fr); } #plan-detail { padding: 16px; } }
+.plan-review-form { display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:16px; }
+.plan-review-form label { display:flex;flex-direction:column;gap:6px; }
+.plan-review-form textarea { min-height:90px; }
+.remediation-actions { display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:14px 0; }
+.remediation-actions label { display:flex;flex-direction:column;gap:6px; }
+.remediation-actions label:has(input[type=checkbox]) { flex-direction:row;align-items:center; }
+.remediation-transaction { width:100%;min-width:650px; }
+.remediation-transaction th,.remediation-transaction td { padding:10px;vertical-align:top; }
+#remediation-operation { overflow-wrap:anywhere; }
+#remediation-error { color:var(--danger,#e98f8f);margin:12px 0; }

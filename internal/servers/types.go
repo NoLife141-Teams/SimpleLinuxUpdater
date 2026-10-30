@@ -109,6 +109,8 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
+	RemediationPlanID           string                     `json:"remediation_plan_id,omitempty"`
+	RemediationDigest           string                     `json:"remediation_digest,omitempty"`
 	APTMetadata                 vulnerabilities.APTContext `json:"apt_metadata,omitzero"`
 	ApplicationPostcheckProfile *postchecks.Snapshot       `json:"application_postcheck_profile,omitempty"`
 	Disabled                    bool                       `json:"disabled"`

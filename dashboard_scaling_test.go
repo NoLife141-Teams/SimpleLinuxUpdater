@@ -596,13 +596,30 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	}
 	if phase := os.Getenv("SLU_E2E_VULNERABILITY_PHASE"); phase != "" {
 		switch phase {
-		case "inventory", "metadata", "evaluation", "persistence", "availability":
+		case "inventory", "metadata", "evaluation", "persistence", "availability", "remediation", "remediation-fail":
 		default:
 			t.Fatal("invalid isolated scan transport phase")
 		}
 		a.deps.VulnerabilityScans.deps.UpdateService = controlledInstalledScanService(phase, nil, nil, nil)
 		if phase == "availability" {
 			a.deps.VulnerabilityScans.deps.UpdateService = syntheticAvailabilityService(dashboardfixture.Now)
+		}
+		if phase == "remediation" || phase == "remediation-fail" {
+			service := syntheticRemediationService(a.deps, phase == "remediation-fail")
+			a.deps.UpdateService = service
+			a.deps.VulnerabilityScans.deps.UpdateService = service
+			a.deps.Remediation.deps.UpdateService = service
+			a.deps.Remediation.deps.StartJobRunner = func(id string, run func(), onFailure ...func()) {
+				startJobRunnerWithManager(a.deps.CurrentJobManager, id, run, onFailure...)
+			}
+			router, err := setupRouterWithDeps(a.deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.handler = a.deps.CurrentSessionManager().LoadAndSave(router)
+			workerCtx, stop := context.WithCancel(t.Context())
+			a.deps.Remediation.Start(workerCtx)
+			t.Cleanup(func() { stop(); a.deps.Remediation.Wait(); waitForUpdateRunners() })
 		}
 		if phase == "persistence" {
 			repository := vulnerabilities.Repository{DB: a.deps.DB}

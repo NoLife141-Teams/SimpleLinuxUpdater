@@ -292,3 +292,34 @@ observed by this process. Errors are sanitary reasons; authorized job logs retai
 the command output. These observations do not establish that no later external
 refresh happened and can be unknown after restart. Finding `availability.apt`
 preserves the host metadata context recorded with that observation.
+
+### CVE remediation and evidence
+
+`GET /api/vulnerabilities` and `GET /api/vulnerabilities/:id` provide bounded
+CVE/package pages (`page`, `page_size` 1–100). `GET /api/vulnerabilities/plan`
+provides whole-Server impact and paginated package treatment groups; `server`,
+`package`, `q` and `state` never narrow whole-Server totals or the APT transaction.
+The browser requests compact Dashboard Projection with
+`include_vulnerability_findings=false`; the default dashboard API remains compatible.
+
+Operational `maintenance:write` routes:
+
+- `POST /api/servers/:name/remediation/prepare`: fresh preparation; explicit manual approval.
+- `POST /api/servers/:name/remediation/:plan_id/retry`: verification only; update is never replayed.
+- `POST /api/servers/:name/vulnerabilities/reviews`: required `package`, `owner`, `reason`, `decision`, future RFC3339 `reevaluate_at`; optional `cve`, `mitigation`. Must identify an unresolved finding.
+
+Read routes use `operational:read`:
+
+- `GET /api/servers/:name/remediation`: most recent 100 plans and risk reviews, compact comparison counts.
+- `GET /api/servers/:name/remediation/:plan_id?page=1`: immutable four-scope transaction and 50-outcome comparison page.
+- `GET /api/servers/:name/remediation/:plan_id/evidence?package=example-package&page=1`: captured inventory, source/candidate finding evidence and admitted package proof, bounded to 50 entries. Omit `package` for paginated installed inventory.
+
+Existing approval endpoints/scopes remain canonical. For a remediation-linked
+pending job, send its `remediation_digest` with `job_id`, `approval_generation`,
+`deferral_revision` and applicable `confirm_removals`. Old endpoints cannot omit
+this identity to bypass the plan. Stale or changed plans return 409; fresh
+execution discovery may publish a new generation requiring renewed consent.
+Cookie same-origin protections and PAT role/scope intersection apply unchanged.
+Verification job `parent_job_id` links the update job; audit metadata retains
+plan/digest, update job and before/after scan IDs. `verified` means the proof
+comparison completed, never that every CVE or host health issue was corrected.

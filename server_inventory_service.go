@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"debian-updater/internal/remediation"
 	"os"
 	"sync"
 
@@ -82,6 +83,9 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 		RenameVulnerabilityObservation: vulnerabilities.RenameServerTx,
 		DeleteVulnerabilityObservation: vulnerabilities.DeleteServerTx,
 		RenameServerFacts: func(tx *sql.Tx, oldName, newName string) error {
+			if err := remediation.RenameServerTx(tx, oldName, newName); err != nil {
+				return err
+			}
 			if err := deferrals.RenameServerTx(tx, oldName, newName); err != nil {
 				return err
 			}
@@ -94,6 +98,9 @@ func newServerInventoryServiceWithHealthObservation(state *serverpkg.State, dbPr
 			return notificationpkg.RenameServerIdentityTx(tx, oldName, newName)
 		},
 		DeleteServerFacts: func(tx *sql.Tx, name string) error {
+			if err := remediation.DeleteServerTx(tx, name); err != nil {
+				return err
+			}
 			if err := deferrals.RenameServerTx(tx, name, ""); err != nil {
 				return err
 			}

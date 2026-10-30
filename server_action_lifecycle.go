@@ -12,6 +12,7 @@ import (
 )
 
 type serverActionLifecycle struct {
+	validateRemediation  func(*ServerStatus, Server) error
 	serverState          *serverpkg.State
 	updateService        *UpdateService
 	currentJobManager    func() *JobManager
@@ -54,6 +55,12 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 		audit = func(string, string, string, string, string, map[string]any) {}
 	}
 	return &serverActionLifecycle{
+		validateRemediation: func(status *ServerStatus, server Server) error {
+			if status.RemediationPlanID == "" {
+				return nil
+			}
+			return deps.Remediation.ValidateApproval(status, server)
+		},
 		serverState:       deps.ServerState,
 		updateService:     deps.UpdateService,
 		currentJobManager: currentJobs,

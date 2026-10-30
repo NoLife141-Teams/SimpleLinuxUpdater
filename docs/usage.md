@@ -1021,3 +1021,56 @@ never proves that no publisher fix exists.
 Sources: [Debian version comparison](https://www.debian.org/doc/debian-policy/ch-controlfields.html#version),
 [Ubuntu source-version OSV events](https://documentation.ubuntu.com/security/security-updates/osv/),
 [APT local-cache limitations](https://manpages.debian.org/trixie/apt/apt-cache.8.en.html).
+
+## Verified CVE remediation
+
+Open **CVE analysis** for the full-width, filtered and paginated source/package
+explorer, then **Correction plan** for Server/package treatment groups. Vendor
+qualification, runtime component ownership, current package proof and candidate
+installability are separate. A published fix without an addressing installable
+candidate needs review. Development headers and external or inactive kernels do
+not establish an active-kernel vulnerability or its correction. Ubuntu 25.04 has
+**current-source coverage unavailable**; the app does not substitute a historical
+snapshot or report an evaluated zero-CVE success.
+
+**Prepare remediation** is an operational POST. It refreshes APT metadata,
+Package Discovery and Upgrade Plan, health expectations and installed inventory,
+and waits for explicit approval even if scheduled automatic approval is enabled.
+Readers can inspect evidence; they cannot prepare, approve, cancel or retry.
+Preparation performs no package upgrade. The immutable plan binds Server identity
+and configuration, fresh inventory/source versions, candidates, simulations,
+deferrals, health profile and the identities/age of existing CVE proofs.
+
+Review one of the four existing Approval Scopes: all standard upgrades, standard
+security upgrades, kept-back security upgrades, or full upgrade. An addressing
+candidate can be an ordinary point release outside security scope. Review extra
+packages, dependency additions, protected dependency impacts and every removal;
+removals still require explicit confirmation. This is the actual maintenance
+scope, not an exact browser-selected CVE subset. Package Deferral continues to
+protect direct, dependency and removal paths. Candidate, source, inventory,
+configuration, health-profile or deferral drift requires fresh preparation or a
+newly published plan and renewed approval. Plans expire after one hour.
+
+After maintenance ends and its Server reservation drains, a durable request
+admits a **new installed-package vulnerability scan** through normal concurrency,
+maintenance and Server admission. Busy/capacity/maintenance conditions keep the
+request queued. Failed, cancelled or partial verification can be retried without repeating
+the update. Restart/restore recover verification only; rename follows a durable
+Server identity, and deletion followed by name reuse cannot inherit the old plan. Changing the Server target keeps verification queued for the original target.
+No restart automatically replays the maintenance transaction.
+
+Maintenance status, health results and CVE verification are independent. A failed
+health check is still visible even if some package corrections are demonstrated.
+Comparison reports corrected package occurrences, removed packages, still-present
+findings, newly observed findings, not-reverified packages and requalifications.
+Partial scans close only packages with complete independent proof. The unique-CVE
+count requires correction/removal on every known occurrence; fixing one of two
+packages is insufficient. Same-version publisher reassessment is a requalification,
+not an installed patch. Runtime active/inactive/external changes do not close
+source findings. Package changes do not prove that a running kernel was corrected.
+
+For an unresolved package without an installable patch, record a risk review with
+owner, reason, treatment decision, optional mitigation and a future reevaluation
+time. Reviews remain visible and do not suppress exposure or create a Package
+Deferral. No review automatically removes packages, edits repositories/configuration,
+upgrades the OS or reboots a Server.

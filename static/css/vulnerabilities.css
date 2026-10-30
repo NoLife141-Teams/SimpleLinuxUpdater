@@ -1,0 +1,32 @@
+.cve-main { max-width: 1800px; }
+.cve-main .workspace { margin-top: 18px; padding: 20px; }
+.cve-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.cve-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; align-items: end; }
+.cve-filters label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; }
+.cve-filters .cve-search { grid-column: span 2; }
+.cve-filters :is(input, select) { width: 100%; min-width: 0; box-sizing: border-box; }
+.cve-scope-note { margin: 16px 0; font-size: 12px; }
+.cve-coverage-notice { padding: 12px 16px; border-left: 3px solid var(--warning); background: var(--card-alt); color: var(--text); font-size: 13px; }
+.cve-results-head, .cve-pagination, .cve-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.cve-results-head { margin-bottom: 12px; }
+.cve-pagination { justify-content: flex-start; font-size: 12px; }
+.cve-table { width: 100%; min-width: 900px; }
+.cve-table :is(th, td), .cve-coverage :is(th, td), .cve-evidence-table :is(th, td) { padding: 12px; vertical-align: top; }
+.cve-table th, .cve-coverage th, .cve-evidence-table th { white-space: normal; }
+.cve-cell-note { display: block; color: var(--subtle); font-size: 12px; margin-top: 5px; overflow-wrap: anywhere; }
+.cve-open { padding: 0; border: 0; background: transparent; color: var(--accent-text); cursor: pointer; text-align: left; font: inherit; font-weight: 600; }
+.cve-open:hover { text-decoration: underline; }
+.cve-severity { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; }
+.cve-severity-critical, .cve-severity-high { color: var(--danger); }
+.cve-severity-medium { color: var(--warning); }
+.cve-severity-low, .cve-severity-none { color: var(--text); }
+.cve-severity-unknown { color: var(--muted); }
+.cve-coverage table { width: 100%; min-width: 650px; }
+#cve-detail { width: min(1400px, calc(100vw - 32px)); max-height: 85vh; box-sizing: border-box; overflow: auto; padding: 24px; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+#cve-detail::backdrop { background: rgba(0, 0, 0, .7); }
+.cve-detail-head h2 { margin: 6px 0; }
+.cve-evidence-table { width: 100%; min-width: 850px; margin-top: 16px; }
+.cve-evidence-table td { overflow-wrap: anywhere; max-width: 380px; }
+#cve-detail-error { color: var(--danger); margin: 12px 0; }
+@media (max-width: 1000px) { .cve-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .cve-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .cve-main .workspace { padding: 14px; } .cve-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cve-filters { grid-template-columns: minmax(0, 1fr); } .cve-filters .cve-search { grid-column: auto; } #cve-detail { padding: 16px; } }

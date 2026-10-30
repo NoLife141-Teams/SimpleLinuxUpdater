@@ -184,6 +184,7 @@ func main() {
 	}
 	if deps.VulnerabilityScans != nil {
 		deps.VulnerabilityScans.Start(shutdownCtx)
+		deps.Remediation.Start(shutdownCtx)
 	}
 	if deps.BackupAutomation != nil {
 		deps.BackupAutomation.Start(shutdownCtx)
@@ -201,6 +202,7 @@ func main() {
 			}
 			if deps.VulnerabilityScans != nil {
 				deps.VulnerabilityScans.Wait()
+				deps.Remediation.Wait()
 			}
 			if deps.HostFactsRefreshWorker != nil {
 				deps.HostFactsRefreshWorker.Wait()

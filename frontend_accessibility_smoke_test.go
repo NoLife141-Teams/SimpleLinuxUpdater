@@ -88,6 +88,8 @@ func TestOperatorPagesRenderOneSharedApplicationShellContract(t *testing.T) {
 		{path: "/", pageLabel: "Status", currentHref: "/", landmark: "Fleet status"},
 		{path: "/manage", pageLabel: "Manage Servers", currentHref: "/manage", landmark: "Server directory"},
 		{path: "/observability", pageLabel: "Observability", currentHref: "/observability", landmark: "Update metrics"},
+		{path: "/vulnerabilities", pageLabel: "CVE analysis", currentHref: "/vulnerabilities", landmark: "CVE analysis"},
+		{path: "/remediation", pageLabel: "Correction plan", currentHref: "/vulnerabilities", landmark: "Correction plan by server"},
 		{path: "/admin", pageLabel: "Admin", currentHref: "/admin", landmark: "App Time"},
 	}
 	wantLinks := []struct {
@@ -97,6 +99,7 @@ func TestOperatorPagesRenderOneSharedApplicationShellContract(t *testing.T) {
 		{label: "Status", href: "/"},
 		{label: "Manage Servers", href: "/manage"},
 		{label: "Observability", href: "/observability"},
+		{label: "CVE analysis", href: "/vulnerabilities"},
 		{label: "Admin", href: "/admin"},
 		{label: "Account", href: "/account"},
 	}

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleLinuxUpdater - Correction plan</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/vulnerabilities.css?v=correction-plan-20261029">
+    <link rel="stylesheet" href="/static/css/remediation.css?v=correction-plan-20261029">
+</head>
+<body data-account-role="{{.Role}}">
+<div class="dashboard-shell">
+    {{template "operator-application-shell" .}}
+    <main class="dashboard-main cve-main">
+        <section class="dashboard-head">
+            <div><div class="eyebrow">Evidence → approved maintenance → independent verification</div><h1>Correction plan by server</h1><p class="muted">Review candidate package updates, their potential CVE impact and the findings that would remain.</p></div>
+            <div class="head-meta"><a class="btn-ghost" id="plan-back" href="/vulnerabilities">CVE analysis</a><button id="plan-refresh" class="primary-action" type="button">Refresh plan</button></div>
+        </section>
+        <div id="plan-error" class="error-banner" role="alert" hidden></div>
+        <form id="plan-filters" class="workspace plan-filters" role="search">
+            <label>Server<select id="plan-server" name="server" aria-label="Server"><option value="">Choose a server</option></select></label>
+            <label>Search package or CVE<input id="plan-search" type="search" name="q" maxlength="200" disabled></label>
+            <label>Review step<select id="plan-state" name="state" aria-label="Review step" disabled><option value="">All package findings</option><option value="update_candidate">Recorded candidate fixes</option><option value="no_verified_fix">No verified candidate fix</option><option value="verify">Verify evidence first</option><option value="published_inaccessible">Published fix inaccessible</option><option value="applicability_review">Applicability review</option><option value="vendor_qualified">Vendor qualified</option><option value="external_owner">External owner</option></select></label>
+            <button type="button" id="plan-clear" class="btn-ghost">Clear package filters</button>
+        </form>
+        <section id="plan-server-context" class="workspace" aria-label="Whole-server plan" hidden>
+            <h2 id="plan-server-title"></h2>
+            <p id="plan-recorded-at" class="muted"></p>
+            <p id="plan-coverage-notice" class="cve-coverage-notice" role="status"></p>
+            <div class="metric-strip cve-metrics" aria-label="Whole-server impact estimate">
+                <article class="metric-item"><span>Known CVEs</span><strong id="plan-cves">—</strong></article>
+                <article class="metric-item"><span>Packages with findings</span><strong id="plan-packages">—</strong></article>
+                <article class="metric-item"><span>Recorded candidate packages</span><strong id="plan-candidates">—</strong></article>
+                <article class="metric-item"><span>Potentially addressed CVEs</span><strong id="plan-potential">—</strong></article>
+                <article class="metric-item"><span>Remaining / inconclusive CVEs</span><strong id="plan-remaining">—</strong></article>
+                <article class="metric-item"><span>CVEs with unverified evidence</span><strong id="plan-unverified">—</strong></article>
+            </div>
+            <p class="muted">These estimates use every known package finding on this server. Package filters do not change these totals. A CVE is potentially addressed only when the recorded candidates cover all its known package findings. A complete scan after maintenance must confirm resolution.</p>
+            <details class="plan-workflow"><summary>Review workflow</summary><ol id="plan-steps"></ol>
+            <p class="muted">Prepare remediation refreshes package discovery and simulations, then waits for explicit approval of one existing Approval Scope. Candidate estimates are not proof of a correction.</p></details>
+        </section>
+        <section id="remediation-workflow" class="workspace" aria-label="Approved remediation workflow" hidden>
+            <h2>Prepare and verify maintenance</h2>
+            <p>Preparation refreshes APT metadata and simulations. It waits for manual approval, including when automatic policy approval is enabled. The selected scope may include ordinary point releases and packages unrelated to these CVEs.</p>
+            <button id="remediation-prepare" type="button" class="primary-action">Prepare remediation</button>
+            <button id="remediation-reload" type="button" class="btn-ghost">Refresh operation</button>
+            <p id="remediation-message" role="status" aria-live="polite"></p><div id="remediation-error" role="alert" hidden></div>
+            <div id="remediation-operation"></div>
+            <details><summary>Document manual treatment or mitigation</summary><p>Risk reviews remain visible and do not defer packages or suppress findings. No package, repository or configuration change is performed.</p>
+            <form id="remediation-review" class="plan-review-form">
+                <label>Package<input name="package" required maxlength="300"></label><label>CVE (optional)<input name="cve" maxlength="100"></label>
+                <label>Owner<input name="owner" required maxlength="200"></label><label>Reason<textarea name="reason" required maxlength="4000"></textarea></label>
+                <label>Treatment decision<textarea name="decision" required maxlength="4000"></textarea></label><label>Mitigation<textarea name="mitigation" maxlength="4000"></textarea></label>
+                <label>Reevaluate at (local time)<input name="reevaluate_at" type="datetime-local" required></label><button type="submit" class="primary-action">Record risk review</button>
+            </form></details><div id="remediation-reviews"></div>
+        </section>
+        <section class="workspace" aria-label="Correction plan results">
+            <div class="cve-results-head"><p id="plan-status" role="status" aria-live="polite">Loading recorded evidence…</p><nav class="cve-pagination" aria-label="Correction plan pages"><button id="plan-prev" class="btn-ghost" type="button" disabled>Previous</button><span id="plan-page">Page —</span><button id="plan-next" class="btn-ghost" type="button" disabled>Next</button></nav></div>
+            <div id="plan-table-wrap" class="table-wrap" aria-busy="true"><table class="plan-table"><thead id="plan-headings"></thead><tbody id="plan-rows"><tr><td>Loading recorded evidence…</td></tr></tbody></table></div>
+        </section>
+    </main>
+</div>
+<dialog id="plan-detail" aria-labelledby="plan-detail-title">
+    <div class="cve-detail-head"><div><div class="eyebrow">Package candidate evidence</div><h2 id="plan-detail-title" tabindex="-1"></h2></div><button id="plan-detail-close" type="button" class="btn-ghost">Close details</button></div>
+    <p id="plan-detail-summary" class="muted"></p><div id="plan-detail-error" role="alert" hidden></div>
+    <nav class="cve-pagination" aria-label="Package CVE evidence pages"><button id="plan-detail-prev" class="btn-ghost" type="button" disabled>Previous findings</button><span id="plan-detail-page">Page —</span><button id="plan-detail-next" class="btn-ghost" type="button" disabled>Next findings</button></nav>
+    <div class="table-wrap"><table class="cve-evidence-table"><thead><tr><th scope="col">CVE / assessment</th><th scope="col">Installed / candidate</th><th scope="col">Recorded fix / severity</th><th scope="col">Source / freshness</th></tr></thead><tbody id="plan-detail-rows"></tbody></table></div>
+</dialog>
+<script src="/static/auth.js"></script>
+<script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/common.js?v=quality-pass-20260711a"></script>
+<script src="/static/js/cve-page-interaction.js?v=correction-plan-20261029"></script>
+<script src="/static/js/remediation.js?v=correction-plan-20261029"></script>
+<script src="/static/js/remediation-workflow.js?v=verified-531"></script>
+</body>
+</html>

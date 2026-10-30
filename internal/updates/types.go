@@ -249,7 +249,23 @@ type ServiceDeps struct {
 	Logf                         func(string, ...any)
 }
 
+type RemediationPreparation struct {
+	Inventory             []servers.PendingUpdate `json:"-"`
+	Prechecks             []PrecheckResult        `json:"prechecks"`
+	FailedUnits           []string                `json:"failed_units"`
+	RebootRequired        *bool                   `json:"reboot_required"`
+	RunningKernel         string                  `json:"running_kernel"`
+	LatestInstalledKernel string                  `json:"latest_installed_kernel"`
+	ObservedAt            string                  `json:"observed_at"`
+}
+
 type UpdateRunRequest struct {
+	// Remediation preparation always stops at explicit approval.
+	ForceManual  bool
+	PublishPlan  func(*servers.ServerStatus, RemediationPreparation) error
+	ValidatePlan func() error
+	Finished     func(map[string]any)
+
 	Server   servers.Server
 	Actor    string
 	ClientIP string

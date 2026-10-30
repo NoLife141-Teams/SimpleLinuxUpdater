@@ -515,6 +515,7 @@ test("installed vulnerability scans show trust states and residual exposure with
 
 test("partial package resolution shows remaining uncertainty and inspectable proof", async ({ page }) => {
     const server = makeServer("proof-host", "done");
+    let resolutionCount = 1;
     await stubDashboardApi(page, () => [server]);
     await page.route("**/api/dashboard/summary*", route => {
         const summary = makeDashboardSummary([server]);
@@ -522,7 +523,7 @@ test("partial package resolution shows remaining uncertainty and inspectable pro
             state: "partial", coverage: "partial", freshness: "fresh", result: "needs_review",
             inventoried: 2, evaluated: 1, unknown: 1, unsupported: 0,
             reported_cves: 1, needs_review_cves: 1, occurrences: 1,
-            current_occurrences: 0, unverified_occurrences: 1, resolved_occurrences: 1,
+            current_occurrences: 0, unverified_occurrences: 1, resolved_occurrences: resolutionCount,
             findings: [{id: "CVE-2026-2000", package: "unverified-package", evidence_state: "not_reverified", freshness: "stale", severity: "unknown"}],
             resolved_findings: [{id: "CVE-2026-1000", package: "updated-package", resolved_at: "2026-10-02T00:00:00Z", resolution: {reason: "installed_version_changed", scan_id: "proof-528", verified_at: "2026-10-02T00:00:00Z", source: "https://example.invalid/querybatch"}}],
             enrichment_errors: ["Optional advisory details unavailable"]
@@ -540,7 +541,10 @@ test("partial package resolution shows remaining uncertainty and inspectable pro
     await expect(section).toContainText("CVE-2026-1000");
     await expect(section).toContainText("No longer reported after installed version changed");
     await expect(section).toContainText("Scan: proof-528");
+    resolutionCount = 120;
     await page.evaluate(() => window.fetchDashboardSummary(true));
+    await expect(section).toContainText("1 of 120 resolved package findings");
+    await expect(section).toContainText("Showing the most recent resolutions.");
     await expect(section.locator(".resolved-vulnerability-findings")).toHaveAttribute("open", "");
     await page.setViewportSize({width: 390, height: 844});
     expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);

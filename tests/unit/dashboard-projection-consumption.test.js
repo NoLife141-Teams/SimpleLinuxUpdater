@@ -357,6 +357,20 @@ test("partial package resolution keeps unverified exposure separate from inspect
     assert.equal(info.resolved_findings[0].resolution.scan_id, "proof-scan");
     assert.match(info.resolved_findings[0].resolutionLabel, /installed version changed/);
     assert.deepEqual(info.enrichment_errors, ["Optional detail unavailable"]);
+    assert.equal(info.resolvedFindingsLabel, "1 resolved package findings");
+    assert.equal(info.resolvedPreviewTruncated, false);
+});
+
+test("resolution preview distinguishes visible details from the complete count", () => {
+    const view = project({statusView: statusView({
+        servers: [{name: "preview-host", status: "done"}],
+        dashboardServers: [{name: "preview-host", risk: {vulnerability: {
+            resolved_occurrences: 120,
+            resolved_findings: [{id: "CVE-A", package: "pkg", resolution: {reason: "package_removed"}}]
+        }}}]
+    })});
+    assert.equal(view.selectedHost.vulnerability.resolvedFindingsLabel, "1 of 120 resolved package findings");
+    assert.equal(view.selectedHost.vulnerability.resolvedPreviewTruncated, true);
 });
 
 test("installed scan progress carries identity and observed facts without estimated percentage", () => {

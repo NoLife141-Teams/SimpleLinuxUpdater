@@ -4238,9 +4238,12 @@
           },
           "resolved_occurrences": {
             "type": "integer",
+            "description": "Complete count of currently resolved package/CVE occurrences; occurrences reopened by newer approval evidence are excluded.",
             "minimum": 0
           },
           "resolved_findings": {
+            "description": "At most 50 most recent currently resolved occurrences. The complete count is resolved_occurrences; full durable history remains in the Server vulnerability observation.",
+            "maxItems": 50,
             "type": [
               "array",
               "null"

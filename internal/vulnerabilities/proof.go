@@ -216,6 +216,17 @@ func (o Observation) SupersedesPackageEvidence(name, observedAt string) bool {
 			return true
 		}
 	}
+	// A base-name cutoff is recorded only when the complete inventory had no
+	// architecture of that package. It can therefore supersede a qualified
+	// approval name as well; a single architecture's cutoff cannot do the reverse.
+	if base, _, qualified := strings.Cut(name, ":"); qualified {
+		if p, ok := o.PackageAbsenceProofs[base]; ok && p.Package == base {
+			verified, err := time.Parse(time.RFC3339, p.VerifiedAt)
+			if err == nil && !verified.Before(at) {
+				return true
+			}
+		}
+	}
 	if p := o.InventoryProof; p != nil {
 		verified, err := time.Parse(time.RFC3339, p.VerifiedAt)
 		if err == nil && !verified.Before(at) {
@@ -250,20 +261,25 @@ func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProo
 		}
 		absences[name] = InventoryAbsenceProof{ScanID: inventory.ScanID, ServerName: inventory.ServerName, Package: name, ObservedAt: inventory.ObservedAt, VerifiedAt: inventory.VerifiedAt}
 	}
+	recordAbsentSelectors := func(name string, inventory *InventoryProof, present packagePresence) {
+		if !present.mayContain(name) {
+			recordAbsence(name, inventory)
+		}
+		base, _, _ := strings.Cut(name, ":")
+		if !present.mayContain(base) {
+			recordAbsence(base, inventory)
+		}
+	}
 	if removal {
 		currentNames := newPackagePresence(len(scan.Packages))
 		for _, p := range scan.Packages {
 			currentNames.add(p.Name)
 		}
 		for name := range out.PackageProofs {
-			if !currentNames.mayContain(name) {
-				recordAbsence(name, scan.InventoryProof)
-			}
+			recordAbsentSelectors(name, scan.InventoryProof, currentNames)
 		}
 		for _, f := range out.Findings {
-			if !currentNames.mayContain(f.Package) {
-				recordAbsence(f.Package, scan.InventoryProof)
-			}
+			recordAbsentSelectors(f.Package, scan.InventoryProof, currentNames)
 		}
 		// A package newly appearing in this inventory was absent in the previous
 		// complete inventory, even if its earlier approval match was never in the
@@ -274,9 +290,7 @@ func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProo
 				previousNames.add(name)
 			}
 			for name := range currentNames.exact {
-				if !previousNames.mayContain(name) {
-					recordAbsence(name, previous)
-				}
+				recordAbsentSelectors(name, previous, previousNames)
 			}
 		}
 	}

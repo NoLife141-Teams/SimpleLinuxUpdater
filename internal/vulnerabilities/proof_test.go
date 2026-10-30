@@ -237,6 +237,30 @@ func TestUnverifiedInventoryCannotCreateAnAbsenceCutoff(t *testing.T) {
 	}
 }
 
+func TestRetainedWholePackageAbsenceCoversApprovalSelectorAliases(t *testing.T) {
+	for _, names := range [][2]string{{"a", "a:amd64"}, {"a:amd64", "a"}} {
+		t.Run(names[0]+" to "+names[1], func(t *testing.T) {
+			removed := evidenceScan("removed", "2026-10-02T12:00:00Z", []Package{{Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			o := Accept(Observation{}, removed)
+			reinstalled := evidenceScan("reinstalled", "2026-10-03T12:00:00Z", []Package{{Name: names[1], Version: "2", State: "unknown"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+			o = Accept(o, reinstalled)
+			if !o.SupersedesPackageEvidence(names[0], "2026-10-01T13:00:00Z") {
+				t.Fatal("qualified spelling lost the earlier whole-package absence")
+			}
+			if o.SupersedesPackageEvidence(names[0], "2026-10-03T13:00:00Z") {
+				t.Fatal("historical alias absence suppressed newer evidence")
+			}
+		})
+	}
+	// Absence of one explicit architecture does not establish absence of the
+	// package's unqualified selector or of an installed foreign architecture.
+	o := Accept(Observation{}, evidenceScan("foreign", "2026-10-02T12:00:00Z", []Package{{Name: "a:i386", Version: "1", State: "unknown"}}, nil))
+	o = Accept(o, evidenceScan("native installed", "2026-10-03T12:00:00Z", []Package{{Name: "a:amd64", Version: "2", State: "unknown"}, {Name: "a:i386", Version: "1", State: "unknown"}}, nil))
+	if !o.SupersedesPackageEvidence("a:amd64", "2026-10-01T13:00:00Z") || o.SupersedesPackageEvidence("a", "2026-10-01T13:00:00Z") || o.SupersedesPackageEvidence("a:i386", "2026-10-01T13:00:00Z") {
+		t.Fatal("architecture-specific absence became a whole-package cutoff", o)
+	}
+}
+
 func TestInventoryAbsenceDoesNotConfuseUnqualifiedAndMultiarchSelectors(t *testing.T) {
 	for _, names := range [][2]string{{"lib", "lib:amd64"}, {"lib:amd64", "lib"}} {
 		t.Run(names[0]+" to "+names[1], func(t *testing.T) {
@@ -327,6 +351,11 @@ func TestProofRepositoryIdentityRenameDeleteAndJSONContinuity(t *testing.T) {
 	next, err := r.Save(t.Context(), "host", s)
 	if err != nil {
 		t.Fatal(err)
+	}
+	wrongOwner := s
+	wrongOwner.ServerName = "other"
+	if _, err := r.SaveReconciled(t.Context(), "host", wrongOwner, s.ID); !errors.Is(err, ErrObservationChanged) {
+		t.Fatal("recovery accepted a different collector owner for the admitted ID", err)
 	}
 	late := evidenceScan("obsolete", "2026-10-04T12:00:00Z", []Package{{Name: "a:amd64", Version: "3"}}, nil)
 	if _, err = r.Save(t.Context(), "host", late); !errors.Is(err, ErrObservationChanged) {

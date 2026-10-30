@@ -41,6 +41,7 @@
         let hoveredName = null;
         let expandedHostFactsServers = new Set();
         let expandedInstalledVulnerabilityServers = new Set();
+        let expandedResolvedVulnerabilityServers = new Set();
         let expandedMiniLists = new Set();
         let expandedCVEFindings = new Set();
         let activePhaseTooltipTarget = null;
@@ -1319,13 +1320,16 @@
                 <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
                 <p>${escapeHtml(info.coverageLabel)}</p>
                 <p>${escapeHtml(info.qualificationCountsLabel)}</p>
+                <p>${escapeHtml(info.evidenceCountsLabel)}</p>
                 ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}
                 <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
                 <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
                 ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
+                ${info.enrichment_errors.length ? `<p>Advisory enrichment incomplete: ${info.enrichment_errors.map(escapeHtml).join("; ")}. Package evaluation evidence is independent.</p>` : ""}
                 <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
                 ${info.state === "running" && info.scan_id && canManageMaintenance ? `<button type="button" class="inline-btn" data-action="cancel-vulnerability-scan" data-name="${safeDataName}" data-scan-id="${escapeHtml(info.scan_id)}">Cancel vulnerability scan</button>` : ""}
                 ${findings ? `<details class="installed-vulnerability-findings" data-name="${safeDataName}" ${findingsOpen ? "open" : ""}><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
+                ${info.resolved_findings.length ? `<details class="resolved-vulnerability-findings" data-name="${safeDataName}" ${expandedResolvedVulnerabilityServers.has(selected.server.name) ? "open" : ""}><summary>${escapeHtml(info.resolvedFindingsLabel)}</summary>${info.resolvedPreviewTruncated ? "<p>Showing the most recent resolutions.</p>" : ""}<ul>${info.resolved_findings.map(f => `<li><strong>${escapeHtml(f.id)} · ${escapeHtml(f.package)}</strong><p>${escapeHtml(f.resolutionLabel)} · Verified: ${escapeHtml(f.resolution?.verified_at || f.resolved_at || "unknown")} · Scan: ${escapeHtml(f.resolution?.scan_id || "legacy")}</p><p>Source: ${escapeHtml(f.resolution?.source || "inventory proof")}</p></li>`).join("")}</ul></details>` : ""}
                 <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
             </section>`;
         }
@@ -3982,7 +3986,7 @@
                 const details = e.target;
                 if (
                     !details?.matches?.(
-                        "details.facts-more, details.installed-vulnerability-findings",
+                        "details.facts-more, details.installed-vulnerability-findings, details.resolved-vulnerability-findings",
                     )
                 )
                     return;
@@ -3991,7 +3995,7 @@
                 if (!hostName) return;
                 const expandedServers = details.matches("details.facts-more")
                     ? expandedHostFactsServers
-                    : expandedInstalledVulnerabilityServers;
+                    : details.classList.contains("resolved-vulnerability-findings") ? expandedResolvedVulnerabilityServers : expandedInstalledVulnerabilityServers;
                 if (details.open) {
                     expandedServers.add(hostName);
                 } else {

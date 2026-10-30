@@ -125,3 +125,7 @@ _Avoid_: SSH helper bundle, update connection
 **Distribution Vulnerability Assessment**:
 The source-attributed evaluation of a vulnerability for an exact distribution ecosystem, source package and version, including vendor triage/priority, applicability/confidence and observation freshness. It is distinct from CVSS, candidate availability, runtime exploitability and resolution of an installed-package finding. Missing or stale assessments require review; vendor-qualified and withdrawn advisories remain visible without being represented as package fixes.
 _Avoid_: CVSS verdict, confirmed vulnerability from an OSV ID alone
+
+**Package Vulnerability Evaluation Proof**:
+The admitted Server/scan-bound evidence that an exact installed binary/source identity was stably collected and completely assessed against a specific distribution source. A valid package proof can resolve that package's absent findings independently of unrelated coverage; removal requires complete stable inventory evidence. Source triage, severity, runtime applicability and maintenance success remain distinct.
+_Avoid_: Whole-host success as package proof, update success as CVE resolution

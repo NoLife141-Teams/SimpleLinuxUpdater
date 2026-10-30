@@ -67,6 +67,7 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 	scan.Unknown = 0
 	scan.Evaluated = 1
 	scan.FinishedAt = "2026-10-04T00:00:00Z"
+	scan = evidenceScan("resolve", scan.FinishedAt, []Package{{Name: "libssl3", Version: "2"}}, nil)
 	if resolved := save(scan); resolved.Findings[0].ResolvedAt != scan.FinishedAt {
 		t.Fatal(resolved)
 	}

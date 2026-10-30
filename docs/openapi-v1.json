@@ -4091,6 +4091,27 @@
             "items": {
               "$ref": "#/components/schemas/VulnerabilityFinding"
             }
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "inventory_proof": {
+            "$ref": "#/components/schemas/VulnerabilityInventoryProof"
+          },
+          "packages": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityPackage"
+            }
+          },
+          "enrichment_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": true
@@ -4115,9 +4136,24 @@
             "items": {
               "$ref": "#/components/schemas/VulnerabilityFinding"
             }
+          },
+          "package_proofs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VulnerabilityPackageProof"
+            }
+          },
+          "package_absence_proofs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VulnerabilityInventoryAbsenceProof"
+            }
+          },
+          "inventory_proof": {
+            "$ref": "#/components/schemas/VulnerabilityInventoryProof"
           }
         },
-        "description": "Accepted scan and durable finding ledger survive cancelled, interrupted, unavailable and partial attempts. Partial coverage never resolves absent findings."
+        "description": "Durable finding ledger and latest accepted scan. Complete stable evidence may resolve its own package even when other packages remain unknown. Whole stable inventory is required to prove removal. Cancelled/interrupted/unavailable scans, package updates alone and legacy counters without proofs cannot close findings. Last complete package proofs survive later unknown scans and supersede older approval observations."
       },
       "VulnerabilityAssessment": {
         "type": "object",
@@ -4163,6 +4199,9 @@
         "properties": {
           "assessment": {
             "$ref": "#/components/schemas/VulnerabilityAssessment"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/VulnerabilityResolution"
           }
         },
         "additionalProperties": true,
@@ -4194,9 +4233,206 @@
           "occurrences": {
             "type": "integer",
             "minimum": 0
+          },
+          "current_occurrences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unverified_occurrences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolved_occurrences": {
+            "type": "integer",
+            "description": "Complete count of currently resolved package/CVE occurrences; occurrences reopened by newer approval evidence are excluded.",
+            "minimum": 0
+          },
+          "resolved_findings": {
+            "description": "At most 50 most recent currently resolved occurrences. The complete count is resolved_occurrences; full durable history remains in the Server vulnerability observation.",
+            "maxItems": 50,
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFinding"
+            }
           }
         },
-        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability."
+        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability. Active occurrences are separated into current and not-reverified evidence; resolved_findings retains closure proof/history and is excluded from active CVE counts. Enrichment failures are independent of package coverage."
+      },
+      "VulnerabilityPackageProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "installed_version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "provenance_verified": {
+            "type": "boolean"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "stable": {
+            "type": "boolean"
+          },
+          "finding_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Complete paginated source assessment for an exact binary/source identity, bound to an admitted Server and scan. Stable means identity was verified at both inventory boundaries; this does not prove runtime reachability. Legacy absence cannot resolve findings."
+      },
+      "VulnerabilityInventoryProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "stable": {
+            "type": "boolean"
+          },
+          "packages": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Complete stable whole-inventory proof; package absence can demonstrate removal independently of CVE coverage of remaining packages."
+      },
+      "VulnerabilityInventoryAbsenceProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          }
+        },
+        "description": "Per-package absence established by a complete stable inventory. Retained to suppress approval snapshots older than that absence after a later unknown reinstall. A base-name cutoff covers qualified aliases only when no architecture of that package was present; an explicit-architecture cutoff does not cover unqualified or foreign-architecture selectors. This is not an evaluation of the current installed version and cannot close new findings."
+      },
+      "VulnerabilityResolution": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "installed_version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "installed_version_changed",
+              "package_removed",
+              "no_longer_reported"
+            ]
+          }
+        },
+        "description": "Evidence-backed closure of a package/CVE occurrence. Version change does not assert runtime mitigation; no_longer_reported does not invent a vendor fix or withdrawal."
+      },
+      "VulnerabilityPackage": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/VulnerabilityPackageProof"
+          }
+        },
+        "description": "Inventoried package with independent assessment state and optional complete evidence."
       }
     }
   }

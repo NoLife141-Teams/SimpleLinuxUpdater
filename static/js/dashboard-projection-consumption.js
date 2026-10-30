@@ -298,6 +298,8 @@
 
     function vulnerabilityPresentation(raw) {
         const info = record(raw);
+        const resolvedCount = count(info.resolved_occurrences);
+        const resolvedPreviewCount = list(info.resolved_findings).length;
         const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running", cancelled: "Scan cancelled", interrupted: "Scan interrupted" };
         const dispositions = { fixed_by_candidate: "Fix available in candidate", still_affected: "Candidate still affected", no_fix_available: "No newer candidate available", candidate_unverified: "Candidate could not be verified" };
         return {
@@ -311,8 +313,13 @@
             coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
             freshnessLabel: text(info.freshness, "unknown"),
             qualificationCountsLabel: `${count(info.reported_cves)} reported CVEs · ${count(info.confirmed_cves)} vendor-confirmed source matches · ${count(info.needs_review_cves)} to review · ${count(info.vendor_qualified_cves)} vendor-qualified · ${count(info.withdrawn_cves)} withdrawn · ${count(info.occurrences)} package occurrences`,
+            evidenceCountsLabel: `${count(info.current_occurrences)} current package findings · ${count(info.unverified_occurrences)} not reverified · ${count(info.resolved_occurrences)} resolved by scan evidence`,
+            resolvedFindingsLabel: `${resolvedPreviewCount < resolvedCount ? `${resolvedPreviewCount} of ` : ""}${resolvedCount} resolved package findings`,
+            resolvedPreviewTruncated: resolvedPreviewCount < resolvedCount,
             resultLabel: { confirmed_exposure: "Historical source matches — review required", vendor_confirmed: "Vendor-confirmed source matches; runtime applicability unverified", needs_review: "Source matches require review", qualified_findings: "Qualified findings; inspect vendor reasoning", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
             findings: list(info.findings).map(finding => ({ ...clone(record(finding)), qualificationLabel: {vendor_confirmed:"Vendor-confirmed source match",vendor_qualified:"Vendor-qualified: inspect rationale",withdrawn:"Advisory withdrawn; no package fix demonstrated"}[text(record(finding).qualification)] || "Applicability requires review", dispositionLabel: dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
+            resolved_findings: list(info.resolved_findings).map(finding => ({ ...clone(record(finding)), resolutionLabel: {installed_version_changed:"No longer reported after installed version changed",package_removed:"Package removal verified",no_longer_reported:"No longer reported by a complete package assessment"}[text(record(record(finding).resolution).reason)] || "Historical resolution; proof unavailable" })),
+            enrichment_errors: list(info.enrichment_errors).map(value => text(value)),
             errors: list(info.errors).map(value => text(value))
         };
     }

@@ -88,6 +88,19 @@ func (r Repository) save(ctx context.Context, name string, scan Scan, acceptComm
 	if expectedID != nil && (errors.Is(err, sql.ErrNoRows) || previous.LastAttempt.ID != *expectedID) {
 		return Observation{}, ErrObservationChanged
 	}
+	// Rename migrates the observation row and its job, while retaining the
+	// collector's original Server name in historical evidence. Recovery may
+	// retain that name only for the exact operation and owner already in this
+	// row; ordinary writes and unrelated Server proofs still fail closed.
+	renamedRecovery := expectedID != nil && scan.ID == *expectedID && scan.ServerName == previous.LastAttempt.ServerName
+	if (scan.ServerName != "" && scan.ServerName != name && !renamedRecovery) || attemptIsOlder(previous, scan) {
+		return Observation{}, ErrObservationChanged
+	}
+	if scanMayResolve(scan) && previous.LastAttempt.ID != "" && previous.LastAttempt.ID != scan.ID {
+		// A proof-bearing terminal result must belong to the operation admitted
+		// into this row. Never rebind late evidence to a different generation.
+		return Observation{}, ErrObservationChanged
+	}
 	next := Accept(previous, scan)
 	blob, err := json.Marshal(next)
 	if err != nil {

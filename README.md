@@ -204,6 +204,8 @@ Distribution triage, applicability/confidence and CVSS are separate. Debian vend
 
 The selected-host panel exposes a read-only **Scan vulnerabilities** action and persisted coverage, freshness, severity, and findings, including packages with no newer candidate. Never-scanned, unavailable, partial, and complete scans are distinct. Failed scans and updates alone never resolve findings. A partial host scan can resolve a package only with its complete, stable, provenance-verified evaluation proof; unknown packages remain open. Legacy scans without these proofs stay conservative. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans).
 
+Component context distinguishes development headers, active/inactive installed kernel images and external container-host kernels without asserting runtime exploitability. CVE scope is host OS packages only: Docker images and application dependencies are not scanned, and third-party repositories are not covered. Missing or stale read-only probes remain unknown; no additional privileges or other-host access are requested.
+
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
 - `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.

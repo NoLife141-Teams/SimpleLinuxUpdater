@@ -3105,3 +3105,8 @@ body.status-page .table-wrap {
 .vulnerability-summary details { margin-top: .75rem; }
 .vulnerability-summary li + li { margin-top: 1rem; }
 .risk-unknown { color: var(--subtle); border-color: var(--border); }
+
+.runtime-applicability small {
+    display: block;
+    margin-top: .25rem;
+}

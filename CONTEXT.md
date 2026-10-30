@@ -129,3 +129,7 @@ _Avoid_: CVSS verdict, confirmed vulnerability from an OSV ID alone
 **Package Vulnerability Evaluation Proof**:
 The admitted Server/scan-bound evidence that an exact installed binary/source identity was stably collected and completely assessed against a specific distribution source. A valid package proof can resolve that package's absent findings independently of unrelated coverage; removal requires complete stable inventory evidence. Source triage, severity, runtime applicability and maintenance success remain distinct.
 _Avoid_: Whole-host success as package proof, update success as CVE resolution
+
+**Component Runtime Applicability**:
+The conservative interpretation of binary/source identity and bounded read-only Host Maintenance Session kernel, installed-image ownership and virtualization facts into observed active, inactive, external or unknown execution, component responsibility and review action. Source/vendor qualification, package finding resolution, execution, exposure and exploitability remain separate; development headers never prove running-kernel exposure, and unavailable or stale context remains unknown.
+_Avoid_: Runtime CVSS verdict, confirmed exploitability from source match

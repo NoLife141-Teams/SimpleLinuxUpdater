@@ -2575,3 +2575,48 @@ test("distribution qualification explains a critical CVSS source match without c
     await page.setViewportSize({width:390,height:844});
     await expect(section).toContainText("Vendor-qualified: inspect rationale");
 });
+
+for (const context of ["active", "inactive", "external", "unknown"]) {
+    test(`component applicability explains ${context} kernel context without asserting exposure`, async ({page}) => {
+        const headers = context === "unknown";
+        const binary = headers ? "linux-libc-dev:amd64" : `linux-image-${context === "inactive" ? "6.0" : "6.1"}-synthetic:amd64`;
+        const kernelCoverage = ["active", "inactive"].includes(context) ? "evaluated" : context;
+        const runtime = {component: headers ? "development_headers" : "kernel_image", execution: context, exposure: "unknown", exploitability: "unknown",
+            owner: context === "external" ? "container_host" : "server", action: context === "external" ? "Ask the container-host operator to verify its kernel; container reboot cannot establish remediation" : context === "inactive" ? "Review boot policy; inactive does not mean risk-free" : "Review component usage before Server maintenance",
+            reason: "Component <requires review>; source match does not prove running-kernel exposure", source: "injected-session", observed_at: "2026-10-30T00:00:00Z", virtualization: context === "external" ? "container" : context === "unknown" ? "unknown" : "vm"};
+        const finding = {id: "CVE-2004-0230", package: binary, source_package: "linux", severity: "high", disposition: "still_affected", runtime, runtime_view: runtime, runtime_freshness: "fresh"};
+        const server = makeServer("component-host", "pending_approval", [{package: binary,current_version: "1", candidate_version: "1", cve_state: "ready", cves:[finding.id], cve_findings:[finding]}]);
+        await stubDashboardApi(page, () => [server]);
+        await page.route("**/api/dashboard/summary*", route => {
+            const summary = makeDashboardSummary([server]);
+            summary.servers[0].risk = {level: "unknown", vulnerability: {state:"complete",freshness:"fresh",result:"needs_review",kernel_coverage:kernelCoverage,
+                inventoried:1,evaluated:1,reported_cves:1,occurrences:1,header_occurrences:Number(headers),runtime_unknown_occurrences:Number(headers),active_kernel_occurrences:Number(context === "active"),inactive_kernel_occurrences:Number(context === "inactive"),external_kernel_occurrences:Number(context === "external"),findings:[finding]}};
+            return fulfillJson(route,summary);
+        });
+        await ensureAuthenticatedSession(page);
+        const section = page.getByRole("region",{name:"Installed package vulnerabilities"});
+        await expect(section).toContainText("Docker images and application dependencies are not scanned");
+        await expect(section).toContainText(`${Number(context === "active")} active kernel image matches`);
+        await expect(section).toContainText(`${Number(context === "inactive")} inactive kernel image matches`);
+        await expect(section).toContainText(`${Number(headers)} development-header matches`);
+        await expect(section).toContainText(kernelCoverage === "external" ? "External container-host kernel" : kernelCoverage === "evaluated" ? "Running kernel context evaluated" : "Running kernel context unknown");
+        await section.locator(".installed-vulnerability-findings > summary").click();
+        await expect(section).toContainText("Component <requires review>");
+        await expect(section).toContainText(`Execution: ${context}`);
+        await expect(section).toContainText("Exposure: unknown");
+        await expect(section).toContainText("Exploitability: unknown");
+        await expect(section).toContainText("CVE-2004-0230");
+        if (context === "external") await expect(section).toContainText("container reboot cannot establish remediation");
+        if (context === "inactive") await expect(section).toContainText("inactive does not mean risk-free");
+        await page.locator('#servers-table [data-action="open-drawer"][data-tab="pending"][data-name="component-host"]').click();
+        const approval = page.locator("#drawer-panel-pending .cve-findings").first();
+        await approval.locator("summary").click();
+        await expect(approval).toContainText(`Binary: ${binary} · Source: linux`);
+        await expect(approval).toContainText("Docker images and application dependencies are not scanned");
+        await page.keyboard.press("Escape");
+        await page.setViewportSize({width:390,height:844});
+        await expect(section).toContainText("Exposure: unknown");
+        expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+        if (context === "external") await section.screenshot({path:"/tmp/slu-527-component-mobile.png"});
+    });
+}

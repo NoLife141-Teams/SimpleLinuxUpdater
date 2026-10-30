@@ -35,6 +35,8 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 		}
 		return o
 	}
+	scan.RuntimeContext = RuntimeContext{Virtualization: "container", KernelRelease: "synthetic-external", Source: "injected-session", ObservedAt: scan.FinishedAt}
+	scan.Findings[0].Runtime = ClassifyRuntime("libssl3", "1", "openssl", "1", scan.RuntimeContext)
 	first := save(scan)
 	scan.FinishedAt = "2026-10-02T00:00:00Z"
 	second := save(scan)
@@ -60,7 +62,7 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.Findings[0].FirstSeen != first.Findings[0].FirstSeen || restarted.Findings[0].ResolvedAt != "" {
+	if restarted.Accepted.RuntimeContext.Virtualization != "container" || restarted.Findings[0].Runtime.Source != "injected-session" || restarted.Findings[0].FirstSeen != first.Findings[0].FirstSeen || restarted.Findings[0].ResolvedAt != "" {
 		t.Fatal(restarted)
 	}
 	scan.State = "complete"
@@ -87,7 +89,7 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 		t.Fatal(err)
 	}
 	renamed, err := repository.Load(ctx, "renamed")
-	if err != nil || len(renamed.Findings) != 1 {
+	if err != nil || len(renamed.Findings) != 1 || renamed.Findings[0].Runtime.Source != "injected-session" {
 		t.Fatalf("%+v %v", renamed, err)
 	}
 	tx, err = db.Begin()

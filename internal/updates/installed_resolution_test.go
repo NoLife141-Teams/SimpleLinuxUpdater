@@ -50,6 +50,8 @@ func TestInstalledScanGeneratesBoundStablePackageProofs(t *testing.T) {
 					t.Fatal("mutating scan")
 				}
 				switch req.Operation {
+				case "vulnerability_scan.runtime_context":
+					return HostCommandResult{}, nil
 				case "vulnerability_scan.installed_inventory", "vulnerability_scan.installed_inventory_verify":
 					a, b, source, distro := "2", "1", "2", "debian\t12"
 					if req.Operation == "vulnerability_scan.installed_inventory_verify" {

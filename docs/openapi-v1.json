@@ -4030,6 +4030,9 @@
           "findings": {
             "type": "integer",
             "minimum": 0
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/VulnerabilityScanMetrics"
           }
         }
       },
@@ -4115,6 +4118,25 @@
           },
           "runtime_context": {
             "$ref": "#/components/schemas/VulnerabilityRuntimeContext"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/VulnerabilityScanMetrics"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScanDiagnostic"
+            }
+          },
+          "enrichment": {
+            "$ref": "#/components/schemas/VulnerabilityEnrichment"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "checkpoint": {
+            "type": "boolean",
+            "description": "Validated accepted partial boundary; LastAttempt remains running until its owner terminalizes."
           }
         },
         "additionalProperties": true
@@ -4622,6 +4644,123 @@
           }
         },
         "description": "runtime_view uses newer accepted scan or approval host context for retained findings and demotes stale/future/missing or unverified image identities to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
+      },
+      "VulnerabilityScanMetrics": {
+        "type": "object",
+        "description": "Observed counters and elapsed milliseconds only; persistence_ms measures checkpoint persistence. Zero metrics may be omitted.",
+        "properties": {
+          "inventory_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evaluation_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enrichment_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "persistence_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unique_queries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_pages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_reuse": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "detail_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "detail_cache_hits": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checkpoints": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VulnerabilityScanDiagnostic": {
+        "type": "object",
+        "required": [
+          "phase",
+          "code"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VulnerabilityEnrichment": {
+        "type": "object",
+        "description": "Bounded synchronous optional detail enrichment; completeness is independent from package evaluation. Cached observations retain their original time.",
+        "properties": {
+          "requested": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "obtained": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budget_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "",
+              "complete",
+              "partial"
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScanDiagnostic"
+            }
+          }
+        }
       }
     }
   }

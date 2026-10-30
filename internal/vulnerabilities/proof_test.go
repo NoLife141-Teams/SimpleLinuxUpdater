@@ -410,3 +410,23 @@ func TestProofRepositoryIdentityRenameDeleteAndJSONContinuity(t *testing.T) {
 		t.Fatal(all, err)
 	}
 }
+
+func TestValidatedCheckpointPreservesRunningOwnerAndRecoveryTerminal(t *testing.T) {
+	old := initialEvidence()
+	scan := evidenceScan("checkpoint", "2026-10-02T12:00:00Z", []Package{{Name: "a:amd64", Version: "2"}, {Name: "b:amd64", Version: "1", State: "unknown"}}, nil)
+	scan.Checkpoint = true
+	checkpoint := Accept(old, scan)
+	if checkpoint.LastAttempt.State != "running" || checkpoint.LastAttempt.FinishedAt != "" || checkpoint.Accepted == nil || !checkpoint.Accepted.Checkpoint || finding(t, checkpoint, "a:amd64", "CVE-A").ResolvedAt == "" || finding(t, checkpoint, "b:amd64", "CVE-B").ResolvedAt != "" {
+		t.Fatal("checkpoint lost its independent proof/running contract")
+	}
+	interrupted := checkpoint.LastAttempt
+	interrupted.State = "interrupted"
+	interrupted.FinishedAt = "2026-10-02T12:01:00Z"
+	recovered := Accept(checkpoint, interrupted)
+	if recovered.LastAttempt.State != "interrupted" || recovered.Accepted.ID != "checkpoint" {
+		t.Fatal("checkpoint recovery reverted to running")
+	}
+	if late := Accept(recovered, scan); late.LastAttempt.State != "interrupted" {
+		t.Fatal("late checkpoint bypassed terminal interruption")
+	}
+}

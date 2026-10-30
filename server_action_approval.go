@@ -104,7 +104,7 @@ func (l *serverActionLifecycle) approve(name string, identity serverActionApprov
 			return jsonResult(http.StatusConflict, staleApprovalMessage)
 		}
 		if l.validateRemediation != nil {
-			if err := l.validateRemediation(status, server); err != nil {
+			if err := l.validateRemediation(status, server, scope, confirmRemovals); err != nil {
 				return jsonResult(http.StatusConflict, "Remediation evidence changed; prepare and approve again: "+err.Error())
 			}
 		}

@@ -12,7 +12,7 @@ import (
 )
 
 type serverActionLifecycle struct {
-	validateRemediation  func(*ServerStatus, Server) error
+	validateRemediation  func(*ServerStatus, Server, string, bool) error
 	serverState          *serverpkg.State
 	updateService        *UpdateService
 	currentJobManager    func() *JobManager
@@ -55,11 +55,11 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 		audit = func(string, string, string, string, string, map[string]any) {}
 	}
 	return &serverActionLifecycle{
-		validateRemediation: func(status *ServerStatus, server Server) error {
+		validateRemediation: func(status *ServerStatus, server Server, scope string, confirmRemovals bool) error {
 			if status.RemediationPlanID == "" {
 				return nil
 			}
-			return deps.Remediation.ValidateApproval(status, server)
+			return deps.Remediation.ValidateApproval(status, server, scope, confirmRemovals)
 		},
 		serverState:       deps.ServerState,
 		updateService:     deps.UpdateService,

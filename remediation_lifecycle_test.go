@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +27,76 @@ type remediationTestScanner struct {
 	fail    *atomic.Bool
 	partial bool
 	now     func() time.Time
+}
+
+func TestRemediationConfigurationDoesNotStoreAnOfflineCredentialVerifier(t *testing.T) {
+	server := Server{Name: "example-host", Host: "example-host.invalid", Port: 22, User: "root", Pass: "synthetic-password"}
+	first := newRemediationLifecycle(AppDeps{})
+	next := newRemediationLifecycle(AppDeps{})
+	identity := first.configuration(server)
+	unkeyed := remediationHash(struct {
+		Server        Server
+		Password, Key string
+	}{server, server.Pass, server.Key})
+	if identity == unkeyed || identity == next.configuration(server) || identity != first.configuration(server) {
+		t.Fatal("configuration is a public password verifier or is not stable for live approval")
+	}
+	for _, kind := range []string{"password", "key", "host", "user"} {
+		t.Run(kind, func(t *testing.T) {
+			changed := server
+			switch kind {
+			case "password":
+				changed.Pass = "changed-synthetic"
+			case "key":
+				changed.Key = "changed-synthetic-key"
+			case "host":
+				changed.Host = "changed-host.invalid"
+			case "user":
+				changed.User = "changed-user"
+			}
+			if first.configuration(changed) == identity {
+				t.Fatal("credential/configuration drift was not bound")
+			}
+		})
+	}
+}
+
+func syntheticRemediationInventory(version int32) string {
+	return fmt.Sprintf("__SLU_OS__\tdebian\t12\naddressable\t%d\tsource-addressable\t%d\nextra-package\t1\tsource-extra-package\t1\nold-runtime\t1\tsource-old-runtime\t1\nordinary-dependency\t1\tsource-ordinary-dependency\t1\nresidual\t1\tsource-residual\t1\n__SLU_INVENTORY_END__\n", version, version)
+}
+
+// The real metadata collector emits these typed records after APT/dpkg reads and
+// release verification; no scanner/OSV response is involved in preparation.
+func syntheticRemediationMetadata(version int32, candidate, dependency, ordinary, candidateSource, candidatePackage, candidateSigned string) string {
+	rows := strings.TrimPrefix(strings.TrimSuffix(syntheticRemediationInventory(version), "__SLU_INVENTORY_END__\n"), "__SLU_OS__\tdebian\t12\n")
+	digest := sha256.Sum256([]byte(rows))
+	var out strings.Builder
+	fmt.Fprintf(&out, "__SLU_OS__\tdebian\t12\n__SLU_INVENTORY_DIGEST__\t%x\n", digest)
+	for _, name := range []string{"addressable", "extra-package", "old-runtime", "ordinary-dependency", "residual", "new-dependency"} {
+		installed, sourceVersion, origin, signed := "1", "1", "Debian", "verified"
+		if name == "addressable" {
+			installed = fmt.Sprint(version)
+			sourceVersion = installed
+		}
+		source := "source-" + name
+		if name == "new-dependency" {
+			installed, sourceVersion, source, origin, signed = "", "", "", "", ""
+		}
+		v, sourceCandidate, sourcePackage, verified := "2", "2", "source-"+name, "verified"
+		if name == "addressable" {
+			v, sourceCandidate, sourcePackage, verified = candidate, candidateSource, candidatePackage, candidateSigned
+		}
+		if name == "new-dependency" {
+			v, sourceCandidate = dependency, dependency
+		}
+		if name == "ordinary-dependency" {
+			v, sourceCandidate = ordinary, ordinary
+		}
+		for _, selector := range []string{name, name + ":amd64"} {
+			fmt.Fprintln(&out, strings.Join([]string{"__SLU_PACKAGE__", selector, name, source, sourceVersion, installed, origin, signed, name, v, sourcePackage + " (" + sourceCandidate + ")", "Debian", verified}, "\t"))
+		}
+	}
+	return out.String()
 }
 
 func TestRiskReviewDoesNotAttachOldFindingToReplacementServer(t *testing.T) {
@@ -122,7 +194,7 @@ func (s remediationTestScanner) ScanInstalled(ctx context.Context, _ HostMainten
 	return scan, nil
 }
 func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *testing.T) {
-	for _, mode := range []string{"success", "late_candidate_drift", "late_dependency_version_drift", "late_dependency_origin_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
+	for _, mode := range []string{"success", "unavailable_scope", "late_source_version_drift", "late_source_package_drift", "late_source_provenance_drift", "late_candidate_drift", "late_dependency_version_drift", "late_dependency_origin_drift", "late_download_dependency_drift", "late_security_dependency_version_drift", "late_security_dependency_origin_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
 		t.Run(mode, func(t *testing.T) {
 			app := newIsolatedTestApp(t)
 			server, err := app.Deps.ServerInventoryService.Create(Server{Name: "example-host", Host: "example-host.invalid", User: "root", Pass: "synthetic"})
@@ -135,11 +207,11 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 			scanner := &remediationTestScanner{version: &version, fail: &fail, now: app.Deps.Now}
 			scope := "all"
 			switch mode {
-			case "security_scope":
+			case "security_scope", "late_security_dependency_version_drift", "late_security_dependency_origin_drift":
 				scope = "security"
 			case "kept_back_scope":
 				scope = "security_kept_back"
-			case "full_scope", "late_dependency_version_drift", "late_dependency_origin_drift":
+			case "full_scope", "late_dependency_version_drift", "late_dependency_origin_drift", "late_download_dependency_drift":
 				scope = "full_upgrade"
 			}
 			discoveries, mutations, approvals := 0, 0, 0
@@ -160,11 +232,72 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 							dependencyOrigin = "Other:stable"
 						}
 						simulation := updatespkg.BuildUpgradePlan(nil, fmt.Sprintf("Inst new-dependency (%s %s [amd64])\n", dependencyVersion, dependencyOrigin), true)
-						return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"addressable"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: candidate, Source: "stable", CVEState: "done", Security: scope == "security" || scope == "security_kept_back", KeptBack: scope == "security_kept_back", RequiresFull: scope == "security_kept_back"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationDigest: simulation.FullUpgradeSimulationDigest, FullUpgradeSimulationPackages: simulation.FullUpgradeSimulationPackages, StandardPackageCount: 1, FullUpgradePlanAvailable: true, KeptBackSecurityPlanAvailable: true, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}, KeptBackSecurityNewPackages: []string{"new-dependency"}, KeptBackSecurityRemovedPackages: []string{"old-runtime"}}}}, nil
+						if mode == "late_download_dependency_drift" {
+							// Actual discovery uses download-only output, which has no Inst records.
+							simulation = updatespkg.BuildUpgradePlan(nil, "The following NEW packages will be installed:\n  new-dependency\n'https://repo.invalid/new-dependency_1_amd64.deb' new-dependency_1_amd64.deb 100 MD5Sum:synthetic\n", true)
+						}
+						return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 1, Upgradable: []string{"addressable"}, PendingUpdates: []PendingUpdate{{Package: "addressable", Raw: fmt.Sprintf("addressable/stable %s amd64 [upgradable from: 1]", candidate), CurrentVersion: "1", CandidateVersion: candidate, Source: "stable", CVEState: "done", Security: scope == "security" || scope == "security_kept_back", KeptBack: scope == "security_kept_back", RequiresFull: scope == "security_kept_back"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationDigest: simulation.FullUpgradeSimulationDigest, FullUpgradeSimulationPackages: simulation.FullUpgradeSimulationPackages, StandardPackageCount: 1, FullUpgradePlanAvailable: true, KeptBackSecurityPlanAvailable: true, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}, KeptBackSecurityNewPackages: []string{"new-dependency"}, KeptBackSecurityRemovedPackages: []string{"old-runtime"}}}}, nil
 					},
 					RunCommandFunc: func(_ context.Context, r HostCommandRequest) (HostCommandResult, error) {
+						if r.Operation == "cve_enrichment.package_inventory" {
+							candidate, dependency, ordinary, sourceVersion, sourcePackage, signed := "2", "1", "2", "2", "source-addressable", "verified"
+							if discoveries > 1 {
+								if mode == "late_candidate_drift" {
+									candidate, sourceVersion = "3", "3"
+								}
+								if mode == "late_dependency_version_drift" || mode == "late_download_dependency_drift" {
+									dependency = "2"
+								}
+								if mode == "late_security_dependency_version_drift" {
+									ordinary = "3"
+								}
+								if mode == "late_source_version_drift" {
+									sourceVersion = "3"
+								}
+								if mode == "late_source_package_drift" {
+									sourcePackage = "other-source"
+								}
+								if mode == "late_source_provenance_drift" {
+									signed = ""
+								}
+							}
+							return HostCommandResult{Stdout: syntheticRemediationMetadata(version.Load(), candidate, dependency, ordinary, sourceVersion, sourcePackage, signed), Attempts: 1}, nil
+						}
+						if strings.HasPrefix(r.Operation, "remediation.simulate.") {
+							if mode == "unavailable_scope" && strings.HasSuffix(r.Operation, ".all") {
+								return HostCommandResult{}, errors.New("synthetic simulation failure")
+							}
+							candidate, dependencyVersion, dependencyOrigin := "2", "1", "Debian:stable"
+							if discoveries > 1 && mode == "late_candidate_drift" {
+								candidate = "3"
+							}
+							if discoveries > 1 && mode == "late_dependency_version_drift" {
+								dependencyVersion = "2"
+							}
+							if discoveries > 1 && mode == "late_download_dependency_drift" {
+								dependencyVersion = "2"
+							}
+							if discoveries > 1 && mode == "late_dependency_origin_drift" {
+								dependencyOrigin = "Other:stable"
+							}
+							output := fmt.Sprintf("Inst addressable [1] (%s Debian:stable [amd64])\n", candidate)
+							if strings.HasSuffix(r.Operation, "full_upgrade") || strings.HasSuffix(r.Operation, "security_kept_back") {
+								output += fmt.Sprintf("Inst new-dependency (%s %s [amd64])\nRemv old-runtime [1]\n", dependencyVersion, dependencyOrigin)
+							}
+							if strings.HasPrefix(mode, "late_security_dependency_") && strings.HasSuffix(r.Operation, ".security") {
+								v, origin := "2", "Debian:stable"
+								if discoveries > 1 && mode == "late_security_dependency_version_drift" {
+									v = "3"
+								}
+								if discoveries > 1 && mode == "late_security_dependency_origin_drift" {
+									origin = "Other:stable"
+								}
+								output += fmt.Sprintf("Inst ordinary-dependency [1] (%s %s [amd64])\n", v, origin)
+							}
+							return HostCommandResult{Stdout: output, Attempts: 1}, nil
+						}
 						if r.Operation == "remediation.installed_inventory" {
-							return HostCommandResult{Stdout: fmt.Sprintf("__SLU_OS__\tdebian\t12\naddressable\t%d\tsource-addressable\t%d\nresidual\t1\tsource-residual\t1\n__SLU_INVENTORY_END__\n", version.Load(), version.Load()), Attempts: 1}, nil
+							return HostCommandResult{Stdout: syntheticRemediationInventory(version.Load()), Attempts: 1}, nil
 						}
 						if r.Effect == updatespkg.HostCommandEffectPackageStateMutation {
 							mutations++
@@ -203,13 +336,51 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 				if status.RemediationDigest == "" || status.RemediationPlanID == "" {
 					t.Fatal("missing plan identity")
 				}
+				if strings.HasPrefix(mode, "late_source_") && approvals == 2 {
+					p, err := app.Deps.Remediation.repo().Load(t.Context(), status.RemediationPlanID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var tx remediationTransaction
+					if err = json.Unmarshal(p.Snapshot, &tx); err != nil {
+						t.Fatal(err)
+					}
+					if tx.Preparation.Sources.Digest == "" {
+						t.Fatal("fresh source identity missing")
+					}
+					for _, row := range tx.Scopes {
+						if row.Scope == "all" && row.Impact.PotentialCVEs != 0 {
+							t.Fatal("obsolete source candidate proof still promises a correction", row.Impact)
+						}
+					}
+				}
+				if strings.HasPrefix(mode, "late_security_dependency_") {
+					p, err := app.Deps.Remediation.repo().Load(t.Context(), status.RemediationPlanID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var tx remediationTransaction
+					if err = json.Unmarshal(p.Snapshot, &tx); err != nil {
+						t.Fatal(err)
+					}
+					for _, row := range tx.Scopes {
+						if row.Scope == "security" && (!slices.Contains(row.Extra, "ordinary-dependency") || len(row.Simulation) != 2) {
+							t.Fatal("security dependency upgrade hidden", row)
+						}
+					}
+				}
 				lifecycle := newServerActionLifecycle(app.Deps, nil)
 				identity := serverActionApprovalIdentity{JobID: status.JobID, Generation: status.ApprovalGeneration, DeferralRevision: status.UpgradePlan.PackageDeferrals.Revision}
 				if result := lifecycle.ApproveAll(server.Name, identity); result.statusCode != 409 {
 					t.Fatalf("legacy endpoint bypassed identity: %+v", result)
 				}
 				identity.RemediationDigest = status.RemediationDigest
-				if mode == "cancelled" {
+				if mode == "unavailable_scope" {
+					if result := lifecycle.approve(server.Name, identity, "all", true); result.statusCode != 409 {
+						t.Fatal("unsimulated scope accepted", result)
+					}
+				}
+				if mode == "cancelled" || mode == "unavailable_scope" {
 					if result := lifecycle.Cancel(server.Name, identity); result.statusCode != 200 {
 						t.Fatal(result)
 					}
@@ -247,7 +418,7 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 			}
 			service.RunUpdateJob(app.Deps.Remediation.request(server, "operator", "", job.ID, RetryPolicy{MaxAttempts: 1}))
 			wantMutations := 1
-			if mode == "cancelled" || mode == "configuration_drift" {
+			if mode == "cancelled" || mode == "configuration_drift" || mode == "unavailable_scope" {
 				wantMutations = 0
 			}
 			if mutations != wantMutations || approvals < 1 {
@@ -369,12 +540,15 @@ func TestRemediationRecoveryBusyRenameAndDeletedReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := remediation.Plan{ID: remediation.ID(), TargetIdentity: remediationTarget(server), ServerKey: key, Server: server.Name, JobID: job.ID, State: "prepared", Actor: "operator"}
+	p := remediation.Plan{ID: remediation.ID(), TargetIdentity: remediationTarget(server), Configuration: app.Deps.Remediation.configuration(server), ServerKey: key, Server: server.Name, JobID: job.ID, State: "prepared", Actor: "operator"}
 	if err = repo.Insert(t.Context(), p); err != nil {
 		t.Fatal(err)
 	}
 	// A fresh app-scoped worker recovers only the verification request.
 	recovered := newRemediationLifecycle(app.Deps)
+	if recovered.configuration(server) == p.Configuration {
+		t.Fatal("recovery fixture did not renew the runtime approval key")
+	}
 	recovered.deps.StartJobRunner = func(_ string, run func(), _ ...func()) { run() }
 	_, previous, err := app.Deps.ServerState.BeginTransientAction(server.Name, "facts_refresh")
 	if err != nil {
@@ -450,15 +624,25 @@ func syntheticRemediationService(deps AppDeps, failVerification bool) *UpdateSer
 		return scheduledJobBehavior{AutoApproveScope: "all", ApprovalTimeout: time.Hour}
 	}
 	base.HostMaintenanceSessions = testHostMaintenanceFactory(&HostMaintenanceSessionFuncs{RunCommandFunc: func(_ context.Context, r HostCommandRequest) (HostCommandResult, error) {
+		if r.Operation == "cve_enrichment.package_inventory" {
+			return HostCommandResult{Stdout: syntheticRemediationMetadata(version.Load(), "2", "2", "2", "2", "source-addressable", "verified"), Attempts: 1}, nil
+		}
+		if strings.HasPrefix(r.Operation, "remediation.simulate.") {
+			output := "Inst addressable [1] (2 Debian:stable [amd64])\nInst extra-package [1] (2 Debian:stable [amd64])\n"
+			if strings.HasSuffix(r.Operation, "full_upgrade") {
+				output += "Inst new-dependency (2 Debian:stable [amd64])\nRemv old-runtime [1]\n"
+			}
+			return HostCommandResult{Stdout: output, Attempts: 1}, nil
+		}
 		if r.Operation == "remediation.installed_inventory" {
-			return HostCommandResult{Stdout: fmt.Sprintf("__SLU_OS__\tdebian\t12\naddressable\t%d\tsource-addressable\t%d\nresidual\t1\tsource-residual\t1\n__SLU_INVENTORY_END__\n", version.Load(), version.Load()), Attempts: 1}, nil
+			return HostCommandResult{Stdout: syntheticRemediationInventory(version.Load()), Attempts: 1}, nil
 		}
 		if r.Effect == updatespkg.HostCommandEffectPackageStateMutation {
 			version.Store(2)
 		}
 		return HostCommandResult{Attempts: 1}, nil
 	}, DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
-		return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 2, Upgradable: []string{"addressable", "extra-package"}, PendingUpdates: []PendingUpdate{{Package: "addressable", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}, {Package: "extra-package", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationPackages: []serverpkg.SimulatedPackage{{Package: "new-dependency", CandidateVersion: "2"}}, StandardPackageCount: 2, FullUpgradePlanAvailable: true, FullUpgradePackageCount: 2, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}}}}, nil
+		return HostPackageDiscoveryResult{Attempts: 1, Outcome: PackageDiscoveryOutcome{PendingPackageCount: 2, Upgradable: []string{"addressable", "extra-package"}, PendingUpdates: []PendingUpdate{{Package: "addressable", Raw: "addressable/stable 2 amd64 [upgradable from: 1]", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}, {Package: "extra-package", Raw: "extra-package/stable 2 amd64 [upgradable from: 1]", CurrentVersion: "1", CandidateVersion: "2", Source: "stable", CVEState: "done"}}, UpgradePlan: UpgradePlan{FullUpgradeSimulationPackages: []serverpkg.SimulatedPackage{{Package: "new-dependency", CandidateVersion: "2"}}, StandardPackageCount: 2, FullUpgradePlanAvailable: true, FullUpgradePackageCount: 2, FullUpgradeNewPackages: []string{"new-dependency"}, FullUpgradeRemovedPackages: []string{"old-runtime"}}}}, nil
 	}})
 	return NewUpdateService(base)
 }
@@ -604,6 +788,64 @@ func TestRemediationRecoveryDoesNotStealLiveCompletionHealth(t *testing.T) {
 	loaded, err = repo.Load(t.Context(), p.ID)
 	if err != nil || loaded.ScanID != "" || loaded.Completion["postchecks_passed"] != false {
 		t.Fatal("verification ran before release or lost failed health", loaded.State, err)
+	}
+}
+
+func TestRemediationForecastUsesActualScopeVersionsAndArchitecture(t *testing.T) {
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	var version atomic.Int32
+	version.Store(1)
+	scan, err := (remediationTestScanner{version: &version, now: func() time.Time { return now }}).ScanInstalled(vulnerabilities.WithScanIdentity(t.Context(), "example-host", "before"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := vulnerabilities.Accept(vulnerabilities.Observation{}, scan)
+	status := &ServerStatus{PendingUpdates: []PendingUpdate{{Package: "addressable", Raw: "addressable/stable 2 amd64 [upgradable from: 1]", CurrentVersion: "1", CandidateVersion: "2", Security: true}}, UpgradePlan: UpgradePlan{FullUpgradePlanAvailable: true}}
+	for _, tc := range []struct {
+		name, arch, candidate string
+		present               bool
+		want                  int
+	}{
+		{"actual upgrade", "amd64", "2", true, 1},
+		{"architecture independent", "all", "2", true, 1},
+		{"explicit all selector", "all", "2", true, 1},
+		{"foreign architecture", "i386", "2", true, 0},
+		{"different simulated candidate", "amd64", "3", true, 0},
+		{"selected but not changed", "amd64", "2", false, 0},
+		{"source version changed", "amd64", "2", true, 0},
+		{"source package changed", "amd64", "2", true, 0},
+		{"source provenance unavailable", "amd64", "2", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := serverpkg.CloneServerStatus(status)
+			selector := "addressable:amd64"
+			if tc.arch == "all" {
+				selector = "addressable"
+				current.PendingUpdates[0].Raw = "addressable/stable 2 all [upgradable from: 1]"
+			}
+			if tc.name == "explicit all selector" {
+				current.PendingUpdates[0].Package = "addressable:all"
+			}
+			source := updatespkg.RemediationPackageSource{InstalledVersion: "1", InstalledSourcePackage: "source-addressable", InstalledSourceVersion: "1", InstalledProvenanceVerified: true, InstalledEcosystem: "Debian:12", CandidateVersion: "2", CandidateSourcePackage: "source-addressable", CandidateSourceVersion: "2", CandidateProvenanceVerified: true, CandidateEcosystem: "Debian:12"}
+			switch tc.name {
+			case "source version changed":
+				source.CandidateSourceVersion = "3"
+			case "source package changed":
+				source.CandidateSourcePackage = "other-source"
+			case "source provenance unavailable":
+				source.CandidateProvenanceVerified = false
+			}
+			p := updatespkg.RemediationPreparation{Sources: updatespkg.RemediationSourcePreparation{Packages: map[string]updatespkg.RemediationPackageSource{selector: source}}, Scopes: map[string]updatespkg.RemediationScopePreparation{"security": {Available: true}}}
+			if tc.present {
+				p.Scopes["security"] = updatespkg.RemediationScopePreparation{Available: true, Packages: []serverpkg.SimulatedPackage{{Package: "addressable", Architecture: tc.arch, CurrentVersion: "1", CandidateVersion: tc.candidate}}}
+			}
+			tx := buildRemediationTransaction("example-host", current, before, now, p)
+			for _, scope := range tx.Scopes {
+				if scope.Scope == "security" && scope.Impact.PotentialCVEs != tc.want {
+					t.Fatalf("forecast promised an unexecuted candidate: %+v", scope.Impact)
+				}
+			}
+		})
 	}
 }
 

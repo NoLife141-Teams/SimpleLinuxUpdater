@@ -1111,8 +1111,18 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					}
 					r.remediationInventory = inventory
 					r.remediationDistro = distro
+					scopes, err := r.readRemediationScopes(discovery)
+					if err != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot simulate remediation scopes: " + err.Error())
+						return
+					}
+					sources, err := r.readRemediationSources(discovery, scopes, inventory, distro)
+					if err != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot bind remediation source/candidate identity: " + err.Error())
+						return
+					}
 					facts := r.session.CollectServerFacts(maintenanceCtx)
-					r.remediationPreparation = RemediationPreparation{Inventory: inventory, Prechecks: append([]PrecheckResult{}, r.precheckResults...), FailedUnits: append([]string{}, r.preUpdateFailedUnits...), RebootRequired: facts.RebootRequired, RunningKernel: facts.RunningKernelVersion, LatestInstalledKernel: facts.LatestInstalledKernelVersion, ObservedAt: deps.Now().UTC().Format(time.RFC3339Nano)}
+					r.remediationPreparation = RemediationPreparation{Sources: sources, Scopes: scopes, Inventory: inventory, Prechecks: append([]PrecheckResult{}, r.precheckResults...), FailedUnits: append([]string{}, r.preUpdateFailedUnits...), RebootRequired: facts.RebootRequired, RunningKernel: facts.RunningKernelVersion, LatestInstalledKernel: facts.LatestInstalledKernelVersion, ObservedAt: deps.Now().UTC().Format(time.RFC3339Nano)}
 				}
 				logs = r.currentLogs()
 				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
@@ -1257,6 +1267,22 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 						return
 					}
 					if !reflect.DeepEqual(inventory, r.remediationInventory) || distro != r.remediationDistro {
+						changed = true
+					}
+					scopes, scopeErr := r.readRemediationScopes(fresh)
+					if scopeErr != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot revalidate remediation scopes: " + scopeErr.Error())
+						return
+					}
+					sources, sourceErr := r.readRemediationSources(fresh, scopes, inventory, distro)
+					if sourceErr != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot revalidate remediation source/candidate identity: " + sourceErr.Error())
+						return
+					}
+					if sources.Digest != r.remediationPreparation.Sources.Digest {
+						changed = true
+					}
+					if !reflect.DeepEqual(scopes, r.remediationPreparation.Scopes) {
 						changed = true
 					}
 				}

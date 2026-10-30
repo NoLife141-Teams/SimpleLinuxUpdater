@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -23,14 +25,19 @@ import (
 )
 
 type remediationLifecycle struct {
-	deps AppDeps
-	mu   sync.Mutex
-	once sync.Once
-	wg   sync.WaitGroup
+	identityKey [32]byte
+	deps        AppDeps
+	mu          sync.Mutex
+	once        sync.Once
+	wg          sync.WaitGroup
 }
 
 func newRemediationLifecycle(deps AppDeps) *remediationLifecycle {
-	return &remediationLifecycle{deps: deps}
+	s := &remediationLifecycle{deps: deps}
+	if _, err := rand.Read(s.identityKey[:]); err != nil {
+		panic(err)
+	}
+	return s
 }
 func (s *remediationLifecycle) repo() remediation.Repository {
 	return remediation.Repository{DB: s.deps.DB}
@@ -49,15 +56,23 @@ func remediationTarget(server Server) string {
 	}{server.Host, server.User, server.Port})
 }
 
-func remediationConfiguration(server Server) string {
-	return remediationHash(struct {
+// A persisted or public fingerprint must not become an offline SSH-password
+// verifier. This key exists only for this app runtime's live approval runners.
+// Restart/restore interrupt maintenance; durable verification uses the separate
+// credential-free target identity and never depends on this runtime key.
+func (s *remediationLifecycle) configuration(server Server) string {
+	b, _ := json.Marshal(struct {
 		Server        Server
 		Password, Key string
 	}{server, server.Pass, server.Key})
+	mac := hmac.New(sha256.New, s.identityKey[:])
+	_, _ = mac.Write([]byte("remediation-configuration-v1\x00"))
+	_, _ = mac.Write(b)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 func (s *remediationLifecycle) request(server Server, actor, ip, jobID string, policy RetryPolicy) UpdateRunRequest {
 	var latest remediation.Plan
-	configuration := remediationConfiguration(server)
+	configuration := s.configuration(server)
 	return UpdateRunRequest{Server: server, Actor: actor, ClientIP: ip, JobID: jobID, Policy: policy, ForceManual: true,
 		PublishPlan: func(status *ServerStatus, preparation updatespkg.RemediationPreparation) error {
 			inventory := preparation.Inventory
@@ -92,8 +107,15 @@ func (s *remediationLifecycle) request(server Server, actor, ip, jobID string, p
 			for i := range snapshot.PendingUpdates {
 				snapshot.PendingUpdates[i].CVEFindings = nil
 				snapshot.PendingUpdates[i].CVEs = nil
+				for _, selector := range updatespkg.PackageDiscoverySelectors(snapshot.PendingUpdates[i]) {
+					if source, ok := preparation.Sources.Packages[selector]; ok {
+						snapshot.PendingUpdates[i].SourcePackage = source.InstalledSourcePackage
+						snapshot.PendingUpdates[i].InstalledSourceVersion = source.InstalledSourceVersion
+						snapshot.PendingUpdates[i].CandidateSourceVersion = source.CandidateSourceVersion
+					}
+				}
 			}
-			transaction := buildRemediationTransaction(server.Name, snapshot, before, s.deps.Now())
+			transaction := buildRemediationTransaction(server.Name, snapshot, before, s.deps.Now(), preparation)
 			transaction.Preparation = preparation
 			raw, err := json.Marshal(transaction)
 			if err != nil {
@@ -123,7 +145,7 @@ func (s *remediationLifecycle) request(server Server, actor, ip, jobID string, p
 			return nil
 		}, ValidatePlan: func() error {
 			current, found := s.deps.ServerState.FindByName(server.Name)
-			if !found || configuration != remediationConfiguration(current) {
+			if !found || !hmac.Equal([]byte(configuration), []byte(s.configuration(current))) {
 				return errors.New("Server configuration drift")
 			}
 			if latest.ID == "" {
@@ -435,7 +457,7 @@ func handleRiskReview(c *gin.Context, deps AppDeps) {
 	c.JSON(201, v)
 }
 
-func (s *remediationLifecycle) ValidateApproval(status *ServerStatus, server Server) error {
+func (s *remediationLifecycle) ValidateApproval(status *ServerStatus, server Server, scope string, confirmRemovals bool) error {
 	p, err := s.repo().Load(context.Background(), status.RemediationPlanID)
 	if err != nil {
 		return err
@@ -444,8 +466,15 @@ func (s *remediationLifecycle) ValidateApproval(status *ServerStatus, server Ser
 	if err != nil || s.deps.Now().Before(at) || s.deps.Now().Sub(at) > time.Hour {
 		return errors.New("plan is stale")
 	}
-	if p.State != "prepared" || p.Digest != status.RemediationDigest || p.JobID != status.JobID || p.Generation != status.ApprovalGeneration || p.Configuration != remediationConfiguration(server) {
+	if p.State != "prepared" || p.Digest != status.RemediationDigest || p.JobID != status.JobID || p.Generation != status.ApprovalGeneration || !hmac.Equal([]byte(p.Configuration), []byte(s.configuration(server))) {
 		return errors.New("plan or Server configuration drift")
+	}
+	var tx remediationTransaction
+	if json.Unmarshal(p.Snapshot, &tx) != nil || !tx.Preparation.Scopes[scope].Available {
+		return errors.New("scope requires a complete fresh transaction simulation")
+	}
+	if len(tx.Preparation.Scopes[scope].Removed) > 0 && !confirmRemovals {
+		return errors.New("scope includes removals; explicit confirmation is required")
 	}
 	return nil
 }
@@ -469,7 +498,7 @@ type remediationTransaction struct {
 	Scopes      []remediationScope                `json:"scopes"`
 }
 
-func buildRemediationTransaction(name string, status *ServerStatus, before vulnerabilities.Observation, now time.Time) remediationTransaction {
+func buildRemediationTransaction(name string, status *ServerStatus, before vulnerabilities.Observation, now time.Time, preparations ...updatespkg.RemediationPreparation) remediationTransaction {
 	out := remediationTransaction{Status: status, Scopes: []remediationScope{}}
 	info := observability.ProjectRemediationEvidence(before, now)
 	for _, scope := range []string{updatespkg.ApprovalScopeAll, updatespkg.ApprovalScopeSecurity, updatespkg.ApprovalScopeSecurityKeptBack, updatespkg.ApprovalScopeFullUpgrade} {
@@ -500,11 +529,30 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 			row.DependencyImpacts = protected.DependencyImpacts
 			row.Available = row.Available && protected.Available
 		}
+		actual := updatespkg.RemediationScopePreparation{}
+		if len(preparations) > 0 {
+			actual = preparations[0].Scopes[scope]
+			row.Available = row.Available && actual.Available
+			row.Simulation = actual.Packages
+			row.Added = actual.Added
+			row.Removed = actual.Removed
+			if !actual.Available {
+				row.Reason = "Complete fresh transaction and source/candidate evidence is required before approval."
+			}
+		}
 		pending := map[string]PendingUpdate{}
 		selected := map[string]string{}
 		selectedNames := map[string]bool{}
-		for _, pkg := range row.Selected {
-			selectedNames[pkg] = true
+		if len(preparations) == 0 {
+			for _, pkg := range row.Selected {
+				selectedNames[pkg] = true
+			}
+		}
+		simulated := map[string]serverpkg.SimulatedPackage{}
+		for _, pkg := range actual.Packages {
+			selector := updatespkg.RemediationSimulationSelector(pkg)
+			selectedNames[selector] = true
+			simulated[selector] = pkg
 		}
 		for _, p := range status.PendingUpdates {
 			selectors := updatespkg.PackageDiscoverySelectors(p)
@@ -521,6 +569,9 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 			if selection != "" {
 				for _, selector := range selectors {
 					selected[selector] = selection
+					if v, ok := simulated[selection]; ok {
+						simulated[selector] = v
+					}
 				}
 			}
 		}
@@ -532,6 +583,15 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 			actual := pending[f.Package]
 			selection, included := selected[f.Package]
 			eligible := included && row.Available && f.InstalledVersion == actual.CurrentVersion && f.Availability != nil && f.CandidateVersion == actual.CandidateVersion && f.Availability.CandidateBinaryVersion == actual.CandidateVersion
+			if len(preparations) > 0 {
+				v := simulated[f.Package]
+				eligible = eligible && v.CurrentVersion == f.InstalledVersion && v.CandidateVersion == actual.CandidateVersion
+				source, ok := preparations[0].Sources.Packages[selection]
+				eligible = eligible && ok && source.InstalledProvenanceVerified && source.CandidateProvenanceVerified && source.InstalledVersion == f.InstalledVersion && source.InstalledSourcePackage == f.SourcePackage && source.InstalledSourceVersion == f.Assessment.SourceVersion && source.InstalledEcosystem == f.Assessment.Ecosystem
+				if f.Availability != nil {
+					eligible = eligible && source.CandidateVersion == f.Availability.CandidateBinaryVersion && source.CandidateSourcePackage == f.Availability.CandidateSourcePackage && source.CandidateSourceVersion == f.Availability.CandidateSourceVersion && source.CandidateEcosystem == source.InstalledEcosystem
+				}
+			}
 			if actual.SourcePackage != "" && f.SourcePackage != actual.SourcePackage {
 				eligible = false
 			}
@@ -539,7 +599,7 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 				eligible = false
 			}
 			// A source candidate outside this scope cannot be presented as a security-only fix.
-			if eligible && f.Availability != nil {
+			if eligible && f.Availability != nil && len(preparations) == 0 {
 				eligible = false
 				for _, s := range f.Availability.Scopes {
 					if s.Scope == scope && s.State == "simulated" {
@@ -555,6 +615,9 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 				}
 			} else if observability.CandidateRemediationFinding(*f) {
 				addressed[selection] = true
+				for _, selector := range updatespkg.PackageDiscoverySelectors(actual) {
+					addressed[selector] = true
+				}
 			}
 		}
 		for _, pkg := range row.Selected {
@@ -562,6 +625,7 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 				row.Extra = append(row.Extra, pkg)
 			}
 		}
+		row.Extra = append(row.Extra, actual.Extra...)
 		plan := observability.BuildRemediationPlan(observability.DashboardSummaryResponse{Servers: []observability.DashboardServerSummary{{Name: name, Risk: observability.DashboardRiskInfo{Vulnerability: scoped}}}}, observability.RemediationQuery{Server: name})
 		row.Impact = plan.Selected
 		out.Scopes = append(out.Scopes, row)

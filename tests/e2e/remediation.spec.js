@@ -1,4 +1,20 @@
 const {test,expect,ensureAuthenticatedSession,password}=require("./support/fixtures");
+test.describe("remediation startup",()=>{
+ test.use({scanTransportPhase:"remediation"});
+ test("a delayed workflow script initializes the server selected by a fast plan response",async({page})=>{
+  await ensureAuthenticatedSession(page);
+  expect((await api(page,"/api/servers","POST",{name:"startup-host",host:"startup-host.invalid",user:"root",pass:"synthetic"})).status).toBe(201);
+  await page.route("**/static/js/remediation-workflow.js*",async route=>{
+   // Let a prematurely mounted page finish its request before the workflow
+   // arrives. Correct startup waits for this dependency before requesting data.
+   await page.waitForResponse(r=>r.url().includes("/api/vulnerabilities/plan?"),{timeout:1500}).catch(()=>{});
+   await route.continue();
+  });
+  await page.goto("/remediation?server=startup-host");
+  await expect(page.locator("#remediation-workflow")).toBeVisible();
+  await expect(page.locator("#remediation-prepare")).toBeEnabled();
+ });
+});
 async function api(page,path,method="GET",body){return page.evaluate(async({path,method,body})=>{const r=await fetch(path,{method,headers:{"Content-Type":"application/json"},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json().catch(()=>({}))};},{path,method,body});}
 async function prepareHost(page){await ensureAuthenticatedSession(page);expect((await api(page,"/api/servers","POST",{name:"example-host",host:"example-host.invalid",user:"root",pass:"synthetic"})).status).toBe(201);const key=await api(page,"/api/hostkeys/scan","POST",{host:"example-host.invalid",port:22});expect((await api(page,"/api/hostkeys/trust","POST",{host:"example-host.invalid",port:22,fingerprint_sha256:key.data.fingerprint_sha256})).status).toBe(200);expect((await api(page,"/api/servers/example-host/vulnerabilities/scan","POST")).status).toBe(202);await expect.poll(async()=>(await api(page,"/api/servers/example-host/vulnerabilities")).data.last_attempt.state).toBe("complete");await page.goto("/vulnerabilities?server=example-host");await expect(page.locator("#cve-count")).toHaveText("2");await page.getByRole("link",{name:"Correction plan",exact:true}).click();await expect(page).toHaveURL(/\/remediation\?server=example-host$/);await expect(page.locator("#plan-cves")).toHaveText("2");}
 for(const phase of ["remediation","remediation-fail"]){test.describe(`real backend ${phase}`,()=>{test.use({scanTransportPhase:phase});test("manual immutable scope, verification and retry stay distinct",async({page})=>{

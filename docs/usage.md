@@ -1045,7 +1045,7 @@ Review one of the four existing Approval Scopes: all standard upgrades, standard
 security upgrades, kept-back security upgrades, or full upgrade. An addressing
 candidate can be an ordinary point release outside security scope. Review extra
 packages, dependency additions, protected dependency impacts and every removal;
-removals still require explicit confirmation. This is the actual maintenance
+removals still require explicit confirmation. Standard security updates can also upgrade ordinary dependencies; inspect their simulated versions. Preparation uses read-only simulations of each existing command, and scopes with unavailable transaction evidence cannot be approved. This is the actual maintenance
 scope, not an exact browser-selected CVE subset. Package Deferral continues to
 protect direct, dependency and removal paths. Candidate, source, inventory,
 configuration, health-profile or deferral drift requires fresh preparation or a

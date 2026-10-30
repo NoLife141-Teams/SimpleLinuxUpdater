@@ -4427,7 +4427,8 @@
               }
             }
           }
-        }
+        },
+        "description": "The immutable transaction.preparation.scope_simulations map binds fresh read-only simulations of all, security, security_kept_back and full_upgrade to opaque dependency/version/origin digests. Each scope exposes available, digest, sanitized packages (package, architecture, current_version, candidate_version), new_packages, removed_packages and extra_packages. A scope without a complete executable simulation cannot be approved. The security scope can include ordinary dependency upgrades. Revalidation requires renewed consent if any actual scope changes; raw command output and repository credentials are not exposed. transaction.preparation.source_identity binds fresh APT/dpkg source and candidate metadata, provenance, release proofs, holds and pins. Its package map exposes binary/source versions, ecosystems and provenance decisions. Same-binary-version source/provenance drift requires renewed consent and cannot reuse an obsolete candidate-fix forecast. Repository credentials, release-file paths and raw output are omitted."
       }
     },
     "/api/servers/{name}/remediation/{plan_id}/evidence": {
@@ -5099,6 +5100,9 @@
                 },
                 "candidate_version": {
                   "type": "string"
+                },
+                "architecture": {
+                  "type": "string"
                 }
               }
             },
@@ -5124,6 +5128,9 @@
                   "type": "string"
                 },
                 "candidate_version": {
+                  "type": "string"
+                },
+                "architecture": {
                   "type": "string"
                 }
               }

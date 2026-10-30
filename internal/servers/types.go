@@ -172,6 +172,7 @@ type DeferralScopePlan struct {
 
 // SimulatedPackage preserves operator-visible versions without command output or repository credentials.
 type SimulatedPackage struct {
+	Architecture     string `json:"architecture,omitempty"`
 	Package          string `json:"package"`
 	CurrentVersion   string `json:"current_version,omitempty"`
 	CandidateVersion string `json:"candidate_version"`

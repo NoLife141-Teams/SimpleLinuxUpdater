@@ -653,7 +653,11 @@ func packageSimulationIdentity(output string) (string, []servers.SimulatedPackag
 		if strings.HasPrefix(line, "Inst ") {
 			facts = append(facts, strings.Join(strings.Fields(line), " "))
 			p := ParsePendingUpdateEntry(strings.TrimPrefix(line, "Inst "))
-			packages = append(packages, servers.SimulatedPackage{Package: p.Package, CurrentVersion: p.CurrentVersion, CandidateVersion: p.CandidateVersion})
+			arch := ""
+			if m := deferralInstallLine.FindStringSubmatch(line); m != nil {
+				arch = m[4]
+			}
+			packages = append(packages, servers.SimulatedPackage{Architecture: arch, Package: p.Package, CurrentVersion: p.CurrentVersion, CandidateVersion: p.CandidateVersion})
 		} else if strings.HasPrefix(line, "Remv ") {
 			facts = append(facts, strings.Join(strings.Fields(line), " "))
 		}

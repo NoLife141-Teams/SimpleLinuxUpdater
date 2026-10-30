@@ -250,13 +250,46 @@ type ServiceDeps struct {
 }
 
 type RemediationPreparation struct {
-	Inventory             []servers.PendingUpdate `json:"-"`
-	Prechecks             []PrecheckResult        `json:"prechecks"`
-	FailedUnits           []string                `json:"failed_units"`
-	RebootRequired        *bool                   `json:"reboot_required"`
-	RunningKernel         string                  `json:"running_kernel"`
-	LatestInstalledKernel string                  `json:"latest_installed_kernel"`
-	ObservedAt            string                  `json:"observed_at"`
+	Sources               RemediationSourcePreparation           `json:"source_identity"`
+	Scopes                map[string]RemediationScopePreparation `json:"scope_simulations"`
+	Inventory             []servers.PendingUpdate                `json:"-"`
+	Prechecks             []PrecheckResult                       `json:"prechecks"`
+	FailedUnits           []string                               `json:"failed_units"`
+	RebootRequired        *bool                                  `json:"reboot_required"`
+	RunningKernel         string                                 `json:"running_kernel"`
+	LatestInstalledKernel string                                 `json:"latest_installed_kernel"`
+	ObservedAt            string                                 `json:"observed_at"`
+}
+
+type RemediationSourcePreparation struct {
+	Digest   string                              `json:"digest"`
+	Packages map[string]RemediationPackageSource `json:"packages"`
+}
+
+// RemediationPackageSource contains structured package metadata, never command
+// output or repository URLs. The opaque digest additionally binds release proofs.
+type RemediationPackageSource struct {
+	InstalledEcosystem          string `json:"installed_ecosystem"`
+	CandidateEcosystem          string `json:"candidate_ecosystem"`
+	InstalledVersion            string `json:"installed_version"`
+	InstalledSourcePackage      string `json:"installed_source_package"`
+	InstalledSourceVersion      string `json:"installed_source_version"`
+	InstalledProvenanceVerified bool   `json:"installed_provenance_verified"`
+	CandidateVersion            string `json:"candidate_version"`
+	CandidateSourcePackage      string `json:"candidate_source_package"`
+	CandidateSourceVersion      string `json:"candidate_source_version"`
+	CandidateProvenanceVerified bool   `json:"candidate_provenance_verified"`
+}
+
+// RemediationScopePreparation records the actual canonical command's simulated
+// changes. Raw output (including repository credentials) is only hashed.
+type RemediationScopePreparation struct {
+	Available bool                       `json:"available"`
+	Digest    string                     `json:"digest,omitempty"`
+	Packages  []servers.SimulatedPackage `json:"packages"`
+	Added     []string                   `json:"new_packages"`
+	Removed   []string                   `json:"removed_packages"`
+	Extra     []string                   `json:"extra_packages"`
 }
 
 type UpdateRunRequest struct {

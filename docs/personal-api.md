@@ -331,3 +331,35 @@ versions, architecture and origins, so drift requires renewed remediation approv
 Parsed package/version facts are visible; raw simulation output and repository credentials are omitted.
 Risk review persistence revalidates the stable Server owner; a concurrent rename or
 delete/recreate cannot attach the original finding review to the replacement.
+
+The immutable `transaction.preparation.scope_simulations` map separately records
+fresh `-s` simulations of the same four maintenance commands. Download-only
+discovery output supplies URI/disk facts and does not establish dependency
+versions. Each scope binds a digest of actual install/upgrade/removal records,
+including architecture and origin; only sanitized package/version facts, new
+packages, removals and extras are public. Standard security approval can upgrade
+ordinary dependencies, which are displayed explicitly. A scope with unavailable
+or incomplete simulation is rejected by approval endpoints. Every scope is
+simulated again after approval, and changed dependency versions/origins require
+renewed consent. No package mutation command or fifth Approval Scope is added.
+
+`transaction.preparation.source_identity` records fresh structured metadata for
+pending and simulated dependency packages using the existing bounded read-only
+APT/dpkg collector. Its digest also binds current source/candidate mappings,
+release signature proofs, administrator holds and negative pins. Observation
+clock fields are excluded from identity. The package map exposes binary/source
+versions, distribution ecosystems and provenance decisions, without raw output,
+repository credentials or release-file paths. Source/provenance drift at the
+same binary candidate version requires renewed approval and invalidates an
+obsolete candidate-fix forecast; unknown source facts never establish a CVE fix.
+
+Live maintenance approvals bind Server credentials/configuration with HMAC under
+a private app-runtime key; neither the key nor an unkeyed SSH-password verifier
+is persisted or exposed through the public digest. Restart/restore interrupt
+maintenance rather than resuming approval. Durable verification instead uses
+the separate credential-free stable target identity, so a new runtime key
+cannot strand pending verification or cause an update replay.
+
+Architecture-independent APT packages (`all`) use their bare dpkg package name
+for source evidence and forecasts, including explicit `:all` discovery aliases.
+Native and foreign binary identities retain their evidenced architecture.

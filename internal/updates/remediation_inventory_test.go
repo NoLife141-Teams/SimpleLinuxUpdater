@@ -6,6 +6,9 @@ import (
 	"debian-updater/internal/vulnerabilities"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,6 +101,119 @@ func TestRemediationWholeDiscoveryDetectsSourceAndUnselectedCandidateDrift(t *te
 			}
 			if remediationDiscoveryEqual(base, fresh) {
 				t.Fatal("drift accepted")
+			}
+		})
+	}
+}
+
+func TestRemediationScopesCaptureActualCommandsAndSanitizeDependencyEvidence(t *testing.T) {
+	discovery := PackageDiscoveryOutcome{PendingUpdates: []servers.PendingUpdate{{Package: "security-package", CurrentVersion: "1", CandidateVersion: "2", Security: true}, {Package: "kept-package", CurrentVersion: "1", CandidateVersion: "2", Security: true, KeptBack: true, RequiresFull: true}}}
+	var drift bool
+	r := &withActorRunner{session: &HostMaintenanceSessionFuncs{RunCommandFunc: func(_ context.Context, request HostCommandRequest) (HostCommandResult, error) {
+		if request.Effect != HostCommandEffectReadOnly || !strings.Contains(request.Command, "apt-get -s") || strings.Contains(request.Command, "--download-only") {
+			t.Fatal("not a read-only simulation of the canonical scope", request)
+		}
+		v, origin := "2", "https://synthetic:private@repo.invalid/old"
+		if drift {
+			v, origin = "3", "https://synthetic:private@repo.invalid/new"
+		}
+		return HostCommandResult{Stdout: fmt.Sprintf("Inst security-package [1] (2 Debian:stable [amd64])\nInst ordinary-dependency [1] (%s %s [amd64])\nInst new-dependency (1 Debian:stable [amd64])\n", v, origin)}, nil
+	}}}
+	before, err := r.readRemediationScopes(discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drift = true
+	after, err := r.readRemediationScopes(discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for scope, p := range before {
+		if !p.Available || p.Digest == "" || p.Digest == after[scope].Digest || len(p.Packages) != 3 || len(p.Extra) < 1 || len(p.Added) != 1 {
+			t.Fatalf("scope %s omitted actual dependency changes: %+v", scope, p)
+		}
+	}
+	raw, _ := json.Marshal(before)
+	if strings.Contains(string(raw), "private") || strings.Contains(string(raw), "https:") || strings.Contains(string(raw), "Inst ") {
+		t.Fatalf("raw output leaked: %s", raw)
+	}
+}
+
+func TestRemediationSourceIdentityUsesGeneratedMetadataCommandForNewDependency(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("shell fixture requires sh")
+	}
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"dpkg":       "printf 'amd64\\n'",
+		"dpkg-query": "printf 'existing:amd64\\tsource-existing\\t1\\t1\\tinstalled\\n'",
+		"apt-get":    "exit 0",
+		"apt-mark":   "exit 0",
+		"find":       "exit 0",
+		"stat":       "exit 0",
+		"apt-cache": `case "$1" in
+policy) [ "$#" -gt 1 ] || exit 0; printf 'new-dependency:amd64:\n  Installed: (none)\n  Candidate: 2\n  Version table:\n     2 500\n';;
+show) printf 'Package: new-dependency\nVersion: 2\nSource: source-dependency (%s)\n\n' "$SLU_SYNTH_SOURCE_VERSION";;
+*) exit 3;;
+esac`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	osRelease := filepath.Join(dir, "os-release")
+	if err := os.WriteFile(osRelease, []byte("ID=debian\nVERSION_ID=12\nVERSION_CODENAME=bookworm\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sourceVersion := "2"
+	r := &withActorRunner{session: &HostMaintenanceSessionFuncs{RunCommandFunc: func(ctx context.Context, request HostCommandRequest) (HostCommandResult, error) {
+		if request.Effect != HostCommandEffectReadOnly || request.Operation != "cve_enrichment.package_inventory" {
+			t.Fatal(request)
+		}
+		command := strings.ReplaceAll(request.Command, "/etc/os-release", osRelease)
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "SLU_SYNTH_SOURCE_VERSION="+sourceVersion)
+		output, err := cmd.CombinedOutput()
+		return HostCommandResult{Stdout: string(output)}, err
+	}}}
+	installed := []servers.PendingUpdate{{Package: "existing:amd64", CurrentVersion: "1", SourcePackage: "source-existing", InstalledSourceVersion: "1"}}
+	scopes := map[string]RemediationScopePreparation{"full_upgrade": {Available: true, Packages: []servers.SimulatedPackage{{Package: "new-dependency", Architecture: "amd64", CandidateVersion: "2"}}}}
+	before, err := r.readRemediationSources(PackageDiscoveryOutcome{}, scopes, installed, "debian 12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceVersion = "3"
+	after, err := r.readRemediationSources(PackageDiscoveryOutcome{}, scopes, installed, "debian 12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := after.Packages["new-dependency:amd64"]
+	if !scopes["full_upgrade"].Available || p.InstalledVersion != "" || p.CandidateVersion != "2" || p.CandidateSourcePackage != "source-dependency" || p.CandidateSourceVersion != "3" || before.Digest == after.Digest {
+		t.Fatalf("same-binary-version source drift escaped generated collection: %+v", after)
+	}
+}
+
+func TestRemediationSourceCollectionUsesNativeForeignAndAllBinaryIdentities(t *testing.T) {
+	for _, tc := range []struct{ name, pending, install, raw, simulated, arch, installed, selector string }{
+		{"native", "binary", "", "binary/stable 2 amd64 [upgradable from: 1]", "binary", "amd64", "binary:amd64", "binary:amd64"},
+		{"foreign", "binary", "binary:i386", "binary/stable 2 i386 [upgradable from: 1]", "binary:i386", "i386", "binary:i386", "binary:i386"},
+		{"all", "all-package", "", "all-package/stable 2 all [upgradable from: 1]", "all-package", "all", "all-package", "all-package"},
+		{"explicit all", "all-package:all", "", "", "all-package", "all", "all-package", "all-package"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installed := []servers.PendingUpdate{{Package: tc.installed, CurrentVersion: "1", SourcePackage: "source-example", InstalledSourceVersion: "1"}}
+			digest := installedInventoryDigest(installed)
+			r := &withActorRunner{session: &HostMaintenanceSessionFuncs{RunCommandFunc: func(_ context.Context, request HostCommandRequest) (HostCommandResult, error) {
+				if request.Effect != HostCommandEffectReadOnly || !strings.Contains(request.Command, tc.selector) || strings.Contains(request.Command, ":all") || tc.arch == "i386" && strings.Contains(request.Command, "binary:amd64") {
+					t.Fatal("wrong binary identity requested", request.Command)
+				}
+				return HostCommandResult{Stdout: fmt.Sprintf("__SLU_OS__\tdebian\t12\n__SLU_INVENTORY_DIGEST__\t%s\n__SLU_PACKAGE__\t%s\t%s\tsource-example\t1\t1\tDebian\tverified\tbinary\t2\tsource-example (2)\tDebian\tverified\n", digest, tc.selector, tc.installed)}, nil
+			}}}
+			discovery := PackageDiscoveryOutcome{PendingUpdates: []servers.PendingUpdate{{Package: tc.pending, InstallPackage: tc.install, Raw: tc.raw, CurrentVersion: "1", CandidateVersion: "2"}}}
+			scopes := map[string]RemediationScopePreparation{"all": {Available: true, Packages: []servers.SimulatedPackage{{Package: tc.simulated, Architecture: tc.arch, CurrentVersion: "1", CandidateVersion: "2"}}}}
+			result, err := r.readRemediationSources(discovery, scopes, installed, "debian 12")
+			if err != nil || !scopes["all"].Available || result.Packages[tc.selector].InstalledVersion != "1" {
+				t.Fatalf("valid binary transaction unavailable: %+v %v", result, err)
 			}
 		})
 	}

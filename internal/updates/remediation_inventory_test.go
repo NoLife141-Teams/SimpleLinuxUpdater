@@ -218,3 +218,42 @@ func TestRemediationSourceCollectionUsesNativeForeignAndAllBinaryIdentities(t *t
 		})
 	}
 }
+
+func TestRemediationSourceIdentityBindsVerifiedReleaseProofs(t *testing.T) {
+	installed := []servers.PendingUpdate{{Package: "binary:amd64", CurrentVersion: "1", SourcePackage: "source-example", InstalledSourceVersion: "1"}}
+	proof := "/var/lib/apt/lists/synthetic_InRelease|/usr/share/keyrings/debian-archive-keyring.gpg|" + strings.Repeat("a", 64)
+	r := &withActorRunner{session: &HostMaintenanceSessionFuncs{RunCommandFunc: func(_ context.Context, request HostCommandRequest) (HostCommandResult, error) {
+		if request.Effect != HostCommandEffectReadOnly {
+			t.Fatal(request)
+		}
+		return HostCommandResult{Stdout: fmt.Sprintf("__SLU_OS__\tdebian\t12\n__SLU_INVENTORY_DIGEST__\t%s\n__SLU_PACKAGE__\tbinary:amd64\tbinary:amd64\tsource-example\t1\t1\tDebian\tverified\tbinary\t2\tsource-example (2)\tDebian\tverified\n__SLU_RELEASE__\t%s\n", installedInventoryDigest(installed), proof)}, nil
+	}}}
+	discovery := PackageDiscoveryOutcome{PendingUpdates: []servers.PendingUpdate{{Package: "binary:amd64"}}}
+	read := func() RemediationSourcePreparation {
+		t.Helper()
+		result, err := r.readRemediationSources(discovery, nil, installed, "debian 12")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := read()
+	if read().Digest != before.Digest {
+		t.Fatal("unchanged release proof did not preserve plan identity")
+	}
+	for _, changed := range []string{
+		strings.Replace(proof, strings.Repeat("a", 64), strings.Repeat("b", 64), 1),
+		strings.Replace(proof, "synthetic_InRelease", "other_InRelease", 1),
+		strings.Replace(proof, "debian-archive-keyring.gpg", "other-keyring.gpg", 1),
+	} {
+		proof = changed
+		after := read()
+		if after.Digest == before.Digest {
+			t.Fatal("release signature proof changed without invalidating plan identity")
+		}
+		public, err := json.Marshal(after)
+		if err != nil || strings.Contains(string(public), "/var/lib/apt/") || strings.Contains(string(public), "/usr/share/keyrings/") {
+			t.Fatalf("release paths exposed in public proof DTO: %s %v", public, err)
+		}
+	}
+}

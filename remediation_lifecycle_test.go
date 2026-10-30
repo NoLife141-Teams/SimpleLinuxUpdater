@@ -194,7 +194,7 @@ func (s remediationTestScanner) ScanInstalled(ctx context.Context, _ HostMainten
 	return scan, nil
 }
 func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *testing.T) {
-	for _, mode := range []string{"success", "unavailable_scope", "late_source_version_drift", "late_source_package_drift", "late_source_provenance_drift", "late_candidate_drift", "late_dependency_version_drift", "late_dependency_origin_drift", "late_download_dependency_drift", "late_security_dependency_version_drift", "late_security_dependency_origin_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
+	for _, mode := range []string{"success", "unavailable_scope", "late_source_version_drift", "late_source_package_drift", "late_source_provenance_drift", "late_release_proof_drift", "late_candidate_drift", "late_dependency_version_drift", "late_dependency_origin_drift", "late_download_dependency_drift", "late_security_dependency_version_drift", "late_security_dependency_origin_drift", "postcheck_failed", "scan_failed", "partial", "security_scope", "kept_back_scope", "full_scope", "cancelled", "configuration_drift"} {
 		t.Run(mode, func(t *testing.T) {
 			app := newIsolatedTestApp(t)
 			server, err := app.Deps.ServerInventoryService.Create(Server{Name: "example-host", Host: "example-host.invalid", User: "root", Pass: "synthetic"})
@@ -261,7 +261,15 @@ func TestRemediationRunnerPreparationApprovalHealthCorrelatedScanAndDrift(t *tes
 									signed = ""
 								}
 							}
-							return HostCommandResult{Stdout: syntheticRemediationMetadata(version.Load(), candidate, dependency, ordinary, sourceVersion, sourcePackage, signed), Attempts: 1}, nil
+							metadata := syntheticRemediationMetadata(version.Load(), candidate, dependency, ordinary, sourceVersion, sourcePackage, signed)
+							if mode == "late_release_proof_drift" {
+								digest := strings.Repeat("a", 64)
+								if discoveries > 1 {
+									digest = strings.Repeat("b", 64)
+								}
+								metadata += "__SLU_RELEASE__\t/var/lib/apt/lists/synthetic_InRelease|/usr/share/keyrings/debian-archive-keyring.gpg|" + digest + "\n"
+							}
+							return HostCommandResult{Stdout: metadata, Attempts: 1}, nil
 						}
 						if strings.HasPrefix(r.Operation, "remediation.simulate.") {
 							if mode == "unavailable_scope" && strings.HasSuffix(r.Operation, ".all") {

@@ -30,7 +30,8 @@ func (r *withActorRunner) readRemediationSources(discovery PackageDiscoveryOutco
 		packages = append(packages, p)
 	}
 	slices.SortFunc(packages, func(a, b servers.PendingUpdate) int { return strings.Compare(a.Package, b.Package) })
-	metadata, err := collectHostVulnerabilityInventory(r.maintenanceContext(), r.session, packages)
+	proofs := []string{}
+	metadata, err := collectHostVulnerabilityInventoryWithProofs(r.maintenanceContext(), r.session, packages, &proofs)
 	if err != nil {
 		return RemediationSourcePreparation{}, err
 	}
@@ -39,13 +40,13 @@ func (r *withActorRunner) readRemediationSources(discovery PackageDiscoveryOutco
 	}
 	// Observation clocks and index ages are presentation facts. The identity binds
 	// current source/candidate mappings, provenance, holds/pins and release files.
-	slices.Sort(metadata.ReleaseProofs)
+	slices.Sort(proofs)
 	identity := struct {
 		Distro, Inventory string
 		Packages          map[string]packageVulnerabilityInventory
 		Holds             map[string]bool
 		Releases          []string
-	}{distro, metadata.InstalledDigest, metadata.Packages, metadata.Holds, metadata.ReleaseProofs}
+	}{distro, metadata.InstalledDigest, metadata.Packages, metadata.Holds, proofs}
 	body, err := json.Marshal(identity)
 	if err != nil {
 		return RemediationSourcePreparation{}, err

@@ -310,8 +310,9 @@
             })(),
             coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
             freshnessLabel: text(info.freshness, "unknown"),
-            resultLabel: { confirmed_exposure: "Confirmed exposure", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
-            findings: list(info.findings).map(finding => ({ ...clone(record(finding)), dispositionLabel: dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
+            qualificationCountsLabel: `${count(info.reported_cves)} reported CVEs · ${count(info.confirmed_cves)} vendor-confirmed source matches · ${count(info.needs_review_cves)} to review · ${count(info.vendor_qualified_cves)} vendor-qualified · ${count(info.withdrawn_cves)} withdrawn · ${count(info.occurrences)} package occurrences`,
+            resultLabel: { confirmed_exposure: "Historical source matches — review required", vendor_confirmed: "Vendor-confirmed source matches; runtime applicability unverified", needs_review: "Source matches require review", qualified_findings: "Qualified findings; inspect vendor reasoning", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
+            findings: list(info.findings).map(finding => ({ ...clone(record(finding)), qualificationLabel: {vendor_confirmed:"Vendor-confirmed source match",vendor_qualified:"Vendor-qualified: inspect rationale",withdrawn:"Advisory withdrawn; no package fix demonstrated"}[text(record(finding).qualification)] || "Applicability requires review", dispositionLabel: dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
             errors: list(info.errors).map(value => text(value))
         };
     }

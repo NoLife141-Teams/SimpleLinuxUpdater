@@ -121,3 +121,7 @@ _Avoid_: Global key, fallback key, shared key
 **Host Maintenance Session**:
 A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, connection-bound pre-update and post-update health inspection, versioned per-Server/tag application expectations with bounded read-only probes, package discovery, host-fact collection, and transport closure, while the invoking application service owns action lifecycle, approval and blocking policy, jobs, audit, and persistence.
 _Avoid_: SSH helper bundle, update connection
+
+**Distribution Vulnerability Assessment**:
+The source-attributed evaluation of a vulnerability for an exact distribution ecosystem, source package and version, including vendor triage/priority, applicability/confidence and observation freshness. It is distinct from CVSS, candidate availability, runtime exploitability and resolution of an installed-package finding. Missing or stale assessments require review; vendor-qualified and withdrawn advisories remain visible without being represented as package fixes.
+_Avoid_: CVSS verdict, confirmed vulnerability from an OSV ID alone

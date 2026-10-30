@@ -82,7 +82,7 @@
             case "pending_approval": return "Show hosts waiting for approval";
             case "active": return "Show hosts with active maintenance phases";
             case "stale_facts": return "Show hosts whose facts need refresh";
-            case "high_risk": return "Show hosts with CVE exposure";
+            case "high_risk": return "Show hosts with CVE matches";
             default: return "Show all hosts";
             }
         }

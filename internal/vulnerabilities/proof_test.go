@@ -237,6 +237,43 @@ func TestUnverifiedInventoryCannotCreateAnAbsenceCutoff(t *testing.T) {
 	}
 }
 
+func TestInventoryAbsenceDoesNotConfuseUnqualifiedAndMultiarchSelectors(t *testing.T) {
+	for _, names := range [][2]string{{"lib", "lib:amd64"}, {"lib:amd64", "lib"}} {
+		t.Run(names[0]+" to "+names[1], func(t *testing.T) {
+			old := Accept(Observation{}, Scan{State: "partial", FinishedAt: "2026-10-01T12:00:00Z", Findings: []Finding{{Package: names[0], ID: "CVE-A"}}})
+			current := evidenceScan("current", "2026-10-02T12:00:00Z", []Package{{Name: names[1], Version: "1", State: "unknown"}}, nil)
+			next := Accept(old, current)
+			if f := finding(t, next, names[0], "CVE-A"); f.ResolvedAt != "" || f.Resolution != nil {
+				t.Fatal("architecture qualification was mistaken for package removal", f)
+			}
+			if next.SupersedesPackageEvidence(names[0], "2026-10-01T13:00:00Z") || len(next.PackageAbsenceProofs) != 0 {
+				t.Fatal("still-present alias was recorded as absent", next)
+			}
+			// Also cover approval-only names newly appearing with a different
+			// spelling, without a prior installed finding to seed the cutoff.
+			before := Accept(Observation{}, evidenceScan("before", "2026-10-01T12:00:00Z", []Package{{Name: names[0], Version: "1", State: "unknown"}}, nil))
+			after := Accept(before, current)
+			if after.SupersedesPackageEvidence(names[1], "2026-10-01T11:00:00Z") || len(after.PackageAbsenceProofs) != 0 {
+				t.Fatal("earlier alias was ignored while retaining absence cutoff", after)
+			}
+		})
+	}
+}
+
+func TestInventoryAliasPresenceDoesNotBorrowArchitectureEvaluation(t *testing.T) {
+	scan := evidenceScan("current", "2026-10-02T12:00:00Z", []Package{{Name: "lib:amd64", Version: "2"}, {Name: "lib:i386", Version: "1", State: "unknown"}}, nil)
+	o := Accept(Observation{}, scan)
+	at := "2026-10-01T12:00:00Z"
+	if !o.SupersedesPackageEvidence("lib:amd64", at) || o.SupersedesPackageEvidence("lib:i386", at) || o.SupersedesPackageEvidence("lib", at) {
+		t.Fatal("complete native evaluation was borrowed by an unknown architecture/alias", o)
+	}
+	old := Accept(Observation{}, evidenceScan("old", "2026-10-01T12:00:00Z", []Package{{Name: "lib:amd64", Version: "1"}}, []Finding{{Package: "lib:amd64", ID: "CVE-A"}}))
+	foreignOnly := evidenceScan("foreign", "2026-10-02T12:00:00Z", []Package{{Name: "lib:i386", Version: "1", State: "unknown"}}, nil)
+	if f := finding(t, Accept(old, foreignOnly), "lib:amd64", "CVE-A"); f.Resolution == nil || f.Resolution.Reason != "package_removed" {
+		t.Fatal("distinct explicit architectures were incorrectly treated as aliases", f)
+	}
+}
+
 func TestProofResolutionLegacyMultiarchReappearanceAndTimeOrdering(t *testing.T) {
 	old := Accept(Observation{}, evidenceScan("old", "2026-10-01T12:00:00Z", []Package{{Name: "lib:amd64", Version: "1"}, {Name: "lib:i386", Version: "1"}}, []Finding{{Package: "lib:amd64", ID: "CVE-A"}, {Package: "lib:i386", ID: "CVE-A"}}))
 	s := evidenceScan("new", "2026-10-02T12:00:00Z", []Package{{Name: "lib:amd64", Version: "2"}, {Name: "lib:i386", Version: "1", State: "unknown"}}, nil)

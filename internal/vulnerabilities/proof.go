@@ -2,8 +2,47 @@ package vulnerabilities
 
 import (
 	"context"
+	"strings"
 	"time"
 )
+
+// Inventory absence is negative knowledge: an unqualified selector can refer
+// to a native-architecture-qualified dpkg name, and an unqualified dpkg name
+// cannot disprove a qualified selector. Evaluation proofs still match exactly.
+type packagePresence struct {
+	exact map[string]bool
+	bases map[string]bool
+}
+
+func newPackagePresence(size int) packagePresence {
+	return packagePresence{exact: make(map[string]bool, size), bases: make(map[string]bool, size)}
+}
+
+func (p packagePresence) add(name string) {
+	p.exact[name] = true
+	base, _, _ := strings.Cut(name, ":")
+	p.bases[base] = true
+}
+
+func (p packagePresence) mayContain(name string) bool {
+	if p.exact[name] {
+		return true
+	}
+	base, _, qualified := strings.Cut(name, ":")
+	if qualified {
+		return p.exact[base]
+	}
+	return p.bases[name]
+}
+
+func selectorsMayReferToSamePackage(a, b string) bool {
+	if a == b {
+		return true
+	}
+	aBase, _, aQualified := strings.Cut(a, ":")
+	bBase, _, bQualified := strings.Cut(b, ":")
+	return aBase == bBase && (!aQualified || !bQualified)
+}
 
 // EvaluationProof attests a complete source query for one exact installed
 // binary/source identity, verified again at the end of this scan. It is not a
@@ -181,7 +220,7 @@ func (o Observation) SupersedesPackageEvidence(name, observedAt string) bool {
 		verified, err := time.Parse(time.RFC3339, p.VerifiedAt)
 		if err == nil && !verified.Before(at) {
 			for _, pkg := range p.Packages {
-				if pkg == name {
+				if selectorsMayReferToSamePackage(pkg, name) {
 					return false
 				}
 			}
@@ -212,17 +251,17 @@ func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProo
 		absences[name] = InventoryAbsenceProof{ScanID: inventory.ScanID, ServerName: inventory.ServerName, Package: name, ObservedAt: inventory.ObservedAt, VerifiedAt: inventory.VerifiedAt}
 	}
 	if removal {
-		currentNames := make(map[string]bool, len(scan.Packages))
+		currentNames := newPackagePresence(len(scan.Packages))
 		for _, p := range scan.Packages {
-			currentNames[p.Name] = true
+			currentNames.add(p.Name)
 		}
 		for name := range out.PackageProofs {
-			if !currentNames[name] {
+			if !currentNames.mayContain(name) {
 				recordAbsence(name, scan.InventoryProof)
 			}
 		}
 		for _, f := range out.Findings {
-			if !currentNames[f.Package] {
+			if !currentNames.mayContain(f.Package) {
 				recordAbsence(f.Package, scan.InventoryProof)
 			}
 		}
@@ -230,12 +269,12 @@ func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProo
 		// complete inventory, even if its earlier approval match was never in the
 		// installed ledger. Keep that cutoff before replacing the inventory.
 		if previous := out.InventoryProof; previous != nil {
-			previousNames := make(map[string]bool, len(previous.Packages))
+			previousNames := newPackagePresence(len(previous.Packages))
 			for _, name := range previous.Packages {
-				previousNames[name] = true
+				previousNames.add(name)
 			}
-			for name := range currentNames {
-				if !previousNames[name] {
+			for name := range currentNames.exact {
+				if !previousNames.mayContain(name) {
 					recordAbsence(name, previous)
 				}
 			}
@@ -268,11 +307,11 @@ func retainProofs(out *Observation, scan Scan, proofs map[string]*EvaluationProo
 	}
 }
 
-func resolutionFor(scan Scan, f Finding, proofs map[string]*EvaluationProof, installed map[string]bool, removal bool) *Resolution {
+func resolutionFor(scan Scan, f Finding, proofs map[string]*EvaluationProof, installed packagePresence, removal bool) *Resolution {
 	if !scanMayResolve(scan) {
 		return nil
 	}
-	if !installed[f.Package] {
+	if !installed.mayContain(f.Package) {
 		if !removal {
 			return nil
 		}

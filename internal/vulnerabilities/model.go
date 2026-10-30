@@ -108,9 +108,9 @@ func Accept(previous Observation, scan Scan) Observation {
 	}
 	out.Accepted = &scan
 	proofs, removal := validatedPackageProofs(scan), scan.HasRemovalProof()
-	installed := map[string]bool{}
+	installed := newPackagePresence(len(scan.Packages))
 	for _, p := range scan.Packages {
-		installed[p.Name] = true
+		installed.add(p.Name)
 	}
 	retainProofs(&out, scan, proofs, removal)
 	complete := scan.State == "complete" && scan.Scope == "installed_packages" && scan.Unknown == 0 && scan.Unsupported == 0 && scan.Evaluated == scan.Inventoried && len(scan.Errors) == 0

@@ -11,9 +11,10 @@ import (
 
 // Every browser decision identifies the exact pending plan the operator saw.
 type serverActionApprovalIdentity struct {
-	JobID            string `json:"job_id"`
-	DeferralRevision string `json:"deferral_revision,omitempty"`
-	Generation       uint64 `json:"approval_generation"`
+	RemediationDigest string `json:"remediation_digest,omitempty"`
+	JobID             string `json:"job_id"`
+	DeferralRevision  string `json:"deferral_revision,omitempty"`
+	Generation        uint64 `json:"approval_generation"`
 }
 
 type serverActionApprovalRequest struct {
@@ -48,6 +49,9 @@ func (l *serverActionLifecycle) withPendingApproval(name string, identity server
 	}
 	if status.Status != "pending_approval" {
 		return jsonResult(http.StatusConflict, "Server not pending approval")
+	}
+	if status.RemediationDigest != "" && identity.RemediationDigest != status.RemediationDigest {
+		return jsonResult(http.StatusConflict, staleApprovalMessage)
 	}
 	if identity.JobID == "" || identity.Generation == 0 || status.JobID != identity.JobID || status.ApprovalGeneration != identity.Generation || status.UpgradePlan.PackageDeferrals.Revision != identity.DeferralRevision {
 		return jsonResult(http.StatusConflict, staleApprovalMessage)
@@ -98,6 +102,11 @@ func (l *serverActionLifecycle) approve(name string, identity serverActionApprov
 	result := l.withPendingApproval(name, identity, func(status *ServerStatus) serverActionLifecycleResult {
 		if status.UpgradePlan.PackageDeferrals.Revision != freshRevision {
 			return jsonResult(http.StatusConflict, staleApprovalMessage)
+		}
+		if l.validateRemediation != nil {
+			if err := l.validateRemediation(status, server, scope, confirmRemovals); err != nil {
+				return jsonResult(http.StatusConflict, "Remediation evidence changed; prepare and approve again: "+err.Error())
+			}
 		}
 		approval = updatespkg.EvaluateManualApproval(status, scope, updatespkg.ApprovalScopeOptions{ConfirmRemovals: confirmRemovals})
 		if !approval.Allowed {

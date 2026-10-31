@@ -204,7 +204,8 @@ type DashboardSummaryResponse struct {
 }
 
 type DashboardSummaryOptions struct {
-	OmitCommandHistory bool
+	OmitVulnerabilityFindings bool
+	OmitCommandHistory        bool
 }
 
 type HealthTrendPoint struct {

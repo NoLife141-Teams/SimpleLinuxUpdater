@@ -1335,7 +1335,7 @@
                 )
                 .join("");
             return `<section class="vulnerability-summary" aria-label="Installed package vulnerabilities">
-                <h3>Installed package vulnerabilities</h3>
+                <h3>Installed package vulnerabilities</h3><p><a href="/vulnerabilities?server=${encodeURIComponent(selected.server.name)}">Open full CVE analysis</a> · <a href="/remediation?server=${encodeURIComponent(selected.server.name)}">Prepare remediation and review verification</a></p>
                 <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
                 <p>${escapeHtml(info.coverageLabel)}</p>
                 <p>${escapeHtml(info.scopeLabel)}</p>

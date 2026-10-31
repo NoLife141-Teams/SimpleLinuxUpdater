@@ -166,7 +166,7 @@
 
             try {
                 const response = await fetch(
-                    "/api/dashboard/summary?window=7d&include_command_history=false",
+                    "/api/dashboard/summary?window=7d&include_command_history=false&include_vulnerability_findings=false",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {

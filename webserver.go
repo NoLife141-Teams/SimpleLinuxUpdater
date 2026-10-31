@@ -1155,6 +1155,15 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 	if c.Request != nil {
 		ctx = c.Request.Context()
 	}
+	omitFindings := false
+	if raw := c.Query("include_vulnerability_findings"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "invalid include_vulnerability_findings value"})
+			return
+		}
+		omitFindings = !v
+	}
 	includeCommandHistory := contextAllows(c, "logs:read")
 	if raw := strings.TrimSpace(c.Query("include_command_history")); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -1165,7 +1174,8 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		includeCommandHistory = parsed && contextAllows(c, "logs:read")
 	}
 	summary, err := service.BuildDashboardSummaryContextWithOptions(ctx, c.Query("window"), now(), observabilitypkg.DashboardSummaryOptions{
-		OmitCommandHistory: !includeCommandHistory,
+		OmitCommandHistory:        !includeCommandHistory,
+		OmitVulnerabilityFindings: omitFindings,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1874,6 +1884,14 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 		c.HTML(http.StatusOK, "manage.html", operatorShellForContext(c, "manage", "Manage Servers"))
 	})
 
+	r.GET("/vulnerabilities", func(c *gin.Context) {
+		setNoStoreHeaders(c)
+		c.HTML(http.StatusOK, "vulnerabilities.html", operatorShellForContext(c, "vulnerabilities", "CVE analysis"))
+	})
+	r.GET("/remediation", func(c *gin.Context) {
+		setNoStoreHeaders(c)
+		c.HTML(http.StatusOK, "remediation.html", operatorShellForContext(c, "vulnerabilities", "Correction plan"))
+	})
 	r.GET("/observability", func(c *gin.Context) {
 		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "observability.html", operatorShellForContext(c, "observability", "Observability"))
@@ -2266,6 +2284,15 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(http.StatusOK, gin.H{"has_key": status.Configured})
 	})
 
+	r.GET("/api/vulnerabilities", func(c *gin.Context) { handleVulnerabilityExplorer(c, deps) })
+	r.GET("/api/vulnerabilities/:id", func(c *gin.Context) { handleVulnerabilityExplorer(c, deps) })
+	r.GET("/api/vulnerabilities/plan", func(c *gin.Context) { handleRemediationPlan(c, deps) })
+	r.POST("/api/servers/:name/remediation/prepare", func(c *gin.Context) { handlePrepareRemediation(c, deps) })
+	r.GET("/api/servers/:name/remediation", func(c *gin.Context) { handleRemediationHistory(c, deps) })
+	r.GET("/api/servers/:name/remediation/:plan_id", func(c *gin.Context) { handleRemediationDetail(c, deps) })
+	r.GET("/api/servers/:name/remediation/:plan_id/evidence", func(c *gin.Context) { handleRemediationEvidence(c, deps) })
+	r.POST("/api/servers/:name/remediation/:plan_id/retry", func(c *gin.Context) { handleRetryRemediation(c, deps) })
+	r.POST("/api/servers/:name/vulnerabilities/reviews", func(c *gin.Context) { handleRiskReview(c, deps) })
 	r.GET("/api/servers/:name/vulnerabilities", func(c *gin.Context) { handleVulnerabilityObservation(c, deps) })
 	r.POST("/api/servers/:name/vulnerabilities/scan", func(c *gin.Context) { handleVulnerabilityScan(c, deps) })
 	r.POST("/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", func(c *gin.Context) { handleCancelVulnerabilityScan(c, deps) })

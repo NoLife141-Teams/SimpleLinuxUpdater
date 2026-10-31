@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleLinuxUpdater - CVEs</title>
+    <link rel="icon" type="image/png" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/vulnerabilities.css?v=correction-plan-20261029">
+</head>
+<body data-account-role="{{.Role}}">
+<div class="dashboard-shell">
+    {{template "operator-application-shell" .}}
+    <main class="dashboard-main cve-main">
+        <section class="dashboard-head">
+            <div><div class="eyebrow">Installed package exposure</div><h1>CVE analysis</h1><p class="muted">One row per CVE. Compare affected hosts, packages and verified candidate fixes.</p></div>
+            <div class="head-meta"><span class="meta-pill" id="cve-refreshed">Awaiting evidence</span><a class="btn-ghost" id="cve-plan-link" href="/remediation">Correction plan</a><button type="button" id="cve-refresh" class="primary-action">Refresh results</button></div>
+        </section>
+        <div id="cve-error" class="error-banner" role="alert" hidden></div>
+        <p id="cve-coverage-notice" class="cve-coverage-notice" role="status" hidden></p>
+        <section class="metric-strip cve-metrics" aria-label="Filtered CVE summary">
+            <article class="metric-item"><span>Unique CVEs</span><strong id="cve-count">—</strong></article>
+            <article class="metric-item"><span>Affected hosts</span><strong id="cve-host-count">—</strong></article>
+            <article class="metric-item"><span>Critical / High</span><strong id="cve-priority-count">—</strong></article>
+            <article class="metric-item"><span>With candidate fixes</span><strong id="cve-fix-count">—</strong></article>
+            <article class="metric-item"><span>Unknown severity evidence</span><strong id="cve-unknown-count">—</strong></article>
+            <article class="metric-item"><span>Package findings</span><strong id="cve-finding-count">—</strong></article>
+        </section>
+        <section class="workspace" aria-label="CVE results">
+            <form id="cve-filters" class="cve-filters" role="search">
+                <label class="cve-search">Search CVE, package or host<input id="cve-search" name="q" type="search" maxlength="200" placeholder="CVE-2026-… or openssl"></label>
+                <label>Server<select id="cve-server" name="server" aria-label="Server"><option value="">All hosts (including disabled)</option></select></label>
+                <label>Distribution<select id="cve-distro" name="distro" aria-label="Distribution"><option value="">All distributions</option></select></label>
+                <label>Highest known severity<select id="cve-severity" name="severity" aria-label="Highest known severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="none">None (CVSS 0)</option><option value="unknown">Includes unknown evidence</option></select></label>
+                <label>Fix status<select id="cve-fix" name="fix" aria-label="Fix status"><option value="">All fix states</option><option value="available">Has a verified candidate fix</option><option value="no_fix_available">Includes no newer candidate</option><option value="still_affected">Includes an affected candidate</option><option value="candidate_unverified">Includes unverified candidate</option></select></label>
+                <label>Age<select id="cve-age" name="min_age" aria-label="Age"><option value="0">Any age</option><option value="7">7+ days</option><option value="30">30+ days</option><option value="90">90+ days</option></select></label>
+                <label>Sort<select id="cve-sort" name="sort" aria-label="Sort"><option value="severity">Severity, then overdue</option><option value="age">Oldest findings</option><option value="hosts">Most affected hosts</option><option value="id">CVE ID</option></select></label>
+                <button type="button" id="cve-clear" class="btn-ghost">Clear filters</button>
+            </form>
+            <p class="muted cve-scope-note">Counts reflect these filters. Severity is the highest known rating in the selected scope; unknown evidence remains visible. A candidate fix can apply to only some affected packages.</p>
+            <div class="cve-results-head"><p id="cve-results-status" role="status" aria-live="polite">Loading CVE evidence…</p><nav class="cve-pagination" aria-label="CVE result pages"><button id="cve-prev" type="button" class="btn-ghost" disabled>Previous</button><span id="cve-page">Page —</span><button id="cve-next" type="button" class="btn-ghost" disabled>Next</button></nav></div>
+            <div class="table-wrap" id="cve-table-wrap" aria-busy="true">
+                <table class="cve-table"><thead><tr><th scope="col">CVE</th><th scope="col">Highest known severity</th><th scope="col">Affected hosts</th><th scope="col">Packages</th><th scope="col">Candidate fixes</th><th scope="col">Age / evidence</th></tr></thead><tbody id="cve-rows"><tr><td colspan="6">Loading CVE evidence…</td></tr></tbody></table>
+            </div>
+        </section>
+        <section id="cve-coverage" class="workspace cve-coverage" aria-label="Scan coverage">
+            <h2>Scan coverage</h2><p class="muted">Exposure counts and scan completeness are separate. Unavailable data, expired scans and unverified packages cannot establish absence of vulnerabilities.</p>
+            <div class="table-wrap"><table><thead><tr><th scope="col">Server / distribution</th><th scope="col">Scan / freshness</th><th scope="col">Evaluated packages</th><th scope="col">Coverage notes</th></tr></thead><tbody id="cve-coverage-rows"><tr><td colspan="4">Loading coverage…</td></tr></tbody></table></div>
+        </section>
+    </main>
+</div>
+<dialog id="cve-detail" aria-labelledby="cve-detail-title">
+    <div class="cve-detail-head"><div><div class="eyebrow">CVE evidence in the selected scope</div><h2 id="cve-detail-title" tabindex="-1">CVE details</h2></div><button id="cve-detail-close" type="button" class="btn-ghost">Close details</button></div>
+    <p id="cve-detail-summary" class="muted"></p><div id="cve-detail-error" role="alert" hidden></div>
+    <nav class="cve-pagination" aria-label="Package evidence pages"><button id="cve-detail-prev" type="button" class="btn-ghost" disabled>Previous packages</button><span id="cve-detail-page">Page —</span><button id="cve-detail-next" type="button" class="btn-ghost" disabled>Next packages</button></nav>
+    <div class="table-wrap"><table class="cve-evidence-table"><thead><tr><th scope="col">Server / package</th><th scope="col">Installed / candidate</th><th scope="col">Severity / fix status</th><th scope="col">Evidence</th></tr></thead><tbody id="cve-detail-rows"></tbody></table></div>
+</dialog>
+<script src="/static/auth.js"></script>
+<script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/common.js?v=quality-pass-20260711a"></script>
+<script src="/static/js/cve-page-interaction.js?v=correction-plan-20261029"></script>
+<script src="/static/js/vulnerabilities.js?v=correction-plan-20261029"></script>
+</body>
+</html>

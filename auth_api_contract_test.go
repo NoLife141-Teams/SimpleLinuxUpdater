@@ -105,7 +105,7 @@ func TestPersonalAPIOpenAPIContractMatchesRoutesScopesTypesErrorsAndPagination(t
 			}
 		}
 	}
-	if len(approvalSchema.Properties) != 4 {
+	if len(approvalSchema.Properties) != 5 {
 		t.Fatal("approval identity gained undocumented fields")
 	}
 	for path, names := range map[string][]string{"/api/audit-events": {"page", "page_size"}, "/api/jobs/{id}/logs": {"after_seq", "limit"}} {

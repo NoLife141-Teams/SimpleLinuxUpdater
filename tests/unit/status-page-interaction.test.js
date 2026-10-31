@@ -27,11 +27,13 @@ test("bulk preview budgets evaluate package facts only for selected hosts", () =
 
 test("approval identities freeze the effective deferral revision across refresh",()=>{
     const store=createStore();const revision='a'.repeat(64);
-    const server={name:"alpha",status:"pending_approval",job_id:"job",approval_generation:1,pending_updates:[{package:"curl",security:true}],upgrade_plan:{full_upgrade_plan_available:true,package_deferrals:{revision,rules:[{selector:"openssl"}]}}};
+    const server={name:"alpha",status:"pending_approval",job_id:"job",approval_generation:1,remediation_digest:"plan-one",pending_updates:[{package:"curl",security:true}],upgrade_plan:{full_upgrade_plan_available:true,package_deferrals:{revision,rules:[{selector:"openssl"}]}}};
     store.dispatch({type:"serversSnapshotReceived",servers:[server]});
     const planned=store.planAction("alpha","approve_full");
-    store.dispatch({type:"serversSnapshotReceived",servers:[{...server,approval_generation:2,upgrade_plan:{...server.upgrade_plan,package_deferrals:{revision:"b".repeat(64),rules:[]}}}]});
+    store.dispatch({type:"serversSnapshotReceived",servers:[{...server,approval_generation:2,remediation_digest:"plan-two",upgrade_plan:{...server.upgrade_plan,package_deferrals:{revision:"b".repeat(64),rules:[]}}}]});
     assert.equal(planned.payloadFacts.approvalIdentity.deferral_revision,revision);
+    assert.equal(planned.payloadFacts.approvalIdentity.remediation_digest,"plan-one");
+    assert.equal(store.planAction("alpha","approve_full").payloadFacts.approvalIdentity.remediation_digest,"plan-two");
     assert.equal(store.planAction("alpha","approve_full").payloadFacts.approvalIdentity.deferral_revision,"b".repeat(64));
 });
 

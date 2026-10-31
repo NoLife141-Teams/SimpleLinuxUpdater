@@ -99,6 +99,7 @@ func PublishProgress(ctx context.Context, progress Progress) {
 }
 
 type Scan struct {
+	CoverageReason   string          `json:"coverage_reason,omitempty"`
 	Checkpoint       bool            `json:"checkpoint,omitempty"`
 	Metrics          ScanMetrics     `json:"metrics,omitzero"`
 	Diagnostics      []Diagnostic    `json:"diagnostics,omitempty"`

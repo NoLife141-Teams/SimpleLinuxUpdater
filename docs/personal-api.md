@@ -292,3 +292,74 @@ observed by this process. Errors are sanitary reasons; authorized job logs retai
 the command output. These observations do not establish that no later external
 refresh happened and can be unknown after restart. Finding `availability.apt`
 preserves the host metadata context recorded with that observation.
+
+### CVE remediation and evidence
+
+`GET /api/vulnerabilities` and `GET /api/vulnerabilities/:id` provide bounded
+CVE/package pages (`page`, `page_size` 1–100). `GET /api/vulnerabilities/plan`
+provides whole-Server impact and paginated package treatment groups; `server`,
+`package`, `q` and `state` never narrow whole-Server totals or the APT transaction.
+The browser requests compact Dashboard Projection with
+`include_vulnerability_findings=false`; the default dashboard API remains compatible.
+
+Operational `maintenance:write` routes:
+
+- `POST /api/servers/:name/remediation/prepare`: fresh preparation; explicit manual approval.
+- `POST /api/servers/:name/remediation/:plan_id/retry`: verification only; update is never replayed.
+- `POST /api/servers/:name/vulnerabilities/reviews`: required `package`, `owner`, `reason`, `decision`, future RFC3339 `reevaluate_at`; optional `cve`, `mitigation`. Must identify an unresolved finding.
+
+Read routes use `operational:read`:
+
+- `GET /api/servers/:name/remediation`: most recent 100 plans and risk reviews, compact comparison counts.
+- `GET /api/servers/:name/remediation/:plan_id?page=1`: immutable four-scope transaction and 50-outcome comparison page.
+- `GET /api/servers/:name/remediation/:plan_id/evidence?package=example-package&page=1`: captured inventory, source/candidate finding evidence and admitted package proof, bounded to 50 entries. Omit `package` for paginated installed inventory.
+
+Existing approval endpoints/scopes remain canonical. For a remediation-linked
+pending job, send its `remediation_digest` with `job_id`, `approval_generation`,
+`deferral_revision` and applicable `confirm_removals`. Old endpoints cannot omit
+this identity to bypass the plan. Stale or changed plans return 409; fresh
+execution discovery may publish a new generation requiring renewed consent.
+Cookie same-origin protections and PAT role/scope intersection apply unchanged.
+Verification job `parent_job_id` links the update job; audit metadata retains
+plan/digest, update job and before/after scan IDs. `verified` means the proof
+comparison completed, never that every CVE or host health issue was corrected.
+
+Upgrade Plan adds `full_upgrade_simulation_digest`, `full_upgrade_simulation_packages`,
+`kept_back_security_simulation_digest` and `kept_back_security_simulation_packages`.
+Digests bind normalized simulated installs/upgrades/removals, including dependency
+versions, architecture and origins, so drift requires renewed remediation approval.
+Parsed package/version facts are visible; raw simulation output and repository credentials are omitted.
+Risk review persistence revalidates the stable Server owner; a concurrent rename or
+delete/recreate cannot attach the original finding review to the replacement.
+
+The immutable `transaction.preparation.scope_simulations` map separately records
+fresh `-s` simulations of the same four maintenance commands. Download-only
+discovery output supplies URI/disk facts and does not establish dependency
+versions. Each scope binds a digest of actual install/upgrade/removal records,
+including architecture and origin; only sanitized package/version facts, new
+packages, removals and extras are public. Standard security approval can upgrade
+ordinary dependencies, which are displayed explicitly. A scope with unavailable
+or incomplete simulation is rejected by approval endpoints. Every scope is
+simulated again after approval, and changed dependency versions/origins require
+renewed consent. No package mutation command or fifth Approval Scope is added.
+
+`transaction.preparation.source_identity` records fresh structured metadata for
+pending and simulated dependency packages using the existing bounded read-only
+APT/dpkg collector. Its digest also binds current source/candidate mappings,
+release signature proofs, administrator holds and negative pins. Observation
+clock fields are excluded from identity. The package map exposes binary/source
+versions, distribution ecosystems and provenance decisions, without raw output,
+repository credentials or release-file paths. Source/provenance drift at the
+same binary candidate version requires renewed approval and invalidates an
+obsolete candidate-fix forecast; unknown source facts never establish a CVE fix.
+
+Live maintenance approvals bind Server credentials/configuration with HMAC under
+a private app-runtime key; neither the key nor an unkeyed SSH-password verifier
+is persisted or exposed through the public digest. Restart/restore interrupt
+maintenance rather than resuming approval. Durable verification instead uses
+the separate credential-free stable target identity, so a new runtime key
+cannot strand pending verification or cause an update replay.
+
+Architecture-independent APT packages (`all`) use their bare dpkg package name
+for source evidence and forecasts, including explicit `:all` discovery aliases.
+Native and foreign binary identities retain their evidenced architecture.

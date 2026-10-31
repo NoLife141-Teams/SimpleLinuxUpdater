@@ -1130,6 +1130,7 @@
                 approvalIdentity: {
                     job_id: String(server?.job_id || ""),
                     approval_generation: Number(server?.approval_generation) || 0,
+                    ...(server?.remediation_digest ? {remediation_digest:String(server.remediation_digest)} : {}),
  ...(server?.upgrade_plan?.package_deferrals?.revision ? {deferral_revision:server.upgrade_plan.package_deferrals.revision} : {})
                 },
                 pendingUpdates: cloneValue(server?.pending_updates || [])

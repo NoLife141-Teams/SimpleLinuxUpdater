@@ -13,6 +13,11 @@ func (r *withActorRunner) commitPendingApproval(snapshot *servers.ServerStatus, 
 	if strings.TrimSpace(r.jobID) == "" {
 		return nil // Untracked embedded runners have no persisted job to publish.
 	}
+	if r.publishRemediationPlan != nil {
+		if err := r.publishRemediationPlan(snapshot, r.remediationPreparation); err != nil {
+			return err
+		}
+	}
 	jm := r.currentJobManager()
 	if jm == nil {
 		return errors.New("job manager unavailable")

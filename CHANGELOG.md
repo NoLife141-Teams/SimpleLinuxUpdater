@@ -19,6 +19,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Keep CVE action and ledger labels in English, consistent with the rest of the application, including accessible names and calendar date formatting.
+
 - Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
 - Separate source-package CVE matches from observed binary/kernel applicability,
   retain header and inactive-image signals, and identify external container-host

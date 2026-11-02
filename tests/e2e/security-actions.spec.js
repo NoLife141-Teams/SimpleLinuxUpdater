@@ -14,26 +14,27 @@ async function setup(page,actions=route=>fulfillJson(route,fixture())){
 test("one decision list at a time, full-width evidence and responsive layout",async({page})=>{
     const errors=[];page.on("pageerror",e=>errors.push(e.message));await setup(page);
     await page.goto("/vulnerabilities");
-    await expect(page.getByRole("tab",{name:/À corriger/})).toHaveAttribute("aria-selected","true");
+    await expect(page.locator("html")).toHaveAttribute("lang","en");
+    await expect(page.getByRole("tab",{name:/Available fixes/})).toHaveAttribute("aria-selected","true");
     await expect(page.locator(".security-item")).toHaveCount(1);
     await expect(page.locator("#security-rows")).not.toContainText("CVE-2026-2000");
     await expect(page.locator("#security-rows a")).toHaveAttribute("href","/remediation?server=example-host");
-    await page.getByRole("button",{name:/^Détails du correctif pour/}).click();
+    await page.getByRole("button",{name:/^Fix details for/}).click();
     await expect(page.locator(".security-evidence")).toBeVisible();
     await expect(page.locator(".security-evidence")).toContainText("1.0-2");
-    await page.getByRole("tab",{name:/Alertes critiques/}).click();
+    await page.getByRole("tab",{name:/Priority alerts/}).click();
     await expect(page.locator("#security-rows")).toContainText("CVE-2026-2000");
-    await page.getByRole("button",{name:/^Détails et mesures pour/}).click();
+    await page.getByRole("button",{name:/^Details and mitigations for/}).click();
     await expect(page.locator(".security-evidence")).toContainText('<script>alert("unsafe")</script>');
     await expect(page.locator(".security-evidence script")).toHaveCount(0);
     await expect(page.locator(".security-evidence a").first()).toHaveAttribute("href",/\/vulnerabilities\/all\?server=example-host&q=CVE/);
-    await page.getByRole("tab",{name:/Fin de support/}).click();
+    await page.getByRole("tab",{name:/End of support/}).click();
     await expect(page.locator(".security-item")).toHaveCount(2);
-    await expect(page.locator("#security-rows")).toContainText("Support éditeur terminé");
+    await expect(page.locator("#security-rows")).toContainText("Upstream support ended");
     for(const width of [1440,390]){
         await page.setViewportSize({width,height:900});
         expect(await page.evaluate(()=>document.body.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
-        await page.screenshot({path:`/tmp/slu-cve-minimal-${width}.png`,fullPage:true});
+        await page.screenshot({path:`/tmp/slu-cve-english-${width}.png`,fullPage:true});
     }
     await page.locator(".security-detail-toggle").first().click();
     await expect(page.locator(".security-evidence").first()).toContainText("2026-01-17");
@@ -44,8 +45,8 @@ test("scope, keyboard tabs and history preserve search without loading the full 
     const ledgerRequests=[];page.on("request",r=>{if(r.url().includes("/api/vulnerabilities?"))ledgerRequests.push(new URL(r.url()).searchParams.get("page_size"));});
     await page.goto("/vulnerabilities?server=example-host&recent_days=7");
     await page.locator("#security-search").fill("example");await expect.poll(()=>requests.at(-1)?.q).toBe("example");
-    await page.getByRole("tab",{name:/À corriger/}).focus();await page.keyboard.press("ArrowRight");
-    await expect(page.getByRole("tab",{name:/Alertes critiques/})).toHaveAttribute("aria-selected","true");
+    await page.getByRole("tab",{name:/Available fixes/}).focus();await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab",{name:/Priority alerts/})).toHaveAttribute("aria-selected","true");
     await expect.poll(()=>requests.at(-1)?.view).toBe("alerts");
     await expect(page.locator("#security-search")).toHaveValue("example");
     await expect(page.locator("#security-recent")).toHaveValue("7");
@@ -53,11 +54,13 @@ test("scope, keyboard tabs and history preserve search without loading the full 
     await expect(page.locator("#cve-plan-link")).toHaveAttribute("href","/remediation?server=other-host");
     await expect(page.locator("#security-ledger-link")).toHaveAttribute("href","/vulnerabilities/all?server=other-host&q=example");
     await page.goBack();await expect(page.locator("#security-server")).toHaveValue("example-host");
-    await page.goBack();await expect(page.getByRole("tab",{name:/À corriger/})).toHaveAttribute("aria-selected","true");
-    await page.goForward();await expect(page.getByRole("tab",{name:/Alertes critiques/})).toHaveAttribute("aria-selected","true");
+    await page.goBack();await expect(page.getByRole("tab",{name:/Available fixes/})).toHaveAttribute("aria-selected","true");
+    await page.goForward();await expect(page.getByRole("tab",{name:/Priority alerts/})).toHaveAttribute("aria-selected","true");
     expect(ledgerRequests.length).toBeGreaterThan(0);expect(ledgerRequests.every(v=>v==="1")).toBe(true);
     await page.locator("#security-ledger-link").click();
     await expect(page).toHaveURL(/\/vulnerabilities\/all\?server=example-host&q=example$/);
+    await expect(page.locator("html")).toHaveAttribute("lang","en");
+    await expect(page.getByRole("heading",{name:"All CVEs",exact:true})).toBeVisible();
     await expect(page.locator("#cve-search")).toHaveValue("example");
     await expect(page.locator("#cve-actions-link")).toHaveAttribute("href","/vulnerabilities?server=example-host&q=example");
     await expect(page.locator("#security-filters")).toHaveCount(0);
@@ -67,38 +70,38 @@ test("coverage warnings are aggregated by server and explicit empty states retai
     await page.unroute("**/api/vulnerabilities?**");
     await page.route("**/api/vulnerabilities?**",route=>fulfillJson(route,{...coverage(),coverage:[...coverage().coverage,{server:"CryptoNode",state:"complete",freshness:"fresh",reason:"source_coverage_unavailable"}]}));
     await page.goto("/vulnerabilities");
-    await expect(page.locator("#security-review")).toHaveText("2 serveurs à vérifier · 2 priorités à réévaluer");
-    await expect(page.locator("#security-rows")).toContainText("ne signifient pas qu’aucun correctif");
-    await page.getByRole("button",{name:"Vérifier les données"}).click();
+    await expect(page.locator("#security-review")).toHaveText("2 servers to review · 2 priority reviews");
+    await expect(page.locator("#security-rows")).toContainText("does not mean no fix");
+    await page.getByRole("button",{name:"Review evidence"}).click();
     await expect(page.locator("#security-health-hosts li")).toHaveCount(2);
-    await expect(page.locator("#security-health-hosts")).toContainText("Données CVE indisponibles pour cette distribution");
+    await expect(page.locator("#security-health-hosts")).toContainText("CVE data unavailable for this distribution");
     await expect(page.locator("#security-health-hosts")).not.toContainText("8688");
-    await page.getByRole("tab",{name:/Alertes critiques/}).click();
-    await expect(page.locator("#security-rows")).toContainText("données inconnues ou anciennes");
+    await page.getByRole("tab",{name:/Priority alerts/}).click();
+    await expect(page.locator("#security-rows")).toContainText("Unknown or stale data");
 });
 test("failed refresh retains only evidence for the same scope and coverage fails independently",async({page})=>{
     let fail=false;await setup(page,route=>fail?route.fulfill({status:503,body:"unavailable"}):fulfillJson(route,fixture()));
     await page.goto("/vulnerabilities");await expect(page.locator(".security-item")).toContainText("example-host");
-    fail=true;await page.locator("#security-refresh").click();await expect(page.locator("#security-error")).toContainText("derniers résultats");
+    fail=true;await page.locator("#security-refresh").click();await expect(page.locator("#security-error")).toContainText("Previous results");
     await expect(page.locator(".security-item")).toContainText("example-host");
     await page.locator("#security-server").selectOption("other-host");await expect(page.locator("#security-error")).toContainText("HTTP 503");
     await expect(page.locator("#security-rows")).not.toContainText("example-host");
     fail=false;await page.unroute("**/api/vulnerabilities?**");await page.route("**/api/vulnerabilities?**",r=>r.fulfill({status:503,body:"unavailable"}));
     await page.locator("#security-refresh").click();await expect(page.locator(".security-item")).toContainText("example-host");
-    await expect(page.locator("#security-review")).toContainText("Couverture des scans indisponible");
+    await expect(page.locator("#security-review")).toContainText("Scan coverage unavailable");
     await expect(page.locator("#security-error")).toBeHidden();
 });
 test("lifecycle details preserve partial provenance, dates and conflicting versions",async({page})=>{
     const data=fixture(),recorded={...data.lifecycle[1],inventory_source:"recorded_findings",inventory_partial:true,inventory_freshness:"stale",inventory_observed_at:"2026-10-01T10:00:00Z"};
     data.lifecycle=[recorded,{...recorded,component:"nodejs",version:"",cycle:"",state:"unknown",inventory_version_state:"conflicting",eol_at:"",inventory_freshness:"unknown"}];
     await setup(page,r=>fulfillJson(r,data));await page.goto("/vulnerabilities?view=lifecycle");
-    await expect(page.locator(".security-item").first()).toContainText("Inventaire partiel");
+    await expect(page.locator(".security-item").first()).toContainText("Partial inventory");
     await page.locator(".security-detail-toggle").first().click();
-    await expect(page.locator(".security-evidence").first()).toContainText("inventaire partiel et historique");
+    await expect(page.locator(".security-evidence").first()).toContainText("partial historical inventory");
     await expect(page.locator(".security-evidence").first()).toContainText("2026-10-01T10:00:00Z");
     await page.locator(".security-detail-toggle").last().click();
-    await expect(page.locator(".security-evidence").last()).toContainText("Versions contradictoires");
-    await expect(page.locator(".security-evidence").last()).toContainText("non vérifié");
+    await expect(page.locator(".security-evidence").last()).toContainText("Conflicting versions");
+    await expect(page.locator(".security-evidence").last()).toContainText("Unverified");
 });
 test("refresh applies a search still waiting for debounce",async({page})=>{
     await setup(page);
@@ -203,9 +206,9 @@ test("legacy investigation links redirect to the ledger and retain their filters
 test("fix rows retain the known-exploitation priority when a patch is available",async({page})=>{
     const data=fixture();data.fixes[0]={...data.fixes[0],severity:"medium",known_exploited:true};
     await setup(page,route=>fulfillJson(route,data));await page.goto("/vulnerabilities");
-    await expect(page.locator(".security-item")).toContainText("Exploitation connue");
-    await expect(page.locator(".security-item")).toContainText("Moyenne");
-    await page.getByRole("button",{name:/^Détails du correctif pour/}).click();
+    await expect(page.locator(".security-item")).toContainText("Known exploitation");
+    await expect(page.locator(".security-item")).toContainText("Medium");
+    await page.getByRole("button",{name:/^Fix details for/}).click();
     await expect(page.locator(".security-evidence")).toContainText("CISA KEV");
     await expect(page.locator("#security-tab-alerts")).toContainText("1");
 });
@@ -225,13 +228,13 @@ test("a delayed coverage request does not block fixes or overwrite a newer serve
         await expect.poll(()=>typeof release).toBe("function");
         await expect(page.locator(".security-item")).toContainText("example-host");
         await expect(page.locator("#security-panel")).toHaveAttribute("aria-busy","false");
-        await expect(page.locator("#security-review")).toContainText("Couverture des scans à vérifier");
+        await expect(page.locator("#security-review")).toContainText("Scan coverage needs review");
         await page.locator("#security-server").selectOption("other-host");
         await expect(page.locator(".security-item")).toContainText("other-host");
-        await expect(page.locator("#security-review")).toContainText("Couverture des scans vérifiée");
+        await expect(page.locator("#security-review")).toContainText("Scan coverage verified");
         release();
         await expect(page.locator("#security-health-hosts")).not.toContainText("example-host");
-        await expect(page.locator("#security-review")).toContainText("Couverture des scans vérifiée");
+        await expect(page.locator("#security-review")).toContainText("Scan coverage verified");
     }finally{release?.();}
 });
 
@@ -245,12 +248,12 @@ for(const coverageFails of [false,true])test(`late coverage ${coverageFails?"fai
     });
     try{
         await page.goto("/vulnerabilities");
-        const toggle=page.getByRole("button",{name:/^Détails du correctif pour/});
+        const toggle=page.getByRole("button",{name:/^Fix details for/});
         await toggle.click();
         await expect(toggle).toBeFocused();
         await expect(page.locator(".security-evidence")).toBeVisible();
         release();
-        await expect(page.locator("#security-review")).toContainText(coverageFails?"Couverture des scans indisponible":"1 serveur à vérifier");
+        await expect(page.locator("#security-review")).toContainText(coverageFails?"Scan coverage unavailable":"1 server to review");
         await expect(toggle).toBeFocused();
         await page.keyboard.press("Space");
         await expect(page.locator(".security-evidence")).toBeHidden();
@@ -274,14 +277,14 @@ test("minimal support rows retain each server identity, dated support and partia
     expect((await repeated.boundingBox()).width).toBeLessThanOrEqual(1);
     await expect(rows.first().locator(".security-component")).toContainText("Ubuntu");
     await expect(rows.first().locator(".security-component")).toContainText("25.04");
-    await expect(rows.first().locator(".security-situation")).toContainText("17 janv. 2026");
-    await expect(rows.nth(1)).toContainText("Inventaire partiel, ancien");
-    await expect(rows.nth(2)).toContainText("Extension à confirmer");
-    await expect(rows.nth(2)).toContainText("Support standard : 10 juin 2026");
-    await expect(rows.nth(2)).toContainText("Dates à vérifier");
+    await expect(rows.first().locator(".security-situation")).toContainText("Jan 17, 2026");
+    await expect(rows.nth(1)).toContainText("Partial inventory, stale");
+    await expect(rows.nth(2)).toContainText("Verify extended support");
+    await expect(rows.nth(2)).toContainText("Standard support: Jun 10, 2026");
+    await expect(rows.nth(2)).toContainText("Dates need review");
     await expect(page.locator("#security-navigation")).toBeHidden();
-    await expect(page.locator("#security-status")).toHaveText("3 / 3 composants");
-    const details=page.getByRole("button",{name:"Détails du support de Ubuntu sur example-host",exact:true});
+    await expect(page.locator("#security-status")).toHaveText("3 / 3 components");
+    const details=page.getByRole("button",{name:"Support details for Ubuntu on example-host",exact:true});
     await details.focus();await page.keyboard.press("Enter");
     await expect(page.locator(".security-evidence").first()).toBeVisible();
     await expect(details).toBeFocused();
@@ -295,11 +298,12 @@ test("minimal support rows retain each server identity, dated support and partia
     }
 });
 
-test("support dates remain calendar dates west of UTC",async({browser,baseURL})=>{
-    const context=await browser.newContext({timezoneId:"America/Toronto",baseURL});
+test("English CVE labels and calendar dates remain consistent with a French browser west of UTC",async({browser,baseURL})=>{
+    const context=await browser.newContext({timezoneId:"America/Toronto",locale:"fr-CA",baseURL});
     const page=await context.newPage();
     try{
         await setup(page);await page.goto("/vulnerabilities?view=lifecycle");
-        await expect(page.locator(".security-item").first().locator(".security-situation")).toContainText("17 janv. 2026");
+        await expect(page.getByRole("tab",{name:/End of support/})).toHaveAttribute("aria-selected","true");
+        await expect(page.locator(".security-item").first().locator(".security-situation")).toContainText("Jan 17, 2026");
     }finally{await context.close();}
 });

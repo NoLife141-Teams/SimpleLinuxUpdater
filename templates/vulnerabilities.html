@@ -1,53 +1,53 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SimpleLinuxUpdater - CVE et support</title>
+    <title>SimpleLinuxUpdater - CVE and support</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
     <link rel="stylesheet" href="/static/css/vulnerabilities.css?v=correction-plan-20261029">
-    <link rel="stylesheet" href="/static/css/security-actions.css?v=minimal-cve-20261102">
+    <link rel="stylesheet" href="/static/css/security-actions.css?v=minimal-cve-en-20261102">
 </head>
 <body data-account-role="{{.Role}}">
 <div class="dashboard-shell">
     {{template "operator-application-shell" .}}
     <main class="dashboard-main cve-main security-workbench" aria-label="CVE analysis">
         <header class="security-heading">
-            <h1>CVE et support</h1>
-            <div class="head-meta"><a id="security-ledger-link" href="/vulnerabilities/all">Toutes les CVE</a><button id="security-refresh" type="button" class="btn-ghost">Actualiser</button></div>
+            <h1>CVE and support</h1>
+            <div class="head-meta"><a id="security-ledger-link" href="/vulnerabilities/all">All CVEs</a><button id="security-refresh" type="button" class="btn-ghost">Refresh</button></div>
         </header>
-        <form id="security-filters" class="security-filters" role="search" aria-label="Filtrer les actions">
-            <label>Serveur<select id="security-server" name="server"><option value="">Tous les serveurs</option></select></label>
-            <label>Rechercher<input id="security-search" name="q" type="search" maxlength="200" placeholder="Paquet, CVE ou serveur"></label>
+        <form id="security-filters" class="security-filters" role="search" aria-label="Filter security actions">
+            <label>Server<select id="security-server" name="server"><option value="">All servers</option></select></label>
+            <label>Search<input id="security-search" name="q" type="search" maxlength="200" placeholder="Package, CVE or server"></label>
         </form>
         <p id="security-error" class="error-banner" role="alert" hidden></p>
         <details id="security-health" class="security-health">
-            <summary><span id="security-review">Vérification des données…</span><span class="security-summary-action">Détails</span></summary>
+            <summary><span id="security-review">Checking evidence…</span><span class="security-summary-action">Details</span></summary>
             <p id="security-health-status"></p><ul id="security-health-hosts"></ul>
-            <p class="muted">Une donnée manquante ou ancienne ne prouve pas l’absence de vulnérabilité. Actualiser relit les résultats enregistrés, sans lancer de scan ni installer de paquet.</p>
+            <p class="muted">Missing or stale data does not prove the absence of vulnerabilities. Refresh reads stored results without scanning servers or installing packages.</p>
         </details>
-        <section class="security-workspace" aria-label="Actions de sécurité">
-            <div class="security-tabs" role="tablist" aria-label="Priorités de sécurité">
-                <button id="security-tab-fixes" type="button" role="tab" aria-selected="true" aria-controls="security-panel" tabindex="0" data-view="fixes">À corriger <span id="security-fix-count">—</span></button>
-                <button id="security-tab-alerts" type="button" role="tab" aria-selected="false" aria-controls="security-panel" tabindex="-1" data-view="alerts">Alertes critiques <span id="security-alert-count">—</span></button>
-                <button id="security-tab-lifecycle" type="button" role="tab" aria-selected="false" aria-controls="security-panel" tabindex="-1" data-view="lifecycle">Fin de support <span id="security-lifecycle-count">—</span></button>
+        <section class="security-workspace" aria-label="Security actions">
+            <div class="security-tabs" role="tablist" aria-label="Security priorities">
+                <button id="security-tab-fixes" type="button" role="tab" aria-selected="true" aria-controls="security-panel" tabindex="0" data-view="fixes">Available fixes <span id="security-fix-count">—</span></button>
+                <button id="security-tab-alerts" type="button" role="tab" aria-selected="false" aria-controls="security-panel" tabindex="-1" data-view="alerts">Priority alerts <span id="security-alert-count">—</span></button>
+                <button id="security-tab-lifecycle" type="button" role="tab" aria-selected="false" aria-controls="security-panel" tabindex="-1" data-view="lifecycle">End of support <span id="security-lifecycle-count">—</span></button>
             </div>
             <div id="security-panel" role="tabpanel" aria-labelledby="security-tab-fixes" tabindex="0">
-                <div class="security-panel-head"><div><h2 id="security-list-title" class="sr-only">Correctifs disponibles</h2><p id="security-list-help">Correctif confirmé, installation simulée avant approbation.</p></div>
-                    <details id="security-options" hidden><summary>Période de publication</summary><label>Critiques récentes<select id="security-recent"><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option></select></label><p>Les alertes déjà suivies restent visibles au-delà de cette période.</p></details>
+                <div class="security-panel-head"><div><h2 id="security-list-title" class="sr-only">Available fixes</h2><p id="security-list-help">Confirmed fix, with installation simulated before approval.</p></div>
+                    <details id="security-options" hidden><summary>Disclosure period</summary><label>Recent critical advisories<select id="security-recent"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label><p>Previously tracked alerts remain visible beyond this period.</p></details>
                 </div>
-                <div class="table-wrap"><table class="security-table" aria-describedby="security-list-help"><thead><tr><th scope="col">Serveur</th><th scope="col">Composant</th><th id="security-situation-heading" scope="col">Situation</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="security-rows"><tr><td colspan="4">Chargement…</td></tr></tbody></table></div>
-                <nav class="security-pagination" aria-label="Pages des actions de sécurité"><p id="security-status" role="status" aria-live="polite">Chargement des actions…</p><div id="security-navigation" hidden><button id="security-prev" type="button" class="btn-ghost" disabled>Précédent</button><span id="security-page">Page —</span><button id="security-next" type="button" class="btn-ghost" disabled>Suivant</button></div></nav>
+                <div class="table-wrap"><table class="security-table" aria-describedby="security-list-help"><thead><tr><th scope="col">Server</th><th scope="col">Component</th><th id="security-situation-heading" scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="security-rows"><tr><td colspan="4">Loading…</td></tr></tbody></table></div>
+                <nav class="security-pagination" aria-label="Security action pages"><p id="security-status" role="status" aria-live="polite">Loading actions…</p><div id="security-navigation" hidden><button id="security-prev" type="button" class="btn-ghost" disabled>Previous</button><span id="security-page">Page —</span><button id="security-next" type="button" class="btn-ghost" disabled>Next</button></div></nav>
             </div>
         </section>
-        <footer class="security-footer"><a id="cve-plan-link" href="/remediation">Plan de correction par serveur</a><details><summary>Comprendre les résultats</summary><p>Les correctifs nécessitent des preuves récentes et une nouvelle approbation avant installation. Les alertes sans correctif sont confirmées pour les paquets observés ; « exploitation connue » ne signifie pas automatiquement « zero-day ».</p><p>Les dates de support applicatives décrivent le support amont. Debian/Ubuntu peuvent continuer leurs correctifs ; un support étendu et un inventaire partiel demandent une vérification.</p><p>Le périmètre couvre les paquets OS et les familles applicatives reconnues. Le contenu des images Docker, les applications autonomes et les dépendances non inventoriées restent hors couverture.</p><h3>Sources et dernière vérification</h3><ul id="security-feeds"></ul></details></footer>
+        <footer class="security-footer"><a id="cve-plan-link" href="/remediation">Correction plan by server</a><details><summary>About these results</summary><p>Fixes require recent evidence and a new approval before installation. Unpatched alerts are confirmed for the observed packages; known exploitation does not automatically mean zero-day.</p><p>Application dates describe upstream support. Debian/Ubuntu may continue providing fixes; extended support and partial inventory need separate verification.</p><p>Coverage includes OS packages and recognized application families. Docker image contents, standalone applications and dependencies missing from inventory remain outside this scope.</p><h3>Sources and last verification</h3><ul id="security-feeds"></ul></details></footer>
     </main>
 </div>
 <script src="/static/auth.js"></script>
 <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
 <script src="/static/js/cve-page-interaction.js?v=correction-plan-20261029"></script>
-<script src="/static/js/security-actions.js?v=minimal-cve-20261102"></script>
+<script src="/static/js/security-actions.js?v=minimal-cve-en-20261102"></script>
 </body>
 </html>

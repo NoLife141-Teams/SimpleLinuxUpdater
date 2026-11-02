@@ -81,6 +81,12 @@ macOS awk. The local standard and race commands exclude only that parent test wi
 repository tests nor the helper were weakened; complete unfiltered Linux
 race/coverage remain mandatory CI gates.
 
+The first hosted browser run passed the existing 218 scenarios but exposed a
+macOS-specific screenshot path in the two new scenarios. Assertions up to
+capture passed; using Playwright's per-test output directory makes capture
+portable. Both complete scenarios passed again locally without retries after
+this test-only fix.
+
 The full local browser run's archive-catalog failure passes with canonical
 `TMPDIR`. Two delayed-load navigation cases (Manage and Admin) still fail on
 this Mac and reproduce in an untouched `origin/main` extraction with one worker.

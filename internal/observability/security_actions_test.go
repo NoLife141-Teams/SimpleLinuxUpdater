@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"debian-updater/internal/securityintel"
+	"debian-updater/internal/servers"
 	"debian-updater/internal/vulnerabilities"
 )
 
@@ -99,6 +100,7 @@ func TestSecurityActionsRetainsStaleWatchedCriticalAsPriorityToReview(t *testing
 		{"scan_expired", "stale", "stale", vulnerabilities.QualificationReview, "critical", "", 1},
 		{"severity_unknown", "unknown", "fresh", vulnerabilities.QualificationConfirmed, "critical", "", 1},
 		{"current_downgrade", "fresh", "fresh", vulnerabilities.QualificationConfirmed, "medium", "", 0},
+		{"expired_downgrade", "stale", "stale", vulnerabilities.QualificationReview, "medium", "", 0},
 		{"vendor_exemption", "stale", "fresh", vulnerabilities.QualificationQualified, "critical", "", 0},
 		{"resolved", "stale", "stale", vulnerabilities.QualificationConfirmed, "critical", "2026-11-01T00:00:00Z", 0},
 	} {
@@ -114,6 +116,53 @@ func TestSecurityActionsRetainsStaleWatchedCriticalAsPriorityToReview(t *testing
 			out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now)
 			if out.AlertTotal != 0 || out.FixTotal != 0 || out.ReviewPriority != tt.wantPriority {
 				t.Fatalf("stale or superseded priority incorrectly classified: %+v", out)
+			}
+		})
+	}
+}
+
+func TestSecurityActionsRetainsWatchWhenNewerApprovalEvidenceReplacesInstalledFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		missing, downgrade, qualified bool
+		alerts, reviewPriority        int
+	}{
+		{name: "refreshed_advisory", alerts: 1},
+		{name: "missing_optional_advisory", missing: true, reviewPriority: 1},
+		{name: "current_downgrade", downgrade: true},
+		{name: "current_vendor_exemption", qualified: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, now := securityActionFixture()
+			before, current := now.Add(-2*time.Hour).Format(time.RFC3339), now.Add(-time.Hour).Format(time.RFC3339)
+			old := summary.Servers[0].Risk.Vulnerability.Findings[0].Finding
+			old.PublishedAt = now.Add(-40 * 24 * time.Hour).Format(time.RFC3339)
+			old.PrioritySince = now.Add(-39 * 24 * time.Hour).Format(time.RFC3339)
+			old.LastSeen, old.SeverityObservedAt = before, before
+			old.Assessment = vulnerabilities.Assessment{Ecosystem: "Debian:12", SourcePackage: "example", SourceVersion: "1.0-1", VendorStatus: "affected", Confidence: "vendor_confirmed", Applicability: "source_match", Source: "synthetic", ObservedAt: before}
+			old.Availability.Published.State = "not_established"
+			old.Availability.Published.Ranges = []vulnerabilities.FixRange{{Type: "ECOSYSTEM", Events: []vulnerabilities.VersionEvent{{Introduced: "0"}}}}
+			old.Availability.CandidateState = "same"
+			observation := vulnerabilities.Observation{Accepted: &vulnerabilities.Scan{State: "partial", FinishedAt: before}, Findings: []vulnerabilities.Finding{old}}
+			approval := old
+			approval.PrioritySince, approval.PublishedAt = "", ""
+			approval.Assessment.ObservedAt, approval.SeverityObservedAt = current, current
+			if tc.missing {
+				approval.Severity, approval.SeveritySource, approval.SeverityObservedAt = "unknown", "", ""
+				approval.Assessment = vulnerabilities.Assessment{}
+				approval.Availability = nil
+			}
+			if tc.downgrade {
+				approval.Severity = "medium"
+			}
+			if tc.qualified {
+				approval.Assessment.VendorStatus, approval.Assessment.Confidence = "unimportant", "vendor_qualified"
+			}
+			status := &servers.ServerStatus{PendingUpdates: []servers.PendingUpdate{{Package: old.Package, CurrentVersion: old.InstalledVersion, CandidateVersion: old.CandidateVersion, CVEScannedAt: current, CVEFindings: []servers.VulnerabilityFinding{approval}}}}
+			summary.Servers[0].Risk = projectVulnerabilityRisk(status, observation, now, nil, 24*time.Hour, true)
+			out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now)
+			if out.AlertTotal != tc.alerts || out.ReviewPriority != tc.reviewPriority {
+				t.Fatalf("newer approval evidence erased or incorrectly promoted a historical watch: %+v", out)
 			}
 		})
 	}

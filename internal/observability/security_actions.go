@@ -151,7 +151,7 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 			}
 			published, err := time.Parse(time.RFC3339, f.PublishedAt)
 			recent := err == nil && !published.After(now) && now.Sub(published) <= time.Duration(q.RecentDays)*24*time.Hour
-			watchedCritical := f.Severity == "critical" && f.SeveritySource != "" && validPriorityWatch(f.PrioritySince, now)
+			watchedCritical := validPriorityWatch(f.PrioritySince, now) && (f.Severity == "critical" || vulnerabilities.SeverityRank(f.Severity) < 0)
 			priority := exploited || (f.Severity == "critical" && f.SeveritySource != "" && f.SeverityFreshness == "fresh" && (recent || watchedCritical))
 			if fresh && priority && a != nil && f.PublishedFixFreshness == "fresh" && a.Published.State == "not_established" && len(a.Published.Ranges) > 0 {
 				row.FixState = "no_published_fix_in_source"

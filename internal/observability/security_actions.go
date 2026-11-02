@@ -116,7 +116,7 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 				continue
 			}
 			known, exploited := intel.Exploited[f.ID]
-			row := SecurityAction{Server: host.Name, Package: f.Package, Installed: f.InstalledVersion, Candidate: f.CandidateVersion, CVEs: []string{f.ID}, Severity: f.Severity, PublishedAt: f.PublishedAt, KnownExploited: exploited, Source: f.AdvisoryURL, ObservedAt: f.LastSeen, Scopes: []string{}}
+			row := SecurityAction{CVECount: 1, Server: host.Name, Package: f.Package, Installed: f.InstalledVersion, Candidate: f.CandidateVersion, CVEs: []string{f.ID}, Severity: f.Severity, PublishedAt: f.PublishedAt, KnownExploited: exploited, Source: f.AdvisoryURL, ObservedAt: f.LastSeen, Scopes: []string{}}
 			if f.SeveritySource == "" || f.SeverityFreshness != "fresh" {
 				row.Severity = "unknown"
 			}

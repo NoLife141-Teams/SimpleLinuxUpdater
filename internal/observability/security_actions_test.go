@@ -81,6 +81,11 @@ func TestSecurityActionsPriorityUsesPublicationAndRetainsWatchedAlerts(t *testin
 			if out.AlertTotal != tt.want || out.FixTotal != 0 {
 				t.Fatalf("incorrect priority: %+v", out)
 			}
+			for _, alert := range out.Alerts {
+				if alert.CVECount != len(alert.CVEs) || alert.CVECount != 1 {
+					t.Fatalf("single-finding alert reported an incorrect CVE count: %+v", alert)
+				}
+			}
 		})
 	}
 }

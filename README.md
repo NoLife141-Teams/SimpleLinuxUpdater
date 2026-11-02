@@ -232,4 +232,6 @@ send `Cache-Control: no-store`. Remote Server failures do not change readiness.
 See [deployment health checks](docs/deployment.md#installation-health-and-readiness)
 for maintenance states, Docker probes, metrics and alert examples.
 
+Interface labels are currently provided in English; configurable interface languages are not yet implemented.
+
 Security actions: `/vulnerabilities` groups verified installable fixes and priority unpatched alerts, and shows endoflife.date OS/upstream application lifecycle evidence. The page shows one tab at a time (fixes, critical alerts, support lifecycle), with inline evidence and scan-quality warnings grouped by server. The full ledger is available separately at `/vulnerabilities/all`. Public feed refresh can be disabled with `DEBIAN_UPDATER_SECURITY_INTEL_REFRESH_ENABLED=false`; `DEBIAN_UPDATER_SECURITY_INTEL_SEED_DIR` optionally supplies dated public metadata to an isolated preview. See [Security intelligence configuration](docs/configuration.md#security-actions-and-lifecycle-intelligence) for proof requirements, freshness and application coverage.

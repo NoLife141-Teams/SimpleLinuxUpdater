@@ -13,9 +13,13 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Changed
 
+- Make CVE actions easier to scan with compact server/component/status columns, readable support dates, contextual detail controls and a lighter header. Retain per-row accessible identities, dated evidence and explicit unknown/partial states.
+
 - Simplify CVE analysis into three decision tabs with shared server/search filters, active-queue pagination, inline full-width evidence, and scan-quality warnings grouped by host. Move the complete investigation ledger to `/vulnerabilities/all`, retaining old deep links and the existing correction/approval safeguards.
 
 ### Fixed
+
+- Keep CVE action and ledger labels in English, consistent with the rest of the application, including accessible names and calendar date formatting.
 
 - Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
 - Separate source-package CVE matches from observed binary/kernel applicability,

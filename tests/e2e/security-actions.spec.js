@@ -44,3 +44,50 @@ test("queue failures preserve only matching evidence and distinguish unknown dat
     await page.locator("#security-refresh").click();await expect(page.locator("#security-fixes")).toContainText("ne signifie pas qu’aucun correctif");
     await expect(page.locator("#security-alerts")).toContainText("données inconnues");
 });
+
+test("action and ledger scopes stay aligned while their pages and filters stay independent",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    const requests={actions:[],ledger:[]};
+    await page.route("**/api/security-actions?**",route=>{
+        const q=new URL(route.request().url()).searchParams;requests.actions.push(Object.fromEntries(q));
+        return fulfillJson(route,{...fixture(q.get("server")||"example-host"),page:Number(q.get("page")||1),pages:2});
+    });
+    await page.route("**/api/vulnerabilities?**",route=>{
+        const q=new URL(route.request().url()).searchParams;requests.ledger.push(Object.fromEntries(q));
+        return fulfillJson(route,{generated_at:"2026-11-02T12:00:00Z",rows:[],summary:{cves:0,hosts:0,critical_high:0,with_fix:0,unknown_severity:0,findings:0},servers:["example-host","other-host"],distros:[],coverage:[],total:0,page:Number(q.get("page")||1),pages:2,page_size:50});
+    });
+    await page.goto("/vulnerabilities?server=example-host&recent_days=7");
+    await expect(page.locator("#security-server")).toHaveValue("example-host");
+    await expect(page.locator("#cve-server")).toHaveValue("example-host");
+    await page.locator("#security-server").selectOption("other-host");
+    await expect(page.locator("#cve-server")).toHaveValue("other-host");
+    await expect(page.locator("#cve-plan-link")).toHaveAttribute("href","/remediation?server=other-host");
+    await expect.poll(()=>requests.ledger.at(-1)?.server).toBe("other-host");
+    await page.locator("#all-cves > summary").click();
+    await page.locator("#cve-server").selectOption("example-host");
+    await expect(page.locator("#security-server")).toHaveValue("example-host");
+    await expect.poll(()=>requests.actions.at(-1)?.server).toBe("example-host");
+    await page.locator("#cve-search").fill("example");
+    await expect(page.locator("#security-search")).toHaveValue("example");
+    await expect.poll(()=>requests.actions.at(-1)?.q).toBe("example");
+    expect(new URL(page.url()).searchParams.get("recent_days")).toBe("7");
+    await page.locator("#cve-next").click();
+    await expect(page.locator("#cve-page")).toContainText("2");
+    await page.locator("#security-next").click();
+    await expect(page.locator("#security-page")).toHaveText("Page 2 / 2");
+    expect(new URL(page.url()).searchParams.get("page")).toBe("2");
+    expect(new URL(page.url()).searchParams.get("action_page")).toBe("2");
+    await page.reload();
+    await expect(page.locator("#security-page")).toHaveText("Page 2 / 2");
+    await expect(page.locator("#cve-page")).toContainText("2");
+    await page.locator("#security-search").fill("different");
+    await expect(page.locator("#cve-search")).toHaveValue("different");
+    await expect(page.locator("#security-page")).toHaveText("Page 1 / 2");
+    await expect(page.locator("#cve-page")).toContainText("1");
+    expect(new URL(page.url()).searchParams.has("page")).toBe(false);
+    expect(new URL(page.url()).searchParams.has("action_page")).toBe(false);
+    await page.locator("#all-cves > summary").click();
+    await page.locator("#cve-clear").click();
+    await expect(page.locator("#security-search")).toHaveValue("");
+    await expect(page.locator("#security-server")).toHaveValue("");
+});

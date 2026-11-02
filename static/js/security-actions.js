@@ -5,7 +5,13 @@
         current?.destroy();
         const life=root.BrowserEffects.create();life.init();
         const defaults={server:"",q:"",recent_days:30,page:1};
-        const store=root.CVEPageInteraction.createStore(location.search,defaults);
+        function locationQuery(){
+            const params=new URLSearchParams(location.search);
+            params.set("page",params.get("action_page")||"1");
+            return root.CVEPageInteraction.parseQuery(params.toString(),defaults);
+        }
+        const store=root.CVEPageInteraction.createStore("",defaults);
+        store.change(locationQuery());
         const el=id=>document.getElementById(id);
         const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
         const note=v=>`<span class="security-note">${esc(v)}</span>`;
@@ -51,7 +57,18 @@
             try{const params=new URLSearchParams({...store.view().query,page_size:25});const response=await life.fetch(`/api/security-actions?${params}`,{signal:controller.signal});if(!response.ok)throw new Error(`Actions indisponibles (HTTP ${response.status})`);const data=await response.json();if(life.isCurrent(ticket)&&store.receive("list",id,data))render();}
             catch(e){if(e.name!=="AbortError"&&life.isCurrent(ticket)&&store.receive("list",id,null,e.message))render();}
         }
-        function change(patch){if(timer){life.clearTimeout(timer);timer=null;}store.change(patch);const qs=root.CVEPageInteraction.queryString(store.view().query,defaults);history.pushState({},"",`${location.pathname}${qs?`?${qs}`:""}${location.hash}`);load();}
+        function change(patch){
+            if(timer){life.clearTimeout(timer);timer=null;}
+            const before=store.view().query;store.change(patch);const query=store.view().query;
+            const params=new URLSearchParams(location.search);
+            for(const key of ["server","q","recent_days"]) {if(String(query[key])===String(defaults[key]))params.delete(key);else params.set(key,query[key]);}
+            if(query.page===1)params.delete("action_page");else params.set("action_page",query.page);
+            const scopeChanged=before.server!==query.server||before.q!==query.q;
+            if(scopeChanged)params.delete("page");
+            const qs=params.toString();history.pushState({},"",`${location.pathname}${qs?`?${qs}`:""}${location.hash}`);
+            if(scopeChanged)root.dispatchEvent(new CustomEvent("cve-scope-change",{detail:{source:"actions",server:query.server,q:query.q}}));
+            load();
+        }
         life.listen(el("security-filters"),"submit",e=>e.preventDefault());
         life.listen(el("security-server"),"change",()=>change({server:el("security-server").value}));
         life.listen(el("security-recent"),"change",()=>change({recent_days:el("security-recent").value}));
@@ -60,7 +77,13 @@
         life.listen(el("security-refresh"),"click",()=>{if(timer){life.clearTimeout(timer);timer=null;}load();});
         life.listen(el("security-prev"),"click",()=>change({page:store.view().query.page-1}));
         life.listen(el("security-next"),"click",()=>change({page:store.view().query.page+1}));
-        life.listen(root,"popstate",()=>{controller?.abort();store.change(root.CVEPageInteraction.parseQuery(location.search,defaults));load();});
+        life.listen(root,"cve-scope-change",event=>{
+            if(event.detail.source==="actions")return;
+            const query=store.view().query;if(query.server===event.detail.server&&query.q===event.detail.q)return;
+            if(timer){life.clearTimeout(timer);timer=null;}
+            store.change({server:event.detail.server,q:event.detail.q});load();
+        });
+        life.listen(root,"popstate",()=>{controller?.abort();store.change(locationQuery());load();});
         life.listen(root,"hashchange",()=>{if(location.hash==="#all-cves")el("all-cves").open=true;});
         if(location.hash==="#all-cves"||new URLSearchParams(location.search).has("fix")||new URLSearchParams(location.search).has("severity"))el("all-cves").open=true;
         current={destroy(){controller?.abort();life.destroy();}};load();

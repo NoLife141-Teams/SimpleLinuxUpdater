@@ -6425,6 +6425,18 @@
           },
           "modified_at": {
             "type": "string"
+          },
+          "supplemental_source": {
+            "type": "string",
+            "description": "Corroborating exact-release tracker URL, separate from the OSV range source."
+          },
+          "supplemental_status": {
+            "type": "string",
+            "description": "Exact source/release status reported by the corroborating tracker."
+          },
+          "supplemental_fixed_version": {
+            "type": "string",
+            "description": "Validated released source-version threshold reported by that tracker. A candidate below it remains unverified even when an OSV query omits the CVE."
           }
         },
         "description": "Exact release/source publisher evidence. fixed_versions are all established fixed events in Debian order, not the candidate version and not a claim that every later version is fixed. not_established means no published fix was established from matching metadata; it never asserts that the publisher has no fix. Unknown/malformed/other-release data stays unknown."

@@ -13,16 +13,17 @@ type FixRange struct {
 	Events []VersionEvent `json:"events"`
 }
 type PublishedFix struct {
-	SupplementalSource string     `json:"supplemental_source,omitempty"`
-	SupplementalStatus string     `json:"supplemental_status,omitempty"`
-	State              string     `json:"state"` // published, not_established, unknown, withdrawn
-	Ecosystem          string     `json:"ecosystem,omitempty"`
-	SourcePackage      string     `json:"source_package,omitempty"`
-	FixedVersions      []string   `json:"fixed_versions,omitempty"`
-	Ranges             []FixRange `json:"ranges,omitempty"`
-	Source             string     `json:"source,omitempty"`
-	ObservedAt         string     `json:"observed_at,omitempty"`
-	ModifiedAt         string     `json:"modified_at,omitempty"`
+	SupplementalSource       string     `json:"supplemental_source,omitempty"`
+	SupplementalStatus       string     `json:"supplemental_status,omitempty"`
+	SupplementalFixedVersion string     `json:"supplemental_fixed_version,omitempty"`
+	State                    string     `json:"state"` // published, not_established, unknown, withdrawn
+	Ecosystem                string     `json:"ecosystem,omitempty"`
+	SourcePackage            string     `json:"source_package,omitempty"`
+	FixedVersions            []string   `json:"fixed_versions,omitempty"`
+	Ranges                   []FixRange `json:"ranges,omitempty"`
+	Source                   string     `json:"source,omitempty"`
+	ObservedAt               string     `json:"observed_at,omitempty"`
+	ModifiedAt               string     `json:"modified_at,omitempty"`
 }
 
 // Index file dates describe local observations, not the success of the latest

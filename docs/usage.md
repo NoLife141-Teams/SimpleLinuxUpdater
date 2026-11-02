@@ -732,6 +732,12 @@ Queries use source-package identities and the existing Debian/Ubuntu archive sig
 
 OSV and distribution trackers can be incomplete or delayed, and version-based assessment does not prove exploitability or inspect locally rebuilt files. A complete scan with no findings means no findings in the supported, verified packages evaluated at that time. It is not proof that the host has no vulnerabilities. Container/application dependencies and network testing are outside this feature. Scans never remove packages; an observed removal is only recorded after complete stable inventory evidence. Package ecosystem, source name, installed version, and candidate version are sent to OSV; host credentials are not.
 
+### CVE actions and support
+
+Open **CVE analysis** to work through one of three tabs: **À corriger** (verified installable fixes), **Alertes critiques** (confirmed priority findings without an announced fix), and **Fin de support** (recognized OS/application support calendars). Filter by server and search, then open a row's details for versions, dated evidence and next steps. Preparing a correction still requires the normal explicit approval workflow; reading or refreshing this page performs no remote scan or installation.
+
+The data-quality disclosure groups missing, incomplete or old scans by server. An empty action list is not proof of zero vulnerabilities or of no published fixes. Application calendars describe upstream support, not distribution backports; partial historical inventory and extended-support uncertainty remain explicit. **Toutes les CVE** opens the separate full ledger at `/vulnerabilities/all`, retaining server and search. Its advanced filters and package proofs remain available for investigations.
+
 ### Check hosted applications after an update
 
 In **Admin → Application Checks**, create a profile, add HTTP status or systemd-active checks, and assign exact Server names or tags. Choose **Blocking** when failure must stop the maintenance rollout, or **Warning** for advisory results. Set a bounded recovery timeout to allow applications to restart before declaring failure. Save the profile, enter a Server name, and run its read-only test before relying on it. The test uses the saved assignments, not unsaved drafts, and never installs missing tools or starts services.

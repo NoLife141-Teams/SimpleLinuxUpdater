@@ -1,97 +1,99 @@
 (function(root){
     "use strict";
     let current;
+    const views={fixes:{title:"Correctifs disponibles",help:"Mises à jour avec correctif confirmé et installation simulée.",empty:"Aucun correctif installable confirmé. Des preuves APT anciennes ou manquantes ne signifient pas qu’aucun correctif n’a été publié."},alerts:{title:"Alertes prioritaires sans correctif",help:"Critiques récentes ou exploitation connue, sans correctif annoncé pour les paquets observés.",empty:"Aucune alerte sans correctif confirmée. Les données inconnues ou anciennes restent à vérifier."},lifecycle:{title:"Fin de support des OS et applications",help:"Calendriers de support pour les versions observées sur vos serveurs.",empty:"Aucun composant reconnu dans ce filtre. Les logiciels non inventoriés restent hors couverture."}};
+    const labels={end_of_life:"Fin de support",upstream_end_of_life:"Fin de support amont",extended_support_unverified:"Extension de support à vérifier",ending_soon:"Fin de support sous 90 jours",supported:"Support en cours",unknown:"Support à vérifier"};
+    const freshness={fresh:"récent",stale:"à actualiser",unavailable:"indisponible",unknown:"non vérifié"};
+    const severity={critical:"Critique",high:"Élevée",medium:"Moyenne",low:"Faible",none:"Aucune",unknown:"Non renseignée"};
     function mount(){
         current?.destroy();
+        if(location.hash==="#all-cves"||["severity","fix","distro","min_age","sort","page"].some(k=>new URLSearchParams(location.search).has(k))){location.replace("/vulnerabilities/all"+location.search+location.hash);return;}
         const life=root.BrowserEffects.create();life.init();
-        const defaults={server:"",q:"",recent_days:30,page:1};
-        function locationQuery(){
-            const params=new URLSearchParams(location.search);
-            params.set("page",params.get("action_page")||"1");
-            return root.CVEPageInteraction.parseQuery(params.toString(),defaults);
-        }
-        const store=root.CVEPageInteraction.createStore("",defaults);
-        store.change(locationQuery());
-        const el=id=>document.getElementById(id);
+        const defaults={server:"",q:"",recent_days:30,view:"fixes",page:1};
+        function locationQuery(){const p=new URLSearchParams(location.search);p.set("page",p.get("action_page")||"1");const q=root.CVEPageInteraction.parseQuery(p.toString(),defaults);if(!views[q.view])q.view="fixes";return q;}
+        const store=root.CVEPageInteraction.createStore("",defaults);store.change(locationQuery());
+        const el=id=>document.getElementById(id),tabs=Array.from(document.querySelectorAll("[data-view]"));
         const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
         const note=v=>`<span class="security-note">${esc(v)}</span>`;
-        const empty=text=>`<tr><td colspan="4" class="security-empty">${esc(text)}</td></tr>`;
-        const plan=server=>`/remediation?${new URLSearchParams({server})}`;
-        const detail=(server,id)=>`/vulnerabilities?${new URLSearchParams({server,q:id})}#all-cves`;
-        const freshness={fresh:"récent",stale:"à actualiser",unavailable:"indisponible",unknown:"non vérifié"};
-        const labels={end_of_life:"Fin de support",upstream_end_of_life:"Fin de support amont",extended_support_unverified:"Support standard terminé ; extension à vérifier",ending_soon:"Fin de support dans moins de 90 jours",supported:"Calendrier de support en cours",unknown:"Support à vérifier"};
-        let controller,timer;
+        const path=(base,values)=>base+"?"+new URLSearchParams(values).toString();
+        const plan=server=>path("/remediation",{server});
+        const ledger=(server,q="")=>path("/vulnerabilities/all",{server,q});
+        const urlLink=(url,label)=>{try{const u=new URL(url);if(!["https:","http:"].includes(u.protocol))return "";return `<a href="${esc(u.href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;}catch{return "";}};
+        let controller,timer=null,coverage=null,coverageError="",expanded=new Set();
+        function sync(){const q=store.view().query;if(timer===null)el("security-search").value=q.q;const select=el("security-server");if(q.server&&!Array.from(select.options).some(o=>o.value===q.server))select.add(new Option(q.server,q.server));select.value=q.server;el("security-recent").value=q.recent_days;el("security-ledger-link").href=ledger(q.server,q.q);el("cve-plan-link").href=plan(q.server);
+            for(const tab of tabs){const active=tab.dataset.view===q.view;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;}el("security-panel").setAttribute("aria-labelledby",`security-tab-${q.view}`);el("security-options").hidden=q.view!=="alerts";el("security-list-title").textContent=views[q.view].title;el("security-list-help").textContent=views[q.view].help;}
+        function health(data){
+            const issues=(coverage?.coverage||[]).filter(h=>h.reason||h.state!=="complete"||h.freshness!=="fresh"||h.unknown||h.unsupported||h.error_count);
+            const priority=data?.review_priority||0;
+            const summary=coverageError?"Couverture des scans indisponible":coverage?issues.length?`${issues.length} serveur${issues.length>1?"s":""} à vérifier`:coverage.coverage.length?"Couverture des scans vérifiée":"Aucun scan dans ce périmètre":"Couverture des scans à vérifier";
+            el("security-review").textContent=summary+(priority?` · ${priority} priorité${priority>1?"s":""} à réévaluer`:"");
+            el("security-health").classList.toggle("needs-attention",!!issues.length||!!priority||!!coverageError||!coverage);
+            el("security-health-status").textContent=coverageError?"La couverture n’a pas pu être relue. Réessayez avec Actualiser ; aucune absence de risque n’est établie.":issues.length?"Consultez les raisons par serveur avant de conclure à l’absence de correctifs.":coverage?.coverage.length?"Les scans enregistrés sont complets et récents. Les correctifs et les alertes restent évalués séparément.":"La couverture sera connue après la lecture des résultats.";
+            el("security-health-hosts").innerHTML=issues.map(h=>{const reason=h.reason==="source_coverage_unavailable"?"Données CVE indisponibles pour cette distribution":h.reason==="unsupported_distribution"?"Distribution non couverte":h.state==="unavailable"?"Dernier scan indisponible":h.state==="not_scanned"?"Aucun scan enregistré":h.state!=="complete"?"Scan incomplet":h.freshness!=="fresh"?"Résultats anciens":(h.unknown||h.unsupported)?"Paquets non évalués":"Erreurs à examiner";return `<li><span><strong>${esc(h.server)}</strong>${note(reason)}</span><a href="${esc(ledger(h.server))}#cve-coverage">Voir la couverture</a></li>`;}).join("");
+        }
+        function detail(f,view){
+            const field=(label,value)=>`<div><dt>${esc(label)}</dt><dd>${esc(value||"Non renseigné")}</dd></div>`;
+            if(view==="fixes")return `<dl>${field("Version installée",f.installed)}${field("Version proposée",f.candidate)}${field("CVE concernées",f.cves.join(", ")+(f.cve_count>f.cves.length?` (extrait de ${f.cve_count} CVE)`:""))}${field("Scopes simulés",f.scopes.join(", "))}${field("Preuve observée",f.observed_at)}</dl><p>La préparation revérifie la transaction. Une approbation explicite et un nouveau scan restent nécessaires pour confirmer la correction.</p>`;
+            if(view==="alerts")return `<dl>${field("Paquet installé",`${f.package} ${f.installed}`)}${field("Publication de l’avis",f.published_at)}${field("Correspondance observée",f.observed_at)}${field("Exploitation connue",f.known_exploited?`CISA KEV — ${freshness[f.exploitation_freshness]||"non vérifié"}`:"Non établie")}</dl><p>${esc(f.required_action||"Consultez l’avis éditeur pour une mesure temporaire et documentez le suivi du serveur.")}</p><p>Aucun correctif annoncé par la source pour cette distribution. Une mesure temporaire n’est pas une preuve de correction et n’est pas exécutée automatiquement.</p><div class="security-detail-links">${urlLink(f.source,"Lire l’avis")}<a href="${esc(ledger(f.server,f.cves[0]))}">Voir les preuves CVE</a><a href="${esc(plan(f.server))}">Documenter le suivi</a></div>`;
+            return `<dl>${field("Version observée",f.version)}${field("Cycle",f.cycle)}${field("Fin de support",f.eol_at)}${field("Extension possible jusqu’au",f.extended_until)}${field("Métadonnées vérifiées",f.observed_at)}${field("Fraîcheur des métadonnées",freshness[f.freshness]||"non vérifié")}${field("Fraîcheur de l’inventaire",freshness[f.inventory_freshness]||"non vérifié")}${field("Paquet observé",f.inventory_observed_at)}</dl>${f.inventory_source==="recorded_findings"?"<p>Constats CVE enregistrés : inventaire partiel et historique. Il ne confirme pas la version actuellement installée ni la présence de toutes les applications.</p>":""}${f.inventory_version_state==="conflicting"?"<p>Versions contradictoires à la même date : version et cycle non établis.</p>":""}<p>${f.kind==="application"?"Ce calendrier décrit le support amont. Les correctifs Debian/Ubuntu doivent être vérifiés séparément.":"Un support étendu doit être vérifié pour ce serveur ; sa disponibilité ne prouve pas son activation."}</p>${urlLink(f.source,"Consulter le calendrier endoflife.date")}`;
+        }
+        function rows(data,view){
+            return data[view].map((f,i)=>{
+                const id=`security-detail-${i}`,open=expanded.has(i),isLife=view==="lifecycle";
+                const component=isLife?f.component:f.package;
+                let situation,annotation,action;
+                if(view==="fixes"){situation=`${f.cve_count||f.cves.length} CVE avec correctif vérifié`;annotation=severity[f.severity]||severity.unknown;action=`<a class="security-row-primary" href="${esc(plan(f.server))}">Préparer la correction</a>`;}
+                else if(view==="alerts"){situation=f.cves[0];annotation=f.known_exploited?"Exploitation connue · sans correctif annoncé":"Critique · sans correctif annoncé";action="";}
+                else{situation=labels[f.state]||labels.unknown;annotation=f.inventory_partial?"Inventaire partiel":f.inventory_freshness!=="fresh"?"Version à revérifier":f.eol_at?`Échéance : ${f.eol_at}`:"";action="";}
+                const danger=view==="alerts"||(isLife&&["end_of_life","upstream_end_of_life"].includes(f.state));
+                return `<tr class="security-item"><td data-label="Serveur / composant"><strong>${esc(f.server)}</strong>${note((isLife?(f.kind==="os"?"OS · ":"Application · "):"")+component+(isLife?` · ${f.version||"version non établie"}`:""))}</td><td data-label="Situation"><strong class="${danger?"security-priority":""}">${esc(situation)}</strong>${note(annotation)}</td><td data-label="Prochaine action"><div class="security-row-actions">${action}<button type="button" class="btn-ghost security-detail-toggle" data-detail="${i}" aria-expanded="${open}" aria-controls="${id}">${isLife?"Vérifier le support":view==="alerts"?"Détails et mesures":"Détails"}</button></div></td></tr><tr id="${id}" class="security-evidence" ${open?"":"hidden"}><td colspan="3"><div class="security-evidence-content">${detail(f,view)}</div></td></tr>`;
+            }).join("");
+        }
         function render(){
             const {list,query}=store.view(),data=list.data;
-            if(!timer)el("security-search").value=query.q;el("security-server").value=query.server;el("security-recent").value=query.recent_days;
-            el("security-error").hidden=!list.error;
-            el("security-error").textContent=list.error?`${list.error}${data?" Les derniers résultats restent affichés.":""} Utilisez Actualiser les résultats pour réessayer.`:"";
-            el("security-prev").disabled=list.loading||!data||data.page<=1;
-            el("security-next").disabled=list.loading||!data||data.page>=data.pages;
-            el("security-filters").setAttribute("aria-busy",String(list.loading));
-            if(!data){
-                for(const id of ["security-fix-count","security-alert-count","security-lifecycle-count"])el(id).textContent="—";
-                el("security-review").textContent="Les résultats de ce filtre doivent être vérifiés avant de conclure à l’absence de correctifs ou d’alertes.";
-                el("security-page").textContent="Page —";
-                el("security-status").textContent=list.loading?"Chargement des actions…":"Résultats indisponibles";
-                for(const id of ["security-fixes","security-alerts","security-lifecycle"])el(id).innerHTML=empty(list.loading?"Chargement…":"Résultats indisponibles. Réessayez l’actualisation.");
-                return;
-            }
-            const names=query.server&&!data.servers.includes(query.server)?[query.server,...data.servers]:data.servers;
-            el("security-server").innerHTML='<option value="">Tous les serveurs</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
-            el("security-server").value=query.server;if(!timer)el("security-search").value=query.q;el("security-recent").value=query.recent_days;
-            el("security-status").textContent=`${list.loading?"Actualisation… ":""}Vue calculée le ${data.generated_at}`;
-            el("security-review").textContent=`${data.review_findings} occurrences demandent une vérification avant de conclure à un correctif disponible ou absent, dont ${data.review_priority} prioritaires. Consultez le détail et la couverture des scans ci-dessous. Une liste vide ne prouve pas l’absence de risque.`;
-            el("security-page").textContent=`Page ${data.page} / ${data.pages}`;
-            el("security-fix-count").textContent=`${data.fix_total} paquets / serveurs`;
-            el("security-alert-count").textContent=`${data.alert_total} occurrences prioritaires`;
-            el("security-lifecycle-count").textContent=`${data.lifecycle_total} composants reconnus`;
-            const notOnPage="Aucun résultat sur cette page. Revenez aux pages précédentes.";
-            el("security-fixes").innerHTML=data.fixes.length?data.fixes.map(f=>`<tr><td><strong>${esc(f.server)}</strong>${note(f.package)}</td><td>${esc(f.installed)} → ${esc(f.candidate)}${note(`Simulation : ${f.scopes.join(", ")}`)}</td><td>${esc(f.severity)}${note(`${f.cve_count||f.cves.length} CVE : ${f.cves.join(", ")}`)}${f.known_exploited?note("Exploitation connue — priorité"):""}</td><td><a href="${esc(plan(f.server))}">Préparer la correction</a>${note("Simulation à revérifier puis approbation explicite")}</td></tr>`).join(""):empty(data.fix_total?notOnPage:"Aucun correctif installable confirmé. Vérifiez la fraîcheur des scans et les informations APT ; cela ne signifie pas qu’aucun correctif n’a été publié.");
-            el("security-alerts").innerHTML=data.alerts.length?data.alerts.map(f=>`<tr><td><a href="${esc(detail(f.server,f.cves[0]))}">${esc(f.cves[0])}</a>${note(f.known_exploited?`Exploitation connue — CISA KEV (${freshness[f.exploitation_freshness]||"non vérifié"})`:"Critique")}</td><td><strong>${esc(f.server)}</strong>${note(`${f.package} ${f.installed}`)}</td><td>${esc(f.published_at||"Publication non renseignée")}${note(`Correspondance vérifiée : ${f.observed_at}`)}${note("Aucun correctif annoncé dans la source pour cette distribution")}</td><td>${esc(f.required_action||"Consulter l’avis éditeur pour les mesures temporaires ; documenter le suivi dans le plan du serveur.")} ${note("Les mesures ne sont pas exécutées automatiquement.")}<a href="${esc(plan(f.server))}">Examiner le suivi</a></td></tr>`).join(""):empty(data.alert_total?notOnPage:"Aucune alerte sans correctif confirmée dans ce périmètre. Les données inconnues, anciennes ou non qualifiées restent à vérifier ; la veille ne détecte pas tous les zero-days.");
-            el("security-lifecycle").innerHTML=data.lifecycle.length?data.lifecycle.map(f=>`<tr><td><strong>${esc(f.server)}</strong>${note(f.kind==="os"?`OS · ${f.component}`:`Application · ${f.component}`)}</td><td>${esc(f.version||"Version inconnue")}${note(`Cycle ${f.cycle||"non identifié"}`)}</td><td><span class="${["end_of_life","upstream_end_of_life"].includes(f.state)?"security-lifecycle-eol":""}">${esc(labels[f.state]||labels.unknown)}</span>${f.eol_at?note(`Fin : ${f.eol_at}`):""}${f.extended_until?note(`Extension possible jusqu’au ${f.extended_until} ; activation non vérifiée`):""}${f.kind==="application"?note("Calendrier amont ; les correctifs Debian/Ubuntu doivent être vérifiés séparément."):""}</td><td>${f.source?`<a href="${esc(f.source)}" target="_blank" rel="noopener noreferrer">endoflife.date</a>`:"Source indisponible"}${note(`Métadonnées : ${freshness[f.freshness]||"non vérifié"} · ${f.observed_at||"aucune observation"}`)}${note(`Inventaire : ${freshness[f.inventory_freshness]||"non vérifié"}`)}${f.inventory_source?note(f.inventory_source==="recorded_findings"?"Constats CVE enregistrés · inventaire partiel et historique":"Inventaire de paquets accepté"):""}${f.inventory_observed_at?note(`Paquet observé : ${f.inventory_observed_at}`):""}${f.inventory_version_state==="conflicting"?note("Versions contradictoires à la même date ; cycle non identifié."):""}</td></tr>`).join(""):empty(data.lifecycle_total?notOnPage:"Aucun composant reconnu dans ce filtre. Les logiciels non inventoriés ne sont pas déclarés pris en charge.");
-            el("security-feeds").innerHTML=Object.entries(data.feeds).map(([name,f])=>`<li>${esc(name)} : ${esc(freshness[f.state]||"non vérifié")} · ${esc(f.observed_at||"jamais vérifié")}${f.last_error?note("Échec de la dernière actualisation ; observation précédente conservée."):""}</li>`).join("");
+            if(data){const select=el("security-server");select.replaceChildren(new Option("Tous les serveurs",""),...data.servers.map(s=>new Option(s,s)));}
+            sync();health(data);
+            el("security-panel").setAttribute("aria-busy",String(list.loading));
+            el("security-error").hidden=!list.error;el("security-error").textContent=list.error?`${list.error}${data?" Les derniers résultats restent affichés.":""} Réessayez avec Actualiser.`:"";
+            for(const [id,key] of [["security-fix-count","fix_total"],["security-alert-count","alert_total"],["security-lifecycle-count","lifecycle_total"]])el(id).textContent=data?String(data[key]):"—";
+            el("security-prev").disabled=list.loading||!data||data.page<=1;el("security-next").disabled=list.loading||!data||data.page>=data.pages;
+            el("security-page").textContent=data?`Page ${data.page} / ${data.pages}`:"Page —";
+            el("security-status").textContent=list.loading?"Lecture des résultats…":data?`Dernière lecture : ${new Date(data.generated_at).toLocaleString("fr-CA")}`:"Résultats indisponibles";
+            el("security-rows").innerHTML=data?(data[query.view].length?rows(data,query.view):`<tr><td colspan="3" class="security-empty"><strong>${query.view==="fixes"?"Aucun correctif prêt à préparer":query.view==="alerts"?"Aucune alerte sans correctif confirmée":"Aucun composant dans ce filtre"}</strong><p>${esc(views[query.view].empty)}</p><button type="button" class="btn-ghost" data-checks>Vérifier les données</button></td></tr>`):`<tr><td colspan="3" class="security-empty">${list.loading?"Chargement…":"Les résultats sont indisponibles. Réessayez avec Actualiser."}</td></tr>`;
+            el("security-feeds").innerHTML=data?Object.entries(data.feeds).map(([name,f])=>`<li>${esc(name)} : ${esc(freshness[f.state]||"non vérifié")} — ${esc(f.observed_at||"jamais vérifié")}${f.last_error?note("Échec de la dernière actualisation ; observation précédente conservée."):""}</li>`).join(""):"";
         }
+        async function json(url,signal){const response=await life.fetch(url,{signal});if(!response.ok)throw new Error(`Résultats indisponibles (HTTP ${response.status})`);return response.json();}
         async function load(){
-            controller?.abort();controller=new AbortController();const id=store.begin("list"),ticket=life.capture();render();
-            try{const params=new URLSearchParams({...store.view().query,page_size:25});const response=await life.fetch(`/api/security-actions?${params}`,{signal:controller.signal});if(!response.ok)throw new Error(`Actions indisponibles (HTTP ${response.status})`);const data=await response.json();if(life.isCurrent(ticket)&&store.receive("list",id,data))render();}
-            catch(e){if(e.name!=="AbortError"&&life.isCurrent(ticket)&&store.receive("list",id,null,e.message))render();}
+            controller?.abort();controller=new AbortController();const signal=controller.signal,id=store.begin("list"),ticket=life.capture(),q=store.view().query;render();
+            const results=await Promise.allSettled([json(path("/api/security-actions",{...q,page_size:25}),signal),json(path("/api/vulnerabilities",{server:q.server,page_size:1}),signal)]);
+            if(!life.isCurrent(ticket)||signal.aborted)return;
+            if(results[0].status==="fulfilled"){
+                if(!store.receive("list",id,results[0].value))return;
+                expanded.clear();
+            }else{if(!store.receive("list",id,null,results[0].reason.message))return;}
+            if(results[1].status==="fulfilled"){coverage=results[1].value;coverageError="";}else coverageError=results[1].reason.message;
+            render();
         }
+        function clearDraft(){if(timer!==null){life.clearTimeout(timer);timer=null;}}
         function change(patch){
-            if(timer){life.clearTimeout(timer);timer=null;}
-            const before=store.view().query,next={q:el("security-search").value,...patch};
-            if(next.q!==before.q||(next.server!==undefined&&next.server!==before.server))next.page=1;
-            store.change(next);const query=store.view().query;
-            const params=new URLSearchParams(location.search);
-            for(const key of ["server","q","recent_days"]) {if(String(query[key])===String(defaults[key]))params.delete(key);else params.set(key,query[key]);}
-            if(query.page===1)params.delete("action_page");else params.set("action_page",query.page);
-            const scopeChanged=before.server!==query.server||before.q!==query.q;
-            if(scopeChanged)params.delete("page");
-            const qs=params.toString();history.pushState({},"",`${location.pathname}${qs?`?${qs}`:""}${location.hash}`);
-            if(scopeChanged)root.dispatchEvent(new CustomEvent("cve-scope-change",{detail:{source:"actions",server:query.server,q:query.q}}));
-            load();
+            clearDraft();const old=store.view().query,next={q:el("security-search").value,...patch};
+            if(next.q!==old.q||(next.server!==undefined&&next.server!==old.server)||(next.view!==undefined&&next.view!==old.view))next.page=1;
+            store.change(next);coverage=null;coverageError="";expanded.clear();
+            const q=store.view().query,p=new URLSearchParams();for(const key of ["server","q","view","recent_days"]){if(String(q[key])!==String(defaults[key]))p.set(key,q[key]);}if(q.page>1)p.set("action_page",q.page);
+            const search=p.toString();history.pushState({},"",location.pathname+(search?"?"+search:""));load();
         }
-        life.listen(el("security-filters"),"submit",e=>e.preventDefault());
+        function refresh(){clearDraft();if(el("security-search").value!==store.view().query.q)change({});else load();}
+        life.listen(el("security-filters"),"submit",e=>{e.preventDefault();refresh();});
         life.listen(el("security-server"),"change",()=>change({server:el("security-server").value}));
         life.listen(el("security-recent"),"change",()=>change({recent_days:el("security-recent").value}));
-        life.listen(el("security-search"),"input",()=>{if(timer)life.clearTimeout(timer);timer=life.setTimeout(()=>change({q:el("security-search").value}),250);});
-        function refresh(){if(timer){life.clearTimeout(timer);timer=null;}if(el("security-search").value!==store.view().query.q)change({});else load();}
-        life.listen(el("cve-refresh"),"click",refresh);
+        life.listen(el("security-search"),"input",()=>{clearDraft();timer=life.setTimeout(()=>change({}),250);});
         life.listen(el("security-refresh"),"click",refresh);
         life.listen(el("security-prev"),"click",()=>change({page:store.view().list.data.page-1}));
         life.listen(el("security-next"),"click",()=>change({page:store.view().list.data.page+1}));
-        life.listen(root,"cve-scope-change",event=>{
-            if(event.detail.source==="actions")return;
-            const query=store.view().query;if(query.server===event.detail.server&&query.q===event.detail.q)return;
-            if(timer){life.clearTimeout(timer);timer=null;}
-            store.change({server:event.detail.server,q:event.detail.q});load();
-        });
-        life.listen(root,"popstate",()=>{if(timer){life.clearTimeout(timer);timer=null;}controller?.abort();store.change(locationQuery());load();});
-        life.listen(root,"hashchange",()=>{if(location.hash==="#all-cves")el("all-cves").open=true;});
-        if(location.hash==="#all-cves"||new URLSearchParams(location.search).has("fix")||new URLSearchParams(location.search).has("severity"))el("all-cves").open=true;
-        current={destroy(){controller?.abort();life.destroy();}};load();
+        for(const tab of tabs){life.listen(tab,"click",()=>change({view:tab.dataset.view}));life.listen(tab,"keydown",e=>{let i=tabs.indexOf(tab);if(e.key==="ArrowRight")i=(i+1)%tabs.length;else if(e.key==="ArrowLeft")i=(i+tabs.length-1)%tabs.length;else if(e.key==="Home")i=0;else if(e.key==="End")i=tabs.length-1;else return;e.preventDefault();tabs[i].focus();change({view:tabs[i].dataset.view});});}
+        life.listen(el("security-rows"),"click",e=>{const button=e.target.closest("[data-detail]");if(button){const i=Number(button.dataset.detail);if(expanded.has(i))expanded.delete(i);else expanded.add(i);button.setAttribute("aria-expanded",String(expanded.has(i)));el(`security-detail-${i}`).hidden=!expanded.has(i);}if(e.target.closest("[data-checks]")){el("security-health").open=true;el("security-health").querySelector("summary").focus();}});
+        life.listen(root,"popstate",()=>{clearDraft();controller?.abort();store.change(locationQuery());coverage=null;coverageError="";expanded.clear();load();});
+        current={destroy(){clearDraft();controller?.abort();life.destroy();}};load();
     }
-    root.addEventListener("pageshow",e=>{if(e.persisted)mount();});
-    root.addEventListener("pagehide",e=>{if(!e.persisted)current?.destroy();});
-    mount();
+    root.addEventListener("pageshow",e=>{if(e.persisted)mount();});root.addEventListener("pagehide",e=>{if(!e.persisted)current?.destroy();});mount();
 })(window);

@@ -24,6 +24,9 @@
         function syncFilters() {
             const query = store.view().query;
             for (const input of byId("cve-filters").elements) { if (input.name) input.value = query[input.name]; }
+            const actionScope = new URLSearchParams();
+            for (const key of ["server", "q"]) if (query[key]) actionScope.set(key, query[key]);
+            byId("cve-actions-link").href = "/vulnerabilities" + (actionScope.size ? `?${actionScope}` : "");
             byId("cve-plan-link").href = "/remediation" + (query.server ? `?server=${encodeURIComponent(query.server)}` : "");
         }
         function renderList() {
@@ -120,7 +123,6 @@
         }
         function change(patch) {
             if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; }
-            const before = store.view().query;
             const patchWithSearch = { q: byId("cve-search").value, ...patch };
             store.change(patchWithSearch);
             controllers.detail?.abort();
@@ -129,11 +131,8 @@
             const params = new URLSearchParams(location.search);
             for (const key of Object.keys(query)) params.delete(key);
             for (const [key,value] of new URLSearchParams(root.CVEPageInteraction.queryString(query))) params.set(key,value);
-            const scopeChanged = before.server !== query.server || before.q !== query.q;
-            if (scopeChanged) params.delete("action_page");
             const encoded = params.toString();
             history.replaceState(null,"",location.pathname + (encoded ? `?${encoded}` : "") + location.hash);
-            if (scopeChanged) root.dispatchEvent(new CustomEvent("cve-scope-change",{detail:{source:"ledger",server:query.server,q:query.q}}));
             syncFilters(); load("list");
         }
         life.listen(byId("cve-filters"),"submit", event => { event.preventDefault(); change({}); });
@@ -149,16 +148,6 @@
         life.listen(byId("cve-detail-close"),"click", () => dialog.close());
         life.listen(dialog,"close", () => { controllers.detail?.abort(); store.close(); const button = Array.from(document.querySelectorAll("button[data-cve]")).find(item => item.dataset.cve === previousFocus); button?.focus({preventScroll:true}); });
         for (const [id,delta] of [["cve-detail-prev",-1],["cve-detail-next",1]]) life.listen(byId(id),"click", () => { store.detailPage(store.view().detail.data.page+delta); load("detail"); });
-        life.listen(root,"cve-scope-change", event => {
-            if (event.detail.source === "ledger") return;
-            const query = store.view().query;
-            if (query.server === event.detail.server && query.q === event.detail.q) return;
-            if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; }
-            store.change({server:event.detail.server,q:event.detail.q});
-            controllers.detail?.abort();
-            if (dialog.open) dialog.close();
-            syncFilters(); load("list");
-        });
         life.listen(root,"popstate", () => { if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; } store.change(root.CVEPageInteraction.parseQuery(location.search)); syncFilters(); if (dialog.open) dialog.close(); load("list"); });
         current = { destroy() { Object.values(controllers).forEach(controller=>controller.abort()); if (dialog.open) dialog.close(); life.destroy(); } };
         syncFilters(); load("list");

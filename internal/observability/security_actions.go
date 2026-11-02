@@ -13,13 +13,13 @@ import (
 )
 
 type SecurityActionQuery struct {
-	Server, Search             string
+	Server, Search, View       string
 	Page, PageSize, RecentDays int
 }
 
 func ParseSecurityActionQuery(v url.Values) (SecurityActionQuery, error) {
-	q := SecurityActionQuery{Server: strings.TrimSpace(v.Get("server")), Search: strings.TrimSpace(v.Get("q")), Page: 1, PageSize: 25, RecentDays: 30}
-	if len(q.Server) > 200 || len(q.Search) > 200 {
+	q := SecurityActionQuery{Server: strings.TrimSpace(v.Get("server")), Search: strings.TrimSpace(v.Get("q")), View: v.Get("view"), Page: 1, PageSize: 25, RecentDays: 30}
+	if len(q.Server) > 200 || len(q.Search) > 200 || !choice(q.View, "", "fixes", "alerts", "lifecycle") {
 		return q, strconv.ErrSyntax
 	}
 	for _, p := range []struct {
@@ -261,6 +261,14 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 	})
 	out.FixTotal, out.AlertTotal, out.LifecycleTotal = len(out.Fixes), len(out.Alerts), len(out.Lifecycle)
 	maxRows := max(out.FixTotal, out.AlertTotal, out.LifecycleTotal)
+	switch q.View {
+	case "fixes":
+		maxRows = out.FixTotal
+	case "alerts":
+		maxRows = out.AlertTotal
+	case "lifecycle":
+		maxRows = out.LifecycleTotal
+	}
 	out.Pages = max(1, (maxRows+q.PageSize-1)/q.PageSize)
 	out.Page = min(q.Page, out.Pages)
 	out.Fixes = actionPage(out.Fixes, out.Page, q.PageSize)

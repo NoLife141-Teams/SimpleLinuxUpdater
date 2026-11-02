@@ -285,7 +285,7 @@ func osLifecycleIdentity(distro, pretty string) (string, string) {
 	return "unknown", ""
 }
 
-var appNameRE = regexp.MustCompile(`^(python3(?:\.[0-9]+)?|php[0-9]+\.[0-9]+(?:-.+)?|postgresql-[0-9]+)$`)
+var appNameRE = regexp.MustCompile(`^(python3(?:\.[0-9]+)?|php[0-9]+\.[0-9]+(?:-.+)?|postgresql-[0-9]+(?:\.[0-9]+)?)$`)
 
 func appLifecycleProduct(name string) string {
 	name = strings.Split(name, ":")[0]

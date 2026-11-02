@@ -174,3 +174,36 @@ func TestLifecyclePrefersNewerOSFactsOverOldScanIdentity(t *testing.T) {
 		t.Fatalf("obsolete scan overrides newer OS facts: %+v", out.Lifecycle)
 	}
 }
+
+func TestLifecycleIncludesInstalledHistoricalPostgreSQLServerCycles(t *testing.T) {
+	summary, now := securityActionFixture()
+	summary.Servers[0].Risk.Vulnerability.Inventory = []vulnerabilities.Package{
+		{Name: "postgresql-9.6:amd64", Version: "9.6.24-1.pgdg110+1"},
+		{Name: "postgresql-17", Version: "17.1-1.pgdg120+1"},
+		{Name: "postgresql-client-9.6", Version: "9.6.24-1.pgdg110+1"},
+		{Name: "postgresql-9.6-pglogical", Version: "2.4.5-1"},
+	}
+	intel := securityintel.Snapshot{
+		Products: map[string]securityintel.Product{"postgresql": {Releases: []securityintel.Release{
+			{Name: "9.6", ReleaseDate: "2016-09-29", EOLFrom: "2021-11-11"},
+			{Name: "17", ReleaseDate: "2024-09-26", EOLFrom: "2029-11-08"},
+		}}},
+		Feeds: map[string]securityintel.Feed{"postgresql": {State: "fresh"}},
+	}
+	out := BuildSecurityActions(summary, intel, SecurityActionQuery{}, now)
+	apps := map[string]LifecycleStatus{}
+	for _, row := range out.Lifecycle {
+		if row.Kind == "application" {
+			apps[row.Component] = row
+		}
+	}
+	if len(apps) != 2 {
+		t.Fatalf("installed historical server omitted or client/extension guessed as server: %+v", apps)
+	}
+	if legacy := apps["postgresql-9.6:amd64"]; legacy.Product != "postgresql" || legacy.Cycle != "9.6" || legacy.State != "upstream_end_of_life" || legacy.EOLAt != "2021-11-11" {
+		t.Fatalf("historical installed PostgreSQL missed its known EOL calendar: %+v", legacy)
+	}
+	if modern := apps["postgresql-17"]; modern.Cycle != "17" || modern.State != "supported" {
+		t.Fatalf("modern PostgreSQL cycle regressed: %+v", modern)
+	}
+}

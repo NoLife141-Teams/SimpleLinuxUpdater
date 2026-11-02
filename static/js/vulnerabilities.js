@@ -159,7 +159,7 @@
             if (dialog.open) dialog.close();
             syncFilters(); load("list");
         });
-        life.listen(root,"popstate", () => { store.change(root.CVEPageInteraction.parseQuery(location.search)); syncFilters(); if (dialog.open) dialog.close(); load("list"); });
+        life.listen(root,"popstate", () => { if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; } store.change(root.CVEPageInteraction.parseQuery(location.search)); syncFilters(); if (dialog.open) dialog.close(); load("list"); });
         current = { destroy() { Object.values(controllers).forEach(controller=>controller.abort()); if (dialog.open) dialog.close(); life.destroy(); } };
         syncFilters(); load("list");
         return current;

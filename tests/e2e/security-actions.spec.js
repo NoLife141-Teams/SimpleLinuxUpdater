@@ -183,3 +183,31 @@ test("browser back cancels a search draft before restoring the previous scope",a
     await expect.poll(()=>requests.at(-1)?.server).toBe("example-host");
     expect(requests.at(-1)?.q).toBe("");
 });
+
+test("browser back cancels the ledger draft before restoring its independent page",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    await page.route("**/api/security-actions?**",route=>{
+        const q=new URL(route.request().url()).searchParams;
+        return fulfillJson(route,fixture(q.get("server")||"example-host"));
+    });
+    await page.route("**/api/vulnerabilities?**",route=>{
+        const q=new URL(route.request().url()).searchParams;
+        return fulfillJson(route,{generated_at:"2026-11-02T12:00:00Z",rows:[],summary:{cves:0,hosts:0,critical_high:0,with_fix:0,unknown_severity:0,findings:0},servers:["example-host","other-host"],distros:[],coverage:[],total:0,page:Number(q.get("page")||1),pages:2,page_size:50});
+    });
+    await page.goto("/vulnerabilities?server=example-host&page=2");
+    await expect(page.locator("#cve-page")).toHaveText("Page 2 of 2");
+    await page.locator("#security-server").selectOption("other-host");
+    await expect(page.locator("#cve-server")).toHaveValue("other-host");
+    await page.locator("#all-cves > summary").click();
+    await page.clock.install();
+    await page.locator("#cve-search").fill("abandoned ledger draft");
+    await page.goBack();
+    await expect(page.locator("#cve-page")).toHaveText("Page 2 of 2");
+    await page.clock.fastForward(300);
+    expect(new URL(page.url()).searchParams.get("page")).toBe("2");
+    await expect(page.locator("#cve-page")).toHaveText("Page 2 of 2");
+    await expect(page.locator("#cve-server")).toHaveValue("example-host");
+    await expect(page.locator("#security-server")).toHaveValue("example-host");
+    await expect(page.locator("#cve-search")).toHaveValue("");
+    await expect(page.locator("#security-search")).toHaveValue("");
+});

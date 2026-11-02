@@ -257,3 +257,5 @@ The security work queues and complete CVE ledger share `server` and `q` through 
 Pending queue search drafts survive a completing request. Refresh and other filter/page commands apply the current draft before clearing its debounce; a changed shared scope resets both page positions.
 
 Browser Back/Forward discards pending queue search drafts before restoring the URL scope. Page commands use the page accepted by the API, so a stale bookmarked page or a shrinking result set cannot trap Previous on the last available page.
+
+Both CVE adapters cancel their own pending search debounce before restoring browser history. An abandoned ledger draft must not reset the independent ledger page restored by an action-view history entry.

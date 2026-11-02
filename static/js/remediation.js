@@ -14,9 +14,10 @@
         const dispositions={fixed_by_candidate:"Candidate recorded as a fix",still_affected:"Candidate still affected",no_fix_available:"No newer candidate available",candidate_unverified:"Candidate not verified"};
         const dialog=el("plan-detail"),controllers={};
         let timer=null,previousPackage="";
-        function sync() {
+        function sync(preserveDraft=false) {
             const q=store.view().query;
-            el("plan-server").value=q.server;el("plan-search").value=q.q;el("plan-state").value=q.state;
+            el("plan-server").value=q.server;el("plan-state").value=q.state;
+            if(!preserveDraft||timer===null)el("plan-search").value=q.q;
             el("plan-search").disabled=!q.server;el("plan-state").disabled=!q.server;
             el("plan-back").href="/vulnerabilities"+(q.server?`?server=${encodeURIComponent(q.server)}`:"");
         }
@@ -29,7 +30,7 @@
             if(!data){if(root.RemediationWorkflow?.server()!==query.server)root.RemediationWorkflow?.select("");el("plan-status").textContent=list.loading?"Loading recorded evidence…":"Plan evidence unavailable";el("plan-page").textContent="Page —";el("plan-rows").innerHTML='<tr><td>No accepted plan response yet.</td></tr>';return;}
             const names=query.server&&!data.servers.includes(query.server)?[query.server,...data.servers]:data.servers;
             el("plan-server").innerHTML='<option value="">Choose a server</option>'+names.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join("");
-            sync();
+            sync(true);
             el("plan-page").textContent=`Page ${data.page} of ${data.pages}`;
             if(!data.selected){
  root.RemediationWorkflow?.select("");
@@ -103,9 +104,9 @@
         life.listen(dialog,"close",()=>{controllers.detail?.abort();store.close();Array.from(document.querySelectorAll("button[data-plan-package]")).find(button=>button.dataset.planPackage===previousPackage)?.focus({preventScroll:true});});
         for(const[id,delta]of [["plan-detail-prev",-1],["plan-detail-next",1]])life.listen(el(id),"click",()=>{store.detailPage(store.view().detail.data.page+delta);load("detail");});
         life.listen(root,"popstate",()=>{store.change(root.CVEPageInteraction.parseQuery(location.search,defaults));sync();if(dialog.open)dialog.close();load("list");});
-        current={destroy(){Object.values(controllers).forEach(controller=>controller.abort());if(dialog.open)dialog.close();life.destroy();}};
+        current={refreshEvidence(server){if(store.view().query.server!==server)return;if(timer!==null)change({});else{load("list");if(store.view().selected)load("detail");}},destroy(){Object.values(controllers).forEach(controller=>controller.abort());if(dialog.open)dialog.close();life.destroy();}};
         sync();load("list");return current;
     }
-    root.RemediationPage={mount,destroy(){current?.destroy();current=null;}};
+    root.RemediationPage={mount,refreshEvidence(server){current?.refreshEvidence(server);},destroy(){current?.destroy();current=null;}};
     mount();root.addEventListener("pagehide",event=>{if(!event.persisted)root.RemediationPage.destroy();});
 })(window);

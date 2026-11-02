@@ -664,7 +664,14 @@ func (s remediationBrowserScanner) ScanInstalled(ctx context.Context, session Ho
 	if s.version.Load() > 1 && s.failOnce.CompareAndSwap(true, false) {
 		return vulnerabilities.Scan{}, errors.New("synthetic verification unavailable")
 	}
-	return s.remediationTestScanner.ScanInstalled(ctx, session)
+	scan, err := s.remediationTestScanner.ScanInstalled(ctx, session)
+	for i := range scan.Findings {
+		f := &scan.Findings[i]
+		f.Availability.Published = vulnerabilities.PublishedFix{State: "published", Source: "https://synthetic.invalid", ObservedAt: scan.FinishedAt}
+		f.Availability.RepositoryState = "observed"
+		f.Availability.APT = vulnerabilities.APTContext{ObservedAt: scan.FinishedAt, LastRefreshState: "succeeded", LastRefreshAt: scan.FinishedAt}
+	}
+	return scan, err
 }
 
 func TestRemediationScopesShowProtectedTransactionsAndPointReleaseBoundary(t *testing.T) {

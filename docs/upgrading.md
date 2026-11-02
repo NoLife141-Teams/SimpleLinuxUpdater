@@ -1,11 +1,39 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading from v0.4.16 to v0.5.0
+# Upgrading to v0.5.1
 
-These instructions cover the v0.5.0 release candidate and its compatibility with
-published v0.4.16. Read the [v0.5.0 compatibility notes](../CHANGELOG.md#upgrade-notes).
-The preparation PR does not publish v0.5.0. Use the download commands below only
-after publication, with the image digest from that release's `publication.json`.
+The v0.5.1 preparation PR creates no tag, release or registry image. Use its
+versioned download commands only after publication, with the image digest from
+that release's `publication.json`.
+
+## From v0.5.0
+
+Export and verify a backup, then use the Docker or binary replacement procedure
+below. Replace the executable and web assets together. Startup adds the
+`remediation_servers`, `remediation_plans` and `vulnerability_risk_reviews`
+tables; CVE observations gain additive JSON evidence. Existing accounts, sessions,
+policies, secrets and package deferrals retain their contracts. There is no new
+required environment variable or SSH helper protocol change.
+
+Legacy CVE records do not establish current qualification, candidate availability,
+runtime applicability or resolution. Run a fresh installed vulnerability scan,
+review **CVE analysis → Available fixes**, prepare the per-Server transaction
+and explicitly approve its Approval Scope. Independent post-maintenance scanning
+must verify package outcomes; update success alone does not resolve a CVE.
+A failed verification can be retried without repeating the update.
+
+Finish or cancel pending maintenance before stopping the old process. Interrupted
+approvals require fresh discovery and approval. Rollback restores the pre-upgrade
+backup into a separate old-version installation; do not run the old executable
+on the upgraded database. See the [v0.5.1 qualification record](release-v0.5.1-readiness.md)
+for measured checks and limits.
+
+## From v0.4.16 or earlier
+
+Also follow the [v0.5.0 compatibility notes](../CHANGELOG.md#v050---2026-10-29)
+for account/session migration, policy changes and the protocol 3 managed helper.
+The pinned automated old-version qualification below remains based on published
+v0.4.16; it is not a separate v0.5.0-to-v0.5.1 migration proof.
 
 ## Before changing the application
 
@@ -56,7 +84,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.0'
+VERSION='0.5.1'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

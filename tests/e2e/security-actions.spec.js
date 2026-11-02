@@ -45,6 +45,23 @@ test("queue failures preserve only matching evidence and distinguish unknown dat
     await expect(page.locator("#security-alerts")).toContainText("données inconnues");
 });
 
+test("lifecycle distinguishes partial recorded inventory, observation dates and conflicting versions",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    const data=fixture();
+    const recorded={...data.lifecycle[1],inventory_source:"recorded_findings",inventory_partial:true,inventory_freshness:"stale",inventory_observed_at:"2026-10-01T10:00:00Z"};
+    data.lifecycle=[recorded,{...recorded,component:"nodejs",product:"nodejs",version:"",cycle:"",state:"unknown",inventory_version_state:"conflicting",eol_at:"",inventory_freshness:"unknown"}];
+    await page.route("**/api/security-actions?**",route=>fulfillJson(route,data));
+    await page.goto("/vulnerabilities");
+    const rows=page.locator("#security-lifecycle tr");
+    await expect(rows.first()).toContainText("Fin de support amont");
+    await expect(rows.first()).toContainText("Constats CVE enregistrés · inventaire partiel et historique");
+    await expect(rows.first()).toContainText("Paquet observé : 2026-10-01T10:00:00Z");
+    await expect(rows.first()).toContainText("Inventaire : à actualiser");
+    await expect(rows.last()).toContainText("Version inconnue");
+    await expect(rows.last()).toContainText("Versions contradictoires à la même date");
+    await expect(rows.last()).toContainText("Inventaire : non vérifié");
+});
+
 test("action and ledger scopes stay aligned while their pages and filters stay independent",async({page})=>{
     await ensureAuthenticatedSession(page);
     const requests={actions:[],ledger:[]};

@@ -6684,6 +6684,24 @@
           "inventory_freshness": {
             "type": "string"
           },
+          "inventory_source": {
+            "type": "string",
+            "enum": ["accepted_inventory", "recorded_findings"],
+            "description": "Application inventory provenance. Recorded unresolved findings are a partial historical inventory, used only when accepted raw package inventory is unavailable."
+          },
+          "inventory_partial": {
+            "type": "boolean",
+            "description": "True for fallback inventory inferred only from positively recorded installed finding versions; this does not change scan coverage."
+          },
+          "inventory_observed_at": {
+            "type": "string",
+            "description": "Dated installed package observation, independent of the public lifecycle metadata observation. Missing means no valid date was recorded."
+          },
+          "inventory_version_state": {
+            "type": "string",
+            "enum": ["conflicting"],
+            "description": "Equally dated installed observations disagree; version and lifecycle cycle stay unknown."
+          },
           "support_context": {
             "type": "string"
           }

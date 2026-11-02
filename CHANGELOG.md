@@ -13,6 +13,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
 - Separate source-package CVE matches from observed binary/kernel applicability,
   retain header and inactive-image signals, and identify external container-host
   kernel responsibility with explicit OS-package-only scan scope.

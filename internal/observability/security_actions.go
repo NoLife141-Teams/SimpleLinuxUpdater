@@ -58,20 +58,24 @@ type SecurityAction struct {
 	Scopes                []string `json:"scopes"`
 }
 type LifecycleStatus struct {
-	Server             string `json:"server"`
-	Component          string `json:"component"`
-	Kind               string `json:"kind"`
-	Version            string `json:"version"`
-	Product            string `json:"product"`
-	Cycle              string `json:"cycle,omitempty"`
-	State              string `json:"state"`
-	EOLAt              string `json:"eol_at,omitempty"`
-	ExtendedUntil      string `json:"extended_until,omitempty"`
-	Source             string `json:"source,omitempty"`
-	ObservedAt         string `json:"observed_at,omitempty"`
-	Freshness          string `json:"freshness"`
-	InventoryFreshness string `json:"inventory_freshness"`
-	SupportContext     string `json:"support_context"`
+	Server                string `json:"server"`
+	Component             string `json:"component"`
+	Kind                  string `json:"kind"`
+	Version               string `json:"version"`
+	Product               string `json:"product"`
+	Cycle                 string `json:"cycle,omitempty"`
+	State                 string `json:"state"`
+	EOLAt                 string `json:"eol_at,omitempty"`
+	ExtendedUntil         string `json:"extended_until,omitempty"`
+	Source                string `json:"source,omitempty"`
+	ObservedAt            string `json:"observed_at,omitempty"`
+	Freshness             string `json:"freshness"`
+	InventoryFreshness    string `json:"inventory_freshness"`
+	InventorySource       string `json:"inventory_source,omitempty"`
+	InventoryPartial      bool   `json:"inventory_partial,omitempty"`
+	InventoryObservedAt   string `json:"inventory_observed_at,omitempty"`
+	InventoryVersionState string `json:"inventory_version_state,omitempty"`
+	SupportContext        string `json:"support_context"`
 }
 type SecurityActions struct {
 	GeneratedAt    string                        `json:"generated_at"`
@@ -187,7 +191,7 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 			out.Lifecycle = append(out.Lifecycle, lifecycleFor(host.Name, osProduct, osProduct, osVersion, "os", osFreshness, intel, now))
 		}
 		seen := map[string]bool{}
-		for _, p := range info.Inventory {
+		for _, p := range lifecycleApplicationInventory(info, now) {
 			product := appLifecycleProduct(p.Name)
 			if product == "" || !actionSearch(q.Search, host.Name, p.Name, p.Version) {
 				continue
@@ -197,7 +201,10 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 				continue
 			}
 			seen[key] = true
-			out.Lifecycle = append(out.Lifecycle, lifecycleFor(host.Name, p.Name, product, p.Version, "application", info.Freshness, intel, now))
+			row := lifecycleFor(host.Name, p.Name, product, p.Version, "application", p.Freshness, intel, now)
+			row.InventorySource, row.InventoryPartial = p.Source, p.Partial
+			row.InventoryObservedAt, row.InventoryVersionState = p.ObservedAt, p.VersionState
+			out.Lifecycle = append(out.Lifecycle, row)
 		}
 	}
 	for _, f := range fixes {
@@ -262,6 +269,69 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 	sort.Strings(out.Servers)
 	return out
 }
+
+type lifecycleApplicationObservation struct {
+	Name, Version, Source, ObservedAt, Freshness, VersionState string
+	Partial                                                    bool
+	at                                                         time.Time
+}
+
+// Legacy observations may retain installed CVE evidence without the raw package
+// inventory. Those positive matches describe only a partial historical inventory,
+// never the absence of other applications. Recorded accepted packages win, as
+// does a proven empty inventory. A legacy empty slice without such proof may be
+// trimmed data; source/candidate versions are never installed facts.
+func lifecycleApplicationInventory(info DashboardVulnerabilityInfo, now time.Time) []lifecycleApplicationObservation {
+	out := []lifecycleApplicationObservation{}
+	if info.InventoryAvailable || len(info.Inventory) > 0 {
+		for _, p := range info.Inventory {
+			out = append(out, lifecycleApplicationObservation{Name: p.Name, Version: p.Version, Source: "accepted_inventory", ObservedAt: info.AcceptedAt, Freshness: info.Freshness})
+		}
+		return out
+	}
+	byPackage := map[string]lifecycleApplicationObservation{}
+	for _, f := range info.Findings {
+		if f.ResolvedAt != "" || f.ID == "" || appLifecycleProduct(f.Package) == "" || strings.TrimSpace(f.InstalledVersion) == "" {
+			continue
+		}
+		p := lifecycleApplicationObservation{Name: f.Package, Version: f.InstalledVersion, Source: "recorded_findings", Partial: true, Freshness: "unknown"}
+		at, err := time.Parse(time.RFC3339, f.LastSeen)
+		if err == nil && !at.After(now) {
+			p.at, p.ObservedAt = at, at.UTC().Format(time.RFC3339)
+			p.Freshness = partialInventoryFreshness(info.Freshness, f.Freshness)
+		}
+		old, exists := byPackage[p.Name]
+		if !exists || p.at.After(old.at) {
+			byPackage[p.Name] = p
+			continue
+		}
+		if p.at.Equal(old.at) {
+			if old.Version != p.Version {
+				old.Version, old.VersionState = "", "conflicting"
+			}
+			old.Freshness = partialInventoryFreshness(old.Freshness, p.Freshness)
+			byPackage[p.Name] = old
+		}
+	}
+	for _, p := range byPackage {
+		out = append(out, p)
+	}
+	// Stable ordering also makes aliases of the same product/version deduplicate
+	// consistently without allowing search filters to change version selection.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func partialInventoryFreshness(inventory, finding string) string {
+	if inventory == "unknown" || inventory == "" || finding == "unknown" || finding == "" {
+		return "unknown"
+	}
+	if inventory == "fresh" && finding == "fresh" {
+		return "fresh"
+	}
+	return "stale"
+}
+
 func actionPage[T any](values []T, page, size int) []T {
 	start := min(len(values), (page-1)*size)
 	return values[start:min(len(values), start+size)]

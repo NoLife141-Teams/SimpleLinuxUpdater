@@ -322,3 +322,149 @@ func TestLifecycleDoesNotInterpretPHPExtensionVersionAsRuntimeVersion(t *testing
 		t.Fatalf("extension version falsely diagnosed an unsupported PHP runtime: %+v", apps)
 	}
 }
+
+func TestLifecycleDiscoversLegacyRecordedApplicationsWithoutChangingScanCoverage(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	at := "2026-10-01T10:00:00Z"
+	for _, accepted := range []*vulnerabilities.Scan{nil, {State: "partial", Distro: "debian 11", FinishedAt: at, Inventoried: 500}, {State: "partial", Distro: "debian 11", FinishedAt: at, Inventoried: 500, Packages: []vulnerabilities.Package{}}} {
+		observation := vulnerabilities.Observation{Accepted: accepted, Findings: []vulnerabilities.Finding{
+			{ID: "CVE-2026-1000", Package: "python3.9-minimal:amd64", InstalledVersion: "3.9.2-1", LastSeen: at},
+			{ID: "CVE-2026-1001", Package: "python3.9-minimal:amd64", InstalledVersion: "3.9.2-1", LastSeen: at},
+			{ID: "CVE-2026-1002", Package: "postgresql-9.6", InstalledVersion: "9.6.24-1", LastSeen: at},
+		}}
+		risk := projectVulnerabilityRisk(nil, observation, now, nil, 24*time.Hour, false)
+		info := risk.Vulnerability
+		summary := DashboardSummaryResponse{Servers: []DashboardServerSummary{{Name: "recorded-host", Risk: risk}}}
+		intel := securityintel.Snapshot{Products: map[string]securityintel.Product{
+			"python":     {Releases: []securityintel.Release{{Name: "3.9", ReleaseDate: "2020-10-05", EOLFrom: "2025-10-31"}}},
+			"postgresql": {Releases: []securityintel.Release{{Name: "9.6", ReleaseDate: "2016-09-29", EOLFrom: "2021-11-11"}}},
+		}, Feeds: map[string]securityintel.Feed{"python": {State: "fresh"}, "postgresql": {State: "fresh"}}}
+		out := BuildSecurityActions(summary, intel, SecurityActionQuery{PageSize: 1}, now)
+		if out.LifecycleTotal != 3 || out.Pages != 3 || len(out.Lifecycle) != 1 {
+			t.Fatalf("legacy apps omitted or pagination changed: %+v", out)
+		}
+		for page := 1; page <= 2; page++ {
+			row := BuildSecurityActions(summary, intel, SecurityActionQuery{PageSize: 1, Page: page}, now).Lifecycle[0]
+			if row.Kind != "application" || row.State != "upstream_end_of_life" || row.InventorySource != "recorded_findings" || !row.InventoryPartial || row.InventoryObservedAt != at || row.InventoryFreshness != info.Freshness || row.SupportContext != "upstream_only_distribution_support_must_be_checked" {
+				t.Fatalf("historical observation promoted or provenance lost: %+v", row)
+			}
+		}
+		wantCoverage := "unknown"
+		if accepted != nil {
+			wantCoverage = "partial"
+		}
+		if info.Occurrences != 3 || info.ReportedCVEs != 3 || len(info.Findings) != 3 || info.Coverage != wantCoverage || info.ScanEnabled || (accepted != nil && info.Inventoried != 500) {
+			t.Fatalf("lifecycle compatibility changed CVE or scan coverage: %+v", info)
+		}
+	}
+}
+
+func TestLifecycleRecordedVersionsUseDatedObservationsConservatively(t *testing.T) {
+	for _, tc := range []struct {
+		name, firstAt, nextAt, nextVersion, version, versionState, observed string
+	}{
+		{"latest_not_highest_version", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "3.9.1", "3.9.1", "", "2026-10-02T00:00:00Z"},
+		{"same_instant_conflict", "2026-10-01T00:00:00Z", "2026-09-30T20:00:00-04:00", "3.10.1", "", "conflicting", "2026-10-01T00:00:00Z"},
+		{"undated_conflict", "", "invalid", "3.10.1", "", "conflicting", ""},
+		{"future_cannot_replace_dated", "2026-10-01T00:00:00Z", "2099-01-01T00:00:00Z", "3.10.1", "3.9.2", "", "2026-10-01T00:00:00Z"},
+		{"dated_supersedes_undated", "", "2026-10-02T00:00:00Z", "3.10.1", "3.10.1", "", "2026-10-02T00:00:00Z"},
+		{"undated_known_version", "", "", "3.9.2", "3.9.2", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, now := securityActionFixture()
+			info := &summary.Servers[0].Risk.Vulnerability
+			info.Freshness = "unknown"
+			info.Findings = []DashboardVulnerabilityFinding{
+				{Finding: vulnerabilities.Finding{ID: "CVE-1", Package: "python3", InstalledVersion: "3.9.2", LastSeen: tc.firstAt}, Freshness: "stale"},
+				{Finding: vulnerabilities.Finding{ID: "CVE-2", Package: "python3", InstalledVersion: tc.nextVersion, LastSeen: tc.nextAt}, Freshness: "stale"},
+			}
+			for range 2 { // Input ordering must not select a version on a tie.
+				out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{Search: "python"}, now)
+				if len(out.Lifecycle) != 1 {
+					t.Fatalf("expected one recognized historical application: %+v", out.Lifecycle)
+				}
+				row := out.Lifecycle[0]
+				if row.Version != tc.version || row.InventoryVersionState != tc.versionState || row.InventoryObservedAt != tc.observed || row.InventoryFreshness != "unknown" || row.State != "unknown" {
+					t.Fatalf("guessed conflicting, future or missing version evidence: %+v", row)
+				}
+				info.Findings[0], info.Findings[1] = info.Findings[1], info.Findings[0]
+			}
+		})
+	}
+}
+
+func TestLifecycleRecordedFindingsNeverInferMissingInstalledApplications(t *testing.T) {
+	summary, now := securityActionFixture()
+	summary.Servers[0].Name = "python-php-nodejs"
+	info := &summary.Servers[0].Risk.Vulnerability
+	info.Findings = []DashboardVulnerabilityFinding{
+		{Finding: vulnerabilities.Finding{ID: "CVE-1", Package: "nodejs", CandidateVersion: "22.1", Assessment: vulnerabilities.Assessment{SourceVersion: "18.1"}}},
+		{Finding: vulnerabilities.Finding{ID: "CVE-2", Package: "library", SourcePackage: "python3", InstalledVersion: "3.9.2"}},
+		{Finding: vulnerabilities.Finding{ID: "CVE-3", Package: "php8.2-apcu", InstalledVersion: "5.1.2"}},
+		{Finding: vulnerabilities.Finding{ID: "CVE-4", Package: "redis-server", InstalledVersion: "6.0", ResolvedAt: "2026-10-01T00:00:00Z"}},
+		{Finding: vulnerabilities.Finding{Package: "nginx", InstalledVersion: "1.18"}},
+	}
+	if out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now); out.LifecycleTotal != 1 || out.Lifecycle[0].Kind != "os" {
+		t.Fatalf("guessed an application from non-installed or resolved evidence: %+v", out.Lifecycle)
+	}
+}
+
+func TestLifecycleRecordedInventoryKeepsActualObservationFreshness(t *testing.T) {
+	for _, tc := range []struct{ inventory, finding, want string }{
+		{"fresh", "fresh", "fresh"},
+		{"fresh", "stale", "stale"},
+		{"stale", "fresh", "stale"},
+		{"unknown", "fresh", "unknown"},
+		{"fresh", "unknown", "unknown"},
+	} {
+		summary, now := securityActionFixture()
+		info := &summary.Servers[0].Risk.Vulnerability
+		info.Freshness = tc.inventory
+		info.Findings = []DashboardVulnerabilityFinding{{Finding: vulnerabilities.Finding{ID: "CVE-1", Package: "python3", InstalledVersion: "3.9.2", LastSeen: now.Add(-time.Hour).Format(time.RFC3339)}, Freshness: tc.finding}}
+		out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{Search: "python"}, now)
+		if len(out.Lifecycle) != 1 || out.Lifecycle[0].InventoryFreshness != tc.want {
+			t.Fatalf("inventory %s / finding %s was promoted: %+v", tc.inventory, tc.finding, out.Lifecycle)
+		}
+	}
+}
+
+func TestLifecycleAcceptedInventoryTakesPrecedenceOverRecordedFindings(t *testing.T) {
+	for _, inventory := range [][]vulnerabilities.Package{
+		{},
+		{{Name: "python3", Version: "3.11.2"}},
+	} {
+		summary, now := securityActionFixture()
+		info := &summary.Servers[0].Risk.Vulnerability
+		info.Inventory, info.AcceptedAt = inventory, "2026-10-01T00:00:00Z"
+		info.InventoryAvailable = true
+		info.Findings = []DashboardVulnerabilityFinding{
+			{Finding: vulnerabilities.Finding{ID: "CVE-1", Package: "python3", InstalledVersion: "3.9.2", LastSeen: "2026-11-01T00:00:00Z"}},
+			{Finding: vulnerabilities.Finding{ID: "CVE-2", Package: "redis-server", InstalledVersion: "6.0"}},
+		}
+		out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now)
+		if out.LifecycleTotal != 1+len(inventory) {
+			t.Fatalf("fallback overrode accepted inventory: %+v", out.Lifecycle)
+		}
+		for _, row := range out.Lifecycle {
+			if row.Kind == "application" && (row.Version != "3.11.2" || row.InventorySource != "accepted_inventory" || row.InventoryPartial || row.InventoryObservedAt != info.AcceptedAt) {
+				t.Fatalf("authoritative inventory version/provenance changed: %+v", row)
+			}
+		}
+	}
+}
+
+func TestLifecycleDoesNotReplaceAProvenEmptyInventoryWithRecordedFindings(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	start, end := "2026-11-02T10:00:00Z", "2026-11-02T11:00:00Z"
+	scan := vulnerabilities.Scan{ID: "empty-inventory", ServerName: "host", Scope: "installed_packages", State: "complete", StartedAt: start, FinishedAt: end,
+		InventoryProof: &vulnerabilities.InventoryProof{ScanID: "empty-inventory", ServerName: "host", Complete: true, Stable: true, ObservedAt: start, VerifiedAt: end}}
+	if !scan.HasRemovalProof() {
+		t.Fatal("fixture lacks authoritative empty inventory")
+	}
+	observation := vulnerabilities.Observation{Accepted: &scan, Findings: []vulnerabilities.Finding{{ID: "CVE-1", Package: "python3", InstalledVersion: "3.9.2", LastSeen: "2026-10-01T00:00:00Z"}}}
+	risk := projectVulnerabilityRisk(nil, observation, now, nil, 24*time.Hour, false)
+	summary := DashboardSummaryResponse{Servers: []DashboardServerSummary{{Name: "host", Risk: risk}}}
+	if out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now); out.LifecycleTotal != 1 || out.Lifecycle[0].Kind != "os" {
+		t.Fatalf("historical finding overrode proven empty inventory: %+v", out.Lifecycle)
+	}
+}
